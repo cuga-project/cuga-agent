@@ -97,17 +97,22 @@ async def create_find_tools_tool(
                 f"App '{app_name}' not found in available apps. Available apps: {[app.name if hasattr(app, 'name') else str(app) for app in all_apps]}"
             )
 
+        # Kept for the log/except paths below, which report on the full text.
         shortlister_query = _compose_find_tools_shortlister_query(query, initial_user_message)
 
         from cuga.backend.cuga_graph.utils.langfuse_tracing import nested_langgraph_invoke_config
 
         try:
+            # Query and task context travel separately so a non-LLM strategy can
+            # weight them; the LLM strategy re-joins them into the same string
+            # `_compose_find_tools_shortlister_query` produces above.
             return await PromptUtils.find_tools(
-                query=shortlister_query,
+                query=query,
                 all_tools=filtered_tools,
                 all_apps=filtered_apps,
                 llm=llm,
                 run_config=nested_langgraph_invoke_config(),
+                task_context=initial_user_message,
             )
         except OutputParserException as e:
             logger.bind(

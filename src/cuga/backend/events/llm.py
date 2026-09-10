@@ -10,7 +10,7 @@ Ported from event-agent-ap ``agent/llm.py`` (itself from cuga-apps/_llm.py). Map
     litellm    LITELLM_API_KEY + LITELLM_BASE_URL
     ollama     OLLAMA_BASE_URL (keyless)
 
-The concierge wants a strong tool-caller (events_docs/ARCHITECTURE.md); workers can be cheaper per-agent.
+The concierge wants a strong tool-caller (the events docs (ARCHITECTURE.md)); workers can be cheaper per-agent.
 """
 
 from __future__ import annotations

@@ -15,6 +15,31 @@ Every new or changed test must be marked with a pytest marker that declares its 
 
 Do not leave tests unmarked when a type marker applies.
 
+## CI discovers tests by directory — do not edit workflow YAML
+
+CI shards in `.github/workflows/tests.yml` (and the matching commands in `external-fork-tests.yml`) select **directories and markers**, not individual `test_*.py` files. A new test is in CI when its directory is one of the shard roots below; adding a file path to YAML is the wrong change.
+
+| New test lives in | CI job | Notes |
+|---|---|---|
+| `tests/unit/` or `tests/integration/` | `unit-b` | Whole tree is collected; excluded only by marker (`manual`, `pgvector`, `load`, `e2e`, `stability`) |
+| One of the 7 colocated dirs listed in the `unit-a` step | `unit-a` | **Not** a `src/**/tests/` glob — an explicit list, one pytest process per suite (singleton isolation) |
+| `src/cuga/backend/cuga_graph/policy/tests/` | `policy-a` / `policy-b` | `test_e2e_*.py` vs the rest of that directory |
+| `src/cuga/sdk_core/tests/` | `sdk` | CRUD, mocks, supervisor policy invoke tests, and a small live invoke smoke (`-m "not e2e"`). Live-LLM duplicates (summarization, extra invoke variants, JSON utterance matching) are `@pytest.mark.e2e` — same opt-out as `unit-b`. |
+| `tests/system/` or `src/system_tests/load/tests/` | `extras` | |
+| `@pytest.mark.load` mocked load | `load` | |
+| `@pytest.mark.pgvector` | `pgvector-integration` | Needs the pgvector service job |
+| `@pytest.mark.stability` | stability workflow | Not the unit-tests aggregator |
+
+Known gap: `unit-a`'s directory list does not cover every colocated suite. `backend/evolve/tests`, `demo_tools/crm/tests`, `tools_env/code_sandbox/tests`, `cuga_lite/executors/filesystem/tests` and `tests/e2e/` currently run in **no** job. Adding a test there means it runs locally but never in CI — extend the `unit-a` list (a directory, not a file) if you need coverage.
+
+Rules:
+
+1. Put a new unit test in `tests/unit/` or in a colocated dir that `unit-a` already collects. Do not list an individual file in a workflow.
+2. Opt a test out of default PR CI with a marker (`manual`, `pgvector`, `load`, `e2e`, `stability`) — not by omitting it from YAML.
+3. If a suite cannot share a process with others, give it its own **job** (or its own `pytest` invocation of a directory). Do not start a file allowlist.
+4. Keep fork CI on the same directories as internal CI so a test cannot pass one and skip the other.
+5. Local `uv run pytest` remains full discovery. CI is a disjoint partition of that set.
+
 ## Lazy imports — rules for new code and tests
 
 **Any additions to these files must preserve the pattern or the startup gains are lost.**
@@ -79,10 +104,9 @@ If a test fails with `AttributeError: <module 'cuga.backend.llm.models' ...> doe
 
 ## Creating issues and pull requests
 
-When creating a new GitHub issue or pull request, use the AI agent commands documented in [CONTRIBUTING.md](CONTRIBUTING.md#ai-agent-commands) instead of inventing an ad-hoc flow. Prefer:
+When creating a new GitHub issue or pull request, use the AI agent skills documented in [CONTRIBUTING.md](CONTRIBUTING.md#ai-agent-skills) instead of inventing an ad-hoc flow. Prefer:
 
-- `/cuga-report-bug` — open a bug issue from the `bug_report.yml` template
-- `/cuga-new-feature` — open a feature request from the `feature_request.yml` template
-- `/cuga-create-pr` — validate local state, pick the right PR template, and open the PR via `gh`
+- `cuga-github-issues` — open bugs, features, epics, and related issues (`bug_report.yml` / `feature_request.yml`), with epic → feature → issue hierarchy
+- `cuga-contributor-workflows` — commit (Conventional Commits), create PRs via `gh`, and run ruff check/format
 
-These commands live under `.cursor/commands/`, `.claude/commands/`, and `.bob/commands/` and follow repo conventions (templates, Conventional Commits, DCO signoff expectations, no promotional footers).
+These skills are mirrored under `.cursor/skills/`, `.claude/skills/`, and `.bob/skills/` and follow repo conventions (templates, Conventional Commits, DCO signoff expectations, no promotional footers).

@@ -302,13 +302,11 @@ class ApiRegistry:
             f"ApiRegistry: call_function(function_name='{function_name}', arguments={arguments}, headers={headers}) called."
         )
         try:
-            # Delegate the call to the client
-            args = arguments['params'] if 'params' in arguments else arguments
             if self.auth_manager:
                 headers["_tokens"] = json.dumps(self.auth_manager.get_stored_tokens())
             result = await self.mcp_client.call_tool(
                 tool_name=function_name,
-                args=args,
+                args=arguments,
                 headers=headers,
             )
             logger.debug("Response:", result)

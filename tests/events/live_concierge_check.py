@@ -1,7 +1,7 @@
 """LIVE Phase-1 check: the CONCIERGE reuses-or-creates a worker and runs it (NOW).
 
 "what's the bitcoin price right now?" → concierge calls list_capabilities → provision_agent
-(pricebot, cuga-finance) → run_now → a real price. Then a reuse check (ethereum → same pricebot).
+(pricebot, cuga_finance) → run_now → a real price. Then a reuse check (ethereum → same pricebot).
 
     .venv-events/bin/python tests/events/live_concierge_check.py
 """

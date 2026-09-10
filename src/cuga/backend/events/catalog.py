@@ -1,8 +1,10 @@
-"""The Examples catalog — the click-to-load utterances behind the Studio **Examples** tab AND the
-filterable ``events_docs/api/examples.html`` board. This file is the SOLE source of truth: the board's
-data array is generated from it by ``scripts/gen_examples.py`` and locked by a consistency test
-(``test_examples_board_matches_the_catalog``), so add examples HERE and regenerate — never hand-edit
-the HTML array.
+"""The Examples catalog — the click-to-load utterances behind the Studio **Examples** tab.
+
+This file is the SOLE source of truth, and now the ONLY one: the Studio reads it live over
+``GET /api/events/examples``, so adding an example here is all there is to do. There used to be a
+second copy — a generated ``const EX = [...]`` array inside a committed ``examples.html`` — kept in
+sync by a generator and a staleness test. Page, generator and test are gone; nothing to regenerate,
+nothing that can drift.
 
 Agents are PRE-BUILT (see ``seed.py``); the runtime concierge ROUTES an utterance to one outcome.
 Each example is tagged so it can be filtered by **trigger · channel · integration · phase · live**:
@@ -130,7 +132,7 @@ EXAMPLES = [
         channel="web",
         phase="run",
         live=True,
-        note="cuga-apps: Paper Scout + Web Researcher (cuga-knowledge + cuga-web)",
+        note="cuga-apps: Paper Scout + Web Researcher (cuga_knowledge + cuga_web)",
     ),
     _ex(
         "now-city",
@@ -141,7 +143,7 @@ EXAMPLES = [
         channel="web",
         phase="run",
         live=True,
-        note="cuga-apps: City Beat + Travel Planner (cuga-geo + cuga-web + cuga-knowledge)",
+        note="cuga-apps: City Beat + Travel Planner (cuga_geo + cuga_web + cuga_knowledge)",
     ),
     _ex(
         "now-code",
@@ -152,9 +154,9 @@ EXAMPLES = [
         channel="web",
         phase="run",
         live=True,
-        note="cuga-apps: Code Reviewer (cuga-code + cuga-web)",
+        note="cuga-apps: Code Reviewer (cuga_code + cuga_web)",
     ),
-    # ── agents that reach the cuga-web tools BEYOND web_search (fetch_webpage / feeds / youtube) ──
+    # ── agents that reach the cuga_web tools BEYOND web_search (fetch_webpage / feeds / youtube) ──
     _ex(
         "now-webpage",
         "Summarize a web page",
@@ -164,7 +166,7 @@ EXAMPLES = [
         channel="web",
         phase="run",
         live=True,
-        note="cuga-apps: Webpage Summarizer — the only agent that calls cuga-web.fetch_webpage",
+        note="cuga-apps: Webpage Summarizer — the only agent that calls cuga_web.fetch_webpage",
     ),
     _ex(
         "now-video",
@@ -175,7 +177,7 @@ EXAMPLES = [
         channel="web",
         phase="run",
         live=True,
-        note="cuga-apps: Video QA — cuga-web.get_youtube_transcript + get_youtube_video_info",
+        note="cuga-apps: Video QA — cuga_web.get_youtube_transcript + get_youtube_video_info",
     ),
     _ex(
         "now-yt-research",
@@ -274,7 +276,7 @@ EXAMPLES = [
         channel="web",
         phase="run",
         live=True,
-        note="cuga-apps: AI Labs News / Newsletter — cuga-web.fetch_feed; the natural CRON/POLL agent",
+        note="cuga-apps: AI Labs News / Newsletter — cuga_web.fetch_feed; the natural CRON/POLL agent",
     ),
     _ex(
         "now-trip",
@@ -285,7 +287,7 @@ EXAMPLES = [
         channel="web",
         phase="run",
         live=True,
-        note="cuga-apps: Hiking Research + Travel Planner — cuga-geo.find_hikes/search_attractions",
+        note="cuga-apps: Hiking Research + Travel Planner — cuga_geo.find_hikes/search_attractions",
     ),
     _ex(
         "now-discord",
@@ -1546,7 +1548,7 @@ def _feasibility(integration: str, ap_trigger: str) -> tuple[str, str]:
             "setup",
             "arms today as a CUGA-owned direct watcher (no AP flow). The Slack app "
             "must be SUBSCRIBED to this event type in its Event Subscriptions — see "
-            "events_docs/setup/SLACK.md — then a real reaction/mention/join fires it.",
+            "the events docs (setup/SLACK.md) — then a real reaction/mention/join fires it.",
         )
     if integration == "discord":
         need = (

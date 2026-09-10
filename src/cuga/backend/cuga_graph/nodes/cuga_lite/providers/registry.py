@@ -7,18 +7,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Dict, List, Optional
 import aiohttp
 from langchain_core.tools import StructuredTool
 from loguru import logger
-from pydantic import Field, create_model
+from pydantic import Field, ValidationError, create_model
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import resolve_tool_call_args
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
+    BlockToolCallCounter,
+    ToolCallTracker,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     AppDefinition,
     ToolProviderInterface,
 )
 from cuga.backend.tools_env.registry.utils.api_utils import get_apis, get_apps, get_registry_base_url
+from cuga.backend.tools_env.registry.utils.schema_utils import python_type_for_schema
 from cuga.config import settings
 
 
@@ -41,16 +47,12 @@ async def call_api(
     Returns:
         The API response
     """
-    import time
-    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
-        BlockToolCallCounter,
-        ToolCallTracker,
-    )
-
     BlockToolCallCounter.increment()
 
     if args is None:
         args = {}
+
+    ToolCallTracker.enforce_call_budget()
 
     registry_base = get_registry_base_url()
     registry_host = f"{registry_base}/functions/call"
@@ -177,23 +179,8 @@ def create_tool_from_api_dict(
             props = parameters["properties"]
             required = parameters.get("required", [])
             for param_name, param_schema in props.items():
-                param_type = param_schema.get("type", "string")
                 param_desc = param_schema.get("description", "")
-
-                # Handle type that might be a list (e.g., ['string', 'null'])
-                if isinstance(param_type, list):
-                    # Take the first non-null type, or default to 'string'
-                    param_type = next((t for t in param_type if t != "null"), "string")
-
-                type_mapping = {
-                    "string": str,
-                    "integer": int,
-                    "number": float,
-                    "boolean": bool,
-                    "array": list,
-                    "object": dict,
-                }
-                python_type = type_mapping.get(param_type, str)
+                python_type = python_type_for_schema(param_schema)
 
                 # Store constraints for later use in prompt
                 constraints = param_schema.get("constraints", [])
@@ -221,10 +208,42 @@ def create_tool_from_api_dict(
     _operation_id = operation_id
     _agent_id = agent_id
 
+    def _validation_error_message(exc: BaseException) -> str:
+        return f"Tool input validation error for {tool_name}: {exc}"
+
     async def tool_func(*args, **kwargs):
         try:
             param_names = list(field_definitions.keys()) if field_definitions else []
-            all_kwargs = merge_tool_call_args(args, kwargs, param_names)
+            all_kwargs, unexpected = resolve_tool_call_args(args, kwargs, param_names)
+            if unexpected:
+                error_msg = f"Unexpected argument(s) for {tool_name}: {', '.join(unexpected)}"
+                ToolCallTracker.record_call(
+                    tool_name=tool_name,
+                    arguments=all_kwargs,
+                    result=None,
+                    app_name=app_name,
+                    operation_id=_operation_id,
+                    duration_ms=0.0,
+                    error=error_msg,
+                )
+                logger.error(error_msg)
+                return {"error": error_msg}
+
+            try:
+                all_kwargs = InputModel.model_validate(all_kwargs).model_dump(exclude_unset=True)
+            except ValidationError as e:
+                error_msg = _validation_error_message(e)
+                ToolCallTracker.record_call(
+                    tool_name=tool_name,
+                    arguments=all_kwargs,
+                    result=None,
+                    app_name=app_name,
+                    operation_id=_operation_id,
+                    duration_ms=0.0,
+                    error=error_msg,
+                )
+                logger.error(error_msg)
+                return {"error": error_msg}
 
             # Call API with timeout (timeout is handled inside call_api)
             result = await call_api(
@@ -259,6 +278,7 @@ def create_tool_from_api_dict(
         name=tool_name,
         description=description,
         args_schema=InputModel,
+        handle_validation_error=_validation_error_message,
     )
 
     if not hasattr(tool.func, "_response_schemas"):

@@ -8,7 +8,12 @@ from typing import Any
 
 import psycopg
 
-from cuga.backend.knowledge.metadata.base import iso_cutoff_days_ago, utc_now_iso
+from cuga.backend.knowledge.metadata.base import (
+    iso_cutoff_days_ago,
+    mark_file_tasks_interrupted,
+    normalize_file_tasks,
+    utc_now_iso,
+)
 from cuga.backend.storage.relational.prod import ProdRelationalStore
 
 _DOC = "cuga_knowledge_meta_documents"
@@ -202,14 +207,10 @@ class PostgresKnowledgeMetadata(ProdRelationalStore):
         count = 0
         for row in rows:
             task_id = row["task_id"]
-            file_tasks = json.loads(row["file_tasks_json"])
-            for ft in file_tasks.values():
-                if ft["status"] in ("pending", "processing"):
-                    ft["status"] = "failed"
-                    ft["error"] = "interrupted by server restart"
+            file_tasks = mark_file_tasks_interrupted(normalize_file_tasks(row["file_tasks_json"]))
             await self.execute(
-                f"UPDATE {_TASK} SET status = 'failed', file_tasks_json = ?, updated_at = ? WHERE task_id = ?",
-                (json.dumps(file_tasks), now, task_id),
+                f"UPDATE {_TASK} SET status = ?, file_tasks_json = ?, updated_at = ? WHERE task_id = ?",
+                ("failed", json.dumps(file_tasks), now, task_id),
             )
             count += 1
         await self.commit()

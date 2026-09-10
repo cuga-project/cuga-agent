@@ -22,27 +22,31 @@ export function useFullDraftSave(opts: {
   } = opts;
 
   const fullSaveAbortRef = useRef<AbortController | null>(null);
+  const agentIdRef = useRef(effectiveAgentId);
+  agentIdRef.current = effectiveAgentId;
 
   useEffect(() => {
+    fullSaveAbortRef.current?.abort();
     return () => {
       fullSaveAbortRef.current?.abort();
     };
-  }, []);
+  }, [effectiveAgentId]);
 
   const performDraftSave = useCallback(
     async (partial?: object) => {
+      const agentId = effectiveAgentId;
       const toSave = partial ? { ...assembleConfig(), ...partial } : assembleConfig();
       setDraftSaving(true);
       fullSaveAbortRef.current?.abort();
       const ac = new AbortController();
       fullSaveAbortRef.current = ac;
       try {
-        const res = await api.postManageConfigDraft(toSave, effectiveAgentId, ac.signal);
-        if (ac.signal.aborted) return;
+        const res = await api.postManageConfigDraft(toSave, agentId, ac.signal);
+        if (ac.signal.aborted || ac !== fullSaveAbortRef.current || agentId !== agentIdRef.current) return;
         setDraftSaving(false);
         if (res.ok) {
           const data = await res.json().catch(() => ({}));
-          if (ac.signal.aborted) return;
+          if (ac.signal.aborted || ac !== fullSaveAbortRef.current || agentId !== agentIdRef.current) return;
           setCurrentVersion("draft");
           const hasPartialErrors = data.status === "partial" && (data.tool_errors || data.policy_errors);
           if (hasPartialErrors) {
@@ -68,7 +72,8 @@ export function useFullDraftSave(opts: {
           addToast("error", "Draft Save Failed", errorMsg);
         }
       } catch (error) {
-        if (isAbortError(error)) return;
+        if (isAbortError(error) || agentId !== agentIdRef.current) return;
+        if (ac !== fullSaveAbortRef.current) return;
         setDraftSaving(false);
         const errorMsg = error instanceof Error ? error.message : "Network error saving draft";
         addToast("error", "Draft Save Failed", errorMsg);

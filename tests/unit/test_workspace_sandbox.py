@@ -1,6 +1,5 @@
 import pytest
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.executors.native import native_sandbox_executor
 from cuga.backend.server.workspace_sandbox import (
     NATIVE_DISPLAY_ROOT,
     NATIVE_WORKSPACE_ROOT,
@@ -206,10 +205,12 @@ def test_sandbox_paths_to_tree_can_render_native_workspace_public_paths() -> Non
 
 
 def test_fetch_native_workspace_tree_is_per_thread_and_public_workspace(monkeypatch, tmp_path) -> None:
+    from cuga.backend.server import workspace_sandbox as ws
+
     def fake_workspace_root(thread_id: str | None):
         return tmp_path / (thread_id or "_default") / "workspace"
 
-    monkeypatch.setattr(native_sandbox_executor, "native_thread_workspace_root", fake_workspace_root)
+    monkeypatch.setattr(ws, "_host_workspace_root", fake_workspace_root)
 
     thread_a_root = fake_workspace_root("thread-a")
     thread_b_root = fake_workspace_root("thread-b")
@@ -239,10 +240,12 @@ def test_fetch_native_workspace_tree_is_per_thread_and_public_workspace(monkeypa
 
 
 def test_native_workspace_file_access_maps_workspace_to_thread_root(monkeypatch, tmp_path) -> None:
+    from cuga.backend.server import workspace_sandbox as ws
+
     def fake_workspace_root(thread_id: str | None):
         return tmp_path / (thread_id or "_default") / "workspace"
 
-    monkeypatch.setattr(native_sandbox_executor, "native_thread_workspace_root", fake_workspace_root)
+    monkeypatch.setattr(ws, "_host_workspace_root", fake_workspace_root)
 
     root = fake_workspace_root("thread-a")
     (root / "nested").mkdir(parents=True)
@@ -271,10 +274,12 @@ def test_native_workspace_file_access_maps_workspace_to_thread_root(monkeypatch,
 def test_native_workspace_file_access_rejects_paths_outside_public_workspace(
     monkeypatch, tmp_path, bad_path: str
 ) -> None:
+    from cuga.backend.server import workspace_sandbox as ws
+
     def fake_workspace_root(thread_id: str | None):
         return tmp_path / (thread_id or "_default") / "workspace"
 
-    monkeypatch.setattr(native_sandbox_executor, "native_thread_workspace_root", fake_workspace_root)
+    monkeypatch.setattr(ws, "_host_workspace_root", fake_workspace_root)
 
     with pytest.raises(ValueError):
         native_workspace_text_preview("thread-a", bad_path)

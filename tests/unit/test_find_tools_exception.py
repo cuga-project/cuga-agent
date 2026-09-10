@@ -89,8 +89,14 @@ async def test_find_tools_func_success_passes_through(mock_tools, mock_apps):
 
 
 @pytest.mark.asyncio
-async def test_find_tools_composes_query_with_initial_user_message(mock_tools, mock_apps):
-    """When initial_user_message is set, shortlister query includes task context."""
+async def test_find_tools_forwards_query_and_task_context_separately(mock_tools, mock_apps):
+    """The step query and the initial user message reach the shortlister as two values.
+
+    They used to be pre-joined into one string here. They now travel separately so a
+    non-LLM strategy can weight them independently (a long task context would otherwise
+    dominate a short step query). ``LLMShortlister`` re-joins them — see the companion
+    test below, which pins that the composed text is unchanged.
+    """
     from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import create_find_tools_tool
 
     app_to_tools_map = {"test_app": mock_tools}
@@ -110,6 +116,28 @@ async def test_find_tools_composes_query_with_initial_user_message(mock_tools, m
 
     mock_find.assert_awaited_once()
     call_kw = mock_find.await_args.kwargs
-    assert call_kw["query"] == (
-        "Query: list calendar tools\nTask context (initial user message): Book a flight to NYC"
+    assert call_kw["query"] == "list calendar tools"
+    assert call_kw["task_context"] == "Book a flight to NYC"
+
+
+@pytest.mark.unit
+def test_compose_query_matches_legacy_find_tools_format():
+    """The text the LLM sees is byte-identical to the pre-split composition.
+
+    Guards the refactor: ``LLMShortlister`` must reproduce exactly what
+    ``_compose_find_tools_shortlister_query`` produced, or every shortlister prompt
+    silently changes.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import (
+        _compose_find_tools_shortlister_query,
     )
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.llm import compose_query
+
+    cases = [
+        ("list calendar tools", "Book a flight to NYC"),
+        ("  padded  ", "  context  "),
+        ("only a query", None),
+        ("only a query", ""),
+    ]
+    for query, context in cases:
+        assert compose_query(query, context) == _compose_find_tools_shortlister_query(query, context)

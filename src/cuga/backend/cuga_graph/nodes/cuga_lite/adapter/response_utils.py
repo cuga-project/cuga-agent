@@ -7,6 +7,8 @@ from typing import Any, Dict, Optional
 
 from langchain_core.messages import HumanMessage
 
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import EXECUTION_OUTPUT_PREFIX
+
 
 def clean_empty_response_retry_meta(meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     cleaned = {**(meta or {})}
@@ -19,7 +21,7 @@ def reflection_current_task(state: Any) -> str:
     if (state.sub_task or "").strip():
         return state.sub_task.strip()
     if state.chat_messages:
-        execution_prefix = "Execution output:"
+        execution_prefix = EXECUTION_OUTPUT_PREFIX
         for msg in reversed(state.chat_messages):
             if isinstance(msg, HumanMessage):
                 content = (msg.content or "").strip()

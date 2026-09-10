@@ -242,6 +242,7 @@ class TestAuthenticationE2E:
             assert "auth_test_basic" in app_names
             assert "auth_test_query" in app_names
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_header_auth_e2e(self, registry_server):
         """Test header authentication end-to-end via registry server"""
@@ -261,6 +262,13 @@ class TestAuthenticationE2E:
             assert response.status_code == 200
 
             data = response.json()
+
+            # Handle case where response is a JSON string instead of dict
+            if isinstance(data, str):
+                import json
+
+                data = json.loads(data)
+
             assert "items" in data
             assert data["auth_method"] == "header"
             assert isinstance(data["items"], list)

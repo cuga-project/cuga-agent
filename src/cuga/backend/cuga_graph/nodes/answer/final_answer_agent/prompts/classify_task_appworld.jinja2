@@ -9,6 +9,7 @@ Rules:
 - Decide from the **user intent** (what is asked), not from how much work the system did.
 - "Buy / order / send / pay the cheapest / best X" is **ACTION** even though it mentions finding X — the deliverable is the action, not a returned value.
 - If the task has an action AND an explicit request to report a value ("... and tell me the total"), it is **QUERY**.
+- If the requested value is delivered **inside the action itself** — a text/email/note whose *content* is the list, name, or data ("the message should be a list of ...", "reply with the name of ...") — it is **ACTION**: the deliverable is the sent artifact, and nothing is returned to the user. It is QUERY only when the user asks to be *told or shown* the value directly ("tell me", "what is", "how many").
 - When genuinely unsure, answer **QUERY**.
 
 Respond with EXACTLY one word on a single line: `ACTION` or `QUERY`. No punctuation, no explanation.
@@ -20,6 +21,8 @@ Respond with EXACTLY one word on a single line: `ACTION` or `QUERY`. No punctuat
 - "Create a Spotify account and add my songs, albums, and playlists." -> ACTION
 - "Do the tasks in my camping Todoist project and mark them all complete." -> ACTION
 - "Reach out to my coworkers via email asking for music recommendations." -> ACTION
+- "Text my partner an itemized list of my wish list as 'name => price' lines." -> ACTION
+- "My wife asked what I want for dinner over text; reply with one of my favorite recipes' name." -> ACTION
 - "Set the thermostat to 22 degrees." -> ACTION
 - "Add milk to my shopping list." -> ACTION
 - "How many unread emails do I have?" -> QUERY

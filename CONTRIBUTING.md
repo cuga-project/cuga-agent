@@ -195,42 +195,43 @@ Other subsets:
 
 ```bash
 uv run pytest -m "not stability and not slow and not pgvector and not manual and not e2e and not load"   # fast local loop
-uv run pytest -m stability --stability-threshold 88 -n0        # stability only
+uv run pytest src/system_tests/e2e -m stability --stability-threshold 87 -n0        # stability only
 uv run pytest -m pgvector -o addopts="-ra --strict-markers --import-mode=importlib"
 ```
 
 The default `uv run pytest` excludes `@pytest.mark.manual` and `@pytest.mark.pgvector` tests via `pyproject.toml` `addopts`.
 
-> **Note:** CI's `unit-tests` job runs the suites above as several separate `pytest`
-> invocations (grouped by area) rather than one big collection. A handful of suites
-> rely on process-global singletons (the FastAPI `app` instance, the policy/config
-> DB) that assume they're the only tests in the process; collecting everything into
+> **Note:** CI splits these suites across parallel jobs (and several separate `pytest`
+> invocations) rather than one big collection. A handful of suites rely on
+> process-global singletons (the FastAPI `app` instance, the policy/config DB)
+> that assume they're the only tests in the process; collecting everything into
 > a single session can resurface cross-test state leaks unrelated to your change. If
 > `uv run pytest` surfaces failures a single scoped run doesn't reproduce, try
 > running just the affected file(s) in isolation before assuming a regression.
+>
+> Jobs select **directories and markers**, not individual test files. Do not add a
+> `test_*.py` path to `.github/workflows/tests.yml` — put the file in `tests/unit/`
+> (or the matching colocated `src/.../tests/` directory) and mark it. See AGENTS.md.
 
 
-## AI Agent Commands
+## AI Agent Skills
 
-If you are working in an AI-assisted IDE or using an AI agent (Cursor, Claude, Bob), a set of pre-built workflow commands is available to streamline common contributor tasks. The same commands are mirrored across all three tooling directories:
+If you are working in an AI-assisted IDE or using an AI agent (Cursor, Claude, Bob), pre-built Agent Skills streamline common contributor tasks. The same skills are mirrored across all three tooling directories:
 
 | Location | For |
 |---|---|
-| `.cursor/commands/cuga-*.md` | Cursor agent |
-| `.claude/commands/cuga-*.md` | Claude / claude-code |
-| `.bob/commands/cuga-*.md` | Bob agent |
+| `.cursor/skills/` | Cursor agent |
+| `.claude/skills/` | Claude / claude-code |
+| `.bob/skills/` | Bob agent |
 
-### Available Commands
+### Available Skills
 
-| Command | What it does |
+| Skill | What it does |
 |---|---|
-| `cuga-commit` | Stages and commits changes using Conventional Commits with scoped messages and bullet-point descriptions |
-| `cuga-create-pr` | Validates local state, picks the right PR template, fills it out from current changes, and opens the PR via `gh` |
-| `cuga-report-bug` | Creates a GitHub issue using the `bug_report.yml` template with context from the current code |
-| `cuga-new-feature` | Creates a GitHub issue using the `feature_request.yml` template |
-| `cuga-ruff-check` | Runs `uv run ruff check --fix` and `uv run ruff format` on the project |
+| `cuga-github-issues` | Creates GitHub issues (bugs, features, epics, and related work) with epic → feature → issue hierarchy and `gh` sub-issue linking |
+| `cuga-contributor-workflows` | Commit (Conventional Commits), create PRs via `gh` + PR templates, and run `uv run ruff check --fix` / `ruff format` |
 
-These commands follow all repo conventions (Conventional Commits, `gh` CLI, no promotional footers). To invoke them, use the slash-command syntax of your tool (e.g. `/cuga-commit` in Cursor).
+These skills follow repo conventions (Conventional Commits, `gh` CLI, no promotional footers). Agents should load them when you ask to create issues/bugs/features/epics, commit, open a PR, or run ruff.
 
 ## IDE Setup Quick Links
 

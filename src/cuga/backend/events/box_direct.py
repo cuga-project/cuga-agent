@@ -19,18 +19,63 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import httpx
 
 API = "https://api.box.com/2.0"
 
-# Server-tracked per-folder "last created_at seen" — so a STANDING scheduled poll fires only on
-# files added since the previous run (an AP schedule flow carries no state between runs). File-backed
-# so it survives restarts (else every file re-fires on reboot). One tiny JSON: {folder_id: created_at}.
+# Server-tracked per-folder "last created_at seen" — a STANDING scheduled poll must fire only on
+# files added since the previous run, so this watermark IS the feature. Lose it and every existing
+# file in the folder re-fires as if it were new.
+#
+# It therefore lives in the EVENTS DATABASE, not a file. It used to be `.box_since.json`, a relative
+# path, and nothing in the Code Engine deploy set EVENTS_BOX_SINCE_FILE or mounted a volume — with
+# Postgres configured the deploy runs "no mount, no snapshots" — so the watermark sat on the
+# container's ephemeral disk and an instance replace silently re-fired the whole folder. Exactly the
+# durability gap the Postgres move was meant to close, in the one place that was still a file.
+#
+# The file remains the fallback for a dev box with no EVENTS_DB, which keeps local behaviour and the
+# offline tests unchanged.
 _SINCE_FILE = os.environ.get("EVENTS_BOX_SINCE_FILE", "") or ".box_since.json"
 
 
+def _cursor_db():
+    """The events DB, or None when unconfigured (→ file fallback). Never raises: a poll must still
+    run if the store is unreachable — it just loses delta tracking for that tick."""
+    dsn = (os.environ.get("EVENTS_DB", "") or "").strip()
+    if not dsn or dsn == ":memory:":
+        return None
+    try:
+        try:
+            from . import db as _db
+        except ImportError:  # flat load (tests put the events dir on sys.path)
+            import db as _db
+        conn = _db.connect(dsn)
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS poll_cursor (
+                 app TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+                 updated_at REAL NOT NULL DEFAULT 0, PRIMARY KEY (app, key)
+               )"""
+        )
+        conn.commit()
+        return conn
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def load_since(folder_id: str) -> str | None:
+    conn = _cursor_db()
+    if conn is not None:
+        try:
+            r = conn.execute(
+                "SELECT value FROM poll_cursor WHERE app=? AND key=?", ("box", str(folder_id))
+            ).fetchone()
+            if r:
+                return r["value"]
+            return None
+        except Exception:  # noqa: BLE001
+            pass  # fall through to the file
     try:
         return json.load(open(_SINCE_FILE)).get(str(folder_id))
     except Exception:  # noqa: BLE001
@@ -40,6 +85,19 @@ def load_since(folder_id: str) -> str | None:
 def save_since(folder_id: str, created_at: str) -> None:
     if not created_at:
         return
+    conn = _cursor_db()
+    if conn is not None:
+        try:
+            conn.execute(
+                """INSERT INTO poll_cursor (app,key,value,updated_at) VALUES (?,?,?,?)
+                   ON CONFLICT(app,key) DO UPDATE SET value=excluded.value,
+                                                     updated_at=excluded.updated_at""",
+                ("box", str(folder_id), str(created_at), time.time()),
+            )
+            conn.commit()
+            return
+        except Exception:  # noqa: BLE001
+            pass  # fall through to the file
     try:
         d = json.load(open(_SINCE_FILE))
     except Exception:  # noqa: BLE001

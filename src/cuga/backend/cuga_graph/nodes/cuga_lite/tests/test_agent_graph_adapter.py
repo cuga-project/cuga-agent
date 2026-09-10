@@ -183,7 +183,7 @@ def test_normalize_response_extracts_reasoning():
 
 
 @pytest.mark.unit
-def test_on_response_processed_code_branch_records_code_not_content():
+def test_on_response_processed_code_branch_records_fenced_code_not_content():
     AgentGraphAdapter = _get_adapter_class()
     tracker = _make_tracker()
     adapter = AgentGraphAdapter(
@@ -196,14 +196,45 @@ def test_on_response_processed_code_branch_records_code_not_content():
     state = SimpleNamespace()
     content = "Here is the solution:\n```python\nprint(1)\n```"
     code = "print(1)"
-    adapter.on_response_processed(state, code=code, content=content)
+    adapter.on_response_processed(state, code=code, content=content, reasoning=None)
 
     calls = tracker.collect_step.call_args_list
     assert len(calls) == 2
     assert calls[0].kwargs["step"].name == "Raw_Assistant_Response"
     assert calls[0].kwargs["step"].data == content
     assert calls[1].kwargs["step"].name == "Assistant_code"
-    assert calls[1].kwargs["step"].data == code  # must be code, not content
+    assert calls[1].kwargs["step"].data == "```python\nprint(1)\n```"
+
+
+@pytest.mark.unit
+def test_on_response_processed_records_reasoning_before_assistant_step():
+    AgentGraphAdapter = _get_adapter_class()
+    tracker = _make_tracker()
+    adapter = AgentGraphAdapter(
+        tracker=tracker,
+        base_callbacks=[],
+        task_todos_ref=[],
+        tools_context_ref={},
+        base_tool_provider=None,
+    )
+    state = SimpleNamespace()
+    content = "The answer is 42."
+    reasoning = "I computed six times seven."
+
+    adapter.on_response_processed(
+        state,
+        code=None,
+        content=content,
+        reasoning=reasoning,
+    )
+
+    calls = tracker.collect_step.call_args_list
+    assert [call.kwargs["step"].name for call in calls] == [
+        "Raw_Assistant_Response",
+        "Assistant_reasoning",
+        "Assistant_nl",
+    ]
+    assert calls[1].kwargs["step"].data == reasoning
 
 
 @pytest.mark.unit
@@ -219,7 +250,7 @@ def test_on_response_processed_nl_branch_records_content():
     )
     state = SimpleNamespace()
     content = "The answer is 42."
-    adapter.on_response_processed(state, code=None, content=content)
+    adapter.on_response_processed(state, code=None, content=content, reasoning="")
 
     calls = tracker.collect_step.call_args_list
     assert len(calls) == 2
@@ -250,31 +281,90 @@ def test_build_metadata_update_adds_playbook_flag_when_fired():
 # ── 8. classify_auto_continue hook ───────────────────────────────────────
 
 
+def _decision(auto_continue: bool, blocked_override: bool = False):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
+        AutoContinueDecision,
+    )
+
+    return AutoContinueDecision(auto_continue=auto_continue, blocked_override=blocked_override)
+
+
 @pytest.mark.asyncio
 async def test_classify_auto_continue_delegates_to_nl_classifier():
     adapter = _make_adapter()
-    state = SimpleNamespace()
+    state = SimpleNamespace(chat_messages=[], cuga_lite_metadata={})
     mock_model = MagicMock()
 
     with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue",
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
         new_callable=AsyncMock,
-        return_value=True,
+        return_value=_decision(True),
     ) as mock_classify:
         result = await adapter.classify_auto_continue(state, mock_model, "Let me continue.", "thought")
-        mock_classify.assert_called_once_with(mock_model, "Let me continue.", "thought")
+        assert mock_classify.call_count == 1
+        args, kwargs = mock_classify.call_args
+        assert args == (mock_model, "Let me continue.", "thought")
+        assert "evidence" in kwargs
         assert result is True
+
+
+@pytest.mark.asyncio
+async def test_classify_auto_continue_blocked_override_returns_correction_and_marks_retry():
+    """The unverified-blocker retry (issue #610): a blocked_override decision
+    yields the corrective directive string and spends the one-shot marker."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
+        BLOCKED_CLAIM_CORRECTION,
+    )
+
+    adapter = _make_adapter()
+    adapter._tools_context = {"find_tools": object()}
+    state = SimpleNamespace(chat_messages=[], cuga_lite_metadata={})
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
+        new_callable=AsyncMock,
+        return_value=_decision(True, blocked_override=True),
+    ):
+        result = await adapter.classify_auto_continue(
+            state, None, "I'm unable to access the Amazon tools in this session.", None
+        )
+    assert result == BLOCKED_CLAIM_CORRECTION
+    assert state.cuga_lite_metadata["_blocked_claim_retry"] is True
+
+
+@pytest.mark.asyncio
+async def test_classify_auto_continue_evidence_reflects_state():
+    """Evidence must report executed code (Execution output: message) and a
+    spent retry marker so the classifier can refuse a second override."""
+    adapter = _make_adapter()
+    adapter._tools_context = {"find_tools": object()}
+    state = SimpleNamespace(
+        chat_messages=[HumanMessage(content="Execution output:\nsome result")],
+        cuga_lite_metadata={"_blocked_claim_retry": True},
+    )
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
+        new_callable=AsyncMock,
+        return_value=_decision(False),
+    ) as mock_classify:
+        result = await adapter.classify_auto_continue(state, None, "text", None)
+    assert result is False
+    evidence = mock_classify.call_args.kwargs["evidence"]
+    assert evidence.tools_available is True
+    assert evidence.code_executed is True
+    assert evidence.retry_used is True
 
 
 @pytest.mark.asyncio
 async def test_classify_auto_continue_returns_false_when_not_continuing():
     adapter = _make_adapter()
-    state = SimpleNamespace()
+    state = SimpleNamespace(chat_messages=[], cuga_lite_metadata={})
 
     with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue",
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
         new_callable=AsyncMock,
-        return_value=False,
+        return_value=_decision(False),
     ):
         result = await adapter.classify_auto_continue(state, None, "All done.", None)
         assert result is False

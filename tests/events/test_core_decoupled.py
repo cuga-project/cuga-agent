@@ -26,6 +26,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[2] / "src" / "cuga"
 
 CORE_FILES = [
     ROOT / "backend" / "server" / "main.py",
+    # /run + the roster, and the slash bridge — extracted OUT of main.py, so they are guarded here
+    # too. events_bridge is the one core module that knows the eventing service exists, and it is
+    # allowed to know only a URL: it must still import nothing from cuga.backend.events.
+    ROOT / "backend" / "server" / "run_routes.py",
+    ROOT / "backend" / "server" / "events_bridge.py",
     ROOT / "cli" / "main.py",
     ROOT / "supervisor_utils" / "supervisor_config.py",
 ]
@@ -49,7 +54,7 @@ def test_core_does_not_import_the_events_package(path):
     offenders = sorted(m for m in _imported_modules(path) if m.startswith("cuga.backend.events"))
     assert not offenders, (
         f"{path.relative_to(ROOT.parent.parent)} imports {offenders}. CUGA core must run without "
-        f"the eventing layer installed; talk to it over HTTP (see _forward_slash_to_events) instead."
+        f"the eventing layer installed; talk to it over HTTP (see events_bridge) instead."
     )
 
 
@@ -78,13 +83,13 @@ def test_the_door_is_closed_when_events_is_not_configured(monkeypatch):
     Reads the guard out of the source rather than importing the server, for the reason in the
     module docstring.
     """
-    src = (ROOT / "backend" / "server" / "main.py").read_text(encoding="utf-8")
-    fn = src.split("def _forwards_to_events(")[1].split("\ndef ")[0]
+    src = (ROOT / "backend" / "server" / "events_bridge.py").read_text(encoding="utf-8")
+    fn = src.split("def forwards_to_events(")[1].split("\ndef ")[0]
     first_real_line = [
         ln.strip() for ln in fn.splitlines() if ln.strip() and not ln.strip().startswith(("#", '"'))
     ][1]
-    assert "_events_api_url()" in first_real_line and "not" in first_real_line, (
-        "the FIRST thing _forwards_to_events does must be the EVENTS_API_URL check — otherwise "
+    assert "events_api_url()" in first_real_line and "not" in first_real_line, (
+        "the FIRST thing forwards_to_events does must be the EVENTS_API_URL check — otherwise "
         f"vanilla CUGA starts behaving differently. Got: {first_real_line!r}"
     )
 

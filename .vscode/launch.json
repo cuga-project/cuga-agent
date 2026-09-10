@@ -2,10 +2,10 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Events: CUGA server :8100 (debug)",
+      "name": "Events: eventing service :8100 (debug)",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/scripts/run_events_server.py",
+      "module": "cuga.backend.events.service",
       "console": "integratedTerminal",
       "python": "${workspaceFolder}/.venv/bin/python",
       "cwd": "${workspaceFolder}",

@@ -11,9 +11,9 @@ from pydantic import BaseModel
 
 from cuga.backend.browser_env.browser.gym_obs.http_stream_comm import ChromeExtensionCommunicatorProtocol
 from cuga.backend.browser_env.tools.providers import BrowserToolImplProvider
-from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph
 from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import setup_tools
-from cuga.backend.cuga_graph.utils.event_porcessors.action_agent_event_processor import (
+from cuga.backend.cuga_graph.nodes.cuga_browser.action_agent_event_processor import (
     ActionAgentEventProcessor,
 )
 from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
@@ -190,7 +190,7 @@ class AgentRunner:
             langfuse_handler = LangfuseCallbackHandler()
             logger.debug("Langfuse tracing enabled for agent loop")
 
-        agent = DynamicAgentGraph(None, langfuse_handler=langfuse_handler)
+        agent = CugaEntryGraph(None, langfuse_handler=langfuse_handler)
         await agent.build_graph()
         state: AgentState = default_state(
             page=self.env.page if self.env else None,
@@ -296,7 +296,7 @@ class AgentRunner:
             langfuse_handler = LangfuseCallbackHandler()
             logger.debug("Langfuse tracing enabled for agent loop")
 
-        agent = DynamicAgentGraph(None, langfuse_handler=langfuse_handler)
+        agent = CugaEntryGraph(None, langfuse_handler=langfuse_handler)
         await agent.build_graph()
         state: AgentState = default_state(
             page=self.env.page if self.env else None,

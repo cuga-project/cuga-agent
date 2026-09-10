@@ -561,3 +561,49 @@ async def test_mode_auto_detection(mock_state):
 
     assert 'x' in new_vars
     assert new_vars['x'] == 42
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generated_exit_ends_the_block_not_the_runtime(mock_state):
+    """exit() ends the block early and keeps its variables — it must not escape.
+
+    Relaxed execution hands generated code the full builtins dict, so `exit`,
+    `quit` and `SystemExit` are all in scope. SystemExit is a BaseException, so
+    it used to walk past every `except Exception` above the executor and
+    terminate the host process (an evaluation sweep died at task 23 of 40 this
+    way). Stopping the block early is legitimate intent, so it is honoured:
+    stdout and the variables computed before the exit survive, exactly as they
+    would for a block that ended normally.
+    """
+    # CodeExecutor sets the relaxed flag itself from the run's state, so ask for
+    # it there rather than via set_skills_relaxed_execution (which it overwrites).
+    mock_state.reflection_skills_enabled = True
+
+    result, new_vars = await CodeExecutor.eval_with_tools_async(
+        code=(
+            "cart_total = 299.0\n"
+            "partner_email = None\n"
+            "print('computed the total')\n"
+            "if not partner_email:\n"
+            "    exit()\n"
+            "unreachable_var = True"
+        ),
+        _locals={},
+        state=mock_state,
+        mode='local',
+    )
+    assert "ended early" in result
+    assert "computed the total" in result
+    # work done before the exit is kept, so the next block can build on it
+    assert new_vars.get('cart_total') == 299.0
+    assert 'unreachable_var' not in new_vars
+
+    # an explicit reason is surfaced to the agent rather than swallowed
+    result, _ = await CodeExecutor.eval_with_tools_async(
+        code="raise SystemExit('no candidate found')",
+        _locals={},
+        state=mock_state,
+        mode='local',
+    )
+    assert "no candidate found" in result

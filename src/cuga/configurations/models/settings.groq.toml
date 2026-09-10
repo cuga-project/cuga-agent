@@ -1,8 +1,3 @@
-[agent.task_decomposition.model]
-platform = "groq"
-temperature = 0.1
-max_tokens = 16000
-
 [agent.planner.model]
 platform = "groq"
 temperature = 0.1
@@ -13,27 +8,12 @@ platform = "groq"
 temperature = 0.1
 max_tokens = 16000
 
-[agent.shortlister.model]
-platform = "groq"
-temperature = 0.1
-max_tokens = 16000
-
-[agent.plan_controller.model]
-platform = "groq"
-temperature = 0.1
-max_tokens = 16000
-
 [agent.final_answer.model]
 platform = "groq"
 temperature = 0.1
 max_tokens = 16000
 
 [agent.code.model]
-platform = "groq"
-temperature = 0.1
-max_tokens = 16000
-
-[agent.code_planner.model]
 platform = "groq"
 temperature = 0.1
 max_tokens = 16000

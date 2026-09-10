@@ -171,7 +171,18 @@ class LoadTestMockChatModel(BaseChatModel):
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         content = self._pick_content(list(messages))
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
+        # Rough chars/4 token estimate so run receipts have usage data offline.
+        input_tokens = sum(len(str(getattr(m, "content", "") or "")) for m in messages) // 4
+        output_tokens = max(len(content) // 4, 1)
+        message = AIMessage(
+            content=content,
+            usage_metadata={
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+        )
+        return ChatResult(generations=[ChatGeneration(message=message)])
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         return await asyncio.to_thread(self._generate, messages, stop, run_manager, **kwargs)

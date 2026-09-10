@@ -15,6 +15,11 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     append_chat_messages_with_step_limit as _core_append_with_step_limit,
     create_error_command as _core_create_error_command,
 )
+from cuga.backend.cuga_graph.policy.models import PolicyDecisionOutcome
+from cuga.backend.cuga_graph.policy.observability import (
+    append_policy_decisions,
+    decision_from_metadata,
+)
 
 
 class ToolApprovalHandler:
@@ -67,6 +72,7 @@ class ToolApprovalHandler:
             "approval_required",
             "user_approved",
             "required_tools",
+            "matched_tools",
             "required_apps",
             "full_code",
             "code_preview",
@@ -90,7 +96,12 @@ class ToolApprovalHandler:
                 state.step_count,
             )
 
-        cleaned_metadata = ToolApprovalHandler.clean_approval_metadata(adapter.get_metadata(state))
+        metadata = dict(adapter.get_metadata(state) or {})
+        append_policy_decisions(
+            metadata,
+            [decision_from_metadata(metadata, outcome=PolicyDecisionOutcome.APPROVED)],
+        )
+        cleaned_metadata = ToolApprovalHandler.clean_approval_metadata(metadata)
 
         return Command(
             goto=adapter.execute_node_name,
@@ -139,12 +150,25 @@ class ToolApprovalHandler:
                 "policy_type": "tool_approval",
                 "policy_id": policy.id,
                 "policy_name": policy.name,
+                "policy_confidence": policy_match.confidence,
+                "policy_reasoning": policy_match.reasoning,
                 "required_tools": policy.required_tools,
+                "matched_tools": policy_match.trigger_details.get("matched_tools", []),
                 "required_apps": policy.required_apps,
                 "approval_message": policy.approval_message
                 or "This tool requires your approval before execution.",
                 "show_code_preview": policy.show_code_preview,
             }
+
+            append_policy_decisions(
+                approval_metadata,
+                [
+                    decision_from_metadata(
+                        approval_metadata,
+                        outcome=PolicyDecisionOutcome.APPROVAL_REQUIRED,
+                    )
+                ],
+            )
 
             adapter.set_metadata(state, approval_metadata)
 
@@ -258,7 +282,12 @@ class ToolApprovalHandler:
         if adapter.get_metadata(state).get("user_approved") is False:
             logger.warning("User denied tool approval - skipping execution")
             meta_key = adapter.metadata_key
-            cleared_meta = {k: v for k, v in adapter.get_metadata(state).items() if k != "user_approved"}
+            metadata = dict(adapter.get_metadata(state) or {})
+            append_policy_decisions(
+                metadata,
+                [decision_from_metadata(metadata, outcome=PolicyDecisionOutcome.DENIED)],
+            )
+            cleared_meta = {k: v for k, v in metadata.items() if k != "user_approved"}
             return Command(
                 goto=END,
                 update={

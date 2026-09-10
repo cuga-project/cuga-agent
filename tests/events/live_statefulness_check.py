@@ -50,7 +50,7 @@ async def main() -> int:
         runtime.AgentSpec(
             name="geobot",
             prompt="You are a geography assistant. Use your tools. Answer in one short line.",
-            mcp_servers=["cuga-geo"],
+            mcp_servers=["cuga_geo"],
         ),
         scope="acme/default/alice",
     )

@@ -1,13 +1,25 @@
 # Shell scripts must use LF so Linux containers do not get CRLF shebangs (exec format error)
 *.sh text eol=lf
 
-# Exclude build directories from diffs and linguist statistics
+# Exclude build directories from diffs and linguist statistics.
+#
+# -diff              → local `git diff` prints "Binary files differ" instead of the content
+# linguist-vendored  → excluded from the repo's language statistics
+# linguist-generated → GitHub COLLAPSES the file in the Files-changed tab. This is the one that
+#                      matters for review: the bundles are content-hashed, so any frontend rebuild
+#                      is a full delete+add and a routine PR reads as ~450k changed lines. The
+#                      +/- counter in the PR header is computed from the raw diff and no attribute
+#                      can lower it — but with this set, reviewers see the ~44k lines that are
+#                      actually hand-written instead of scrolling a minified vendor chunk.
 src/frontend_workspaces/extension/releases/** -diff
 src/frontend_workspaces/extension/releases/** linguist-vendored
+src/frontend_workspaces/extension/releases/** linguist-generated=true
 src/cuga/frontend/dist/** -diff
 src/cuga/frontend/dist/** linguist-vendored
+src/cuga/frontend/dist/** linguist-generated=true
 src/frontend_workspaces/shared/dist/** -diff
 src/frontend_workspaces/shared/dist/** linguist-vendored
+src/frontend_workspaces/shared/dist/** linguist-generated=true
 
 # Ignore all JSON/YAML/TXT/CSV files (nested across repo)
 **/*.json

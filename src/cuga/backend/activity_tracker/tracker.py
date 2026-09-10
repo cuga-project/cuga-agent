@@ -3,13 +3,14 @@ import json
 import os
 import shutil
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 import time
 
 import pandas as pd
 
 
-from cuga.backend.cuga_graph.nodes.api.code_agent.model import CodeAgentOutput
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.code_agent_output import CodeAgentOutput
 
 from cuga.backend.tools_env.registry.utils.types import AppDefinition
 from cuga.backend.utils.id_utils import mask_with_timestamp, random_id_with_timestamp
@@ -567,7 +568,7 @@ class ActivityTracker(object):
             except Exception:
                 step.image_before = None
         if AGENT_ANALYTICS:
-            if step.name == "TaskAnalyzerAgent":
+            if step.name == "EntryRouter":
                 AIEventRecorder.record_data_annotation(
                     name=step.name,
                     annotation_type=DataAnnotation.Type.RAW_TEXT,
@@ -663,6 +664,25 @@ class ActivityTracker(object):
             # TODO: Handle None full_path properly - either use a default path or require callers to provide one
             if not full_path:
                 logger.debug("Skipping external step collection: full_path is None")
+                return
+
+            # Confine the write to the trajectory base directory before any other use.
+            # ``full_path`` may arrive from an untrusted caller (the registry's
+            # ``/functions/call`` trajectory_path query parameter), and every legitimate
+            # value is built under ``_base_dir`` by ``get_current_trajectory_path``.
+            # Anything that resolves outside it is refused, so this cannot become an
+            # arbitrary file write. Resolving first means every path use below operates
+            # on the confined value. Same helper and pattern as the static-route fix.
+            # Imported locally: the helper's package pulls a chain that imports this
+            # module back, so a top-level import would be circular.
+            from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+                assert_resolved_path_under,
+            )
+
+            try:
+                full_path = str(assert_resolved_path_under(Path(full_path), Path(self._base_dir)))
+            except ValueError:
+                logger.error("Rejected external step path outside the trajectory directory")
                 return
 
             if not os.path.exists(os.path.dirname(full_path)):

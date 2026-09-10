@@ -147,7 +147,7 @@ def _no_footer():
 
 
 # ── POST /invoke — the gateway every armed AP flow calls back into ────────────
-def test_invoke_rejects_missing_gateway_token():
+def test_invoke_rejects_missing_gateway_token(closed_gates):
     """/invoke runs an agent on a caller-supplied scope. With a token configured, an unsigned call
     is 401 — before the envelope is even parsed."""
     c, _ = _client(gateway_token="s3cret")
@@ -788,7 +788,7 @@ def test_debug_run_surfaces_an_ap_refusal_as_502():
     assert r.status_code == 502 and "Activepieces refused" in r.json()["error"]
 
 
-def test_debug_run_requires_the_gateway_token():
+def test_debug_run_requires_the_gateway_token(closed_gates):
     """It runs an agent with the caller's credentials and posts to a real channel. Its gate must not
     be weaker than /invoke's."""
     c, _ = _client([_sub()], engine=_RunEngine(), gateway_token="s3cret")
@@ -1080,84 +1080,65 @@ def test_admin_add_user_without_a_user_store_is_501():
     assert c.post("/api/events/admin/users", json={"user_id": "bob"}).status_code == 501
 
 
-# ── the spec must stay golden ─────────────────────────────────────────────────
-def test_api_spec_is_golden():
-    """`events_docs/api/api_spec.html` is generated from the endpoint table in `scripts/gen_api_spec.py`,
-    which is itself checked against the routes registered in `events/app.py`.
+# NOTE: three tests lived here, all of them guarding committed HTML that no longer exists.
+#
+#   test_api_spec_is_golden               → the events docs (api/api_spec.html)  (204 KB, generated)
+#   test_examples_board_matches_catalog   → the events docs (api/examples.html)  (71 KB)
+#   test_every_route_appears_in_the_api_reference → the events docs (api/api.html) (37 KB)
+#
+# All three pages are gone, along with `scripts/gen_api_spec.py` and `scripts/gen_examples.py`. The
+# repo was carrying ~110 KB of HTML in every clone, plus the generators that produced it, so that
+# these tests could diff against them — and the pages restated things the running service already
+# publishes from the same source:
+#
+#   the API contract  → FastAPI serves /docs and /openapi.json, always accurate, never stale
+#   the examples board → GET /api/events/examples serves catalog.py directly, which is what the
+#                        Studio's Examples tab has always rendered from (it never read the HTML)
+#
+# What the route test was actually protecting — "a route nobody outside this repo can discover" —
+# is preserved by `test_every_route_is_self_documenting` below, without a committed artifact.
 
-    This fails in two situations, both of which mean the spec is lying:
-      1. a route exists in the code with no entry in the table (or vice versa);
-      2. the table changed but the checked-in HTML wasn't regenerated.
+# NOTE: `test_every_trigger_appears_in_its_setup_guide` lived here. It read
+# `setup/<APP>.md` in the events documentation repository and asserted every registry trigger was named in its app's guide, so
+# a trigger could not ship without its Slack scopes / Discord intents documented. The setup guides
+# now live in the events documentation repository, so the assertion has nothing in-repo to read.
+# Restore it there, alongside the guides, rather than here — a test that reads a tree this repo does
+# not own passes vacuously the moment the tree moves, which is worse than not having it.
 
-    Fix: `python scripts/gen_api_spec.py`. Describe the new route while you're there — an endpoint
-    with no caller, no payload and no failure modes is not documented, it is merely listed.
+
+def test_every_route_is_self_documenting():
+    """A route added with no docstring is a route nobody outside this repo can discover.
+
+    This replaces `test_every_route_appears_in_the_api_reference`, which asserted the same thing
+    against a hand-maintained `api.html`. The intent is unchanged; the mechanism no longer needs a
+    37 KB file kept in sync by hand. FastAPI turns each handler's docstring into the `description`
+    in /openapi.json, so this asserts the contract is complete at the source — and it cannot go
+    stale, because there is nothing to regenerate.
     """
-    import subprocess
-
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    p = subprocess.run(
-        [sys.executable, os.path.join(root, "scripts/gen_api_spec.py"), "--check"],
-        capture_output=True,
-        text=True,
-        cwd=root,
-    )
-    assert p.returncode == 0, p.stdout + p.stderr
-
-
-def test_examples_board_matches_the_catalog():
-    """`events_docs/api/examples.html` is generated from `events/catalog.py` — the same source that
-    powers the Studio Examples tab. Adding an agent + a catalog example but forgetting to regenerate
-    the board leaves the public doc showing fewer flows than the product actually does. This is exactly
-    the drift that hid 8 agents (the cuga-apps set) from the board.
-
-    Fix: `python scripts/gen_examples.py`.
-    """
-    import subprocess
-
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    p = subprocess.run(
-        [sys.executable, os.path.join(root, "scripts/gen_examples.py"), "--check"],
-        capture_output=True,
-        text=True,
-        cwd=root,
-    )
-    assert p.returncode == 0, p.stdout + p.stderr
-
-
-def test_every_trigger_appears_in_its_setup_guide():
-    """Every registry trigger must be named (as `event`) in its app's events_docs/setup/<APP>.md —
-    the setup guides are where a tester learns which scope/intent/subscription each trigger needs
-    (Slack scopes, Discord privileged intents, the one-credential-covers-all note for gmail/github/
-    box). A trigger added without its permissions documented is a support ticket waiting."""
-    import pathlib
-
-    root = pathlib.Path(__file__).resolve().parents[2] / "events_docs" / "setup"
-    from events import triggers as tr
-
-    missing = []
-    for t in tr.rows():
-        doc = root / f"{t.app.upper()}.md"
-        if not doc.exists() or f"`{t.event}`" not in doc.read_text():
-            missing.append(f"{t.app}/{t.event} → setup/{doc.name}")
-    assert not missing, "triggers not documented in their setup guide:\n  " + "\n  ".join(missing)
-
-
-def test_every_route_appears_in_the_api_reference():
-    """`events_docs/api/api.html` is what we hand people. A route added without a doc row is a route nobody
-    outside this repo can discover. Matching is on the path with `{param}`/`<param>` normalised away,
-    so renaming a path parameter doesn't spuriously fail."""
-    import html as _html
+    import ast
     import re
 
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    src = open(os.path.join(root, "src/cuga/backend/events/app.py")).read()
-    doc = _html.unescape(open(os.path.join(root, "events_docs/api/api.html")).read())
+    path = os.path.join(root, "src/cuga/backend/events/app.py")
+    tree = ast.parse(open(path).read())
 
-    def norm(s):
-        return re.sub(r"\{[^}/]+\}|<[a-z_]+>", "*", s)
+    undocumented = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            # @app.get("/path") / @app.post(...) — the route string is the first positional arg.
+            if not (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)):
+                continue
+            if dec.func.attr not in ("get", "post", "delete", "put", "patch"):
+                continue
+            route = dec.args[0].value if dec.args and isinstance(dec.args[0], ast.Constant) else "?"
+            if not re.match(r"^/", str(route)):
+                continue
+            if not ast.get_docstring(node):
+                undocumented.append(f"{dec.func.attr.upper()} {route}  ({node.name})")
 
-    routes = {norm(p) for _, p in re.findall(r'@app\.(get|post|delete|put)\("([^"]+)"\)', src)}
-    undocumented = sorted(r for r in routes if r not in norm(doc))
     assert not undocumented, (
-        f"{len(undocumented)} route(s) missing from events_docs/api/api.html: {undocumented}"
+        f"{len(undocumented)} route(s) have no docstring, so /openapi.json describes them as "
+        f"nothing:\n  " + "\n  ".join(undocumented)
     )

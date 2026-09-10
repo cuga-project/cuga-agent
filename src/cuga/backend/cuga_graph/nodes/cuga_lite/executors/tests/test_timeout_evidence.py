@@ -86,6 +86,38 @@ await asyncio.sleep(5)"""
 
 
 @pytest.mark.asyncio
+async def test_timeout_keeps_variables_computed_before_stall():
+    """Locals assigned before the stalling await survive the timeout.
+
+    ``asyncio.wait_for`` on a bare coroutine cancels and clears the frame
+    before it can be read, so the block's namespace used to be discarded even
+    though the frame was still live at the timeout instant. Variables assigned
+    after the stalling line must stay absent — recovered state is real
+    progress, not a partial write.
+    """
+    executor = LocalExecutor()
+    ctx: dict = {}
+    code = _wrap(
+        """cart_total = 299.0
+denise_email = "deniseburch@gmail.com"
+print(f"cart_total={cart_total}")
+await asyncio.sleep(5)
+after_timeout = True"""
+    )
+
+    result = await executor.execute(wrapped_code=code, context_locals=ctx, timeout=0.3)
+
+    assert "timed out after 0.3 seconds" in result
+    assert ctx.get("cart_total") == 299.0
+    assert ctx.get("denise_email") == "deniseburch@gmail.com"
+    assert "after_timeout" not in ctx
+    assert "cart_total" in result
+    assert "denise_email" in result
+    assert "LOST" not in result
+    assert "after_timeout" not in result
+
+
+@pytest.mark.asyncio
 async def test_successful_block_unaffected():
     """Blocks that finish in time keep the existing output contract."""
     executor = LocalExecutor()

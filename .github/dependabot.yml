@@ -1,0 +1,101 @@
+# Tells Dependabot to open pull requests for dependency updates.
+#
+# Without this file, Dependabot still reports security alerts on the Security
+# tab, but it never opens a pull request to fix them. Someone has to notice the
+# alerts and update the lockfiles by hand.
+#
+# Updates are grouped so that one pull request covers many packages. Ungrouped,
+# a backlog of 45 alerts would arrive as 45 separate pull requests. Routine
+# updates are split into two groups per ecosystem so that a broken build tool
+# does not hold up a runtime fix, and so a red batch says what it is. Major
+# upgrades are always left on their own because they are the most likely to
+# break something.
+#
+# Not covered on purpose: the standalone example projects under docs/examples.
+# They are illustrations, not shipped code, and nothing installs them as part
+# of the product.
+version: 2
+
+updates:
+  # Python packages in pyproject.toml and uv.lock.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "fix(deps)"
+      prefix-development: "chore(deps)"
+    groups:
+      # One pull request for everything that fixes a security alert.
+      python-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      # Test and lint tooling. Kept apart from runtime packages so a broken
+      # tool does not block a runtime upgrade, and the other way round.
+      python-tooling:
+        applies-to: version-updates
+        patterns:
+          - "pytest*"
+          - "ruff*"
+          - "mypy*"
+          - "types-*"
+          - "coverage*"
+          - "pre-commit*"
+        update-types: ["minor", "patch"]
+      # Everything else that ships.
+      python-runtime:
+        applies-to: version-updates
+        exclude-patterns:
+          - "pytest*"
+          - "ruff*"
+          - "mypy*"
+          - "types-*"
+          - "coverage*"
+          - "pre-commit*"
+        update-types: ["minor", "patch"]
+
+  # Frontend packages. This is the pnpm workspace root; Dependabot picks up the
+  # nested package.json files under it from pnpm-lock.yaml.
+  - package-ecosystem: "npm"
+    directory: "/src/frontend_workspaces"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "fix(deps)"
+      prefix-development: "chore(deps)"
+    groups:
+      npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      # Build tooling, which never reaches the browser.
+      npm-dev:
+        applies-to: version-updates
+        dependency-type: "development"
+        update-types: ["minor", "patch"]
+      # Packages that ship to the browser, which get a closer look.
+      npm-prod:
+        applies-to: version-updates
+        dependency-type: "production"
+        update-types: ["minor", "patch"]
+
+  # Versions of the actions used in .github/workflows.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      github-actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      github-actions:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

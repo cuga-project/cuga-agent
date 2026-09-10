@@ -47,11 +47,7 @@ class EvolveIntegration:
     @classmethod
     def is_enabled(cls) -> bool:
         """Check if Evolve integration is active based on settings."""
-        if not settings.evolve.enabled:
-            return False
-        if settings.evolve.lite_mode_only and not settings.advanced_features.lite_mode:
-            return False
-        return True
+        return bool(settings.evolve.enabled)
 
     @classmethod
     async def get_guidelines(

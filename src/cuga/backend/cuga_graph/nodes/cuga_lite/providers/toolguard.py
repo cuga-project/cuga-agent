@@ -19,7 +19,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     AppDefinition,
     ToolProviderInterface,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import resolve_tool_call_args
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
 
 
 _METADATA_ATTRS = (
@@ -258,7 +259,20 @@ class ToolGuardingToolProvider(ToolProviderInterface):
         description = tool.description or ""
 
         async def guarded_tool_func(*args: Any, **kwargs: Any) -> Any:
-            all_kwargs = merge_tool_call_args(args, kwargs, param_names)
+            all_kwargs, unexpected = resolve_tool_call_args(args, kwargs, param_names)
+            if unexpected:
+                error_msg = f"Unexpected argument(s) for {tool_name}: {', '.join(unexpected)}"
+                operation_id = getattr(tool, "_operation_id", None)
+                ToolCallTracker.record_call(
+                    tool_name=tool_name,
+                    arguments=all_kwargs,
+                    result=None,
+                    app_name=app_name,
+                    operation_id=operation_id,
+                    duration_ms=0.0,
+                    error=error_msg,
+                )
+                return {"error": error_msg}
 
             runtime = await self._get_or_create_toolguard_runtime()
             if runtime is not None:

@@ -27,7 +27,6 @@ from cuga.backend.tools_env.registry.mcp_manager.adapter import (
     apply_authentication,
     sanitize_tool_name,
 )
-import threading
 from collections import defaultdict
 from urllib.parse import parse_qsl, quote, urlencode, urlparse
 from loguru import logger
@@ -58,6 +57,7 @@ class MCPManager:
         self.schemas = {}
         self.trm_tools = {}
         self.mcp_clients = {}  # Store MCP client connections
+        self.mcp_transports = {}  # Store SSE transports for FastMCP servers
         self.fastmcp_client = None  # FastMCP client for standard MCP servers
         self.initialization_errors = {}  # Track errors during tool initialization
         self.service_statuses = {}
@@ -169,21 +169,6 @@ class MCPManager:
         base_url = f"{parsed.scheme}://{parsed.netloc}"
 
         return base_url
-
-    @staticmethod
-    def _get_free_port():
-        import socket
-        import random
-
-        for _ in range(100):  # Try up to 100 times
-            port = random.randint(49152, 65535)
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                try:
-                    s.bind(('', port))
-                    return port
-                except OSError:
-                    continue
-        raise RuntimeError("No free port found in safe range.")
 
     @staticmethod
     async def _fetch_and_parse_schema(url_or_path):
@@ -544,14 +529,26 @@ class MCPManager:
         if not args:
             args = {}
         if not server:
+            logger.error(
+                f"Tool {tool_name} not found. Available tools: {list(self.server_by_tool.keys())[:10]}"
+            )
             raise Exception(f"[Tool {tool_name} not found in any server]")
 
-        # Check if this is an MCP server tool
-        if isinstance(server, str) and server in self.mcp_clients:
-            return await self._call_mcp_server_tool(server, tool_name, args)
+        # Check if this is a string (MCP server name) or FastMCP server instance
+        if isinstance(server, str):
+            # External MCP server - use client-based call
+            if server in self.mcp_clients:
+                return await self._call_mcp_server_tool(server, tool_name, args)
+            else:
+                raise Exception(f"[MCP server {server} not found in mcp_clients]")
         else:
-            # Traditional MCP server call
-            return await server.call_tool(tool_name, {"params": args, "headers": headers})
+            # Local FastMCP server instance - call directly.
+            # Handlers expect {"params": <args>, "headers": <headers>}.
+            result = await server.call_tool(tool_name, {"params": args, "headers": headers})
+            # FastMCP 3.x returns ToolResult; callers expect a TextContent list.
+            if hasattr(result, "content") and not isinstance(result, list):
+                return list(result.content or [])
+            return result
 
     def get_server_names(self):
         return list(self.tools_by_server.keys())
@@ -601,6 +598,12 @@ class MCPManager:
                     s_copy['response_schemas'] = {}
                 result[prefixed_tool_name] = s_copy
             return result
+
+        # OpenAPI services keep OpenAPITransformer parameter shaping (nested body fields, etc.).
+        openapi_schema = self.schemas.get(app_name)
+        if isinstance(openapi_schema, dict) and "paths" in openapi_schema:
+            openapi_schema["x-app-name"] = app_name
+            return OpenAPITransformer(openapi_schema).transform()
 
         # Check if it's an MCP server (either successfully connected or configured)
         is_mcp_server = app_name in self.mcp_clients or (
@@ -664,16 +667,21 @@ class MCPManager:
 
             return result
 
-        # For OpenAPI services, schema should be in self.schemas
         if app_name not in self.schemas:
             raise KeyError(
                 f"Application '{app_name}' not found in schemas. Available apps: {list(self.schemas.keys())}"
             )
 
-        self.schemas[app_name]['x-app-name'] = app_name
-        trans = OpenAPITransformer(self.schemas[app_name])
-        res = trans.transform()
-        return res
+        # Fallback: treat remaining dict schemas as OpenAPI
+        schema = self.schemas[app_name]
+        if isinstance(schema, dict):
+            schema['x-app-name'] = app_name
+            return OpenAPITransformer(schema).transform()
+
+        raise KeyError(
+            f"Application '{app_name}' schema is present but is not OpenAPI, MCP, or TRM. "
+            f"Schema type: {type(schema).__name__}"
+        )
 
     def _clear_mcp_server_registration(self, name: str) -> None:
         self.schemas.pop(name, None)
@@ -1309,24 +1317,35 @@ class MCPManager:
 
     async def _register_tools(self, mcp_server):
         response = await mcp_server.list_tools()
+        logger.info(f"Registering {len(response)} tools for server {mcp_server.name}")
         for tool in response:
+            # Convert FunctionTool to MCP Tool format if needed
+            if hasattr(tool, 'to_mcp_tool'):
+                mcp_tool = tool.to_mcp_tool()
+                input_schema = mcp_tool.inputSchema
+            elif hasattr(tool, 'inputSchema'):
+                input_schema = tool.inputSchema
+            else:
+                # Fallback for FunctionTool with parameters attribute
+                input_schema = getattr(tool, 'parameters', {})
+
             tool_dict = {
                 "type": "function",
                 "function": {
                     "name": tool.name,
                     "description": tool.description,
-                    "parameters": tool.inputSchema,
+                    "parameters": input_schema,
                 },
             }
             self.tools_by_server[mcp_server.name].append(tool_dict)
+            # Store the FastMCP server instance so call_tool can invoke it directly
             self.server_by_tool[tool.name] = mcp_server
+            logger.info(f"Registered tool '{tool.name}' -> server '{mcp_server.name}'")
+            # Also store in original_tool_name_by_sanitized for reverse lookup
+            self.original_tool_name_by_sanitized[tool.name] = tool.name
 
     async def run_all_servers(self):
-        for name, server in self.servers.items():
-            port = self._get_free_port()
-            self.server_ports[server.name] = port
-            server.settings.port = port
-            thread = threading.Thread(target=server.run, kwargs={"transport": "sse"}, daemon=True)
-            thread.start()
-            self.threads[name] = thread
-            print(f"Started MCP SSE server for {name} on port {port}")
+        # Local OpenAPI tools are invoked via the FastMCP instance in server_by_tool
+        # (see call_tool). Starting SSE here used to support the old client hop and is
+        # unused now — keep this no-op so callers/docs that still await it do not break.
+        return

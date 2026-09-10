@@ -96,6 +96,31 @@ class TestTokenCounter:
     def test_lookup_model_context_size_with_provider_prefix(self):
         assert lookup_model_context_size("openai/gpt-oss-120b") == 131072
 
+    @pytest.mark.unit
+    def test_lookup_mistral_medium_35_not_shadowed_by_generic_entry(self):
+        """A longer, more specific key must win over the generic ``mistral-medium``.
+
+        Without a dedicated entry, ``Mistral-Medium-3.5-128B`` prefix-matches
+        ``mistral-medium`` and silently resolves to 32000 instead of the 262144 the
+        RITS deployment serves — no warning, because a key *did* match (issue #719).
+        """
+        assert lookup_model_context_size("mistralai/Mistral-Medium-3.5-128B") == 262144
+        # Double provider prefix (e.g. MODEL_NAME="rits/mistralai/...") strips only the
+        # first segment, so the vendor-qualified key has to resolve too.
+        assert lookup_model_context_size("rits/mistralai/Mistral-Medium-3.5-128B") == 262144
+        # The generic entry must keep working for models that legitimately want it.
+        assert lookup_model_context_size("mistralai/mistral-medium") == 32000
+
+    @pytest.mark.unit
+    def test_lookup_gemma_4_matches_rits_deployment_window(self):
+        """Gemma 4 on RITS serves the full 262144 native window (issue #719).
+
+        Previously pinned to 131072 when the deployment capped it at half; that cap has
+        since been lifted, so the pin under-reported the window by ~130k tokens.
+        """
+        for name in ("gemma-4-31b-it", "google/gemma-4-31B-it"):
+            assert lookup_model_context_size(name) == 262144
+
     def test_resolve_model_identifier_prefers_model_id(self):
         model = Mock()
         model.model_id = "openai/gpt-oss-120b"

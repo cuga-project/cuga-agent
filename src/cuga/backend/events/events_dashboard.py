@@ -121,7 +121,12 @@ let RUNFILTER={mode:null,backend:null,status:null};
 let GW=sessionStorage.getItem('gw')||'';
 
 async function j(u,o){try{const r=await fetch(u,o);return await r.json();}catch(e){return null;}}
-function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+// Escapes the six characters that matter, not three. Values land inside double-quoted attributes
+// (e.g. title="${esc(prompt)}"), so a bare " in a watcher prompt used to terminate the attribute and
+// let the rest of the prompt add one of its own — onmouseover=, and script runs in the operator's
+// session. A watcher prompt is user-supplied text, so that was reachable.
+function esc(s){return String(s==null?'':s).replace(/[&<>"'`]/g,
+  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));}
 function ago(iso){if(!iso)return'';const t=new Date(iso).getTime();if(!t)return'';
   const s=Math.max(0,(Date.now()-t)/1000);
   if(s<60)return Math.floor(s)+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';
@@ -154,17 +159,21 @@ function renderWatchers(subs){
     const st=s.status==='paused'?'<span class="pill paused">paused</span>':'<span class="pill ok">active</span>';
     const bk=s.backend==='native'?'<span class="pill native">native</span>':'<span class="pill ap">AP</span>';
     const fired=s.fire_count?`<span class="mono" title="fires">×${s.fire_count}</span>`:'';
+    // Actions bind through data- attributes and one delegated listener. Building
+    // onclick="act('${s.id}',…)" put an id straight into a JS string literal with no escaping at
+    // all, so an id containing a quote was code, not data.
+    const sid=esc(s.id);
     const pr=s.status==='paused'
-      ?`<button class="btn ghost" onclick="act('${s.id}','resume')">resume</button>`
-      :`<button class="btn ghost" onclick="act('${s.id}','pause')">pause</button>`;
-    const run=s.backend==='native'?`<button class="btn ghost" onclick="fire('${s.id}')">run</button>`:'';
+      ?`<button class="btn ghost" data-id="${sid}" data-act="resume">resume</button>`
+      :`<button class="btn ghost" data-id="${sid}" data-act="pause">pause</button>`;
+    const run=s.backend==='native'?`<button class="btn ghost" data-id="${sid}" data-act="run">run</button>`:'';
     return `<tr>
       <td title="${esc(s.prompt||'')}"><div>${esc(task.slice(0,80))}</div><div class="mono">${esc(s.target_agent)} · ${esc(s.id)}</div></td>
       <td>${src}</td>
       <td><span class="pill ${mp(s.mode)}">${s.mode}</span> ${bk}</td>
       <td>${cad} ${fired}</td>
       <td><span class="next">${nf||st}</span>${nf?' · '+st:''}</td>
-      <td class="acts">${run}${pr}<button class="btn ghost" onclick="act('${s.id}','delete')">✕</button></td>
+      <td class="acts">${run}${pr}<button class="btn ghost" data-id="${sid}" data-act="delete">✕</button></td>
     </tr>`;
   }).join('');
   $('#watchers').innerHTML=`<table><tr><th>Watching for</th><th>Source</th><th>Type</th><th>Cadence</th><th>Next / status</th><th></th></tr>${rows}</table>`;
@@ -189,8 +198,9 @@ function renderRuns(runs){
 function renderFilters(runs){
   const modes=[...new Set(runs.map(r=>r.mode))];
   const backs=[...new Set(runs.map(r=>r.backend))];
-  const chip=(k,v,lbl)=>`<span class="chip ${RUNFILTER[k]===v?'on':''}" onclick="setf('${k}','${v}')">${lbl}</span>`;
-  $('#rfilters').innerHTML=`<span class="chip ${!RUNFILTER.mode&&!RUNFILTER.backend&&!RUNFILTER.status?'on':''}" onclick="setf('clear')">all</span>`
+  // Same treatment as the row actions: mode/backend come from the runs API, so they are data.
+  const chip=(k,v,lbl)=>`<span class="chip ${RUNFILTER[k]===v?'on':''}" data-k="${esc(k)}" data-v="${esc(v)}">${esc(lbl)}</span>`;
+  $('#rfilters').innerHTML=`<span class="chip ${!RUNFILTER.mode&&!RUNFILTER.backend&&!RUNFILTER.status?'on':''}" data-k="clear">all</span>`
     +modes.map(m=>chip('mode',m,m)).join('')+backs.map(b=>chip('backend',b,b)).join('');
 }
 function setf(k,v){if(k==='clear'){RUNFILTER={mode:null,backend:null,status:null};}else{RUNFILTER[k]=RUNFILTER[k]===v?null:v;}load();}
@@ -238,6 +248,17 @@ async function load(){
   $('#clock').textContent=new Date().toLocaleTimeString();
 }
 $('#utt').addEventListener('keydown',e=>{if(e.key==='Enter')dryrun();});
+// Delegated, so the containers keep working after every innerHTML re-render, and so no handler is
+// ever built by string concatenation out of server data.
+$('#watchers').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-act]'); if(!b)return;
+  const id=b.getAttribute('data-id')||'', what=b.getAttribute('data-act');
+  if(what==='run')fire(id); else act(id,what);
+});
+$('#rfilters').addEventListener('click',e=>{
+  const c=e.target.closest('.chip[data-k]'); if(!c)return;
+  setf(c.getAttribute('data-k'),c.getAttribute('data-v'));
+});
 load(); setInterval(load,10000);
 </script>
 </body></html>

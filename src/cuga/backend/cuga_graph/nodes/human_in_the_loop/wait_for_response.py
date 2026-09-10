@@ -25,7 +25,7 @@ class WaitForResponse(BaseNode):
     @staticmethod
     async def node_handler(
         state: AgentState,
-    ) -> Command[Literal["__end__", "FinalAnswerAgent", "ChatAgent", "APIPlannerAgent", "CugaLite"]]:
+    ) -> Command[Literal["__end__", "FinalAnswerAgent", "ChatAgent", "CugaLite", "EntryRouter"]]:
         response = interrupt(state.hitl_action.model_dump())
         state.hitl_response = ActionResponse(**response)
         tracker.collect_step(Step(name="WaitForResponse", data=state.hitl_response.model_dump_json()))

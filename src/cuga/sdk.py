@@ -68,10 +68,11 @@ Tool Approval Example (with HITL):
     ```
 """
 
-from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
+from typing import Callable, List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
+import time
 import uuid
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.callbacks import BaseCallbackHandler
@@ -80,10 +81,24 @@ from cuga.backend.observability.openlit_init import init_openlit, set_session_at
 from cuga.config import settings
 
 if TYPE_CHECKING:
+    from cuga.backend.cuga_graph.nodes.answer.answer_function import FinalAnswerConfig
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import Shortlister
     from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+    from cuga.backend.cuga_graph.policy.models import PolicyDecision
 
 from langchain_core.messages import BaseMessage
+
+# Eager by necessity, unlike the lazy imports elsewhere in this module: pydantic
+# resolves ``InvokeResult.receipt``'s annotation when the model class is built,
+# and this module has no postponed annotations. Importing the module for
+# ``RunReceipt`` also brings its siblings, so deferring those would buy nothing.
+# Its own deps (langchain_core, pydantic, loguru) are already imported above.
+from cuga.backend.cuga_graph.utils.run_receipt import (
+    RunMetricsCollector,
+    RunReceipt,
+    build_run_receipt,
+)
 
 _llm_manager_instance = None
 
@@ -126,10 +141,64 @@ class InvokeResult(BaseModel):
         default_factory=dict,
         description="Variables computed by the sub-agent, bridged to the Supervisor's namespace",
     )
+    if TYPE_CHECKING:
+        policy_decisions: List[PolicyDecision]
+    else:
+        policy_decisions: List[Any] = Field(
+            default_factory=list,
+            description="Ordered policy decisions made during this invocation",
+        )
+
+    @field_validator("policy_decisions", mode="before")
+    @classmethod
+    def _parse_policy_decisions(cls, value):
+        """Keep SDK imports lazy while returning typed public decisions."""
+        if not value:
+            return []
+
+        from cuga.backend.cuga_graph.policy.models import PolicyDecision
+
+        return [PolicyDecision.model_validate(item) for item in value]
+
+    receipt: Optional[RunReceipt] = Field(
+        default=None,
+        description="Per-run token/cost/timing receipt (populated when advanced_features.run_receipt is enabled)",
+    )
 
     def __str__(self) -> str:
         """Return the answer when converting to string for backward compatibility."""
         return self.answer
+
+
+def _policy_decisions_from_result(result: Any, metadata_key: str) -> list[dict[str, Any]]:
+    """Read the public decision trail from an invocation's existing metadata."""
+    from cuga.backend.cuga_graph.policy.observability import serialize_policy_decisions
+
+    metadata = result.get(metadata_key, {}) if isinstance(result, dict) else getattr(result, metadata_key, {})
+    return serialize_policy_decisions(metadata)
+
+
+def _record_denied_policy_decision(metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Record an SDK-wrapper denial using the same stored approval metadata."""
+    from cuga.backend.cuga_graph.policy.models import PolicyDecisionOutcome
+    from cuga.backend.cuga_graph.policy.observability import (
+        append_policy_decisions,
+        decision_from_metadata,
+    )
+
+    updated = dict(metadata or {})
+    append_policy_decisions(
+        updated,
+        [decision_from_metadata(updated, outcome=PolicyDecisionOutcome.DENIED)],
+    )
+    return updated
+
+
+def _reset_policy_decisions(metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Start a new SDK turn without carrying the previous turn's decision trail."""
+    updated = dict(metadata or {})
+    updated["policy_decisions"] = []
+    return updated
 
 
 class PoliciesManager:
@@ -1656,6 +1725,47 @@ class PoliciesManager:
         return guard_code
 
 
+def _finalization_ran(result: dict) -> bool:
+    """Whether a FinalAnswerNode terminal branch delivered THIS turn's answer.
+
+    Reads AgentState.final_answer_finalized — set by every FinalAnswerNode
+    terminal branch. invoke() explicitly resets it to False on each new user
+    message (checkpointed state carries it across turns otherwise); the HITL
+    resume path deliberately keeps the interrupted turn's value (review:
+    haroldship + coderabbitai + sami-marreed on #707).
+    """
+    return bool(result.get("final_answer_finalized", False))
+
+
+def _apply_answer_function_to_text(text: str, answer_function) -> str:
+    """Mirror finalize_answer's ordering for out-of-graph text: strip harmony
+    tokens first, then apply the answer function. Used by invoke()'s
+    transcript-recovery fallback so the function sees the same input shape
+    as on the terminal path."""
+    from types import SimpleNamespace as _NS
+
+    from cuga.backend.cuga_graph.nodes.answer.answer_function import apply_answer_function
+    from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
+
+    if "<|" in text:
+        text = strip_harmony_tokens(text)
+    _shim = _NS(final_answer=text)
+    apply_answer_function(_shim, answer_function)
+    return _shim.final_answer
+
+
+def _empty_answer_is_final(result: dict, formatter_configured: bool) -> bool:
+    """Whether an empty final_answer is a deliberate answer-function result.
+
+    True only when a formatter is in play AND finalization ran — then ""
+    must be delivered as-is (no transcript recovery, no error substitution,
+    no re-application; once-only contract). With no formatter configured
+    this is always False, so the pre-existing empty-answer recovery behaves
+    exactly as before this feature (review: haroldship on #707).
+    """
+    return formatter_configured and _finalization_ran(result)
+
+
 class CugaAgent:
     """
     Simple SDK interface for CUGA Agent.
@@ -1743,6 +1853,8 @@ class CugaAgent:
         enable_citations: Optional[bool] = None,
         enable_skills: Optional[bool] = None,
         skills_folder: Optional[str] = None,
+        shortlister: Optional["Shortlister"] = None,
+        final_answer: "Optional[Union[str, Callable[[str], str], FinalAnswerConfig]]" = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -1762,6 +1874,16 @@ class CugaAgent:
             enable_citations: None = follow knowledge settings; True/False override knowledge.citations_enabled for this agent instance
             enable_skills: If True, enable agent skills (SKILL.md / load_skill). None = auto from settings.
             skills_folder: Workspace root or `.cuga` folder containing `skills/`. Defaults to cwd / CUGA_FOLDER env var.
+            shortlister: How to shrink a large tool set before the model sees it, e.g.
+                `Shortlister(strategy="hybrid")`. None = use `[shortlister]` settings
+                (default `"llm"`, i.e. unchanged behavior). Overridable per invoke()/stream().
+            final_answer: How the final answer is shaped. A `str` adds guidance for the
+                answer-composing LLM; a callable `(str) -> str` deterministically
+                post-processes the composed answer before delivery (must be pure;
+                applied once per delivered answer); `FinalAnswerConfig(instructions=...,
+                function=...)` combines both. None = unchanged behavior. Non-SDK
+                deployments use the `[final_answer]` settings section. Not applied to
+                supervisor-composed synthesis (#621).
 
         Example with tool approval policy:
             ```python
@@ -1795,6 +1917,51 @@ class CugaAgent:
         self._policy_system = policy_system
         self._special_instructions = special_instructions
 
+        # final_answer: str -> LLM guidance; callable -> deterministic function;
+        # FinalAnswerConfig -> both. In the SDK graph the answer is composed by
+        # CugaLite, so guidance is injected into its prompt (special_instructions
+        # channel); the function is installed on FinalAnswerNode at build time.
+        self._answer_function: Optional[Callable[[str], str]] = None
+        if final_answer is not None:
+            from cuga.backend.cuga_graph.nodes.answer.answer_function import FinalAnswerConfig
+
+            fa_instructions: Optional[str] = None
+            # Classes are callable: a bare class here (e.g. FinalAnswerConfig
+            # with a forgotten `()`) would silently install as the answer
+            # function and never format anything — reject it explicitly.
+            if isinstance(final_answer, type):
+                raise TypeError(
+                    f"final_answer got the class {final_answer.__name__} — pass an instance "
+                    f"(e.g. {final_answer.__name__}(...)) or a plain (str) -> str function"
+                )
+            if isinstance(final_answer, str):
+                fa_instructions = final_answer
+            elif isinstance(final_answer, FinalAnswerConfig):
+                if isinstance(final_answer.function, type):
+                    raise TypeError(
+                        f"FinalAnswerConfig.function got the class {final_answer.function.__name__} — "
+                        "pass a (str) -> str function, not a class"
+                    )
+                if final_answer.function is not None and not callable(final_answer.function):
+                    raise TypeError(
+                        "FinalAnswerConfig.function must be a (str) -> str callable, "
+                        f"got {type(final_answer.function).__name__}"
+                    )
+                self._answer_function = final_answer.function
+                fa_instructions = final_answer.instructions
+            elif callable(final_answer):
+                self._answer_function = final_answer
+            else:
+                raise TypeError(
+                    "final_answer must be a str (LLM guidance), a callable (str) -> str, "
+                    f"or FinalAnswerConfig — got {type(final_answer).__name__}"
+                )
+            if fa_instructions:
+                block = f"## Final answer instructions\n{fa_instructions}"
+                self._special_instructions = (
+                    f"{self._special_instructions}\n\n{block}" if self._special_instructions else block
+                )
+
         # Use settings defaults if not provided
         self.cuga_folder = cuga_folder if cuga_folder is not None else settings.policy.cuga_folder
         self._auto_load_policies = (
@@ -1812,6 +1979,10 @@ class CugaAgent:
         # Skills configuration
         self._enable_skills = enable_skills  # None = auto from settings
         self._skills_folder = skills_folder  # None = use CUGA_FOLDER / cwd
+
+        # Tool shortlisting. None => [shortlister] settings, whose default ("llm")
+        # is the pre-feature behavior.
+        self._shortlister = shortlister
 
         # Setup tool provider. ToolGuard is installed immediately as a transparent
         # provider-level decorator so create-agent-first, add-guard-later flows work.
@@ -1854,6 +2025,7 @@ class CugaAgent:
 
         # Initialize knowledge manager (cached instance)
         self._knowledge_client = None
+        self._feature_overrides: Dict[str, Any] = {}
 
     async def initialize(self):
         """
@@ -1884,6 +2056,12 @@ class CugaAgent:
         if self._auto_load_policies or self._reset_policy_storage:
             await self.policies._ensure_policy_system()
             logger.debug("Policy system initialized during agent.initialize()")
+
+    def _formatter_in_play(self) -> bool:
+        """An answer function is configured: SDK-injected or settings path."""
+        from cuga.backend.cuga_graph.nodes.answer.answer_function import answer_function_configured
+
+        return self._answer_function is not None or answer_function_configured()
 
     def _build_callbacks(self) -> List[BaseCallbackHandler]:
         """
@@ -1919,13 +2097,42 @@ class CugaAgent:
         """
         run_config: dict = dict(config) if config else {}
         run_config["configurable"] = dict(run_config.get("configurable") or {})
+        for key, value in (getattr(self, "_feature_overrides", None) or {}).items():
+            if value is not None:
+                run_config["configurable"].setdefault(key, value)
         return run_config
 
-    def _apply_callbacks(self, run_config: dict) -> None:
+    def _apply_shortlister(self, run_config: dict, shortlister: Optional["Shortlister"] = None) -> None:
+        """Merge shortlister config into ``run_config['configurable']``.
+
+        A per-invoke ``shortlister`` overrides the constructor default. Raw
+        ``shortlister_*`` keys already set by the caller win over both — we
+        ``setdefault`` rather than overwrite. No-op when nothing is configured,
+        so the default (LLM shortlisting) path is untouched.
+        """
+        try:
+            from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import (
+                shortlister_to_configurable,
+            )
+
+            effective = shortlister if shortlister is not None else self._shortlister
+            cfg = shortlister_to_configurable(effective)
+            if not cfg:
+                return
+            configurable = run_config["configurable"]
+            for key, value in cfg.items():
+                configurable.setdefault(key, value)
+        except Exception as e:
+            logger.warning(f"Applying Shortlister config failed; using default shortlisting: {e}")
+
+    def _apply_callbacks(
+        self, run_config: dict, extra_callbacks: Optional[List[BaseCallbackHandler]] = None
+    ) -> None:
         """
         Merge built-in callbacks (TokenUsageTracker + user callbacks) with any
         caller-supplied callbacks in run_config, writing the result to both the
-        top-level and ``configurable`` slots.
+        top-level and ``configurable`` slots. ``extra_callbacks`` are per-call
+        handlers appended last (e.g. the run-receipt metrics collector).
 
         Only ``run_config["callbacks"]`` is read for caller-supplied handlers;
         any pre-existing ``run_config["configurable"]["callbacks"]`` is replaced
@@ -1956,10 +2163,28 @@ class CugaAgent:
             built_callbacks = [cb for cb in built_callbacks if not is_langfuse_callback_handler(cb)]
 
         merged = built_callbacks + existing
+        if extra_callbacks:
+            merged = merged + list(extra_callbacks)
         run_config["callbacks"] = merged
         run_config["configurable"]["callbacks"] = merged
 
         sync_langfuse_callbacks_from_config(run_config)
+
+    def _build_run_receipt(
+        self,
+        collector: Optional[RunMetricsCollector],
+        started_at: Optional[float],
+        tool_calls: List[Dict[str, Any]],
+    ) -> Optional[RunReceipt]:
+        """Assemble the per-run receipt; None when disabled or on any failure."""
+        if collector is None:
+            return None
+        try:
+            wall_time_s = time.monotonic() - started_at if started_at is not None else 0.0
+            return build_run_receipt(collector, tool_calls, wall_time_s)
+        except Exception as e:
+            logger.debug(f"Run receipt skipped: {e}")
+            return None
 
     async def _ensure_initialized(self):
         """Ensure tool provider is initialized."""
@@ -2023,7 +2248,7 @@ class CugaAgent:
         - SDKCallback handles response -> back to CugaLiteSubgraph or FinalAnswerAgent
         - Otherwise -> FinalAnswerAgent -> END
 
-        Dummy nodes (APIPlannerAgent, ChatAgent, CugaLite) are added to support
+        Dummy nodes (ChatAgent, CugaLite, EntryRouter) are added to support
         internal routing from CugaLiteSubgraph that references these nodes.
         """
         from cuga.backend.cuga_graph.nodes.human_in_the_loop.suggest_actions import SuggestHumanActions
@@ -2055,11 +2280,6 @@ class CugaAgent:
         compiled_subgraph = cuga_lite_subgraph.compile()
 
         # Dummy nodes to support internal CugaLiteSubgraph routing
-        async def dummy_api_planner_node(state: AgentState) -> Command[Literal['SDKCallback']]:
-            """Dummy APIPlannerAgent node - routes back to SDK callback."""
-            logger.debug("Dummy APIPlannerAgent node - routing to SDKCallback")
-            return Command(update=state.model_dump(), goto="SDKCallback")
-
         async def dummy_chat_agent_node(state: AgentState) -> Command[Literal['SDKCallback']]:
             """Dummy ChatAgent node - routes back to SDK callback."""
             logger.debug("Dummy ChatAgent node - routing to SDKCallback")
@@ -2068,6 +2288,11 @@ class CugaAgent:
         async def dummy_cuga_lite_node(state: AgentState) -> Command[Literal['SDKCallback']]:
             """Dummy CugaLite node - routes back to SDK callback."""
             logger.debug("Dummy CugaLite node - routing to SDKCallback")
+            return Command(update=state.model_dump(), goto="SDKCallback")
+
+        async def dummy_entry_router_node(state: AgentState) -> Command[Literal['SDKCallback']]:
+            """Dummy EntryRouter node - routes back to SDK callback."""
+            logger.debug("Dummy EntryRouter node - routing to SDKCallback")
             return Command(update=state.model_dump(), goto="SDKCallback")
 
         # Create custom callback node for SDK (simpler than full CugaLiteNode)
@@ -2102,6 +2327,7 @@ class CugaAgent:
                     logger.warning("User denied tool execution - stopping execution")
                     # User denied - set final answer and end
                     policy_name = state.cuga_lite_metadata.get("policy_name", "Tool Approval Policy")
+                    state.cuga_lite_metadata = _record_denied_policy_decision(state.cuga_lite_metadata)
                     state.final_answer = f"❌ **Execution Cancelled**\n\nYou denied the execution of restricted tools required by **{policy_name}**.\n\nThe agent will not proceed with this task."
                     # Set sender to CugaLite so FinalAnswerAgent handles it properly
                     state.sender = NodeNames.CUGA_LITE
@@ -2136,7 +2362,7 @@ class CugaAgent:
         # Create nodes
         suggest_actions = SuggestHumanActions()
         wait_for_response = WaitForResponse()
-        final_answer_node = FinalAnswerNode(FinalAnswerAgent.create())
+        final_answer_node = FinalAnswerNode(FinalAnswerAgent.create(), answer_function=self._answer_function)
 
         # Create wrapper graph using AgentState (compatible with HITL nodes)
         wrapper = StateGraph(AgentState)
@@ -2149,9 +2375,9 @@ class CugaAgent:
         wrapper.add_node(final_answer_node.final_answer_agent.name, final_answer_node.node)
 
         # Add dummy nodes for internal CugaLiteSubgraph routing
-        wrapper.add_node(NodeNames.API_PLANNER_AGENT, dummy_api_planner_node)
         wrapper.add_node(NodeNames.CHAT_AGENT, dummy_chat_agent_node)
         wrapper.add_node(NodeNames.CUGA_LITE, dummy_cuga_lite_node)
+        wrapper.add_node(NodeNames.ENTRY_ROUTER, dummy_entry_router_node)
 
         # Add static edges (routing is done via Command objects in nodes)
         wrapper.add_edge(START, "CugaLiteSubgraph")
@@ -2356,6 +2582,7 @@ class CugaAgent:
         user_context: Optional[str] = None,
         track_tool_calls: bool = False,
         variables: Optional[Dict[str, Any]] = None,
+        shortlister: Optional["Shortlister"] = None,
     ) -> InvokeResult:
         """
         Invoke the agent with a message and get the response.
@@ -2372,6 +2599,8 @@ class CugaAgent:
                 result, operation_id, duration_ms, etc.) and returns them in result.tool_calls
             variables: Optional dict of variables to make available in the agent's context.
                 Used when delegating from a supervisor to pass context to sub-agents.
+            shortlister: Overrides the agent's shortlister for this call only, e.g.
+                `Shortlister(strategy="hybrid")`. None = use the agent default.
 
         Returns:
             InvokeResult containing:
@@ -2379,6 +2608,7 @@ class CugaAgent:
             - tool_calls: List of tool calls made (when track_tool_calls=True)
             - thread_id: Thread ID used for this invocation
             - error: Error message if execution failed
+            - policy_decisions: Ordered policy outcomes for this invocation
 
         Example:
             ```python
@@ -2386,6 +2616,10 @@ class CugaAgent:
             result = await agent.invoke("What's 2+2?", track_tool_calls=True)
             print(result.answer)  # Access the answer
             print(result.tool_calls)  # Access tool calls
+
+            # Inspect policies that affected this invocation
+            for decision in result.policy_decisions:
+                print(decision.policy_id, decision.stage, decision.outcome)
 
             # The result also converts to string for backward compatibility
             print(result)  # Prints the answer
@@ -2441,9 +2675,27 @@ class CugaAgent:
 
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
+        self._apply_shortlister(run_config, shortlister)
 
         # Pass track_tool_calls flag via configurable
         run_config["configurable"]["track_tool_calls"] = track_tool_calls
+
+        # Run receipt (advanced_features.run_receipt, default off): per-run
+        # token/cost/timing metrics, collected fail-safe so a receipt problem
+        # can never affect the run itself.
+        receipt_collector: Optional[RunMetricsCollector] = None
+        receipt_started_at: Optional[float] = None
+        try:
+            if settings.advanced_features.run_receipt:
+                receipt_collector = RunMetricsCollector()
+                receipt_started_at = time.monotonic()
+                if not track_tool_calls:
+                    # Tool durations for the receipt require tracking, but the
+                    # caller did not opt into payload capture: timings-only mode
+                    # records tool name/duration, never arguments/results/errors.
+                    run_config["configurable"]["track_tool_calls"] = "timings_only"
+        except Exception as e:
+            logger.debug(f"Run receipt disabled: {e}")
 
         # Pass skills configuration via configurable (overrides settings when set)
         if self._enable_skills is not None:
@@ -2474,9 +2726,23 @@ class CugaAgent:
             self._inject_knowledge_to_config(run_config)
 
             # Add callbacks (TokenUsageTracker + user callbacks merged with per-call callbacks)
-            self._apply_callbacks(run_config)
+            self._apply_callbacks(
+                run_config, extra_callbacks=[receipt_collector] if receipt_collector else None
+            )
 
             from langgraph.types import Command
+
+            # tool_calls accumulate on the thread state across turns; snapshot
+            # the prior count so the receipt covers only this resume segment
+            # (matching the token/time scope of the fresh collector).
+            resume_prior_tool_calls = 0
+            if receipt_collector is not None:
+                try:
+                    prior_state = self.graph.get_state(run_config)
+                    if prior_state and prior_state.values:
+                        resume_prior_tool_calls = len(prior_state.values.get("tool_calls") or [])
+                except Exception as e:
+                    logger.debug(f"Run receipt: could not snapshot prior tool_calls: {e}")
 
             if action_response:
                 logger.info(
@@ -2489,16 +2755,19 @@ class CugaAgent:
             else:
                 result = await self.graph.ainvoke(None, config=run_config)
 
-            # Extract final answer
+            # Extract final answer. A "" from a completed finalize with a
+            # formatter configured is a deliberate result — skip the empty-
+            # answer substitutions below (same gate as the fresh-turn path).
             final_answer = result.get("final_answer", "")
+            empty_is_final = not final_answer and _empty_answer_is_final(result, self._formatter_in_play())
 
             error_msg = None
-            if not final_answer and result.get("error"):
+            if not final_answer and not empty_is_final and result.get("error"):
                 error_msg = result['error']
                 final_answer = f"Error: {error_msg}"
 
             # Check if graph interrupted again
-            if not final_answer:
+            if not final_answer and not empty_is_final:
                 try:
                     state = self.graph.get_state(run_config)
                     if state.next:  # Has pending nodes = interrupted again
@@ -2525,6 +2794,12 @@ class CugaAgent:
                 thread_id=thread_id,
                 error=error_msg,
                 variables=_hitl_variables,
+                policy_decisions=_policy_decisions_from_result(result, "cuga_lite_metadata"),
+                receipt=self._build_run_receipt(
+                    receipt_collector,
+                    receipt_started_at,
+                    (result.get("tool_calls") or [])[resume_prior_tool_calls:],
+                ),
             )
 
         # Normal invocation case
@@ -2583,6 +2858,18 @@ class CugaAgent:
             initial_state_dict = existing_state.model_dump()
             initial_state_dict["chat_messages"] = updated_chat_messages
             initial_state_dict["input"] = new_messages[-1].content if new_messages else ""
+            # InvokeResult reports decisions for this request, not the entire
+            # checkpointed conversation. HITL resume bypasses this branch and
+            # therefore preserves the interrupted request's decision lifecycle.
+            initial_state_dict["cuga_lite_metadata"] = _reset_policy_decisions(
+                initial_state_dict.get("cuga_lite_metadata")
+            )
+            # Per-turn, not thread-scoped: a checkpointed True from turn N must
+            # not mark turn N+1 as finalized (it would skip pause/error/
+            # transcript recovery when a formatter is configured). HITL resume
+            # bypasses this branch, deliberately keeping the interrupted
+            # turn's flag (review: sami-marreed on #707).
+            initial_state_dict["final_answer_finalized"] = False
 
             # Update user_context (pi) if provided
             if user_context:
@@ -2613,6 +2900,7 @@ class CugaAgent:
                 "pi": user_context,
                 "input": new_messages[-1].content if new_messages else "",
                 "url": "",  # Required by AgentState (used for web navigation, empty for SDK)
+                "cuga_lite_metadata": _reset_policy_decisions(None),
             }
             initial_state_pydantic = AgentState(**initial_state)
 
@@ -2637,10 +2925,14 @@ class CugaAgent:
             run_config["configurable"]["policy_system"] = self._policy_system
 
         # Add callbacks (TokenUsageTracker + user callbacks merged with per-call callbacks)
-        self._apply_callbacks(run_config)
+        self._apply_callbacks(run_config, extra_callbacks=[receipt_collector] if receipt_collector else None)
 
         # Add knowledge engine for awareness injection
         self._inject_knowledge_to_config(run_config)
+
+        # tool_calls accumulate on the thread state across turns; snapshot the
+        # prior count so the receipt only covers this invocation.
+        prior_tool_calls_count = len(initial_state_pydantic.tool_calls or [])
 
         # Invoke the graph
         total_messages = len(initial_state_pydantic.chat_messages or [])
@@ -2658,8 +2950,12 @@ class CugaAgent:
         # Fallback: if final_answer is still empty, look at the last non-empty AI message.
         # Reasoning models sometimes return content='' with the answer only in
         # additional_kwargs['reasoning_content'], so check both fields.
+        # Gated on finalization NOT having run (every FinalAnswerNode terminal
+        # branch appends an AIMessage named FinalAnswerAgent): an empty string
+        # from a completed finalize is a valid answer-function result, and the
+        # fallback re-applying the function would break the once-only contract.
         fallback_sources = None
-        if not final_answer:
+        if not final_answer and not _empty_answer_is_final(result, self._formatter_in_play()):
             for msg in reversed(result.get("chat_messages", [])):
                 if getattr(msg, "type", None) != "ai":
                     continue
@@ -2672,8 +2968,12 @@ class CugaAgent:
                     break
 
             # Chat transcript keeps raw [sN] markers by design; the
-            # fallback text bypassed FinalAnswerNode resolution, so
-            # resolve here before returning it to the caller.
+            # fallback text bypassed FinalAnswerNode entirely, so mirror
+            # finalize_answer here: answer function first, then citation
+            # resolution, before returning it to the caller.
+            if final_answer:
+                final_answer = _apply_answer_function_to_text(final_answer, self._answer_function)
+
             from cuga.backend.knowledge.sources import (
                 get_ledger,
                 has_citation_markers,
@@ -2790,6 +3090,12 @@ class CugaAgent:
             thread_id=thread_id,
             error=error_msg,
             variables=_result_variables,
+            policy_decisions=_policy_decisions_from_result(result, "cuga_lite_metadata"),
+            receipt=self._build_run_receipt(
+                receipt_collector,
+                receipt_started_at,
+                (result.get("tool_calls") or [])[prior_tool_calls_count:],
+            ),
         )
 
     async def stream(
@@ -2798,6 +3104,7 @@ class CugaAgent:
         thread_id: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         action_response: Optional[Any] = None,  # ActionResponse for resuming after HITL
+        shortlister: Optional["Shortlister"] = None,
     ):
         """
         Stream the agent's execution step by step.
@@ -2811,6 +3118,8 @@ class CugaAgent:
             thread_id: Thread ID (required for resume, auto-generated for new conversations)
             config: Optional LangGraph config
             action_response: Optional ActionResponse for resuming after approval/interruption
+            shortlister: Overrides the agent's shortlister for this call only, e.g.
+                `Shortlister(strategy="hybrid")`. None = use the agent default.
 
         Yields:
             State updates as the agent executes
@@ -2842,6 +3151,7 @@ class CugaAgent:
 
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
+        self._apply_shortlister(run_config, shortlister)
 
         # Pass skills configuration via configurable (overrides settings when set)
         if self._enable_skills is not None:
@@ -2906,6 +3216,7 @@ class CugaAgent:
             "thread_id": thread_id,
             "input": messages[-1].content if messages else "",
             "url": "",  # Required by AgentState (used for web navigation, empty for SDK)
+            "cuga_lite_metadata": _reset_policy_decisions(None),
         }
 
         run_config["configurable"]["thread_id"] = thread_id
@@ -3218,6 +3529,7 @@ class CugaSupervisor:
                         state.sender = callback_name
                         return Command(update=state.model_dump(), goto="SupervisorSubgraph")
                     policy_name = (state.supervisor_metadata or {}).get("policy_name", "Tool Approval")
+                    state.supervisor_metadata = _record_denied_policy_decision(state.supervisor_metadata)
                     state.final_answer = (
                         f"❌ **Execution Cancelled**\n\nYou denied execution required by "
                         f"**{policy_name}**. The supervisor will not proceed with this task."
@@ -3241,6 +3553,10 @@ class CugaSupervisor:
                 metadata_key="supervisor_metadata",
             )
 
+            # NOTE: no [final_answer].function application here — sub-agents
+            # apply it in their own FinalAnswerNode (already-shaped text with
+            # resolved [n] chips must not be re-shaped); supervisor-composed
+            # synthesis is a documented v1 gap (#621).
             # NOTE: no citation resolution here — sub-agents resolve their own
             # answers via FinalAnswerNode; if supervisor-level retrieval is ever
             # added, resolve [sN] markers before END (see
@@ -3265,8 +3581,8 @@ class CugaSupervisor:
         for node_name in (
             "FinalAnswerAgent",
             NodeNames.CHAT_AGENT,
-            NodeNames.API_PLANNER_AGENT,
             NodeNames.CUGA_LITE,
+            NodeNames.ENTRY_ROUTER,
         ):
             wrapper.add_node(node_name, dummy_route_to_callback)
 
@@ -3427,6 +3743,7 @@ class CugaSupervisor:
             sources=sources,
             thread_id=thread_id,
             error=error_msg,
+            policy_decisions=_policy_decisions_from_result(result, "supervisor_metadata"),
         )
 
     @property

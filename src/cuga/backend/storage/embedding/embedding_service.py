@@ -130,21 +130,33 @@ async def _create_openai(
         return None
 
 
+def get_shared_text_embedding(model_name: str) -> Any:
+    """Get-or-create the process-wide fastembed session for ``model_name``.
+
+    One ONNX session per model, shared by every consumer (knowledge, policy,
+    tool shortlisting). Two sessions for the same weights would double memory
+    and load time for no benefit, so all local embedding goes through here.
+
+    Raises whatever fastembed raises — callers decide how to degrade.
+    """
+    cached = _embedding_model_cache.get(model_name)
+    if cached is not None:
+        logger.info(f"Using cached embedding model: {model_name}")
+        return cached
+
+    from fastembed import TextEmbedding
+
+    logger.info(f"Loading local embedding model: {model_name}")
+    cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
+    local_files_only = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
+    model = TextEmbedding(model_name, cache_dir=cache_dir, local_files_only=local_files_only)
+    _embedding_model_cache[model_name] = model
+    return model
+
+
 async def _create_local(model_name: str) -> Optional[Callable]:
     try:
-        from fastembed import TextEmbedding
-        import os
-
-        cache_key = model_name
-        if cache_key in _embedding_model_cache:
-            logger.info(f"Using cached embedding model: {model_name}")
-            model = _embedding_model_cache[cache_key]
-        else:
-            logger.info(f"Loading local embedding model: {model_name}")
-            cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
-            local_files_only = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
-            model = TextEmbedding(model_name, cache_dir=cache_dir, local_files_only=local_files_only)
-            _embedding_model_cache[cache_key] = model
+        model = get_shared_text_embedding(model_name)
 
         sample = next(model.embed(["probe"]))
         dim = len(sample)

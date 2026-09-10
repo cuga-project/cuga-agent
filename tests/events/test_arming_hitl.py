@@ -93,7 +93,9 @@ def test_read_reply_hands_back_the_new_prompt_VERBATIM():
     """
     action, field, value = read_reply("change the prompt to: summarise the PR\n- risk\n- reviewers")
     assert (action, field) == ("edit", "prompt")
-    assert value == ": summarise the PR\n- risk\n- reviewers"
+    # The separator colon is syntax, not prompt text — it must not reach the stored prompt. What
+    # follows it, newlines and all, must survive byte-for-byte.
+    assert value == "summarise the PR\n- risk\n- reviewers"
 
     _, _, v2 = read_reply("set prompt to Check jira.\n\nThen post a table to slack.")
     assert v2 == "Check jira.\n\nThen post a table to slack."
@@ -266,14 +268,14 @@ def test_channel_arm_records_the_originating_conversation(monkeypatch):
 
 
 def _door_pattern():
-    """CUGA's door predicate (`_slash_verb`), lifted from source rather than imported.
+    """CUGA's door predicate (`slash_verb`), lifted from source rather than imported.
 
     Importing cuga.backend.server.main pulls the whole CUGA server in — module-level side effects
     that leak into every other test in this session (17 unrelated failures when it was imported
     here). The events suite must stay light, so the definition is extracted and exec'd on its own.
 
     It used to be a regex literal we could pull out with a `re.search`. It is now a function
-    (`_slash_verb`), because a quantifier over unbounded chat text is a ReDoS surface CodeQL flags —
+    (`slash_verb`), because a quantifier over unbounded chat text is a ReDoS surface CodeQL flags —
     so lift the function and its one constant via AST instead. Returns an object with `.match()` so
     the tests below read the same either way.
     """
@@ -281,23 +283,28 @@ def _door_pattern():
     import pathlib
 
     src = (
-        pathlib.Path(__file__).resolve().parents[2] / "src" / "cuga" / "backend" / "server" / "main.py"
+        pathlib.Path(__file__).resolve().parents[2]
+        / "src"
+        / "cuga"
+        / "backend"
+        / "server"
+        / "events_bridge.py"
     ).read_text()
     tree = ast.parse(src)
     wanted = [
         n
         for n in tree.body
-        if (isinstance(n, ast.FunctionDef) and n.name == "_slash_verb")
-        or (isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "_SLASH_VERB_NAMES" for t in n.targets))
+        if (isinstance(n, ast.FunctionDef) and n.name == "slash_verb")
+        or (isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "SLASH_VERB_NAMES" for t in n.targets))
     ]
-    assert len(wanted) == 2, "server/main.py no longer defines _SLASH_VERB_NAMES + _slash_verb"
+    assert len(wanted) == 2, "events_bridge.py no longer defines SLASH_VERB_NAMES + slash_verb"
     ns: dict = {}
     exec(compile(ast.Module(body=wanted, type_ignores=[]), "<door>", "exec"), ns)
 
     class _Door:
         @staticmethod
         def match(text):  # truthy/falsy like the old re.match, so the assertions are unchanged
-            return ns["_slash_verb"](text)
+            return ns["slash_verb"](text)
 
     return _Door
 

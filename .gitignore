@@ -28,10 +28,13 @@ test_results.json
 vendor
 logs/
 .milvus*
-.bob
-!.bob/commands/
-!.bob/commands/cuga-*.md
-!.bob/commands/github_commands.md
+.bob/*
+!.bob/skills/
+.bob/skills/*
+!.bob/skills/cuga-github-issues/
+!.bob/skills/cuga-github-issues/**
+!.bob/skills/cuga-contributor-workflows/
+!.bob/skills/cuga-contributor-workflows/**
 test_workspace/
 *.logs
 
@@ -82,10 +85,13 @@ vendor/
 cuga.egg-info
 
 # IDE and editor files
-.cursor/
-!.cursor/commands/
-!.cursor/commands/cuga-*.md
-!.cursor/commands/github_commands.md
+.cursor/*
+!.cursor/skills/
+.cursor/skills/*
+!.cursor/skills/cuga-github-issues/
+!.cursor/skills/cuga-github-issues/**
+!.cursor/skills/cuga-contributor-workflows/
+!.cursor/skills/cuga-contributor-workflows/**
 
 # Local TLS certs for HTTPS (e.g. IBM Verify)
 deployment/certs/*.key
@@ -120,13 +126,25 @@ src/cuga/frontend/dist/*.map
 .venv-events/
 .events.db
 
-# events_docs local cruft
-events_docs/**/__pycache__/
-events_docs/**/.DS_Store
 
 # Code Engine deploy secrets / generated URLs
-deploy/ce/.env.ce
-deploy/ce/.ce_urls.env
+# .env.ce is the EVENTS secret source; .env.ce.core is cuga-core's (same minus the channel
+# tokens). The glob covers both plus anything else make_env_ce.sh emits alongside them.
+events/deploy/.env.ce
+events/deploy/.env.ce.*
+events/deploy/.ce_urls.env
+events/deploy/.ce_urls_split.env
+
+# Hand-made copies of the secret files. `.env` and `.env.ce` are ignored, but the natural thing
+# to do before editing one — `cp .env .env.bak` — produces a file holding every live credential
+# that IS committable, and shows up as an innocuous untracked entry for `git add -A` to sweep up.
+.env.*.bak
+.env.bak*
+*.env.bak*
+events/deploy/.env.ce.bak*
 
 # Roo AI assistant
 .roo/
+events/deploy/.env.ce
+events/deploy/.ce_urls_split.env
+events/deploy/.ce_urls.env

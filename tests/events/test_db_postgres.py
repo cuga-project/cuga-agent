@@ -248,13 +248,13 @@ def test_agent_store(dsn):
             name="pricebot",
             prompt="prices",
             backend="cuga",
-            mcp_servers=["cuga-finance"],
+            mcp_servers=["cuga_finance"],
             builtin_tools=[],
             channels=["slack"],
         ),
     )
     got = a.get("acme", "pricebot")
-    assert got and got.mcp_servers == ["cuga-finance"] and got.channels == ["slack"]
+    assert got and got.mcp_servers == ["cuga_finance"] and got.channels == ["slack"]
     assert a.get("globex", "pricebot") is None
     assert [x.name for x in a.list("acme")] == ["pricebot"]
 
@@ -267,7 +267,7 @@ def test_now_run_store(dsn):
         channel="slack",
         prompt="p",
         answer="a",
-        mcp=["cuga-finance"],
+        mcp=["cuga_finance"],
         tools=["get_stock_quote"],
         ms=1234,
     )
@@ -275,7 +275,7 @@ def test_now_run_store(dsn):
     assert len(rows) == 1 and rows[0]["answer"] == "a"
     got = r.get(rid)
     assert got["prompt"] == "p"
-    assert got["mcp"] == ["cuga-finance"] and got["tools"] == ["get_stock_quote"]  # JSON columns
+    assert got["mcp"] == ["cuga_finance"] and got["tools"] == ["get_stock_quote"]  # JSON columns
     assert r.list(scope="globex") == []
 
 

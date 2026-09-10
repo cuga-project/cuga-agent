@@ -1,4 +1,4 @@
-"""End-to-end tracing for the events layer (events_docs/ARCHITECTURE.md).
+"""End-to-end tracing for the events layer (the events docs (ARCHITECTURE.md)).
 
 Every request carries a ``trace_id`` stamped on each seam log line, so grepping one id
 follows a request across CUGA and AP:

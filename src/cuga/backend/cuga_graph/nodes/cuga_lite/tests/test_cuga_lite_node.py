@@ -7,6 +7,9 @@ from langgraph.types import Command
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_node import CugaLiteNode
 from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.mark.asyncio
@@ -160,3 +163,31 @@ async def test_callback_node_handles_missing_multi_user_params():
     assert kwargs["user_id"] is None  # "default" sentinel normalized away
     assert kwargs["namespace_id"] is None
     assert kwargs["session_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_process_results_hands_hybrid_api_result_to_browser():
+    state = AgentState(
+        input="get the top account",
+        sub_task_type="hybrid",
+        hybrid_original_task="get the top account and add it to this page",
+        hybrid_api_task="get the top account",
+        hybrid_web_task="add the top account to this page",
+        hybrid_phase="api",
+    )
+    node = CugaLiteNode()
+
+    with patch.object(node, "_apply_output_formatter", new_callable=AsyncMock) as formatter:
+        result = await node._process_results(
+            state=state,
+            answer="Acme Corp",
+            initial_var_names=[],
+            is_autonomous_subtask=False,
+        )
+
+    assert result.goto == NodeNames.CUGA_BROWSER
+    assert state.hybrid_phase == "web"
+    assert state.hybrid_api_answer == "Acme Corp"
+    assert state.final_answer == ""
+    assert state.input == "add the top account to this page\n\nResult from the API phase:\nAcme Corp"
+    formatter.assert_not_awaited()

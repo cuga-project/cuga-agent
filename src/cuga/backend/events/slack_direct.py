@@ -48,7 +48,22 @@ def verify_signature(headers, raw_body: str) -> tuple[bool, str]:
     set SLACK_SIGNING_SECRET to lock this down."""
     secret = signing_secret()
     if not secret:
-        return True, "unverified (SLACK_SIGNING_SECRET not set)"
+        # FAIL CLOSED. This returned True — "allow it but flag it" — so a missing signing secret
+        # disabled verification entirely and the endpoint accepted forged Slack events from anyone
+        # who could reach it. The events URL is public on Code Engine, so "flag it" meant a log
+        # line next to an unauthenticated agent-execution path.
+        #
+        # Opening it now requires saying so, the same way /run's dev opt-out works.
+        import os
+
+        if (os.environ.get("EVENTS_ALLOW_UNAUTHENTICATED", "") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return True, "unverified (EVENTS_ALLOW_UNAUTHENTICATED=1)"
+        return False, "SLACK_SIGNING_SECRET not set — refusing unverified Slack events"
     ts = headers.get("x-slack-request-timestamp") or headers.get("X-Slack-Request-Timestamp") or ""
     sig = headers.get("x-slack-signature") or headers.get("X-Slack-Signature") or ""
     if not ts or not sig:
@@ -170,6 +185,37 @@ async def _bot_in_thread(channel: str, thread_ts: str, uid: str) -> bool:
         remember_thread(channel, thread_ts)
         return True
     return False
+
+
+async def fetch_message_text(channel: str, ts: str) -> str:
+    """The text of the message at ``ts`` — "" if it can't be read.
+
+    POINTER-SHAPED EVENTS. Slack's `reaction_added` / `reaction_removed` / `star_added` carry only
+    `item.channel` + `item.ts`; the message itself is NOT in the payload. So a watcher armed as
+    "when someone reacts :bug:, review the code" reached the agent with a reaction and no code, and
+    the agent truthfully answered that it had nothing to review — no error anywhere.
+
+    Resolving the pointer here (rather than giving the agent a Slack tool) keeps the bot token in
+    the one module that already owns it, and fixes every pointer-shaped trigger at once.
+
+    Needs `channels:history` — the same scope SLACK.md already requires for `message.channels`, so
+    no new permission. Returns "" on any failure: a watcher that fires with less context is better
+    than one that does not fire.
+    """
+    tok = bot_token()
+    if not (tok and channel and ts):
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(
+                "https://slack.com/api/conversations.replies",
+                params={"channel": channel, "ts": ts, "limit": 1, "inclusive": "true"},
+                headers={"Authorization": f"Bearer {tok}"},
+            )
+        msgs = (r.json() or {}).get("messages") or []
+    except Exception:  # noqa: BLE001
+        return ""
+    return str((msgs[0] or {}).get("text") or "") if msgs else ""
 
 
 async def send_message(channel: str, text: str, thread_ts: str | None = None) -> dict:

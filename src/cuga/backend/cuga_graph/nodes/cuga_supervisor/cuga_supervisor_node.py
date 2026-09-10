@@ -10,6 +10,11 @@ from loguru import logger
 from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
+from cuga.backend.cuga_graph.policy.models import PolicyDecisionOutcome
+from cuga.backend.cuga_graph.policy.observability import (
+    append_policy_decisions,
+    decision_from_metadata,
+)
 
 
 class CugaSupervisorNode(BaseNode):
@@ -36,6 +41,32 @@ class CugaSupervisorNode(BaseNode):
             state.final_answer = "Error: Supervisor subgraph not initialized"
             state.sender = self.name
             return Command(update=state.model_dump(), goto="FinalAnswerAgent")
+
+        # Resume from a plan-approval interrupt: WaitForResponse's Command(goto=prev_sender)
+        # lands here (node "CugaSupervisor"), not in callback_node, since prev_sender was set
+        # to self.name before routing to SuggestHumanActions. Consume the response here so the
+        # re-invoked subgraph below sees plan_approved=True and execute_agent_tool's gate lets
+        # the (re-planned) delegation through instead of asking again.
+        from cuga.backend.cuga_graph.utils.nodes_names import ActionIds
+
+        if (
+            state.sender == "WaitForResponse"
+            and state.hitl_response is not None
+            and state.hitl_response.action_id == ActionIds.AGENT_APPROVAL
+        ):
+            confirmed = state.hitl_response.confirmed
+            state.hitl_response = None
+            state.hitl_action = None
+            if confirmed:
+                logger.info("User approved supervisor delegation plan - resuming")
+                state.supervisor_metadata = {**(state.supervisor_metadata or {}), "plan_approved": True}
+                state.final_answer = ""
+                state.sender = self.name
+            else:
+                logger.warning("User denied supervisor delegation plan")
+                state.final_answer = "Agent execution was cancelled by user."
+                state.sender = self.name
+                return Command(update=state.model_dump(), goto="FinalAnswerAgent")
 
         logger.info("Routing to CugaSupervisor subgraph")
         logger.info(
@@ -223,6 +254,21 @@ class CugaSupervisorNode(BaseNode):
             and state.hitl_response
             and state.hitl_response.action_id == ActionIds.TOOL_APPROVAL
         ):
+            metadata = state.supervisor_metadata or {}
+            append_policy_decisions(
+                metadata,
+                [
+                    decision_from_metadata(
+                        metadata,
+                        outcome=(
+                            PolicyDecisionOutcome.APPROVED
+                            if state.hitl_response.confirmed
+                            else PolicyDecisionOutcome.DENIED
+                        ),
+                    )
+                ],
+            )
+            state.supervisor_metadata = metadata
             if state.hitl_response.confirmed:
                 logger.info("User approved supervisor tool execution - resuming subgraph")
                 sd = state.model_dump()

@@ -684,6 +684,7 @@ def _start_demo_crm_services(
         # Configure supervisor mode
         if enable_supervisor:
             os.environ["DYNACONF_SUPERVISOR__ENABLED"] = "true"
+            os.environ["DYNACONF_SUPERVISOR__REGISTRY_ENABLED"] = "true"
             supervisor_config_path = os.path.join(
                 PACKAGE_ROOT, "backend", "tools_env", "registry", "config", "supervisor_demo_crm.yaml"
             )
@@ -915,6 +916,11 @@ def start(
         "--oak-health",
         help="Enable healthcare insurance OpenAPI (cuga-oak-health; port from settings server_ports.oak_health_api)",
     ),
+    seed_supervisor_demo: bool = typer.Option(
+        False,
+        "--seed-supervisor-demo",
+        help="For manager: preload 3 sub-agents + 1 supervisor (draft + published) so the multi-agent flow is immediately testable in the UI",
+    ),
     reset: bool = typer.Option(
         False,
         "--reset",
@@ -1137,12 +1143,6 @@ def start(
     """
     validate_service(service)
 
-    # NB: there is no --events flag. The event-driven layer is a SEPARATE SERVICE
-    # (`uv run python -m cuga.backend.events.service`, or `make run-events`) that calls this server
-    # over HTTP. `make up` starts both. This command starts CUGA and nothing else.
-    # slow external APIs (arXiv ~5.5s/call + retries) blow the 30s sandbox default
-    os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT", "120")
-
     if (reset or hard_reset) and service != "demo_knowledge":
         logger.warning(
             "--reset/--hard-reset is only supported for demo_knowledge and will be ignored for '%s'", service
@@ -1247,6 +1247,17 @@ def start(
     app_crm, app_email, app_digital_sales, app_docs, app_filesystem, app_oak_health = _resolve_apps(
         service, crm, email, digital_sales, docs, filesystem, no_email, oak_health
     )
+    if seed_supervisor_demo and service != "manager":
+        logger.warning("--seed-supervisor-demo is only applied for service=manager; ignoring")
+    # The supervisor demo's sub-agents are CRM / email / filesystem specialists, so force those
+    # services on and enable runtime filesystem tools — otherwise delegation lands on agents
+    # whose tools were never provisioned (issue #101).
+    if seed_supervisor_demo and service == "manager":
+        app_crm = True
+        app_email = True
+        app_filesystem = True
+        os.environ["DYNACONF_ADVANCED_FEATURES__ENABLE_FILESYSTEM_TOOLS"] = "true"
+        os.environ["DYNACONF_SUPERVISOR__REGISTRY_ENABLED"] = "true"
     resolved_tools = build_tools_from_apps(
         crm=app_crm,
         email=app_email,
@@ -1264,7 +1275,12 @@ def start(
             os.environ["MCP_SERVERS_FILE"] = "none"
             _apply_local_demo_workspace_env()
             logger.info(f"Manager mode: policy filesystem sync disabled, MCP_SERVERS_FILE={managed_path}")
-            setup_demo_manage_config("manager", tools=resolved_tools, filesystem=app_filesystem)
+            setup_demo_manage_config(
+                "manager",
+                tools=resolved_tools,
+                filesystem=app_filesystem,
+                seed_supervisor_demo=seed_supervisor_demo,
+            )
 
             app_mgr = _make_app_manager()
             workspace_path = cuga_workspace or os.path.join(os.getcwd(), "cuga_workspace")
@@ -1349,27 +1365,9 @@ def start(
         os.environ["CUGA_DEMO_ADVANCED"] = "true"
         os.environ["CUGA_MANAGER_MODE"] = "true"
         os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
-        # The registry needs FILE mode (serving cuga-finance/geo/web/…) whenever a roster of
-        # sub-agents is in play; "none" means managed-config-db mode, which serves only the demo
-        # app. Two ways to be in that world:
-        #   • CUGA_SUPERVISOR_ROSTER=…     this server preloaded AS a supervisor
-        #   • an explicitly exported MCP_SERVERS_FILE  (make up, a container env, …)
-        # The latter used to be silently overwritten with "none" here, which is why a cuga-core
-        # started with `cuga start demo` served only `digital_sales` and every roster agent
-        # answered "the available toolset does not include…" despite the env being set.
-        _explicit_mcp = (os.environ.get("MCP_SERVERS_FILE", "") or "").strip()
-        _wants_roster = bool(
-            (os.environ.get("CUGA_SUPERVISOR_ROSTER", "") or "").split(" #", 1)[0].strip()
-            or (_explicit_mcp and _explicit_mcp != "none")
-        )
-        if _wants_roster:
-            # setdefault so an exported MCP_SERVERS_FILE (e.g. make up's) wins over the default.
-            os.environ.setdefault(
-                "MCP_SERVERS_FILE",
-                os.path.join(PACKAGE_ROOT, "backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml"),
-            )
-            logger.info(f"registry in FILE mode: MCP_SERVERS_FILE={os.environ['MCP_SERVERS_FILE']}")
-        else:
+        # An operator who exports MCP_SERVERS_FILE means it — don't overwrite it. Unset still means
+        # "none" (managed-config-db mode, serving the demo app), which is what the demo wants.
+        if not (os.environ.get("MCP_SERVERS_FILE", "") or "").strip():
             os.environ["MCP_SERVERS_FILE"] = "none"
         ensure_managed_mcp_file_exists(get_managed_mcp_path())
 

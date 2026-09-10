@@ -11,6 +11,7 @@ from langgraph.types import Command
 from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import thread_budget_exhausted
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import create_update_todos_tool
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import (
     ExecutionRouter,
@@ -29,6 +30,57 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
 )
 from cuga.config import settings
 from cuga.configurations.instructions_manager import get_all_instructions_formatted
+
+
+def next_node_after_prepare(adapter: Any, state: CugaSupervisorState) -> str:
+    """Skip call_model when the user already approved this turn's delegation script."""
+    if (
+        getattr(adapter, "_plan_approval", False)
+        and (adapter.get_metadata(state) or {}).get("plan_approved")
+        and (getattr(state, "script", None) or "").strip()
+    ):
+        return adapter.execute_node_name
+    return "call_model"
+
+
+def _delegate_tool_name(agent_name: str) -> str:
+    """Build a VALID PYTHON IDENTIFIER delegate tool name for ``agent_name``.
+
+    Agent ids from the manage UI are slugified with hyphens (e.g. ``crm-agent``), but the
+    supervisor invokes delegate tools as Python function calls in generated code —
+    ``delegate_to_crm-agent(...)`` parses as subtraction and matches nothing in the execution
+    context, so the code executor rejects it ("Code must use at least one variable or tool from
+    context"). Encode hyphens as ``_h_`` so ``sales-east`` and ``sales_east`` stay distinct;
+    other non-identifier characters become ``_<hex>_``.
+    """
+    pieces: List[str] = []
+    for ch in agent_name:
+        if ch == "-":
+            pieces.append("_h_")
+        elif ch.isalnum() or ch == "_":
+            pieces.append(ch)
+        else:
+            pieces.append(f"_{ord(ch):x}_")
+    ident = "".join(pieces) or "agent"
+    if ident[0].isdigit():
+        ident = f"a_{ident}"
+    return "delegate_to_" + ident
+
+
+def delegate_tool_names(agent_names) -> Dict[str, str]:
+    """Map each agent id to a unique ``delegate_to_*`` callable name."""
+    assigned: Dict[str, str] = {}
+    used: set[str] = set()
+    for name in agent_names:
+        base = _delegate_tool_name(name)
+        tool = base
+        n = 2
+        while tool in used:
+            tool = f"{base}_{n}"
+            n += 1
+        used.add(tool)
+        assigned[name] = tool
+    return assigned
 
 
 def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
@@ -94,6 +146,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
         agent_list = []
         agent_tools_for_prompt = []
         pass_variables_a2a = getattr(settings.supervisor, "pass_variables_a2a", False)
+        tool_names = delegate_tool_names(adapter._agents.keys())
 
         for agent_name, agent_or_config in adapter._agents.items():
             agent_card = None
@@ -129,7 +182,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
                 agent_entry["agent_card"] = format_agent_card_for_prompt(agent_card)
             agent_list.append(agent_entry)
 
-            tool_name = f"delegate_to_{agent_name}"
+            tool_name = tool_names[agent_name]
             tool_func = create_agent_delegation_func(
                 adapter, agent_name, agent_or_config, agent_card=agent_card
             )
@@ -271,8 +324,21 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
         if is_fresh_conversation:
             update_payload["task_todos"] = None
 
+        # Per-task tool-call budget resets here: prepare runs once per graph
+        # invocation (START -> prepare), so each user turn starts fresh. See the
+        # matching reset in the CugaLite prepare node — including why
+        # tool_calls_used_thread must NOT be reset alongside it.
+        update_payload["tool_calls_used_run"] = 0
+        update_payload["tool_budget_exhausted"] = thread_budget_exhausted(
+            getattr(state, "tool_calls_used_thread", 0)
+        )
+
+        next_node = next_node_after_prepare(adapter, state)
+        if next_node != "call_model" and state.script:
+            update_payload["script"] = state.script
+
         return Command(
-            goto="call_model",
+            goto=next_node,
             update=update_payload,
         )
 

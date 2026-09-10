@@ -11,8 +11,11 @@ These tests do NOT require an external server — they call the internal functio
 directly using pytest-asyncio.
 """
 
+from contextlib import contextmanager
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 from cuga.backend.llm.models import (
     LLMManager,
@@ -61,11 +64,40 @@ def _make_app_state():
 
 
 def _vault_settings_stub():
-    """Return a mock settings.secrets that looks like vault mode with force_env=False."""
-    s = MagicMock()
-    s.mode = "vault"
-    s.force_env = False
-    return s
+    """Return a secrets stub that looks like vault mode with force_env=False."""
+    return SimpleNamespace(mode="vault", force_env=False)
+
+
+def _vault_settings_module_stub():
+    """Vault-mode settings for apply.py and models.create_llm_from_config.
+
+    Patch both modules: models.py binds `settings` at import, so patching only
+    cuga.config.settings leaves CI's watsonx TOML in place. Use SimpleNamespace
+    so settings.connections.* are not MagicMocks (treated as a CA bundle path).
+    """
+    return SimpleNamespace(
+        secrets=_vault_settings_stub(),
+        agent=SimpleNamespace(
+            code=SimpleNamespace(
+                model={
+                    "platform": "watsonx",
+                    "model": "ibm/granite-4-h-small",
+                    "max_tokens": 16000,
+                }
+            )
+        ),
+        connections=SimpleNamespace(ssl_ca_bundle=None, llm_http_timeout=None),
+    )
+
+
+@contextmanager
+def vault_mode_settings():
+    stub = _vault_settings_module_stub()
+    with (
+        patch("cuga.config.settings", stub),
+        patch("cuga.backend.llm.models.settings", stub),
+    ):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +105,7 @@ def _vault_settings_stub():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestPublishSetsLLMOverride:
     """_apply_published_config sets app_state.current_llm in vault/local mode."""
 
@@ -84,18 +117,8 @@ class TestPublishSetsLLMOverride:
         config = {"llm": VAULT_MODE_CONFIG}
         app_state = _make_app_state()
 
-        fake_secrets = _vault_settings_stub()
-        with patch("cuga.config.settings") as mock_cfg:
-            mock_cfg.secrets = fake_secrets
-            with patch("cuga.backend.server.manage_routes.logger"):
-                import cuga.config as cfg_mod
-
-                real_secrets = getattr(cfg_mod.settings, "secrets", None)
-                try:
-                    cfg_mod.settings.secrets = fake_secrets
-                    await _apply_published_config(app_state, config)
-                finally:
-                    cfg_mod.settings.secrets = real_secrets
+        with vault_mode_settings():
+            await _apply_published_config(app_state, config)
 
         assert getattr(app_state, "current_llm", None) is not None
         llm = app_state.current_llm
@@ -111,18 +134,8 @@ class TestPublishSetsLLMOverride:
         config = {"llm": VAULT_MODE_CONFIG}
         app_state = _make_app_state()
 
-        fake_secrets = _vault_settings_stub()
-        with patch("cuga.config.settings") as mock_cfg:
-            mock_cfg.secrets = fake_secrets
-            with patch("cuga.backend.server.manage_routes.logger"):
-                import cuga.config as cfg_mod
-
-                real_secrets = getattr(cfg_mod.settings, "secrets", None)
-                try:
-                    cfg_mod.settings.secrets = fake_secrets
-                    await _apply_published_config(app_state, config)
-                finally:
-                    cfg_mod.settings.secrets = real_secrets
+        with vault_mode_settings():
+            await _apply_published_config(app_state, config)
 
         assert getattr(app_state, "current_llm", None) is not None, (
             "current_llm should be set after publish in vault mode"
@@ -133,6 +146,7 @@ class TestPublishSetsLLMOverride:
         )
 
 
+@pytest.mark.unit
 class TestDynamicAgentGraphPicksUpLLMConfig:
     """DynamicAgentGraph.build_graph uses create_llm_from_config when llm_config is set."""
 
@@ -140,7 +154,7 @@ class TestDynamicAgentGraphPicksUpLLMConfig:
     async def test_build_graph_uses_create_llm_from_config(self):
         """When llm_config is set, build_graph calls create_llm_from_config with it."""
         from unittest.mock import AsyncMock
-        from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+        from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph
         from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 
         mock_tp = MagicMock(spec=ToolProviderInterface)
@@ -153,9 +167,9 @@ class TestDynamicAgentGraphPicksUpLLMConfig:
             captured["llm_cfg"] = dict(cfg) if cfg else {}
             return MagicMock()
 
-        with patch("cuga.backend.cuga_graph.graph.create_llm_from_config", side_effect=spy_create_llm):
+        with patch("cuga.backend.cuga_graph.entry_graph.create_llm_from_config", side_effect=spy_create_llm):
             with patch.object(LLMManager, "get_model", return_value=MagicMock()):
-                agent = DynamicAgentGraph(
+                agent = CugaEntryGraph(
                     None,
                     tool_provider=mock_tp,
                     llm_config=VAULT_MODE_CONFIG,

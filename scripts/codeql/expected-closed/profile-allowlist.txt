@@ -1,0 +1,3 @@
+# Alerts closed by only allowing known profile names when loading a profile.
+# GitHub alerts #68, #69.
+py/path-injection	src/cuga/backend/knowledge/config.py

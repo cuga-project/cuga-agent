@@ -11,11 +11,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import CoreGraphAdapter
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
+
+pytestmark = pytest.mark.unit
 
 
 class LiteLikeAdapter(CoreGraphAdapter):
@@ -104,6 +107,7 @@ def test_clean_approval_metadata_strips_known_fields():
         "approval_required": True,
         "user_approved": True,
         "required_tools": [],
+        "matched_tools": ["delete_records"],
         "required_apps": [],
         "full_code": "x",
         "code_preview": ["a"],
@@ -113,15 +117,29 @@ def test_clean_approval_metadata_strips_known_fields():
 
 def test_handle_denial_lite_shape():
     a = LiteLikeAdapter()
-    denied = SimpleNamespace(cuga_lite_metadata={"user_approved": False}, step_count=4)
+    denied = SimpleNamespace(
+        cuga_lite_metadata={
+            "user_approved": False,
+            "policy_id": "approval-1",
+            "policy_name": "Approve deletion",
+            "policy_type": "tool_approval",
+            "required_tools": ["delete_records"],
+        },
+        step_count=4,
+    )
+    metadata_before = dict(denied.cuga_lite_metadata)
     cmd = ToolApprovalHandler.handle_denial(a, denied)
     assert cmd.goto == END
-    assert cmd.update == {
-        "execution_complete": True,
-        "final_answer": "Execution cancelled by user.",
-        "step_count": 5,
-        "cuga_lite_metadata": {},
-    }
+    assert cmd.update["execution_complete"] is True
+    assert cmd.update["final_answer"] == "Execution cancelled by user."
+    assert cmd.update["step_count"] == 5
+    metadata = cmd.update["cuga_lite_metadata"]
+    assert "user_approved" not in metadata
+    assert metadata["policy_decisions"][0]["outcome"] == "denied"
+    assert metadata["policy_decisions"][0]["tool_name"] == "delete_records"
+    assert denied.cuga_lite_metadata == metadata_before
+    assert metadata is not denied.cuga_lite_metadata
+    assert "policy_decisions" not in cmd.update
     assert ToolApprovalHandler.handle_denial(a, SimpleNamespace(cuga_lite_metadata={})) is None
 
 
@@ -129,9 +147,16 @@ def test_handle_approval_resumption_routes_to_adapter_execute_node():
     a = LiteLikeAdapter()
     st = SimpleNamespace(
         chat_messages=[AIMessage(content="```python\nprint('go')\n```")],
-        cuga_lite_metadata={"user_approved": True, "policy_name": "P"},
+        cuga_lite_metadata={
+            "user_approved": True,
+            "policy_id": "approval-1",
+            "policy_name": "P",
+            "policy_type": "tool_approval",
+            "required_tools": ["delete_records"],
+        },
         step_count=2,
     )
+    metadata_before = dict(st.cuga_lite_metadata)
     cmd = ToolApprovalHandler.handle_approval_resumption(a, st)
     assert cmd.goto == "sandbox"
     assert cmd.update["script"] == "print('go')"
@@ -139,6 +164,12 @@ def test_handle_approval_resumption_routes_to_adapter_execute_node():
     # cleaned metadata written under the adapter's metadata_key
     assert "user_approved" not in cmd.update["cuga_lite_metadata"]
     assert cmd.update["cuga_lite_metadata"]["policy_name"] == "P"
+    decisions = cmd.update["cuga_lite_metadata"]["policy_decisions"]
+    assert decisions[0]["outcome"] == "approved"
+    assert decisions[0]["tool_name"] == "delete_records"
+    assert st.cuga_lite_metadata == metadata_before
+    assert cmd.update["cuga_lite_metadata"] is not st.cuga_lite_metadata
+    assert "policy_decisions" not in cmd.update
 
 
 def test_real_supervisor_adapter_has_correct_approval_seams():

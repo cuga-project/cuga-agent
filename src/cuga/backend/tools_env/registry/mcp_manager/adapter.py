@@ -4,8 +4,8 @@ from typing import Any, Callable, Dict, List, Literal, Optional, TypeAlias
 from urllib.parse import urlencode
 
 import requests
+from fastmcp import FastMCP
 from loguru import logger
-from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 
 from cuga.backend.tools_env.registry.config.config_loader import ServiceConfig

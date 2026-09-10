@@ -19,15 +19,20 @@ INSTRUCTIONS:
 2. Check Variables Summary first for "what" questions before using any tool
 3. If the answer may be in indexed documents, use the knowledge tools before replying
 4. Use execute_task tool for action-oriented requests (get, find, retrieve, etc.)
+   - task_type="api" for API/tool-only work
+   - task_type="web" for browser/page-only work
+   - task_type="hybrid" for requests combining both; also provide api_task and web_task
 5. Never mention variable names to users - use their content directly
 6. Pass user utterances EXACTLY as-is to execute_task (preserve typos, slang, punctuation)
 7. ALWAYS return proper JSON tool calls - NEVER return malformed formats like <|python_start|> or semicolon-separated JSON
 8. Tasks can be long and complex, potentially involving multiple or all apps from the available_apps list
 
 TOOLS:
-- execute_task(task: str, relevant_variables: List[str]) - Execute tasks on available apps
+- execute_task(task: str, relevant_variables: List[str], task_type: "api" | "web" | "hybrid", api_task: str, web_task: str) - Execute tasks on available apps
   * task: Exact user utterance (verbatim copy)
   * relevant_variables: List of relevant variable names from VARIABLES section only (NOT apps from apps_list)
+  * task_type: Whether the request needs API tools, browser interaction, or both
+  * api_task/web_task: For hybrid work, concise executable portions for the API and browser phases
   * Can execute on single or multiple apps automatically
   * IMPORTANT: Return ONE proper JSON tool call at a time, not multiple concatenated calls
 - `knowledge_*` tools - Search and manage indexed knowledge documents

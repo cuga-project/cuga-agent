@@ -137,9 +137,6 @@
       .accurate .mode-icon {
         background: #2ecc71;
       }
-      .save_reuse_fast .mode-icon {
-        background: #e67e22;
-      }
       .custom .mode-icon {
         background: #9b59b6;
       }
@@ -711,37 +708,6 @@
             </div>
           </div>
 
-          <div class="mode-card save_reuse_fast" data-mode="save_reuse_fast">
-            <div class="mode-title">
-              <div class="mode-icon"></div>
-              Save & Reuse Fast
-            </div>
-            <div class="mode-description">
-              Fast mode with save and reuse capabilities enabled. Build time same as fast mode, with additional 2s for save operation.
-            </div>
-            <div class="mode-stats">
-              <div class="stat-item">
-                <span class="stat-label">Performance:</span>
-                <span class="stat-value">Good</span>
-              </div>
-              <div class="stat-item">
-                <span class="stat-label">Task Complexity:</span>
-                <span class="stat-value">Any</span>
-              </div>
-              <div class="stat-item">
-                <span class="stat-label">Exec Time:</span>
-                <span class="stat-value">15s-35s -> 3s</span>
-              </div>
-              <div class="stat-item">
-                <span class="stat-label">LLM Calls:</span>
-                <span class="stat-value">8 -> 1</span>
-              </div>
-              <div class="stat-item">
-                <span class="stat-label">Tokens:</span>
-                <span class="stat-value">21k-24k -> 1k</span>
-              </div>
-            </div>
-          </div>
 
           <div class="mode-card custom" data-mode="custom">
             <div class="mode-title">
@@ -820,20 +786,6 @@
             type: "boolean",
             impact: "high",
           },
-          save_reuse: {
-            name: "Enable Save & Reuse",
-            description: "Enables Save and Reuse where system after final answer asks to save the flow, then will be available in chat mode.",
-            category: "ux",
-            type: "boolean",
-            impact: "low",
-          },
-          task_decomposition: {
-            name: "Enable Task Decomposition",
-            description: "Decomposes complex tasks into multiple sub-tasks for better handling",
-            category: "complex_tasks",
-            type: "boolean",
-            impact: "high",
-          },
           local_sandbox: {
             name: "Local Sandbox",
             description: "Enables fast local sandbox without docker sandbox",
@@ -887,52 +839,34 @@
         },
         modeConfigurations: {
           fast: {
-            task_decomposition: false,
             final_answer: false,
             thoughts: false,
             local_sandbox: true,
             code_generation: "fast",
             code_output_summary: false,
             code_output_reflection: false,
-            save_reuse: false,
             forced_apps: [],
             chat: false,
           },
           accurate: {
             chat: false,
-            task_decomposition: true,
             local_sandbox: false,
             thoughts: true,
             code_output_summary: true,
             code_generation: "accurate",
             code_output_reflection: true,
-            save_reuse: false,
             forced_apps: [],
             final_answer: true,
           },
           balanced: {
             chat: false,
-            task_decomposition: true,
             local_sandbox: true,
             thoughts: false,
             code_output_summary: false,
             code_generation: "fast",
             code_output_reflection: true,
-            save_reuse: false,
             forced_apps: [],
             final_answer: true,
-          },
-          save_reuse_fast: {
-            task_decomposition: false,
-            final_answer: false,
-            thoughts: true,
-            local_sandbox: true,
-            code_generation: "fast",
-            code_output_summary: false,
-            code_output_reflection: false,
-            save_reuse: true,
-            forced_apps: [],
-            chat: true,
           },
           custom: {
             // This will be dynamically populated
@@ -1216,12 +1150,6 @@
               llmCalls = '9';
               tokens = '29k-33k';
               taskComplexity = 'Moderate';
-            } else if (mode === 'save_reuse_fast') {
-              performanceValue = 'Good';
-              execTime = '15s-35s -> 3s';
-              llmCalls = '8 -> 1';
-              tokens = '21k-24k -> 1k';
-              taskComplexity = 'Any';
             }
 
             statsContainer.innerHTML = `
@@ -1258,7 +1186,6 @@
           fast: "Fast Mode",
           accurate: "Accurate Mode",
           balanced: "Balanced Mode",
-          save_reuse_fast: "Save & Reuse Fast",
           custom: "Custom Mode",
         };
 

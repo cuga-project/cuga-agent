@@ -9,7 +9,10 @@ import os
 import tempfile
 
 from cuga import CugaSupervisor
-from cuga.supervisor_utils.supervisor_config import load_supervisor_config
+from cuga.supervisor_utils.supervisor_config import (
+    build_agents_from_stored_subagents,
+    load_supervisor_config,
+)
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -278,3 +281,187 @@ agents:
                 await load_supervisor_config(temp_path)
         finally:
             os.unlink(temp_path)
+
+
+class TestToolProviderScoping:
+    """A sub-agent gets ONLY the registry apps it names.
+
+    Scoping on `apps:` is upstream behaviour, settled in #433 — `app_names=app_names or None`. What
+    is new here is that `mcp_servers:` entries count as named apps too. They did not before, so an
+    agent declaring only `mcp_servers:` — which is every agent in the events roster — produced an
+    empty list, fell through to `or None`, and received the entire registry; the declaration was
+    decorative. That is the one narrowing, and it is deliberate.
+
+    Names are otherwise passed through verbatim — see tests/unit/test_supervisor_tool_scoping.py,
+    which guards that specifically.
+    """
+
+    @pytest.mark.asyncio
+    async def test_named_apps_are_the_only_ones_loaded(self, monkeypatch):
+        from cuga.supervisor_utils import supervisor_config as sc
+
+        seen = {}
+
+        class _Provider:
+            def __init__(self, app_names=None, **kw):
+                seen["app_names"] = app_names
+
+            async def initialize(self):
+                seen["initialized"] = True
+
+        monkeypatch.setattr(sc, "CombinedToolProvider", _Provider)
+
+        provider = await sc._create_tool_provider(
+            apps=[{"name": "cuga_finance"}], mcp_servers=[{"name": "cuga_web"}]
+        )
+
+        assert provider is not None and seen["initialized"] is True
+        # `apps:` first, then `mcp_servers:`, each exactly as declared.
+        assert seen["app_names"] == ["cuga_finance", "cuga_web"]
+
+    @pytest.mark.asyncio
+    async def test_an_agent_that_names_nothing_still_gets_everything(self, monkeypatch):
+        """The unchanged half of the contract — declaring no apps is not the same as declaring none."""
+        from cuga.supervisor_utils import supervisor_config as sc
+
+        called = {"n": 0}
+
+        class _Provider:
+            def __init__(self, app_names=None, **kw):
+                called["n"] += 1
+
+            async def initialize(self):  # pragma: no cover - not reached
+                pass
+
+        monkeypatch.setattr(sc, "CombinedToolProvider", _Provider)
+
+        assert await sc._create_tool_provider(apps=[], mcp_servers=[]) is None
+        assert called["n"] == 0, "no apps and no servers must not build a scoped provider at all"
+
+
+@pytest.mark.unit
+class TestBuildAgentsFromStoredSubAgents:
+    """build_agents_from_stored_subagents — the manage-UI store-sourced loader (issue #101)."""
+
+    @pytest.mark.asyncio
+    async def test_a2a_entry_resolves_to_external_config(self, monkeypatch):
+        monkeypatch.setenv("TEST_A2A_TOKEN", "secret-token")
+
+        agents = await build_agents_from_stored_subagents(
+            [
+                {
+                    "kind": "a2a",
+                    "name": "hotel_agent",
+                    "endpoint": "http://localhost:9000",
+                    "auth": {"type": "bearer", "tokenEnvVar": "TEST_A2A_TOKEN"},
+                    "timeout": 15,
+                }
+            ]
+        )
+
+        assert list(agents.keys()) == ["hotel_agent"]
+        entry = agents["hotel_agent"]
+        assert entry["type"] == "external"
+        a2a_cfg = entry["config"]["a2a_protocol"]
+        assert a2a_cfg["endpoint"] == "http://localhost:9000"
+        assert a2a_cfg["timeout"] == 15
+        assert a2a_cfg["auth"] == {"type": "bearer", "token": "secret-token"}
+
+    @pytest.mark.asyncio
+    async def test_a2a_entry_missing_name_or_endpoint_is_skipped(self):
+        agents = await build_agents_from_stored_subagents(
+            [
+                {"kind": "a2a", "endpoint": "http://localhost:9000"},
+                {"kind": "a2a", "name": "no-endpoint"},
+                {"kind": "a2a", "name": "ok", "endpoint": "http://localhost:9001"},
+            ]
+        )
+        assert list(agents.keys()) == ["ok"]
+
+    @pytest.mark.asyncio
+    async def test_a2a_entry_without_token_env_var_has_no_auth(self):
+        agents = await build_agents_from_stored_subagents(
+            [{"kind": "a2a", "name": "public_agent", "endpoint": "http://localhost:9001"}]
+        )
+
+        assert agents["public_agent"]["config"]["a2a_protocol"]["auth"] is None
+
+    @pytest.mark.asyncio
+    async def test_internal_ref_resolves_to_cuga_agent(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        from cuga.backend.server.config_store import reset_config_db, save_config
+        from cuga.sdk import CugaAgent
+
+        reset_config_db()
+        await save_config(
+            {
+                "agent": {"name": "Flight Booker", "description": "Books flights"},
+                "tools": [{"name": "flights_app", "type": "openapi"}],
+            },
+            agent_id="flight-booker",
+        )
+
+        agents = await build_agents_from_stored_subagents([{"kind": "internal", "ref": "flight-booker"}])
+
+        assert list(agents.keys()) == ["flight-booker"]
+        assert isinstance(agents["flight-booker"], CugaAgent)
+
+    @pytest.mark.asyncio
+    async def test_internal_ref_missing_config_is_skipped(self):
+        from cuga.backend.server.config_store import reset_config_db
+
+        reset_config_db()
+
+        agents = await build_agents_from_stored_subagents([{"kind": "internal", "ref": "does-not-exist"}])
+
+        assert agents == {}
+
+    @pytest.mark.asyncio
+    async def test_internal_ref_forwards_llm_and_feature_settings(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        seen = {}
+        fake_model = object()
+
+        def _fake_get_model(model_config):
+            seen["model"] = model_config
+            return fake_model
+
+        monkeypatch.setattr(
+            "cuga.supervisor_utils.supervisor_config._get_model_from_config",
+            _fake_get_model,
+        )
+
+        from cuga.backend.server.config_store import reset_config_db, save_config
+        from cuga.sdk import CugaAgent
+
+        reset_config_db()
+        await save_config(
+            {
+                "agent": {"name": "Sales East"},
+                "llm": {"provider": "openai", "model": "gpt-4o-mini", "temperature": 0.2},
+                "feature_flags": {
+                    "enable_todos": True,
+                    "reflection": False,
+                    "max_steps": 12,
+                    "enable_filesystem_tools": True,
+                    "shortlisting_tool_threshold": 7,
+                },
+            },
+            agent_id="sales-east",
+        )
+
+        agents = await build_agents_from_stored_subagents([{"kind": "internal", "ref": "sales-east"}])
+
+        assert list(agents.keys()) == ["sales-east"]
+        agent = agents["sales-east"]
+        assert isinstance(agent, CugaAgent)
+        assert agent._model is fake_model
+        assert seen["model"]["model_name"] == "gpt-4o-mini"
+        assert seen["model"]["provider"] == "openai"
+        overrides = getattr(agent, "_feature_overrides", {})
+        assert overrides.get("enable_todos") is True
+        assert overrides.get("reflection_enabled") is False
+        assert overrides.get("cuga_lite_max_steps") == 12
+        assert overrides.get("enable_filesystem_tools") is True
+        assert overrides.get("shortlisting_tool_threshold") == 7

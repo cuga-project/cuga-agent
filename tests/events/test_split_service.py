@@ -181,13 +181,23 @@ def test_roster_is_cached_not_re_read_per_call(patch_httpx_sync):
 
 
 def test_cugas_roster_beats_a_stale_local_row(patch_httpx_sync):
-    """A leftover row in ~/.cuga/events.db from an earlier run used to mask the live roster —
-    the service reported 1 agent while CUGA was serving 9. CUGA wins."""
+    """A leftover row in ~/.cuga/events.db from an earlier run used to MASK the live roster — the
+    service reported 1 agent while CUGA was serving 9.
+
+    The assertion softened when Studio-created agents started being listed too (they live only in
+    this store, so returning the roster alone made them invisible). The BUG this guards is the
+    roster being replaced or reordered, and that is what is asserted: the full roster, first, in
+    order. A local row may follow it; it can no longer displace it.
+
+    A row seeded by EVENTS_SEED_AGENTS is excluded outright — see
+    test_seeded_demo_agents_do_not_join_the_roster.
+    """
     patch_httpx_sync(_FakeCugaRoster([{"name": "cuga"}, {"name": "pricebot"}]))
     store = AgentStore(":memory:")
     store.upsert("default", AgentSpec(name="Digital Sales Agent", prompt="stale", integrations=[]))
     rt = HttpRuntime(agent_store=store, base_url="http://cuga.test", token="t0k")
-    assert [a.name for a in rt.list_agents(scope="default")] == ["cuga", "pricebot"]
+    names = [a.name for a in rt.list_agents(scope="default")]
+    assert names[:2] == ["cuga", "pricebot"], f"the roster was masked or reordered: {names}"
 
 
 def test_local_store_is_the_fallback_when_cuga_is_unreachable(patch_httpx_sync):
@@ -370,16 +380,16 @@ def test_slash_matcher_tolerates_a_leading_mention():
     """Slack/Discord normally strip "<@bot>" before we see the text — but that depends on a bot-id
     lookup succeeding. If it ever doesn't, "<@U123> /automate …" must STILL be recognised as arming;
     handing it to the plain agent is the silent-failure trap (it tries to implement the schedule)."""
-    from cuga.backend.server.main import _slash_verb
+    from cuga.backend.server.events_bridge import slash_verb
 
     for armed in ("/automate x", "  /schedule y", "<@U123> /automate x", "<@U1> <@U2> /poll z"):
-        assert _slash_verb(armed), armed
+        assert slash_verb(armed), armed
     for chat in ("what is /automate?", "hello", "tell me about /cron jobs"):
-        assert not _slash_verb(chat), chat
+        assert not slash_verb(chat), chat
     # the trailing word boundary the old `\b` gave us: a longer word is NOT the verb
     for chat in ("/automated x", "/automate1 x", "/nope x"):
-        assert not _slash_verb(chat), chat
-    assert _slash_verb("/automate?") == "automate"  # …but punctuation still ends it
+        assert not slash_verb(chat), chat
+    assert slash_verb("/automate?") == "automate"  # …but punctuation still ends it
 
 
 # ── CUGA MUST STAND ALONE: eventing absent, off, or down ──────────────────────────────────────
@@ -387,26 +397,29 @@ def test_cuga_is_standalone_when_no_eventing_service_is_configured(monkeypatch):
     """CUGA deployed by itself, with no eventing service anywhere: EVENTS_API_URL unset. The
     forward is DISABLED, so /run and /stream behave exactly as upstream CUGA does — even a slash
     verb is just text for the agent. Vanilla CUGA is a supported configuration, not a broken one."""
-    from cuga.backend.server import main as m
+    from cuga.backend.server import events_bridge as eb
 
     monkeypatch.delenv("EVENTS_API_URL", raising=False)
     for q in ("/automate every 5 mins check ibm", "hello", "yes"):
-        assert m._forwards_to_events(q, "t1") is False, q
+        assert eb.forwards_to_events(q, "t1") is False, q
 
 
 def test_forward_is_enabled_only_by_events_api_url(monkeypatch):
-    from cuga.backend.server import main as m
+    from cuga.backend.server import events_bridge as eb
 
+    # Both halves: the master switch says this instance takes part in eventing at all, the URL says
+    # where. See test_events_master_switch.py for the switch on its own.
+    monkeypatch.setenv("CUGA_EVENTS_ENABLED", "1")
     monkeypatch.setenv("EVENTS_API_URL", "http://events.test")
-    assert m._forwards_to_events("/automate x", "t1") is True
-    assert m._forwards_to_events("what is the weather?", "t1") is False  # chat never forwards
+    assert eb.forwards_to_events("/automate x", "t1") is True
+    assert eb.forwards_to_events("what is the weather?", "t1") is False  # chat never forwards
 
 
 @pytest.mark.asyncio
 async def test_cuga_degrades_gracefully_when_the_eventing_service_is_down(monkeypatch):
     """Configured but unreachable — the realistic outage. Chat must be unaffected (it never calls
     out), and an arming attempt must come back as an honest sentence, not a stack trace or a hang."""
-    from cuga.backend.server import main as m
+    from cuga.backend.server import events_bridge as eb
 
     class _Down:
         def __init__(self, *a, **kw):
@@ -423,7 +436,7 @@ async def test_cuga_degrades_gracefully_when_the_eventing_service_is_down(monkey
 
     monkeypatch.setenv("EVENTS_API_URL", "http://events.test")
     monkeypatch.setattr(httpx, "AsyncClient", _Down)
-    reply = await m._forward_slash_to_events("/automate x", "t1", {})
+    reply = await eb.forward_slash_to_events("/automate x", "t1", {})
     assert "Nothing was armed" in reply and "events.test" in reply
 
 
@@ -431,7 +444,7 @@ async def test_cuga_degrades_gracefully_when_the_eventing_service_is_down(monkey
 async def test_an_open_dialogue_closes_when_the_flow_arms(monkeypatch):
     """The multi-turn gate must not latch. Once the eventing service says `armed`, the thread stops
     being routed there — otherwise ordinary chat in that thread would be hijacked forever."""
-    from cuga.backend.server import main as m
+    from cuga.backend.server import events_bridge as eb
 
     states = iter(["confirm", "armed"])
 
@@ -456,14 +469,15 @@ async def test_an_open_dialogue_closes_when_the_flow_arms(monkeypatch):
         async def post(self, *a, **kw):
             return _Resp()
 
+    monkeypatch.setenv("CUGA_EVENTS_ENABLED", "1")  # the master switch; see test_events_master_switch
     monkeypatch.setenv("EVENTS_API_URL", "http://events.test")
     monkeypatch.setattr(httpx, "AsyncClient", _C)
-    m._events_open_threads.discard("t-gate")
+    eb._events_open_threads.discard("t-gate")
 
-    await m._forward_slash_to_events("/automate x", "t-gate", {})  # → confirm
-    assert m._forwards_to_events("yes", "t-gate") is True  # bare follow-up routes
-    await m._forward_slash_to_events("yes", "t-gate", {})  # → armed
-    assert m._forwards_to_events("what is 2+2?", "t-gate") is False  # gate released
+    await eb.forward_slash_to_events("/automate x", "t-gate", {})  # → confirm
+    assert eb.forwards_to_events("yes", "t-gate") is True  # bare follow-up routes
+    await eb.forward_slash_to_events("yes", "t-gate", {})  # → armed
+    assert eb.forwards_to_events("what is 2+2?", "t-gate") is False  # gate released
 
 
 def test_flow_reuse_never_crosses_tenants():
@@ -513,3 +527,312 @@ def test_slack_endpoint_answers_a_browser_instead_of_a_bare_405(monkeypatch):
     # and the real path is untouched: Slack's handshake still echoes the challenge
     r2 = c.post("/api/events/slack/events", json={"type": "url_verification", "challenge": "probe-1"})
     assert r2.status_code == 200 and "probe-1" in r2.text
+
+
+# ── /run is a MACHINE seam: it must never be the one unauthenticated door ─────────────────────
+def _cuga_client():
+    """A TestClient over the REAL run router, mounted on a bare app.
+
+    Deliberately NOT `main.app`: whether main mounts these routes is decided at import time by
+    run_api_enabled(), and CI has no .env — so on CI the routes would be absent and every
+    assertion below would see 404 instead of the 401 it is checking for. Mounting the router
+    directly tests the request-time gate, which is the thing under test. The mount-time gate has
+    its own test (test_run_api_is_not_mounted_without_configuration).
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from cuga.backend.server import run_routes as rr
+
+    async def _fake_stream(*a, **kw):  # pragma: no cover — auth rejects before this runs
+        if False:
+            yield None
+
+    app = FastAPI()
+    app.include_router(rr.build_run_router(event_stream=_fake_stream, default_user_id="tester"))
+    return TestClient(app, raise_server_exceptions=False), rr
+
+
+def test_run_returns_401_without_the_token(monkeypatch):
+    """The regression Sami found: the gate read `if token and header != token`, so with NO token
+    configured — vanilla CUGA, which sets neither CUGA_RUN_TOKEN nor GATEWAY_TOKEN — the condition
+    was false and the check vanished. Anyone who could reach the port could execute the agent, even
+    with CUGA auth enabled and /stream gated behind require_chat_access.
+
+    Fails closed now: no token configured and no explicit dev flag → 401, before any agent runs.
+    """
+    c, rr = _cuga_client()
+    for var in ("CUGA_RUN_TOKEN", "GATEWAY_TOKEN", rr.RUN_DEV_UNAUTH_ENV):
+        monkeypatch.delenv(var, raising=False)
+
+    r = c.post("/run", json={"query": "hello"})
+    assert r.status_code == 401, r.text
+    assert "CUGA_RUN_TOKEN" in r.json()["error"]
+
+    assert c.get("/run/agents").status_code == 401  # the roster seam is guarded the same way
+
+
+def test_run_rejects_a_wrong_token(monkeypatch):
+    c, rr = _cuga_client()
+    monkeypatch.delenv(rr.RUN_DEV_UNAUTH_ENV, raising=False)
+    monkeypatch.setenv("CUGA_RUN_TOKEN", "s3cret")
+
+    assert c.post("/run", json={"query": "hi"}, headers={"X-Gateway-Token": "wrong"}).status_code == 401
+    assert c.get("/run/agents", headers={"X-Gateway-Token": "wrong"}).status_code == 401
+
+
+def test_run_accepts_the_right_token(monkeypatch):
+    """Past the gate. /run itself may still fail for lack of a live agent — the assertion is only
+    that authentication is no longer the thing stopping it."""
+    c, rr = _cuga_client()
+    monkeypatch.delenv(rr.RUN_DEV_UNAUTH_ENV, raising=False)
+    monkeypatch.setenv("CUGA_RUN_TOKEN", "s3cret")
+
+    assert c.get("/run/agents", headers={"X-Gateway-Token": "s3cret"}).status_code == 200
+
+
+def test_a_non_ascii_token_header_is_a_401_not_a_500(monkeypatch):
+    """hmac.compare_digest raises TypeError on non-ASCII `str`, and this header is attacker
+    supplied — comparing bytes keeps a hostile header a 401 rather than a stack trace."""
+    c, rr = _cuga_client()
+    monkeypatch.delenv(rr.RUN_DEV_UNAUTH_ENV, raising=False)
+    monkeypatch.setenv("CUGA_RUN_TOKEN", "s3cret")
+
+    # Headers travel as latin-1, so a str with a non-ASCII char cannot even be sent by the client.
+    # The reachable hostile input is a latin-1-encodable byte, which starlette decodes back to a
+    # non-ASCII str — exactly what compare_digest refuses to take.
+    r = c.get("/run/agents", headers={"X-Gateway-Token": "sécret".encode("latin-1")})
+    assert r.status_code == 401
+
+
+def test_the_dev_flag_is_the_only_way_to_run_unauthenticated(monkeypatch):
+    """An explicit, verbose opt-out — so a deployment cannot end up open by forgetting to set
+    something. It is logged at boot (warn_if_run_is_unauthenticated)."""
+    c, rr = _cuga_client()
+    for var in ("CUGA_RUN_TOKEN", "GATEWAY_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv(rr.RUN_DEV_UNAUTH_ENV, "1")
+
+    assert c.get("/run/agents").status_code == 200
+
+
+def test_run_api_is_not_mounted_without_configuration(monkeypatch):
+    """Vanilla CUGA has no /run at all — a 404, not a 401.
+
+    /run executes an agent and requires a shared secret, so with nothing configured every call
+    would 401; mounting it then serves only to advertise an endpoint nobody can use. Mirrors A2A's
+    `if settings.a2a.enabled`.
+
+    Mounting now takes TWO things: CUGA_EVENTS_ENABLED (this instance takes part in eventing at all)
+    and a credential (how callers authenticate). The second half below therefore sets the switch —
+    it is what the deployment does. See test_events_master_switch.py for the switch on its own.
+    """
+    from cuga.backend.server import run_routes as rr
+
+    for var in (
+        "CUGA_EVENTS_ENABLED",
+        "CUGA_RUN_TOKEN",
+        "GATEWAY_TOKEN",
+        "CUGA_SUPERVISOR_ROSTER",
+        rr.RUN_DEV_UNAUTH_ENV,
+    ):
+        monkeypatch.setenv(var, "")
+    assert rr.run_api_enabled() is False
+
+    monkeypatch.setenv("CUGA_EVENTS_ENABLED", "1")
+    for var, val in (
+        ("CUGA_RUN_TOKEN", "s3cret"),
+        ("GATEWAY_TOKEN", "s3cret"),
+        ("CUGA_SUPERVISOR_ROSTER", "/tmp/roster.yaml"),
+        (rr.RUN_DEV_UNAUTH_ENV, "1"),
+    ):
+        monkeypatch.setenv(var, val)
+        assert rr.run_api_enabled() is True, var
+        monkeypatch.setenv(var, "")
+
+
+# ── /run accepts a LOGGED-IN USER too, not only the shared secret ────────────────────────────────
+# Review (#602): "JWT and auth middleware is not wired for the run endpoint — can we do the same
+# that is in other endpoints?" It could not simply adopt `Depends(require_chat_access)`, because
+# /run has two kinds of caller: the eventing service, which holds a shared secret and has no login
+# session, and a person or the UI, which has a JWT and should not be handed a machine credential.
+# So both are accepted, and the JWT half goes through the SAME dependency /stream uses.
+
+
+def _auth_patch(monkeypatch, rr, *, user=None, raises=None):
+    """Stand in for the auth backend `_jwt_denial` imports at call time.
+
+    Only `require_chat_access` is stubbed, because that is all `_jwt_denial` calls — including for
+    "is authentication on?", which the dependency answers by returning None."""
+    import sys
+    import types
+
+    mod = types.ModuleType("cuga.backend.server.auth.dependencies")
+
+    async def require_chat_access(request):
+        if raises is not None:
+            raise raises
+        return user
+
+    mod.require_chat_access = require_chat_access
+    monkeypatch.setitem(sys.modules, "cuga.backend.server.auth.dependencies", mod)
+
+
+def test_run_accepts_an_authenticated_user_without_the_shared_secret(monkeypatch):
+    """The point of the change: a logged-in caller reaches /run on the same terms as /stream."""
+    c, rr = _cuga_client()
+    monkeypatch.delenv(rr.RUN_DEV_UNAUTH_ENV, raising=False)
+    monkeypatch.setenv("CUGA_RUN_TOKEN", "s3cret")
+    _auth_patch(monkeypatch, rr, user=object())
+
+    assert c.get("/run/agents").status_code != 401
+
+
+def test_an_authenticated_user_lacking_the_role_gets_403_not_401(monkeypatch):
+    """`require_chat_access` raises 403 for a user without a chat role. Reporting that as "missing
+    token" would send someone hunting for a credential they were never supposed to need."""
+    from fastapi import HTTPException
+
+    c, rr = _cuga_client()
+    monkeypatch.delenv(rr.RUN_DEV_UNAUTH_ENV, raising=False)
+    monkeypatch.setenv("CUGA_RUN_TOKEN", "s3cret")
+    _auth_patch(monkeypatch, rr, raises=HTTPException(status_code=403, detail="Access denied"))
+
+    r = c.get("/run/agents")
+    assert r.status_code == 403, r.text
+
+
+def test_auth_disabled_still_requires_the_token(monkeypatch):
+    """THE REGRESSION GUARD. With authentication off, `require_chat_access` returns None — it means
+    "nobody is logged in and that is fine here", NOT "anyone may execute an agent". Treating that as
+    success would reopen the hole the fail-closed gate was written to close.
+
+    Stubbing the dependency to return None is exactly what the real one does with auth disabled, so
+    this exercises the mechanism rather than a flag."""
+    c, rr = _cuga_client()
+    monkeypatch.delenv(rr.RUN_DEV_UNAUTH_ENV, raising=False)
+    monkeypatch.setenv("CUGA_RUN_TOKEN", "s3cret")
+    _auth_patch(monkeypatch, rr, user=None)
+
+    assert c.get("/run/agents").status_code == 401
+    # ...and the machine caller still gets in with the secret
+    assert c.get("/run/agents", headers={"X-Gateway-Token": "s3cret"}).status_code != 401
+
+
+def test_a_broken_auth_backend_is_a_denial_not_an_admission(monkeypatch):
+    """An exception from the auth stack must not fall through to "authorised"."""
+    c, rr = _cuga_client()
+    monkeypatch.delenv(rr.RUN_DEV_UNAUTH_ENV, raising=False)
+    monkeypatch.setenv("CUGA_RUN_TOKEN", "s3cret")
+    _auth_patch(monkeypatch, rr, raises=RuntimeError("auth backend is down"))
+
+    assert c.get("/run/agents").status_code == 401
+
+
+# ── the master switch also gates whether /run is MOUNTED ────────────────────────────────────────
+# CUGA_EVENTS_ENABLED is tested on its own in test_events_master_switch.py. These cover the half
+# that needs the real app: mounting. They live here rather than there because building a client
+# imports the whole CUGA server, and doing that from a suite that blanks the environment bakes those
+# blanks into `cuga.config`'s settings singleton and breaks unrelated tests later in the run.
+
+
+def test_a_token_alone_no_longer_mounts_run(monkeypatch):
+    """THE REGRESSION GUARD. GATEWAY_TOKEN is a generic shared secret; before the switch, setting it
+    for any unrelated reason mounted an endpoint that executes an agent."""
+    from cuga.backend.server import run_routes as rr
+
+    monkeypatch.setenv("CUGA_EVENTS_ENABLED", "")
+    monkeypatch.setenv("GATEWAY_TOKEN", "s3cret")
+    monkeypatch.setenv("CUGA_SUPERVISOR_ROSTER", "")
+    monkeypatch.setenv(rr.RUN_DEV_UNAUTH_ENV, "")
+
+    assert rr.run_api_enabled() is False
+
+
+def test_a_roster_alone_no_longer_mounts_run(monkeypatch):
+    from cuga.backend.server import run_routes as rr
+
+    monkeypatch.setenv("CUGA_EVENTS_ENABLED", "")
+    monkeypatch.setenv("GATEWAY_TOKEN", "")
+    monkeypatch.setenv("CUGA_RUN_TOKEN", "")
+    monkeypatch.setenv("CUGA_SUPERVISOR_ROSTER", "docs/examples/events/supervisor_agents.yaml")
+    monkeypatch.setenv(rr.RUN_DEV_UNAUTH_ENV, "")
+
+    assert rr.run_api_enabled() is False
+
+
+def test_the_switch_alone_does_not_mount_run(monkeypatch):
+    """Both halves are required. The switch says "this instance takes part"; the credential says
+    "and here is how callers authenticate". Mounting on the switch alone would advertise an endpoint
+    that 401s every call — the thing run_api_enabled exists to avoid."""
+    from cuga.backend.server import run_routes as rr
+
+    monkeypatch.setenv("CUGA_EVENTS_ENABLED", "1")
+    monkeypatch.setenv("GATEWAY_TOKEN", "")
+    monkeypatch.setenv("CUGA_RUN_TOKEN", "")
+    monkeypatch.setenv("CUGA_SUPERVISOR_ROSTER", "")
+    monkeypatch.setenv(rr.RUN_DEV_UNAUTH_ENV, "")
+
+    assert rr.run_api_enabled() is False
+
+
+def test_switch_plus_token_mounts_run(monkeypatch):
+    from cuga.backend.server import run_routes as rr
+
+    monkeypatch.setenv("CUGA_EVENTS_ENABLED", "1")
+    monkeypatch.setenv("GATEWAY_TOKEN", "s3cret")
+
+    assert rr.run_api_enabled() is True
+
+
+def test_run_uses_the_authenticated_user_not_the_body(monkeypatch):
+    """A SIGNED-IN CALLER IS WHO THE TOKEN SAYS.
+
+    `/run` read `body["user_id"]` unconditionally, so a logged-in user could act as anyone simply
+    by naming them — their thread, their history, their scope. The body still decides for the
+    MACHINE caller (the eventing service has no session, and body user_id is the only way a
+    channel's user reaches CUGA at all), so both halves are asserted here.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from cuga.backend.server import run_routes as rr
+    import cuga.backend.server.auth.dependencies as dep
+
+    seen = {}
+
+    async def _capturing_stream(*a, **kw):
+        seen["user_id"] = kw.get("user_id")
+        if False:  # pragma: no cover
+            yield None
+
+    app = FastAPI()
+    app.include_router(rr.build_run_router(event_stream=_capturing_stream, default_user_id="tester"))
+    c = TestClient(app, raise_server_exceptions=False)
+    monkeypatch.setenv(rr.RUN_DEV_UNAUTH_ENV, "1")  # past the auth gate; identity is the point here
+
+    # 1) a SIGNED-IN caller naming somebody else — the token wins
+    class _User:
+        sub = "alice"
+
+    async def _as_alice(request):
+        return _User()
+
+    monkeypatch.setattr(dep, "require_chat_access", _as_alice)
+    c.post("/run", json={"query": "hi", "user_id": "bob"})
+    assert seen.get("user_id") == "alice", "a signed-in user could still act as somebody else"
+
+    # 2) a MACHINE caller — authenticates with the shared secret, has no session. The body is the
+    #    only identity there is, so it stands: this is how a Slack/Telegram user reaches CUGA.
+    seen.clear()
+    monkeypatch.setenv("CUGA_RUN_TOKEN", "s3cret")
+
+    async def _nobody(request):
+        return None  # what require_chat_access returns when auth is disabled
+
+    monkeypatch.setattr(dep, "require_chat_access", _nobody)
+    r = c.post(
+        "/run",
+        json={"query": "hi", "user_id": "slack:U123"},
+        headers={"X-Gateway-Token": "s3cret"},
+    )
+    assert r.status_code != 401, r.text
+    assert seen.get("user_id") == "slack:U123", "the channel user no longer reaches CUGA"

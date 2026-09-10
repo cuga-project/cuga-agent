@@ -14,6 +14,16 @@ from ..common.benchmark_mode import is_relaxed_execution
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import BlockToolCallCounter
 
 
+class _BlockSystemExit:
+    """Carrier so exit()/SystemExit inside a Task does not escape the event loop."""
+
+    __slots__ = ("exc", "locals")
+
+    def __init__(self, exc: BaseException, locals_: dict[str, Any]):
+        self.exc = exc
+        self.locals = locals_
+
+
 class LocalExecutor(BaseExecutor):
     """Handles local code execution with restricted environment."""
 
@@ -86,29 +96,84 @@ class LocalExecutor(BaseExecutor):
 
                 async_main = exec_locals['_async_main']
                 BlockToolCallCounter.reset()
-                try:
-                    result_locals = await asyncio.wait_for(async_main(), timeout=timeout)
-                except asyncio.TimeoutError:
+
+                # Run as a Task so a timeout can read the still-live frame before
+                # cancelling. ``wait_for`` on a bare coroutine clears that frame,
+                # which is why variables computed before the stall used to vanish.
+                #
+                # SystemExit inside a Task is re-raised into the event loop by
+                # asyncio (it escapes ``except SystemExit`` around ``wait``), so
+                # catch it inside the task and return a carrier instead.
+                async def _run_block():
+                    try:
+                        return await async_main()
+                    except SystemExit as e:
+                        return _BlockSystemExit(e, LocalExecutor._locals_from_frame(e, "_async_main"))
+
+                task = asyncio.create_task(_run_block())
+                done, _pending = await asyncio.wait({task}, timeout=timeout)
+                if not done:
+                    recovered = self._locals_from_coro(task.get_coro(), "_async_main")
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+                    context_locals.update(recovered)
                     # Preserve the evidence instead of discarding it: the agent
                     # otherwise sees a bare timeout, learns nothing, and re-runs
                     # the same loop until the step limit.
                     partial_stdout = stdout_buf.getvalue()
                     calls_made = BlockToolCallCounter.current_count()
+                    kept = sorted(k for k in recovered if not callable(recovered[k]))
+                    if kept:
+                        kept_note = (
+                            f"kept variables from this block: {', '.join(kept)} "
+                            "(available in the next block).\n"
+                        )
+                    else:
+                        kept_note = "no variables from this block were saved.\n"
                     guidance = (
                         f"Error during execution: Execution timed out after {timeout} seconds.\n"
                         f"This code block started {calls_made} tool call(s) before it was killed; "
-                        "ALL variables from this block are LOST (nothing was saved).\n"
+                        f"{kept_note}"
                         "Do NOT rerun the same code — it will time out again. Restructure instead: "
                         "use a bulk/aggregate tool (find_tools), or process a small batch of items "
-                        "per code block and store partial progress in a variable (variables persist "
-                        "across blocks only when the block finishes in time).\n"
+                        "per code block and store partial progress in a variable.\n"
                     )
                     if partial_stdout.strip():
                         guidance += f"Partial stdout before the timeout:\n{partial_stdout}"
                     else:
                         guidance += "(no stdout was printed before the timeout)"
                     return guidance
-                context_locals.update(result_locals)
+                outcome = task.result()
+                if isinstance(outcome, _BlockSystemExit):
+                    # `exit()` is a reasonable thing for generated code to reach —
+                    # "stop this block, there is nothing more to do". Honour that
+                    # intent: end the block early and keep variables computed
+                    # before the exit (#629 / #630).
+                    context_locals.update(outcome.locals)
+                    reason = str(outcome.exc) if str(outcome.exc) and not str(outcome.exc).isdigit() else ""
+                    note = "Block ended early: the code called exit()/quit() or raised SystemExit"
+                    note += f" ({reason}).\n" if reason else ".\n"
+                    note += (
+                        "This ended the block only — variables defined before it were kept and "
+                        "are available in the next block. Nothing after the exit ran.\n"
+                    )
+                    captured = stdout_buf.getvalue()
+                    return f"{note}{captured}" if captured.strip() else f"{note}(no output printed)"
+                context_locals.update(outcome)
+        except SystemExit as e:
+            # Safety net for SystemExit raised outside the task (e.g. during
+            # setup). Task-scoped exit()/SystemExit is handled via _BlockSystemExit.
+            context_locals.update(self._locals_from_frame(e, "_async_main"))
+            reason = str(e) if str(e) and not str(e).isdigit() else ""
+            note = "Block ended early: the code called exit()/quit() or raised SystemExit"
+            note += f" ({reason}).\n" if reason else ".\n"
+            note += (
+                "This ended the block only — variables defined before it were kept and "
+                "are available in the next block. Nothing after the exit ran.\n"
+            )
+            captured = stdout_buf.getvalue()
+            return f"{note}{captured}" if captured.strip() else f"{note}(no output printed)"
         except Exception as e:
             # Preserve prints from earlier successful lines so the agent still
             # sees discovery output (e.g. find_tools) when a later line raises.
@@ -122,6 +187,45 @@ class LocalExecutor(BaseExecutor):
             result = "<code ran, no output printed to stdout>"
 
         return result
+
+    @staticmethod
+    def _locals_from_frame(error: BaseException, func_name: str) -> dict[str, Any]:
+        """Read a still-live frame's locals off an exception's traceback.
+
+        Used when the block stopped somewhere other than its own ``return
+        locals()`` — the frame is kept alive by the traceback, so the variables
+        computed up to that point are still readable and need not be discarded.
+        """
+        frame = None
+        tb = error.__traceback__
+        while tb is not None:
+            if tb.tb_frame.f_code.co_name == func_name:
+                frame = tb.tb_frame
+            tb = tb.tb_next
+        if frame is None:
+            return {}
+        return {k: v for k, v in frame.f_locals.items() if not k.startswith("__")}
+
+    @staticmethod
+    def _locals_from_coro(coro: Any, func_name: str) -> dict[str, Any]:
+        """Read locals from a still-suspended coroutine frame.
+
+        Used on the timeout path: the Task is stalled at an ``await``, so its
+        frame is live until we cancel. Must be called before cancellation —
+        afterwards the frame is cleared and recovery returns nothing. Walks
+        ``cr_await`` so a thin wrapper around ``_async_main`` still works.
+        """
+        seen: set[int] = set()
+        while coro is not None and id(coro) not in seen:
+            seen.add(id(coro))
+            frame = getattr(coro, "cr_frame", None)
+            while frame is not None:
+                if frame.f_code.co_name == func_name:
+                    return {k: v for k, v in frame.f_locals.items() if not k.startswith("__")}
+                frame = frame.f_back
+            nxt = getattr(coro, "cr_await", None)
+            coro = nxt if asyncio.iscoroutine(nxt) else None
+        return {}
 
     def format_error(
         self,

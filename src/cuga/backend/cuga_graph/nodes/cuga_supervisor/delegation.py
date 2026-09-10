@@ -8,29 +8,56 @@ from typing import Any, Callable, Dict, List, Optional
 from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
+    SUPERVISOR_EXEC_KEY,
     resolve_supervisor_execution_context,
 )
 from cuga.config import settings
 
 
-def resolve_names_from_caller_frame(variable_names: List[str]) -> Dict[str, Any]:
-    """Resolve names from the delegated code's caller frame.
+def _frame_has_supervisor_exec(frame: Any) -> bool:
+    return SUPERVISOR_EXEC_KEY in frame.f_locals or SUPERVISOR_EXEC_KEY in frame.f_globals
 
-    LocalExecutor injects supervisor context into ``_async_main``'s globals; only
-    using ``f_locals`` missed those bindings, so sub-agents received no variables
-    and tasks showed e.g. ``amount=None``.
+
+def _variables_from_supervisor_vm() -> Dict[str, Any]:
+    """Copy the active supervisor variable manager into a name→value dict."""
+    exec_ctx = resolve_supervisor_execution_context()
+    if exec_ctx is None or exec_ctx.variable_manager is None:
+        return {}
+    vm = exec_ctx.variable_manager
+    return {name: vm.get_variable(name) for name in vm.get_variable_names()}
+
+
+def resolve_names_from_caller_frame(variable_names: List[str]) -> Dict[str, Any]:
+    """Resolve names from the generated supervisor script frame.
+
+    Walk to the frame holding ``SUPERVISOR_EXEC_KEY`` (``_async_main``), not the
+    immediate ``delegate_to_agent`` wrapper. Fill names missing from that frame
+    from the supervisor VM (prior-turn values are not locals yet).
     """
     resolved: Dict[str, Any] = {}
     frame = inspect.currentframe()
     try:
-        caller = frame.f_back if frame is not None else None
-        if caller is None:
+        current = frame.f_back if frame is not None else None
+        first_caller = current
+        exec_frame = None
+        while current is not None:
+            if _frame_has_supervisor_exec(current):
+                exec_frame = current
+                break
+            current = current.f_back
+        target = exec_frame if exec_frame is not None else first_caller
+        if target is None:
             return resolved
         for name in variable_names:
-            if name in caller.f_locals:
-                resolved[name] = caller.f_locals[name]
-            elif name in caller.f_globals:
-                resolved[name] = caller.f_globals[name]
+            if name in target.f_locals:
+                resolved[name] = target.f_locals[name]
+            elif name in target.f_globals:
+                resolved[name] = target.f_globals[name]
+        if any(name not in resolved for name in variable_names):
+            vm_vars = _variables_from_supervisor_vm()
+            for name in variable_names:
+                if name not in resolved and name in vm_vars:
+                    resolved[name] = vm_vars[name]
     finally:
         del frame
     return resolved
@@ -78,9 +105,10 @@ def create_agent_delegation_func(
         logger.info(f"Delegating to {agent_name}: {task[:100]}...")
 
         if isinstance(agent_or_config, CugaAgent):
-            vars_to_pass = {}
             if variables is not None:
                 vars_to_pass = resolve_names_from_caller_frame(variables)
+            else:
+                vars_to_pass = _variables_from_supervisor_vm()
             result = await agent_or_config.invoke(
                 task,
                 thread_id=f"supervisor_conversational_{agent_name}",
@@ -141,7 +169,7 @@ def create_agent_delegation_func(
             await a2a_protocol.connect()
             try:
                 vars_to_pass = {}
-                if variables is not None:
+                if pass_variables_a2a and variables is not None:
                     vars_to_pass = resolve_names_from_caller_frame(variables)
                 result = await a2a_protocol.delegate_task(
                     target_agent=agent_name,

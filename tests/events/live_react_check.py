@@ -1,7 +1,7 @@
 """LIVE Phase-1 check: ReactRuntime runs a real worker via watsonx + a real cuga-* MCP.
 
 Proves the NOW path + per-thread memory end to end. Needs .env (watsonx creds) and network
-to watsonx + the cuga-geo MCP server. Run with the focused venv:
+to watsonx + the cuga_geo MCP server. Run with the focused venv:
 
     .venv-events/bin/python tests/events/live_react_check.py
 
@@ -43,7 +43,7 @@ async def main() -> int:
         runtime.AgentSpec(
             name="geobot",
             prompt="You are a geography assistant. Use your tools. Answer in one short line.",
-            mcp_servers=["cuga-geo"],
+            mcp_servers=["cuga_geo"],
         )
     )
 

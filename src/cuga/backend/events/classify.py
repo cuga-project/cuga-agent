@@ -1,6 +1,6 @@
 """Deterministic trigger classifier — the dry-run baseline & eval oracle.
 
-The *real* concierge classifies via LLM tool-calling (events_docs/ARCHITECTURE.md). This module is a
+The *real* concierge classifies via LLM tool-calling (the events docs (ARCHITECTURE.md)). This module is a
 dependency-free heuristic used for: (a) ``dry_run`` when no LLM is configured, and
 (b) the acceptance eval's expected-label oracle. It is intentionally simple and
 transparent — not a replacement for the LLM, a check on it.

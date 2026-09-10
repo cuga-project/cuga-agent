@@ -5,6 +5,7 @@ import threading
 import weakref
 from datetime import date
 from typing import Dict, Any, Optional, Mapping, TYPE_CHECKING
+from urllib.parse import urlsplit
 import hashlib
 import json
 import os
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
 from cuga.backend.cuga_graph.utils.token_counter import ensure_model_context_profile
 from cuga.backend.llm.load_test_mock import clone_load_test_mock_chat_model, is_mock_llm_enabled
 from cuga.backend.secrets import resolve_secret
+from cuga.backend.utils.consts import LOCAL_ORCHESTRATE_URL
 from cuga.config import DEFAULT_LLM_HTTP_TIMEOUT, settings
 
 # weakref.ref(loop) on watsonx APIClient for the loop the async httpx client is for.
@@ -117,6 +119,30 @@ def _get_reasoning_chat_litellm():
 
 _get_reasoning_chat_litellm._loaded = False  # type: ignore[attr-defined]
 _get_reasoning_chat_litellm._cls = None  # type: ignore[attr-defined]
+
+
+def _get_chat_wxo():
+    """Lazy-load and return the ChatWxO class, or None if ibm_watsonx_orchestrate_sdk is missing.
+
+    No lock is needed: same reasoning as ``_get_reasoning_chat_openai`` — all callers
+    are on the asyncio event loop with no OS-thread exposure to this path.
+    """
+    if _get_chat_wxo._loaded:
+        return _get_chat_wxo._cls
+
+    try:
+        from ibm_watsonx_orchestrate_sdk.langchain import ChatWxO
+
+        _get_chat_wxo._cls = ChatWxO
+    except ImportError:
+        _get_chat_wxo._cls = None
+
+    _get_chat_wxo._loaded = True
+    return _get_chat_wxo._cls
+
+
+_get_chat_wxo._loaded = False  # type: ignore[attr-defined]
+_get_chat_wxo._cls = None  # type: ignore[attr-defined]
 
 _ENV_REF_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _DEFAULT_LLM_HTTP_TIMEOUT = DEFAULT_LLM_HTTP_TIMEOUT
@@ -224,6 +250,32 @@ def _merge_optional_sampling(
             target[key] = model_settings[key]
     if include_extra and model_settings.get("extra_params") is not None:
         target.update(_safe_extra_params(model_settings.get("extra_params")))
+
+
+_WXO_LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
+def _is_local_wxo_url(url: Optional[str]) -> bool:
+    """True only for an exact loopback host on the canonical local ADK port.
+
+    Uses urllib.parse rather than string prefixes: "http://localhost.example.com"
+    starts with "http://localhost" but is a different, real, remote host that a
+    naive prefix check would misclassify as local — letting a keyless call
+    reach it. Requires an exact hostname match, http scheme, and the same port
+    as LOCAL_ORCHESTRATE_URL, not just "some port on a local-looking host".
+    """
+    if not url:
+        return False
+    try:
+        parsed = urlsplit(url)
+        canonical_port = urlsplit(LOCAL_ORCHESTRATE_URL).port
+        return (
+            parsed.scheme == "http"
+            and parsed.hostname in _WXO_LOCAL_HOSTNAMES
+            and parsed.port == canonical_port
+        )
+    except ValueError:
+        return False
 
 
 def _coerce_settings_dict(model_settings: Any) -> Dict[str, Any]:
@@ -577,7 +629,40 @@ class LLMManager:
             d['resolved_http_timeout'] = self._get_http_timeout(model_settings)
 
         settings_str = json.dumps(d, sort_keys=True)
-        return hashlib.md5(settings_str.encode()).hexdigest()
+        # CodeQL reports this line under the rule py/weak-sensitive-data-hashing,
+        # as alert #170. That alert has been dismissed as a false positive rather
+        # than fixed, because none of the available fixes is an improvement.
+        # Recording the reasoning here so it does not have to be worked out again:
+        #
+        # * The rule is asking for a password-hashing function that is slow on
+        #   purpose, such as bcrypt, scrypt, argon2 or PBKDF2. SHA-256 does not
+        #   satisfy it, and neither did MD5, so changing the algorithm does not
+        #   help. This was checked by running CodeQL locally.
+        # * A slow password-hashing function is the wrong tool here. This runs
+        #   every time a model is requested, and those functions take upwards of
+        #   100 milliseconds by design. They also need a random value mixed in,
+        #   which would change the result on every call, so the cache would never
+        #   find anything.
+        # * Passing usedforsecurity=False, which normally tells tools that a hash
+        #   is not being used for security, has no effect: CodeQL does not read
+        #   that argument in any language. See github/codeql issue 13637, open
+        #   since 2023.
+        # * Removing the credential from the data before hashing does not work
+        #   either. CodeQL follows values held in a dictionary by their key, and
+        #   it does not treat assigning to a key that is worked out at runtime as
+        #   replacing what was there, so it still considers the credential
+        #   present. Also checked by running CodeQL locally.
+        #
+        # The report is a false positive in terms of what it would let someone do.
+        # This value is only used as a key in the self._models dictionary. It is
+        # never saved, never sent anywhere, and never compared against a stored
+        # value, and it is held in the same memory as the credential it was made
+        # from, so anyone able to read it can already read the credential itself.
+        #
+        # SHA-256 is used in place of MD5 simply because there is no reason to
+        # prefer MD5. It changes nothing that can be observed: the cache only
+        # exists while the program is running and is rebuilt on every start.
+        return hashlib.sha256(settings_str.encode()).hexdigest()
 
     def _get_model_name(self, model_settings: Dict[str, Any], platform: str) -> str:
         """Get model name: config (JSON) first, then env, then TOML."""
@@ -612,6 +697,20 @@ class LLMManager:
             else:
                 # Default fallback
                 default_model = "openai/gpt-oss-20b"
+                logger.info(f"No model_name specified, using default: {default_model}")
+                return default_model
+        elif platform == "wxo":
+            # For watsonx Orchestrate, check environment variables
+            env_model_name = os.environ.get('MODEL_NAME')
+            if env_model_name:
+                logger.info(f"Using MODEL_NAME from environment for wxO: {env_model_name}")
+                return env_model_name
+            elif toml_model_name:
+                logger.debug(f"Using model_name from TOML: {toml_model_name}")
+                return toml_model_name
+            else:
+                # Default fallback
+                default_model = "watsonx/openai/gpt-oss-120b"
                 logger.info(f"No model_name specified, using default: {default_model}")
                 return default_model
         elif platform == "watsonx":
@@ -807,6 +906,25 @@ class LLMManager:
         # Groq SDK manages its own endpoint; any URL in config is ignored
         if platform == "groq":
             return None
+
+        # wxO: let WXO_INSTANCE_URL env override the TOML so the tenant instance can be
+        # swapped from .env without editing every per-role TOML block. Falls back to the
+        # local ADK dev server (same port CUGA already knows as LOCAL_ORCHESTRATE_URL).
+        if platform == "wxo":
+            env_instance_url = os.environ.get('WXO_INSTANCE_URL')
+            if env_instance_url and env_instance_url.strip():
+                logger.info(f"Using WXO_INSTANCE_URL from environment: {env_instance_url.strip()}")
+                return env_instance_url.strip()
+            toml_url = (
+                model_settings.get("instance_url")
+                or model_settings.get("base_url")
+                or model_settings.get("url")
+            )
+            if toml_url and str(toml_url).strip():
+                logger.debug(f"Using instance_url from TOML for wxO: {toml_url}")
+                return str(toml_url).strip()
+            logger.info(f"No instance_url specified for wxO, defaulting to local: {LOCAL_ORCHESTRATE_URL}")
+            return LOCAL_ORCHESTRATE_URL
 
         # RITS: let RITS_BASE_URL env override the TOML so model/endpoint can be
         # swapped from .env without editing every per-role TOML block.
@@ -1112,6 +1230,63 @@ class LLMManager:
                 include_extra=True,
             )
             llm = ChatGroq(**groq_params)
+        elif platform == "wxo":
+            ChatWxO = _get_chat_wxo()
+            if ChatWxO is None:
+                raise ImportError(
+                    "platform 'wxo' requires the watsonx Orchestrate SDK: "
+                    "pip install 'cuga[wxo]' (needs Python >= 3.11)"
+                )
+
+            api_key = None
+            apikey_ref = model_settings.get("api_key")
+            if apikey_ref:
+                api_key = _normalize_secret(resolve_secret(apikey_ref)) or os.environ.get(apikey_ref)
+            if not api_key:
+                api_key = _normalize_secret(resolve_secret("WXO_API_KEY")) or os.environ.get("WXO_API_KEY")
+
+            is_local = _is_local_wxo_url(base_url)
+            if not api_key and not is_local:
+                raise ValueError(
+                    "wxO requires an API key for a remote instance. Set WXO_API_KEY "
+                    "(Settings -> API details -> Generate API key in watsonx Orchestrate), "
+                    "or point WXO_INSTANCE_URL at a local ADK dev server."
+                )
+
+            logger.debug(f"Creating wxO model: {model_name} (instance_url={base_url})")
+            is_reasoning = self._is_reasoning_model(model_name)
+            wxo_params: Dict[str, Any] = {
+                "model": model_name,
+                "instance_url": base_url,
+                "api_key": api_key,
+                "max_tokens": max_tokens,
+                "timeout": http_timeout,
+            }
+            if not is_reasoning:
+                wxo_params["temperature"] = temperature
+                _merge_optional_sampling(
+                    wxo_params,
+                    model_settings,
+                    keys=("top_p", "frequency_penalty", "presence_penalty", "stop"),
+                )
+            else:
+                logger.debug(f"Skipping temperature for reasoning model: {model_name}")
+                _merge_optional_sampling(
+                    wxo_params,
+                    model_settings,
+                    keys=("stop",),
+                )
+
+            ssl_verify = self._get_ssl_verify(model_settings)
+            if ssl_verify is not True:
+                wxo_params["verify"] = ssl_verify
+                # ChatWxO only builds a *sync* httpx.Client for `verify`; without an
+                # explicit async client CUGA's async invoke/stream path would silently
+                # ignore a disabled/custom CA.
+                wxo_params["http_async_client"] = httpx.AsyncClient(verify=ssl_verify)
+
+            llm = ChatWxO(**wxo_params)
+            ensure_model_context_profile(llm, model_name)
         elif platform == "watsonx":
             from langchain_ibm import ChatWatsonx
 

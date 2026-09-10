@@ -11,7 +11,11 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from cuga.backend.knowledge.metadata.base import utc_now_iso
+from cuga.backend.knowledge.metadata.base import (
+    mark_file_tasks_interrupted,
+    normalize_file_tasks,
+    utc_now_iso,
+)
 from cuga.backend.storage.relational.local import LocalRelationalStore
 
 
@@ -180,25 +184,7 @@ class SqliteKnowledgeMetadata(LocalRelationalStore):
         count = 0
         for row in rows:
             task_id = row["task_id"]
-            try:
-                file_tasks = json.loads(row["file_tasks_json"]) or {}
-            except (TypeError, ValueError):
-                # Corrupted JSON — treat as empty so we still mark the
-                # parent task failed instead of 500-ing the entire engine
-                # startup health probe.
-                file_tasks = {}
-            if isinstance(file_tasks, dict):
-                for ft in file_tasks.values():
-                    # ``status`` is missing on rows written by older
-                    # builds / partial reindex tasks. Default to
-                    # ``pending`` so the recovery still re-marks them
-                    # ``failed`` rather than crashing the whole engine
-                    # health/list endpoints with a KeyError.
-                    if not isinstance(ft, dict):
-                        continue
-                    if ft.get("status", "pending") in ("pending", "processing"):
-                        ft["status"] = "failed"
-                        ft["error"] = ft.get("error") or "interrupted by server restart"
+            file_tasks = mark_file_tasks_interrupted(normalize_file_tasks(row["file_tasks_json"]))
             await self.execute(
                 "UPDATE tasks SET status='failed', file_tasks_json=?, updated_at=? WHERE task_id=?",
                 (json.dumps(file_tasks), now, task_id),

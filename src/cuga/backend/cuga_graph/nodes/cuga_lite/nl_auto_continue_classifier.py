@@ -2,6 +2,7 @@
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -93,6 +94,80 @@ _SECOND_PERSON_RE = re.compile(r"\b(?:you|your|yours)\b", re.IGNORECASE)
 
 _PLANNING_MAX_LEN = 400
 
+# ── Unverified-blocker override (issue #610) ────────────────────────────────
+#
+# Observed failure mode: on turn 1, before ANY tool call has executed, the model
+# emits "plan → refusal" prose ("I'll discover the relevant Spotify tool first.
+# I'm sorry, but I couldn't access the Spotify subscription details…") and the
+# classifier — correctly, per its spec — treats the refusal as a hard stop. The
+# run ends after 2 LLM calls with zero executed calls, on tasks the same prompt
+# solves in sibling runs.
+#
+# When the harness can positively verify the claim is unfounded (tools ARE bound
+# for this turn, and nothing has executed or errored yet), the refusal half of
+# such a message is always wrong: an inability claim with no attempt behind it.
+# In that narrow case we override the finalize once, with a corrective user
+# message; a second consecutive refusal is accepted (the caller tracks the
+# one-shot marker). This is deliberately NOT `require_tool_call_before_final`
+# (removed in PR #416 review): a legitimate tool-free completion ("what can you
+# do?") contains no inability claim, does not match the pattern below, and
+# finalizes exactly as before.
+_BLOCKED_CLAIM_RE = re.compile(
+    r"(?:unable\s+to|couldn['’]t|could\s+not|cannot|can['’]t)\s+"
+    r"(?:access|locate|find|retrieve|reach|execute|use|continue|proceed)"
+    r"|(?:don['’]t|do\s+not|doesn['’]t|does\s+not)\s+have\s+(?:a|the|any)[^.]{0,40}\btools?\b"
+    r"|\btools?\b[^.!\n]{0,60}(?:\bnot\b|\bun)available"
+    r"|(?:(?:is|are)\s+not|isn['’]t|aren['’]t)\s+available\s+in\s+"
+    r"(?:this|the\s+current)\s+(?:session|environment|context)"
+    # "there's no (available) tool …", "we have no tool listed", "no such tool":
+    # observed verbatim on gpt-oss-120b task 7574325_1 ("there's no available tool
+    # or API for updating Venmo credentials"), which the clauses above all missed.
+    # Kept as a bigram ("no … tool") so ordinary finals mentioning tools don't hit.
+    r"|\bno\s+(?:available\s+|such\s+|suitable\s+|matching\s+)?(?:tools?|apis?)\b"
+    r"|\black(?:s|ing)?\s+(?:a|the|any)\s+tool",
+    re.IGNORECASE,
+)
+
+# Sent as the synthetic user turn instead of the plain "continue" when the
+# override fires — a bare "continue" tends to elicit the same refusal again.
+BLOCKED_CLAIM_CORRECTION = (
+    "Your previous message claimed the required tools or data are unavailable, "
+    "but no tool call has been executed yet and connected applications with "
+    "tools ARE available (see Connected Applications and Current Available "
+    "Tools in the system prompt). An unverified inability claim is not an "
+    "acceptable final answer. Use find_tools(query, app_name) to discover the "
+    "relevant tools and continue the task. If a call genuinely fails, report "
+    "the observed error instead."
+)
+
+
+@dataclass(frozen=True)
+class BlockedClaimEvidence:
+    """What the harness knows about this turn, for the unverified-blocker override.
+
+    ``tools_available``: at least one callable tool is bound for this turn.
+    ``code_executed``: any sandbox execution has already run this task (a refusal
+    after real attempts may be legitimate — the override only targets turn-1
+    claims with nothing behind them).
+    ``retry_used``: the one-shot corrective retry has already been spent.
+    """
+
+    tools_available: bool
+    code_executed: bool
+    retry_used: bool
+
+
+@dataclass(frozen=True)
+class AutoContinueDecision:
+    auto_continue: bool
+    blocked_override: bool = False
+
+
+def looks_like_unverified_blocker(visible: str, reasoning: str = "") -> bool:
+    """True when the turn's text contains an inability/unavailability claim."""
+    combined = f"{visible or ''}\n{reasoning or ''}"
+    return bool(_BLOCKED_CLAIM_RE.search(combined))
+
 
 def looks_like_planning_text(visible: str) -> bool:
     """True for a short first-person intent statement that signals more work to come.
@@ -179,27 +254,45 @@ def parse_auto_continue_json(raw: str) -> Optional[bool]:
     return None
 
 
-async def classify_nl_auto_continue(
+def _blocked_override_applies(visible: str, reasoning: str, evidence: Optional[BlockedClaimEvidence]) -> bool:
+    """The unverified-blocker override (issue #610): all conditions must hold."""
+    if evidence is None:
+        return False
+    if not getattr(settings.advanced_features, "cuga_lite_blocked_claim_retry", True):
+        return False
+    if not evidence.tools_available or evidence.code_executed or evidence.retry_used:
+        return False
+    return looks_like_unverified_blocker(visible, reasoning)
+
+
+async def classify_nl_auto_continue_decision(
     llm: BaseChatModel,
     assistant_visible: Any,
     reasoning_excerpt: Optional[Any],
-) -> bool:
-    """Return True if the graph should append a user ``continue`` message and re-invoke the coder model."""
+    *,
+    evidence: Optional[BlockedClaimEvidence] = None,
+) -> AutoContinueDecision:
+    """Full decision: whether to auto-continue, and whether the blocked-claim override fired.
+
+    ``evidence`` is what the harness knows about the turn; without it the
+    unverified-blocker override never fires and behavior is unchanged.
+    """
     if not getattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True):
-        return False
+        return AutoContinueDecision(auto_continue=False)
     visible = normalize_assistant_text(assistant_visible)
     reasoning = normalize_assistant_text(reasoning_excerpt)
     if looks_like_planning_text(visible):
         logger.info("NL auto-continue: planning-text fast-path matched; auto-continuing")
-        return True
+        return AutoContinueDecision(auto_continue=True)
     combined = build_combined_content_and_reasoning(visible, reasoning)
     if not combined.strip():
-        return False
+        return AutoContinueDecision(auto_continue=False)
     user_block = (
         "Classify this assistant output (content + reasoning below).\n\n"
         f"{combined}\n\n"
         'Respond with JSON only: {"auto_continue": true} or {"auto_continue": false}'
     )
+    finalize = AutoContinueDecision(auto_continue=False)
     try:
         from cuga.backend.cuga_graph.utils.langfuse_tracing import get_langfuse_invoke_config
 
@@ -213,8 +306,34 @@ async def classify_nl_auto_continue(
         parsed = parse_auto_continue_json(getattr(resp, "content", "") or "")
         if parsed is None:
             logger.warning("NL auto-continue classifier returned unparsable output; treating as finalize")
-            return False
-        return parsed
+            return finalize
+        if parsed:
+            return AutoContinueDecision(auto_continue=True)
     except Exception as e:
         logger.warning(f"NL auto-continue classifier failed: {e}")
-        return False
+        return finalize
+
+    # The classifier explicitly chose finalize (parsed False). Only that verdict
+    # reaches the override — a classifier error or unparsable output finalizes
+    # above, exactly like the pre-existing bool path, so the override never
+    # fires on anything but a confirmed finalize (PR #657 review, finding 1).
+    # If the finalize is an inability claim the harness can positively
+    # contradict (tools bound, nothing executed, retry unspent), override once
+    # with a corrective continue instead.
+    if _blocked_override_applies(visible, reasoning, evidence):
+        logger.warning(
+            "NL auto-continue: turn-1 inability claim with tools bound and zero executed "
+            "calls — overriding finalize with one corrective retry (issue #610)"
+        )
+        return AutoContinueDecision(auto_continue=True, blocked_override=True)
+    return finalize
+
+
+async def classify_nl_auto_continue(
+    llm: BaseChatModel,
+    assistant_visible: Any,
+    reasoning_excerpt: Optional[Any],
+) -> bool:
+    """Return True if the graph should append a user ``continue`` message and re-invoke the coder model."""
+    decision = await classify_nl_auto_continue_decision(llm, assistant_visible, reasoning_excerpt)
+    return decision.auto_continue

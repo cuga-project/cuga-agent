@@ -1,6 +1,6 @@
 """The concierge — the NL→Flow COMPILER in front of THE one agent ("cuga").
 
-SINGLE-AGENT WORLD (events_docs/plans/SUPERVISOR_REFACTOR.md): the concierge does NO agent
+SINGLE-AGENT WORLD (the events docs (plans/SUPERVISOR_REFACTOR.md)): the concierge does NO agent
 routing — there is nothing to route between. Every hand-off and every flow targets ``cuga``
 (a supervisor over YAML-defined sub-agents when EVENTS_SUPERVISOR=1, else the plain classic
 agent). When an end user chats, the concierge:
@@ -25,7 +25,7 @@ import os
 import re
 import uuid
 
-# THE one addressable agent (supervisor model — events_docs/plans/SUPERVISOR_REFACTOR.md).
+# THE one addressable agent (supervisor model — the events docs (plans/SUPERVISOR_REFACTOR.md)).
 # Every flow and every chat hand-off targets it; specialist routing happens INSIDE it.
 THE_AGENT = "cuga"
 
@@ -48,6 +48,17 @@ _principal: contextvars.ContextVar = contextvars.ContextVar("principal", default
 # the RAW inbound utterance — tools must read arm-time qualifiers ("… for one hour") from it, not
 # from their `prompt` argument, which the LLM routinely rewrites (and drops qualifiers from)
 _utterance: contextvars.ContextVar[str] = contextvars.ContextVar("utterance", default="")
+
+# ARMING IS SLASH-ONLY. `/automate …` (and its explicit siblings /cron /poll /watch /push) is the
+# ONLY way to reach the arming machinery — from every surface, web chat and channels alike. Plain
+# English answers once, now, and never creates a standing flow.
+#
+# This is a ContextVar rather than an argument because the two paths that used to arm without a
+# verb do not share a call signature: the deterministic pre-router calls the tool directly, and the
+# react-agent calls it as an LLM tool call several frames away. `run()` clears it on every turn and
+# only the post-approval armer sets it, so "did a human type the verb and then say yes?" is the one
+# question the tool has to answer.
+_arm_allowed: contextvars.ContextVar[bool] = contextvars.ContextVar("arm_allowed", default=False)
 
 CHAT_STYLE = (
     "\n\nReply for a chat app: short plain-text lines or simple '- ' bullets. No markdown tables/headings."
@@ -123,22 +134,30 @@ def _slash_parse(text: str) -> dict | None:
     # require a word boundary after it — each a single linear pass. Keep the two in lockstep;
     # test_the_door_and_the_concierge_agree_on_what_a_slash_command_is fails if they drift.
     s = (text or "").lstrip()
-    while s.startswith("<@"):
-        close = s.find(">")
-        if close < 3:  # `<@[^>]+>` needs a BODY — keep in lockstep with the door, see main.py
-            break
-        s = s[close + 1 :].lstrip()
-    if not s.startswith("/"):
-        return None
-    after = s[1:]
+    # Cursor, not slicing — re-slicing per mention made this quadratic on a long "<@=>" run. Keep in
+    # lockstep with server/main.py:_slash_verb, which carries the measurement.
+    n = len(s)
     i = 0
-    while i < len(after) and after[i].isalpha():
+    while i < n and s[i].isspace():
         i += 1
-    cmd = after[:i].lower()
-    nxt = after[i : i + 1]
+    while s.startswith("<@", i):
+        close = s.find(">", i)
+        if close < i + 3:  # `<@[^>]+>` needs a BODY — keep in lockstep with the door, see main.py
+            break
+        i = close + 1
+        while i < n and s[i].isspace():
+            i += 1
+    if not s.startswith("/", i):
+        return None
+    i += 1
+    j = i
+    while j < n and s[j].isalpha():
+        j += 1
+    cmd = s[i:j].lower()
+    nxt = s[j : j + 1]
     if cmd not in _SLASH_CMDS or (nxt and (nxt.isalnum() or nxt == "_")):
         return None
-    rest = after[i:].strip()
+    rest = s[j:].strip()
     if not rest:
         return {
             "cmd": cmd,
@@ -436,6 +455,21 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             The agent's answer is delivered to deliver_to (or the origin channel). The events layer
             never runs connector actions — the agent's own tools do that.
             Reuses a matching flow (agent+source+event+cadence+sink+owner) instead of duplicating."""
+            # SLASH-ONLY GATE. Arming is a standing commitment — it runs unattended, on a schedule,
+            # against real credentials — so it takes an explicit verb and an explicit "yes". Reached
+            # any other way (the deterministic pre-router, or the react-agent deciding on its own
+            # that a sentence sounded like a schedule) this refuses and says how to ask properly.
+            #
+            # The refusal is a plain sentence rather than an error because the LLM reads it: given a
+            # tool result that names the correct phrasing, it relays that to the human instead of
+            # inventing a different tool call.
+            if not _arm_allowed.get():
+                return (
+                    "I can't arm that from plain chat — standing flows are created with a verb so "
+                    "nothing schedules itself by accident. Type `/automate "
+                    + (prompt or "…").strip()
+                    + "` and I'll show you exactly what will run, then arm it when you reply yes."
+                )
             try:
                 from . import triggers as _tr
             except ImportError:
@@ -625,13 +659,33 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 f"{agent}|{source or 'time'}|{cadence}|{_cfg_tag}|{_sink_tag}|"
                 f"{_task_tag}|{_owner_scope(spec, p)}"
             )
-            existing = store.find_by_dedup_key(dedup_key, scope=p.scope)
-            if existing:
-                nm = f"\"{existing.flow_name}\" " if getattr(existing, "flow_name", "") else ""
-                return (
-                    f"REUSING existing flow {nm}({existing.mode}) for {agent} → {sink} "
-                    f"(subscription {existing.id}). Nothing new created."
-                )
+            # REUSE IS OFF BY DEFAULT (EVENTS_FLOW_REUSE=1 to restore it).
+            #
+            # Silently answering "REUSING existing flow … Nothing new created" to a human who just
+            # confirmed an arming is the worst failure shape available: they typed yes, they were
+            # told nothing was created, and the flow they asked for does not exist. Observed on a
+            # real Slack arm — "every 3 minutes give me a joke" was folded into a pre-existing
+            # 1-minute flow.
+            #
+            # The identity was never trustworthy for cron/poll either. The task hash reads
+            # `_utterance`, a ContextVar the react-agent does not reliably propagate into tool
+            # execution (the same caveat documented at the poll-tier selection below) — so two
+            # different requests can hash identically, which is exactly a collision.
+            #
+            # Leaving dedup_key EMPTY (rather than deleting the column) is what actually disables
+            # this: the store's UNIQUE index is partial — `WHERE dedup_key != ''` — so an empty key
+            # cannot collide, and `upsert` can never raise DuplicateSubscription. Flip the flag on
+            # and both the lookup and the index constraint come back exactly as before.
+            if os.environ.get("EVENTS_FLOW_REUSE", "0").split(" #", 1)[0].strip() != "1":
+                dedup_key = ""
+            else:
+                existing = store.find_by_dedup_key(dedup_key, scope=p.scope)
+                if existing:
+                    nm = f"\"{existing.flow_name}\" " if getattr(existing, "flow_name", "") else ""
+                    return (
+                        f"REUSING existing flow {nm}({existing.mode}) for {agent} → {sink} "
+                        f"(subscription {existing.id}). Nothing new created."
+                    )
             origin = _origin.get()
             if kind == "push":
                 if not source:
@@ -748,7 +802,7 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                         ""
                         if base_app != "slack"
                         else " (the Slack app must be subscribed to this event type — see "
-                        "events_docs/setup/SLACK.md)"
+                        "the events docs (setup/SLACK.md))"
                     )
                     return (
                         f"ARMED direct watcher ({base_app}/{event}{_cfg}) for {agent} → {sink}"
@@ -983,7 +1037,13 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 import native_scheduler as _ns
             if _ns.enabled():
                 _now = _time.time()
-                _next = (_now + interval) if interval else _ns.next_cron(cron, _now)
+                # Compute the first fire BEFORE storing anything: a cron nobody can ever satisfy
+                # ("*/0 * * * *", "0 0 30 2 *") should be refused here, not stored and then
+                # discovered by the scheduler when the row first comes due.
+                try:
+                    _next = (_now + interval) if interval else _ns.next_cron(cron, _now)
+                except Exception as e:  # noqa: BLE001 — a bad expression is user input, not a crash
+                    return f"error: {cron!r} is not a schedule I can satisfy ({e}). Try `every 5 minutes` or `0 9 * * 1-5`."
                 sub = Subscription(
                     id=sub_id,
                     mode=kind.upper(),
@@ -1146,6 +1206,7 @@ class Concierge:
 
         p = principal or DEFAULT_PRINCIPAL
         arming.reset()
+        _arm_allowed.set(False)  # slash-only; re-granted per approved arming below
         _utterance.set(text)  # tools read arm-time qualifiers from the RAW text (see ttl_of)
         # HITL ARMING GATE. An in-flight arming dialogue on this thread owns the next message —
         # it is answering a question or standing at the CONFIRM gate. Checked FIRST so a bare
@@ -1289,6 +1350,7 @@ class Concierge:
                 # Clear FIRST: arming re-enters run() for cron/poll, and a stale parked row would
                 # make the gate swallow that internal turn.
                 self._clear_arm(tkey)
+                _arm_allowed.set(True)  # the human typed the verb, saw the card, and said yes
                 reply = await self._arm_slash(thread_id, p, parsed, approved_prompt=prompt)
                 sub_id = ""
                 try:
@@ -1358,7 +1420,7 @@ class Concierge:
 
         SUPERVISOR MODEL: the concierge does NOT pick an agent — every flow targets the ONE
         agent, "cuga"; routing to a specialist happens inside it, per wake-up
-        (events_docs/plans/SUPERVISOR_REFACTOR.md)."""
+        (the events docs (plans/SUPERVISOR_REFACTOR.md))."""
         tool = next((t for t in self._tools if t.name == "find_or_create_flow"), None)
         if tool is None:
             return None

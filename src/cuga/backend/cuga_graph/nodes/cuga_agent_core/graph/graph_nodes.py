@@ -20,6 +20,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.graph import END
 from langgraph.types import Command
 from loguru import logger
+from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
 
 
 class CoreGraphAdapter(ABC):
@@ -131,11 +132,18 @@ class CoreGraphAdapter(ABC):
         """Extract ``(content, reasoning)`` from the model response.
 
         Default passes through ``response.content`` and the
-        ``reasoning_content`` additional kwarg unchanged.
+        ``reasoning_content`` additional kwarg.
         Lite overrides to run ``normalize_assistant_text`` and recover
         tool-call code from proxy responses.
+
+        ``content`` is stripped of harmony protocol framing here because this is
+        the one point every user-visible surface derives from — the delivered
+        answer, ``state.messages``, the streamed ``CodeAgent`` event, the chat
+        copy, the trajectory step. Sanitizing per surface leaks: a new surface is
+        a new leak. ``reasoning`` is left raw so ``call_model`` can still tell
+        framing from a real answer when visible content is empty.
         """
-        content = response.content or ""
+        content = strip_harmony_tokens(response.content or "")
         reasoning = (getattr(response, "additional_kwargs", None) or {}).get("reasoning_content")
         return content, reasoning
 
@@ -145,9 +153,19 @@ class CoreGraphAdapter(ABC):
         Default: empty (Supervisor and any adapter that hasn't opted in)."""
         return frozenset()
 
-    def on_response_processed(self, state: Any, code: Optional[str], content: str) -> None:
-        """Side-effect hook called after code extraction.  Default: no-op.
-        Lite uses this to record tracker steps."""
+    def on_response_processed(
+        self,
+        state: Any,
+        code: Optional[str],
+        content: str,
+        reasoning: Optional[str] = None,
+    ) -> None:
+        """Side-effect hook called after code extraction.
+
+        ``reasoning`` is the normalized model reasoning returned alongside
+        ``content``. Default: no-op. Lite uses this to record tracker steps.
+        """
+        pass
 
     def build_metadata_update(self, state: Any, *, playbook_fired: bool) -> dict:
         """Return the *value* (not the full key/value pair) for the metadata
@@ -163,10 +181,12 @@ class CoreGraphAdapter(ABC):
 
     async def classify_auto_continue(
         self, state: Any, model: Any, content: str, reasoning: Optional[str]
-    ) -> bool:
+    ) -> bool | str:
         """Return ``True`` when the NL response should loop back automatically.
-        Default: ``False`` (Supervisor never auto-continues).
-        Lite overrides with ``classify_nl_auto_continue``."""
+        A truthy ``str`` also loops back, but is used verbatim as the synthetic
+        user message instead of the plain ``"continue"`` (Lite's unverified-
+        blocker retry, issue #610). Default: ``False`` (Supervisor never
+        auto-continues). Lite overrides with ``classify_nl_auto_continue_decision``."""
         return False
 
 
@@ -199,9 +219,16 @@ def append_chat_messages_with_step_limit(
     return base + new_messages, None
 
 
+# Prefix of every execution-feedback HumanMessage. Consumers that *detect*
+# execution history by matching message text (Lite's blocked-claim evidence,
+# the reasoning-only finalize fallback, reflection task extraction) must use
+# this constant so they cannot drift from the producer below.
+EXECUTION_OUTPUT_PREFIX = "Execution output:"
+
+
 def execution_output_text(output: str) -> str:
     """The execution-feedback message body shared by both execute nodes."""
-    return f"Execution output:\n{output}"
+    return f"{EXECUTION_OUTPUT_PREFIX}\n{output}"
 
 
 def enforce_step_limit(

@@ -6,6 +6,11 @@ name: Deploy Image to IBM Cloud
 on:
   workflow_dispatch:
 
+# This workflow only reads the repository. It pushes to the IBM Cloud
+# Registry using its own credentials, not the GitHub token.
+permissions:
+  contents: read
+
 jobs:
   deploy:
     name: Build and push image

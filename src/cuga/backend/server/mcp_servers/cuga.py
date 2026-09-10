@@ -1,6 +1,6 @@
 # server.py
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from cuga.backend.cuga_graph.utils.controller import AgentRunner as CugaAgent, ExperimentResult as AgentResult
 from loguru import logger

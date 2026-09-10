@@ -145,3 +145,92 @@ async def test_continuing_conversation_preserves_ref_and_omits_task_todos_in_upd
     assert "task_todos" not in result.update, (
         "Command.update should not include task_todos on a continuing turn (would erase the in-flight plan)"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chat_messages",
+    [
+        [HumanMessage(content="first task")],
+        [HumanMessage(content="first"), AIMessage(content="done"), HumanMessage(content="second task")],
+    ],
+    ids=["first-turn", "follow-up-turn"],
+)
+async def test_tool_call_budget_resets_every_turn(chat_messages):
+    """advanced_features.max_tool_calls_per_run is a per-RUN budget (one user turn), so prepare — which
+    runs once per graph invocation (START -> prepare) — must zero the counter on
+    every turn, not only on a fresh conversation.
+
+    Without this the count is restored from the checkpoint each turn and
+    accumulates over a thread: turn N+1 inherits turn N's spend and a long
+    conversation eventually starts a turn with no budget left at all.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import (
+        create_prepare_tools_and_apps_node,
+    )
+
+    adapter = _build_mock_adapter([])
+    state = _make_state(chat_messages=chat_messages, task_todos=None)
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.settings.policy.enabled",
+        new=False,
+    ):
+        node = create_prepare_tools_and_apps_node(adapter, lc_bind_tools_meta={})
+        result = await node(state, config={"configurable": {"enable_todos": False}})
+
+    assert result.update.get("tool_calls_used_run") == 0, (
+        "prepare must reset tool_calls_used_run so the cap is per run; without it "
+        "the budget is per conversation and long threads starve"
+    )
+
+
+async def _run_prepare(state):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import (
+        create_prepare_tools_and_apps_node,
+    )
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.settings.policy.enabled",
+        new=False,
+    ):
+        node = create_prepare_tools_and_apps_node(_build_mock_adapter([]), lc_bind_tools_meta={})
+        return await node(state, config={"configurable": {"enable_todos": False}})
+
+
+@pytest.mark.asyncio
+async def test_prepare_never_resets_the_thread_budget():
+    """The counterpart to the per-turn reset above, and the reason a second
+    counter exists at all.
+
+    Resetting the turn budget every turn is correct — but it means the per-turn
+    cap cannot bound a conversation (20 turns x 256 = 5,120 calls). The thread
+    counter is the ceiling that can, so prepare must leave it alone. Resetting
+    it here would silently restore the unbounded-conversation gap.
+    """
+    state = _make_state(chat_messages=[HumanMessage(content="turn 5")], task_todos=None)
+    state.tool_calls_used_thread = 1500
+
+    result = await _run_prepare(state)
+
+    assert "tool_calls_used_thread" not in result.update, (
+        "prepare must not write tool_calls_used_thread — the checkpointed count "
+        "is the conversation ceiling and resetting it leaves long threads unbounded"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "thread_used,expected",
+    [(1999, False), (2000, True)],
+    ids=["under-ceiling", "at-ceiling"],
+)
+async def test_prepare_opens_the_turn_exhausted_past_the_thread_ceiling(thread_used, expected):
+    """A conversation already over its ceiling should go straight to a final
+    synthesis pass rather than spend a step discovering the budget is gone."""
+    state = _make_state(chat_messages=[HumanMessage(content="another one")], task_todos=None)
+    state.tool_calls_used_thread = thread_used
+
+    result = await _run_prepare(state)
+
+    assert result.update.get("tool_budget_exhausted") is expected

@@ -1,3 +1,52 @@
-# Default CodeQL setup auto-discovers model extensions under
-# .github/codeql/extensions/*/qlpack.yml (see workspace-path-sanitizers/).
+# CodeQL configuration.
+#
+# NOTE: this file is not currently read by anything.
+#
+# Code scanning here runs as GitHub-managed default setup, which does not read a
+# repository CodeQL config file unless the `github-codeql-config-file` repository
+# property points at one, or the repository moves to advanced setup. Neither is the
+# case today, so any setting added below has no effect.
+#
+# This does NOT apply to the model pack in .github/codeql/extensions/. Default setup
+# detects and uses model packs in that directory automatically, independently of this
+# file. So the sanitizer model there is live and needs nothing configured here.
+#
+# To check locally which model files an analysis actually loaded:
+#
+#   codeql resolve extensions \
+#     --additional-packs=.github/codeql/extensions \
+#     --model-packs=cuga-project/workspace-path-sanitizers \
+#     -- codeql/python-queries:Security/CWE-022/PathInjection.ql
+#
+# The output lists every model file loaded; the sanitizer model should appear with a
+# non-zero row count for the `barrierModel` predicate.
+#
+# An earlier version of this comment claimed default setup auto-discovers model
+# extensions *because of this file*. That was wrong in both directions: this file is
+# not read, and the extensions directory does not depend on it. See issue #633.
+#
+# WHICH RULES THE SANITIZER MODEL CAN AFFECT
+#
+# The model pack in .github/codeql/extensions/ lets us tell CodeQL that a given
+# function makes a value safe, so the analysis stops reporting it. Each entry
+# names a "kind", which is the rule the entry applies to.
+#
+# This only works for rules whose CodeQL source asks for these entries. Those
+# rules are: CodeInjection, SqlInjection, UnsafeDeserialization, ReflectedXSS,
+# PathInjection, LogInjection, CommandInjection, UrlRedirect,
+# ServerSideRequestForgery, and HardcodedCredentials.
+#
+# The sanitizer pack here is written for PathInjection, which is on that list,
+# so it takes effect.
+#
+# It would NOT work for py/stack-trace-exposure, py/clear-text-logging-sensitive-data
+# or py/weak-sensitive-data-hashing. Those rules do not read these entries, so an
+# entry naming one of them would be loaded and then ignored, with no warning.
+# That is the same kind of mistake as issue #633: something that looks configured
+# but does nothing.
+#
+# For those rules the code itself has to change so the value never reaches the
+# place being reported. See src/cuga/backend/server/error_responses.py, whose
+# helpers never copy anything out of the exception, so there is nothing to
+# declare safe in the first place.
 name: cuga-agent-codeql
