@@ -311,7 +311,11 @@ def create_call_model_node(
         # discard a usable answer.
         both_blank = not (content or "").strip() and not (reasoning or "").strip()
         already_retried = bool(adapter.get_metadata(state).get(EMPTY_RESPONSE_CORRECTION_KEY))
-        if both_blank and not already_retried and not budget_exhausted:
+        # A retry costs a step. On the last allowed one it would route to
+        # call_model only to trip the step limit there, replacing whatever
+        # answer we could still give with the limit message.
+        step_remains = new_step_count < max_steps
+        if both_blank and not already_retried and not budget_exhausted and step_remains:
             logger.warning(
                 f"{adapter.sender_name}: model returned an empty reply "
                 "(no content, no reasoning) — retrying once"

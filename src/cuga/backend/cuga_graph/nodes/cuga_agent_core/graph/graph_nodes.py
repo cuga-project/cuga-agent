@@ -249,7 +249,10 @@ def sandbox_step_execution_output(messages: Any) -> str:
         if not isinstance(content, str):
             return ""
         if content.startswith(EXECUTION_OUTPUT_PREFIX):
-            return content.split(f"{EXECUTION_OUTPUT_PREFIX}\n")[-1]
+            # Strip only the leading marker: splitting on every occurrence
+            # discarded everything before the last one when the sandbox output
+            # itself contained the literal "Execution output:" sequence.
+            return content[len(EXECUTION_OUTPUT_PREFIX) :].lstrip("\n")
         if content.startswith(STEP_LIMIT_MESSAGE_PREFIX):
             continue
         return ""

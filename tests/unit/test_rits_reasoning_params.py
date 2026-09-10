@@ -55,9 +55,12 @@ def test_include_extra_false_drops_extra_params():
 
 def test_reasoning_env_override_is_read():
     """REASONING_EFFORT mirrors the MODEL_NAME / RITS_BASE_URL override pattern."""
+    # Assert restoration, not absence: patch.dict puts back whatever the test
+    # process inherited, so `is None` passes only on a machine without the var.
+    before = os.environ.get("REASONING_EFFORT")
     with patch.dict(os.environ, {"REASONING_EFFORT": "high"}):
         assert os.environ.get("REASONING_EFFORT") == "high"
-    assert os.environ.get("REASONING_EFFORT") is None
+    assert os.environ.get("REASONING_EFFORT") == before
 
 
 @pytest.mark.parametrize(

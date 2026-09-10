@@ -443,6 +443,10 @@ class OpenAPITransformer:
                                         "type": prop_type,
                                         "required": prop_name in required_body_fields,
                                         "description": resolved_prop_schema.get('description', ''),
+                                        # The anyOf unwrap above preserves the wrapper's title
+                                        # alongside its description; dropping it here undid half
+                                        # of that for every optional body field.
+                                        "title": resolved_prop_schema.get('title'),
                                         "default": resolved_prop_schema.get('default'),
                                         "constraints": self._format_constraints(resolved_prop_schema),
                                         # Include nested shape for object/array fields

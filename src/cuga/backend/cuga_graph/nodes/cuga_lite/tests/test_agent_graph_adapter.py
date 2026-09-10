@@ -263,6 +263,7 @@ def test_on_response_processed_nl_branch_records_content():
 # ── 7. build_metadata_update hook ────────────────────────────────────────
 
 
+@pytest.mark.unit
 def test_build_metadata_update_cleans_empty_response_meta():
     adapter = _make_adapter()
     from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
