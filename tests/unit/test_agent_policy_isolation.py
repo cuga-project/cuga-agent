@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from cuga.backend.cuga_graph.policy.configurable import (
     create_agent_policy_system,
@@ -41,6 +42,84 @@ def test_agent_policy_collection_name_scoping():
     assert get_agent_policy_collection_name("sales-eu", draft=False) != get_agent_policy_collection_name(
         "sales-us", draft=False
     )
+
+
+@pytest.mark.asyncio
+async def test_resolve_policy_agent_id_returns_registry_candidate():
+    registry_agent_id = "".join(["crm", "-agent"])
+    requested_agent_id = registry_agent_id.encode().decode()
+    assert requested_agent_id == registry_agent_id
+    assert requested_agent_id is not registry_agent_id
+
+    with patch(
+        "cuga.backend.server.config_store.list_agents_with_configs",
+        new_callable=AsyncMock,
+        return_value=[{"agent_id": registry_agent_id}],
+    ):
+        resolved = await main_mod._resolve_policy_agent_id(requested_agent_id)
+
+    assert resolved is registry_agent_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested_agent_id", ["missing-agent", "crm-agent; DROP TABLE policies--"])
+async def test_resolve_policy_agent_id_rejects_unknown_ids(requested_agent_id):
+    with patch(
+        "cuga.backend.server.config_store.list_agents_with_configs",
+        new_callable=AsyncMock,
+        return_value=[{"agent_id": "crm-agent"}],
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await main_mod._resolve_policy_agent_id(requested_agent_id)
+
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_resolve_policy_agent_id_uses_default_when_registry_disabled(monkeypatch):
+    monkeypatch.setattr(
+        "cuga.backend.server.agent_registry.is_agent_registry_enabled",
+        lambda: False,
+    )
+
+    assert await main_mod._resolve_policy_agent_id("crm-agent") == "cuga-default"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested_agent_id", [None, "cuga-default"])
+async def test_resolve_policy_agent_id_accepts_default_without_registry_lookup(requested_agent_id):
+    with patch(
+        "cuga.backend.server.config_store.list_agents_with_configs",
+        new_callable=AsyncMock,
+    ) as list_agents:
+        assert await main_mod._resolve_policy_agent_id(requested_agent_id) == "cuga-default"
+
+    list_agents.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "method", "agent_id"),
+    [
+        (main_mod.get_policies_config, "GET", None),
+        (main_mod.save_policies_config, "POST", "query-agent"),
+    ],
+)
+async def test_policy_config_routes_resolve_external_agent_id_before_storage(route, method, agent_id):
+    request = SimpleNamespace(
+        method=method,
+        headers={"X-Agent-ID": "header-agent"},
+    )
+    rejection = HTTPException(status_code=404, detail="unknown agent")
+
+    with patch.object(
+        main_mod, "_resolve_policy_agent_id", new_callable=AsyncMock, side_effect=rejection
+    ) as resolver:
+        with pytest.raises(HTTPException) as exc_info:
+            await route(request, agent_id=agent_id, current_user=None)
+
+    resolver.assert_awaited_once_with(agent_id or "header-agent")
+    assert exc_info.value is rejection
 
 
 @pytest.mark.asyncio

@@ -3218,6 +3218,23 @@ async def _sync_policy_to_config_store(
     return True, None
 
 
+async def _resolve_policy_agent_id(requested_agent_id: Optional[str]) -> str:
+    """Resolve an external policy-route agent ID to a server-owned registry value."""
+    if not agent_registry.is_agent_registry_enabled():
+        return "cuga-default"
+    if not requested_agent_id or requested_agent_id == "cuga-default":
+        return "cuga-default"
+
+    from cuga.backend.server.config_store import list_agents_with_configs
+
+    for row in await list_agents_with_configs():
+        registered_agent_id = row["agent_id"]
+        if registered_agent_id == requested_agent_id:
+            return registered_agent_id
+
+    raise HTTPException(status_code=404, detail=f"Agent '{requested_agent_id}' not found")
+
+
 @app.get("/api/config/policies")
 async def get_policies_config(
     request: Request,
@@ -3228,26 +3245,9 @@ async def get_policies_config(
     if not settings.policy.enabled:
         return JSONResponse({"enablePolicies": False, "policies": []})
 
-    resolved_agent_id = agent_id or request.headers.get("X-Agent-ID") or "cuga-default"
+    requested_agent_id = agent_id or request.headers.get("X-Agent-ID")
+    resolved_agent_id = await _resolve_policy_agent_id(requested_agent_id)
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
-
-    # Reject unrecognised agent IDs supplied via the header so a crafted value
-    # cannot map to an existing agent's collection (IDOR / CWE-639).
-    # After validation, replace the caller-supplied string with the value read
-    # from the registry so that downstream code uses a server-side value and
-    # static-analysis tools (CodeQL) no longer see user input reaching SQL sinks.
-    if (
-        resolved_agent_id
-        and resolved_agent_id != "cuga-default"
-        and agent_registry.is_agent_registry_enabled()
-    ):
-        from cuga.backend.server.config_store import list_agents_with_configs
-
-        known_agents = {r["agent_id"]: r["agent_id"] for r in await list_agents_with_configs()}
-        if resolved_agent_id not in known_agents:
-            raise HTTPException(status_code=404, detail=f"Agent '{resolved_agent_id}' not found")
-        # Use the registry-sourced value from here on (not the caller-supplied string).
-        resolved_agent_id = known_agents[resolved_agent_id]
 
     try:
         from cuga.backend.cuga_graph.policy.configurable import get_agent_policy_collection_name
@@ -3313,26 +3313,9 @@ async def save_policies_config(
             status_code=403,
         )
 
-    resolved_agent_id = agent_id or request.headers.get("X-Agent-ID") or "cuga-default"
+    requested_agent_id = agent_id or request.headers.get("X-Agent-ID")
+    resolved_agent_id = await _resolve_policy_agent_id(requested_agent_id)
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
-
-    # Reject unrecognised agent IDs supplied via the header so a crafted value
-    # cannot clear or overwrite an existing agent's policy collection (IDOR / CWE-639).
-    # After validation, replace the caller-supplied string with the value read
-    # from the registry so that downstream code uses a server-side value and
-    # static-analysis tools (CodeQL) no longer see user input reaching SQL sinks.
-    if (
-        resolved_agent_id
-        and resolved_agent_id != "cuga-default"
-        and agent_registry.is_agent_registry_enabled()
-    ):
-        from cuga.backend.server.config_store import list_agents_with_configs
-
-        known_agents = {r["agent_id"]: r["agent_id"] for r in await list_agents_with_configs()}
-        if resolved_agent_id not in known_agents:
-            raise HTTPException(status_code=404, detail=f"Agent '{resolved_agent_id}' not found")
-        # Use the registry-sourced value from here on (not the caller-supplied string).
-        resolved_agent_id = known_agents[resolved_agent_id]
 
     try:
         from cuga.backend.cuga_graph.policy.configurable import get_agent_policy_collection_name
