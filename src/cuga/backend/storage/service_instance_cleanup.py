@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from cuga.backend.storage.facade import get_storage_connection_params
+from cuga.config import DBS_DIR, settings
 
 _KNOWLEDGE_METADATA_TABLES = {
     "documents",
@@ -183,32 +185,67 @@ async def _delete_postgres_service_instance_records(
         await pool.close()
 
 
+def _configured_storage_targets() -> list[tuple[str, str]]:
+    """Resolve primary, knowledge, and policy databases using their factory settings.
+
+    Local targets are canonicalized to avoid purging a shared file twice. Optional
+    local stores that have never been created contain no records to purge.
+    """
+    from cuga.backend.knowledge.vector_store import KNOWLEDGE_LOCAL_VECTORS_DB
+
+    mode, local_db_path, postgres_url = get_storage_connection_params()
+    knowledge = getattr(settings, "knowledge", None) or {}
+    targets: list[tuple[str, str]] = []
+    if mode == "prod":
+        if not postgres_url:
+            raise ValueError("storage.postgres_url is required when storage.mode=prod")
+        targets.append(("prod", postgres_url.strip()))
+        knowledge_url = (knowledge.get("pgvector_connection_string", "") or "").strip()
+        targets.append(("prod", knowledge_url or postgres_url.strip()))
+    else:
+        if not local_db_path:
+            raise ValueError("storage.local_db_path is required when storage.mode=local")
+        targets.append(("local", str(Path(local_db_path).resolve())))
+        persist_dir = knowledge.get("persist_dir", "") or Path.cwd() / ".cuga" / "knowledge"
+        knowledge_path = Path(persist_dir) / KNOWLEDGE_LOCAL_VECTORS_DB
+        if knowledge_path.exists():
+            targets.append(("local", str(knowledge_path.resolve())))
+
+    policy = getattr(settings, "policy", None)
+    policy_path = (getattr(policy, "policy_db_path", "") or "").strip()
+    if policy_path:
+        path = Path(policy_path)
+        if not path.is_absolute():
+            path = Path(DBS_DIR) / path
+        if path.exists():
+            targets.append(("local", str(path.resolve())))
+    return list(dict.fromkeys(targets))
+
+
 async def delete_service_instance_records(
     service_instance_id: str,
     *,
     dry_run: bool = False,
 ) -> ServiceInstanceCleanupResult:
-    service_instance_id = (service_instance_id or "").strip()
-    if not service_instance_id:
+    """Purge the exact instance ID from every configured storage target.
+
+    Counts for matching table names are summed across databases. Each database
+    commits independently; a later failure can leave earlier targets purged.
+    Knowledge metadata and unscoped FTS sidecars remain excluded.
+    """
+    if not service_instance_id or not service_instance_id.strip():
         raise ValueError("service_instance_id is required")
 
-    mode, local_db_path, postgres_url = get_storage_connection_params()
-    if mode == "prod":
-        if not postgres_url:
-            raise ValueError("storage.postgres_url is required when storage.mode=prod")
-        deleted = await _delete_postgres_service_instance_records(
-            postgres_url,
-            service_instance_id,
-            dry_run=dry_run,
+    deleted: dict[str, int] = {}
+    for mode, connection in _configured_storage_targets():
+        cleanup = (
+            _delete_postgres_service_instance_records
+            if mode == "prod"
+            else _delete_sqlite_service_instance_records
         )
-    else:
-        if not local_db_path:
-            raise ValueError("storage.local_db_path is required when storage.mode=local")
-        deleted = await _delete_sqlite_service_instance_records(
-            local_db_path,
-            service_instance_id,
-            dry_run=dry_run,
-        )
+        counts = await cleanup(connection, service_instance_id, dry_run=dry_run)
+        for table, count in counts.items():
+            deleted[table] = deleted.get(table, 0) + count
 
     return ServiceInstanceCleanupResult(
         service_instance_id=service_instance_id,
