@@ -1,3 +1,4 @@
+import re
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -5,6 +6,13 @@ from loguru import logger
 from cuga.backend.storage.embedding.base import EmbeddingSchemaConfig
 
 SCOPE_COLS = ["tenant_id", "instance_id"]
+
+# Table identifiers are interpolated directly into DDL statements (CREATE TABLE /
+# CREATE INDEX) where PostgreSQL does not support parameterised identifiers.
+# Catching a bad name here converts a corrupted DDL statement into a clear
+# ValueError at construction time (same pattern as StorageBackedKnowledgeVectorStore).
+# 63-char cap matches the PostgreSQL identifier limit.
+_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_]{1,63}$")
 
 
 def _placeholders(n: int) -> str:
@@ -18,6 +26,11 @@ def _pg_type(s: str) -> str:
 
 class ProdEmbeddingStore:
     def __init__(self, postgres_url: str, collection_name: str, schema: EmbeddingSchemaConfig):
+        if not _SAFE_IDENTIFIER_RE.match(collection_name):
+            raise ValueError(
+                f"collection_name {collection_name!r} contains characters that are not "
+                "allowed in a PostgreSQL identifier. Only [A-Za-z0-9_]{{1,63}} is accepted."
+            )
         self._postgres_url = postgres_url
         self._collection_name = collection_name
         self._schema = schema

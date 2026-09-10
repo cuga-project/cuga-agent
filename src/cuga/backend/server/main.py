@@ -609,46 +609,40 @@ async def lifespan(app: FastAPI):
                 if not filesystem_sync_enabled:
                     logger.info("Filesystem sync disabled in settings")
                     app_state.policy_filesystem_sync = None
-                elif not auto_load_enabled:
-                    logger.info("Auto-load policies disabled in settings")
-                    # Initialize sync but don't load
-                    app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
-                    logger.info(f"✅ Filesystem sync enabled for {cuga_folder} (auto-load disabled)")
-                # Load policies from filesystem if folder exists and auto-load is enabled
-                elif os.path.exists(cuga_folder):
-                    logger.info(f"Loading policies from {cuga_folder}...")
-                    try:
-                        result = await load_policies_from_folder(
-                            folder_path=cuga_folder,
-                            storage=app_state.policy_system.storage,
-                            clear_existing=False,
-                        )
-                        await app_state.policy_system.initialize()  # Reinitialize after loading
-                        logger.info(f"✅ Loaded {result['count']} policies from {cuga_folder}")
-
-                        # Initialize filesystem sync for automatic saving
-                        app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
-                        logger.info(f"✅ Filesystem sync enabled for {cuga_folder}")
-
-                        # Validate and sync: ensure filesystem and storage are in sync
-                        try:
-                            sync_result = await validate_and_sync_policies(
-                                app_state.policy_system.storage, app_state.policy_filesystem_sync
-                            )
-                            if sync_result['removed'] or sync_result['added_to_filesystem']:
-                                logger.info(
-                                    f"📊 Sync validation: "
-                                    f"removed from storage={sync_result['removed']}, "
-                                    f"added to filesystem={sync_result['added_to_filesystem']}"
-                                )
-                        except Exception as e:
-                            logger.warning(f"Failed to validate and sync policies: {e}")
-                    except Exception as e:
-                        logger.error(f"Failed to load policies from {cuga_folder}: {e}")
-                        app_state.policy_filesystem_sync = None
                 else:
-                    logger.info(f"Policy folder {cuga_folder} not found, skipping auto-load")
-                    app_state.policy_filesystem_sync = None
+                    app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+                    logger.info(f"✅ Filesystem sync enabled for {cuga_folder}")
+
+                    if not auto_load_enabled:
+                        logger.info("Auto-load policies disabled in settings")
+                    elif os.path.exists(cuga_folder):
+                        logger.info(f"Loading policies from {cuga_folder}...")
+                        try:
+                            result = await load_policies_from_folder(
+                                folder_path=cuga_folder,
+                                storage=app_state.policy_system.storage,
+                                clear_existing=False,
+                            )
+                            await app_state.policy_system.initialize()  # Reinitialize after loading
+                            logger.info(f"✅ Loaded {result['count']} policies from {cuga_folder}")
+
+                            # Validate and sync: ensure filesystem and storage are in sync
+                            try:
+                                sync_result = await validate_and_sync_policies(
+                                    app_state.policy_system.storage, app_state.policy_filesystem_sync
+                                )
+                                if sync_result['removed'] or sync_result['added_to_filesystem']:
+                                    logger.info(
+                                        f"📊 Sync validation: "
+                                        f"removed from storage={sync_result['removed']}, "
+                                        f"added to filesystem={sync_result['added_to_filesystem']}"
+                                    )
+                            except Exception as e:
+                                logger.warning(f"Failed to validate and sync policies: {e}")
+                        except Exception as e:
+                            logger.error(f"Failed to load policies from {cuga_folder}: {e}")
+                    else:
+                        logger.info(f"Policy folder {cuga_folder} not found, skipping auto-load")
 
                 app_state.set_subsystem_status("policy", "ready", "Policy subsystem ready")
 
@@ -1069,6 +1063,7 @@ async def lifespan(app: FastAPI):
         await draft_storage.initialize_async()
         draft_app_state.policy_system = PolicyConfigurable(storage=draft_storage)
         await draft_app_state.policy_system.initialize()
+        draft_app_state.policy_filesystem_sync = app_state.policy_filesystem_sync
         logger.info(f"Draft policy system initialized (collection: {draft_collection})")
 
     draft_tool_provider = CombinedToolProvider(
@@ -2557,17 +2552,28 @@ async def _resolve_stream_agent(
             from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
             from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
 
+            from cuga.backend.server.manage_routes.helpers import policies_list_from_config
+            from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
+
             agent_meta = config.get("agent") or {}
             kind = agent_meta.get("kind") or "single"
-            policy_system = (
-                getattr(draft_state, "policy_system", None) if use_draft else None
-            ) or app_state.policy_system
+            raw_policies = config.get("policies")
+            policies_list = policies_list_from_config(raw_policies) if raw_policies is not None else None
+
+            policy_system = await create_agent_policy_system(
+                agent_id=agent_id,
+                draft=use_draft,
+                policies_data=policies_list,
+            )
 
             if kind == "supervisor":
                 from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
 
                 supervisor_cfg = config.get("supervisor") or {}
-                agents_dict = await build_agents_from_stored_subagents(supervisor_cfg.get("subAgents") or [])
+                agents_dict = await build_agents_from_stored_subagents(
+                    supervisor_cfg.get("subAgents") or [],
+                    use_draft=use_draft,
+                )
 
                 # Supervisors have no LLM UI section (that panel is hidden for kind=supervisor), so a
                 # stored ``llm`` block is only ever the create-agent default (provider=openai, empty
@@ -3212,21 +3218,45 @@ async def _sync_policy_to_config_store(
     return True, None
 
 
+async def _resolve_policy_agent_id(requested_agent_id: Optional[str]) -> str:
+    """Resolve an external policy-route agent ID to a server-owned registry value."""
+    if not agent_registry.is_agent_registry_enabled():
+        return "cuga-default"
+    if not requested_agent_id or requested_agent_id == "cuga-default":
+        return "cuga-default"
+
+    from cuga.backend.server.config_store import list_agents_with_configs
+
+    for row in await list_agents_with_configs():
+        registered_agent_id = row["agent_id"]
+        if registered_agent_id == requested_agent_id:
+            return registered_agent_id
+
+    raise HTTPException(status_code=404, detail=f"Agent '{requested_agent_id}' not found")
+
+
 @app.get("/api/config/policies")
 async def get_policies_config(
     request: Request,
+    agent_id: Optional[str] = None,
     current_user: Optional[UserInfo] = Depends(require_auth),
 ):
     """Endpoint to retrieve policies configuration. Use draft collection when X-Use-Draft header is set."""
     if not settings.policy.enabled:
         return JSONResponse({"enablePolicies": False, "policies": []})
 
+    requested_agent_id = agent_id or request.headers.get("X-Agent-ID")
+    resolved_agent_id = await _resolve_policy_agent_id(requested_agent_id)
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
+
     try:
+        from cuga.backend.cuga_graph.policy.configurable import get_agent_policy_collection_name
         from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 
         need_disconnect = False
-        if use_draft:
+        is_default = not resolved_agent_id or resolved_agent_id == "cuga-default"
+
+        if use_draft and is_default:
             draft_state = getattr(request.app.state, "draft_app_state", None)
             if (
                 draft_state
@@ -3237,21 +3267,19 @@ async def get_policies_config(
                 logger.info("Using draft policy storage for GET")
             else:
                 need_disconnect = True
-                policy_config = getattr(settings, "policy", None)
-                base_name = policy_config.collection_name if policy_config else "cuga_policies"
-                draft_collection = f"{base_name}_draft"
+                draft_collection = get_agent_policy_collection_name(resolved_agent_id, draft=True)
                 storage = PolicyStorage(collection_name=draft_collection)
                 await storage.initialize_async()
                 logger.info(f"Created draft storage for GET (collection: {draft_collection})")
-        elif app_state.policy_system and app_state.policy_system.storage:
+        elif not use_draft and is_default and app_state.policy_system and app_state.policy_system.storage:
             storage = app_state.policy_system.storage
             logger.info("Using existing policy system storage for GET")
         else:
             need_disconnect = True
-            collection_name = settings.policy.collection_name
+            collection_name = get_agent_policy_collection_name(resolved_agent_id, draft=use_draft)
             storage = PolicyStorage(collection_name=collection_name)
             await storage.initialize_async()
-            logger.info(f"Created new storage instance for GET (collection: {collection_name})")
+            logger.info(f"Created storage instance for GET (collection: {collection_name})")
 
         # List all policies (this IS async)
         policies_objs = await storage.list_policies(enabled_only=False)
@@ -3275,6 +3303,7 @@ async def get_policies_config(
 @app.post("/api/config/policies")
 async def save_policies_config(
     request: Request,
+    agent_id: Optional[str] = None,
     current_user: Optional[UserInfo] = Depends(require_auth),
 ):
     """Endpoint to save policies configuration. Use draft collection when X-Use-Draft header is set."""
@@ -3284,16 +3313,24 @@ async def save_policies_config(
             status_code=403,
         )
 
+    requested_agent_id = agent_id or request.headers.get("X-Agent-ID")
+    resolved_agent_id = await _resolve_policy_agent_id(requested_agent_id)
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
+
     try:
+        from cuga.backend.cuga_graph.policy.configurable import get_agent_policy_collection_name
         from cuga.backend.cuga_graph.policy.storage import PolicyStorage
         from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+        from cuga.backend.storage.embedding import get_embedding_config
 
         data = await request.json()
-        logger.info(f"Received policy save request with {len(data.get('policies', []))} policies")
+        logger.info(
+            f"Received policy save request with {len(data.get('policies', []))} policies for {resolved_agent_id}"
+        )
         policies = data.get("policies", [])
+        is_default = not resolved_agent_id or resolved_agent_id == "cuga-default"
 
-        if use_draft:
+        if use_draft and is_default:
             draft_state = getattr(request.app.state, "draft_app_state", None)
             draft_need_disconnect = False
             if (
@@ -3305,11 +3342,7 @@ async def save_policies_config(
                 logger.info("Saving to draft policy storage")
             else:
                 draft_need_disconnect = True
-                policy_config = getattr(settings, "policy", None)
-                base_name = policy_config.collection_name if policy_config else "cuga_policies"
-                draft_collection = f"{base_name}_draft"
-                from cuga.backend.storage.embedding import get_embedding_config
-
+                draft_collection = get_agent_policy_collection_name(resolved_agent_id, draft=True)
                 emb_cfg = get_embedding_config()
                 storage = PolicyStorage(
                     collection_name=draft_collection,
@@ -3332,52 +3365,48 @@ async def save_policies_config(
                 storage,
                 policies,
                 clear_existing=True,
-                filesystem_sync=None,
+                filesystem_sync=getattr(draft_state, "policy_filesystem_sync", None) if draft_state else None,
             )
             if draft_need_disconnect:
                 await storage.disconnect()
-        else:
-            if app_state.policy_system and app_state.policy_system.storage:
-                storage = app_state.policy_system.storage
-                logger.info("Using existing policy system storage")
-            else:
-                collection_name = settings.policy.collection_name
-                from cuga.backend.storage.embedding import get_embedding_config
-
-                emb_cfg = get_embedding_config()
-                storage = PolicyStorage(
-                    collection_name=collection_name,
-                    embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
-                    or os.getenv("POLICY_EMBEDDING_PROVIDER")
-                    or emb_cfg["provider"],
-                    embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
-                    or os.getenv("POLICY_EMBEDDING_MODEL")
-                    or emb_cfg["model"],
-                    embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
-                    or os.getenv("POLICY_EMBEDDING_BASE_URL")
-                    or emb_cfg["base_url"],
-                    embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
-                    or os.getenv("POLICY_EMBEDDING_API_KEY")
-                    or emb_cfg["api_key"],
-                )
-                await storage.initialize_async()
-                logger.info(
-                    f"Created new storage instance from settings (collection: {collection_name}, "
-                    f"embedding: {storage.embedding_provider}, dim: {storage.embedding_dim})"
-                )
-
+        elif not use_draft and is_default and app_state.policy_system and app_state.policy_system.storage:
             await apply_policies_data_to_storage(
-                storage,
+                app_state.policy_system.storage,
                 policies,
                 clear_existing=True,
                 filesystem_sync=app_state.policy_filesystem_sync,
             )
-
-            if not (app_state.policy_system and app_state.policy_system.storage):
-                await storage.disconnect()
-                logger.info("Storage disconnected")
-            else:
-                logger.info("Keeping policy system storage connected")
+        else:
+            collection_name = get_agent_policy_collection_name(resolved_agent_id, draft=use_draft)
+            emb_cfg = get_embedding_config()
+            storage = PolicyStorage(
+                collection_name=collection_name,
+                embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
+                or os.getenv("POLICY_EMBEDDING_PROVIDER")
+                or emb_cfg["provider"],
+                embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
+                or os.getenv("POLICY_EMBEDDING_MODEL")
+                or emb_cfg["model"],
+                embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
+                or os.getenv("POLICY_EMBEDDING_BASE_URL")
+                or emb_cfg["base_url"],
+                embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
+                or os.getenv("POLICY_EMBEDDING_API_KEY")
+                or emb_cfg["api_key"],
+            )
+            await storage.initialize_async()
+            logger.info(
+                f"Created storage instance from settings (collection: {collection_name}, "
+                f"embedding: {storage.embedding_provider}, dim: {storage.embedding_dim})"
+            )
+            await apply_policies_data_to_storage(
+                storage,
+                policies,
+                clear_existing=True,
+                filesystem_sync=None,
+            )
+            await storage.disconnect()
+            logger.info("Storage disconnected")
 
         logger.info(f"Policies configuration saved: {len(policies)} policies")
         return JSONResponse({"status": "success", "message": f"Saved {len(policies)} policies successfully"})
