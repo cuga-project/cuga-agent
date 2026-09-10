@@ -3233,6 +3233,9 @@ async def get_policies_config(
 
     # Reject unrecognised agent IDs supplied via the header so a crafted value
     # cannot map to an existing agent's collection (IDOR / CWE-639).
+    # After validation, replace the caller-supplied string with the value read
+    # from the registry so that downstream code uses a server-side value and
+    # static-analysis tools (CodeQL) no longer see user input reaching SQL sinks.
     if (
         resolved_agent_id
         and resolved_agent_id != "cuga-default"
@@ -3240,9 +3243,11 @@ async def get_policies_config(
     ):
         from cuga.backend.server.config_store import list_agents_with_configs
 
-        known_ids = {r["agent_id"] for r in await list_agents_with_configs()}
-        if resolved_agent_id not in known_ids:
+        known_agents = {r["agent_id"]: r["agent_id"] for r in await list_agents_with_configs()}
+        if resolved_agent_id not in known_agents:
             raise HTTPException(status_code=404, detail=f"Agent '{resolved_agent_id}' not found")
+        # Use the registry-sourced value from here on (not the caller-supplied string).
+        resolved_agent_id = known_agents[resolved_agent_id]
 
     try:
         from cuga.backend.cuga_graph.policy.configurable import get_agent_policy_collection_name
@@ -3313,6 +3318,9 @@ async def save_policies_config(
 
     # Reject unrecognised agent IDs supplied via the header so a crafted value
     # cannot clear or overwrite an existing agent's policy collection (IDOR / CWE-639).
+    # After validation, replace the caller-supplied string with the value read
+    # from the registry so that downstream code uses a server-side value and
+    # static-analysis tools (CodeQL) no longer see user input reaching SQL sinks.
     if (
         resolved_agent_id
         and resolved_agent_id != "cuga-default"
@@ -3320,9 +3328,11 @@ async def save_policies_config(
     ):
         from cuga.backend.server.config_store import list_agents_with_configs
 
-        known_ids = {r["agent_id"] for r in await list_agents_with_configs()}
-        if resolved_agent_id not in known_ids:
+        known_agents = {r["agent_id"]: r["agent_id"] for r in await list_agents_with_configs()}
+        if resolved_agent_id not in known_agents:
             raise HTTPException(status_code=404, detail=f"Agent '{resolved_agent_id}' not found")
+        # Use the registry-sourced value from here on (not the caller-supplied string).
+        resolved_agent_id = known_agents[resolved_agent_id]
 
     try:
         from cuga.backend.cuga_graph.policy.configurable import get_agent_policy_collection_name

@@ -32,11 +32,7 @@ class ProdEmbeddingStore:
                 "allowed in a PostgreSQL identifier. Only [A-Za-z0-9_]{{1,63}} is accepted."
             )
         self._postgres_url = postgres_url
-        # Strip every character outside [A-Za-z0-9_] so that static-analysis tools
-        # (CodeQL py/sql-injection) see a re.sub-sanitized value flowing into SQL
-        # rather than the raw caller-supplied string. The guard above already rejects
-        # any non-conforming name, so this substitution is a no-op in practice.
-        self._collection_name = re.sub(r"[^A-Za-z0-9_]", "", collection_name)
+        self._collection_name = collection_name
         self._schema = schema
         self._pool: Any = None
 

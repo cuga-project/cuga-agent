@@ -32,11 +32,12 @@ def test_agent_policy_collection_name_scoping():
     assert get_agent_policy_collection_name(None, draft=True) == "cuga_policies_draft"
     assert get_agent_policy_collection_name("cuga-default", draft=True) == "cuga_policies_draft"
 
+    # Hyphens are substituted with underscores for registry-issued slugified IDs ([a-z0-9-]).
     assert get_agent_policy_collection_name("crm-agent", draft=False) == "cuga_policies_crm_agent"
     assert get_agent_policy_collection_name("crm-agent", draft=True) == "cuga_policies_crm_agent_draft"
 
-    # Registry-issued IDs are [a-z0-9-] only (see _slugify in agents_routes.py), so the
-    # hyphen→underscore substitution is injective for all legitimate agent IDs.
+    # Registry-issued IDs are [a-z0-9-] only (see _slugify in agents_routes.py); distinct
+    # IDs remain distinct after hyphen substitution.
     assert get_agent_policy_collection_name("sales-eu", draft=False) != get_agent_policy_collection_name(
         "sales-us", draft=False
     )
