@@ -1226,3 +1226,50 @@ def test_locally_bound_name_with_a_verb_suffix_is_not_a_write():
 
     code = 'tools_delete = await find_tools("delete expense", "splitwise")\nprint(tools_delete)'
     assert has_write_call(code) is False, "a variable is not a tool, whatever it is called"
+
+
+# ── the resolver must stay cheap on adversarial shapes ──────────────────────
+#
+# _mutated_names re-analyzed a helper's body once per call site with no memo,
+# so M call sites at chain depth D cost ~M^D. Measured before the fix: a
+# 48-line block of two-line helpers took 14.8 s, growing about 4x per level.
+# It runs synchronously inside decide_pre_execute_verify, and the asyncio
+# timeout there wraps only the LLM call — so this froze the gate, on code
+# generated from untrusted task and tool content.
+
+
+def _helper_chain(fan_out: int, depth: int) -> str:
+    """`depth` helpers, each calling the next `fan_out` times."""
+    parts = []
+    for d in range(depth):
+        body = (
+            "\n".join(f"    h{d + 1}(p)" for _ in range(fan_out))
+            if d < depth - 1
+            else "    p['amount'] = 46.67"
+        )
+        parts.append(f"def h{d}(p):\n{body}")
+    parts.append("h0(payload)")
+    return "\n".join(parts)
+
+
+@pytest.mark.unit
+def test_helper_mutation_analysis_stays_fast_on_deep_chains():
+    import time
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import _mutated_names
+
+    source = _helper_chain(fan_out=4, depth=12)
+    assert len(source.splitlines()) < 80, "guard: this must stay a plausibly small block"
+    started = time.monotonic()
+    _mutated_names(ast.parse(source))
+    elapsed = time.monotonic() - started
+    assert elapsed < 2.0, f"helper analysis took {elapsed:.1f}s on a {len(source.splitlines())}-line block"
+
+
+@pytest.mark.unit
+def test_helper_mutation_is_still_carried_through_a_chain():
+    """The budget must not cost us the propagation the analysis exists for."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import _mutated_names
+
+    source = "def inner(q):\n    q['a'] = 1\n\ndef outer(p):\n    inner(p)\n\nouter(payload)"
+    assert "payload" in _mutated_names(ast.parse(source))

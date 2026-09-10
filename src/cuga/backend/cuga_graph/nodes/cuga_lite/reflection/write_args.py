@@ -384,7 +384,10 @@ def _shadowed_names(tree: ast.AST) -> Dict[Optional[int], set]:
 
 
 def _mutated_names(
-    tree: ast.AST, _seen: frozenset = frozenset(), _helpers: Optional[Dict[str, ast.AST]] = None
+    tree: ast.AST,
+    _seen: frozenset = frozenset(),
+    _helpers: Optional[Dict[str, ast.AST]] = None,
+    _memo: Optional[Dict[int, set]] = None,
 ) -> set:
     """Names whose object is changed in place somewhere in the block.
 
@@ -397,8 +400,18 @@ def _mutated_names(
 
     Block-wide rather than per-scope on purpose: a mutation inside a helper or a
     loop body still invalidates the outer binding.
+
+    ``_memo`` caches each helper's result by identity. Without it the body of a
+    helper is re-analyzed once per call site, so M call sites at chain depth D
+    cost ~M^D: a 48-line block of two-line helpers measured 261 s, and this runs
+    synchronously before the sandbox on model-generated code. With the cache
+    every helper is analyzed once. A helper first reached through a cycle is
+    cached with the result the cycle guard produced, which can be a subset —
+    the same order-dependence the guard already had, now bounded.
     """
     names: set = set()
+    if _memo is None:
+        _memo = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             for target in node.targets:
@@ -444,7 +457,11 @@ def _mutated_names(
         # blocks, not by the unit tests.
         if fn is None or id(fn) in _seen:
             continue
-        inner = _mutated_names(fn, _seen | {id(fn), id(tree)}, helpers)
+        cached = _memo.get(id(fn))
+        if cached is None:
+            cached = _mutated_names(fn, _seen | {id(fn), id(tree)}, helpers, _memo)
+            _memo[id(fn)] = cached
+        inner = cached
         params = [a.arg for a in fn.args.posonlyargs + fn.args.args]
         for i, arg in enumerate(node.args):
             if isinstance(arg, ast.Name) and i < len(params) and params[i] in inner:
