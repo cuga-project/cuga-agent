@@ -22,6 +22,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.messages import HumanMessage
 
+pytestmark = pytest.mark.unit
+
 
 def _get_adapter_class():
     from cuga.backend.cuga_graph.nodes.cuga_lite.agent_graph_adapter import AgentGraphAdapter
@@ -306,6 +308,31 @@ async def test_classify_auto_continue_delegates_to_nl_classifier():
         assert args == (mock_model, "Let me continue.", "thought")
         assert "evidence" in kwargs
         assert result is True
+
+
+# ── 8b. resolve_finalize_disposition hook (#445) ──────────────────────────
+
+
+def test_resolve_finalize_disposition_autonomous_deferral_continues():
+    adapter = _make_adapter()
+    result = adapter.resolve_finalize_disposition(
+        "Would you like me to continue processing the remaining actions?",
+        autonomous=True,
+        nl_auto_continue=True,
+    )
+    assert result == "continue"
+
+
+def test_resolve_finalize_disposition_interactive_clarifying_question_falls_through():
+    """#732 review: ask_user-only text (no deferral) no longer short-circuits —
+    it returns "finalize" so shared_nodes.py consults classify_auto_continue."""
+    adapter = _make_adapter()
+    result = adapter.resolve_finalize_disposition(
+        "Which account should I use?",
+        autonomous=False,
+        nl_auto_continue=True,
+    )
+    assert result == "finalize"
 
 
 @pytest.mark.asyncio

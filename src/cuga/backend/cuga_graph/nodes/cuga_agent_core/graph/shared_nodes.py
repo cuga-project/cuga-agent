@@ -294,11 +294,37 @@ def create_call_model_node(
                 },
             )
 
-        should_continue = (
-            False
-            if budget_exhausted
-            else await adapter.classify_auto_continue(state, active_model, content, reasoning)
-        )
+        # ── Mode-aware finalize disposition (#445: deferral + ask_user) ────
+        # Routed through an adapter hook (default no-op) rather than calling
+        # Lite's resolve_finalize_disposition directly — this node is shared
+        # with Supervisor, which must keep finalizing NL turns unconditionally.
+        should_continue: bool | str = False
+        if not budget_exhausted:
+            nl_auto_continue = bool(getattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True))
+            # Mirrors is_autonomous_subtask in cuga_lite_node.py / prepare_node.py: a
+            # sub-task turn gets the "DO NOT ASK" system prompt regardless of the
+            # global force_autonomous_mode flag, so it must be treated as autonomous
+            # here too — otherwise a sub-task the prompt told not to ask about still
+            # routes deferral text to ASK_USER, which no interactive user is present
+            # to answer (#732 review). sub_task is Lite-only; absent on Supervisor state.
+            sub_task = (getattr(state, "sub_task", None) or "").strip()
+            autonomous = bool(getattr(settings.advanced_features, "force_autonomous_mode", False)) or bool(
+                sub_task
+            )
+
+            disposition = adapter.resolve_finalize_disposition(
+                content, autonomous=autonomous, nl_auto_continue=nl_auto_continue
+            )
+            if disposition == "continue":
+                should_continue = True
+            elif disposition != "ask_user":
+                # None (adapter default — e.g. Supervisor) or "finalize": consult
+                # the existing LLM classifier, which also carries the
+                # unverified-blocker corrective retry (issue #610).
+                should_continue = await adapter.classify_auto_continue(
+                    state, active_model, content, reasoning
+                )
+
         if should_continue:
             # A str result is a corrective directive (e.g. Lite's unverified-blocker
             # retry, issue #610) — use it as the synthetic user message.
@@ -310,7 +336,7 @@ def create_call_model_node(
             meta_update = {
                 adapter.metadata_key: adapter.build_metadata_update(state, playbook_fired=playbook_fired)
             }
-            logger.info(f"{adapter.sender_name}: NL response classified as interim — auto-continuing")
+            logger.info(f"{adapter.sender_name}: NL response disposition=continue — auto-continuing")
             return Command(
                 goto="call_model",
                 update={
@@ -323,6 +349,7 @@ def create_call_model_node(
                 },
             )
 
+        # ASK_USER and FINALIZE both end the turn (interactive user can reply).
         # ponytail: reasoning-only models may finalize with empty visible content
         final_answer = content
         if not (final_answer or "").strip() and reasoning:

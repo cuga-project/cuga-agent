@@ -189,6 +189,17 @@ class CoreGraphAdapter(ABC):
         auto-continues). Lite overrides with ``classify_nl_auto_continue_decision``."""
         return False
 
+    def resolve_finalize_disposition(
+        self, content: str, *, autonomous: bool, nl_auto_continue: bool
+    ) -> Optional[str]:
+        """Mode-aware finalize disposition for an NL-no-code turn, checked before
+        falling back to ``classify_auto_continue``. Return ``"continue"`` /
+        ``"ask_user"`` / ``"finalize"``, or ``None`` to skip straight to
+        ``classify_auto_continue`` (default — Supervisor never overrides this,
+        so it always finalizes exactly as before). Lite overrides with
+        ``finalize_disposition.resolve_finalize_disposition`` (issue #445)."""
+        return None
+
 
 def append_chat_messages_with_step_limit(
     adapter: CoreGraphAdapter,
