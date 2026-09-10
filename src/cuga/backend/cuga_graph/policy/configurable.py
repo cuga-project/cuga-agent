@@ -1,6 +1,7 @@
 """LangGraph configurable integration for policy system."""
 
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -30,7 +31,12 @@ def get_agent_policy_collection_name(agent_id: Optional[str] = None, draft: bool
     clean_id = agent_id.split("--")[0] if agent_id else None
     if not clean_id or clean_id == "cuga-default":
         return f"{base_name}_draft" if draft else base_name
-    safe_id = clean_id.replace("-", "_").replace(".", "_")
+    # re.sub strips every character outside [a-z0-9_]; static-analysis tools (CodeQL
+    # py/sql-injection) model re.sub with a character-stripping pattern as a sanitizer,
+    # breaking the taint chain from the caller-supplied agent_id. In practice this is
+    # equivalent to the previous .replace("-","_").replace(".","_") for registry-issued
+    # slugified IDs which only contain [a-z0-9-].
+    safe_id = re.sub(r"[^a-z0-9_]", "_", clean_id)
     prefix = f"{base_name}_{safe_id}"
     return f"{prefix}_draft" if draft else prefix
 
