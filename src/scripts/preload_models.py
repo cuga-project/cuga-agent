@@ -9,6 +9,7 @@ Set HF_HUB_OFFLINE=1 at runtime to prevent any accidental network access.
 
 import os
 import sys
+from pathlib import Path
 
 
 EVOLVE_SENTENCE_TRANSFORMER_MODELS = (
@@ -143,6 +144,12 @@ def preload_evolve_sentence_transformers() -> None:
                 trust_remote_code=trust_remote_code,
             )
             model.encode(["warmup"])
+            if cache_dir:
+                # Runtime requests the default revision. Alias it to the exact
+                # snapshot baked above so offline lookup never needs a Hub HEAD.
+                reference = Path(cache_dir) / ("models--" + model_name.replace("/", "--")) / "refs" / "main"
+                reference.parent.mkdir(parents=True, exist_ok=True)
+                reference.write_text(revision)
             print(f"  ✓ {model_name}")
     except Exception as error:
         handle_preload_error("Evolve sentence-transformer", error)

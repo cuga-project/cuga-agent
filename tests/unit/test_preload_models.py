@@ -146,6 +146,9 @@ def test_preload_evolve_sentence_transformers_warms_all_required_models(
         )
         for model_name, revision, trust_remote_code in EVOLVE_SENTENCE_TRANSFORMER_MODELS
     ]
+    for model_name, revision, _ in EVOLVE_SENTENCE_TRANSFORMER_MODELS:
+        reference = tmp_path / ("models--" + model_name.replace("/", "--")) / "refs" / "main"
+        assert reference.read_text() == revision
     for model in models:
         model.encode.assert_called_once_with(["warmup"])
 
