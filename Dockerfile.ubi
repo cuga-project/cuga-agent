@@ -2,7 +2,7 @@
 ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312-minimal@sha256:e161bab1e953b5918e8073a9fb35f9b3340cc256a2ff0ed4af3247dc5f4829d6
 ARG NODE_IMAGE=node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:latest@sha256:73d2665b478d8fa2de1cf105c6841f8e9cb6b09e568fc7700440c09f8fcd7ac4
-ARG EVOLVE_REF=60a3420cf069983dc075267dcf02af054d4e944f
+ARG EVOLVE_REF=1b47f858c68b2658a8e321195f0965cb3e7cf901
 
 FROM --platform=$BUILDPLATFORM ${UV_IMAGE} AS build-uv-tools
 

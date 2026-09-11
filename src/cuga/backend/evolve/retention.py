@@ -43,7 +43,7 @@ ORPHANED_CONVERSATION_RULE: dict[str, Any] = {
 }
 
 _REPORT_FIELDS = {
-    "actor_id",
+    "initiated_by",
     "as_of",
     "completed_at",
     "policy_id",
@@ -101,6 +101,8 @@ def _safe_report_reason(item: dict[str, Any], bucket: str) -> str | None:
     rule = item.get("rule")
     reason = item.get("reason")
     if bucket == "skipped":
+        if reason == "legal_hold":
+            return "Deletion blocked by legal hold."
         if rule == "unused-guidelines" and reason == "unused":
             return "No recorded last-used date was available, so this guideline was kept instead of being deleted."
         if reason == "delete_failed":
@@ -217,7 +219,7 @@ def sanitize_retention_report(report: dict[str, Any]) -> dict[str, Any]:
                 for key, value in item.items()
                 if key in _REPORT_ITEM_FIELDS and isinstance(value, (str, int, float, bool, type(None)))
             }
-            if title := memory_title(item):
+            if bucket != "deleted" and (title := memory_title(item)):
                 sanitized_item["title"] = title
             if reason := _safe_report_reason(item, bucket):
                 sanitized_item["reason"] = reason
@@ -242,7 +244,7 @@ def project_retention_report(report: dict[str, Any]) -> dict[str, Any]:
     return {
         **{
             key: report[key]
-            for key in ("run_id", "policy_id", "policy_name", "actor_id", "started_at", "completed_at")
+            for key in ("run_id", "policy_id", "policy_name", "initiated_by", "started_at", "completed_at")
             if key in report
         },
         **buckets,
@@ -279,8 +281,6 @@ def project_retention_policy(policy: dict[str, Any]) -> dict[str, Any]:
         for rule in rules
         if isinstance(rule, dict)
     ]
-    if policy.get("policy_id") == DEFAULT_RETENTION_POLICY_ID:
-        projected_rules.append(ORPHANED_CONVERSATION_RULE)
     return {
         key: policy.get(key)
         for key in ("policy_id", "name", "description", "enabled", "created_at", "updated_at")
@@ -307,7 +307,7 @@ def retention_capabilities(*, retention_available: bool) -> dict[str, Any]:
                     else {"max_age_days": rule["max_age_days"]}
                 ),
             }
-            for rule in [*DEFAULT_RETENTION_POLICY["rules"], ORPHANED_CONVERSATION_RULE]
+            for rule in DEFAULT_RETENTION_POLICY["rules"]
         ],
     }
 

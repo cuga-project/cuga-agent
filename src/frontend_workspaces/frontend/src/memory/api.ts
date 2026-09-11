@@ -388,3 +388,36 @@ export async function deleteMemory(entityId: string, agentId: string): Promise<v
     method: "DELETE",
   });
 }
+
+
+export type RetentionCandidate = {
+  entity_id: string;
+  policy_id: string;
+  status: "pending" | "held" | "review" | "deleted" | "withdrawn" | "missing";
+  rule: string;
+  reason: string;
+  updated_at: string;
+};
+
+export type RetentionAuditEvent = {
+  event_id: string;
+  entity_id: string;
+  policy_id: string;
+  outcome: string;
+  rule: string;
+  reason: string;
+  occurred_at: string;
+  initiated_by?: string;
+};
+
+export async function loadRetentionCollection() {
+  const [candidates, audit] = await Promise.all([
+    requestJson<{items: RetentionCandidate[]}>("/api/manage/memory/retention/candidates"),
+    requestJson<{items: RetentionAuditEvent[]}>("/api/manage/memory/retention/audit"),
+  ]);
+  return {candidates: candidates.items, audit: audit.items};
+}
+
+export async function collectRetention(policyId: string, phase: "mark" | "sweep") {
+  return requestJson<{run_id: string}>(`/api/manage/memory/retention/policies/${encodeURIComponent(policyId)}/${phase}`, {method: "POST"});
+}

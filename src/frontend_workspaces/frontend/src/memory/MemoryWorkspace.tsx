@@ -19,7 +19,10 @@ import {
   loadRetentionCapabilities,
   loadRetentionPolicies,
   loadRetentionRuns,
-  runRetention,
+  collectRetention,
+  loadRetentionCollection,
+  type RetentionCandidate,
+  type RetentionAuditEvent,
 } from "./api";
 import {
   type MemoryRecord,
@@ -395,7 +398,7 @@ function AutomationDetail({
   capabilities: RetentionCapabilities | null;
   latestRun?: RetentionRun;
   runningRetention: boolean;
-  onRunRetention: () => void;
+  onRunRetention: (phase: "mark" | "sweep") => void;
 }) {
   const policy = automation.policy;
   const latestPolicyRun = policy
@@ -461,13 +464,15 @@ function AutomationDetail({
           {automation.kind === "retention" && (
             <>
               <Button
-                kind="danger--tertiary"
+                kind="secondary"
                 size="sm"
                 disabled={runningRetention || !capabilities?.available || !policy?.enabled}
-                onClick={onRunRetention}
+                onClick={() => onRunRetention("mark")}
               >
-                {runningRetention ? "Running..." : "Run retention now"}
+                {runningRetention ? "Working..." : "Mark eligible memories"}
               </Button>
+              <Button kind="danger--tertiary" size="sm" disabled={runningRetention || !capabilities?.available || !policy?.enabled}
+                onClick={() => onRunRetention("sweep")}>Delete marked memories</Button>
               <Button kind="secondary" size="sm" disabled>Edit schedule</Button>
             </>
           )}
@@ -603,6 +608,67 @@ function RetentionRunDetail({
       </div>
     </>
   );
+}
+
+function CollectionActivity({memories, refreshKey, onOpen}: {
+  memories: MemoryRecord[]; refreshKey: RetentionRun[]; onOpen: (memoryId: string) => void;
+}) {
+  const [candidates, setCandidates] = useState<RetentionCandidate[]>([]);
+  const [events, setEvents] = useState<RetentionAuditEvent[]>([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  React.useEffect(() => {
+    let active = true;
+    setLoading(true);
+    loadRetentionCollection().then((data) => {
+      if (active) {setCandidates(data.candidates); setEvents(data.audit); setError("");}
+    }).catch(() => {if (active) setError("Retention activity could not be loaded.");})
+      .finally(() => {if (active) setLoading(false);});
+    return () => {active = false;};
+  }, [refreshKey]);
+  const pending = candidates.filter((item) => ["pending", "held", "review"].includes(item.status));
+  const visible = pending.flatMap((item) => {
+    const memory = memories.find((memory) => memory.entityId === item.entity_id);
+    return memory ? [{item, memory}] : [];
+  });
+  const groups = Array.from(events.reduce((groups, event) => {
+    const key = `${event.occurred_at.slice(0, 10)}:${event.policy_id}:${event.outcome}`;
+    const existing = groups.get(key);
+    if (existing) existing.count++;
+    else groups.set(key, {event, count: 1});
+    return groups;
+  }, new Map<string, {event: RetentionAuditEvent; count: number}>()).values());
+  return <section className="memory-workspace__section" aria-label="Durable retention activity">
+    <h2>Marked memories</h2>
+    {error && <p role="alert">{error}</p>}
+    {loading && <p>Loading retention activity…</p>}
+    {!loading && !error && !pending.length && <p>No memories are currently marked.</p>}
+    <ul className="memory-workspace__list">
+      {visible.map(({item, memory}) => <li key={`${item.policy_id}:${item.entity_id}`}>
+        <Button kind="ghost" onClick={() => onOpen(memory.id)}>{memory.title}</Button>
+        <p>{item.status === "held" ? "Deletion blocked by legal hold" : item.status === "review" ? "Flagged for review" : "Awaiting deletion"} · {item.policy_id}</p>
+      </li>)}
+    </ul>
+    {pending.length > visible.length && <p>Other marked memories are outside the current memory view. Their status is available in audit details.</p>}
+    <h2>Committed outcomes</h2>
+    <p>Outcomes remain available even when a run is interrupted.</p>
+    <ul className="memory-workspace__list">
+      {groups.map(({event, count}) => <li key={event.event_id}>
+        <strong>{displayType(event.outcome)} · {event.policy_id}</strong>
+        <p>{count} {count === 1 ? "memory" : "memories"} · {new Date(event.occurred_at).toLocaleDateString()}</p>
+      </li>)}
+    </ul>
+    <Accordion><AccordionItem title="Candidate and action references">
+      <p>Showing up to 1,000 recent candidates and actions for this service instance.</p>
+      <div className="memory-workspace__audit-table"><table>
+        <caption>Current marks</caption><thead><tr><th scope="col">Reference</th><th scope="col">Status</th><th scope="col">Policy</th></tr></thead>
+        <tbody>{pending.map((item) => <tr key={`${item.policy_id}:${item.entity_id}`}><td><code>{item.entity_id}</code></td><td>{item.status === "held" ? "Deletion blocked by legal hold" : displayType(item.status)}</td><td>{item.policy_id}</td></tr>)}</tbody>
+      </table><table>
+        <caption>Committed actions</caption><thead><tr><th scope="col">Reference</th><th scope="col">Outcome</th><th scope="col">Requested by</th><th scope="col">Time</th></tr></thead>
+        <tbody>{events.map((event) => <tr key={event.event_id}><td><code>{event.entity_id}</code></td><td>{displayType(event.outcome)}</td><td>{event.initiated_by ?? "Not recorded"}</td><td>{new Date(event.occurred_at).toLocaleString()}</td></tr>)}</tbody>
+      </table></div>
+    </AccordionItem></Accordion>
+  </section>;
 }
 
 export function MemoryWorkspace({
@@ -969,22 +1035,22 @@ export function MemoryWorkspace({
     }
   };
 
-  const executeRetention = async () => {
+  const executeRetention = async (phase: "mark" | "sweep") => {
     const policy = selectedAutomation?.policy;
     if (runningRetention || !capabilities?.available || !policy?.enabled) return;
     if (!window.confirm(
-      "Run retention now? Memories matching deletion rules may be permanently deleted.",
+      phase === "mark" ? "Mark eligible memories across this service instance? No memories will be deleted." : "Delete marked memories across this service instance? Current legal holds will be respected.",
     )) return;
     const generation = requestGenerationRef.current;
     setRunningRetention(true);
     setMessage("Running retention...");
     try {
-      const report = await runRetention(agentId, policy.policyId);
+      const report = await collectRetention(policy.policyId, phase);
       if (generation !== requestGenerationRef.current) return;
       await refreshData();
       if (activeAgentRef.current !== agentId) return;
-      setSelectedRunId(report.runId ?? "");
-      setMessage(report.errors.length ? "Retention finished with errors. Review the audit history." : "Retention finished. Review the audit history.");
+      setSelectedRunId(report.run_id ?? "");
+      setMessage(phase === "mark" ? "Marking finished. Review the marked memories in Activity." : "Sweep finished. Review the committed outcomes in Activity.");
     } catch (error) {
       if (generation !== requestGenerationRef.current) return;
       setMessage(error instanceof Error ? error.message : "Retention could not be completed");
@@ -1151,7 +1217,7 @@ export function MemoryWorkspace({
         <>
           <div className="memory-workspace__context-bar">
             <div>
-              <strong>{agentName} / Memory administration</strong>
+              <strong>Service instance / Memory administration</strong>
               <span>Administrator controls</span>
             </div>
             <div className="memory-workspace__context-actions">
@@ -1225,7 +1291,7 @@ export function MemoryWorkspace({
                       capabilities={capabilities}
                       latestRun={runs.find((run) => run.policyId === selectedAutomation.policy?.policyId)}
                       runningRetention={runningRetention}
-                      onRunRetention={() => void executeRetention()}
+                      onRunRetention={(phase) => void executeRetention(phase)}
                     />
                   ) : <p className="memory-workspace__empty">Select an automation to view its details.</p>}
                   detailLabel="Automation details"
@@ -1238,7 +1304,7 @@ export function MemoryWorkspace({
                 <div className="memory-workspace__section-head">
                   <div>
                     <h2>Latest activity</h2>
-                    <p>Recent manual retention runs for this agent.</p>
+                    <p>Recent retention runs for this service instance.</p>
                   </div>
                 </div>
                 <div className="memory-workspace__compact-list">
@@ -1367,6 +1433,10 @@ export function MemoryWorkspace({
                   <p>Review retention outcomes, policy attribution, and administrative audit records.</p>
                 </Column>
               </Grid>
+              <CollectionActivity memories={adminMemories} refreshKey={runs} onOpen={(id) => {
+                setAdminOwner("all"); setAdminState("all");
+                setSelectedAdminMemoryId(id); setAdminTab("memory"); setDetailOpen(true);
+              }} />
               <div className="memory-workspace__section-head">
                 <div>
                   <h2>Retention history</h2>

@@ -20,7 +20,7 @@ def test_supported_image_builds_memory_ui_and_bakes_evolve_for_offline_runtime()
 
     assert "pnpm --filter ./frontend build" in dockerfile
     assert "altk-evolve[hooks,pii-regex]" in dockerfile
-    assert "EVOLVE_REF=60a3420cf069983dc075267dcf02af054d4e944f" in dockerfile
+    assert "EVOLVE_REF=1b47f858c68b2658a8e321195f0965cb3e7cf901" in dockerfile
     assert dockerfile.count("@sha256:") >= 3
     assert (
         "ARG BASE_IMAGE=" in dockerfile

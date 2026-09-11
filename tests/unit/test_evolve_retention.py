@@ -49,7 +49,7 @@ async def test_run_retention_serializes_server_scope():
             run_id="run-a",
             namespace_id="namespace-a",
             metadata_filters={"agent_id": "agent-a"},
-            actor_id="admin-a",
+            initiated_by="admin-a",
         )
 
     call_tool.assert_awaited_once_with(
@@ -60,7 +60,7 @@ async def test_run_retention_serializes_server_scope():
             "run_id": "run-a",
             "namespace_id": "namespace-a",
             "metadata_filters": json.dumps({"agent_id": "agent-a"}),
-            "actor_id": "admin-a",
+            "initiated_by": "admin-a",
         },
     )
 
@@ -148,12 +148,9 @@ def test_manual_run_uses_server_policy_scope_and_sanitizes_report(client):
     run_retention.assert_awaited_once_with(
         "policy-a",
         dry_run=False,
-        as_of=None,
         scan_limit=None,
         namespace_id="namespace-a",
-        metadata_filters={"agent_id": "agent-a"},
-        additional_matches=[],
-        actor_id="admin-1",
+        initiated_by="admin-1",
     )
     assert response.json()["errors"] == ["One or more memories could not be evaluated."]
     assert response.json()["warnings"] == ["Some memories were evaluated with incomplete usage data."]
@@ -255,7 +252,7 @@ def test_orphan_detection_resolves_direct_and_derived_conversations():
     assert [item["id"] for item in orphaned] == ["wrong-owner", "no-source"]
 
 
-def test_manual_run_deletes_orphaned_memories_and_keeps_a_safe_title(client):
+def test_manual_run_discards_deleted_titles_and_uses_only_evolve_policy(client):
     orphan = {
         "id": "orphan-a",
         "type": "fact",
@@ -303,7 +300,7 @@ def test_manual_run_deletes_orphaned_memories_and_keeps_a_safe_title(client):
         get_conversation_db.return_value.get_thread_owners_for_agent = AsyncMock(return_value=set())
         response = client.post(
             "/api/manage/memory/retention/runs?agent_id=agent-a",
-            json={"policy_id": DEFAULT_RETENTION_POLICY_ID, "as_of": "2026-09-03T00:00:00Z"},
+            json={"policy_id": DEFAULT_RETENTION_POLICY_ID},
         )
 
     assert response.status_code == 200
@@ -313,19 +310,13 @@ def test_manual_run_deletes_orphaned_memories_and_keeps_a_safe_title(client):
             "entity_type": "fact",
             "action": "delete",
             "outcome": "deleted",
-            "title": "Orphaned preference",
             "reason": "Deleted because the memory was more than 7 days old and its source conversation was unavailable.",
         }
     ]
     assert "private memory content" not in response.text
-    assert run_retention.await_args.kwargs["additional_matches"] == [
-        {
-            "entity_id": "orphan-a",
-            "rule": "orphaned-conversations",
-            "reason": "orphaned_conversation",
-            "detail": "memory is older than 7 days and its source conversation is unavailable",
-        }
-    ]
+    assert "additional_matches" not in run_retention.await_args.kwargs
+    assert "metadata_filters" not in run_retention.await_args.kwargs
+    assert "Orphaned preference" not in response.text
 
 
 @pytest.mark.unit
@@ -378,7 +369,7 @@ def test_admin_run_history_is_read_from_evolve_and_sanitized(client):
                         {
                             "run_id": "run-a",
                             "policy_id": "strict",
-                            "actor_id": "admin-1",
+                            "initiated_by": "admin-1",
                             "status": "completed",
                             "created_at": "2026-09-09T12:00:00Z",
                             "report": {
@@ -404,7 +395,6 @@ def test_admin_run_history_is_read_from_evolve_and_sanitized(client):
     assert response.json()["items"][0]["policy_id"] == "strict"
     assert "private" not in response.text
     list_runs.assert_awaited_once_with(
-        agent_id="agent-a",
         namespace_id="namespace-a",
         limit=20,
     )
@@ -449,13 +439,7 @@ def test_retention_capabilities_report_scheduling_as_unsupported(client):
     assert response.json()["retention_available"] is True
     assert response.json()["scheduling_supported"] is False
     assert response.json()["schedule"]["state"] == "unavailable"
-    assert response.json()["rules"][-1] == {
-        "name": "orphaned-conversations",
-        "entity_type": "memory",
-        "action": "delete",
-        "max_age_days": 7,
-        "description": "Delete memories older than 7 days when their source conversation is unavailable",
-    }
+    assert all(rule["name"] != "orphaned-conversations" for rule in response.json()["rules"])
 
 
 def test_compliance_status_does_not_expose_provider_details(client):
@@ -490,3 +474,55 @@ def test_compliance_status_does_not_expose_provider_details(client):
     assert response.json()["scheduling_supported"] is False
     assert "connection_string" not in response.text
     assert "config" not in response.text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("phase", ["mark", "sweep"])
+def test_collection_operations_use_instance_and_authenticated_admin(client, phase):
+    with (
+        patch.object(EvolveIntegration, "is_enabled", return_value=True),
+        patch.object(
+            EvolveIntegration, "_call_structured_tool", new=AsyncMock(return_value={"run_id": "r"})
+        ) as call,
+        patch("cuga.backend.server.memory_routes._retention_policies", new=AsyncMock(return_value=[])),
+        patch("cuga.backend.server.memory_routes._namespace_id", return_value="instance-a"),
+    ):
+        response = client.post(f"/api/manage/memory/retention/policies/p/{phase}?agent_id=irrelevant")
+    assert response.status_code == 200
+    call.assert_awaited_once_with(
+        f"{phase}_retention", {"namespace_id": "instance-a", "policy_id": "p", "initiated_by": "admin-1"}
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("resource", ["candidates", "audit"])
+def test_collection_inventory_is_service_scoped(client, resource):
+    with (
+        patch.object(EvolveIntegration, "is_enabled", return_value=True),
+        patch.object(
+            EvolveIntegration, "_call_structured_tool", new=AsyncMock(return_value={"items": []})
+        ) as call,
+        patch("cuga.backend.server.memory_routes._namespace_id", return_value="instance-a"),
+    ):
+        response = client.get(f"/api/manage/memory/retention/{resource}")
+    assert response.status_code == 200
+    call.assert_awaited_once_with(f"list_retention_{resource}", {"namespace_id": "instance-a", "limit": 1000})
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_collection_transport_cannot_override_instance_namespace(monkeypatch):
+    monkeypatch.setenv("DYNACONF_SERVICE__INSTANCE_ID", "instance-a")
+    with (
+        patch.object(EvolveIntegration, "_get_mode", return_value="direct"),
+        patch.object(
+            EvolveIntegration, "_call_tool_direct", new=AsyncMock(return_value={"items": []})
+        ) as call,
+    ):
+        await EvolveIntegration._call_tool("list_retention_candidates", {"namespace_id": "other-tenant"})
+        call.assert_awaited_once_with("list_retention_candidates", {"namespace_id": "instance-a"})
+        monkeypatch.setenv("DYNACONF_SERVICE__INSTANCE_ID", "")
+        with pytest.raises(ValueError, match="service instance ID"):
+            await EvolveIntegration._call_tool(
+                "sweep_retention", {"namespace_id": "other-tenant", "policy_id": "p"}
+            )
