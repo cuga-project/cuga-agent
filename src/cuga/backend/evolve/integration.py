@@ -14,7 +14,7 @@ import aiohttp
 from loguru import logger
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
-from cuga.config import settings
+from cuga.config import get_service_instance_id, settings
 
 # Placeholder user identifiers that must not reach Evolve as real users:
 # "default" is AgentState.user_id's default; "default_user" is the server's
@@ -219,6 +219,12 @@ class EvolveIntegration:
     @classmethod
     async def _call_tool(cls, tool_name: str, args: dict):
         """Call an Evolve MCP tool via the registry or direct SSE."""
+        # The deployment owns the namespace; never trust a tenant or agent ID
+        # supplied by a caller, or fall back to Evolve's shared default namespace.
+        namespace_id = get_service_instance_id().strip()
+        if not namespace_id:
+            raise ValueError("Evolve requires a configured service instance ID")
+        args = {**args, "namespace_id": namespace_id}
         mode = cls._get_mode()
         registry_enabled = bool(getattr(settings.advanced_features, "registry", False))
 

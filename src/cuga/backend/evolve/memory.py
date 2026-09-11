@@ -45,7 +45,7 @@ async def build_evolve_special_instructions_extension(
         try:
             # Extract multi-user parameters from state for Evolve attribution
             _evolve_user_id = normalize_evolve_identifier(getattr(state, 'user_id', None))
-            _evolve_namespace_id = (getattr(state, 'service_scope', {}) or {}).get('tenant_id') or None
+            _evolve_namespace_id = (getattr(state, 'service_scope', {}) or {}).get('instance_id') or None
             _evolve_session_id = getattr(state, 'thread_id', None)
 
             evolve_guidelines = await asyncio.wait_for(

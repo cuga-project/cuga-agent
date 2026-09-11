@@ -248,8 +248,13 @@ class TestUserFacts:
         mock_call_tool.assert_called_once_with("get_guidelines", {"task": "test task"})
 
 
+@pytest.mark.unit
 class TestToolDispatch:
     """Test transport selection and fallback behavior."""
+
+    @pytest.fixture(autouse=True)
+    def service_instance(self, monkeypatch):
+        monkeypatch.setenv("DYNACONF_SERVICE__INSTANCE_ID", "instance-a")
 
     @pytest.mark.asyncio
     @patch.object(EvolveIntegration, "_call_tool_direct", new_callable=AsyncMock)
@@ -264,7 +269,9 @@ class TestToolDispatch:
         result = await EvolveIntegration._call_tool("get_guidelines", {"task": "demo"})
 
         assert result == "guideline"
-        mock_registry_call.assert_called_once_with("get_guidelines", {"task": "demo"})
+        mock_registry_call.assert_called_once_with(
+            "get_guidelines", {"task": "demo", "namespace_id": "instance-a"}
+        )
         mock_direct_call.assert_not_called()
 
     @pytest.mark.asyncio
@@ -281,7 +288,9 @@ class TestToolDispatch:
         result = await EvolveIntegration._call_tool("get_guidelines", {"task": "demo"})
 
         assert result == "guideline"
-        mock_direct_call.assert_called_once_with("get_guidelines", {"task": "demo"})
+        mock_direct_call.assert_called_once_with(
+            "get_guidelines", {"task": "demo", "namespace_id": "instance-a"}
+        )
 
     @pytest.mark.asyncio
     @patch.object(EvolveIntegration, "_call_tool_direct", new_callable=AsyncMock)
@@ -438,3 +447,54 @@ class TestSaveTrajectory:
         assert "user_id" not in payload
         assert "namespace_id" not in payload
         assert "session_id" not in payload
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["direct", "registry"])
+async def test_all_memory_operations_use_instance_namespace(monkeypatch, mode):
+    """The same user and tenant in two instances must reach different namespaces."""
+    with (
+        patch("cuga.backend.evolve.integration.settings") as config,
+        patch.object(EvolveIntegration, "_call_tool_direct", new_callable=AsyncMock) as direct,
+        patch.object(EvolveIntegration, "_call_tool_via_registry", new_callable=AsyncMock) as registry,
+    ):
+        config.evolve.enabled = True
+        config.evolve.lite_mode_only = False
+        config.evolve.save_on_success = True
+        config.evolve.mode = mode
+        config.advanced_features.registry = True
+        transport = direct if mode == "direct" else registry
+        transport.return_value = None
+        for instance in ["instance-a", "instance-b"]:
+            monkeypatch.setenv("DYNACONF_SERVICE__INSTANCE_ID", instance)
+            await EvolveIntegration.get_guidelines("task", user_id="alice", namespace_id="same-tenant")
+            await EvolveIntegration.store_user_facts("alice", "preference", metadata={"agent_id": "agent-1"})
+            await EvolveIntegration.retrieve_user_facts("alice", "query")
+            await EvolveIntegration.save_trajectory(
+                [HumanMessage(content="hello")], "task", True, user_id="alice", namespace_id="same-tenant"
+            )
+            calls = transport.call_args_list[-4:]
+            assert [call.args[0] for call in calls] == [
+                "get_guidelines",
+                "store_user_facts",
+                "retrieve_user_facts",
+                "save_trajectory",
+            ]
+            assert all(call.args[1]["namespace_id"] == instance for call in calls)
+            assert all(call.args[1]["user_id"] == "alice" for call in calls)
+            assert json.loads(calls[1].args[1]["metadata"])["agent_id"] == "agent-1"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_missing_instance_never_uses_default_namespace(monkeypatch):
+    monkeypatch.setenv("DYNACONF_SERVICE__INSTANCE_ID", " ")
+    with (
+        patch.object(EvolveIntegration, "_call_tool_direct", new_callable=AsyncMock) as direct,
+        patch.object(EvolveIntegration, "_call_tool_via_registry", new_callable=AsyncMock) as registry,
+    ):
+        with pytest.raises(ValueError, match="service instance ID"):
+            await EvolveIntegration._call_tool("get_guidelines", {"namespace_id": "tenant"})
+        direct.assert_not_called()
+        registry.assert_not_called()

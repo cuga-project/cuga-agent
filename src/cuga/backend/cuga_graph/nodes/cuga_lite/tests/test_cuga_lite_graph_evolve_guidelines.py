@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
 from langchain_core.messages import AIMessage, HumanMessage
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
@@ -11,6 +12,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     AppDefinition,
     ToolProviderInterface,
 )
+
+pytestmark = pytest.mark.unit
 
 
 class _EmptyToolProvider(ToolProviderInterface):
@@ -133,7 +136,7 @@ async def test_multi_user_params_flow_end_to_end():
     mock_get_guidelines.assert_awaited_once_with(
         "fetch all users",
         user_id="user-123",
-        namespace_id="tenant-789",
+        namespace_id="inst-1",
         session_id="thread-456",
     )
 
