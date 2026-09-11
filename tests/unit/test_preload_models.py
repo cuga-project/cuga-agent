@@ -21,7 +21,7 @@ def test_supported_image_builds_memory_ui_and_bakes_evolve_for_offline_runtime()
     assert "pnpm --filter ./frontend build" in dockerfile
     project = (REPO_ROOT / "pyproject.toml").read_text()
     assert "altk-evolve[hooks,pii-regex]" in project
-    assert "bcf65aecbe3ccad599534d3056f12d694f6efea4" in project
+    assert "26aa74500142e2daf8339980fe8b492f4a05f6f6" in project
     assert "--frozen --no-editable --no-dev" in dockerfile
     assert "uv pip install" not in dockerfile
     assert dockerfile.count("@sha256:") >= 3

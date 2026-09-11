@@ -327,7 +327,7 @@ wheels = [
 [[package]]
 name = "altk-evolve"
 version = "1.1.6"
-source = { url = "https://github.com/AgentToolkit/altk-evolve/archive/bcf65aecbe3ccad599534d3056f12d694f6efea4.tar.gz" }
+source = { url = "https://github.com/AgentToolkit/altk-evolve/archive/26aa74500142e2daf8339980fe8b492f4a05f6f6.tar.gz" }
 dependencies = [
     { name = "arize-phoenix", marker = "python_full_version >= '3.12'" },
     { name = "croniter", marker = "python_full_version >= '3.12'" },
@@ -344,7 +344,7 @@ dependencies = [
     { name = "tzdata", marker = "python_full_version >= '3.12'" },
     { name = "uvicorn", marker = "python_full_version >= '3.12'" },
 ]
-sdist = { hash = "sha256:28430927e605db285a4ce2782f7a041d38f717ec6743c1e291f8eedf34c1f76e" }
+sdist = { hash = "sha256:d57be80b32295776c7ea91c6e38d4f0d9d630a6164fe07212ad22a715abcd409" }
 
 [package.optional-dependencies]
 hooks = [
@@ -1490,7 +1490,7 @@ requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], specifier = ">=0.3.22" },
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "aiosmtpd" },
-    { name = "altk-evolve", extras = ["hooks", "pii-regex"], marker = "python_full_version >= '3.12' and extra == 'evolve'", url = "https://github.com/AgentToolkit/altk-evolve/archive/bcf65aecbe3ccad599534d3056f12d694f6efea4.tar.gz" },
+    { name = "altk-evolve", extras = ["hooks", "pii-regex"], marker = "python_full_version >= '3.12' and extra == 'evolve'", url = "https://github.com/AgentToolkit/altk-evolve/archive/26aa74500142e2daf8339980fe8b492f4a05f6f6.tar.gz" },
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "boto3", specifier = ">=1.34.0" },
