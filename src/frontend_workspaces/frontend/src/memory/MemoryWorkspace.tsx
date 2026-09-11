@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from "react";
 import {
+  Accordion,
+  AccordionItem,
   Button,
   Column,
   Grid,
@@ -75,11 +77,17 @@ function statusTone(status: string): "healthy" | "warning" | "neutral" | "error"
     return "warning";
   }
   if (status === "Incomplete" || status === "Failed") return "error";
+  if (status === "Running" || status === "Cancelled") return "neutral";
+  if (status === "Interrupted") return "warning";
   if (status === "Unavailable" || status === "Status unavailable" || status === "Disabled") return "neutral";
   return "healthy";
 }
 
 function runStatus(run: RetentionRun): string {
+  if (run.status === "running") return "Running";
+  if (run.status === "interrupted") return "Interrupted";
+  if (run.status === "cancelled") return "Cancelled";
+  if (run.status === "failed") return "Failed";
   if (run.status !== "completed" || run.errors.length > 0) return "Incomplete";
   return "Completed";
 }
@@ -487,25 +495,25 @@ function ReportItems({
   return (
     <section className="memory-workspace__report-items">
       <h3>{title}</h3>
+      <p>View memories that are still available.</p>
+      {!items.some((item) => memories.some((memory) => memory.entityId === item.entityId)) && (
+        <p>These memories are not available to view. See audit details for recorded outcomes.</p>
+      )}
       <ul>
         {items.map((item, index) => {
           const memory = memories.find((candidate) => candidate.entityId === item.entityId);
-          const title = memory?.title ?? item.title;
+          if (!memory) return null;
           const outcome = item.outcome ? displayType(item.outcome) : undefined;
           const itemType = item.entityType ? displayType(item.entityType) : undefined;
           const reason = item.reason?.trim();
           return (
             <li key={`${item.entityId ?? "unknown"}-${index}`}>
-              {memory ? (
-                <ReferenceLink
-                  href={`/chat?memory_id=${encodeURIComponent(memory.entityId)}`}
-                  onClick={() => onOpenMemory(memory.id)}
-                >
-                  <strong>{memory.title}</strong>
-                </ReferenceLink>
-              ) : (
-                <strong>{title ?? "Memory record unavailable"}</strong>
-              )}
+              <ReferenceLink
+                href={`/chat?memory_id=${encodeURIComponent(memory.entityId)}`}
+                onClick={() => onOpenMemory(memory.id)}
+              >
+                <strong>{memory.title}</strong>
+              </ReferenceLink>
               <span>
                 {reason || (memory && memory.state === "Needs attention"
                   ? memoryStatusDetail(memory, capabilities)
@@ -536,11 +544,16 @@ function RetentionRunDetail({
     <>
       <DetailHeader
         eyebrow={new Date(run.createdAt).toLocaleString()}
-        title="Retention run"
+        title="Retention audit"
         status={status}
       />
       <div className="memory-workspace__detail-body">
-        <p>{run.summary}</p>
+        <section className="memory-workspace__notice" aria-label="Recorded retention outcome">
+          <strong>{run.deleted.length ? "Memory deletion recorded" : "Retention activity recorded"}</strong>
+          <p>{run.summary}</p>
+          {run.deleted.length > 0 && <p>Deleted memory titles and contents are not displayed in this history.</p>}
+          {run.status !== "completed" && <p>The audit shows the outcomes recorded so far.</p>}
+        </section>
         {run.warnings.map((warning) => (
           <div className="memory-workspace__notice" key={warning}>
             <strong>Warning</strong>
@@ -555,16 +568,38 @@ function RetentionRunDetail({
         ))}
         <DefinitionList
           items={[
-            { label: "Run ID", value: run.runId },
             { label: "Policy", value: run.policyName ?? run.policyId ?? "Unavailable" },
-            { label: "Mode", value: "Applied changes" },
-            { label: "Requested by", value: run.actorId || "Service administrator" },
+            { label: "Requested by", value: run.initiatedBy || "Not recorded" },
+            { label: "Started", value: new Date(run.startedAt ?? run.createdAt).toLocaleString() },
+            { label: "Finished", value: run.completedAt ? new Date(run.completedAt).toLocaleString() : "Not recorded" },
             { label: "Result", value: status },
           ]}
         />
         <ReportItems title="Flagged for review" items={run.flagged} memories={memories} capabilities={capabilities} onOpenMemory={onOpenMemory} />
-        <ReportItems title="Deleted" items={run.deleted} memories={memories} capabilities={capabilities} onOpenMemory={onOpenMemory} />
         <ReportItems title="Skipped" items={run.skipped} memories={memories} capabilities={capabilities} onOpenMemory={onOpenMemory} />
+        <Accordion className="memory-workspace__audit-details">
+          <AccordionItem title="Administrative audit details">
+            <p>Technical references connect recorded actions. They do not retrieve deleted memory content.</p>
+            <DefinitionList items={[{ label: "Run ID", value: run.runId }, { label: "Policy ID", value: run.policyId ?? "Not recorded" }]} />
+            <div className="memory-workspace__audit-table">
+              <table>
+                <caption>Recorded actions for this run</caption>
+                <thead><tr><th scope="col">Outcome</th><th scope="col">Entity reference</th><th scope="col">Reason</th></tr></thead>
+                <tbody>
+                  {([
+                    ["Flagged", run.flagged], ["Deleted", run.deleted], ["Skipped", run.skipped],
+                  ] as const).flatMap(([outcome, items]) => items.map((item, index) => (
+                    <tr key={`${outcome}-${item.entityId ?? index}`}>
+                      <td>{outcome}</td>
+                      <td><code>{item.entityId ?? "Not recorded"}</code></td>
+                      <td>{item.reason || "Not recorded"}</td>
+                    </tr>
+                  )))}
+                </tbody>
+              </table>
+            </div>
+          </AccordionItem>
+        </Accordion>
       </div>
     </>
   );
@@ -949,7 +984,7 @@ export function MemoryWorkspace({
       await refreshData();
       if (activeAgentRef.current !== agentId) return;
       setSelectedRunId(report.runId ?? "");
-      setMessage("Retention run completed");
+      setMessage(report.errors.length ? "Retention finished with errors. Review the audit history." : "Retention finished. Review the audit history.");
     } catch (error) {
       if (generation !== requestGenerationRef.current) return;
       setMessage(error instanceof Error ? error.message : "Retention could not be completed");
@@ -1329,7 +1364,7 @@ export function MemoryWorkspace({
                 <Column sm={4} md={8} lg={16} className="memory-workspace__page-copy">
                   <p className="memory-workspace__eyebrow">Lifecycle evidence</p>
                   <h1>Activity</h1>
-                  <p>Inspect the locally recorded history of manual retention runs.</p>
+                  <p>Review retention outcomes, policy attribution, and administrative audit records.</p>
                 </Column>
               </Grid>
               <div className="memory-workspace__section-head">

@@ -85,7 +85,8 @@ type RetentionReportResponse = {
 type RetentionRunResponse = {
   run_id: string;
   policy_id: string;
-  actor_id: string;
+  initiated_by?: string;
+  actor_id?: string;
   status: string;
   created_at: string;
   report: RetentionReportResponse;
@@ -251,7 +252,8 @@ function mapReport(report: RetentionReportResponse): RetentionReport {
     completedAt: report.completed_at,
     summary: report.summary ?? "Retention completed.",
     flagged: (report.flagged ?? []).map(mapReportItem),
-    deleted: (report.deleted ?? []).map(mapReportItem),
+    // Discard deleted titles even when an older report supplies them.
+    deleted: (report.deleted ?? []).map((item) => ({ ...mapReportItem(item), title: undefined })),
     skipped: (report.skipped ?? []).map(mapReportItem),
     errors: report.errors ?? [],
     warnings: report.warnings ?? [],
@@ -364,7 +366,7 @@ export async function loadRetentionRuns(agentId: string): Promise<RetentionRun[]
     ...mapReport(run.report),
     runId: run.run_id,
     policyId: run.report.policy_id ?? run.policy_id,
-    actorId: run.actor_id,
+    initiatedBy: run.initiated_by ?? run.actor_id,
     status: run.status,
     createdAt: run.created_at,
   }));

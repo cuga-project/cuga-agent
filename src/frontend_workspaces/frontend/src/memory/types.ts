@@ -96,7 +96,7 @@ export type RetentionReport = {
 
 export type RetentionRun = RetentionReport & {
   runId: string;
-  actorId: string;
+  initiatedBy?: string;
   status: string;
   createdAt: string;
 };

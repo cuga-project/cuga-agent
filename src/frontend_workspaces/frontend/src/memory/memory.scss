@@ -757,3 +757,33 @@
     align-items: flex-start;
   }
 }
+
+
+.memory-workspace__audit-details {
+  margin-top: var(--cds-spacing-07);
+}
+
+.memory-workspace__audit-table {
+  overflow-x: auto;
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    text-align: left;
+  }
+
+  caption {
+    padding-block: var(--cds-spacing-05);
+    text-align: left;
+  }
+
+  th, td {
+    padding: var(--cds-spacing-04);
+    vertical-align: top;
+    border-bottom: 1px solid var(--cds-border-subtle-01);
+  }
+
+  code {
+    overflow-wrap: anywhere;
+  }
+}
