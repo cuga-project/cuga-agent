@@ -7,7 +7,8 @@ Uses the storage layer (get_storage().get_relational_store("conversation")) for 
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import uuid
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -96,6 +97,9 @@ class ConversationHistoryDB:
                 PRIMARY KEY (tenant_id, instance_id, agent_id, thread_id, user_id)
             )
         """)
+        await store.execute("""CREATE TABLE IF NOT EXISTS conversation_deletion_outbox (
+            event_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL, thread_id TEXT NOT NULL, user_id TEXT NOT NULL, deleted_at TEXT NOT NULL)""")
         for idx_sql in [
             "CREATE INDEX IF NOT EXISTS idx_thread_id ON conversation_history(thread_id)",
             "CREATE INDEX IF NOT EXISTS idx_user_id ON conversation_history(user_id)",
@@ -284,19 +288,43 @@ class ConversationHistoryDB:
             store = self._get_store()
             tenant_id = _tenant_id()
             inst_id = _instance_id()
-            await store.execute(
-                "DELETE FROM conversation_history WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
-                (tenant_id, inst_id, agent_id, thread_id, user_id),
+            scope = (tenant_id, inst_id, agent_id, thread_id, user_id)
+            where = "tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?"
+            await store.execute_batch(
+                [
+                    (
+                        "INSERT INTO conversation_deletion_outbox SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM conversation_history WHERE "
+                        + where
+                        + ") OR EXISTS (SELECT 1 FROM stream_events WHERE "
+                        + where
+                        + ")",
+                        (str(uuid.uuid4()), *scope, datetime.now(timezone.utc).isoformat(), *scope, *scope),
+                    ),
+                    ("DELETE FROM conversation_history WHERE " + where, scope),
+                    ("DELETE FROM stream_events WHERE " + where, scope),
+                ]
             )
-            await store.execute(
-                "DELETE FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
-                (tenant_id, inst_id, agent_id, thread_id, user_id),
-            )
-            await store.commit()
             return True
         except Exception as e:
             logger.error(f"Error deleting thread: {e}")
             return False
+
+    async def pending_source_deletions(self) -> list[dict]:
+        """Read a bounded batch of committed deletion events for this instance."""
+        await self._ensure_schema()
+        return await self._get_store().fetchall(
+            "SELECT * FROM conversation_deletion_outbox WHERE tenant_id=? AND instance_id=? ORDER BY deleted_at,event_id LIMIT 100",
+            (_tenant_id(), _instance_id()),
+        )
+
+    async def acknowledge_source_deletion(self, event_id: str) -> None:
+        """Remove an event only after Evolve durably acknowledges it."""
+        store = self._get_store()
+        await store.execute(
+            "DELETE FROM conversation_deletion_outbox WHERE event_id=? AND tenant_id=? AND instance_id=?",
+            (event_id, _tenant_id(), _instance_id()),
+        )
+        await store.commit()
 
     async def get_all_threads_for_agent(self, agent_id: str, user_id: str) -> List[Dict[str, Any]]:
         try:

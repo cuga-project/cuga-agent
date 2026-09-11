@@ -7,6 +7,7 @@ from typing import Any
 
 DEFAULT_RETENTION_POLICY: dict[str, Any] = {
     "rules": [
+        {"name": "orphaned-conversations", "source_deleted": True, "max_age_days": 7, "action": "delete"},
         {
             "name": "unused-guidelines",
             "entity_type": "guideline",
@@ -275,6 +276,7 @@ def project_retention_policy(policy: dict[str, Any]) -> dict[str, Any]:
                 "action",
                 "on_missing_access_signal",
                 "cascade_derived",
+                "source_deleted",
             )
             if key in rule
         }
@@ -298,7 +300,8 @@ def retention_capabilities(*, retention_available: bool) -> dict[str, Any]:
         "rules": [
             {
                 "name": rule["name"],
-                "entity_type": rule["entity_type"],
+                "entity_type": rule.get("entity_type"),
+                "source_deleted": rule.get("source_deleted", False),
                 "action": rule["action"],
                 **({"description": rule["description"]} if "description" in rule else {}),
                 **(

@@ -1140,6 +1140,11 @@ async def lifespan(app: FastAPI):
     # never blocks startup on failure.
     await warm_shortlister_catalogue()
 
+    if settings.evolve.enabled:
+        from cuga.backend.evolve.deleted_sources import source_deletion_delivery_loop
+
+        app_state.background_tasks.append(asyncio.create_task(source_deletion_delivery_loop()))
+
     yield
     logger.info("Application is shutting down...")
 

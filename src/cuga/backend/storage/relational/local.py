@@ -35,6 +35,17 @@ class LocalRelationalStore:
         async with self._lock:
             await asyncio.to_thread(self._execute_sync, sql, params)
 
+    async def execute_batch(self, statements: list[tuple[str, tuple]]) -> None:
+        """Commit a batch atomically on a dedicated connection."""
+
+        def batch():
+            with sqlite3.connect(self._db_path, timeout=30) as conn:
+                for sql, params in statements:
+                    conn.execute(sql, params)
+
+        async with self._lock:
+            await asyncio.to_thread(batch)
+
     async def fetchall(self, sql: str, params: tuple = ()) -> List[Any]:
         async with self._lock:
             rows = await asyncio.to_thread(self._fetchall_sync, sql, params)

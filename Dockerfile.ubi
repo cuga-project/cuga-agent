@@ -2,7 +2,6 @@
 ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312-minimal@sha256:e161bab1e953b5918e8073a9fb35f9b3340cc256a2ff0ed4af3247dc5f4829d6
 ARG NODE_IMAGE=node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:latest@sha256:73d2665b478d8fa2de1cf105c6841f8e9cb6b09e568fc7700440c09f8fcd7ac4
-ARG EVOLVE_REF=1b47f858c68b2658a8e321195f0965cb3e7cf901
 
 FROM --platform=$BUILDPLATFORM ${UV_IMAGE} AS build-uv-tools
 
@@ -19,7 +18,6 @@ RUN corepack enable \
 
 FROM --platform=$BUILDPLATFORM ${BASE_IMAGE} AS model-cache
 
-ARG EVOLVE_REF
 
 COPY --from=build-uv-tools /uv /usr/local/bin/uv
 COPY --from=build-uv-tools /uvx /usr/local/bin/uvx
@@ -39,16 +37,12 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 
 RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + \
-    && uv sync --no-editable --no-dev \
-    && uv pip install --python /app/.venv/bin/python \
-        "altk-evolve[hooks,pii-regex] @ https://github.com/AgentToolkit/altk-evolve/archive/${EVOLVE_REF}.tar.gz" \
-    && uv pip install --python /app/.venv/bin/python einops==0.8.1
+    && uv sync --frozen --no-editable --no-dev --extra evolve
 
 RUN uv run --no-sync python src/scripts/preload_models.py
 
 FROM ${BASE_IMAGE} AS builder
 
-ARG EVOLVE_REF
 
 # Use official uv image to avoid curl+tar dance
 COPY --from=uv-tools /uv /usr/local/bin/uv
@@ -66,12 +60,8 @@ COPY --from=frontend-builder /workspace/frontend/dist/ ./src/cuga/frontend/dist/
 
 # Default deps omit openlit (optional `observability` extra; keeps pip/uvx core resolvable with litellm 1.83.x).
 RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + \
-    && uv sync --no-editable --no-dev --extra observability \
-    && uv pip install --python /app/.venv/bin/python \
-        "altk-evolve[hooks,pii-regex] @ https://github.com/AgentToolkit/altk-evolve/archive/${EVOLVE_REF}.tar.gz"
+    && uv sync --frozen --no-editable --no-dev --extra observability --extra evolve
 
-# Required by the trusted model code shipped with nomic-ai/CodeRankEmbed.
-RUN uv pip install --python /app/.venv/bin/python einops==0.8.1
 
 # Slim down torch: remove test suite and C++ headers (not needed at runtime) ~143MB
 # NOTE: torch/bin must be kept — contains torch_shm_manager required at import time

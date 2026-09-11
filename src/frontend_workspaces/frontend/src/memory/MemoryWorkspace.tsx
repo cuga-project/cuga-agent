@@ -98,6 +98,7 @@ function runStatus(run: RetentionRun): string {
 function formatRule(rule: RetentionCapabilities["rules"][number]): string {
   if (rule.description) return rule.description;
   const action = rule.action === "delete" ? "Delete" : rule.action === "flag" ? "Flag" : displayType(rule.action);
+  if (rule.sourceDeleted) return `After the source conversation is explicitly deleted, delete memories older than ${rule.maxAgeDays} days.`;
   const days = rule.maxUnusedDays ?? rule.maxAgeDays;
   const qualifier = rule.maxUnusedDays != null ? " without use" : "";
   const entityType = rule.entityType ? `${displayType(rule.entityType).toLowerCase()} memories` : "all memories";

@@ -54,6 +54,7 @@ type RetentionCapabilitiesResponse = {
     entity_type?: string | null;
     action: string;
     description?: string;
+    source_deleted?: boolean;
     max_age_days?: number;
     max_unused_days?: number;
   }>;
@@ -266,6 +267,7 @@ function mapRule(rule: NonNullable<RetentionCapabilitiesResponse["rules"]>[numbe
     entityType: rule.entity_type ?? undefined,
     action: rule.action,
     description: rule.description,
+    sourceDeleted: rule.source_deleted,
     maxAgeDays: rule.max_age_days,
     maxUnusedDays: rule.max_unused_days,
   };

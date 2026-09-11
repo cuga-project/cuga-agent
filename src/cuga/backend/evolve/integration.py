@@ -183,6 +183,7 @@ class EvolveIntegration:
         user_id: Optional[str] = None,
         namespace_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> None:
         """Save the agent trajectory to Evolve for tip generation."""
         if not cls.is_enabled():
@@ -222,6 +223,8 @@ class EvolveIntegration:
                 args["namespace_id"] = namespace_id
             if session_id:
                 args["session_id"] = session_id
+            if agent_id:
+                args["agent_id"] = agent_id
             await cls._call_tool("save_trajectory", args)
             logger.info("Evolve: Trajectory saved successfully")
         except Exception as e:

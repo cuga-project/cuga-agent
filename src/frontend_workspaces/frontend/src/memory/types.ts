@@ -50,6 +50,7 @@ export type RetentionRule = {
   entityType?: string;
   action: string;
   description?: string;
+  sourceDeleted?: boolean;
   maxAgeDays?: number;
   maxUnusedDays?: number;
 };

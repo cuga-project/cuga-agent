@@ -19,8 +19,11 @@ def test_supported_image_builds_memory_ui_and_bakes_evolve_for_offline_runtime()
     entrypoint = (REPO_ROOT / "scripts/docker-entrypoint.sh").read_text()
 
     assert "pnpm --filter ./frontend build" in dockerfile
-    assert "altk-evolve[hooks,pii-regex]" in dockerfile
-    assert "EVOLVE_REF=1b47f858c68b2658a8e321195f0965cb3e7cf901" in dockerfile
+    project = (REPO_ROOT / "pyproject.toml").read_text()
+    assert "altk-evolve[hooks,pii-regex]" in project
+    assert "bcf65aecbe3ccad599534d3056f12d694f6efea4" in project
+    assert "--frozen --no-editable --no-dev" in dockerfile
+    assert "uv pip install" not in dockerfile
     assert dockerfile.count("@sha256:") >= 3
     assert (
         "ARG BASE_IMAGE=" in dockerfile

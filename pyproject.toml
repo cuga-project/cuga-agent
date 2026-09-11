@@ -101,7 +101,7 @@ e2b = ["e2b-code-interpreter>=2.4.1"]
 knowledge = []  # knowledge is now built-in, no extra dependencies needed
 health = ["cuga-oak-health; python_version>='3.12'"]  # kept for backward compat, now also in core deps
 opensandbox = ["opensandbox", "opensandbox-code-interpreter"]
-evolve = ["altk-evolve>=1.1.0; python_version>='3.12'"]
+evolve = ["altk-evolve[hooks,pii-regex]>=1.1.0; python_version>='3.12'", "einops==0.8.1; python_version>='3.12'"]
 # wxO SDK requires Python >=3.11; keep it an extra so 3.10 installs are unaffected.
 wxo = ["ibm-watsonx-orchestrate-sdk>=2.15.0; python_version>='3.11'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
@@ -158,6 +158,7 @@ constraint-dependencies = [
 override-dependencies = ["python-dotenv>=1.1.0"]
 
 [tool.uv.sources]
+altk-evolve = { url = "https://github.com/AgentToolkit/altk-evolve/archive/bcf65aecbe3ccad599534d3056f12d694f6efea4.tar.gz" }
 torch                 = { index = "pytorch-cpu" }
 torchvision           = { index = "pytorch-cpu" }
 torchaudio            = { index = "pytorch-cpu" }
