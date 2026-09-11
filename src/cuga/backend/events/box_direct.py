@@ -8,8 +8,18 @@ paid Box app with a saved redirect URI + ``manage_webhook``). Combined with dire
 
     Box folder poll (this module) ▸ /invoke(resume_judge) ▸ Slack/Gmail delivery.
 
-Token: ``BOX_DEV_TOKEN`` (a 60-min Box developer token — grab a fresh one from the Box dev console;
-no OAuth app/redirect-URI needed) or, later, a stored OAuth access token via ``EVENTS_BOX_TOKEN``.
+AUTH — two ways, and the second is the one you want in production.
+
+  * **Client Credentials Grant (CCG)** — set ``BOX_CLIENT_ID`` + ``BOX_CLIENT_SECRET`` +
+    ``BOX_ENTERPRISE_ID`` (or ``BOX_USER_ID`` to act as one user). This module then MINTS its own
+    access token and re-mints it when it expires. No user consent, no redirect URI, and crucially
+    **no refresh token** — what expires is regenerable from static config, so there is nothing to
+    rotate and nothing to lose on a restart.
+  * **A static token** — ``BOX_DEV_TOKEN`` (a 60-minute developer token from the Box console) or
+    ``EVENTS_BOX_TOKEN``. Fine for a five-minute demo; it dies an hour later, which is exactly the
+    pain CCG removes.
+
+A static token, if set, always wins — so an existing setup keeps working untouched.
 
 This is a POLLING trigger (Box has no free push): CUGA lists a folder's items and fires on files
 whose ``created_at`` is newer than the last poll. Emit-on-change is caller-tracked (``since``).
@@ -18,12 +28,16 @@ whose ``created_at`` is newer than the last poll. Emit-on-change is caller-track
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 
 import httpx
 
 API = "https://api.box.com/2.0"
+OAUTH_TOKEN_URL = "https://api.box.com/oauth2/token"
+
+log = logging.getLogger("cuga.events.box")
 
 # Server-tracked per-folder "last created_at seen" — a STANDING scheduled poll must fire only on
 # files added since the previous run, so this watermark IS the feature. Lose it and every existing
@@ -110,18 +124,108 @@ def save_since(folder_id: str, created_at: str) -> None:
         pass
 
 
-def token() -> str:
-    """The Box bearer token — dev token (fast, OAuth-free) or a configured access token.
-    Reads through the events secret seam (vault://-capable; plaintext unchanged)."""
+def _secret(key: str) -> str:
+    """Read a credential through the events secret seam (vault://-capable, plaintext unchanged)."""
     try:
-        from .secret_seam import secret as _secret
+        from .secret_seam import secret as _s
     except ImportError:  # flat load (tests put the events dir on sys.path)
-        from secret_seam import secret as _secret
+        from secret_seam import secret as _s  # type: ignore
+    return _s(key)
+
+
+def token() -> str:
+    """The STATIC Box bearer token, or "" when none is configured.
+
+    Deliberately does NOT mint a CCG token: this is sync, and minting is a network call that would
+    block the event loop. Use :func:`access_token` for the real accessor and :func:`configured` for
+    "is Box usable at all", which is what the status endpoints actually want.
+    """
     for key in ("EVENTS_BOX_TOKEN", "BOX_DEV_TOKEN"):
         v = _secret(key)
         if v:
             return v
     return ""
+
+
+def _ccg_config() -> dict:
+    """Client-Credentials-Grant settings, or {} when not configured.
+
+    ``box_subject_type``/``box_subject_id`` say WHO the token acts as: the whole enterprise (a
+    service account) or a single user. Enterprise is the normal choice for a folder watcher.
+    """
+    cid, csec = _secret("BOX_CLIENT_ID"), _secret("BOX_CLIENT_SECRET")
+    if not (cid and csec):
+        return {}
+    ent, usr = _secret("BOX_ENTERPRISE_ID"), _secret("BOX_USER_ID")
+    if usr:
+        sub_type, sub_id = "user", usr
+    elif ent:
+        sub_type, sub_id = "enterprise", ent
+    else:
+        return {}
+    return {"client_id": cid, "client_secret": csec, "subject_type": sub_type, "subject_id": sub_id}
+
+
+def configured() -> bool:
+    """Is Box usable — either a static token, or enough config to mint one?
+
+    The status endpoints used to call ``token()`` for this, which reports "not_connected" for a
+    perfectly good CCG setup because no static token exists.
+    """
+    return bool(token()) or bool(_ccg_config())
+
+
+# Minted CCG token + the epoch second it stops being valid. Re-minted on demand, in-process only:
+# it is cheap to obtain and pointless to persist, since a restart can just ask for another.
+_ccg_cache: dict = {"token": "", "expires_at": 0.0}
+# Re-mint this many seconds BEFORE the stated expiry, so a poll never starts with a token that
+# dies mid-request.
+_CCG_SKEW = 120.0
+
+
+async def access_token(force: bool = False) -> str:
+    """The token to actually call Box with: a static one if set, else a minted CCG token.
+
+    Returns "" when Box is not configured — callers already treat that as "not set up".
+    """
+    static = token()
+    if static:
+        return static
+    cfg = _ccg_config()
+    if not cfg:
+        return ""
+    now = time.time()
+    if not force and _ccg_cache["token"] and now < _ccg_cache["expires_at"]:
+        return _ccg_cache["token"]
+    body = {
+        "grant_type": "client_credentials",
+        "client_id": cfg["client_id"],
+        "client_secret": cfg["client_secret"],
+        "box_subject_type": cfg["subject_type"],
+        "box_subject_id": cfg["subject_id"],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post(OAUTH_TOKEN_URL, data=body)
+    except Exception as e:  # noqa: BLE001 — a mint failure must not kill the poll loop
+        log.warning("box: CCG mint failed (%s) — treating Box as unavailable this tick", e)
+        return ""
+    if r.status_code != 200:
+        # Never log the body: it echoes the client_secret on some Box error paths.
+        log.warning(
+            "box: CCG mint returned HTTP %s — check BOX_CLIENT_ID/SECRET/ENTERPRISE_ID", r.status_code
+        )
+        return ""
+    j = r.json() or {}
+    tok = str(j.get("access_token") or "")
+    if not tok:
+        log.warning("box: CCG response carried no access_token")
+        return ""
+    ttl = float(j.get("expires_in") or 3600)
+    _ccg_cache["token"] = tok
+    _ccg_cache["expires_at"] = now + max(60.0, ttl - _CCG_SKEW)
+    log.info("box: minted a CCG access token (valid ~%ss, no refresh token needed)", int(ttl))
+    return tok
 
 
 def should_process(item: dict) -> bool:
@@ -131,7 +235,7 @@ def should_process(item: dict) -> bool:
 
 async def whoami(tok: str | None = None) -> dict:
     """GET /users/me — proves the token is valid (used by the live harness / setup guide)."""
-    tok = tok or token()
+    tok = tok or await access_token()
     if not tok:
         return {"ok": False, "error": "no BOX_DEV_TOKEN / EVENTS_BOX_TOKEN"}
     async with httpx.AsyncClient(timeout=15) as c:
@@ -145,7 +249,7 @@ async def whoami(tok: str | None = None) -> dict:
 async def list_folder_items(folder_id: str, tok: str | None = None) -> list[dict]:
     """List a folder's items (id, name, type, created_at). Raises on a non-200 so callers see
     an expired token loudly rather than treating it as 'no new files'."""
-    tok = tok or token()
+    tok = tok or await access_token()
     if not tok:
         raise RuntimeError("no Box token (set BOX_DEV_TOKEN or EVENTS_BOX_TOKEN)")
     async with httpx.AsyncClient(timeout=20) as c:
@@ -180,7 +284,7 @@ async def new_folders_since(folder_id: str, since_iso: str | None, tok: str | No
 
 async def file_comments(file_id: str, tok: str | None = None) -> list[dict]:
     """GET /files/{id}/comments — every comment on one file (box/new_box_comment support)."""
-    tok = tok or token()
+    tok = tok or await access_token()
     if not tok:
         raise RuntimeError("no Box token (set BOX_DEV_TOKEN or EVENTS_BOX_TOKEN)")
     async with httpx.AsyncClient(timeout=20) as c:
@@ -256,7 +360,7 @@ def download_enabled() -> bool:
 async def download_file(file_id: str, tok: str | None = None, max_bytes: int = MAX_DOWNLOAD_BYTES) -> bytes:
     """Fetch a file's bytes. Raises on a non-200 so an expired token is loud, and refuses anything
     over ``max_bytes`` rather than streaming it into memory."""
-    tok = tok or token()
+    tok = tok or await access_token()
     if not tok:
         raise RuntimeError("no Box token (set BOX_DEV_TOKEN or EVENTS_BOX_TOKEN)")
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:

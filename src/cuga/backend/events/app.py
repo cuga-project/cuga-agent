@@ -1628,7 +1628,7 @@ def register_events_routes(
         if os.environ.get("EVENTS_BOX_BACKEND") == "direct":
             from . import box_direct
 
-            has_tok = bool(box_direct.token())
+            has_tok = box_direct.configured()  # static token OR CCG creds — not just a pasted dev token
             for r in rows:
                 if r["name"] == "box":
                     r["status"] = "connected" if has_tok else "not_connected"
@@ -1916,7 +1916,7 @@ def register_events_routes(
         if os.environ.get("EVENTS_BOX_BACKEND", "").lower() == "direct":  # box direct = a USER token
             from . import box_direct
 
-            st["box"] = "connected" if box_direct.token() else "not_connected"
+            st["box"] = "connected" if box_direct.configured() else "not_connected"
         out = []
 
         def _cred_scope(key: str) -> str:
@@ -1997,6 +1997,66 @@ def register_events_routes(
                 "'your request URL returned an HTTP error'."
             ),
         }
+
+    @app.post("/api/events/github/events")
+    async def github_events(request: Request):
+        """GitHub webhook receiver — ALL 14 github triggers arrive here, AP-free.
+
+        GitHub POSTs every subscribed event to one URL and names the kind in ``X-GitHub-Event``,
+        so this is a signature check plus a dispatch table rather than fourteen endpoints.
+
+        Acks immediately and does the agent work in the background: GitHub marks a delivery failed
+        if we take longer than ~10s, and an agent run is far slower than that.
+        """
+        import asyncio
+
+        from . import direct_events, github_direct
+
+        raw = await request.body()
+        ok, why = github_direct.verify_signature(request.headers, raw)
+        if not ok:
+            Trace(new_trace_id()).error("github.direct", reason=why)
+            return JSONResponse({"ok": False, "error": why}, 401)
+
+        payload = await _safe_json(request) or {}
+        gh_event = (
+            (request.headers.get("x-github-event") or request.headers.get("X-GitHub-Event") or "")
+            .strip()
+            .lower()
+        )
+        # GitHub pings a new webhook once to prove the URL works. Answer it, arm nothing.
+        if gh_event == "ping":
+            return {"ok": True, "pong": True}
+
+        event = github_direct.event_of(request.headers, payload)
+        repo = github_direct.repo_of(payload)
+        tr = Trace(new_trace_id())
+        if not event:
+            # Most deliveries match no watcher — that is normal, not an error.
+            tr("github.direct", gh_event=gh_event, repo=repo, matched=0, mapped=False)
+            return {"ok": True, "ignored": gh_event}
+
+        subs = direct_events.match(
+            store, "github", event, repo=repo, text=github_direct.summarize(gh_event, payload)
+        )
+        # new_gh_mention is a CONTENT match, not an event-type one: any commentable event whose
+        # body @-mentions the watched login counts.
+        if gh_event in github_direct._MENTIONABLE:
+            for sub in direct_events.match(store, "github", "new_gh_mention", repo=repo):
+                login = str((sub.config or {}).get("login") or (sub.config or {}).get("user") or "")
+                if github_direct.mentions(payload, login) and sub not in subs:
+                    subs.append(sub)
+
+        if subs:
+            tr("github.direct", gh_event=gh_event, event=event, repo=repo, matched=len(subs))
+            enriched = dict(payload)
+            enriched["_summary"] = github_direct.summarize(gh_event, payload)
+            asyncio.create_task(
+                direct_events.dispatch_all(subs, app="github", event=event, payload=enriched, engine=engine)
+            )
+        else:
+            tr("github.direct", gh_event=gh_event, event=event, repo=repo, matched=0)
+        return {"ok": True, "event": event, "matched": len(subs)}
 
     @app.post("/api/events/slack/events")
     async def slack_events(request: Request):
@@ -2356,12 +2416,19 @@ def register_events_routes(
             return JSONResponse(
                 {"ok": False, "error": f"no trigger for source={source!r} event={body.get('event')!r}"}, 404
             )
-        if row.backend != "ap":
+        # Synth-fire needs a payload we can fabricate faithfully. That is a property of the
+        # TRIGGER SHAPE, not of the backend: a webhook-shaped trigger carries the real provider
+        # body in `row.synth`, so injecting it exercises the true path minus the HTTP hop.
+        #
+        # This used to refuse everything non-AP, which was right when "direct" meant only sockets
+        # and pollers. GitHub is direct now and still webhook-shaped (fire="synth"), and refusing
+        # it would have silently dropped 14 triggers out of the e2e harness.
+        if row.fire != "synth":
             return JSONResponse(
                 {
                     "ok": False,
-                    "error": f"{row.app}/{row.event} is a DIRECT trigger — "
-                    "fire it through its real transport (or /api/events/box/poll for box)",
+                    "error": f"{row.app}/{row.event} cannot be synth-fired — it arrives on a live "
+                    "transport (socket/poll). Drive it for real, or use /api/events/box/poll for box.",
                 },
                 400,
             )
@@ -2781,6 +2848,38 @@ def register_events_routes(
             _bg = list(getattr(app.state, "events_background", []) or [])
             _bg.append(_native_scheduler)
             app.state.events_background = _bg
+
+    # OAuth token renewal. Refresh-on-use (oauth_tokens.access_token) covers anything actively
+    # called, but a grant belonging to a poller that runs every 15 minutes can still lapse between
+    # ticks — and a lapsed grant needs a human to reconnect. This pass renews slightly ahead of
+    # expiry so that never becomes the user's problem.
+    #
+    # Cheap and idempotent: it only touches grants inside the window, and `due()` skips any with
+    # no refresh token (there is nothing to renew and nothing to log about repeatedly).
+    if os.environ.get("EVENTS_OAUTH_RENEW", "1").strip().lower() not in ("0", "false", "no", "off"):
+
+        async def _oauth_renewal():
+            import asyncio
+
+            from . import oauth_tokens as _ot
+
+            try:
+                tokens = _ot.TokenStore(os.environ.get("EVENTS_DB", "") or ":memory:")
+            except Exception as e:  # noqa: BLE001 — no store, no renewal; everything else still runs
+                _elog.warning("oauth renewal: cannot open the token store (%s) — disabled", e)
+                return
+            while True:
+                try:
+                    n = await tokens.renew_due(within=900.0)
+                    if n:
+                        _elog.info("oauth renewal: refreshed %s token(s)", n)
+                except Exception as e:  # noqa: BLE001
+                    _elog.warning("oauth renewal pass failed (%s)", e)
+                await asyncio.sleep(300)
+
+        _bg2 = list(getattr(app.state, "events_background", []) or [])
+        _bg2.append(_oauth_renewal)
+        app.state.events_background = _bg2
 
     # Auto-connect .env USER tokens (single-operator convenience): a token set in .env becomes the
     # operator's AP connection on startup, so "set in .env" == "connected". Multi-user deployments

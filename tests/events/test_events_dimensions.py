@@ -330,16 +330,21 @@ def test_integrations_full_ap_wiring():
     assert oauth.connect_kind("github") == "oauth"
     # AP piece PUSH triggers use the REAL piece trigger names (verified against the running pieces)
     assert flows.SOURCE_TRIGGER["box"] == ("box", "new_file")
-    assert flows.SOURCE_TRIGGER["github_pr"] == ("github", "trigger_pull_request")
     assert flows.SOURCE_TRIGGER["gmail"] == ("gmail", "gmail_new_email_received")
+    # GITHUB IS NO LONGER AP. SOURCE_TRIGGER is a generated view of AP-backed rows, so the github
+    # alias correctly drops out of it — that absence IS the assertion, not an oversight.
+    assert "github_pr" not in flows.SOURCE_TRIGGER
     # a setup guide per integration, all AP-wired
-    for app in ("box", "github", "gmail"):
+    for app in ("box", "gmail"):
         g = setup_guides.guide(app)
         assert g and g["kind"] == "integration" and "AP" in g["wiring"]
-    # a push flow builder wires the piece trigger → /invoke for each source
-    for src in ("box", "github_pr", "gmail"):
+    # a push flow builder wires the piece trigger → /invoke for each AP source
+    for src in ("box", "gmail"):
         f = flows.build_push_flow(agent="x", source=src, thread_id="t", prompt="p")
         assert f["trigger"]["settings"]["pieceName"].startswith("@activepieces/piece-")
+    # ...and github builds the direct marker instead
+    gh = flows.build_push_flow(agent="x", source="github", event_kind="new_pr", thread_id="t", prompt="p")
+    assert gh["trigger"]["settings"]["pieceName"] == "cuga-direct"
 
 
 # ---- flow dedup: reuse-or-create by identity -----------------------------

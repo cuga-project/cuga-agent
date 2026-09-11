@@ -849,7 +849,9 @@ def test_triggers_endpoint_serves_the_registry():
     assert len(gh["triggers"]) == len(tr.events_for("github"))
     assert gh["triggers"][0]["default"] is True  # the app default leads its group
     row = next(t for t in gh["triggers"] if t["event"] == "new_pr")
-    assert row["backend"] == "ap" and row["fire"] == "synth"
+    # github went DIRECT — one signed webhook serves all 14 triggers — but stays
+    # webhook-shaped, so it is still synthetically fireable for the e2e harness.
+    assert row["backend"] == "direct" and row["fire"] == "synth"
     assert row["slots"][0]["name"] == "repo" and row["slots"][0]["required"] is True
 
 

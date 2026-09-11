@@ -91,6 +91,16 @@ class Trigger:
 
 
 def _t(*a, **kw) -> Trigger:
+    # A DIRECT row must name the transport event it arrives as (`direct_kind`). For GitHub that is
+    # simply the X-GitHub-Event header, which these rows already carry as `hook_event`, so derive
+    # it rather than repeating the string on fourteen rows.
+    #
+    # NB two GitHub rows share a hook_event (`pull_request` → new_pr + new_review_request,
+    # `push` → new_commit + new_push), so `direct_events.kind_for()` CANNOT disambiguate GitHub.
+    # Nothing asks it to: github_direct.event_of() maps on (event, action), which is the only
+    # thing that can tell those pairs apart.
+    if kw.get("backend") == "direct" and not kw.get("direct_kind") and kw.get("hook_event"):
+        kw["direct_kind"] = kw["hook_event"]
     return Trigger(*a, **kw)
 
 
@@ -98,7 +108,10 @@ def _t(*a, **kw) -> Trigger:
 # GitHub — 14 triggers, all WEBHOOK type (⇒ all synthetically fireable via /run), all need `repo`.
 # Payload paths follow the piece's sampleData (the raw GitHub webhook shape).
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-_GH = dict(app="github", backend="ap", piece="github", slots=("repo",), fire="synth")
+# GitHub is DIRECT: its 14 triggers all arrive on one signed webhook
+# (/api/events/github/events) and are dispatched by github_direct, so Activepieces is not
+# in the path. `piece` stays for the AP fallback and for the setup guide's links.
+_GH = dict(app="github", backend="direct", piece="github", slots=("repo",), fire="synth")
 
 _GITHUB = [
     _t(

@@ -175,9 +175,24 @@ def test_flow_push_delivers_to_sink():
         sink=sink,
     )
     trig = f["trigger"]
-    assert trig["settings"]["pieceName"] == flows.PIECE["github"]
-    # trigger → /invoke → send (no router, no action tail)
+    # GitHub is a DIRECT source now — its 14 triggers arrive on our own signed webhook
+    # (/api/events/github/events), so the built flow carries the direct marker, not an AP piece.
+    assert trig["settings"]["pieceName"] == "cuga-direct"
+    # trigger → /invoke → send (no router, no action tail). THIS is what the test is about, and it
+    # is unchanged by the backend flip: the sink still gets the answer.
     assert trig["nextAction"]["nextAction"]["settings"]["pieceName"] == flows.PIECE["telegram"]
+
+    # ...and a source that is still AP-backed keeps its piece, so the flip was scoped to github.
+    g = flows.build_push_flow(
+        agent="mailbot",
+        thread_id="sub:2",
+        prompt="triage",
+        source="gmail",
+        event_kind="new_email",
+        source_input={},
+        sink=sink,
+    )
+    assert g["trigger"]["settings"]["pieceName"] == flows.PIECE["gmail"]
 
 
 def test_flow_dispatcher_and_inbound():
