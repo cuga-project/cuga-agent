@@ -439,7 +439,12 @@ def test_retention_capabilities_report_scheduling_as_unsupported(client):
     assert response.json()["retention_available"] is True
     assert response.json()["scheduling_supported"] is False
     assert response.json()["schedule"]["state"] == "unavailable"
-    assert all(rule["name"] != "orphaned-conversations" for rule in response.json()["rules"])
+    assert (
+        next(rule for rule in response.json()["rules"] if rule["name"] == "orphaned-conversations")[
+            "source_deleted"
+        ]
+        is True
+    )
 
 
 def test_compliance_status_does_not_expose_provider_details(client):
