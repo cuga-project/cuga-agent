@@ -84,7 +84,7 @@ from cuga.backend.server.workspace_sandbox import (
     workspace_tree_is_sandbox_backed,
 )
 from cuga.backend.server.auth import require_auth, require_chat_access
-from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled
+from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled, has_manage_access
 from cuga.backend.server.auth.models import TokenResponse, UserInfo
 from cuga.backend.server.tool_guard_generation import (
     build_tool_guard_generation_agent,
@@ -1139,6 +1139,11 @@ async def lifespan(app: FastAPI):
     # silently fall back to the LLM. A no-op on the default LLM strategy, and it
     # never blocks startup on failure.
     await warm_shortlister_catalogue()
+
+    if settings.evolve.enabled:
+        from cuga.backend.evolve.deleted_sources import source_deletion_delivery_loop
+
+        app_state.background_tasks.append(asyncio.create_task(source_deletion_delivery_loop()))
 
     yield
     logger.info("Application is shutting down...")
@@ -2412,8 +2417,8 @@ async def auth_userinfo(request: Request):
     if _auth_enabled() and user is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     if user is None:
-        return JSONResponse({"sub": DEFAULT_USER_ID})
-    return JSONResponse(user.model_dump())
+        return JSONResponse({"sub": DEFAULT_USER_ID, "can_manage": True})
+    return JSONResponse(user.model_dump() | {"can_manage": has_manage_access(user)})
 
 
 if getattr(settings.advanced_features, "use_extension", False):

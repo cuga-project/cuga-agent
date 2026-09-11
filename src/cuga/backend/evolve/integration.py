@@ -14,7 +14,7 @@ import aiohttp
 from loguru import logger
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
-from cuga.config import settings
+from cuga.config import get_service_instance_id, settings
 
 # Placeholder user identifiers that must not reach Evolve as real users:
 # "default" is AgentState.user_id's default; "default_user" is the server's
@@ -183,6 +183,7 @@ class EvolveIntegration:
         user_id: Optional[str] = None,
         namespace_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> None:
         """Save the agent trajectory to Evolve for tip generation."""
         if not cls.is_enabled():
@@ -222,6 +223,8 @@ class EvolveIntegration:
                 args["namespace_id"] = namespace_id
             if session_id:
                 args["session_id"] = session_id
+            if agent_id:
+                args["agent_id"] = agent_id
             await cls._call_tool("save_trajectory", args)
             logger.info("Evolve: Trajectory saved successfully")
         except Exception as e:
@@ -395,7 +398,7 @@ class EvolveIntegration:
         namespace_id: Optional[str] = None,
         metadata_filters: Optional[dict[str, Any]] = None,
         additional_matches: Optional[list[dict[str, Any]]] = None,
-        actor_id: Optional[str] = None,
+        initiated_by: Optional[str] = None,
     ) -> Optional[dict]:
         """Run an Evolve-owned policy and return its persisted report."""
         args: dict[str, Any] = {"policy_id": policy_id, "dry_run": dry_run}
@@ -406,7 +409,7 @@ class EvolveIntegration:
             "namespace_id": normalize_evolve_identifier(namespace_id),
             "metadata_filters": json.dumps(metadata_filters) if metadata_filters else None,
             "additional_matches": json.dumps(additional_matches) if additional_matches else None,
-            "actor_id": normalize_evolve_identifier(actor_id),
+            "initiated_by": normalize_evolve_identifier(initiated_by),
         }
         args.update({key: value for key, value in optional.items() if value is not None})
         return await cls._call_structured_tool("run_retention", args)
@@ -478,6 +481,11 @@ class EvolveIntegration:
     @classmethod
     async def _call_tool(cls, tool_name: str, args: dict):
         """Call an Evolve MCP tool via the registry or direct SSE."""
+        if tool_name != "validate_retention_policy":
+            namespace_id = get_service_instance_id().strip()
+            if not namespace_id:
+                raise ValueError("Evolve requires a configured service instance ID")
+            args = {**args, "namespace_id": namespace_id}
         mode = cls._get_mode()
         registry_enabled = bool(getattr(settings.advanced_features, "registry", False))
 

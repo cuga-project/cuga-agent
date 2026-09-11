@@ -6,6 +6,7 @@ interface UserInfo {
   email?: string;
   sub?: string;
   roles?: string[];
+  canManage?: boolean;
 }
 
 interface AuthContextType {
@@ -46,6 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               email: data.email,
               sub: data.sub,
               roles: data.roles || [],
+              canManage: data.can_manage === true,
             });
           }
         }

@@ -2,6 +2,16 @@
   flex-shrink: 0;
 }
 
+.cuga-memory-mobile-action {
+  display: none !important;
+}
+
+@media (max-width: 65.98rem) {
+  .cuga-memory-mobile-action {
+    display: flex !important;
+  }
+}
+
 .cuga-header-logo {
   display: flex;
   align-items: center;
