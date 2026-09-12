@@ -581,7 +581,11 @@ def test_concierge_without_flow_param_makes_no_ap_call():
     assert [c for c in eng.calls if c[0] == "get_flow"] == []
 
 
+@pytest.mark.unit
 def test_concierge_error_is_500_with_trace_id():
+    """The caller gets a 500 with a trace id to report — not the exception text itself
+    (py/stack-trace-exposure, CWE-209; see error_responses.py's rule for server/)."""
+
     class _Boom:
         async def run(self, *a, **k):
             raise RuntimeError("AP unreachable")
@@ -589,7 +593,9 @@ def test_concierge_error_is_500_with_trace_id():
     c, _ = _client(concierge=_Boom())
     r = c.post("/api/concierge", json={"text": "arm something"})
     assert r.status_code == 500
-    assert r.json()["error"] == "AP unreachable" and r.json()["trace_id"]
+    body = r.json()
+    assert body["trace_id"] and body["trace_id"] in body["error"]
+    assert "AP unreachable" not in body["error"]
 
 
 # ── subscription lifecycle ────────────────────────────────────────────────────
@@ -970,14 +976,20 @@ def test_connect_token_without_ap_is_501():
     assert r.status_code == 501 and "AP not configured" in r.json()["error"]
 
 
+@pytest.mark.unit
 def test_connect_token_ap_failure_is_500_not_a_crash():
+    """The caller gets a 500 with a reference code — not the exception text itself
+    (py/stack-trace-exposure, CWE-209; see error_responses.py's rule for server/)."""
+
     class _Broken(_FakeEngine):
         async def ensure_secret_connection(self, *a, **k):
             raise RuntimeError("connection_name_already_exists")
 
     c, _ = _client(engine=_Broken())
     r = c.post("/api/events/connect/telegram/token", json={"token": "8123:AAH"})
-    assert r.status_code == 500 and "already_exists" in r.json()["error"]
+    assert r.status_code == 500
+    error = r.json()["error"]
+    assert "already_exists" not in error and "ref " in error
 
 
 # ── profile / connections / linking ───────────────────────────────────────────

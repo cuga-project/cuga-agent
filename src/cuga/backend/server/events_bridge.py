@@ -14,6 +14,8 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional
 
+from cuga.backend.server.error_responses import log_error_ref
+
 # ── the slash forwarder: main-chat arming, without mounting the events layer ───────────────────
 # CUGA core does not know how to arm anything, and shouldn't. But a user typing "/automate …" in
 # the MAIN chat box must still reach the concierge — handed to the plain agent it tries to
@@ -152,10 +154,10 @@ async def forward_slash_to_events(
             return f"The eventing service returned HTTP {r.status_code}. Nothing was armed."
         data = r.json() if r.content else {}
     except Exception as e:  # noqa: BLE001 — a down events service must not break chat
-        from loguru import logger as _logger  # local bind: the error path must never itself raise
-
-        _logger.warning(f"slash forward to {base} failed: {e}")
-        return f"Couldn't reach the eventing service at {base} ({e}). Nothing was armed."
+        # The reply below reaches the end user verbatim (via /run and /stream). `e` can carry a
+        # stack trace, so it stays in the log only — CodeQL py/stack-trace-exposure, alert #217.
+        ref = log_error_ref(e, context=f"forward_slash_to_events → {base}")
+        return f"Couldn't reach the eventing service at {base}. Nothing was armed. (ref {ref})"
     state = (data.get("state") or "").lower()
     if thread_id:
         if state in ("confirm", "needs_input"):
@@ -231,14 +233,11 @@ async def proxy_admin(request, path: str, current_user=None):
                 request.method, url, content=body or None, headers=hdrs, params=dict(request.query_params)
             )
     except Exception as e:  # noqa: BLE001
-        # Bind the logger locally on the error path. CI hit `NameError: name 'logger' is not
-        # defined` here under `--import-mode=importlib` — an error-logging line must never be the
-        # thing that raises, so it does not depend on the module global being resolvable at the
-        # moment a proxied call fails.
-        from loguru import logger as _logger
-
-        _logger.warning("events admin proxy failed: {}", e)
-        return 502, {"ok": False, "error": "could not reach the eventing service"}
+        # log_error_ref logs the full exception behind a reference code and returns only that code
+        # — the body stays free of `str(e)` (CodeQL py/stack-trace-exposure), and because it is a
+        # module-level import it also settles the `NameError: logger` this path once hit in CI.
+        ref = log_error_ref(e, context=f"proxy_admin → {url}")
+        return 502, {"ok": False, "error": f"could not reach the eventing service (ref {ref})"}
     try:
         return r.status_code, r.json()
     except Exception:  # noqa: BLE001

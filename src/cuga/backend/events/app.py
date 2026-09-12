@@ -504,12 +504,12 @@ def register_events_routes(
                         agent=agent,
                         channel=env.source.name,
                         prompt=env.text,
-                        answer=str(e),
+                        answer=f"concierge agent run failed (ref {tr.id})",
                         status="error",
                         ms=ms,
                         trace_id=tr.id,
                     )
-                return JSONResponse({"ok": False, "error": str(e)}, 500)
+                return JSONResponse({"ok": False, "error": f"concierge agent run failed (ref {tr.id})"}, 500)
         else:
             if not agent or runtime.get_agent(agent, scope=agent_scope) is None:
                 tr.error("error", reason="unknown agent", agent=agent, scope=agent_scope)
@@ -546,12 +546,12 @@ def register_events_routes(
                         agent=agent,
                         channel=env.source.name,
                         prompt=env.text,
-                        answer=str(e),
+                        answer=f"worker agent run failed (ref {tr.id})",
                         status="error",
                         ms=ms,
                         trace_id=tr.id,
                     )
-                return JSONResponse({"ok": False, "error": str(e)}, 500)
+                return JSONResponse({"ok": False, "error": f"worker agent run failed (ref {tr.id})"}, 500)
         # metadata footer — who answered + which tools ran — appended to the reply so it shows on
         # every channel (Telegram/Discord/…). Structured `meta` also rides in the API response.
         # Off with EVENTS_REPLY_METADATA=0.
@@ -901,12 +901,14 @@ def register_events_routes(
                 agent="concierge",
                 channel="web",
                 prompt=text,
-                answer=str(e),
+                answer=f"concierge run failed (ref {tr.id})",
                 status="error",
                 ms=int((_t.time() - _t0) * 1000),
                 trace_id=tr.id,
             )
-            return JSONResponse({"ok": False, "error": str(e), "trace_id": tr.id}, 500)
+            return JSONResponse(
+                {"ok": False, "error": f"concierge run failed (ref {tr.id})", "trace_id": tr.id}, 500
+            )
         _meta = runmeta.get() or {}
         _log_now(
             scope=principal.scope,
@@ -1430,7 +1432,9 @@ def register_events_routes(
                     "note": "native watch fired via /invoke (no AP) — also in GET /api/events/runs.",
                 }
             except Exception as e:  # noqa: BLE001
-                return JSONResponse({"ok": False, "error": f"native fire failed: {e}"}, 500)
+                _tr = Trace(new_trace_id())
+                _tr.error("native.fire", err=str(e))
+                return JSONResponse({"ok": False, "error": f"native fire failed (ref {_tr.id})"}, 500)
         if engine is None:
             return JSONResponse({"ok": False, "error": "AP not configured"}, 501)
         if not sub.ap_flow_id:
@@ -1851,9 +1855,13 @@ def register_events_routes(
         except RuntimeError as e:
             # single-agent world: sub-agents are defined in supervisor_agents.yaml (canonical
             # CUGA-main schema) — the fleet registration API is retired, and says so.
-            return JSONResponse({"ok": False, "error": str(e)}, 410)
+            _tr = Trace(new_trace_id())
+            _tr.error("agent.upsert", err=str(e))
+            return JSONResponse({"ok": False, "error": f"agent registration is retired (ref {_tr.id})"}, 410)
         except Exception as e:  # noqa: BLE001
-            return JSONResponse({"ok": False, "error": str(e)}, 500)
+            _tr = Trace(new_trace_id())
+            _tr.error("agent.upsert", err=str(e))
+            return JSONResponse({"ok": False, "error": f"agent registration failed (ref {_tr.id})"}, 500)
         Trace(new_trace_id())("agent.upsert", name=spec.name, scope=agent_scope, backend=spec.backend)
         return {"ok": True, "name": spec.name, "scope": agent_scope}
 
@@ -1876,9 +1884,15 @@ def register_events_routes(
         try:
             runtime.upsert_agent(spec, scope=agent_scope)
         except RuntimeError as e:
-            return JSONResponse({"ok": False, "error": str(e)}, 410)  # single-agent world
+            _tr = Trace(new_trace_id())
+            _tr.error("agent.update", err=str(e))
+            return JSONResponse(
+                {"ok": False, "error": f"agent registration is retired (ref {_tr.id})"}, 410
+            )  # single-agent world
         except Exception as e:  # noqa: BLE001
-            return JSONResponse({"ok": False, "error": str(e)}, 500)
+            _tr = Trace(new_trace_id())
+            _tr.error("agent.update", err=str(e))
+            return JSONResponse({"ok": False, "error": f"agent update failed (ref {_tr.id})"}, 500)
         Trace(new_trace_id())("agent.update", name=spec.name, scope=agent_scope)
         return {"ok": True, "name": spec.name, "scope": agent_scope}
 
@@ -2239,7 +2253,7 @@ def register_events_routes(
                 items = await box_direct.new_files_since(folder, since)
         except Exception as e:  # noqa: BLE001
             tr.error("box.poll", folder=folder, kind=kind, err=str(e))
-            return JSONResponse({"ok": False, "error": str(e)}, 502)
+            return JSONResponse({"ok": False, "error": f"box poll failed (ref {tr.id})"}, 502)
         tr("box.poll", folder=folder, kind=kind, new=len(items), since=since)
         processed, newest = [], since or ""
         # Resolved once per poll, not per file: a JD in a Box file would otherwise be downloaded
@@ -2402,7 +2416,7 @@ def register_events_routes(
             }
         except Exception as e:  # noqa: BLE001
             tr.error("synth.fire", err=str(e))
-            return JSONResponse({"ok": False, "error": str(e)}, 502)
+            return JSONResponse({"ok": False, "error": f"synth fire failed (ref {tr.id})"}, 502)
 
     async def _resume_jd(body: dict) -> str:
         """The job description a resume is judged against.
@@ -2598,7 +2612,9 @@ def register_events_routes(
             j = r.json() if r.status_code == 200 else {}
         except Exception as e:  # noqa: BLE001
             tr.error("hook", err=str(e))
-            return JSONResponse({"ok": False, "webhook": name, "error": str(e)}, 502)
+            return JSONResponse(
+                {"ok": False, "webhook": name, "error": f"webhook call failed (ref {tr.id})"}, 502
+            )
         # SINGLE-AGENT WORLD: the executor is always 'cuga' (the supervisor picks a specialist
         # internally, per wake-up). Surface 'cuga' for routed calls — the old "which agent did
         # the concierge choose" question is retired with fleet routing.
@@ -2992,8 +3008,9 @@ def register_events_routes(
         except Exception as e:  # noqa: BLE001
             import traceback
 
-            Trace(new_trace_id()).error("connect_token", app=app, err=repr(e), tb=traceback.format_exc())
-            return JSONResponse({"ok": False, "error": repr(e) or type(e).__name__}, 500)
+            _tr = Trace(new_trace_id())
+            _tr.error("connect_token", app=app, err=repr(e), tb=traceback.format_exc())
+            return JSONResponse({"ok": False, "error": f"connect token failed (ref {_tr.id})"}, 500)
         out = {"ok": True, "app": app, "connection": ext}
         # AP stores any SECRET_TEXT connection without complaint, but a piece that does not ACCEPT
         # SECRET_TEXT will later run with no usable credential — and the failure surfaces far away, at
@@ -3214,8 +3231,9 @@ def register_events_routes(
         except Exception as e:  # noqa: BLE001
             import traceback
 
-            Trace(new_trace_id()).error("arm", channel=channel, err=repr(e), tb=traceback.format_exc())
-            return JSONResponse({"ok": False, "error": repr(e) or type(e).__name__}, 500)
+            _tr = Trace(new_trace_id())
+            _tr.error("arm", channel=channel, err=repr(e), tb=traceback.format_exc())
+            return JSONResponse({"ok": False, "error": f"channel arm failed (ref {_tr.id})"}, 500)
         return {"ok": True, "channel": channel, "ap_flow_id": flow_id}
 
     @app.get("/api/events/admin/oauth-apps")
@@ -3281,7 +3299,9 @@ def register_events_routes(
         try:
             _env_upsert(key, str(value))
         except Exception as e:  # noqa: BLE001
-            return JSONResponse({"ok": False, "error": f"could not write .env: {e}"}, 500)
+            _tr = Trace(new_trace_id())
+            _tr.error("admin_set_credential", key=key, err=str(e))
+            return JSONResponse({"ok": False, "error": f"could not write .env (ref {_tr.id})"}, 500)
         live = key in _CRED_LIVE or key.startswith("EVENTS_OAUTH_")
         note = (
             "Saved to .env and applied live — no restart needed."
