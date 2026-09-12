@@ -8,9 +8,11 @@ an AP send-step, which fails for a direct channel (there is no AP connection). T
 that gap: a scheduled/push flow whose sink is a *direct* channel keeps ``deliver=True`` (no AP send
 step) and, when the fired run reaches ``/invoke``, CUGA sends the answer itself via ``send_direct``.
 
-One knob per channel: ``EVENTS_<CHANNEL>_BACKEND`` (``direct`` | ``ap``). Slack defaults to
-``direct``; telegram/discord default to ``ap`` (their AP round-trip is verified live). Flip a
-channel to direct here the day its direct adapter lands — no other code changes.
+One knob per channel: ``EVENTS_<CHANNEL>_BACKEND`` (``direct`` | ``ap``). **All four channels now
+default to ``direct``** — see ``_DEFAULT_BACKEND`` below, which is the authority. This paragraph
+used to say telegram/discord defaulted to ``ap``; that stopped being true when ``telegram_direct``
+and ``discord_direct`` landed, and a stale default here is the kind of thing that sends someone to
+install Activepieces to fix a channel that already works.
 """
 
 from __future__ import annotations

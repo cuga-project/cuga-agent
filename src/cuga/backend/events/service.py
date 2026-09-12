@@ -147,6 +147,27 @@ def create_app():
     identity = IdentityMap(db)
     oauth_store = OAuthAppStore(db)
 
+    # BOOTSTRAP THE FIRST ADMIN, or the deployment deadlocks.
+    #
+    # `users` is always constructed, so `_is_builder`/`_is_admin` always consult it — and on a fresh
+    # deployment it is EMPTY, which means nobody holds a role. Creating an agent in the Studio is
+    # builder-only (403) and creating the user who could is admin-only (403), so there was no path
+    # in: `seed_default_users` existed but was never called from anywhere.
+    #
+    # Identity only, no password: roles are what the gates read, and the local-login path is
+    # separate. This grants nothing that the header-based principal model does not already grant —
+    # see decisions/0009, which is where wiring real auth is tracked.
+    _admins = [
+        u.strip() for u in (os.environ.get("EVENTS_ADMIN_USERS", "admin") or "").split(",") if u.strip()
+    ]
+    for _uid in _admins:
+        try:
+            if users.get(_uid, "default") is None:
+                users.add(_uid, roles=["admin", "builder", "user"], tenant="default")
+                log.info("events service: bootstrapped admin/builder identity %r", _uid)
+        except Exception as e:  # noqa: BLE001 — never block startup on the user store
+            log.warning("events service: could not bootstrap admin %r: %s", _uid, e)
+
     # THE split: the worker crosses the wire. Everything else — triggers, scheduler, channels,
     # concierge, delivery — stays right here, which is why the direct integrations are unaffected.
     runtime = make_runtime(
@@ -179,15 +200,32 @@ def create_app():
                 t.cancel()
 
     app = FastAPI(title="CUGA eventing", lifespan=lifespan)
-    # The Studio UI is served by CUGA (it owns the SPA) but calls THIS service for /api/events/*.
-    # That is cross-origin in a split deployment, so the browser needs CORS. Origins are explicit
-    # (EVENTS_CORS_ORIGINS, comma-separated — the deploy script sets it to the CUGA app's URL);
-    # unset means combined mode, where the UI is same-origin and no CORS is needed at all.
+    # The Studio UI is served by CUGA (it owns the SPA) but calls THIS service for /api/events/*,
+    # /api/concierge and /invoke. That is cross-origin whenever the two run on different ports, so
+    # the browser needs CORS. EVENTS_CORS_ORIGINS (comma-separated) is the explicit setting; the CE
+    # deploy script sets it to the CUGA app's URL.
     _origins = [
         o.strip().rstrip("/")
         for o in (os.environ.get("EVENTS_CORS_ORIGINS", "") or "").split(",")
         if o.strip()
     ]
+    if not _origins:
+        # UNSET USED TO MEAN "combined mode, same origin, no CORS needed". That has been wrong ever
+        # since combined mode was removed: `make up-noap` puts CUGA on :7860 and this service on
+        # :8100, which a browser treats as two origins. The preflight OPTIONS then got a bare 405
+        # with no Access-Control-* headers, the browser cancelled the request, and the Studio's
+        # concierge box printed NOTHING — no error, no reply, because the fetch never completed.
+        # It only worked on Code Engine, which is the one place that sets the variable.
+        #
+        # So derive the default from CUGA_URL, which this service already must know in order to
+        # call /run at all. Both host spellings are listed because the SPA is reachable at either
+        # and the browser sends whichever the human typed.
+        _cuga = (os.environ.get("CUGA_URL", "") or "http://127.0.0.1:7860").rstrip("/")
+        _origins = [_cuga]
+        for a, b in (("127.0.0.1", "localhost"), ("localhost", "127.0.0.1")):
+            if a in _cuga:
+                _origins.append(_cuga.replace(a, b))
+        log.info("events service: CORS origins defaulted from CUGA_URL (%s)", ", ".join(_origins))
     if _origins:
         from fastapi.middleware.cors import CORSMiddleware
 

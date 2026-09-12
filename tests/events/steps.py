@@ -3,7 +3,7 @@
 A pass/fail count tells you *whether* something broke. It does not tell you what a person would have
 had to do to see it, or what they would have seen instead. So each harness also records its steps in
 the second person — "you post a message in #eda-test" — along with what was expected and what actually
-came back. `scripts/run_all_tests.py` renders those into the final report.
+came back. `events/scripts/run_all_tests.py` renders those into the final report.
 
 Recording is OFF unless ``E2E_STEPS_FILE`` names a file, so importing this costs a normal harness run
 nothing and no harness needs a flag. One JSON object per line, appended, so a crashed run still leaves

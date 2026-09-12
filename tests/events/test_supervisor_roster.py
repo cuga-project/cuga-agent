@@ -23,7 +23,7 @@ import seed  # noqa: E402
 import triggers  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-ROSTER = os.path.join(ROOT, "docs", "examples", "events", "supervisor_agents.yaml")
+ROSTER = os.path.join(ROOT, "events", "examples", "rosters", "default.yaml")
 
 
 def _roster():
@@ -39,7 +39,7 @@ def test_roster_parses_and_has_the_supervisor_block():
     assert "delegate" in (cfg["supervisor"].get("special_instructions") or "").lower()
     agents = cfg.get("agents") or []
     # The shipped roster is deliberately SMALL (one agent per capability area, every MCP server
-    # covered); the 27-agent example moved to rosters/supervisor_agents_full.yaml. This floor only
+    # covered); the 27-agent example moved to events/examples/rosters/supervisor_agents_full.yaml. This floor only
     # catches an accidentally truncated or half-written file.
     assert len(agents) >= 5, f"roster suspiciously small: {len(agents)}"
     assert all(a.get("name") and a.get("special_instructions") for a in agents)
@@ -59,7 +59,7 @@ def test_no_roster_smuggles_trigger_hints_back_into_the_prompts():
 
     They were removed. This test stops them coming back by hand or by generator.
     """
-    for path in [ROSTER] + sorted(glob.glob(os.path.join(ROOT, "rosters", "*.yaml"))):
+    for path in [ROSTER] + sorted(glob.glob(os.path.join(ROOT, "events", "examples", "rosters", "*.yaml"))):
         text = open(path).read()
         assert "HANDLES" not in text, (
             f"{os.path.basename(path)} reintroduces HANDLES prose. Trigger ownership goes in the "

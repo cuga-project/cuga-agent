@@ -2,6 +2,21 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Events: eventing service :8100 (debug)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "cuga.backend.events.service",
+      "console": "integratedTerminal",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "env": { "PYTHONUNBUFFERED": "1" },
+      "justMyCode": false,
+      "stopOnEntry": false,
+      "redirectOutput": true,
+      "subProcess": true
+    },
+    {
       "name": "API Registry Appworld",
       "type": "python",
       "request": "launch",

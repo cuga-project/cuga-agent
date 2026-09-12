@@ -24,6 +24,11 @@ try:
 except ImportError:  # flat load (offline tests put the events dir on sys.path)
     from runtime import AgentSpec
 
+try:
+    from . import mcp_catalog
+except ImportError:  # flat load, as above
+    import mcp_catalog
+
 
 class AgentStore:
     def __init__(self, db_path: str = ":memory:"):
@@ -40,6 +45,7 @@ class AgentStore:
                  channels TEXT NOT NULL DEFAULT '[]',
                  integrations TEXT NOT NULL DEFAULT '[]',
                  access TEXT NOT NULL DEFAULT '[]',
+                 source TEXT NOT NULL DEFAULT 'studio',
                  PRIMARY KEY (scope, name)
                )"""
         )
@@ -48,17 +54,22 @@ class AgentStore:
         for col in ("integrations", "access"):
             if col not in cols:
                 self._db.execute(f"ALTER TABLE agent ADD COLUMN {col} TEXT NOT NULL DEFAULT '[]'")
+        # `source` defaults to 'studio' so PRE-EXISTING rows read as human-made. That is the safe
+        # direction: showing an old row is a cosmetic surprise, hiding one a human built is data
+        # they cannot find. Seeded rows are rewritten with 'seed' on the next seed run.
+        if "source" not in cols:
+            self._db.execute("ALTER TABLE agent ADD COLUMN source TEXT NOT NULL DEFAULT 'studio'")
         self._db.commit()
 
     def upsert(self, scope: str, spec: AgentSpec) -> None:
         self._db.execute(
-            """INSERT INTO agent (scope,name,prompt,backend,mcp_servers,builtin_tools,channels,integrations,access)
-               VALUES (?,?,?,?,?,?,?,?,?)
+            """INSERT INTO agent (scope,name,prompt,backend,mcp_servers,builtin_tools,channels,integrations,access,source)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(scope,name) DO UPDATE SET
                  prompt=excluded.prompt, backend=excluded.backend,
                  mcp_servers=excluded.mcp_servers, builtin_tools=excluded.builtin_tools,
                  channels=excluded.channels, integrations=excluded.integrations,
-                 access=excluded.access""",
+                 access=excluded.access, source=excluded.source""",
             (
                 scope,
                 spec.name,
@@ -69,6 +80,7 @@ class AgentStore:
                 json.dumps(spec.channels),
                 json.dumps(spec.integrations),
                 json.dumps(spec.access),
+                getattr(spec, "source", "studio") or "studio",
             ),
         )
         self._db.commit()
@@ -79,11 +91,16 @@ class AgentStore:
             name=r["name"],
             prompt=r["prompt"] or "",
             backend=r["backend"],
-            mcp_servers=json.loads(r["mcp_servers"]),
+            # Read-time migration of this catalog's pre-rename spellings (cuga-web → cuga_web).
+            # Rows written before the rename would otherwise scope a backend="cuga" worker to a
+            # key CUGA's registry does not have, leaving it with no tools and only a log warning.
+            # Bounded to the seven names we renamed — see mcp_catalog.migrate_legacy_names.
+            mcp_servers=mcp_catalog.migrate_legacy_names(json.loads(r["mcp_servers"])),
             builtin_tools=json.loads(r["builtin_tools"]),
             channels=json.loads(r["channels"]),
             integrations=json.loads(r["integrations"] if "integrations" in k else "[]"),
             access=json.loads(r["access"] if "access" in k else "[]"),
+            source=(r["source"] if "source" in k else "studio") or "studio",
         )
 
     def get(self, scope: str, name: str) -> AgentSpec | None:

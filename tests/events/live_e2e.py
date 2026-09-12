@@ -32,7 +32,7 @@ WHY WE CHECK AP IS REACHABLE BEFORE ACCEPTING "CONNECT NEEDED": the connect gate
 "connect your credentials" when Activepieces is merely unreachable (concierge.py: a bare `except`
 swallows the AP error and sets exists=False). So an unreachable AP would otherwise make every PUSH leg
 "pass" as a legitimate connect-needed. We probe AP first and refuse to accept connect-needed if AP is
-down. See the events docs (GAPS.md)
+down. See the events docs (GAPS.md).
 
 NOTE ON POLL: there is no state primitive today — no poll_state.py, no /api/events/poll. A "poll" is a
 cron-scheduled flow plus a prompt line ("only report if changed"). We assert exactly that and no more.
@@ -128,6 +128,26 @@ def srv(method, path, body=None, headers=None, timeout=200):
 
 def gw_headers():
     return {"X-Gateway-Token": env("GATEWAY_TOKEN")}
+
+
+def hook_path(name: str, **params) -> str:
+    """Path for the inbound webhook, carrying ?key= when one is configured.
+
+    The webhook authenticates on a QUERY PARAM, not a header, so gw_headers() does nothing for it.
+    This harness used to POST with no key at all and pass — because the gate was "enforce if
+    configured" and the deployment had no EVENTS_WEBHOOK_KEY set, which is exactly the hole that
+    made /api/events/hook/<name> an unauthenticated agent-execution endpoint. Now that the gate
+    fails closed, a keyless POST is a 401 and these four assertions went red against a perfectly
+    healthy deployment.
+
+    Sends nothing when the variable is unset, so a local run with EVENTS_ALLOW_UNAUTHENTICATED=1
+    still exercises the open path.
+    """
+    from urllib.parse import urlencode
+
+    key = env("EVENTS_WEBHOOK_KEY")
+    q = {**params, **({"key": key} if key else {})}
+    return f"/api/events/hook/{name}" + (f"?{urlencode(q)}" if q else "")
 
 
 def has_digit(s: str) -> bool:
@@ -720,7 +740,15 @@ def arm_with_confirm(utter: str, thread: str, *, timeout: int = 300, max_turns: 
     the concierge proposes, the human approves. A harness is that human — it answers the clarifying
     question if one comes back, then says "yes". Returns ``(code, body)`` of the LAST turn, so the
     caller sees the armed reply exactly as before the gate existed.
+
+    THE VERB IS PART OF THE PRODUCT. Plain English no longer arms anything: `/automate` is the only
+    phrase that reaches the events service, so a harness that omits it is testing the refusal path,
+    not the arming path. This went unnoticed because `_match_sub` accepts a PRE-EXISTING flow — with
+    a stale CRON on the server every case reported "reused an existing flow" and passed green while
+    arming zero flows. Callers pass a bare utterance; the verb is added here, once.
     """
+    if not utter.lstrip().startswith("/"):
+        utter = f"/automate {utter}"
     code, body = srv("POST", "/api/concierge", {"text": utter, "thread_id": thread}, timeout=timeout)
     for _ in range(max_turns):
         state = (body or {}).get("state")
@@ -751,12 +779,19 @@ def _arm_and_verify(
     if not r.ok(phase, f"{phase}: concierge accepted the utterance", code == 200, fail_detail=f"HTTP {code}"):
         return
     sub, is_new = _match_sub(before, mode)
+    # is_new is REQUIRED, not decoration. Flow reuse is off by default, so an arm that armed
+    # anything leaves a subscription that was not in `before`. Accepting a pre-existing one made
+    # this assertion pass on a months-old CRON while the server refused every single arm.
     if not r.ok(
         phase,
         f"{phase}: a {mode} subscription exists after arming",
-        bool(sub),
-        "created" if is_new else "reused an existing flow (dedup_key)",
-        fail_detail="no subscription — the concierge answered but never armed",
+        bool(sub) and is_new,
+        "created",
+        fail_detail=(
+            "matched only a PRE-EXISTING flow — nothing was armed by this run"
+            if sub
+            else "no subscription — the concierge answered but never armed"
+        ),
     ):
         return
     if is_new:
@@ -958,7 +993,7 @@ def flow_webhook(r: Report):
     print("\n\033[1m[flow · WEBHOOK]\033[0m  POST an alert → incident_triage → severity")
     code, rep = srv(
         "POST",
-        "/api/events/hook/monitoring",
+        hook_path("monitoring"),
         {"alert": "HighCPU", "service": "checkout-api", "value": "97%", "threshold": "85%"},
         timeout=240,
     )
@@ -987,7 +1022,7 @@ def flow_webhook(r: Report):
     print("\n\033[1m[flow · WEBHOOK]\033[0m  POST a non-alert shape (CI failure) → same worker")
     code2, rep2 = srv(
         "POST",
-        "/api/events/hook/monitoring",
+        hook_path("monitoring"),
         {
             "event": "build.failed",
             "repo": "anupamamurthi/pachyderm",
@@ -1026,7 +1061,7 @@ def flow_webhook(r: Report):
     print("\n\033[1m[flow · WEBHOOK]\033[0m  ROUTED (?route=1) — concierge picks the agent, like chat")
     code3, rep3 = srv(
         "POST",
-        "/api/events/hook/ci?route=1",
+        hook_path("ci", route="1"),
         {
             "pull_request": {
                 "title": "Refactor auth module",

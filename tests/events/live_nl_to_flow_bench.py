@@ -1,6 +1,6 @@
 """LIVE nl_to_flow benchmark — the real thing, against a real Activepieces.
 
-The offline `test_nl_to_flow_bench.py` stubs AP (FakeEngine) and only proves the concierge COMPILED
+The offline `test_flowspec_bench.py` stubs AP (FakeEngine) and only proves the concierge COMPILED
 the right FlowSpec. This runner does what that can't: it drives the SAME cases through the real
 concierge + real AP, so AP itself builds the flow and stamps every step `valid: true/false`. Then it
 FIRES the synth-fireable ones (github) and reads the run status. It does NOT judge whether the output

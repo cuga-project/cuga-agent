@@ -4,9 +4,10 @@ Two new endpoints (the events docs (ARCHITECTURE.md)):
   - ``POST /invoke``         — the seam AP calls back through (X-Gateway-Token).
   - ``POST /api/concierge``  — NL → decide; ``?dry_run=1`` builds the flow without publishing.
 
-``register_events_routes(app, runtime=..., store=...)`` is called from CUGA's ``main.py``
-lifespan ONLY when the flag is on, so vanilla CUGA is untouched when off. fastapi is a CUGA
-dependency; the dependency-light core doesn't import this module.
+``register_events_routes(app, runtime=..., store=...)`` is called from ``events/service.py`` — the
+eventing service's OWN app. It is never called from CUGA's ``main.py``: the "combined" mode that
+mounted these routes onto CUGA, and the ``EVENTS_ENABLED`` flag that gated it, are both gone.
+Vanilla CUGA is untouched because it never imports this module at all.
 """
 
 from __future__ import annotations
@@ -27,6 +28,34 @@ from .principal import resolve as resolve_principal
 from .trace import Trace, new_trace_id
 
 _elog = logging.getLogger("cuga.events")
+
+
+def _open_by_choice() -> bool:
+    """Is this server DELIBERATELY running without authentication?
+
+    The events seams (``/invoke``, the poll endpoints, the inbound webhook, Slack's signature
+    check) each used to enforce only when their secret happened to be set, which meant an unset
+    secret silently disabled the check. Now they refuse instead, and running open has to be said
+    out loud — the same shape as ``CUGA_RUN_ALLOW_UNAUTHENTICATED`` on ``/run``.
+
+    Deliberately NOT read through the secret seam: this is a local-dev switch, not a credential,
+    and it must never arrive from a vault reference.
+    """
+    return (os.environ.get("EVENTS_ALLOW_UNAUTHENTICATED", "") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _gateway_denied(token: str, request) -> bool:
+    """True when this request must be refused. Missing token = refuse, unless opened by choice."""
+    if _open_by_choice():
+        return False
+    if not token:
+        return True  # nothing to check against → closed, not open
+    return request.headers.get("X-Gateway-Token") != token
 
 
 def _iso(ts: float) -> str:
@@ -90,6 +119,61 @@ def _slack_first_touch(ts: str) -> bool:
     return True
 
 
+# Pointer-shaped events (reaction_added, star_added, …) dedup on `event_ts` — the timestamp OF THE
+# REACTION — in a namespace of their OWN, deliberately separate from _SLACK_ANSWERED_TS above.
+# Sharing that list would key both on the same value and cross-cancel: reacting to a message the
+# bot had already answered would look like a duplicate and the watcher would never fire.
+_SLACK_DISPATCHED_EVENT_TS: list = []
+
+
+def _slack_first_dispatch(event_ts: str) -> bool:
+    """True the first time this Slack EVENT is seen (and records it); False on a redelivery.
+
+    Slack retries an event when the acknowledgement misses its 3-second deadline, and neither
+    ``direct_events.match`` nor ``dispatch_all`` deduplicates — so a retry ran every matching
+    watcher a second time. That was not hypothetical: hydration used to sit on the ack path with a
+    10-second timeout, so the slow case and the retry case were the same case.
+    """
+    if not event_ts:
+        return True
+    if event_ts in _SLACK_DISPATCHED_EVENT_TS:
+        return False
+    _SLACK_DISPATCHED_EVENT_TS.append(event_ts)
+    if len(_SLACK_DISPATCHED_EVENT_TS) > 300:
+        del _SLACK_DISPATCHED_EVENT_TS[:100]
+    return True
+
+
+_HONOUR_FALSE = {"0", "false", "no", "off"}
+
+
+def honour_channel(name: str) -> bool:
+    """Should this process serve ``name`` (``slack``/``discord``/``telegram``/``web``)?
+
+    A LOCAL-DEVELOPMENT switch, and deliberately opt-OUT: unset means honour, so a deployment that
+    sets none of these behaves exactly as before. Code Engine sets none of them.
+
+    It exists because bot credentials are singletons. Telegram's ``getUpdates`` allows one consumer
+    per token, so a laptop and a deployment polling the same bot fight over every message; two
+    Discord Gateway sessions on one token both receive every event and answer twice. Running a
+    local stack alongside a live one therefore corrupts the live one unless you can silence the
+    shared channels — which is what this does:
+
+        LOCAL_HONOR_SLACK=false LOCAL_HONOR_DISCORD=false LOCAL_HONOR_TELEGRAM=false make up-noap
+
+    leaving web chat, the concierge, cron/poll and webhooks fully live. Blanking the tokens works
+    too, but it is a worse habit: it edits the same ``.env`` you deploy from.
+
+    Both spellings are accepted (HONOR/HONOUR) — nobody should have to remember which.
+    """
+    key = name.strip().upper()
+    for var in (f"LOCAL_HONOR_{key}", f"LOCAL_HONOUR_{key}"):
+        raw = os.environ.get(var)
+        if raw is not None:
+            return raw.split("#", 1)[0].strip().lower() not in _HONOUR_FALSE
+    return True
+
+
 def register_events_routes(
     app,
     *,
@@ -111,21 +195,30 @@ def register_events_routes(
     from .secret_seam import secret as _secret
 
     token = gateway_token if gateway_token is not None else _secret("GATEWAY_TOKEN")
-    if not token:
-        # /invoke runs agents on a caller-supplied scope; with no token the seam is open. Fine for
-        # local dev, dangerous in a shared deploy — warn loudly rather than fail silently.
+
+    # FAIL CLOSED. These guards were all written as "enforce IF configured", so an unset secret
+    # meant no enforcement at all — the service warned in a log nobody reads and then served every
+    # request. On a public URL that is not a warning, it is an open endpoint: /api/events/hook/<x>
+    # ran an agent for anyone who knew the address.
+    #
+    # Inverted to match what /run already does with CUGA_RUN_ALLOW_UNAUTHENTICATED: missing
+    # credential = refuse, and running open requires SAYING SO. One flag covers the events seams.
+    if _open_by_choice():
         _elog.warning(
-            "events: GATEWAY_TOKEN is empty — /invoke and the poll/webhook seams are "
-            "UNAUTHENTICATED. Set GATEWAY_TOKEN before exposing this server."
+            "events: EVENTS_ALLOW_UNAUTHENTICATED=1 — /invoke, the poll/webhook seams and Slack "
+            "signature checks are OPEN. Local development only; never on a reachable host."
         )
-    if not os.environ.get("EVENTS_WEBHOOK_KEY"):
-        # The hook runs an agent and can post into a channel. Unset, `?key=` is not merely optional —
-        # it is ignored, so a WRONG key is accepted too. That surprises people; say it plainly.
-        _elog.warning(
-            "events: EVENTS_WEBHOOK_KEY is empty — POST /api/events/hook/<name> accepts "
-            "ANY request, including one with a wrong ?key=. Set it before exposing this "
-            "server on a public URL."
-        )
+    else:
+        if not token:
+            _elog.warning(
+                "events: GATEWAY_TOKEN is empty — /invoke and the poll seams will REFUSE every "
+                "request (401). Set GATEWAY_TOKEN, or EVENTS_ALLOW_UNAUTHENTICATED=1 for local dev."
+            )
+        if not os.environ.get("EVENTS_WEBHOOK_KEY"):
+            _elog.warning(
+                "events: EVENTS_WEBHOOK_KEY is empty — POST /api/events/hook/<name> will REFUSE "
+                "every request (401). Set it, or EVENTS_ALLOW_UNAUTHENTICATED=1 for local dev."
+            )
     if not os.environ.get("SLACK_SIGNING_SECRET") and os.environ.get("SLACK_BOT_TOKEN"):
         _elog.warning(
             "events: SLACK_SIGNING_SECRET is empty — /api/events/slack/events accepts "
@@ -236,7 +329,7 @@ def register_events_routes(
         X-Gateway-Token; `deliver` decides whether the answer is also pushed to a channel."""
         body = await request.json()
         tr = Trace(body.get("trace_id") or new_trace_id())
-        if token and request.headers.get("X-Gateway-Token") != token:
+        if _gateway_denied(token, request):
             return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
         from .envelope import validate as _validate_envelope
 
@@ -1304,7 +1397,7 @@ def register_events_routes(
             )
         # Same seam as /invoke: this runs an agent with the caller's credentials and delivers to a
         # real channel, so it must not be weaker than /invoke's gate.
-        if token and request.headers.get("X-Gateway-Token") != token:
+        if _gateway_denied(token, request):
             return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
         sub, _ = _owned_sub(sub_id, request)
         if sub is None:
@@ -1523,7 +1616,17 @@ def register_events_routes(
         and which backend carries each — direct, or Activepieces."""
         from .connectors import channels_status
 
-        return {"channels": channels_status()}
+        rows = channels_status()
+        # Surface LOCAL_HONOR_<CHANNEL>. A silenced channel still reports "connected" — its token is
+        # valid and nothing is misconfigured — so without this the status board would say a channel
+        # is live while this process deliberately ignores it, which is exactly the confusion the
+        # switch is meant to avoid.
+        for row in rows:
+            name = (row.get("name") or row.get("channel") or "") if isinstance(row, dict) else ""
+            if name and not honour_channel(name):
+                row["honored"] = False
+                row["note"] = f"silenced locally (LOCAL_HONOR_{name.upper()}=false)"
+        return {"channels": rows}
 
     @app.get("/api/events/integrations")
     async def events_integrations(request: Request):
@@ -1612,14 +1715,53 @@ def register_events_routes(
 
     @app.get("/api/events/mcp-servers")
     async def events_mcp_servers():
-        """The tool servers a builder can attach to an agent (name + one-line hint). Drives the
-        Agent-editor form so the UI never hardcodes the catalog. Also returns the MCP registry URL so
-        the Studio can link out to the tool explorer (its interactive /docs)."""
+        """The tool servers a builder can attach to an agent (name + one-line hint).
+
+        Sourced from the LIVE CUGA registry, so a server somebody registered in their own
+        MCP_SERVERS_FILE appears in the Studio picker with no code change. It used to return
+        mcp_catalog's built-in seven and nothing else, which — together with a validator that
+        rejected everything outside them — made the catalog a closed allow-list.
+
+        The catalog is now only the fallback, for when the registry is unreachable: an editor with
+        an empty tool picker is useless, and "the registry is down" should not look like "you have
+        no tools". Names from both sources are merged, registry first, so the built-in hints still
+        annotate the cuga_* servers when the registry describes them tersely.
+        """
         from . import mcp_catalog
 
         registry_url = (os.environ.get("EVENTS_REGISTRY_URL") or "http://localhost:8001").rstrip("/")
+        servers: list[dict] = []
+        seen: set[str] = set()
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=5) as c:
+                r = await c.get(f"{registry_url}/applications")
+            if r.status_code == 200:
+                data = r.json()
+                # /applications answers either a list of {name, description} or a name-keyed dict.
+                rows = data if isinstance(data, list) else [{"name": k, **(v or {})} for k, v in data.items()]
+                for row in rows:
+                    n = (row.get("name") or "").strip() if isinstance(row, dict) else str(row).strip()
+                    if not n or n in seen:
+                        continue
+                    seen.add(n)
+                    hint = mcp_catalog.HINTS.get(n) or (
+                        row.get("description") if isinstance(row, dict) else ""
+                    )
+                    servers.append({"name": n, "hint": (hint or "").strip()})
+        except Exception as e:  # noqa: BLE001 — an unreachable registry must not empty the picker
+            _elog.warning(
+                f"mcp-servers: registry at {registry_url} unreachable ({e}); using the built-in catalog"
+            )
+
+        for n in mcp_catalog.known_names():
+            if n not in seen:
+                seen.add(n)
+                servers.append({"name": n, "hint": mcp_catalog.HINTS.get(n, "")})
+
         return {
-            "servers": [{"name": n, "hint": mcp_catalog.HINTS.get(n, "")} for n in mcp_catalog.known_names()],
+            "servers": servers,
             "registry_url": registry_url,
             "explorer_url": f"{registry_url}/docs",
         }
@@ -1635,11 +1777,26 @@ def register_events_routes(
         backend = (body.get("backend") or "cuga").strip()
         if backend not in ("react", "cuga"):
             return None, "backend must be 'react' or 'cuga'"
-        known = set(mcp_catalog.known_names())
-        mcp = [str(m) for m in (body.get("mcp_servers") or [])]
-        bad = [m for m in mcp if m not in known]
-        if bad:
-            return None, f"unknown mcp_servers: {bad} (known: {sorted(known)})"
+        # BRING YOUR OWN MCP SERVER. Any name is accepted here. This used to reject anything
+        # outside mcp_catalog, which made the built-in seven a closed allow-list: somebody running
+        # the events layer against their own registry could not create an agent that used it.
+        #
+        # The catalog is a convenience default, not a permission list, and the check was in the
+        # wrong process anyway. For backend="cuga" — the normal path — the name is only ever
+        # resolved by CUGA against whatever MCP_SERVERS_FILE its registry serves; the events layer
+        # has no way to know what is in there and no business ruling on it.
+        #
+        # backend="react" is the narrower case: it builds LangChain tools here, so it needs a URL
+        # and can only use servers this process can resolve. That is enforced where the tools are
+        # actually built (ReactRuntime → mcp_catalog.resolve), which fails loudly, rather than by
+        # refusing to store the agent.
+        # PRESERVE dict entries. `str(m)` collapsed `{"name": "x", "url": "..."}` into the literal
+        # text "{'name': 'x', ...}", so the dict branch of mcp_catalog.to_client_config — the whole
+        # mechanism for reaching an MCP server this catalog has never heard of — was unreachable
+        # through this API. The agent stored a nonsense name, resolve() found no endpoint for it,
+        # and the agent came up with fewer tools than it declared.
+        mcp = [m if isinstance(m, dict) else str(m) for m in (body.get("mcp_servers") or [])]
+        mcp = mcp_catalog.migrate_legacy_names(mcp)  # cuga-web → cuga_web, if a client still sends it
         channels = [str(c) for c in (body.get("channels") or [])]
         bad_ch = [c for c in channels if c not in ("web", "telegram", "slack", "discord")]
         if bad_ch:
@@ -1902,6 +2059,11 @@ def register_events_routes(
         # 1) URL verification handshake (must echo the challenge; no signature yet)
         if body.get("type") == "url_verification":
             return PlainTextResponse(body.get("challenge", ""))
+        # LOCAL_HONOR_SLACK=false — ack and drop. Slack retries anything that is not a 2xx, so a
+        # local stack must still answer 200; it simply must not ALSO reply in the channel, which
+        # would double up on whatever deployment owns this Slack app.
+        if not honour_channel("slack"):
+            return JSONResponse({"ok": True, "ignored": "LOCAL_HONOR_SLACK=false"})
         # 2) verify it's really Slack
         ok_sig, why = slack_direct.verify_signature(request.headers, raw)
         if not ok_sig:
@@ -1974,22 +2136,56 @@ def register_events_routes(
             kind = direct_events.kind_for("slack", ev_type)
             if kind:
                 item = ev.get("item") or {}
-                subs = direct_events.match(
-                    store,
-                    "slack",
-                    kind,
-                    channel=str(ev.get("channel") or item.get("channel") or ""),
-                    text=str(ev.get("text") or ""),
-                    emoji=str(ev.get("reaction") or ""),
-                )
-                if subs:
-                    Trace(new_trace_id())("slack.direct", event=kind, matched=len(subs))
-                    asyncio.create_task(
-                        direct_events.dispatch_all(
-                            subs, app="slack", event=kind, payload=dict(ev), engine=engine
-                        )
-                    )
+                # POINTER-SHAPED EVENTS carry item.{channel,ts} but NOT the message, so they need a
+                # conversations.replies round-trip to become useful. That used to be awaited HERE,
+                # before `return {"ok": True}` — a 10-second timeout in front of Slack's 3-second
+                # acknowledgement deadline. Slack then retried, and because nothing downstream
+                # deduplicates, the retry ran every matched watcher again.
+                #
+                # So: dedup the pointer event on its own event_ts, then do hydration, matching AND
+                # dispatch in the background. The ack returns immediately either way.
+                #
+                # The gate is POINTER-ONLY on purpose. Gating the whole `kind` branch would also
+                # gate app_mention, which carries its own text, needs no hydration, and must keep
+                # dispatching new_slack_mention watchers.
+                is_pointer = bool(not ev.get("text") and item.get("ts") and item.get("channel"))
+                if not is_pointer or _slack_first_dispatch(str(ev.get("event_ts") or "")):
+                    asyncio.create_task(_slack_dispatch_watchers(dict(ev), dict(item), kind, is_pointer))
         return {"ok": True}
+
+    async def _slack_dispatch_watchers(ev: dict, item: dict, kind: str, is_pointer: bool) -> None:
+        """Hydrate a pointer event, match watchers and dispatch — all OFF the ack path.
+
+        Everything here was previously inline in the webhook handler. Nothing about the matching
+        or dispatch changed; only when it runs. Exceptions are contained because this is a
+        fire-and-forget task: an unhandled one would be swallowed by the event loop and reported
+        as nothing at all.
+        """
+        try:
+            from . import direct_events, slack_direct
+
+            payload = dict(ev)
+            if is_pointer:
+                # describe() already renders a "text" key, so hydrating it here reaches the prompt
+                # with no other change.
+                payload["text"] = await slack_direct.fetch_message_text(str(item["channel"]), str(item["ts"]))
+            subs = direct_events.match(
+                store,
+                "slack",
+                kind,
+                channel=str(ev.get("channel") or item.get("channel") or ""),
+                # the config `pattern` filter now matches the MESSAGE, which is what a user
+                # arming "react :bug: on a message containing traceback" means.
+                text=str(payload.get("text") or ""),
+                emoji=str(ev.get("reaction") or ""),
+            )
+            if subs:
+                Trace(new_trace_id())("slack.direct", event=kind, matched=len(subs))
+                await direct_events.dispatch_all(
+                    subs, app="slack", event=kind, payload=payload, engine=engine
+                )
+        except Exception:  # noqa: BLE001
+            _elog.exception("slack watcher dispatch failed for event=%s", kind)
 
     async def _slack_answer(text: str, channel: str, user: str, thread_ts: str | None = None) -> None:
         """Route a Slack message through CUGA's /run and post the reply BACK INTO THE THREAD.
@@ -2023,7 +2219,7 @@ def register_events_routes(
         defaults to the AP PUSH trigger (create_push_flow) — this endpoint is the manual/AP-free
         alternative you drive/schedule yourself. Gateway-token protected. Body:
         {folder_id, since?, agent?, deliver_to?, scope?}. Returns the new files + newest created_at."""
-        if token and request.headers.get("X-Gateway-Token") != token:
+        if _gateway_denied(token, request):
             return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
         from . import box_direct
 
@@ -2145,7 +2341,7 @@ def register_events_routes(
         Disable with EVENTS_DEBUG_RUN=0 (same switch as /run)."""
         if os.environ.get("EVENTS_DEBUG_RUN", "1") == "0":
             return JSONResponse({"ok": False, "error": "debug endpoint disabled (EVENTS_DEBUG_RUN=0)"}, 403)
-        if token and request.headers.get("X-Gateway-Token") != token:
+        if _gateway_denied(token, request):
             return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
         from . import triggers as _triggers
 
@@ -2352,9 +2548,23 @@ def register_events_routes(
         import json as _json
         import httpx
 
+        # FAIL CLOSED. This used to be `if want and …`, so an unset EVENTS_WEBHOOK_KEY skipped the
+        # check entirely: the endpoint ran an agent for anyone who knew the URL, and a WRONG ?key=
+        # was accepted too. On a public deployment that is an open agent-execution endpoint —
+        # unauthenticated LLM spend, reading whatever the service account can reach.
         want = os.environ.get("EVENTS_WEBHOOK_KEY")
-        if want and not _hmac.compare_digest(request.query_params.get("key") or "", want):
-            return JSONResponse({"ok": False, "error": "bad or missing ?key"}, 401)
+        if not _open_by_choice():
+            if not want:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": "webhook disabled: set EVENTS_WEBHOOK_KEY (or "
+                        "EVENTS_ALLOW_UNAUTHENTICATED=1 for local dev)",
+                    },
+                    401,
+                )
+            if not _hmac.compare_digest(request.query_params.get("key") or "", want):
+                return JSONResponse({"ok": False, "error": "bad or missing ?key"}, 401)
         payload = await _safe_json(request)
         route = (request.query_params.get("route") or "").strip().lower()
         routed = route in ("1", "true", "yes", "llm", "concierge")
@@ -2467,7 +2677,7 @@ def register_events_routes(
 
     # register the Gateway as a startup background task (direct is the default). The server's
     # lifespan launches app.state.events_background; nothing to arm (the bot connects on boot).
-    if os.environ.get("EVENTS_DISCORD_BACKEND", "direct") != "ap":
+    if os.environ.get("EVENTS_DISCORD_BACKEND", "direct") != "ap" and honour_channel("discord"):
         from . import discord_direct as _dd
 
         if _dd.bot_token():
@@ -2542,7 +2752,7 @@ def register_events_routes(
 
     # register the long-poll loop as a startup background task (direct is the DEFAULT — no AP, no
     # tunnel). The AP webhook backend stays behind EVENTS_TELEGRAM_BACKEND=ap.
-    if os.environ.get("EVENTS_TELEGRAM_BACKEND", "direct") != "ap":
+    if os.environ.get("EVENTS_TELEGRAM_BACKEND", "direct") != "ap" and honour_channel("telegram"):
         from . import telegram_direct as _tg
 
         if _tg.bot_token():
@@ -2717,8 +2927,12 @@ def register_events_routes(
                     ext,
                     prov["piece"],
                     code,
-                    client_id=os.environ.get(f"EVENTS_OAUTH_{app.upper()}_CLIENT_ID", ""),
-                    client_secret=os.environ.get(f"EVENTS_OAUTH_{app.upper()}_CLIENT_SECRET", ""),
+                    # Through oauth._env, NOT a raw environ read: the seam resolves `vault://` /
+                    # `aws://` references and the admin-entered OAuthAppStore. A raw read passed the
+                    # LITERAL string "vault://…" as the client secret, which authenticates against
+                    # nothing and fails with no hint that the reference was never resolved.
+                    client_id=oauth._env(app, "CLIENT_ID"),
+                    client_secret=oauth._env(app, "CLIENT_SECRET"),
                     scope=" ".join(prov.get("scopes", [])),
                     redirect_url=oauth.redirect_uri(app),
                     authorization_method=prov.get("authorization_method", "BODY"),
@@ -2895,6 +3109,9 @@ def register_events_routes(
     async def admin_list_users(request: Request):
         """Identities known to this tenant. Admin-only; returns an empty list when no user store is
         configured."""
+        _denied = _admin_denied(request)
+        if _denied is not None:
+            return _denied
         if users is None:
             return {"users": []}
         p = _principal_from(request.query_params.get("scope"), request.headers)
@@ -2910,6 +3127,9 @@ def register_events_routes(
     async def admin_add_user(request: Request):
         """Register an identity in this tenant so channel messages can resolve to a real user rather
         than the fallback. Admin-only; 501 when no user store is configured."""
+        _denied = _admin_denied(request)
+        if _denied is not None:
+            return _denied
         if users is None:
             return JSONResponse({"ok": False, "error": "user store not configured"}, 501)
         body = await _safe_json(request)
@@ -2933,6 +3153,9 @@ def register_events_routes(
         """Admin: arm a channel INBOUND flow. Slack uses the DIRECT backend by default (no AP — the
         Slack Events API posts straight to /api/events/slack/events); set EVENTS_SLACK_BACKEND=ap to
         use the (kept-for-revisit) AP path. Other channels go through AP."""
+        _denied = _admin_denied(request)
+        if _denied is not None:
+            return _denied
         body = await _safe_json(request)
         p = _principal_from(body.get("scope") or request.query_params.get("scope"), request.headers)
         if not _is_admin(p):
@@ -3016,6 +3239,9 @@ def register_events_routes(
     @app.get("/api/events/admin/oauth-apps")
     async def admin_oauth_apps(request: Request):
         """Which OAuth providers have client id/secret configured (via UI or .env). No secrets returned."""
+        _denied = _admin_denied(request)
+        if _denied is not None:
+            return _denied
         p = _principal_from(request.query_params.get("scope"), request.headers)
         if not _is_admin(p):
             return JSONResponse({"ok": False, "error": "admin only"}, 403)
@@ -3026,6 +3252,9 @@ def register_events_routes(
     @app.post("/api/events/admin/oauth-apps")
     async def admin_set_oauth_app(request: Request):
         """Admin enters a provider's OAuth app client id/secret once (UI instead of .env)."""
+        _denied = _admin_denied(request)
+        if _denied is not None:
+            return _denied
         if oauth_store is None:
             return JSONResponse({"ok": False, "error": "oauth store not configured"}, 501)
         body = await _safe_json(request)
@@ -3049,6 +3278,9 @@ def register_events_routes(
         'edit this credential' seam for channels + integrations. Persists to .env AND updates the live
         process. Whitelisted to the known connector cred keys (from setup_guides) so the UI can never
         inject arbitrary environment. Admin only. Reports whether it applied live or needs a reload."""
+        _denied = _admin_denied(request)
+        if _denied is not None:
+            return _denied
         from . import setup_guides
 
         body = await _safe_json(request)
@@ -3087,6 +3319,37 @@ def register_events_routes(
             return await request.json()
         except Exception:  # noqa: BLE001
             return {}
+
+    def _admin_denied(request):
+        """Refuse an /api/events/admin/* request that is not AUTHENTICATED. Returns a response, or
+        None to continue.
+
+        WHY THIS EXISTS. The role check below (`_is_admin`) reads a principal built from
+        caller-controlled input — `body["scope"]`, a query param, or the X-User-Id header — and the
+        bootstrap makes the default identity `admin`. So with a GATEWAY_TOKEN configured and
+        EVENTS_ALLOW_UNAUTHENTICATED=0, an unauthenticated POST /api/events/admin/users still
+        created another admin: the caller simply asserted who they were and the role lookup agreed.
+        The same path guards OAuth app configuration and connector credentials.
+
+        Authorization cannot be the first gate — something has to establish WHO is calling before
+        their roles mean anything. These routes are administrative, so they now take the same
+        machine credential the rest of the events seams take, and fail closed without it.
+
+        NOTE — this is a mitigation, not the end state. The Studio calls these routes from the
+        browser, which holds no gateway token, so its admin screens need CUGA to proxy them (core
+        has the token) or a real session. That is the "Studio has no login" item tracked
+        separately; closing the open-admin hole should not wait for it.
+        """
+        if _gateway_denied(token, request):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "admin endpoints require authentication (X-Gateway-Token). "
+                    "For local development set EVENTS_ALLOW_UNAUTHENTICATED=1.",
+                },
+                401,
+            )
+        return None
 
     def _is_admin(p) -> bool:
         if users is None:
