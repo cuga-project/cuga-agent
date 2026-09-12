@@ -257,6 +257,51 @@ async def test_the_header_still_travels_when_authentication_is_off(monkeypatch):
     assert seen["headers"]["X-User-Id"] == "kate"
 
 
+@pytest.mark.asyncio
+async def test_the_proxy_refuses_a_path_that_escapes_the_admin_prefix(monkeypatch):
+    """`{path:path}` captures slashes and httpx normalises `..` on the wire, so an unconfined proxy
+    turns `/api/events/admin/../../invoke` into a gateway-token-authenticated call to /invoke."""
+    import httpx
+
+    from cuga.backend.server import events_bridge as eb
+
+    monkeypatch.setenv("EVENTS_API_URL", "http://events.local")
+    monkeypatch.setenv("GATEWAY_TOKEN", "tok")
+
+    called = {"n": 0}
+
+    class _C:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def request(self, *a, **k):
+            called["n"] += 1  # must NOT happen for a rejected path
+
+            class _R:
+                status_code = 200
+
+                def json(self):
+                    return {"ok": True}
+
+            return _R()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _C)
+    for bad in ("../../invoke", "..%2f..%2finvoke", "a/../b", "%2e%2e/x"):
+        status, body = await eb.proxy_admin(_Req("POST", {}, b"{}"), bad)
+        assert status == 400, f"{bad!r} should be refused, got {status}"
+    assert called["n"] == 0, "a refused path must never reach the events service"
+
+    # a legitimate multi-segment admin path still passes
+    status, _ = await eb.proxy_admin(_Req("POST", {}, b"{}"), "channels/slack/arm")
+    assert status == 200
+
+
 # ── the SPA must actually route admin calls to CUGA ────────────────────────────────────────────
 def test_the_spa_routes_admin_paths_to_core_not_the_events_origin():
     api = pathlib.Path("src/frontend_workspaces/frontend/src/api.ts").read_text()

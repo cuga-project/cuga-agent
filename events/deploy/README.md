@@ -24,8 +24,8 @@ Three things bite a brand-new checkout, and only the first one fails loudly.
 **1. Populate `.env` FIRST.** `make_env_ce.sh` builds the Code Engine secret *from your local
 `.env`* — it does not prompt, and it does not warn about keys you never set. A clone with an empty
 `.env` produces a secret missing the LLM credentials and every channel token, and the deploy
-succeeds anyway. Fill it in from [`../docs/SETUP.md`](../docs/SETUP.md) → *`.env` keys*, then run
-`./make_env_ce.sh`.
+succeeds anyway. Fill it in from the annotated [`.env.events.example`](../../.env.events.example) at
+the repo root (every key the events layer reads, grouped by connector), then run `./make_env_ce.sh`.
 
 **2. Run `./4_postgres.sh` BEFORE `./2_deploy.sh` on a new project.** `2_deploy.sh` branches on
 whether `EVENTS_DB` is already in the CE secret: present → managed PostgreSQL; absent → it falls
@@ -128,7 +128,7 @@ flow, with *no restart recorded*. On 2026-08-05 a cron armed from Slack at 11:12
 pod started at 11:24, and `ibmcloud ce app get` still read `Restarts: 0` throughout.
 
 ```bash
-cd deploy/ce
+cd events/deploy
 YES=1 ./4_postgres.sh          # provisions the DB + credentials, writes the DSN + CA into BOTH
                                # the CE secret and .env.ce (so a from-scratch deploy can rebuild)
 ```
@@ -150,7 +150,7 @@ minimum), service credentials, and writes `EVENTS_DB` + `EVENTS_DB_CA_B64` into 
 
 ## Sequence (the scripts underneath)
 ```bash
-cd deploy/ce
+cd events/deploy
 ./make_env_ce.sh                        # .env.ce from ../../.env (gitignored, chmod 600)
 YES=1 ./4_postgres.sh                   # ONCE: the events database (see above)
 CUGA_CE_ADMIN=1 ./5_appid.sh            # ONCE: OIDC login (see "Login" below) — needs cuga-core's URL
@@ -164,7 +164,7 @@ Tear down the apps: `CUGA_CE_ADMIN=1 ./teardown.sh` (leaves the database intact)
 
 ### The exact commands the live deploy used (copy-paste to reproduce)
 ```bash
-cd deploy/ce
+cd events/deploy
 ./make_env_ce.sh                                    # .env.ce from ../../.env
 YES=1 ./4_postgres.sh                               # once — skips anything already there
 CUGA_CE_ADMIN=1 YES=1 ./1_build_push_image.sh       # ~10-20 min
@@ -233,7 +233,9 @@ calls are proxied through core and why `make_env_ce.sh` has a `CORE_ONLY` list.
 `2_deploy.sh` gates `DYNACONF_AUTH__ENABLED` on `OIDC_CLIENT_ID` actually being in the core
 secret, because enabling auth without the four keys is a **hard brick**: `get_oidc_client()`
 returns `None`, `/auth/login` answers 503, and every `require_auth` route answers 401 — nobody,
-including you, can log in. Watch for one of these lines:
+including you, can log in. When it does enable auth it also sets `DYNACONF_AUTH__REQUIRE_HTTPS=true`
+— required on Code Engine, or the session cookie is issued without `Secure` and the `SameSite=None`
+state cookie is rejected by the browser. Watch for one of these lines:
 
 ```
 auth: OIDC login ENABLED (authorization/roles off — see the note above)

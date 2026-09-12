@@ -214,7 +214,16 @@ async def proxy_admin(request, path: str, current_user=None):
     verified = getattr(current_user, "sub", None) or getattr(current_user, "email", None)
     if verified:
         hdrs["X-User-Id"] = str(verified)
-    url = f"{base}{_ADMIN_PREFIX}/{path.lstrip('/')}"
+    # CONFINE the forwarded path to the admin prefix. `{path:path}` captures slashes, uvicorn does
+    # NOT normalise `..`, and httpx collapses `/api/events/admin/../../invoke` on the wire to
+    # `/api/invoke` — so without this a caller past the auth gate could pivot the gateway token onto
+    # any events endpoint (/invoke, /api/concierge), not just the six admin routes. Reject any dot
+    # segment or an already-encoded one rather than trying to re-normalise after the fact.
+    clean = path.strip("/")
+    segments = clean.split("/")
+    if any(seg in ("", ".", "..") for seg in segments) or "%2f" in path.lower() or "%2e" in path.lower():
+        return 400, {"ok": False, "error": "invalid admin path"}
+    url = f"{base}{_ADMIN_PREFIX}/{clean}"
     try:
         body = await request.body()
         async with httpx.AsyncClient(timeout=60) as c:

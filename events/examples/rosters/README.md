@@ -12,8 +12,10 @@ Grouped along the same lines as the Activepieces app catalogue — Enterprise Pr
 Market & Research Intelligence, and the document-/recording-/code-centric flows.
 
 > **Nothing here is wired in.** These are drop-in *alternatives* to the root roster, authored for
-> testing. No code changed, no server restarted. Each file is loader-compatible with the existing
-> `supervisor: … / agents: …` schema and its `HANDLES TRIGGERS:` convention.
+> testing. No code changed, no server restarted. Each file uses the loader schema
+> `supervisor: … / agents: …`, where every sub-agent carries `name`, `special_instructions` and
+> `mcp_servers`. Which triggers an agent covers is recorded in **comments**, mirrored from
+> `src/cuga/backend/events/triggers.py` — it is documentation, not a structured field the loader reads.
 
 ## The families
 
@@ -38,8 +40,8 @@ is a property of the *triggers*, not the agents** — an `ap_*` roster fields Sa
 (Gmail/GitHub/Box/Calendar) that CUGA can't watch directly, so it needs AP; a `no_ap_*` roster's
 triggers are all direct channels (Slack/Discord/Telegram) + native cron/poll/RSS, so it runs with
 **zero AP infra**. All agents are pulled verbatim from `supervisor_agents_full.yaml` — regrouped, not
-rewritten. Where a borrowed agent had a mixed trigger set, the `no_ap_*` files trim its
-`HANDLES TRIGGERS` lines down to only the AP-free triggers so the file is honestly no-AP.
+rewritten. Where a borrowed agent had a mixed trigger set, the `no_ap_*` files trim the trigger
+notes in its comments down to only the AP-free triggers so the file is honestly no-AP.
 
 | File | Persona | Sub-agents | AP |
 |---|---|---|---|
@@ -54,8 +56,8 @@ rewritten. Where a borrowed agent had a mixed trigger set, the `no_ap_*` files t
 - **One domain = one file = one supervisor.** A domain is a *source of events + a purpose*, not a
   single integration. "Box Intelligence" is about documents, so it also fields email attachments;
   "Team Comms" spans Slack + Discord + Telegram because they're the same job on different transports.
-- **Each sub-agent does ONE meaningful thing** and declares the exact triggers it HANDLES (mirrored
-  from `src/cuga/backend/events/triggers.py`). No sub-agent is a catch-all.
+- **Each sub-agent does ONE meaningful thing**, and its comments note the exact triggers it covers
+  (mirrored from `src/cuga/backend/events/triggers.py`). No sub-agent is a catch-all.
 - **Tools stay within the real MCP set**: `cuga_finance · cuga_knowledge · cuga_geo · cuga_web ·
   cuga_code · cuga_text`. No invented servers.
 - **Supervisor name stays `cuga`** so a file is drop-in: events still address the one agent `cuga`;
