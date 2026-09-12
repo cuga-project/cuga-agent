@@ -119,6 +119,31 @@ def _slack_first_touch(ts: str) -> bool:
     return True
 
 
+# Pointer-shaped events (reaction_added, star_added, …) dedup on `event_ts` — the timestamp OF THE
+# REACTION — in a namespace of their OWN, deliberately separate from _SLACK_ANSWERED_TS above.
+# Sharing that list would key both on the same value and cross-cancel: reacting to a message the
+# bot had already answered would look like a duplicate and the watcher would never fire.
+_SLACK_DISPATCHED_EVENT_TS: list = []
+
+
+def _slack_first_dispatch(event_ts: str) -> bool:
+    """True the first time this Slack EVENT is seen (and records it); False on a redelivery.
+
+    Slack retries an event when the acknowledgement misses its 3-second deadline, and neither
+    ``direct_events.match`` nor ``dispatch_all`` deduplicates — so a retry ran every matching
+    watcher a second time. That was not hypothetical: hydration used to sit on the ack path with a
+    10-second timeout, so the slow case and the retry case were the same case.
+    """
+    if not event_ts:
+        return True
+    if event_ts in _SLACK_DISPATCHED_EVENT_TS:
+        return False
+    _SLACK_DISPATCHED_EVENT_TS.append(event_ts)
+    if len(_SLACK_DISPATCHED_EVENT_TS) > 300:
+        del _SLACK_DISPATCHED_EVENT_TS[:100]
+    return True
+
+
 _HONOUR_FALSE = {"0", "false", "no", "off"}
 
 
@@ -1761,7 +1786,12 @@ def register_events_routes(
         # and can only use servers this process can resolve. That is enforced where the tools are
         # actually built (ReactRuntime → mcp_catalog.resolve), which fails loudly, rather than by
         # refusing to store the agent.
-        mcp = [str(m) for m in (body.get("mcp_servers") or [])]
+        # PRESERVE dict entries. `str(m)` collapsed `{"name": "x", "url": "..."}` into the literal
+        # text "{'name': 'x', ...}", so the dict branch of mcp_catalog.to_client_config — the whole
+        # mechanism for reaching an MCP server this catalog has never heard of — was unreachable
+        # through this API. The agent stored a nonsense name, resolve() found no endpoint for it,
+        # and the agent came up with fewer tools than it declared.
+        mcp = [m if isinstance(m, dict) else str(m) for m in (body.get("mcp_servers") or [])]
         mcp = mcp_catalog.migrate_legacy_names(mcp)  # cuga-web → cuga_web, if a client still sends it
         channels = [str(c) for c in (body.get("channels") or [])]
         bad_ch = [c for c in channels if c not in ("web", "telegram", "slack", "discord")]
@@ -2092,33 +2122,56 @@ def register_events_routes(
             kind = direct_events.kind_for("slack", ev_type)
             if kind:
                 item = ev.get("item") or {}
-                # POINTER-SHAPED EVENTS: a reaction/star carries item.{channel,ts} but NOT the
-                # message. Resolve it so the agent gets something to act on — "when someone reacts
-                # :bug:, review the code" is useless with a reaction and no code. describe() already
-                # renders a "text" key, so hydrating it here reaches the prompt with no other change.
-                payload = dict(ev)
-                if not payload.get("text") and item.get("ts") and item.get("channel"):
-                    payload["text"] = await slack_direct.fetch_message_text(
-                        str(item["channel"]), str(item["ts"])
-                    )
-                subs = direct_events.match(
-                    store,
-                    "slack",
-                    kind,
-                    channel=str(ev.get("channel") or item.get("channel") or ""),
-                    # the config `pattern` filter now matches the MESSAGE, which is what a user
-                    # arming "react :bug: on a message containing traceback" means.
-                    text=str(payload.get("text") or ""),
-                    emoji=str(ev.get("reaction") or ""),
-                )
-                if subs:
-                    Trace(new_trace_id())("slack.direct", event=kind, matched=len(subs))
-                    asyncio.create_task(
-                        direct_events.dispatch_all(
-                            subs, app="slack", event=kind, payload=payload, engine=engine
-                        )
-                    )
+                # POINTER-SHAPED EVENTS carry item.{channel,ts} but NOT the message, so they need a
+                # conversations.replies round-trip to become useful. That used to be awaited HERE,
+                # before `return {"ok": True}` — a 10-second timeout in front of Slack's 3-second
+                # acknowledgement deadline. Slack then retried, and because nothing downstream
+                # deduplicates, the retry ran every matched watcher again.
+                #
+                # So: dedup the pointer event on its own event_ts, then do hydration, matching AND
+                # dispatch in the background. The ack returns immediately either way.
+                #
+                # The gate is POINTER-ONLY on purpose. Gating the whole `kind` branch would also
+                # gate app_mention, which carries its own text, needs no hydration, and must keep
+                # dispatching new_slack_mention watchers.
+                is_pointer = bool(not ev.get("text") and item.get("ts") and item.get("channel"))
+                if not is_pointer or _slack_first_dispatch(str(ev.get("event_ts") or "")):
+                    asyncio.create_task(_slack_dispatch_watchers(dict(ev), dict(item), kind, is_pointer))
         return {"ok": True}
+
+    async def _slack_dispatch_watchers(ev: dict, item: dict, kind: str, is_pointer: bool) -> None:
+        """Hydrate a pointer event, match watchers and dispatch — all OFF the ack path.
+
+        Everything here was previously inline in the webhook handler. Nothing about the matching
+        or dispatch changed; only when it runs. Exceptions are contained because this is a
+        fire-and-forget task: an unhandled one would be swallowed by the event loop and reported
+        as nothing at all.
+        """
+        try:
+            from . import direct_events, slack_direct
+
+            payload = dict(ev)
+            if is_pointer:
+                # describe() already renders a "text" key, so hydrating it here reaches the prompt
+                # with no other change.
+                payload["text"] = await slack_direct.fetch_message_text(str(item["channel"]), str(item["ts"]))
+            subs = direct_events.match(
+                store,
+                "slack",
+                kind,
+                channel=str(ev.get("channel") or item.get("channel") or ""),
+                # the config `pattern` filter now matches the MESSAGE, which is what a user
+                # arming "react :bug: on a message containing traceback" means.
+                text=str(payload.get("text") or ""),
+                emoji=str(ev.get("reaction") or ""),
+            )
+            if subs:
+                Trace(new_trace_id())("slack.direct", event=kind, matched=len(subs))
+                await direct_events.dispatch_all(
+                    subs, app="slack", event=kind, payload=payload, engine=engine
+                )
+        except Exception:  # noqa: BLE001
+            _elog.exception("slack watcher dispatch failed for event=%s", kind)
 
     async def _slack_answer(text: str, channel: str, user: str, thread_ts: str | None = None) -> None:
         """Route a Slack message through CUGA's /run and post the reply BACK INTO THE THREAD.
@@ -3039,6 +3092,9 @@ def register_events_routes(
     async def admin_list_users(request: Request):
         """Identities known to this tenant. Admin-only; returns an empty list when no user store is
         configured."""
+        _denied = _admin_denied(request)
+        if _denied is not None:
+            return _denied
         if users is None:
             return {"users": []}
         p = _principal_from(request.query_params.get("scope"), request.headers)
@@ -3054,6 +3110,9 @@ def register_events_routes(
     async def admin_add_user(request: Request):
         """Register an identity in this tenant so channel messages can resolve to a real user rather
         than the fallback. Admin-only; 501 when no user store is configured."""
+        _denied = _admin_denied(request)
+        if _denied is not None:
+            return _denied
         if users is None:
             return JSONResponse({"ok": False, "error": "user store not configured"}, 501)
         body = await _safe_json(request)
@@ -3077,6 +3136,9 @@ def register_events_routes(
         """Admin: arm a channel INBOUND flow. Slack uses the DIRECT backend by default (no AP — the
         Slack Events API posts straight to /api/events/slack/events); set EVENTS_SLACK_BACKEND=ap to
         use the (kept-for-revisit) AP path. Other channels go through AP."""
+        _denied = _admin_denied(request)
+        if _denied is not None:
+            return _denied
         body = await _safe_json(request)
         p = _principal_from(body.get("scope") or request.query_params.get("scope"), request.headers)
         if not _is_admin(p):
@@ -3159,6 +3221,9 @@ def register_events_routes(
     @app.get("/api/events/admin/oauth-apps")
     async def admin_oauth_apps(request: Request):
         """Which OAuth providers have client id/secret configured (via UI or .env). No secrets returned."""
+        _denied = _admin_denied(request)
+        if _denied is not None:
+            return _denied
         p = _principal_from(request.query_params.get("scope"), request.headers)
         if not _is_admin(p):
             return JSONResponse({"ok": False, "error": "admin only"}, 403)
@@ -3169,6 +3234,9 @@ def register_events_routes(
     @app.post("/api/events/admin/oauth-apps")
     async def admin_set_oauth_app(request: Request):
         """Admin enters a provider's OAuth app client id/secret once (UI instead of .env)."""
+        _denied = _admin_denied(request)
+        if _denied is not None:
+            return _denied
         if oauth_store is None:
             return JSONResponse({"ok": False, "error": "oauth store not configured"}, 501)
         body = await _safe_json(request)
@@ -3192,6 +3260,9 @@ def register_events_routes(
         'edit this credential' seam for channels + integrations. Persists to .env AND updates the live
         process. Whitelisted to the known connector cred keys (from setup_guides) so the UI can never
         inject arbitrary environment. Admin only. Reports whether it applied live or needs a reload."""
+        _denied = _admin_denied(request)
+        if _denied is not None:
+            return _denied
         from . import setup_guides
 
         body = await _safe_json(request)
@@ -3228,6 +3299,37 @@ def register_events_routes(
             return await request.json()
         except Exception:  # noqa: BLE001
             return {}
+
+    def _admin_denied(request):
+        """Refuse an /api/events/admin/* request that is not AUTHENTICATED. Returns a response, or
+        None to continue.
+
+        WHY THIS EXISTS. The role check below (`_is_admin`) reads a principal built from
+        caller-controlled input — `body["scope"]`, a query param, or the X-User-Id header — and the
+        bootstrap makes the default identity `admin`. So with a GATEWAY_TOKEN configured and
+        EVENTS_ALLOW_UNAUTHENTICATED=0, an unauthenticated POST /api/events/admin/users still
+        created another admin: the caller simply asserted who they were and the role lookup agreed.
+        The same path guards OAuth app configuration and connector credentials.
+
+        Authorization cannot be the first gate — something has to establish WHO is calling before
+        their roles mean anything. These routes are administrative, so they now take the same
+        machine credential the rest of the events seams take, and fail closed without it.
+
+        NOTE — this is a mitigation, not the end state. The Studio calls these routes from the
+        browser, which holds no gateway token, so its admin screens need CUGA to proxy them (core
+        has the token) or a real session. That is the "Studio has no login" item tracked
+        separately; closing the open-admin hole should not wait for it.
+        """
+        if _gateway_denied(token, request):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "admin endpoints require authentication (X-Gateway-Token). "
+                    "For local development set EVENTS_ALLOW_UNAUTHENTICATED=1.",
+                },
+                401,
+            )
+        return None
 
     def _is_admin(p) -> bool:
         if users is None:

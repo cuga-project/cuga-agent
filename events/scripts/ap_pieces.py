@@ -85,20 +85,53 @@ def _req(url, method="GET", body=None, token=None, timeout=60):
 
 
 def _catalog(base):
-    """The cloud-synced catalog list → {name: version}. This is what's AVAILABLE to install and
-    carries the CURRENT version AP's own sync uses — the authoritative version to install with, so we
-    never depend on a stale hardcoded pin (pin drift is what makes an install POST 409 and no-op).
-    Do NOT use presence-in-this-list to decide 'installed' (a listed piece may not be materialized yet
-    — that's what _present is for). Returns {} if AP is down."""
+    """The cloud-synced catalog list → {name: version}, or None when AP is UNREACHABLE.
+
+    This is what's AVAILABLE to install and carries the CURRENT version AP's own sync uses — the
+    authoritative version to install with, so we never depend on a stale hardcoded pin (pin drift is
+    what makes an install POST 409 and no-op). Do NOT use presence-in-this-list to decide
+    'installed' (a listed piece may not be materialized yet — that's what _present is for).
+
+    UNREACHABLE IS None, NOT {}. A reachable AP with an empty catalog answers `200 []`, which is
+    exactly the fresh-database state this script exists to repair. Collapsing that to {} made it
+    indistinguishable from a connection failure, and main() then printed "AP not reachable" and
+    returned before installing anything — the one case the script is for.
+    """
     st, d = _req(f"{base}/api/v1/pieces", timeout=15)
     if st != 200 or not isinstance(d, list):
-        return {}
+        return None
     return {p.get("name"): p.get("version") for p in d if p.get("name")}
 
 
 def _count(base):
-    """Best-effort catalog size for display. See _catalog for why list-membership != installed."""
-    return len(_catalog(base)) or None
+    """Catalog size, or None when AP is unreachable. Zero is a real, reportable answer."""
+    cat = _catalog(base)
+    return None if cat is None else len(cat)
+
+
+def _reject_cleartext_credentials(base):
+    """Refuse to POST AP_EMAIL/AP_PASSWORD over plaintext HTTP to a remote host.
+
+    `AP_BASE_URL` is read from .env and defaults to localhost, but pointing it at a tunnelled or
+    hosted Activepieces is a normal thing to do — and `/api/v1/authentication/sign-in` sends the
+    password in the request body. Over http:// to anything but loopback that is on the wire in
+    cleartext (CWE-319), and the AP password is the credential guarding every stored OAuth token.
+    Loopback stays allowed: that is the documented local stack and there is no network to sniff.
+    """
+    from urllib.parse import urlparse
+
+    u = urlparse(base)
+    if u.scheme == "https":
+        return None
+    host = (u.hostname or "").lower()
+    if host in ("localhost", "127.0.0.1", "::1", "") or host.endswith(".localhost"):
+        return None
+    return (
+        f"✗ refusing to send AP_EMAIL/AP_PASSWORD to {base} over plaintext HTTP.\n"
+        f"  The sign-in request carries the password in its body, and that password guards every\n"
+        f"  OAuth token Activepieces holds. Use https:// for a remote AP, or point AP_BASE_URL at\n"
+        f"  localhost for the local stack."
+    )
 
 
 def _present(base, name):
@@ -149,6 +182,10 @@ def main():
     # "MISSING" past make up's wait window). So we install the EXACT version AP's live catalog reports,
     # and fall back to PINNED only if the catalog is unreachable. That forces full materialization
     # instead of no-op'ing on a stale pin. On 409 we retry once at the live version before giving up.
+    _unsafe = _reject_cleartext_credentials(base)
+    if _unsafe:
+        print(_unsafe)
+        return 2
     email, pw = _env("AP_EMAIL"), _env("AP_PASSWORD")
     st, auth = _req(f"{base}/api/v1/authentication/sign-in", "POST", {"email": email, "password": pw})
     token = auth.get("token") if isinstance(auth, dict) else None
@@ -156,7 +193,10 @@ def main():
         print(f"✗ AP sign-in failed (HTTP {st}). Check AP_EMAIL/AP_PASSWORD in .env.")
         return 2
 
-    catalog = _catalog(base)  # {name: current-version} — authoritative version to install with
+    # `or {}` because _catalog now signals UNREACHABLE with None. The comment above already says
+    # the intent — fall back to PINNED when the catalog cannot be read — and an empty mapping is
+    # exactly that fallback, whereas None would AttributeError in the .get() calls below.
+    catalog = _catalog(base) or {}  # {name: current-version} — authoritative version to install with
 
     def _install(name, ver):
         return _req(
@@ -177,7 +217,7 @@ def main():
         # 409 = a row for this name already exists but isn't materialized (the split-brain that keeps
         # _present at 404). Re-fetch the catalog and retry at the freshest version to force it through.
         if st == 409:
-            fresh = _catalog(base).get(p)
+            fresh = (_catalog(base) or {}).get(p)
             if fresh and fresh != ver:
                 st, res = _install(p, fresh)
                 ver, src = fresh, "catalog-retry"

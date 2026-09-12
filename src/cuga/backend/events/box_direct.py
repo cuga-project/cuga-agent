@@ -40,12 +40,47 @@ API = "https://api.box.com/2.0"
 _SINCE_FILE = os.environ.get("EVENTS_BOX_SINCE_FILE", "") or ".box_since.json"
 
 
+# ONE connection per DSN, reused for the life of the process.
+#
+# This used to open a fresh connection on every call and never close it. `box_poll` calls
+# `load_since` each tick and `save_since` whenever the watermark moves, so a poller running every
+# 60s opened two PostgreSQL connections a minute and dropped both on the floor — the server runs
+# out of connection slots long before anything here notices, and it takes the rest of the events
+# layer down with it, because they share the database. It also re-ran CREATE TABLE every time.
+_CURSOR_CACHE: dict = {"dsn": None, "conn": None}
+
+
 def _cursor_db():
     """The events DB, or None when unconfigured (→ file fallback). Never raises: a poll must still
-    run if the store is unreachable — it just loses delta tracking for that tick."""
+    run if the store is unreachable — it just loses delta tracking for that tick.
+
+    The connection is CACHED per DSN. A cached handle is probed with `SELECT 1` before being
+    handed back, because a long-lived Postgres connection does die — server restart, idle timeout,
+    failover — and returning a dead one would turn a recoverable blip into a permanently broken
+    poller. On a failed probe, or a changed DSN, the old handle is closed and one is reopened.
+    """
     dsn = (os.environ.get("EVENTS_DB", "") or "").strip()
     if not dsn or dsn == ":memory:":
         return None
+
+    cached = _CURSOR_CACHE.get("conn")
+    if cached is not None and _CURSOR_CACHE.get("dsn") == dsn:
+        try:
+            cached.execute("SELECT 1")
+            return cached
+        except Exception:  # noqa: BLE001 — dead handle; fall through and reopen
+            try:
+                cached.close()
+            except Exception:  # noqa: BLE001
+                pass
+            _CURSOR_CACHE["conn"] = None
+    elif cached is not None:
+        try:  # DSN changed out from under us (tests, reconfiguration)
+            cached.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _CURSOR_CACHE["conn"] = None
+
     try:
         try:
             from . import db as _db
@@ -59,6 +94,7 @@ def _cursor_db():
                )"""
         )
         conn.commit()
+        _CURSOR_CACHE["dsn"], _CURSOR_CACHE["conn"] = dsn, conn
         return conn
     except Exception:  # noqa: BLE001
         return None

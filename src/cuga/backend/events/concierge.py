@@ -659,6 +659,16 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 f"{agent}|{source or 'time'}|{cadence}|{_cfg_tag}|{_sink_tag}|"
                 f"{_task_tag}|{_owner_scope(spec, p)}"
             )
+            # The same identity string, kept for NAMING even when reuse is disabled below.
+            #
+            # Two different jobs are stacked on one value: dedup ("have I armed this before?") and
+            # AP flow naming ("is this flow distinct from that one?"). Disabling reuse clears
+            # dedup_key, which silently took the naming with it — sha1("") is da39a3ee for every
+            # watch, so two GitHub repos under one scope both produced
+            # `push-github-new-pr-cuga-da39a3ee`, and APEngine._new_flow() deletes a same-named flow
+            # before creating its replacement. Arming the second watcher destroyed the first one's
+            # AP flow and left its subscription behind, pointing at nothing.
+            flow_identity = dedup_key
             # REUSE IS OFF BY DEFAULT (EVENTS_FLOW_REUSE=1 to restore it).
             #
             # Silently answering "REUSING existing flow … Nothing new created" to a human who just
@@ -858,7 +868,9 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 # the dedup-reuse check above BEFORE flow creation, so this hash never blocks a reuse.
                 import hashlib
 
-                _disc = hashlib.sha1(dedup_key.encode()).hexdigest()[:8]
+                # Hash the IDENTITY, never dedup_key: the latter is deliberately empty whenever
+                # EVENTS_FLOW_REUSE is off, which is the default.
+                _disc = hashlib.sha1(flow_identity.encode()).hexdigest()[:8]
                 flow_name = f"push-{source}-{(event or 'default').replace('_', '-')}-{agent}-{_disc}"
                 # NATIVE-vs-AP routing (Phase 2): a PUSH on an integration IS an AP piece. Without the
                 # AP engine we can't watch it — decline clearly, naming the integration, and point at

@@ -141,14 +141,16 @@ fi
 # to ephemeral SQLite and exited 0.
 # `secret update` MERGES — it preserves the other keys (bot tokens, watsonx, GATEWAY_TOKEN), so
 # do NOT recreate.
-echo "→ writing EVENTS_DB into Code Engine secret '$SECRET_NAME' ..."
-ibmcloud ce secret update --name "$SECRET_NAME" --from-literal "EVENTS_DB=${DSN}" >/dev/null
-if [[ -n "$CA_B64" ]]; then
-  ibmcloud ce secret update --name "$SECRET_NAME" --from-literal "EVENTS_DB_CA_B64=${CA_B64}" >/dev/null
-fi
-echo "✓ secret updated"
-
-echo "→ persisting the same two keys into $ENV_CE_FILE (gitignored, 600) ..."
+# ORDER MATTERS. Persist locally FIRST, then touch the cloud.
+#
+# The documented fresh-project sequence runs this script BEFORE 2_deploy.sh — but 2_deploy.sh is
+# what CREATES $SECRET_NAME. An unconditional `secret update` therefore fails on a fresh project,
+# and with `set -euo pipefail` the script dies right there: the database and its service
+# credentials have already been provisioned, the create response is the ONLY place the DSN and CA
+# are ever readable (this account redacts credentials on later reads), and they are gone.
+#
+# Writing .env.ce first means a failure past this point costs an API call, not the credentials.
+echo "→ persisting the DSN + CA into $ENV_CE_FILE (gitignored, 600) ..."
 umask 177
 touch "$ENV_CE_FILE"
 python3 - "$ENV_CE_FILE" "$DSN" "$CA_B64" <<'PY'
@@ -174,6 +176,24 @@ for key, val in new.items():
 path.write_text("\n".join(lines) + "\n")
 PY
 chmod 600 "$ENV_CE_FILE"
+echo "✓ $ENV_CE_FILE updated (make_env_ce.sh carries these forward from here)"
+
+# Now the Code Engine secret. CREATE it when absent — on a fresh project it does not exist yet —
+# and UPDATE otherwise, because `secret update` MERGES and must not clobber the bot tokens,
+# watsonx keys and GATEWAY_TOKEN that 2_deploy.sh puts there.
+echo "→ writing EVENTS_DB into Code Engine secret '$SECRET_NAME' ..."
+_pg_literals=(--from-literal "EVENTS_DB=${DSN}")
+if [[ -n "$CA_B64" ]]; then
+  _pg_literals+=(--from-literal "EVENTS_DB_CA_B64=${CA_B64}")
+fi
+if ibmcloud ce secret get -n "$SECRET_NAME" >/dev/null 2>&1; then
+  ibmcloud ce secret update --name "$SECRET_NAME" "${_pg_literals[@]}" >/dev/null
+  echo "✓ secret updated"
+else
+  ibmcloud ce secret create --name "$SECRET_NAME" "${_pg_literals[@]}" >/dev/null
+  echo "✓ secret created (it did not exist yet — 2_deploy.sh will merge the rest in)"
+fi
+unset _pg_literals
 unset DSN CA_B64
 echo "✓ $ENV_CE_FILE updated (make_env_ce.sh carries these forward from here)"
 

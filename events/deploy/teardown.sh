@@ -12,11 +12,22 @@ admin_guard "${1:-}"
 require_login
 ce_target
 
-if ibmcloud ce app get -n "$APP_NAME" >/dev/null 2>&1; then
-  echo "Deleting app '$APP_NAME' ..."
-  ibmcloud ce app delete --name "$APP_NAME" --force --wait --ignore-not-found
-else
-  echo "App '$APP_NAME' not found (already gone)."
+# Delete every app the split deploy creates — and the retired combined one, so an old
+# deployment is cleaned up too. Tearing down only $APP_NAME left cuga-core and
+# cuga-events-svc running (and billing, and processing events) while reporting success.
+_deleted=0
+for _app in "$CORE_APP" "$EVENTS_APP" "$APP_NAME"; do
+  [ -n "$_app" ] || continue
+  if ibmcloud ce app get -n "$_app" >/dev/null 2>&1; then
+    echo "Deleting app '$_app' ..."
+    ibmcloud ce app delete --name "$_app" --force --wait --ignore-not-found
+    _deleted=$((_deleted + 1))
+  else
+    echo "App '$_app' not found (already gone)."
+  fi
+done
+if [ "$_deleted" -eq 0 ]; then
+  echo "Nothing was deleted — no app named $CORE_APP, $EVENTS_APP or $APP_NAME exists in this project."
 fi
 
 if [[ "${WIPE_SECRET:-}" == "1" ]] && ibmcloud ce secret get -n "$SECRET_NAME" >/dev/null 2>&1; then

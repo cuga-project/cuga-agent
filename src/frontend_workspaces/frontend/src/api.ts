@@ -56,6 +56,12 @@ export async function getUiConfig(): Promise<UiConfig> {
 // be sent there. The server tells us where via /api/ui/config (EVENTS_API_URL); resolved once and
 // cached, and any failure falls back to same-origin rather than breaking the page.
 const EVENTS_PATHS = ["/api/events", "/api/concierge", "/invoke"];
+// ...EXCEPT the admin endpoints. Those now require the gateway token on the eventing service
+// (they used to accept a caller-asserted identity, so an unauthenticated POST could create an
+// admin). A browser cannot hold that secret, so these go to CUGA instead, which attaches the
+// token and forwards — behind the same auth that protects the Manage UI. Routing them to the
+// events origin directly would simply 401.
+const CORE_ONLY_PATHS = ["/api/events/admin"];
 let eventsBaseCache: string | null = null;
 let eventsBaseInFlight: Promise<string> | null = null;
 
@@ -106,7 +112,9 @@ export async function apiFetch(
 ): Promise<Response> {
   const base = getApiBaseUrl();
   const isEvents =
-    typeof url === "string" && EVENTS_PATHS.some((p) => url.startsWith(p));
+    typeof url === "string" &&
+    EVENTS_PATHS.some((p) => url.startsWith(p)) &&
+    !CORE_ONLY_PATHS.some((p) => url.startsWith(p));
   const callBase = isEvents ? await getEventsBaseUrl() : base;
   const fullUrl = typeof url === "string" && !url.startsWith("http") ? `${callBase}${url.startsWith("/") ? "" : "/"}${url}` : url;
   const res = await fetch(fullUrl, {

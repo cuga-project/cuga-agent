@@ -77,8 +77,12 @@ def migrate_legacy_names(names: list) -> list:
     """
     out = []
     for n in names or []:
-        s = str(n)
-        out.append(f"cuga_{s[5:]}" if s[:5] == "cuga-" and s[5:] in CUGA_APPS else n)
+        # A dict entry carries its own url and is never one of this catalog's names — pass it
+        # through untouched rather than relying on str(dict) failing to match the prefix.
+        if not isinstance(n, str):
+            out.append(n)
+            continue
+        out.append(f"cuga_{n[5:]}" if n[:5] == "cuga-" and n[5:] in CUGA_APPS else n)
     return out
 
 
@@ -93,8 +97,25 @@ def to_client_config(name, transport: str = "streamable_http") -> dict | None:
     not the set of servers that may exist.
     """
     if isinstance(name, dict):
+        # A dict entry is only usable if it names itself: `resolve` uses that name as the
+        # MultiServerMCPClient config KEY, and a missing one put a literal None key in the config.
+        if not str(name.get("name") or "").strip():
+            return None
         url = (name.get("url") or "").strip()
         if not url:
+            return None
+        # Bound the scheme. This URL comes from the request body and is handed to an HTTP client
+        # that the agent then talks to, so anything but http/https (file://, gopher://, …) is not a
+        # transport we support and is the wrong thing to hand a URL fetcher.
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            _log.warning(
+                "mcp_catalog: refusing MCP endpoint %r for %r — only http/https URLs are accepted",
+                url,
+                name.get("name"),
+            )
             return None
         return {"url": url, "transport": (name.get("transport") or transport)}
     url = known_mcp_url(name)

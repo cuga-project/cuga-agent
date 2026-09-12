@@ -29,6 +29,23 @@ set -euo pipefail
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 source "${SCRIPT_DIR}/config.sh"
 
+# The three guards every other script in this directory calls. This one sourced config.sh and then
+# used none of them, which is the worst combination: it looks guarded and is not.
+#
+#   admin_guard  — this script creates BILLABLE COS resources and rotates an HMAC service key, so
+#                  it is exactly the path CUGA_CE_ADMIN=1 exists to gate. Passed `-y` because the
+#                  script has its OWN confirmation prompt below; without it you answer twice.
+#   require_login — fail with instructions rather than a raw ibmcloud error.
+#   ce_target    — WITHOUT THIS the `ibmcloud ce secret create` and `ibmcloud ce pds create` calls
+#                  below act on whatever project happens to be selected. Create the store in the
+#                  wrong project and 2_deploy.sh — which does call ce_target — reports "does not
+#                  exist in this project" and exits, with nothing to suggest the resource was made
+#                  somewhere else entirely. It also has to run BEFORE $BUCKET is computed, since
+#                  that reads the account GUID from the current target.
+admin_guard -y
+require_login
+ce_target
+
 STORE_NAME="${EVENTS_STATE_STORE:-cuga-events-state}"
 BUCKET="${EVENTS_STATE_BUCKET:-cuga-events-state-$(ibmcloud target --output json | python3 -c 'import sys,json;print(json.load(sys.stdin)["account"]["guid"][:8])' 2>/dev/null || echo local)}"
 COS_INSTANCE="${EVENTS_STATE_COS_INSTANCE:-cuga-cos}"

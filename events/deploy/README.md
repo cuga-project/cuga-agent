@@ -95,6 +95,7 @@ targets are unchanged; these are the CE parallels — `[CE]` in `make help`.**
 | `make ce-status` | deploy status + the live capability report |
 | `make ce-logs` | container logs — `FOLLOW=1` to stream · `GREP=telegram` to filter · `TAIL=n` |
 | `make ce-url` | print the deployed URL |
+| `make ce-appid` | **once**: provision App ID + wire OIDC login (`5_appid.sh`; idempotent) |
 | `make ce-teardown` | delete both apps (keeps image, registry secret, **and the database**) |
 
 `test-e2e-ce` runs the **same harness** as `test-e2e`, only with `EVENTS_SERVER_URL`
@@ -152,6 +153,7 @@ minimum), service credentials, and writes `EVENTS_DB` + `EVENTS_DB_CA_B64` into 
 cd deploy/ce
 ./make_env_ce.sh                        # .env.ce from ../../.env (gitignored, chmod 600)
 YES=1 ./4_postgres.sh                   # ONCE: the events database (see above)
+CUGA_CE_ADMIN=1 ./5_appid.sh            # ONCE: OIDC login (see "Login" below) — needs cuga-core's URL
 
 CUGA_CE_ADMIN=1 ./1_build_push_image.sh # cloud buildrun -> icr.io/.../cuga-events:latest (~10-20 min)
 CUGA_CE_ADMIN=1 ./2_deploy.sh           # create BOTH apps; prints the routes + Slack step
@@ -171,6 +173,103 @@ python 3_smoke.py
 ```
 `YES=1` skips the interactive "Proceed? [y/N]" confirm (for automation); drop it to
 be prompted. `CUGA_CE_ADMIN=1` is the required admin opt-in on every step.
+
+## Login (OIDC via IBM App ID) — `5_appid.sh`
+
+**Run it once, not every deploy.** The App ID instance and its registered application are
+long-lived; the client id and secret live in `.env` and reach Code Engine through
+`make_env_ce.sh`. Re-registering mints a **new secret and invalidates the old one**, which is why
+this is a separate script and not a step inside `2_deploy.sh`.
+
+```bash
+CUGA_CE_ADMIN=1 ./5_appid.sh                  # create or reuse — safe to re-run
+CUGA_CE_ADMIN=1 RECREATE_APP=1 ./5_appid.sh   # force a NEW client secret (rotation)
+```
+
+Idempotent by default: an existing instance is reused, and an existing application of the same
+name is reused **with its current credentials**. It needs `cuga-core` to already exist (it reads
+the route to build the redirect URI), so on a brand-new project deploy first, then run this, then
+re-run `make_env_ce.sh && ./2_deploy.sh` to turn login on.
+
+What it configures:
+
+| Step | Why it matters |
+|---|---|
+| App ID instance | Lite plan = free. `APPID_PLAN=graduated-tier` for volume. |
+| Application | Yields `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, the discovery URL. |
+| Redirect URIs | Must match `OIDC_REDIRECT_URI` **exactly** or App ID refuses the callback. |
+| **IdP lockdown** | **The one you cannot skip** — see below. |
+| Writes 4 keys to `.env` | `make_env_ce.sh`'s `CORE_ONLY` list puts them in **cuga-core's secret only**. |
+
+> ### ⚠ A fresh App ID instance has TWO ways in that you did not intend
+> **1. Public self-signup.** Cloud Directory ships with `signupEnabled: true`, so anyone on the
+> internet can register an account and log in.
+>
+> **2. Anonymous access.** Separate, and easy to miss because disabling signup does not touch it.
+> `anonymousAccess` is enabled by default, and a plain GET with `&idp=appid_anon` returns a real
+> authorization code with **no account and no password** — reproduced against this instance before
+> it was closed. A user sent to CUGA's login page can append that parameter to the authorization
+> URL CUGA redirected them to; they already hold a `state` and PKCE challenge CUGA issued, so the
+> callback validates and they are inside. While authorization is off, that is full access.
+>
+> Turn authentication on against an untouched instance and you get a deployment that looks secured
+> and is not. `5_appid.sh` closes both, and deactivates the social providers that are "active" with
+> empty config. Accounts become admin-created only:
+> *IBM Cloud > Resource list > `cuga-appid` > Cloud Directory > Users > Add user.*
+> That user creation is the one manual step; everything else is scripted.
+
+**The redirect URI is a frontend page, not the callback route.** Pointing it at `/auth/callback`
+looks right and fails at runtime: that route reads a **JSON body**, so it is called by the SPA,
+not the IdP. App ID redirects the browser (GET) to a React route, `App.tsx` reads `code`/`state`
+off the query string and POSTs them as JSON. So the redirect target is `/manage`.
+
+**Why OIDC goes to cuga-core only.** The events service has no session awareness at all — it
+authenticates callers with `X-Gateway-Token`. It is also a different origin, and the session
+cookie is `SameSite=Lax`, so a browser session can never reach it directly. That is why admin
+calls are proxied through core and why `make_env_ce.sh` has a `CORE_ONLY` list.
+
+### Authentication is what closes the admin hole
+
+`2_deploy.sh` gates `DYNACONF_AUTH__ENABLED` on `OIDC_CLIENT_ID` actually being in the core
+secret, because enabling auth without the four keys is a **hard brick**: `get_oidc_client()`
+returns `None`, `/auth/login` answers 503, and every `require_auth` route answers 401 — nobody,
+including you, can log in. Watch for one of these lines:
+
+```
+auth: OIDC login ENABLED (authorization/roles off — see the note above)
+⚠ auth: DISABLED — no OIDC_CLIENT_ID in cuga-core-secrets
+```
+
+With auth **off**, `require_manage_access` is a pass-through, so core's `/api/events/admin/*`
+proxy attaches `GATEWAY_TOKEN` on behalf of **any anonymous caller** — the events service
+correctly refuses strangers while core vouches for them. Turning authentication on is what makes
+that gate real. Verify:
+
+```bash
+curl -s $CORE_URL/api/auth/config                     # -> {"enabled":true,...}
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+     $CORE_URL/api/events/admin/users                 # -> 401  (was 200)
+```
+
+**Authorization (roles) stays OFF deliberately — one step still missing.**
+`jwt_validator._extract_roles` reads a top-level `roles` claim or `realm_access.roles`, and App ID
+emits neither by default. `5_appid.sh` now maps `roles → roles` into both tokens, which is the
+half that needed doing in App ID's config. What remains is data, and it is **manual**:
+
+1. Define roles named exactly `ServiceOwner`, `ServiceAdmin`, `ServiceUser` — the names in
+   `settings.toml` under `[auth] manage_roles` / `chat_roles`.
+   *App ID > Profiles and roles > Roles.* Roles are built from application scopes, so add scopes
+   to the `cuga-core` application first.
+2. Assign a role to every user who should have access.
+3. Only then set `DYNACONF_AUTH__AUTHORIZATION_ENABLED=true`.
+
+Flip the flag before step 2 and every authenticated user is **403'd out of all ~37 Manage
+routes** — including you. Until then, authentication alone is the control: everyone who can log
+in can do everything, which is safe only because signup and anonymous access are both off and
+accounts are admin-created.
+
+Channels and `test-e2e-ce` are unaffected by any of this — they authenticate with
+`X-Gateway-Token`, not sessions.
 
 ### `2_deploy.sh` checks two things that fail SILENTLY
 

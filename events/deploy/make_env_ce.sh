@@ -66,6 +66,19 @@ CLOUD_KEYS=(
   EVENTS_DB_CA_B64
 )
 
+# ---- CORE-ONLY: copied from .env into cuga-core's secret, and NOWHERE else --
+# The mirror image of EVENTS_ONLY below. OIDC logs a HUMAN in to the Studio UI, which only
+# cuga-core serves; the events service has no session awareness at all and authenticates its
+# callers with X-Gateway-Token. Handing it OIDC_CLIENT_SECRET would repeat the exact anti-pattern
+# EVENTS_ONLY was added to stop — a process storing a credential it never reads, which
+# seed_secrets_from_env then persists into the database.
+CORE_ONLY=(
+  OIDC_CLIENT_ID
+  OIDC_CLIENT_SECRET
+  OIDC_DISCOVERY_URL
+  OIDC_REDIRECT_URI
+)
+
 # Read one key's value out of an env file: last assignment wins, quotes and
 # trailing comments stripped. Prints nothing when absent.
 read_key() {
@@ -139,11 +152,32 @@ while IFS= read -r line; do
   [[ -n "$skip" ]] || echo "$line" >> "$CORE_OUT"
 done < "$OUT"
 
+# CORE_ONLY keys never entered $OUT, so they are appended straight to the core secret.
+core_only_copied=(); core_only_skipped=()
+for k in "${CORE_ONLY[@]}"; do
+  val=$(read_key "$k" "$SRC")
+  if [[ -n "$val" ]]; then
+    echo "$k=$val" >> "$CORE_OUT"; core_only_copied+=("$k")
+  else
+    core_only_skipped+=("$k")
+  fi
+done
+# OIDC is all-or-nothing: get_oidc_client() requires all four and returns None otherwise, so a
+# partial set means /auth/login answers 503 and nobody can log in. Say so at generation time
+# rather than leaving it to be discovered against a deployed app.
+if (( ${#core_only_copied[@]} )) && (( ${#core_only_skipped[@]} )); then
+  echo ""
+  echo "  ⚠ PARTIAL OIDC CONFIG — present: ${core_only_copied[*]}"
+  echo "                          missing: ${core_only_skipped[*]}"
+  echo "    get_oidc_client() needs all four; with any missing, /auth/login returns 503."
+fi
+
 trap - EXIT
 
 echo "wrote $OUT (chmod 600)          — the EVENTS secret (all credentials)"
 echo "wrote $CORE_OUT (chmod 600)     — the CORE secret"
 echo "  withheld from core: ${withheld[*]:-none}"
+echo "  core-only (not in events): ${core_only_copied[*]:-none}"
 echo "  copied from .env : ${copied[*]}"
 echo "  skipped          : ${skipped[*]:-none} (absent/empty in $SRC)"
 echo "  carried forward  : ${carried[*]:-none} (provisioned in the cloud)"

@@ -20,10 +20,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import time
 
 import httpx
+
+log = logging.getLogger("cuga.events.slack")
 
 
 def bot_token() -> str:
@@ -209,13 +212,31 @@ async def fetch_message_text(channel: str, ts: str) -> str:
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.get(
                 "https://slack.com/api/conversations.replies",
-                params={"channel": channel, "ts": ts, "limit": 1, "inclusive": "true"},
+                # NO `limit=1`. conversations.replies returns the THREAD — parent first — so when the
+                # reacted message is a reply, limit=1 returns the parent and the agent reviewed the
+                # wrong message with no error anywhere. Ask for a bounded window and pick by ts.
+                # conversations.history is NOT the alternative: it does not return thread replies at
+                # all, so a reaction on a reply would resolve to nothing.
+                params={"channel": channel, "ts": ts, "limit": 50, "inclusive": "true"},
                 headers={"Authorization": f"Bearer {tok}"},
             )
-        msgs = (r.json() or {}).get("messages") or []
+        payload = r.json() or {}
     except Exception:  # noqa: BLE001
         return ""
-    return str((msgs[0] or {}).get("text") or "") if msgs else ""
+    # A Slack API error is HTTP 200 with ok=false. Treating that as "no text" turned a fixable
+    # configuration problem — missing_scope, channel_not_found — into a watcher that fires with
+    # empty context forever and never says why.
+    if not payload.get("ok"):
+        log.warning("slack fetch_message_text failed for %s/%s: %s", channel, ts, payload.get("error"))
+        return ""
+    msgs = payload.get("messages") or []
+    for m in msgs:
+        if isinstance(m, dict) and str(m.get("ts") or "") == str(ts):
+            return str(m.get("text") or "")
+    # No exact match: only trust a single-message thread, where there is nothing else it could be.
+    if len(msgs) == 1 and isinstance(msgs[0], dict):
+        return str(msgs[0].get("text") or "")
+    return ""
 
 
 async def send_message(channel: str, text: str, thread_ts: str | None = None) -> dict:

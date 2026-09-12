@@ -24,6 +24,13 @@ export IMAGE_REPO="${REGISTRY_HOST}/${REGISTRY_NAMESPACE}/cuga-events"
 export IMAGE_REF="${IMAGE_REF:-${IMAGE_REPO}:latest}"
 
 # ---- The ONE Code Engine app -----------------------------------------------
+# THE TWO APPS THE SPLIT DEPLOY CREATES. These live here, not in 2_deploy.sh, so that
+# teardown.sh deletes exactly what deploy created. They used to be defined only in 2_deploy.sh
+# while teardown looked up APP_NAME ("cuga-events") — a name the split never creates — so a
+# teardown reported "already gone", exited 0, and left BOTH apps running and billable.
+export CORE_APP="${CORE_APP:-cuga-core}"
+export EVENTS_APP="${EVENTS_APP:-cuga-events-svc}"
+# Legacy single-app name, kept for the retired combined mode and older scripts.
 export APP_NAME="${APP_NAME:-cuga-events}"
 export APP_PORT="${APP_PORT:-7860}"                 # CUGA's native port; the CE route maps to it
 export CPU="${CPU:-2}"

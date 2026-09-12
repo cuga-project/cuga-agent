@@ -37,15 +37,26 @@ rsync -a \
   --exclude '*.js.map' \
   --exclude '*.db' --exclude 'events.db' \
   --exclude '/output/' --exclude '/results/' \
-  --exclude 'events/deploy/.env.ce' \
+  --exclude 'events/deploy/.env.ce*' \
   --exclude 'events/deploy/.ce_urls.env' \
+  --exclude '/.env' \
   --exclude '.DS_Store' \
   "$APP_ROOT/" "$STAGE/"
 
 # Belt-and-suspenders: prove the secret file did not make it into the context.
-if [ -f "$STAGE/events/deploy/.env.ce" ]; then
-  echo "ABORT: .env.ce leaked into the build context. Refusing to upload secrets."; exit 1
+# make_env_ce.sh emits TWO secret files — .env.ce (events) and .env.ce.core (gateway, LLM and
+# database credentials) — plus any .bak a human made before editing. rsync honours neither
+# .gitignore nor .dockerignore, so each has to be named here, and the glob covers them all.
+_leaked=""
+for _f in "$STAGE"/events/deploy/.env.ce* "$STAGE/.env"; do
+  [ -e "$_f" ] && _leaked="${_leaked} ${_f}"
+done
+if [ -n "$_leaked" ]; then
+  echo "ABORT: a secret env file leaked into the build context. Refusing to upload secrets."
+  for _f in $_leaked; do echo "  found: $_f"; done
+  exit 1
 fi
+unset _leaked _f
 CTX_SIZE=$(du -sh "$STAGE" 2>/dev/null | cut -f1)
 echo "Build context size: ${CTX_SIZE:-?}"
 

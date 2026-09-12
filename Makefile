@@ -91,12 +91,16 @@ preflight-noap: ## Check the MINIMAL tools the no-AP path needs (uv + .venv only
 check-gateway-token:
 	@tok=$$(grep -E '^GATEWAY_TOKEN=' .env 2>/dev/null | tail -1 | cut -d= -f2- \
 	        | sed -e 's/[[:space:]]*#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//' -e 's/^"//' -e 's/"$$//'); \
-	if [ -z "$$tok" ] || [ "$$tok" = "paste-a-generated-secret-here" ]; then \
-	  echo "✗ GATEWAY_TOKEN missing from .env — CUGA's /run fails closed, so every channel message"; \
-	  echo "  and every scheduled fire would come back 401. Generate one and add it to .env:"; \
-	  echo "      python -c \"import secrets; print(secrets.token_urlsafe(32))\""; \
-	  exit 1; \
-	fi
+	case "$$tok" in \
+	  ""|paste-a-generated-secret-here|replace-with-a-random-secret-openssl-rand-hex-16|pick-any-random-string|changeme|secret|token) \
+	    echo "✗ GATEWAY_TOKEN is missing or still a placeholder in .env."; \
+	    echo "  A published placeholder is WORSE than an empty one: it is non-empty, so it used to"; \
+	    echo "  pass this check, and anyone who has read the repo knows it. /invoke and /run both"; \
+	    echo "  treat this as a shared credential, so that is an open door on an exposed endpoint."; \
+	    echo "  Generate a real one and add it to .env:"; \
+	    echo "      python -c \"import secrets; print(secrets.token_urlsafe(32))\""; \
+	    exit 1;; \
+	esac
 
 up-noap: preflight-noap ## Boot BOTH services WITHOUT Activepieces & WITHOUT a tunnel (web · Telegram-direct · Discord-direct)
 	EVENTS_TELEGRAM_BACKEND=direct EVENTS_DISCORD_BACKEND=direct events/scripts/events_up.sh --no-tunnel
@@ -301,7 +305,7 @@ test-exhaustive:
 	$(PY) tests/events/live_exhaustive.py $(ARGS)
 
 test-new-pieces:
-	EVENTS_SERVER_URL=http://localhost:7860 $(PY) tests/events/live_new_pieces.py $(ARGS)
+	EVENTS_SERVER_URL=$(EVENTS_URL) $(PY) tests/events/live_new_pieces.py $(ARGS)
 
 # ============================================================================
 # Code Engine (DEPLOYED) — CE parallels of the local targets + ops.
@@ -339,6 +343,9 @@ ce-build: ## [CE] Build + push the image (cloud buildrun → ICR)
 
 ce-deploy: ## [CE] Deploy/redeploy BOTH services — cuga-core + cuga-events-svc (roster: $(CE_ROSTER))
 	cd events/deploy && CUGA_CE_ADMIN=1 YES=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=$(CE_ROSTER) ./2_deploy.sh
+
+ce-appid: ## [CE] ONCE: provision IBM App ID + wire OIDC login (idempotent; RECREATE_APP=1 rotates the secret)
+	cd events/deploy && CUGA_CE_ADMIN=1 YES=1 ./5_appid.sh
 
 ce-teardown: ## [CE] Delete the app (keeps the image + registry secret)
 	cd events/deploy && CUGA_CE_ADMIN=1 YES=1 ./teardown.sh

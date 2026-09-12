@@ -198,6 +198,34 @@ if [[ "$CE_EVENTS_SUPERVISOR" == "1" ]]; then
   fi
   echo "   roster on cuga-core (preloaded supervisor): $CE_ROSTER"
 fi
+# ---- OIDC login for humans -------------------------------------------------
+# GATED ON THE SECRET, for the same reason storage.mode=prod is above: turning authentication on
+# without the four OIDC keys is a HARD BRICK, not a degraded mode. get_oidc_client() returns None
+# unless all four are present, so /auth/login answers 503 while every require_auth route answers
+# 401 — an app nobody, including you, can log in to. So we check the credential is actually there
+# and otherwise deploy open, loudly.
+#
+# WHY THIS MATTERS BEYOND THE STUDIO LOGIN: with auth OFF, require_manage_access is a pass-through
+# (it returns None and the role check accepts it), so core's /api/events/admin/* proxy attaches
+# GATEWAY_TOKEN on behalf of ANY anonymous caller. The events service is correctly refusing
+# strangers; core was vouching for them. Turning authentication on is what makes that gate real.
+#
+# AUTHORIZATION (role checks) stays OFF deliberately. jwt_validator._extract_roles reads a
+# top-level `roles` claim or `realm_access.roles`; IBM App ID emits neither by default, so
+# flipping it on would authenticate everyone and then 403 them out of every Manage route.
+# Turn it on together with a claim mapping, not before.
+if secret_has_key "$CORE_SECRET_NAME" OIDC_CLIENT_ID; then
+  core_args+=( --env "DYNACONF_AUTH__ENABLED=true" )
+  # Required on CE: the session cookie is set Secure only when this is true, and /auth/login sets
+  # the state cookie SameSite=None, which browsers reject without Secure.
+  core_args+=( --env "DYNACONF_AUTH__REQUIRE_HTTPS=true" )
+  echo "   auth: OIDC login ENABLED (authorization/roles off — see the note above)"
+else
+  echo "   ⚠ auth: DISABLED — no OIDC_CLIENT_ID in $CORE_SECRET_NAME."
+  echo "     The Studio and /api/events/admin/* are reachable WITHOUT credentials."
+  echo "     Fix: put the four OIDC_* keys in .env, re-run ./make_env_ce.sh, redeploy."
+fi
+
 if ibmcloud ce app get -n "$CORE_APP" >/dev/null 2>&1; then
   echo "Deleting existing app '$CORE_APP' for a clean redeploy ..."
   ibmcloud ce app delete --name "$CORE_APP" --force --wait --ignore-not-found
