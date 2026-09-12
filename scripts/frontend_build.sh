@@ -24,8 +24,14 @@ fi
 echo "== install workspace deps (first run downloads Carbon/React — a few min) =="
 ( cd "$WS" && pnpm install )
 
-echo "== build frontend (webpack) =="
-( cd "$FE" && pnpm run build )
+echo "== build frontend (webpack, PRODUCTION) =="
+# NODE_ENV=production is REQUIRED, not a nicety. webpack.config.js keys `mode`, minification,
+# console-stripping and source-maps off `process.env.NODE_ENV === "production"`, and `pnpm run
+# build` sets nothing — so a bare build is a DEVELOPMENT build: unminified, with source maps, ~3.5x
+# larger. Committing that balloons the served bundle (main.js 1.3MB→4.6MB, vendors 7MB→24MB) and
+# turns a routine rebuild into a ~450k-line git diff, because the dev bundle has real newlines
+# where the production one is a single minified line.
+( cd "$FE" && NODE_ENV=production pnpm run build )
 
 echo "== publish → $SERVED =="
 rm -rf "$SERVED"

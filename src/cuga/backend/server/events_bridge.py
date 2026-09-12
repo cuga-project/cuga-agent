@@ -14,8 +14,6 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional
 
-from loguru import logger
-
 # ── the slash forwarder: main-chat arming, without mounting the events layer ───────────────────
 # CUGA core does not know how to arm anything, and shouldn't. But a user typing "/automate …" in
 # the MAIN chat box must still reach the concierge — handed to the plain agent it tries to
@@ -154,7 +152,9 @@ async def forward_slash_to_events(
             return f"The eventing service returned HTTP {r.status_code}. Nothing was armed."
         data = r.json() if r.content else {}
     except Exception as e:  # noqa: BLE001 — a down events service must not break chat
-        logger.warning(f"slash forward to {base} failed: {e}")
+        from loguru import logger as _logger  # local bind: the error path must never itself raise
+
+        _logger.warning(f"slash forward to {base} failed: {e}")
         return f"Couldn't reach the eventing service at {base} ({e}). Nothing was armed."
     state = (data.get("state") or "").lower()
     if thread_id:
@@ -231,7 +231,13 @@ async def proxy_admin(request, path: str, current_user=None):
                 request.method, url, content=body or None, headers=hdrs, params=dict(request.query_params)
             )
     except Exception as e:  # noqa: BLE001
-        logger.warning("events admin proxy failed: {}", e)
+        # Bind the logger locally on the error path. CI hit `NameError: name 'logger' is not
+        # defined` here under `--import-mode=importlib` — an error-logging line must never be the
+        # thing that raises, so it does not depend on the module global being resolvable at the
+        # moment a proxied call fails.
+        from loguru import logger as _logger
+
+        _logger.warning("events admin proxy failed: {}", e)
         return 502, {"ok": False, "error": "could not reach the eventing service"}
     try:
         return r.status_code, r.json()
