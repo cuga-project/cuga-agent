@@ -2552,18 +2552,16 @@ async def _resolve_stream_agent(
             from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
             from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
 
-            from cuga.backend.server.manage_routes.helpers import policies_list_from_config
             from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
 
             agent_meta = config.get("agent") or {}
             kind = agent_meta.get("kind") or "single"
-            raw_policies = config.get("policies")
-            policies_list = policies_list_from_config(raw_policies) if raw_policies is not None else None
 
+            # Graph construction is read-only w.r.t. policy storage: do not pass policies_data
+            # here, or the config-snapshot would overwrite any newer save from POST /api/config/policies.
             policy_system = await create_agent_policy_system(
                 agent_id=agent_id,
                 draft=use_draft,
-                policies_data=policies_list,
             )
 
             if kind == "supervisor":

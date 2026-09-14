@@ -207,10 +207,14 @@ async def build_agents_from_stored_subagents(
             ref = entry.get("ref")
             if not ref:
                 continue
+            resolved_draft = use_draft
             if use_draft:
                 ref_config = await load_draft(ref)
                 if not ref_config:
+                    # No draft exists for this subagent; fall back to published config and
+                    # read from the published policy collection, not the (empty) draft one.
                     ref_config, _ = await load_config(None, ref)
+                    resolved_draft = False
             else:
                 ref_config, _ = await load_config(None, ref)
             if not ref_config:
@@ -232,7 +236,7 @@ async def build_agents_from_stored_subagents(
             # read-only operation; the already-persisted collection is used as-is.
             sub_policy_system = await create_agent_policy_system(
                 agent_id=ref,
-                draft=use_draft,
+                draft=resolved_draft,
             )
 
             # ref_config["tools"] holds registry-app entries (name + include filter), not

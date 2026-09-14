@@ -11,8 +11,13 @@ SCOPE_COLS = ["tenant_id", "instance_id"]
 # CREATE INDEX) where PostgreSQL does not support parameterised identifiers.
 # Catching a bad name here converts a corrupted DDL statement into a clear
 # ValueError at construction time (same pattern as StorageBackedKnowledgeVectorStore).
-# 63-char cap matches the PostgreSQL identifier limit.
-_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_]{1,63}$")
+#
+# Constraints:
+#   - Must be lowercase-leading ([a-z]) — PostgreSQL rejects digit-leading unquoted identifiers.
+#   - Max 49 chars: the derived index name is idx_{name}_embedding (14 extra bytes), which must
+#     stay within PostgreSQL's 63-byte identifier limit to avoid silent truncation and
+#     CREATE INDEX IF NOT EXISTS collisions between distinct long collection names.
+_SAFE_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]{0,48}$")
 
 
 def _placeholders(n: int) -> str:
@@ -26,10 +31,11 @@ def _pg_type(s: str) -> str:
 
 class ProdEmbeddingStore:
     def __init__(self, postgres_url: str, collection_name: str, schema: EmbeddingSchemaConfig):
-        if not _SAFE_IDENTIFIER_RE.match(collection_name):
+        if _SAFE_IDENTIFIER_RE.fullmatch(collection_name) is None:
             raise ValueError(
-                f"collection_name {collection_name!r} contains characters that are not "
-                "allowed in a PostgreSQL identifier. Only [A-Za-z0-9_]{{1,63}} is accepted."
+                f"collection_name {collection_name!r} is not a valid PostgreSQL identifier. "
+                "Must match ^[a-z][a-z0-9_]{0,48}$ (lowercase-leading, max 49 chars so the "
+                "derived index name stays within PostgreSQL's 63-byte limit)."
             )
         self._postgres_url = postgres_url
         self._collection_name = collection_name

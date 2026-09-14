@@ -32,7 +32,9 @@ def get_agent_policy_collection_name(agent_id: Optional[str] = None, draft: bool
         return f"{base_name}_draft" if draft else base_name
     safe_id = clean_id.replace("-", "_").replace(".", "_")
     prefix = f"{base_name}_{safe_id}"
-    return f"{prefix}_draft" if draft else prefix
+    # Use '__draft' (double underscore) so agent 'crm-draft' published (..._crm_draft) never
+    # collides with agent 'crm' draft (..._crm__draft). Registry slugs are [a-z0-9-] only.
+    return f"{prefix}__draft" if draft else prefix
 
 
 async def create_agent_policy_system(

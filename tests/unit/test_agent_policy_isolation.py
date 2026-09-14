@@ -35,8 +35,13 @@ def test_agent_policy_collection_name_scoping():
 
     # Hyphens are substituted with underscores for registry-issued slugified IDs ([a-z0-9-]).
     assert get_agent_policy_collection_name("crm-agent", draft=False) == "cuga_policies_crm_agent"
-    assert get_agent_policy_collection_name("crm-agent", draft=True) == "cuga_policies_crm_agent_draft"
+    assert get_agent_policy_collection_name("crm-agent", draft=True) == "cuga_policies_crm_agent__draft"
 
+    # '__draft' suffix (double underscore) is injective: agent 'crm-draft' published maps to
+    # 'cuga_policies_crm_draft', while agent 'crm' draft maps to 'cuga_policies_crm__draft'.
+    assert get_agent_policy_collection_name("crm-draft", draft=False) != get_agent_policy_collection_name(
+        "crm", draft=True
+    )
     # Registry-issued IDs are [a-z0-9-] only (see _slugify in agents_routes.py); distinct
     # IDs remain distinct after hyphen substitution.
     assert get_agent_policy_collection_name("sales-eu", draft=False) != get_agent_policy_collection_name(
@@ -166,7 +171,13 @@ async def test_create_agent_policy_system_isolates_storage():
 
 @pytest.mark.asyncio
 async def test_resolve_stream_agent_creates_isolated_policy_system():
-    """_resolve_stream_agent instantiates an agent-specific policy system for non-default agents."""
+    """_resolve_stream_agent instantiates an agent-specific policy system for non-default agents.
+
+    Graph construction is read-only w.r.t. policy storage: policies_data from the config
+    snapshot is NOT passed to create_agent_policy_system, so a concurrent POST /api/config/policies
+    save is never overwritten by a first stream. The collection is populated by the save/publish
+    flows, not by graph construction.
+    """
     request = SimpleNamespace()
     request.app = SimpleNamespace(state=SimpleNamespace(draft_app_state=None))
 
@@ -206,9 +217,10 @@ async def test_resolve_stream_agent_creates_isolated_policy_system():
     assert resolved_graph.policy_system is not None
     assert resolved_graph.policy_system.storage.collection_name == "cuga_policies_crm_agent"
 
+    # Graph build is read-only: the collection is NOT seeded from the config snapshot.
+    # Population is the responsibility of save/publish flows.
     policies = await resolved_graph.policy_system.storage.list_policies(enabled_only=False)
-    assert len(policies) == 1
-    assert policies[0].id == "policy-crm-1"
+    assert len(policies) == 0
 
 
 @pytest.mark.asyncio
