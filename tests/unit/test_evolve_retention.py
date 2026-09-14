@@ -13,7 +13,6 @@ from cuga.backend.evolve.retention import (
 from cuga.backend.server.auth import require_chat_access, require_manage_access
 from cuga.backend.server.auth.models import UserInfo
 from cuga.backend.server.main import app
-from cuga.backend.server.memory_routes import _list_retention_inventory
 
 pytestmark = pytest.mark.unit
 
@@ -43,10 +42,8 @@ async def test_run_retention_serializes_server_scope():
     ):
         await EvolveIntegration.run_retention(
             "standard",
-            dry_run=False,
             run_id="run-a",
             namespace_id="namespace-a",
-            metadata_filters={"agent_id": "agent-a"},
             initiated_by="admin-a",
         )
 
@@ -57,7 +54,6 @@ async def test_run_retention_serializes_server_scope():
             "dry_run": False,
             "run_id": "run-a",
             "namespace_id": "namespace-a",
-            "metadata_filters": json.dumps({"agent_id": "agent-a"}),
             "initiated_by": "admin-a",
         },
     )
@@ -107,10 +103,6 @@ def test_manual_run_uses_server_policy_scope_and_sanitizes_report(client):
             "cuga.backend.server.memory_routes.EvolveIntegration.run_retention",
             new=AsyncMock(return_value=provider_report),
         ) as run_retention,
-        patch(
-            "cuga.backend.server.memory_routes._list_retention_inventory",
-            new=AsyncMock(return_value=[]),
-        ) as list_inventory,
         patch("cuga.backend.server.conversation_history.get_conversation_db") as get_conversation_db,
         patch("cuga.backend.server.memory_routes._namespace_id", return_value="namespace-a"),
     ):
@@ -129,7 +121,7 @@ def test_manual_run_uses_server_policy_scope_and_sanitizes_report(client):
             "entity_type": "guideline",
             "action": "delete",
             "outcome": "deleted",
-            "reason": "Deleted because no use was recorded for more than 180 days.",
+            "reason": "Deleted because it matched a deletion rule in the retention policy.",
         }
     ]
     assert response.json()["skipped"] == [
@@ -138,21 +130,19 @@ def test_manual_run_uses_server_policy_scope_and_sanitizes_report(client):
             "entity_type": "guideline",
             "action": "skip",
             "outcome": "skipped",
-            "reason": "No recorded last-used date was available, so this guideline was kept instead of being deleted.",
+            "reason": "The retention action was not applied.",
         }
     ]
     assert "private memory" not in response.text
     assert "user-9" not in response.text
     run_retention.assert_awaited_once_with(
         "policy-a",
-        dry_run=False,
         scan_limit=None,
         namespace_id="namespace-a",
         initiated_by="admin-1",
     )
-    assert response.json()["errors"] == ["One or more memories could not be evaluated."]
-    assert response.json()["warnings"] == ["Some memories were evaluated with incomplete usage data."]
-    list_inventory.assert_not_awaited()
+    assert response.json()["errors"] == ["One or more retention operations failed."]
+    assert response.json()["warnings"] == ["Evolve reported retention warnings; review the run in Evolve."]
     get_conversation_db.assert_not_called()
 
 
@@ -166,17 +156,13 @@ def test_manual_run_always_applies_retention(client):
             "cuga.backend.server.memory_routes.EvolveIntegration.run_retention",
             new=AsyncMock(return_value={"flagged": [], "deleted": [], "skipped": [], "errors": []}),
         ) as run_retention,
-        patch(
-            "cuga.backend.server.memory_routes._list_retention_inventory",
-            new=AsyncMock(return_value=[]),
-        ),
         patch("cuga.backend.server.conversation_history.get_conversation_db") as get_conversation_db,
     ):
         get_conversation_db.return_value.get_thread_owners_for_agent = AsyncMock(return_value=set())
         response = client.post("/api/manage/memory/retention/runs", json={"policy_id": "policy-a"})
 
     assert response.status_code == 200
-    assert run_retention.await_args.kwargs["dry_run"] is False
+    assert "dry_run" not in run_retention.await_args.kwargs
 
 
 def test_manual_run_rejects_removed_preview_option(client):
@@ -200,13 +186,6 @@ def test_manual_run_rejects_removed_preview_option(client):
 
 
 def test_manual_run_discards_deleted_titles_and_uses_only_evolve_policy(client):
-    orphan = {
-        "id": "orphan-a",
-        "type": "fact",
-        "content": "private memory content",
-        "created_at": "2026-01-01T00:00:00Z",
-        "metadata": {"title": "Orphaned preference", "user_id": "user-1"},
-    }
     with (
         patch(
             "cuga.backend.server.memory_routes.EvolveIntegration.is_enabled",
@@ -234,10 +213,6 @@ def test_manual_run_discards_deleted_titles_and_uses_only_evolve_policy(client):
             ),
         ) as run_retention,
         patch(
-            "cuga.backend.server.memory_routes._list_retention_inventory",
-            new=AsyncMock(return_value=[orphan]),
-        ),
-        patch(
             "cuga.backend.server.memory_routes._retention_policies",
             new=AsyncMock(return_value=[]),
         ),
@@ -257,7 +232,7 @@ def test_manual_run_discards_deleted_titles_and_uses_only_evolve_policy(client):
             "entity_type": "fact",
             "action": "delete",
             "outcome": "deleted",
-            "reason": "Deleted because the memory was more than 7 days old and its source conversation was unavailable.",
+            "reason": "Deleted because it matched a deletion rule in the retention policy.",
         }
     ]
     assert "private memory content" not in response.text
@@ -347,29 +322,7 @@ def test_admin_run_history_is_read_from_evolve_and_sanitized(client):
     )
 
 
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_orphan_inventory_fails_closed_when_scan_limit_truncates_provenance():
-    with (
-        patch.object(
-            EvolveIntegration,
-            "list_entities",
-            new=AsyncMock(
-                return_value={
-                    "items": [{"id": "one", "type": "guideline"}],
-                    "next_cursor": "more",
-                }
-            ),
-        ),
-        patch("cuga.backend.server.memory_routes._namespace_id", return_value="namespace-a"),
-    ):
-        with pytest.raises(HTTPException) as exc_info:
-            await _list_retention_inventory(agent_id="agent-a", scan_limit=1)
-
-    assert exc_info.value.status_code == 409
-
-
-def test_retention_capabilities_report_scheduling_as_unsupported(client):
+def test_retention_capabilities_report_evolve_schedule_management(client):
     with (
         patch(
             "cuga.backend.server.memory_routes.EvolveIntegration.is_enabled",
@@ -384,8 +337,8 @@ def test_retention_capabilities_report_scheduling_as_unsupported(client):
 
     assert response.status_code == 200
     assert response.json()["retention_available"] is True
-    assert response.json()["scheduling_supported"] is False
-    assert response.json()["schedule"]["state"] == "unavailable"
+    assert response.json()["scheduling_supported"] is True
+    assert response.json()["schedule"]["state"] == "managed_by_evolve"
     assert (
         next(rule for rule in response.json()["rules"] if rule["name"] == "orphaned-conversations")[
             "source_deleted"
@@ -423,7 +376,7 @@ def test_compliance_status_does_not_expose_provider_details(client):
         response = client.get("/api/manage/memory/compliance/status")
 
     assert response.status_code == 200
-    assert response.json()["scheduling_supported"] is False
+    assert response.json()["scheduling_supported"] is True
     assert "connection_string" not in response.text
     assert "config" not in response.text
 
@@ -482,9 +435,9 @@ async def test_collection_transport_cannot_override_instance_namespace(monkeypat
 
 @pytest.mark.parametrize("bucket", ["flagged", "deleted", "skipped"])
 def test_report_projection_never_exposes_memory_labels(bucket):
-    from cuga.backend.evolve.retention import sanitize_retention_report
+    from cuga.backend.evolve.retention import project_retention_report
 
-    result = sanitize_retention_report(
+    result = project_retention_report(
         {
             bucket: [
                 {
@@ -503,10 +456,10 @@ def test_report_projection_never_exposes_memory_labels(bucket):
 
 def test_report_rejects_malformed_items_instead_of_silently_dropping_them():
     from pydantic import ValidationError
-    from cuga.backend.evolve.retention import sanitize_retention_report
+    from cuga.backend.evolve.retention import project_retention_report
 
     with pytest.raises(ValidationError):
-        sanitize_retention_report({"deleted": ["not a report item"]})
+        project_retention_report({"deleted": ["not a report item"]})
 
 
 def test_invalid_provider_report_returns_safe_gateway_error():
@@ -516,3 +469,111 @@ def test_invalid_provider_report_returns_safe_gateway_error():
         _retention_report_response({"deleted": [{"entity_id": {"secret": "private content"}}]})
     assert error.value.status_code == 502
     assert error.value.detail == "Evolve returned an invalid retention report"
+
+
+@pytest.mark.parametrize("operation", ["start", "stop", "delete", "get", "list", "put"])
+def test_schedule_routes_forward_service_scope_and_revision(client, operation):
+    tool = {"get": "get", "list": "list", "put": "put"}.get(operation, operation)
+    tool = f"{tool}_retention_schedule" + ("s" if operation == "list" else "")
+    with (
+        patch.object(
+            EvolveIntegration, "_call_structured_tool", new=AsyncMock(return_value={"revision": 4})
+        ) as call,
+        patch("cuga.backend.server.memory_routes._namespace_id", return_value="service-a"),
+    ):
+        path = "/api/manage/memory/retention/schedules"
+        if operation != "list":
+            path += "/nightly"
+        if operation in {"start", "stop"}:
+            response = client.post(path + "/" + operation, json={"expected_revision": 3})
+        elif operation == "put":
+            response = client.put(
+                path, json={"policy_id": "custom", "spec": {"schedule": "@daily"}, "expected_revision": 3}
+            )
+        elif operation == "delete":
+            response = client.delete(path + "?expected_revision=3")
+        else:
+            response = client.get(path)
+    assert response.status_code == 200
+    args = call.await_args.args
+    assert args[0] == tool
+    assert args[1]["namespace_id"] == "service-a"
+    assert "user_id" not in args[1]
+    if operation in {"put", "start", "stop"}:
+        assert args[1]["initiated_by"] == "admin-1"
+        assert args[1]["expected_revision"] == 3
+    if operation == "put":
+        assert args[1]["definition"]["agent_id"] is None
+        assert args[1]["definition"]["dry_run"] is False
+
+
+def test_schedule_conflict_requires_refresh(client):
+    with patch.object(
+        EvolveIntegration,
+        "_call_structured_tool",
+        new=AsyncMock(return_value={"error": "Schedule revision conflict"}),
+    ):
+        response = client.post(
+            "/api/manage/memory/retention/schedules/nightly/start", json={"expected_revision": 1}
+        )
+    assert response.status_code == 409
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"namespace_id": "other"},
+        {"user_id": "other"},
+        {"agent_id": "other"},
+        {"initiated_by": "other"},
+        {"dry_run": True},
+    ],
+)
+def test_schedule_body_cannot_override_service_scope_or_execution(client, override):
+    response = client.put(
+        "/api/manage/memory/retention/schedules/nightly",
+        json={"policy_id": "custom", "spec": {"schedule": "@daily"}, **override},
+    )
+    assert response.status_code == 422
+
+
+def test_schedule_preview_uses_evolve_without_saving(client):
+    with (
+        patch.object(EvolveIntegration, "is_enabled", return_value=True),
+        patch.object(EvolveIntegration, "_call_structured_tool", new=AsyncMock()) as call,
+    ):
+        response = client.post(
+            "/api/manage/memory/retention/schedules/preview",
+            json={"spec": {"schedule": "0 2 * * *", "timeZone": "America/New_York", "suspend": True}},
+        )
+    assert response.status_code == 200
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    assert len(response.json()["next_runs"]) == 5
+    assert all(
+        datetime.fromisoformat(value).astimezone(ZoneInfo("America/New_York")).hour == 2
+        for value in response.json()["next_runs"]
+    )
+    assert response.json()["suspended"] is True
+    call.assert_not_awaited()
+
+
+@pytest.mark.parametrize("spec", [{"schedule": "bad"}, {"schedule": "@daily", "timeZone": "+03:00"}])
+def test_schedule_preview_rejects_invalid_timing(client, spec):
+    with patch.object(EvolveIntegration, "is_enabled", return_value=True):
+        response = client.post("/api/manage/memory/retention/schedules/preview", json={"spec": spec})
+    assert response.status_code == 422
+
+
+def test_schedule_changes_require_management_access(client):
+    def denied():
+        raise HTTPException(status_code=403)
+
+    app.dependency_overrides[require_manage_access] = denied
+    with patch.object(EvolveIntegration, "_call_structured_tool", new=AsyncMock()) as call:
+        response = client.post(
+            "/api/manage/memory/retention/schedules/nightly/start", json={"expected_revision": 1}
+        )
+    assert response.status_code == 403
+    call.assert_not_awaited()

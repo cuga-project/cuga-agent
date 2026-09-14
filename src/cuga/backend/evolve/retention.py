@@ -67,81 +67,41 @@ class RetentionReport(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-def _safe_report_reason(item: RetentionReportItem, bucket: str) -> str | None:
-    rule = item.rule
-    reason = item.reason
-    if bucket == "skipped":
-        if reason == "legal_hold":
-            return "Deletion blocked by legal hold."
-        if rule == "unused-guidelines" and reason == "unused":
-            return "No recorded last-used date was available, so this guideline was kept instead of being deleted."
-        if reason == "delete_failed":
-            return "The memory could not be deleted, so it was kept."
-        return "The retention action could not be applied safely, so this memory was kept."
-    if bucket != "deleted":
-        return None
-    if rule == "unused-guidelines" and reason == "unused":
-        return "Deleted because no use was recorded for more than 180 days."
-    if rule == "old-sessions" and reason == "age":
-        return "Deleted because the source conversation was more than one year old."
-    if reason is not None and reason.startswith("cascade:"):
-        return "Deleted because it was derived from a conversation deleted by the retention policy."
-    if rule == "orphaned-conversations" and reason == "orphaned_conversation":
-        return (
-            "Deleted because the memory was more than 7 days old and its source conversation was unavailable."
-        )
-    return "Deleted because it matched a deletion rule in the retention policy."
-
-
-def sanitize_retention_report(report: dict[str, Any]) -> dict[str, Any]:
-    """Validate the wire report and project only content-free audit fields."""
-    parsed = RetentionReport.model_validate(report)
-    sanitized = parsed.model_dump(
-        exclude={"flagged", "deleted", "skipped", "errors", "warnings"}, exclude_unset=True
-    )
-    sanitized["error_count"] = len(parsed.errors)
-    sanitized["warning_count"] = len(parsed.warnings)
-    for bucket in ("flagged", "deleted", "skipped"):
-        items = []
-        for item in getattr(parsed, bucket):
-            projected = item.model_dump(exclude={"rule", "reason"}, exclude_unset=True)
-            if reason := _safe_report_reason(item, bucket):
-                projected["reason"] = reason
-            items.append(projected)
-        sanitized[bucket] = items
-    return sanitized
+def _report_reason(item: RetentionReportItem, bucket: str) -> str:
+    if item.outcome == "held" or item.reason == "legal_hold":
+        return "Deletion blocked by legal hold."
+    if item.outcome == "missing":
+        return "The memory was already absent."
+    if item.outcome == "withdrawn":
+        return "The memory no longer matched the deletion criteria."
+    if bucket == "deleted":
+        return "Deleted because it matched a deletion rule in the retention policy."
+    if bucket == "flagged":
+        return "Flagged for review by the retention policy."
+    return "The retention action was not applied."
 
 
 def project_retention_report(report: dict[str, Any]) -> dict[str, Any]:
-    buckets = {
-        bucket: [
-            {
-                key: item[key]
-                for key in ("entity_id", "entity_type", "action", "outcome", "reason")
-                if key in item
-            }
-            for item in report.get(bucket, [])
-            if isinstance(item, dict)
+    """Validate the wire report once and expose only content-free audit fields."""
+    parsed = RetentionReport.model_validate(report)
+    result = parsed.model_dump(
+        exclude={"flagged", "deleted", "skipped", "errors", "warnings"}, exclude_unset=True
+    )
+    for bucket in ("flagged", "deleted", "skipped"):
+        result[bucket] = [
+            item.model_dump(exclude={"rule", "reason"}, exclude_unset=True)
+            | {"reason": _report_reason(item, bucket)}
+            for item in getattr(parsed, bucket)
         ]
-        for bucket in ("flagged", "deleted", "skipped")
-    }
-    return {
-        **{
-            key: report[key]
-            for key in ("run_id", "policy_id", "policy_name", "initiated_by", "started_at", "completed_at")
-            if key in report
-        },
-        **buckets,
-        "summary": (
-            f"Retention flagged {len(buckets['flagged'])} for review, "
-            f"deleted {len(buckets['deleted'])}, and "
-            f"{len(buckets['skipped'])} skipped."
-        ),
-        "errors": ["One or more memories could not be evaluated."] if report.get("error_count") else [],
-        "warnings": ["Some memories were evaluated with incomplete usage data."]
-        if report.get("warning_count")
-        else [],
-    }
+    result["summary"] = (
+        f"Retention flagged {len(parsed.flagged)} for review, "
+        f"deleted {len(parsed.deleted)}, and {len(parsed.skipped)} skipped."
+    )
+    result["errors"] = ["One or more retention operations failed."] if parsed.errors else []
+    result["warnings"] = (
+        ["Evolve reported retention warnings; review the run in Evolve."] if parsed.warnings else []
+    )
+    return result
 
 
 def project_retention_policy(policy: dict[str, Any]) -> dict[str, Any]:
@@ -175,10 +135,10 @@ def project_retention_policy(policy: dict[str, Any]) -> dict[str, Any]:
 def retention_capabilities(*, retention_available: bool) -> dict[str, Any]:
     return {
         "retention_available": retention_available,
-        "scheduling_supported": False,
+        "scheduling_supported": retention_available,
         "schedule": {
-            "state": "unavailable",
-            "label": "Scheduled retention is unavailable",
+            "state": "managed_by_evolve",
+            "label": "Schedules are stored and executed by Evolve.",
         },
         "rules": [
             {
@@ -204,7 +164,7 @@ def project_compliance_status(result: dict[str, Any]) -> dict[str, Any]:
         "evolve_version": result.get("evolve_version"),
         "backend": result.get("backend"),
         "retention_available": bool(result.get("retention_available")),
-        "scheduling_supported": False,
+        "scheduling_supported": bool(result.get("retention_available")),
         "plugins": [
             {key: plugin.get(key) for key in ("name", "protection_class", "hooks", "enabled", "healthy")}
             for plugin in result.get("plugins", [])

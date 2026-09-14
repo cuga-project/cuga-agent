@@ -61,7 +61,6 @@ class RetentionRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     policy_id: str = Field(min_length=1, max_length=128)
-    as_of: Optional[str] = None
     scan_limit: Optional[int] = Field(default=None, ge=1, le=100_000)
 
 
@@ -82,6 +81,10 @@ def _memory_result(result: Optional[dict[str, Any]]) -> dict[str, Any]:
     lowered = error.lower()
     if "permission denied" in lowered or "forbidden" in lowered:
         raise HTTPException(status_code=403, detail="Memory access denied")
+    if any(word in lowered for word in ("conflict", "already exists", "referenced", "active jobs")):
+        raise HTTPException(
+            status_code=409, detail="Memory configuration changed or is in use; refresh and retry"
+        )
     if "not found" in lowered:
         raise HTTPException(status_code=404, detail="Memory not found")
     raise HTTPException(status_code=400, detail="Memory request rejected")
@@ -191,37 +194,6 @@ def _validate_metadata_patch(metadata: dict[str, Any], allowed: set[str], audien
             status_code=422,
             detail=f"{audience}-editable memory fields are limited to: {', '.join(sorted(allowed))}",
         )
-
-
-async def _list_retention_inventory(*, agent_id: str, scan_limit: Optional[int]) -> list[dict[str, Any]]:
-    remaining = scan_limit or 100_000
-    cursor: Optional[str] = None
-    seen_cursors: set[str] = set()
-    entities: list[dict[str, Any]] = []
-    while remaining > 0:
-        result = _memory_result(
-            await EvolveIntegration.list_entities(
-                agent_id=agent_id,
-                cursor=cursor,
-                limit=min(remaining, 200),
-                include_content=False,
-                namespace_id=_namespace_id(),
-            )
-        )
-        page = [item for item in result.get("items", []) if isinstance(item, dict)]
-        entities.extend(page[:remaining])
-        remaining -= len(page)
-        next_cursor = result.get("next_cursor")
-        if remaining <= 0 and isinstance(next_cursor, str) and next_cursor:
-            raise HTTPException(
-                status_code=409,
-                detail="Retention cannot safely evaluate source conversations within the scan limit",
-            )
-        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
-            break
-        seen_cursors.add(next_cursor)
-        cursor = next_cursor
-    return entities
 
 
 async def _retention_policies() -> list[dict[str, Any]]:
@@ -538,10 +510,10 @@ async def validate_admin_retention_policy(
 def _retention_report_response(report: dict) -> dict:
     from pydantic import ValidationError
 
-    from cuga.backend.evolve.retention import project_retention_report, sanitize_retention_report
+    from cuga.backend.evolve.retention import project_retention_report
 
     try:
-        return project_retention_report(sanitize_retention_report(report))
+        return project_retention_report(report)
     except ValidationError:
         raise HTTPException(status_code=502, detail="Evolve returned an invalid retention report") from None
 
@@ -549,21 +521,15 @@ def _retention_report_response(report: dict) -> dict:
 @router.post("/manage/memory/retention/runs")
 async def run_admin_memory_retention(
     body: RetentionRunRequest,
-    agent_id: str = Query(default="cuga-default", min_length=1, max_length=200),
     current_user: Optional[UserInfo] = Depends(require_manage_access),
 ):
     from cuga.backend.evolve.retention import DEFAULT_RETENTION_POLICY_ID
 
-    if body.as_of is not None:
-        raise HTTPException(
-            status_code=422, detail="Sweeping checks current eligibility; historical execution is unavailable"
-        )
     if body.policy_id == DEFAULT_RETENTION_POLICY_ID:
         await _retention_policies()
     result = _memory_result(
         await EvolveIntegration.run_retention(
             body.policy_id,
-            dry_run=False,
             scan_limit=body.scan_limit,
             namespace_id=_namespace_id(),
             initiated_by=_user_id(current_user),
@@ -574,7 +540,6 @@ async def run_admin_memory_retention(
 
 @router.get("/manage/memory/retention/runs")
 async def list_admin_memory_retention_runs(
-    agent_id: str = Query(default="cuga-default", min_length=1, max_length=200),
     limit: int = Query(default=50, ge=1, le=200),
     current_user: Optional[UserInfo] = Depends(require_manage_access),
 ):
@@ -645,5 +610,139 @@ async def sweep_retention(policy_id: str, current_user: Optional[UserInfo] = Dep
         await EvolveIntegration._call_structured_tool(
             "sweep_retention",
             {"namespace_id": _namespace_id(), "policy_id": policy_id, "initiated_by": _user_id(current_user)},
+        )
+    )
+
+
+class RetentionScheduleWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy_id: str = Field(min_length=1, max_length=128)
+    spec: dict[str, Any]
+    expected_revision: int = Field(default=0, ge=0)
+
+
+class RetentionScheduleRevision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class RetentionSchedulePreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    spec: dict[str, Any]
+
+
+async def _schedule_call(tool: str, **arguments: Any) -> dict:
+    return _memory_result(
+        await EvolveIntegration._call_structured_tool(tool, {**arguments, "namespace_id": _namespace_id()})
+    )
+
+
+@router.get("/manage/memory/retention/schedules")
+async def list_retention_schedules(current_user: Optional[UserInfo] = Depends(require_manage_access)):
+    return JSONResponse(await _schedule_call("list_retention_schedules"))
+
+
+@router.post("/manage/memory/retention/schedules/preview")
+async def preview_retention_schedule(
+    body: RetentionSchedulePreview,
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    # Evolve 1.2 exposes upcoming times for saved schedules over MCP. For an
+    # unsaved form, use its same timing implementation without writing a record.
+    from datetime import datetime, timezone
+
+    from pydantic import ValidationError
+
+    if not EvolveIntegration.is_enabled():
+        raise HTTPException(status_code=503, detail="Evolve memory is unavailable")
+    try:
+        from altk_evolve.retention.schedule import CronJobSpec
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Install the Evolve extra to preview schedules") from None
+    try:
+        spec = CronJobSpec.model_validate(body.spec)
+        instant = datetime.now(timezone.utc)
+        occurrences = []
+        for _ in range(5):
+            instant = spec.next_time(instant)
+            occurrences.append(instant.isoformat())
+    except (ValidationError, ValueError):
+        raise HTTPException(status_code=422, detail="Invalid schedule or IANA timezone") from None
+    return JSONResponse({"next_runs": occurrences, "timeZone": spec.timeZone, "suspended": spec.suspend})
+
+
+@router.get("/manage/memory/retention/schedules/{schedule_id}")
+async def get_retention_schedule(
+    schedule_id: str,
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    return JSONResponse(await _schedule_call("get_retention_schedule", schedule_id=schedule_id))
+
+
+@router.put("/manage/memory/retention/schedules/{schedule_id}")
+async def save_retention_schedule(
+    schedule_id: str,
+    body: RetentionScheduleWrite,
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    if body.policy_id == "cuga-standard":
+        await _retention_policies()
+    return JSONResponse(
+        await _schedule_call(
+            "put_retention_schedule",
+            schedule_id=schedule_id,
+            definition={"policy_id": body.policy_id, "spec": body.spec, "dry_run": False, "agent_id": None},
+            expected_revision=body.expected_revision,
+            initiated_by=_user_id(current_user),
+        )
+    )
+
+
+@router.post("/manage/memory/retention/schedules/{schedule_id}/start")
+async def start_retention_schedule(
+    schedule_id: str,
+    body: RetentionScheduleRevision,
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    return JSONResponse(
+        await _schedule_call(
+            "start_retention_schedule",
+            schedule_id=schedule_id,
+            expected_revision=body.expected_revision,
+            initiated_by=_user_id(current_user),
+        )
+    )
+
+
+@router.post("/manage/memory/retention/schedules/{schedule_id}/stop")
+async def stop_retention_schedule(
+    schedule_id: str,
+    body: RetentionScheduleRevision,
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    return JSONResponse(
+        await _schedule_call(
+            "stop_retention_schedule",
+            schedule_id=schedule_id,
+            expected_revision=body.expected_revision,
+            initiated_by=_user_id(current_user),
+        )
+    )
+
+
+@router.delete("/manage/memory/retention/schedules/{schedule_id}")
+async def delete_retention_schedule(
+    schedule_id: str,
+    expected_revision: int = Query(ge=1),
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    return JSONResponse(
+        await _schedule_call(
+            "delete_retention_schedule",
+            schedule_id=schedule_id,
+            expected_revision=expected_revision,
         )
     )
