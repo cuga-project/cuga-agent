@@ -535,17 +535,24 @@ async def validate_admin_retention_policy(
     )
 
 
+def _retention_report_response(report: dict) -> dict:
+    from pydantic import ValidationError
+
+    from cuga.backend.evolve.retention import project_retention_report, sanitize_retention_report
+
+    try:
+        return project_retention_report(sanitize_retention_report(report))
+    except ValidationError:
+        raise HTTPException(status_code=502, detail="Evolve returned an invalid retention report") from None
+
+
 @router.post("/manage/memory/retention/runs")
 async def run_admin_memory_retention(
     body: RetentionRunRequest,
     agent_id: str = Query(default="cuga-default", min_length=1, max_length=200),
     current_user: Optional[UserInfo] = Depends(require_manage_access),
 ):
-    from cuga.backend.evolve.retention import (
-        DEFAULT_RETENTION_POLICY_ID,
-        project_retention_report,
-        sanitize_retention_report,
-    )
+    from cuga.backend.evolve.retention import DEFAULT_RETENTION_POLICY_ID
 
     if body.as_of is not None:
         raise HTTPException(
@@ -562,8 +569,7 @@ async def run_admin_memory_retention(
             initiated_by=_user_id(current_user),
         )
     )
-    sanitized = sanitize_retention_report(result)
-    return JSONResponse(project_retention_report(sanitized))
+    return JSONResponse(_retention_report_response(result))
 
 
 @router.get("/manage/memory/retention/runs")
@@ -572,8 +578,6 @@ async def list_admin_memory_retention_runs(
     limit: int = Query(default=50, ge=1, le=200),
     current_user: Optional[UserInfo] = Depends(require_manage_access),
 ):
-    from cuga.backend.evolve.retention import project_retention_report, sanitize_retention_report
-
     result = _memory_result(
         await EvolveIntegration.list_retention_runs(
             namespace_id=_namespace_id(),
@@ -589,13 +593,7 @@ async def list_admin_memory_retention_runs(
                     for key in ("run_id", "policy_id", "initiated_by", "status", "created_at")
                     if key in row
                 }
-                | {
-                    "report": project_retention_report(
-                        sanitize_retention_report(
-                            row["report"] if isinstance(row.get("report"), dict) else {}
-                        )
-                    )
-                }
+                | {"report": _retention_report_response(row.get("report", {}))}
                 for row in rows
             ]
         }

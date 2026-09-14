@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_RETENTION_POLICY: dict[str, Any] = {
     "rules": [
@@ -34,73 +35,41 @@ DEFAULT_RETENTION_POLICY_ID = "cuga-standard"
 DEFAULT_RETENTION_POLICY_NAME = "Standard retention"
 DEFAULT_RETENTION_POLICY_DESCRIPTION = "CUGA's default memory lifecycle policy"
 
-ORPHANED_CONVERSATION_MINIMUM_AGE_DAYS = 7
-ORPHANED_CONVERSATION_RULE: dict[str, Any] = {
-    "name": "orphaned-conversations",
-    "entity_type": "memory",
-    "action": "delete",
-    "max_age_days": ORPHANED_CONVERSATION_MINIMUM_AGE_DAYS,
-    "description": "Delete memories older than 7 days when their source conversation is unavailable",
-}
 
-_REPORT_FIELDS = {
-    "initiated_by",
-    "as_of",
-    "completed_at",
-    "policy_id",
-    "policy_name",
-    "run_id",
-    "started_at",
-}
-_REPORT_ITEM_FIELDS = {
-    "action",
-    "created_at",
-    "entity_id",
-    "entity_type",
-    "outcome",
-}
+class RetentionReportItem(BaseModel):
+    """Fields consumed from Evolve's engine and durable collection reports."""
+
+    model_config = ConfigDict(strict=True, extra="ignore")
+
+    entity_id: str
+    entity_type: str | None = None
+    action: str | None = None
+    outcome: str | None = None
+    rule: str | None = None
+    reason: str | None = None
 
 
-def _metadata(entity: dict[str, Any]) -> dict[str, Any]:
-    value = entity.get("metadata")
-    return value if isinstance(value, dict) else {}
+class RetentionReport(BaseModel):
+    """Validate the MCP report once; ignore provider fields we do not expose."""
+
+    model_config = ConfigDict(strict=True, extra="ignore")
+
+    run_id: str | None = None
+    policy_id: str | None = None
+    policy_name: str | None = None
+    initiated_by: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    flagged: list[RetentionReportItem] = Field(default_factory=list)
+    deleted: list[RetentionReportItem] = Field(default_factory=list)
+    skipped: list[RetentionReportItem] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
-def _string_value(*values: Any) -> str | None:
-    return next((value.strip() for value in values if isinstance(value, str) and value.strip()), None)
-
-
-def _created_at(value: Any) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def retention_reference_time(value: str | None) -> datetime:
-    if value is None:
-        return datetime.now(timezone.utc)
-    parsed = _created_at(value)
-    if parsed is None:
-        raise ValueError("as_of must be an ISO-8601 timestamp")
-    return parsed
-
-
-def memory_title(entity: dict[str, Any]) -> str | None:
-    """Return a short, non-content label suitable for persisted retention reports."""
-    metadata = _metadata(entity)
-    title = _string_value(entity.get("title"), metadata.get("title"), metadata.get("display_name"))
-    return title[:200] if title else None
-
-
-def _safe_report_reason(item: dict[str, Any], bucket: str) -> str | None:
-    rule = item.get("rule")
-    reason = item.get("reason")
+def _safe_report_reason(item: RetentionReportItem, bucket: str) -> str | None:
+    rule = item.rule
+    reason = item.reason
     if bucket == "skipped":
         if reason == "legal_hold":
             return "Deletion blocked by legal hold."
@@ -115,7 +84,7 @@ def _safe_report_reason(item: dict[str, Any], bucket: str) -> str | None:
         return "Deleted because no use was recorded for more than 180 days."
     if rule == "old-sessions" and reason == "age":
         return "Deleted because the source conversation was more than one year old."
-    if isinstance(reason, str) and reason.startswith("cascade:"):
+    if reason is not None and reason.startswith("cascade:"):
         return "Deleted because it was derived from a conversation deleted by the retention policy."
     if rule == "orphaned-conversations" and reason == "orphaned_conversation":
         return (
@@ -124,108 +93,22 @@ def _safe_report_reason(item: dict[str, Any], bucket: str) -> str | None:
     return "Deleted because it matched a deletion rule in the retention policy."
 
 
-def find_orphaned_memory_entities(
-    entities: list[dict[str, Any]],
-    conversation_keys: set[tuple[str, str]],
-    *,
-    now: datetime | None = None,
-) -> list[dict[str, Any]]:
-    """Find old memories that cannot resolve to a scoped CUGA conversation."""
-    effective_now = now or datetime.now(timezone.utc)
-    if effective_now.tzinfo is None:
-        effective_now = effective_now.replace(tzinfo=timezone.utc)
-    else:
-        effective_now = effective_now.astimezone(timezone.utc)
-    cutoff = effective_now - timedelta(days=ORPHANED_CONVERSATION_MINIMUM_AGE_DAYS)
-
-    trajectory_sources: dict[str, set[str]] = {}
-    for entity in entities:
-        if entity.get("type") != "trajectory":
-            continue
-        metadata = _metadata(entity)
-        source = _string_value(
-            metadata.get("thread_id"),
-            metadata.get("session_id"),
-            entity.get("session_id"),
-        )
-        if not source:
-            continue
-        for key in (
-            entity.get("id"),
-            entity.get("task_id"),
-            metadata.get("task_id"),
-            metadata.get("trace_id"),
-        ):
-            task_id = _string_value(key)
-            if task_id:
-                trajectory_sources.setdefault(task_id, set()).add(source)
-
-    threads = {thread_id for thread_id, _ in conversation_keys}
-    orphaned = []
-    for entity in entities:
-        if entity.get("type") == "trajectory":
-            continue
-        metadata = _metadata(entity)
-        if metadata.get("legal_hold") is True:
-            continue
-        created_at = _created_at(entity.get("created_at"))
-        if created_at is None or created_at > cutoff:
-            continue
-
-        sources = {
-            source
-            for source in (
-                _string_value(metadata.get("thread_id")),
-                _string_value(metadata.get("session_id"), entity.get("session_id")),
-            )
-            if source
-        }
-        source_task_id = _string_value(entity.get("source_task_id"), metadata.get("source_task_id"))
-        if source_task_id:
-            sources.update(trajectory_sources.get(source_task_id, set()))
-
-        owner_id = _string_value(
-            entity.get("user_id"),
-            metadata.get("user_id"),
-            metadata.get("owner_id"),
-        )
-        associated = (
-            any((source, owner_id) in conversation_keys for source in sources)
-            if owner_id
-            else any(source in threads for source in sources)
-        )
-        if not associated:
-            orphaned.append(entity)
-    return orphaned
-
-
 def sanitize_retention_report(report: dict[str, Any]) -> dict[str, Any]:
-    """Remove memory content, ownership data, policy internals, and provider details."""
-    sanitized = {key: report[key] for key in _REPORT_FIELDS if key in report}
-    errors = report.get("errors")
-    warnings = report.get("warnings")
-    sanitized["error_count"] = (
-        len(errors) if isinstance(errors, list) else int(report.get("error_count") or bool(errors))
+    """Validate the wire report and project only content-free audit fields."""
+    parsed = RetentionReport.model_validate(report)
+    sanitized = parsed.model_dump(
+        exclude={"flagged", "deleted", "skipped", "errors", "warnings"}, exclude_unset=True
     )
-    sanitized["warning_count"] = (
-        len(warnings) if isinstance(warnings, list) else int(report.get("warning_count") or bool(warnings))
-    )
+    sanitized["error_count"] = len(parsed.errors)
+    sanitized["warning_count"] = len(parsed.warnings)
     for bucket in ("flagged", "deleted", "skipped"):
-        sanitized_items = []
-        for item in report.get(bucket, []):
-            if not isinstance(item, dict):
-                continue
-            sanitized_item = {
-                key: value
-                for key, value in item.items()
-                if key in _REPORT_ITEM_FIELDS and isinstance(value, (str, int, float, bool, type(None)))
-            }
-            if bucket != "deleted" and (title := memory_title(item)):
-                sanitized_item["title"] = title
+        items = []
+        for item in getattr(parsed, bucket):
+            projected = item.model_dump(exclude={"rule", "reason"}, exclude_unset=True)
             if reason := _safe_report_reason(item, bucket):
-                sanitized_item["reason"] = reason
-            sanitized_items.append(sanitized_item)
-        sanitized[bucket] = sanitized_items
+                projected["reason"] = reason
+            items.append(projected)
+        sanitized[bucket] = items
     return sanitized
 
 
@@ -234,7 +117,7 @@ def project_retention_report(report: dict[str, Any]) -> dict[str, Any]:
         bucket: [
             {
                 key: item[key]
-                for key in ("entity_id", "entity_type", "action", "outcome", "title", "reason")
+                for key in ("entity_id", "entity_type", "action", "outcome", "reason")
                 if key in item
             }
             for item in report.get(bucket, [])
