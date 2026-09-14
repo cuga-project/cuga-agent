@@ -418,4 +418,4 @@ triggers once Activepieces is deployed.
 | `2_deploy.sh` | create the CE secret + app; set `EVENTS_PUBLIC_URL` |
 | `3_smoke.py` | capability report + channels + a web-chat probe |
 | `teardown.sh` | delete the app (optionally the secret) |
-| `.env.ce.example` | placeholder template (real `.env.ce` is gitignored) |
+| `make_env_ce.sh` | **the** way to build the CE secrets — generates BOTH `.env.ce` (events) and `.env.ce.core` (core) from `../../.env`; both gitignored. There is no hand-edited template: the annotated key list lives in the repo-root `.env.events.example`. |

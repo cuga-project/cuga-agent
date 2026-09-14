@@ -872,6 +872,15 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 # EVENTS_FLOW_REUSE is off, which is the default.
                 _disc = hashlib.sha1(flow_identity.encode()).hexdigest()[:8]
                 flow_name = f"push-{source}-{(event or 'default').replace('_', '-')}-{agent}-{_disc}"
+                # …but the identity hash is IDENTICAL for the SAME watch armed twice, and with reuse
+                # OFF (the default, `dedup_key == ""`) those two arms are INTENTIONALLY two distinct
+                # subscriptions. APEngine._new_flow() deletes any same-named flow, so the second arm
+                # would delete the first arm's live flow and leave its subscription pointing at a
+                # flow that no longer exists. When reuse is off, make every created flow unique so
+                # each subscription keeps its own. Reuse ON never reaches here for a duplicate — the
+                # dedup lookup above short-circuits — so the deterministic name is preserved there.
+                if not dedup_key:
+                    flow_name = f"{flow_name}-{uuid.uuid4().hex[:6]}"
                 # NATIVE-vs-AP routing (Phase 2): a PUSH on an integration IS an AP piece. Without the
                 # AP engine we can't watch it — decline clearly, naming the integration, and point at
                 # what works AP-free, rather than failing with a cryptic connection error later.

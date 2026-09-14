@@ -3114,7 +3114,7 @@ def register_events_routes(
             return _denied
         if users is None:
             return {"users": []}
-        p = _principal_from(request.query_params.get("scope"), request.headers)
+        p = _admin_actor(request)  # trusted identity only — see _admin_actor
         if not _is_admin(p):
             return JSONResponse({"ok": False, "error": "admin only"}, 403)
         return {
@@ -3133,7 +3133,7 @@ def register_events_routes(
         if users is None:
             return JSONResponse({"ok": False, "error": "user store not configured"}, 501)
         body = await _safe_json(request)
-        p = _principal_from(body.get("scope") or request.query_params.get("scope"), request.headers)
+        p = _admin_actor(request)  # trusted identity only — see _admin_actor
         if not _is_admin(p):
             return JSONResponse({"ok": False, "error": "admin only"}, 403)
         uid = body.get("user_id")
@@ -3157,7 +3157,7 @@ def register_events_routes(
         if _denied is not None:
             return _denied
         body = await _safe_json(request)
-        p = _principal_from(body.get("scope") or request.query_params.get("scope"), request.headers)
+        p = _admin_actor(request)  # trusted identity only — see _admin_actor
         if not _is_admin(p):
             return JSONResponse({"ok": False, "error": "admin only"}, 403)
         # Discord DIRECT backend (default): nothing to arm in AP — the Gateway bot connects on boot.
@@ -3242,7 +3242,7 @@ def register_events_routes(
         _denied = _admin_denied(request)
         if _denied is not None:
             return _denied
-        p = _principal_from(request.query_params.get("scope"), request.headers)
+        p = _admin_actor(request)  # trusted identity only — see _admin_actor
         if not _is_admin(p):
             return JSONResponse({"ok": False, "error": "admin only"}, 403)
         if oauth_store is None:
@@ -3258,7 +3258,7 @@ def register_events_routes(
         if oauth_store is None:
             return JSONResponse({"ok": False, "error": "oauth store not configured"}, 501)
         body = await _safe_json(request)
-        p = _principal_from(body.get("scope") or request.query_params.get("scope"), request.headers)
+        p = _admin_actor(request)  # trusted identity only — see _admin_actor
         if not _is_admin(p):
             return JSONResponse({"ok": False, "error": "admin only"}, 403)
         app_name = (body.get("app") or "").lower()
@@ -3284,7 +3284,7 @@ def register_events_routes(
         from . import setup_guides
 
         body = await _safe_json(request)
-        p = _principal_from(body.get("scope") or request.query_params.get("scope"), request.headers)
+        p = _admin_actor(request)  # trusted identity only — see _admin_actor
         if not _is_admin(p):
             return JSONResponse({"ok": False, "error": "admin only"}, 403)
         key = (body.get("key") or "").strip()
@@ -3350,6 +3350,21 @@ def register_events_routes(
                 401,
             )
         return None
+
+    def _admin_actor(request):
+        """The identity to AUTHORIZE an admin action against — resolved ONLY from trusted transport
+        headers (``X-User-Id`` etc.), NEVER from a caller-supplied ``scope``.
+
+        THE HOLE THIS CLOSES. The admin routes used to build the principal with
+        ``_principal_from(body["scope"] or query["scope"], headers)`` and then check ``_is_admin`` on
+        it. ``_principal_from`` honours ``scope`` FIRST, so an authenticated ordinary user — whose
+        real id the core proxy pins into ``X-User-Id`` from the verified session — could still send
+        ``scope=default/default/admin`` in the body and pass the admin check while Manage-role
+        enforcement is off. Authorization must never read the actor's identity from a field the
+        actor controls: who you ARE comes from trusted transport; ``scope`` may only name a TARGET,
+        and only after you are known to be an admin.
+        """
+        return _principal_from(None, request.headers)
 
     def _is_admin(p) -> bool:
         if users is None:

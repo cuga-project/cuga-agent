@@ -754,7 +754,7 @@ def test_a_roster_alone_no_longer_mounts_run(monkeypatch):
     monkeypatch.setenv("CUGA_EVENTS_ENABLED", "")
     monkeypatch.setenv("GATEWAY_TOKEN", "")
     monkeypatch.setenv("CUGA_RUN_TOKEN", "")
-    monkeypatch.setenv("CUGA_SUPERVISOR_ROSTER", "docs/examples/events/supervisor_agents.yaml")
+    monkeypatch.setenv("CUGA_SUPERVISOR_ROSTER", "events/examples/rosters/default.yaml")
     monkeypatch.setenv(rr.RUN_DEV_UNAUTH_ENV, "")
 
     assert rr.run_api_enabled() is False

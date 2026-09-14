@@ -51,12 +51,17 @@ up() {
       "$RT" start "$CONTAINER" >/dev/null
     else
       echo "→ creating ${CONTAINER} (postgres 16, :${PORT}) ..."
+      # `-p 127.0.0.1:PORT:5432` binds LOOPBACK ONLY. A bare `-p PORT:5432` publishes on 0.0.0.0,
+      # and this container runs the PUBLISHED development credentials (see PGPASS above), so on any
+      # reachable host another machine could read and modify event state. Nothing outside this box
+      # ever needs it: the local stack talks to 127.0.0.1.
+      #
+      # The comment lives HERE, not inside the command. A `#` line spliced between the backslash-
+      # continued arguments ends the command early — the shell treats it as a comment, drops the
+      # `-p`/image arguments, and then runs the next physical line (`-p "…"`) as its own command:
+      # "-p: command not found", and PostgreSQL never starts.
       "$RT" run -d --name "$CONTAINER" \
         -e POSTGRES_USER="$PGUSER" -e POSTGRES_PASSWORD="$PGPASS" -e POSTGRES_DB="$PGDB" \
-        # Loopback ONLY. A bare -p publishes on 0.0.0.0, and this container runs the
-        # PUBLISHED development credentials (see PGPASS above), so on any reachable host
-        # another machine could read and modify event state. Nothing outside this box ever
-        # needs it: the local stack talks to 127.0.0.1.
         -p "127.0.0.1:${PORT}:5432" "$IMAGE" >/dev/null
     fi
     _wait_ready

@@ -108,3 +108,47 @@ def test_no_gateway_token_configured_still_fails_CLOSED(monkeypatch):
     """An unset secret must refuse, not disable the check — that inversion is the whole point."""
     c = _client(monkeypatch, token="")
     assert c.get("/api/events/admin/users").status_code == 401
+
+
+# ── the AUTHORIZATION half (Sami, PR 603 round 2, P1) ───────────────────────────────────────────
+#
+# The tests above pin the AUTHENTICATION gate (no/invalid token → 401). They cannot catch Sami's
+# second finding, because they wire no user store: with `users is None` `_is_admin` returns True
+# (open dev), so authorization is a no-op and asserting a scope is indistinguishable from any other
+# call. This wires a real store with a NON-admin ('mallory') and an admin, so the escalation is
+# observable: a caller past authentication who is not an admin must not become one by putting
+# `scope=default/default/admin` in the body. The acting identity comes from the trusted X-User-Id
+# the proxy pins from the session, never from a caller-supplied field.
+def _authz_client(monkeypatch):
+    from events.users import UserStore
+
+    users = UserStore(":memory:")
+    users.add("admin", roles=["admin"], tenant="default")
+    users.add("mallory", roles=["user"], tenant="default")
+    monkeypatch.setenv("GATEWAY_TOKEN", TOKEN)
+    monkeypatch.setenv("EVENTS_ALLOW_UNAUTHENTICATED", "")
+    monkeypatch.setenv("EVENTS_DB", ":memory:")
+    app = FastAPI()
+    register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None, users=users)
+    return TestClient(app)
+
+
+def test_authenticated_non_admin_cannot_escalate_via_scope(monkeypatch):
+    c = _authz_client(monkeypatch)
+    r = c.post(
+        "/api/events/admin/users",
+        json={"user_id": "victim", "roles": ["admin"], "scope": "default/default/admin"},
+        headers={"X-Gateway-Token": TOKEN, "X-User-Id": "mallory"},
+    )
+    assert r.status_code == 403, f"non-admin escalated via scope: {r.status_code} {r.text[:200]}"
+
+
+def test_a_real_admin_identity_still_passes(monkeypatch):
+    """The trusted identity, not the scope, decides — an actual admin is admitted."""
+    c = _authz_client(monkeypatch)
+    r = c.post(
+        "/api/events/admin/users",
+        json={"user_id": "victim"},
+        headers={"X-Gateway-Token": TOKEN, "X-User-Id": "admin"},
+    )
+    assert r.status_code == 200, f"the real admin was blocked: {r.status_code} {r.text[:200]}"

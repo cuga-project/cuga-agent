@@ -5,8 +5,11 @@
 #
 #   scripts/frontend_build.sh
 #
-# Requires node + pnpm (the workspace is a pnpm monorepo). If pnpm is missing, we enable it via
-# corepack (bundled with node).
+# This is a THIN WRAPPER around src/frontend_workspaces/frontend/build.sh, which owns the actual
+# build + copy-into-the-package (and, crucially, sets NODE_ENV=production so the bundle is minified
+# — a bare `pnpm run build` defaults to a DEVELOPMENT build: unminified, ~3.5x larger, and a
+# ~450k-line git diff). Keeping the build logic in one place means the two can't drift; this script
+# only adds the toolchain setup (corepack/pnpm, workspace install) and a post-build sanity check.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -24,18 +27,8 @@ fi
 echo "== install workspace deps (first run downloads Carbon/React — a few min) =="
 ( cd "$WS" && pnpm install )
 
-echo "== build frontend (webpack, PRODUCTION) =="
-# NODE_ENV=production is REQUIRED, not a nicety. webpack.config.js keys `mode`, minification,
-# console-stripping and source-maps off `process.env.NODE_ENV === "production"`, and `pnpm run
-# build` sets nothing — so a bare build is a DEVELOPMENT build: unminified, with source maps, ~3.5x
-# larger. Committing that balloons the served bundle (main.js 1.3MB→4.6MB, vendors 7MB→24MB) and
-# turns a routine rebuild into a ~450k-line git diff, because the dev bundle has real newlines
-# where the production one is a single minified line.
-( cd "$FE" && NODE_ENV=production pnpm run build )
-
-echo "== publish → $SERVED =="
-rm -rf "$SERVED"
-cp -r "$FE/dist" "$SERVED"
+echo "== build + publish (delegates to frontend/build.sh — production, copies into the package) =="
+( cd "$FE" && bash build.sh )
 
 BUNDLE=$(ls -1 "$SERVED"/main.*.js 2>/dev/null | head -1)
 if grep -ql "StudioPage\|/studio" "$BUNDLE" 2>/dev/null; then
