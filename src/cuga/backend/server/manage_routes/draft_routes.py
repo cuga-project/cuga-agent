@@ -19,6 +19,7 @@ from cuga.backend.server.manage_routes.helpers import (
     is_secret_field_name,
     load_and_patch_draft,
     policies_list_from_config,
+    resolve_registered_agent_id,
     save_draft_section_unlocked,
 )
 
@@ -53,12 +54,11 @@ def _preserved_supervisor(stored: Any, incoming: Any) -> Any:
 @router.post("/config/draft")
 async def save_manage_config_draft(request: Request, agent_id: Optional[str] = None):
     """Auto-save current form to draft (version stays 'draft'). Updates draft agent tools and triggers registry reload."""
+    agent_id = await resolve_registered_agent_id(agent_id)
+
     try:
         from cuga.backend.server.config_store import save_draft
         from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
-
-        if agent_id is None:
-            agent_id = "cuga-default"
 
         data = await request.json()
         config = data.get("config", data)

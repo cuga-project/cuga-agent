@@ -20,6 +20,7 @@ from cuga.backend.server.manage_routes.helpers import (
     merge_feature_flags_defaults,
     merge_mcp_yaml_into_config,
     redact_secrets_in_config,
+    resolve_registered_agent_id,
 )
 from cuga.backend.server.manage_routes.knowledge_reindex import (
     _BACKGROUND_TASKS,
@@ -70,8 +71,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
     """Create new version from current config and apply to agent (live)."""
     # IMPORTANT: apply_published_config is called at startup (main.py:488,582).
     # Do NOT add knowledge/reindex logic there. Knowledge apply belongs here only.
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
 
     state = app_state(request)
     if state is None:
