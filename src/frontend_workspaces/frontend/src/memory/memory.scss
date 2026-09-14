@@ -787,3 +787,47 @@
     overflow-wrap: anywhere;
   }
 }
+
+/* Settings uses the same navigation with a compact category list. */
+.memory-workspace__settings {
+  max-width: 75rem;
+  margin: 2rem auto;
+  padding: 0 2rem;
+}
+.memory-workspace__settings .memory-workspace__section-head,
+.memory-workspace__settings .memory-workspace__page-head { padding-left: 0; padding-right: 0; }
+.memory-workspace__settings .memory-workspace__record { display: block; padding: 1.25rem 1rem; }
+.memory-workspace__settings .memory-workspace__record-state,
+.memory-workspace__settings .memory-workspace__record > svg { display: none; }
+.memory-workspace__settings .memory-workspace__record-copy > span { white-space: normal; }
+.memory-workspace__settings .memory-workspace__detail { background: var(--cds-background); }
+.memory-workspace__settings .memory-workspace__record-list { border-right: 0; }
+@media (min-width: 66rem) {
+  .memory-workspace__settings .memory-workspace__master-detail { display: grid; grid-template-columns: 18rem minmax(0, 1fr); gap: 2rem; }
+  .memory-workspace__settings .memory-workspace__record-list { grid-column: 1; }
+  .memory-workspace__settings .memory-workspace__detail-column { grid-column: 2; }
+}
+.memory-schedules { margin-top: 1.5rem; }
+.memory-schedules__card { background: var(--cds-layer-01); padding: 1rem; margin: 1rem 0; }
+.memory-schedules__card > p { margin: .75rem 0; }
+.memory-schedules__state { margin-left: 1rem; font-size: .75rem; }
+.memory-schedules__actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0; }
+.memory-schedules button, .memory-schedules__actions button, .memory-workspace__settings .memory-workspace__detail-body > button {
+  border: 1px solid var(--cds-link-primary); background: transparent; color: var(--cds-link-primary); padding: .75rem 1rem; font: inherit; cursor: pointer;
+}
+.memory-schedules button:disabled, .memory-schedules__actions button:disabled, .memory-workspace__settings button:disabled { opacity: .5; cursor: not-allowed; }
+.memory-schedules__actions .memory-schedules__primary { background: var(--cds-button-primary); color: var(--cds-text-on-color); }
+.memory-schedules__actions .memory-schedules__danger { color: var(--cds-text-error); border-color: var(--cds-text-error); }
+.memory-schedules__editor, .memory-schedules__rules, .memory-schedules__footer { border-top: 1px solid var(--cds-border-subtle-01); padding-top: 1.5rem; margin-top: 1.5rem; }
+.memory-schedules fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.memory-schedules__fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 1rem; margin: 1rem 0; }
+.memory-schedules label { display: block; font-size: .75rem; color: var(--cds-text-secondary); }
+.memory-schedules input, .memory-schedules select { display: block; width: 100%; margin-top: .5rem; padding: .75rem; border: 0; border-bottom: 1px solid var(--cds-border-strong-01); background: var(--cds-field-01); color: var(--cds-text-primary); font: inherit; font-size: .875rem; }
+.memory-schedules summary, .memory-schedules__rules summary { cursor: pointer; color: var(--cds-link-primary); margin-bottom: 1rem; }
+.memory-schedules__rules ul, .memory-schedules__notice ul { list-style: disc; padding-left: 1.5rem; }
+.memory-schedules__notice { padding: 1rem; margin: 1rem 0; background: var(--cds-layer-accent-01); }
+.memory-schedules__error { color: var(--cds-text-error); }
+.memory-schedules :focus-visible, .memory-schedules__actions button:focus-visible { outline: 2px solid var(--cds-focus); outline-offset: 2px; }
+@media (max-width: 42rem) { .memory-schedules__fields { grid-template-columns: 1fr; } .memory-workspace__settings { padding: 0 1rem; margin: 1rem auto; } }
+
+.memory-workspace__settings .memory-workspace__record-copy > strong { white-space: normal; }

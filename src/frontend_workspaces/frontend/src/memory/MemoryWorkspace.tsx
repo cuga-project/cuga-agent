@@ -19,7 +19,7 @@ import {
   loadRetentionCapabilities,
   loadRetentionPolicies,
   loadRetentionRuns,
-  collectRetention,
+  runRetention,
   loadRetentionCollection,
   type RetentionCandidate,
   type RetentionAuditEvent,
@@ -33,6 +33,7 @@ import {
   type RetentionRun,
 } from "./types";
 import "./memory.scss";
+import { RetentionSchedules } from "./RetentionSchedules";
 
 type MemorySort =
   | "recently-saved"
@@ -42,11 +43,11 @@ type MemorySort =
   | "oldest"
   | "name";
 
-type AdminTab = "automation" | "memory" | "activity";
-type AutomationId = string;
+type AdminTab = "settings" | "memory" | "activity";
+type SettingsId = string;
 
-type AutomationItem = {
-  id: AutomationId;
+type SettingsItem = {
+  id: SettingsId;
   title: string;
   description: string;
   status: string;
@@ -55,6 +56,7 @@ type AutomationItem = {
   enabled: boolean;
   healthy?: boolean;
   pluginCount?: number;
+  plugins?: ProtectionStatus["plugins"];
   policy?: RetentionPolicy;
 };
 
@@ -388,100 +390,44 @@ function MemoryDetail({
   );
 }
 
-function AutomationDetail({
-  automation,
-  capabilities,
-  latestRun,
-  runningRetention,
-  onRunRetention,
-}: {
-  automation: AutomationItem;
+function SettingsDetail({settings, capabilities, latestRun, runningRetention, onRunRetention}: {
+  settings: SettingsItem;
   capabilities: RetentionCapabilities | null;
   latestRun?: RetentionRun;
   runningRetention: boolean;
-  onRunRetention: (phase: "mark" | "sweep") => void;
+  onRunRetention: () => void;
 }) {
-  const policy = automation.policy;
-  const latestPolicyRun = policy
-    ? latestRun?.policyId === policy.policyId ? latestRun : undefined
-    : latestRun;
-  const latestLabel = latestPolicyRun
-    ? new Date(latestPolicyRun.createdAt).toLocaleString()
-    : "None recorded";
-  return (
-    <>
-      <DetailHeader eyebrow="Automation" title={automation.title} status={automation.status} />
-      <div className="memory-workspace__detail-body">
-        <p>{automation.description}</p>
-        {automation.kind === "protection" && (
-          <DefinitionList
-            items={[
-              { label: "Status", value: automation.enabled ? "Enabled" : "Disabled" },
-              { label: "Health", value: automation.healthy ? "Healthy" : "Status unavailable" },
-              {
-                label: "Configuration",
-                value: automation.pluginCount
-                  ? `${automation.pluginCount} protection ${automation.pluginCount === 1 ? "plugin" : "plugins"}`
-                  : "No protection plugins reported",
-              },
-              { label: "Operation", value: "Continuous" },
-            ]}
-          />
-        )}
-        {automation.kind === "retention" && (
-          <>
-            <DefinitionList
-              items={[
-                { label: "Availability", value: capabilities?.available ? "Manual runs available" : "Unavailable" },
-                { label: "Schedule", value: "Manual only" },
-                { label: "Latest manual activity", value: latestLabel },
-                { label: "Next occurrence", value: "Not scheduled" },
-              ]}
-            />
-            <section className="memory-workspace__rules">
-              <h3>Published rules</h3>
-              {policy?.rules.length ? (
-                <ul>{policy.rules.map((rule) => <li key={rule.name}>{formatRule(rule)}</li>)}</ul>
-              ) : <p>No retention rules are available.</p>}
-            </section>
-          </>
-        )}
-        {automation.kind === "events" && (
-          <>
-            <DefinitionList
-              items={[
-                { label: "Status", value: "Unavailable" },
-                { label: "Destination", value: "Not configured" },
-                { label: "Latest", value: "No lifecycle event delivered" },
-              ]}
-            />
-            <div className="memory-workspace__notice memory-workspace__notice--muted">
-              <strong>Events integration required</strong>
-              <p>Lifecycle delivery will become configurable when the events feature is available.</p>
-            </div>
-          </>
-        )}
-        <div className="memory-workspace__detail-actions">
-          {automation.kind === "retention" && (
-            <>
-              <Button
-                kind="secondary"
-                size="sm"
-                disabled={runningRetention || !capabilities?.available || !policy?.enabled}
-                onClick={() => onRunRetention("mark")}
-              >
-                {runningRetention ? "Working..." : "Mark eligible memories"}
-              </Button>
-              <Button kind="danger--tertiary" size="sm" disabled={runningRetention || !capabilities?.available || !policy?.enabled}
-                onClick={() => onRunRetention("sweep")}>Delete marked memories</Button>
-              <Button kind="secondary" size="sm" disabled>Edit schedule</Button>
-            </>
-          )}
-          {automation.kind === "events" && <Button kind="secondary" size="sm" disabled>Configure destination</Button>}
-        </div>
-      </div>
-    </>
-  );
+  const policy = settings.policy;
+  return <>
+    <DetailHeader eyebrow={settings.kind === "retention" ? "Retention" : settings.kind === "protection" ? "Protection" : "Lifecycle events"} title={settings.title} status={settings.status}/>
+    <div className="memory-workspace__detail-body">
+      <p>{settings.description}</p>
+      {settings.kind === "protection" && <>
+        <DefinitionList items={[
+          {label:"Status",value:settings.enabled ? "Enabled" : "Disabled"},
+          {label:"Health",value:settings.healthy ? "Healthy" : "Status unavailable"},
+          {label:"Applies to",value:"All users of this service instance"},
+          {label:"Configured plugins",value:String(settings.pluginCount ?? 0)},
+          {label:"Operation",value:"Continuous"},
+        ]}/>
+        <h3>Configured protections</h3>
+        {settings.plugins?.length ? settings.plugins.map(plugin => <div className="memory-schedules__card" key={plugin.name}><strong>{plugin.name}</strong><p>{plugin.enabled ? "Enabled" : "Disabled"} · {plugin.healthy ? "Healthy" : "Status unavailable"}</p></div>) : <p>No protection plugins reported.</p>}
+        <p className="memory-schedules__notice">Protection configuration is managed by the service operator. This view reports the active configuration.</p>
+      </>}
+      {policy && <>
+        <div className="memory-schedules__actions"><button className="memory-schedules__primary" disabled={runningRetention || !capabilities?.available || !policy.enabled} onClick={onRunRetention}>{runningRetention ? "Running retention…" : "Run retention now"}</button></div>
+        <details className="memory-schedules__rules"><summary>Policy rules · {policy.rules.length} {policy.rules.length === 1 ? "rule" : "rules"}</summary><ul>{policy.rules.map(rule => <li key={rule.name}>{formatRule(rule)}</li>)}</ul></details>
+        {capabilities?.available ? <RetentionSchedules key={policy.policyId} policyId={policy.policyId} enabled={policy.enabled}/> : <p>Retention is unavailable.</p>}
+        <p className="memory-schedules__footer">Latest run: {latestRun ? new Date(latestRun.createdAt).toLocaleString() : "None recorded"}. View marked memories and completed outcomes in Activity.</p>
+      </>}
+      {settings.kind === "events" && <>
+        <DefinitionList items={[{label:"Status",value:"Not available yet"},{label:"Destination",value:"Not configured"},{label:"Delivery history",value:"No deliveries recorded"}]}/>
+        <p className="memory-schedules__notice">Lifecycle event delivery is not integrated yet. Destination settings will be available here when delivery is supported.</p>
+        <button disabled>Configure destination</button>
+        <h3>Retention activity</h3><p>Marked memories and committed retention outcomes remain available in Activity, independently of external event delivery.</p>
+      </>}
+    </div>
+  </>;
 }
 
 function ReportItems({
@@ -686,7 +632,7 @@ export function MemoryWorkspace({
   const requestGenerationRef = React.useRef(0);
   const activeAgentRef = React.useRef(agentId);
   const [view, setView] = useState<"user" | "admin">("user");
-  const [adminTab, setAdminTab] = useState<AdminTab>("automation");
+  const [adminTab, setAdminTab] = useState<AdminTab>("settings");
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
   const [memoryTotal, setMemoryTotal] = useState(0);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -699,7 +645,7 @@ export function MemoryWorkspace({
   const [runs, setRuns] = useState<RetentionRun[]>([]);
   const [selectedMemoryId, setSelectedMemoryId] = useState("");
   const [selectedAdminMemoryId, setSelectedAdminMemoryId] = useState("");
-  const [selectedAutomationId, setSelectedAutomationId] = useState<AutomationId>("save-check");
+  const [selectedSettingsId, setSelectedSettingsId] = useState<SettingsId>("save-check");
   const [selectedRunId, setSelectedRunId] = useState("");
   const [detailOpen, setDetailOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -767,7 +713,7 @@ export function MemoryWorkspace({
         loadMemoryPage(agentId),
         loadRetentionCapabilities(),
         canManage ? loadRetentionPolicies() : Promise.resolve([]),
-        canManage ? loadRetentionRuns(agentId) : Promise.resolve([]),
+        canManage ? loadRetentionRuns() : Promise.resolve([]),
         canManage ? loadAdminMemoryPage(agentId) : Promise.resolve(null),
         canManage ? loadProtectionStatus() : Promise.resolve([]),
         Promise.allSettled(focusedEntityIds.map((entityId) => loadMemoryEntity(agentId, entityId))),
@@ -877,8 +823,8 @@ export function MemoryWorkspace({
     }
   }, [selectedAdminMemoryId, visibleAdminMemories]);
 
-  const automations = useMemo<AutomationItem[]>(() => {
-    const protectionItems: AutomationItem[] = (["save-check", "send-check"] as const).map((id) => {
+  const settingsItems = useMemo<SettingsItem[]>(() => {
+    const protectionItems: SettingsItem[] = (["save-check", "send-check"] as const).map((id) => {
       const protection = protections.find((item) => item.id === id);
       const title = id === "save-check" ? "Sensitive information before saving" : "Sensitive information before sending";
       const description = id === "save-check"
@@ -894,13 +840,14 @@ export function MemoryWorkspace({
         enabled: protection?.enabled ?? false,
         healthy: protection?.healthy ?? false,
         pluginCount: protection?.pluginCount ?? 0,
+        plugins: protection?.plugins ?? [],
       };
     });
-    const retentionItems: AutomationItem[] = retentionPolicies.map((policy) => ({
+    const retentionItems: SettingsItem[] = retentionPolicies.map((policy) => ({
       id: `retention:${policy.policyId}`,
       title: policy.name,
       description: policy.description ?? "Evaluates this published retention policy on demand.",
-      status: !capabilities?.available ? "Unavailable" : policy.enabled ? "Available for manual runs" : "Disabled",
+      status: !capabilities?.available ? "Unavailable" : policy.enabled ? "Enabled" : "Disabled",
       detail: `${policy.rules.length} published ${policy.rules.length === 1 ? "rule" : "rules"}`,
       kind: "retention",
       enabled: Boolean(capabilities?.available && policy.enabled),
@@ -949,15 +896,15 @@ export function MemoryWorkspace({
 
   const selectedMemory = visibleMemories.find((memory) => memory.id === selectedMemoryId) ?? visibleMemories[0];
   const selectedAdminMemory = visibleAdminMemories.find((memory) => memory.id === selectedAdminMemoryId) ?? visibleAdminMemories[0];
-  const selectedAutomation = automations.find((automation) => automation.id === selectedAutomationId) ?? automations[0];
+  const selectedSettings = settingsItems.find((settings) => settings.id === selectedSettingsId) ?? settingsItems[0];
   const selectedRun = runs.find((run) => run.runId === selectedRunId) ?? runs[0];
 
   React.useEffect(() => {
     if (!detailOpen) return;
     const selectedId = view === "user"
       ? selectedMemory?.id
-      : adminTab === "automation"
-        ? selectedAutomation?.id
+      : adminTab === "settings"
+        ? selectedSettings?.id
         : adminTab === "memory"
           ? selectedAdminMemory?.id
           : selectedRun?.runId;
@@ -967,7 +914,7 @@ export function MemoryWorkspace({
         ?.querySelector<HTMLElement>(`#${recordDomId(view === "user" ? "user" : adminTab, selectedId)}`)
         ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     });
-  }, [adminTab, detailOpen, selectedAdminMemory?.id, selectedAutomation?.id, selectedMemory?.id, selectedRun?.runId, view]);
+  }, [adminTab, detailOpen, selectedAdminMemory?.id, selectedSettings?.id, selectedMemory?.id, selectedRun?.runId, view]);
 
   const loadMore = async () => {
     if (!nextCursor || loadingMore) return;
@@ -1036,22 +983,22 @@ export function MemoryWorkspace({
     }
   };
 
-  const executeRetention = async (phase: "mark" | "sweep") => {
-    const policy = selectedAutomation?.policy;
+  const executeRetention = async () => {
+    const policy = selectedSettings?.policy;
     if (runningRetention || !capabilities?.available || !policy?.enabled) return;
     if (!window.confirm(
-      phase === "mark" ? "Mark eligible memories across this service instance? No memories will be deleted." : "Delete marked memories across this service instance? Current legal holds will be respected.",
+      "Run retention for all users of this service instance? Eligible memories will be marked and deleted; current legal holds will be respected.",
     )) return;
     const generation = requestGenerationRef.current;
     setRunningRetention(true);
     setMessage("Running retention...");
     try {
-      const report = await collectRetention(policy.policyId, phase);
+      const report = await runRetention(policy.policyId);
       if (generation !== requestGenerationRef.current) return;
       await refreshData();
       if (activeAgentRef.current !== agentId) return;
-      setSelectedRunId(report.run_id ?? "");
-      setMessage(phase === "mark" ? "Marking finished. Review the marked memories in Activity." : "Sweep finished. Review the committed outcomes in Activity.");
+      setSelectedRunId(report.runId ?? "");
+      setMessage("Retention finished. Review marked memories and committed outcomes in Activity.");
     } catch (error) {
       if (generation !== requestGenerationRef.current) return;
       setMessage(error instanceof Error ? error.message : "Retention could not be completed");
@@ -1228,7 +1175,7 @@ export function MemoryWorkspace({
           </div>
 
           <div className="memory-workspace__tabs" role="tablist" aria-label="Memory administration">
-            {(["automation", "memory", "activity"] as AdminTab[]).map((tab) => (
+            {(["settings", "memory", "activity"] as AdminTab[]).map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -1244,41 +1191,41 @@ export function MemoryWorkspace({
             ))}
           </div>
 
-          {adminTab === "automation" && (
-            <div role="tabpanel" aria-label="Automation">
+          {adminTab === "settings" && (
+            <div role="tabpanel" aria-label="Settings" className="memory-workspace__settings">
               <Grid className="memory-workspace__page-head memory-workspace__page-head--admin">
                 <Column sm={4} md={8} lg={16} className="memory-workspace__page-copy">
                   <p className="memory-workspace__eyebrow">Published configuration</p>
-                  <h1>Automation</h1>
-                  <p>Review protection status and run retention manually. Scheduling and lifecycle delivery are visible but unavailable in this release.</p>
+                  <h1>Settings</h1>
+                  <p>Manage protection, retention policies, schedules, and lifecycle event delivery.</p>
                 </Column>
               </Grid>
 
               <section className="memory-workspace__section">
                 <div className="memory-workspace__section-head">
                   <div>
-                    <h2>Automation status</h2>
-                    <p>Select an automation to inspect its current configuration.</p>
+                    <h2>Categories</h2>
+                    <p>Select a settings category to inspect its configuration.</p>
                   </div>
                   <Button kind="ghost" size="sm" renderIcon={Renew} disabled={loading} onClick={() => void refreshData()}>Refresh</Button>
                 </div>
                 <MasterDetail
-                  listLabel="Automation status"
+                  listLabel="Settings"
                   list={(
                     <ul className="memory-workspace__list">
-                      {automations.map((automation) => (
-                        <li key={automation.id}>
+                      {settingsItems.map((settings) => (
+                        <li key={settings.id}>
                           <RecordRow
-                            id={automation.id}
-                            scope="automation"
-                            selected={automation.id === selectedAutomation?.id}
-                            title={automation.title}
-                            meta={automation.description}
-                            status={automation.status}
-                            detail={automation.detail}
-                            muted={automation.kind === "events"}
+                            id={settings.id}
+                            scope="settings"
+                            selected={settings.id === selectedSettings?.id}
+                            title={settings.title}
+                            meta={settings.description}
+                            status={settings.status}
+                            detail={settings.detail}
+                            muted={settings.kind === "events"}
                             onSelect={() => {
-                              setSelectedAutomationId(automation.id);
+                              setSelectedSettingsId(settings.id);
                               setDetailOpen(true);
                             }}
                           />
@@ -1286,67 +1233,21 @@ export function MemoryWorkspace({
                       ))}
                     </ul>
                   )}
-                  detail={selectedAutomation ? (
-                    <AutomationDetail
-                      automation={selectedAutomation}
+                  detail={selectedSettings ? (
+                    <SettingsDetail
+                      settings={selectedSettings}
                       capabilities={capabilities}
-                      latestRun={runs.find((run) => run.policyId === selectedAutomation.policy?.policyId)}
+                      latestRun={runs.find((run) => run.policyId === selectedSettings.policy?.policyId)}
                       runningRetention={runningRetention}
-                      onRunRetention={(phase) => void executeRetention(phase)}
+                      onRunRetention={() => void executeRetention()}
                     />
-                  ) : <p className="memory-workspace__empty">Select an automation to view its details.</p>}
-                  detailLabel="Automation details"
+                  ) : <p className="memory-workspace__empty">Select a settings category to view its details.</p>}
+                  detailLabel="Settings details"
                   sheetOpen={detailOpen}
                   closeSheet={() => setDetailOpen(false)}
                 />
               </section>
 
-              <section className="memory-workspace__section">
-                <div className="memory-workspace__section-head">
-                  <div>
-                    <h2>Latest activity</h2>
-                    <p>Recent retention runs for this service instance.</p>
-                  </div>
-                </div>
-                <div className="memory-workspace__compact-list">
-                  {runs.slice(0, 3).length ? (
-                    <ul className="memory-workspace__list">
-                      {runs.slice(0, 3).map((run) => (
-                        <li key={run.runId}>
-                          <RecordRow
-                            id={run.runId}
-                            scope="latest"
-                            selected={false}
-                            title={run.policyName ?? "Retention run"}
-                            meta={`${new Date(run.createdAt).toLocaleString()} / ${run.runId}`}
-                            status={runStatus(run)}
-                            detail={run.summary}
-                            onSelect={() => {
-                              setSelectedRunId(run.runId);
-                              setAdminTab("activity");
-                              setDetailOpen(true);
-                            }}
-                          />
-                        </li>
-                      ))}
-                    </ul>
-                  ) : <p className="memory-workspace__empty">{loading ? "Loading activity..." : "No retention activity has been recorded."}</p>}
-                </div>
-              </section>
-
-              <section className="memory-workspace__section memory-workspace__section--disabled" aria-disabled="true">
-                <div className="memory-workspace__section-head">
-                  <div>
-                    <h2>Lifecycle event records</h2>
-                    <p>Sanitized outcomes can be delivered to an audit, governance, or workflow system after the events feature is integrated.</p>
-                  </div>
-                  <Button kind="secondary" size="sm" disabled>Configure destination</Button>
-                </div>
-                <div className="memory-workspace__disabled-surface">
-                  <strong>No event destination connected</strong>
-                  <p>Lifecycle event records will appear here when delivery is available.</p>
-                </div>
-              </section>
             </div>
           )}
 
