@@ -98,6 +98,45 @@ async def test_non_planning_falls_through_to_llm():
     llm.ainvoke.assert_called_once()
 
 
+# ── Mode-aware classifier prompt (#445) ──────────────────────────────────────
+#
+# The deterministic deferral detector in finalize_disposition.py only catches
+# a narrow, false-positive-free set of phrases (#732 review). Everything else
+# — ask-user text, and deferral phrasing the narrowed regex no longer matches
+# — falls through to this LLM classifier, so it must itself know whether a
+# real user is present to answer.
+
+
+def _user_prompt_sent(llm) -> str:
+    call = llm.ainvoke.call_args
+    messages = call.args[0] if call.args else call.kwargs["messages"]
+    return next(m["content"] for m in messages if m["role"] == "user")
+
+
+@pytest.mark.asyncio
+async def test_autonomous_flag_adds_autonomous_mode_line():
+    llm = MagicMock()
+    resp = MagicMock()
+    resp.content = '{"auto_continue": true}'
+    llm.ainvoke = AsyncMock(return_value=resp)
+    await classify_nl_auto_continue(llm, "The count is 96.", None, autonomous=True)
+    prompt = _user_prompt_sent(llm)
+    assert "Session mode: autonomous" in prompt
+
+
+@pytest.mark.asyncio
+async def test_default_mode_line_is_interactive():
+    """Callers that don't pass ``autonomous`` (unchanged behavior) get the
+    interactive mode line, matching pre-#445 semantics."""
+    llm = MagicMock()
+    resp = MagicMock()
+    resp.content = '{"auto_continue": false}'
+    llm.ainvoke = AsyncMock(return_value=resp)
+    await classify_nl_auto_continue(llm, "The count is 96.", None)
+    prompt = _user_prompt_sent(llm)
+    assert "Session mode: interactive" in prompt
+
+
 @pytest.mark.asyncio
 async def test_disabled_flag_finalizes_planning_text(monkeypatch):
     """With the feature flag off, even planning text must finalize (return False)

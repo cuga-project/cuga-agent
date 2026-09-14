@@ -31,22 +31,27 @@ class FinalizeDisposition(str, Enum):
 # CPU (#732 review: 2.5-6.8s observed on ~200KB of untruncated text).
 _SCAN_MAX_LEN = 4000
 
-# Deferral language (#445) — interrogative and statement-form. Gaps between
-# anchors are bounded to a single clause (`[^.!?\n]{0,80}`) rather than
-# unbounded `.+` under DOTALL, so the "once ... i can" / "i can ... once you"
-# alternatives can't bridge separate sentences or paragraphs (#732 review:
-# "I can confirm the order shipped.\n\nOnce you receive the package..." must
-# not read as a single deferral clause). Apostrophes accept both the ASCII
-# and typographic forms — the latter is common in LLM output.
+# Deferral language (#445) — interrogative and statement-form. Each
+# alternative is a direct phrase match with no cross-clause gap, so none of
+# them can bridge separate sentences or paragraphs. Apostrophes accept both
+# the ASCII and typographic forms — the latter is common in LLM output.
+#
+# Deliberately excludes an "once <condition>, I can ..." / "I can ... once
+# you ..." alternative that shipped in an earlier revision of this file: a
+# 797-task AppWorld replay (#732 review, sami-marreed) found it firing 8
+# times, 6 of them on already-completed, passing tasks where the agent was
+# quoting the body of an email it had just sent to a third party ("I can
+# place the order once you confirm"). Telling "the agent is deferring to
+# whoever reads this" from "the agent is quoting a message drafted for
+# someone else" needs semantic understanding a regex doesn't have — that
+# distinction is left to the mode-aware LLM classifier fallback instead.
 _DEFERRAL_RE = re.compile(
     r"(?:"
     r"would\s+you\s+like(?:\s+me)?\s+to\b|"
     r"shall\s+i\b|"
     r"should\s+i\s+(?:continue|keep\s+going|proceed)\b|"
     r"let\s+me\s+know\s+how\s+you(?:['’]d| would)\s+like\s+to\b|"
-    r"to\s+proceed,?\s+i\s+recommend\b|"
-    r"once\s+[^.!?\n]{0,80}?\bi\s+can\s+(?:complete|retry|proceed|finish)\b|"
-    r"i\s+can\s+[^.!?\n]{0,80}?\bonce\s+you\b"
+    r"to\s+proceed,?\s+i\s+recommend\b"
     r")",
     re.IGNORECASE,
 )

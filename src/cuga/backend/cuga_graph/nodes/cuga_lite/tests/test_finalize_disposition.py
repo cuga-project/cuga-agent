@@ -29,7 +29,6 @@ pytestmark = pytest.mark.unit
         "Let me know how you'd like to proceed!",
         "I can retry the purchase for you. Let me know how you'd like to proceed.",
         "To proceed, I recommend: double-checking if it was sent from a different sender.",
-        "Once a valid card is available, I can complete the order.",
         "Shall I keep going with the remaining steps?",
     ],
 )
@@ -45,6 +44,16 @@ def test_autonomous_deferral_detected(text):
         "Task complete—no further action is needed.",
         "We need to search student_loan app.",
         "Hello!",
+        # PR #732 review (sami-marreed): an "once <condition>, I can ..." / "I
+        # can ... once you ..." alternative shipped in an earlier revision and
+        # fired 8 times over a 797-task AppWorld replay, 6 of them on
+        # already-completed, passing tasks — the agent quoting the body of an
+        # email it had just sent to a third party. Dropped from the regex;
+        # these fall through to the mode-aware LLM classifier instead, which
+        # can tell "the agent is deferring" from "the agent is quoting a
+        # message drafted for someone else".
+        "Once a valid card is available, I can complete the order.",
+        "Let me know if it looks good. I can place the order once you confirm. Best, Stephen Mccoy",
     ],
 )
 def test_autonomous_deferral_not_detected(text):
@@ -175,6 +184,9 @@ def test_deferral_with_unverified_blocker_falls_through_to_classifier():
 
 
 def test_deferral_across_paragraphs_not_detected():
-    """The bounded-gap fix (#732 review) must not bridge separate sentences."""
+    """No remaining _DEFERRAL_RE alternative can bridge separate sentences or
+    paragraphs (#732 review) — the "once ... i can" / "i can ... once you"
+    alternatives that could were dropped entirely (see
+    test_autonomous_deferral_not_detected)."""
     text = "I can confirm the order shipped.\n\nOnce you receive the package, let me know."
     assert _resolve(text, autonomous=True) == FinalizeDisposition.FINALIZE

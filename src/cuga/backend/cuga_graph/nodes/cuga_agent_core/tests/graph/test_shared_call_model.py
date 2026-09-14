@@ -230,7 +230,7 @@ async def test_step_limit_in_no_code_path_routes_to_end_with_error(mock_summariz
 
 class _AutoContinueAdapter(_TestAdapter):
     async def classify_auto_continue(
-        self, state: Any, model: Any, content: str, reasoning: Optional[str]
+        self, state: Any, model: Any, content: str, reasoning: Optional[str], *, autonomous: bool = False
     ) -> bool:
         return True  # always continue
 
@@ -635,7 +635,7 @@ async def test_supervisor_planning_text_still_finalizes(mock_summarize):
 
 
 class _ClassifierSaysContinue(_LiteDispositionAdapter):
-    async def classify_auto_continue(self, state, model, content, reasoning):
+    async def classify_auto_continue(self, state, model, content, reasoning, *, autonomous: bool = False):
         return True
 
 

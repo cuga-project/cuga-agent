@@ -310,6 +310,34 @@ async def test_classify_auto_continue_delegates_to_nl_classifier():
         assert result is True
 
 
+@pytest.mark.asyncio
+async def test_classify_auto_continue_forwards_autonomous_flag():
+    """#445: the mode-aware LLM classifier fallback needs to know whether a
+    real user is present — the adapter hook must forward the caller's
+    ``autonomous`` flag straight through to the classifier."""
+    adapter = _make_adapter()
+    state = SimpleNamespace(chat_messages=[], cuga_lite_metadata={})
+    mock_model = MagicMock()
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
+        new_callable=AsyncMock,
+        return_value=_decision(True),
+    ) as mock_classify:
+        await adapter.classify_auto_continue(
+            state, mock_model, "Would you like me to continue?", None, autonomous=True
+        )
+        assert mock_classify.call_args.kwargs["autonomous"] is True
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
+        new_callable=AsyncMock,
+        return_value=_decision(False),
+    ) as mock_classify:
+        await adapter.classify_auto_continue(state, mock_model, "Which account should I use?", None)
+        assert mock_classify.call_args.kwargs["autonomous"] is False
+
+
 # ── 8b. resolve_finalize_disposition hook (#445) ──────────────────────────
 
 

@@ -320,9 +320,13 @@ def create_call_model_node(
             elif disposition != "ask_user":
                 # None (adapter default — e.g. Supervisor) or "finalize": consult
                 # the existing LLM classifier, which also carries the
-                # unverified-blocker corrective retry (issue #610).
+                # unverified-blocker corrective retry (issue #610). Passing
+                # `autonomous` lets the classifier itself finalize-vs-continue
+                # ask-user/deferral text it deemed ambiguous, mode-aware
+                # (#445 review — the deterministic path only short-circuits
+                # the narrow, false-positive-free deferral phrases).
                 should_continue = await adapter.classify_auto_continue(
-                    state, active_model, content, reasoning
+                    state, active_model, content, reasoning, autonomous=autonomous
                 )
 
         if should_continue:

@@ -31,8 +31,6 @@ DEFERRAL_POSITIVES = [
     "Let me know how you would like to proceed.",
     "I can retry the purchase for you. Let me know how you'd like to proceed.",
     "To proceed, I recommend: double-checking if it was sent from a different sender.",
-    "Once a valid card is available, I can complete the order.",
-    "I can complete the order once you add a valid payment method.",
 ]
 
 DEFERRAL_NEGATIVES = [
@@ -45,6 +43,12 @@ DEFERRAL_NEGATIVES = [
     "Purchase completed successfully.",
     # Chatty but complete — must not be treated as deferral
     "All set—just let me know if you need anything else later.",
+    # PR #732 review (sami-marreed): dropped "once <condition>, i can ..." /
+    # "i can ... once you ..." — 6 of its 8 fires in a 797-task AppWorld
+    # replay were quoted third-party text (an email body the agent had
+    # already sent), not the agent deferring. Left to the LLM classifier.
+    "Once a valid card is available, I can complete the order.",
+    "Let me know if it looks good. I can place the order once you confirm. Best, Stephen Mccoy",
 ]
 
 

@@ -193,7 +193,7 @@ class _FullAdapter(CoreGraphAdapter):
         return getattr(state, "pi", None)
 
     async def classify_auto_continue(
-        self, state: Any, model: Any, content: str, reasoning: Optional[str]
+        self, state: Any, model: Any, content: str, reasoning: Optional[str], *, autonomous: bool = False
     ) -> bool:
         return "CONTINUE" in content
 

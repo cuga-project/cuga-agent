@@ -15,6 +15,7 @@ CLASSIFIER_SYSTEM_PROMPT = """You classify a single turn from an API automation 
 The agent must normally respond with a fenced Python script that calls tools. Sometimes it replies with only natural language (status, narration, or a short plan) and no code. That text may still be shown to the end user, which is wrong when the model clearly intends to keep working.
 
 You receive one transcript that concatenates:
+0) Session mode — "interactive" (a real user can respond) or "autonomous" (no user is present; the task must run to completion unassisted)
 1) Assistant content — user-visible reply (may be empty)
 2) Reasoning — internal chain-of-thought when the platform provides it (may be empty)
 
@@ -27,25 +28,32 @@ Use auto_continue true when the combined content + reasoning shows the model sti
 - phase-complete narration that then announces the next phase the agent will do itself
 - upcoming tool calls, searches, listings, discoveries, or inspections (even if phrased as “I will / I’ll …”)
 - multi-step plans where the announced work has not been executed yet in this turn (no code ran)
+- in autonomous mode only: the turn hands control to a user who isn't there — a clarifying question, a request for missing input, or deferral language ("would you like me to continue?", "shall I…", "let me know how you'd like to proceed") — UNLESS it is also a hard stop (see below); there is no one to answer, so the agent must proceed unassisted rather than stall
 
 Important: a completed *sub-step* plus “next I will / proceed to / mark that phase complete and …” is still interim → true. Do NOT finalize just because an earlier clause reports counts or “X is complete” if later text clearly continues the overall task.
 
 Use auto_continue false when the combined picture is an appropriate completed turn OR a hard stop:
 - final answer / result with no further agent-owned work announced
-- user question, missing input, or a choice the user must make
+- in interactive mode: a user question, missing input, or a choice the user must make — a real user can answer, so this is a legitimate stopping point (in autonomous mode the same text is auto_continue true instead — see above)
 - refusal, fatal error, or explicit inability to continue (tools missing, environment unavailable, blocked)
-- if ANY clause says the agent cannot / is unable to continue (or tools are not available), prefer false even when earlier sentences described a plan
+- if ANY clause says the agent cannot / is unable to continue (or tools are not available), prefer false even when earlier sentences described a plan, regardless of session mode — an unverified inability claim is handled by a separate corrective-retry mechanism, not by auto-continuing here
+- text that only quotes or drafts a message addressed to someone else (e.g. the body of an email the agent already sent), even if that quoted text itself asks a question or defers — the agent itself is not the one deferring, and the task it was asked to do is done
 
-Examples (visible content → decision):
+Examples (visible content → decision; mode noted only where it changes the answer):
 - "We need to search student_loan app." → {"auto_continue": true} — interim plan; the work it announces has not happened.
 - "Let me perform the second phase." → {"auto_continue": true} — interim status before more execution.
 - "The export is complete: 12 saved tracks, 6 saved albums, and 6 ordered playlists. I’ll mark that phase complete and proceed to account setup discovery." → {"auto_continue": true} — sub-phase done, but the agent announces the next phase it will run itself.
 - "I’ll inspect the work directory and search Jonathan’s inbox across all result pages for schedule-related threads, using the supplied current date as the search boundary. The directory listing and email-thread search are independent, so I’ll retrieve both and retain every matching thread page for detailed inspection." → {"auto_continue": true} — pure forward plan; no code yet.
-- "I’ll inspect the work directory and search Jonathan’s inbox across all result pages for schedule-related threads… I’m unable to continue because the connected application tool functions are not available in the current execution environment." → {"auto_continue": false} — plan is overridden by a hard stop / tools unavailable.
-- "Ok I will fetch the information, but first I require your ID" → {"auto_continue": false} — blocked on user input despite the announced plan.
+- "I’ll inspect the work directory and search Jonathan’s inbox across all result pages for schedule-related threads… I’m unable to continue because the connected application tool functions are not available in the current execution environment." → {"auto_continue": false} — plan is overridden by a hard stop / tools unavailable, in either mode.
 - "I could not find any matching loans." → {"auto_continue": false} — a result, not a plan.
-- "Which account should I use?" → {"auto_continue": false} — clarifying question.
-- "Done. All 15 artists are followed on Spotify." → {"auto_continue": false} — completed result with no next agent phase."""
+- "Done. All 15 artists are followed on Spotify." → {"auto_continue": false} — completed result with no next agent phase.
+- [interactive] "Ok I will fetch the information, but first I require your ID" → {"auto_continue": false} — blocked on user input despite the announced plan; a real user can reply.
+- [interactive] "Which account should I use?" → {"auto_continue": false} — clarifying question; a real user can reply.
+- [autonomous] "Ok I will fetch the information, but first I require your ID" → {"auto_continue": true} — same request, but no user is present to supply the ID; the agent must proceed rather than stall.
+- [autonomous] "…Would you like me to continue processing the remaining unfriending actions, or is there anything else you'd like to do?" → {"auto_continue": true} — deferral to an absent user; nothing stops the agent from continuing itself.
+- [interactive] "…Would you like me to continue processing the remaining unfriending actions, or is there anything else you'd like to do?" → {"auto_continue": false} — same text, but a real user is present to answer.
+- [autonomous] "Let me know how you'd like to proceed!" → {"auto_continue": true} — statement-form deferral; no user to notify.
+- [autonomous] "…Let me know if it looks good. I can place the order once you confirm. Best, Stephen Mccoy" → {"auto_continue": false} — this is the body of an email the agent already sent to a third party, not the agent deferring to you; the task (sending the email) is already done."""
 
 _VISIBLE_MAX = 12000
 _REASONING_MAX = 8000
@@ -271,11 +279,19 @@ async def classify_nl_auto_continue_decision(
     reasoning_excerpt: Optional[Any],
     *,
     evidence: Optional[BlockedClaimEvidence] = None,
+    autonomous: bool = False,
 ) -> AutoContinueDecision:
     """Full decision: whether to auto-continue, and whether the blocked-claim override fired.
 
     ``evidence`` is what the harness knows about the turn; without it the
     unverified-blocker override never fires and behavior is unchanged.
+
+    ``autonomous`` (#445) tells the classifier whether a real user is present.
+    It only changes the verdict for ask-user / deferral text (see
+    ``CLASSIFIER_SYSTEM_PROMPT``): interactive keeps the original behavior
+    (finalize so the user can reply), autonomous flips it to continue, since
+    there is no one to answer. Defaults to ``False`` (interactive) so callers
+    that don't pass it see unchanged behavior.
     """
     if not getattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True):
         return AutoContinueDecision(auto_continue=False)
@@ -287,8 +303,12 @@ async def classify_nl_auto_continue_decision(
     combined = build_combined_content_and_reasoning(visible, reasoning)
     if not combined.strip():
         return AutoContinueDecision(auto_continue=False)
+    mode_line = (
+        "autonomous (no user is present to answer)" if autonomous else "interactive (a user can respond)"
+    )
     user_block = (
         "Classify this assistant output (content + reasoning below).\n\n"
+        f"Session mode: {mode_line}\n\n"
         f"{combined}\n\n"
         'Respond with JSON only: {"auto_continue": true} or {"auto_continue": false}'
     )
@@ -333,7 +353,11 @@ async def classify_nl_auto_continue(
     llm: BaseChatModel,
     assistant_visible: Any,
     reasoning_excerpt: Optional[Any],
+    *,
+    autonomous: bool = False,
 ) -> bool:
     """Return True if the graph should append a user ``continue`` message and re-invoke the coder model."""
-    decision = await classify_nl_auto_continue_decision(llm, assistant_visible, reasoning_excerpt)
+    decision = await classify_nl_auto_continue_decision(
+        llm, assistant_visible, reasoning_excerpt, autonomous=autonomous
+    )
     return decision.auto_continue

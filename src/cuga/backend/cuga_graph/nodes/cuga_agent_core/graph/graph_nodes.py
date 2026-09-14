@@ -180,13 +180,16 @@ class CoreGraphAdapter(ABC):
         return meta
 
     async def classify_auto_continue(
-        self, state: Any, model: Any, content: str, reasoning: Optional[str]
+        self, state: Any, model: Any, content: str, reasoning: Optional[str], *, autonomous: bool = False
     ) -> bool | str:
         """Return ``True`` when the NL response should loop back automatically.
         A truthy ``str`` also loops back, but is used verbatim as the synthetic
         user message instead of the plain ``"continue"`` (Lite's unverified-
-        blocker retry, issue #610). Default: ``False`` (Supervisor never
-        auto-continues). Lite overrides with ``classify_nl_auto_continue_decision``."""
+        blocker retry, issue #610). ``autonomous`` (#445) tells overriding
+        classifiers whether a real user is present to answer a clarifying
+        question or deferral; the base default ignores it. Default: ``False``
+        (Supervisor never auto-continues). Lite overrides with
+        ``classify_nl_auto_continue_decision``."""
         return False
 
     def resolve_finalize_disposition(
