@@ -23,6 +23,12 @@
   background: transparent;
 }
 
+.memory-workspace-shell {
+  width: 100%;
+  overflow: auto;
+  background: var(--cds-background);
+}
+
 /* ─── Workspace file tree (Carbon TreeView label layout) ─────────────────── */
 
 .chat-landing-workspace-tree.cds--tree,

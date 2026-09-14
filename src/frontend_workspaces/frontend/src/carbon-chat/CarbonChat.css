@@ -13,6 +13,12 @@
   position: relative;
 }
 
+.cuga-memory-usage-link {
+  min-height: 2rem;
+  margin-top: 0.25rem;
+  padding-inline: 0;
+}
+
 /* ── Composer toolbar (paperclip + chips row) ── */
 
 .cuga-composer-toolbar {

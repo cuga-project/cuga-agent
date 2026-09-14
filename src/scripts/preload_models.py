@@ -9,6 +9,25 @@ Set HF_HUB_OFFLINE=1 at runtime to prevent any accidental network access.
 
 import os
 import sys
+from pathlib import Path
+
+
+EVOLVE_SENTENCE_TRANSFORMER_MODELS = (
+    ("sentence-transformers/all-MiniLM-L6-v2", "1110a243fdf4706b3f48f1d95db1a4f5529b4d41", False),
+    ("nomic-ai/CodeRankEmbed", "3c4b60807d71f79b43f3c4363786d9493691f8b1", True),
+)
+
+
+def strict_preload_enabled() -> bool:
+    """Return whether a missing model should fail the preload process."""
+    return os.environ.get("MODEL_PRELOAD_STRICT", "0") == "1"
+
+
+def handle_preload_error(component: str, error: Exception) -> None:
+    """Report an optional preload failure, or make it fatal in strict mode."""
+    if strict_preload_enabled():
+        raise RuntimeError(f"{component} preload failed") from error
+    print(f"  ! {component} preload skipped: {error}")
 
 
 def docling_transformers_layout_repo_id() -> str:
@@ -127,6 +146,33 @@ def preload_tiktoken() -> None:
         tiktoken.get_encoding(name).encode("airgap warmup")
 
 
+def preload_evolve_sentence_transformers() -> None:
+    """Cache every SentenceTransformer model used by the pinned Evolve build."""
+    print("→ Preloading Evolve sentence-transformer models...")
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        cache_dir = os.environ.get("SENTENCE_TRANSFORMERS_HOME")
+        for model_name, revision, trust_remote_code in EVOLVE_SENTENCE_TRANSFORMER_MODELS:
+            print(f"  Downloading {model_name}...")
+            model = SentenceTransformer(
+                model_name,
+                cache_folder=cache_dir,
+                revision=revision,
+                trust_remote_code=trust_remote_code,
+            )
+            model.encode(["warmup"])
+            if cache_dir:
+                # Runtime requests the default revision. Alias it to the exact
+                # snapshot baked above so offline lookup never needs a Hub HEAD.
+                reference = Path(cache_dir) / ("models--" + model_name.replace("/", "--")) / "refs" / "main"
+                reference.parent.mkdir(parents=True, exist_ok=True)
+                reference.write_text(revision)
+            print(f"  ✓ {model_name}")
+    except Exception as error:
+        handle_preload_error("Evolve sentence-transformer", error)
+
+
 if __name__ == "__main__":
     print("Preloading models for airgapped operation...\n")
     preload_fastembed()
@@ -134,5 +180,7 @@ if __name__ == "__main__":
     preload_docling()
     preload_evolve()
     preload_tiktoken()
+    if os.environ.get("PRELOAD_EVOLVE_MODELS", "0") == "1":
+        preload_evolve_sentence_transformers()
     print("\nDone. Set HF_HUB_OFFLINE=1 at runtime to enforce airgap.")
     sys.exit(0)
