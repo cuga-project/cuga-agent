@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import time
 import typing as typing_module
 from dataclasses import dataclass, field
@@ -57,10 +58,6 @@ from cuga.backend.memory_graph.schemas import (
 from cuga.backend.memory_graph.traversal import (
     TraversalConfig,
     build_coverage_aware_mini_graphs,
-)
-from cuga.backend.memory_graph.local_community_ppr import (
-    LocalCommunityConfig,
-    LocalCommunityDetector,
 )
 from cuga.backend.llm.models import LLMManager
 from cuga.config import settings
@@ -134,6 +131,25 @@ class _CandidateQueryContextEntry:
 
 
 @dataclass(frozen=True)
+class _CandidateVerificationBulk:
+    """One contiguous Stanza-derived slice of a non-code candidate.
+
+    The candidate graph is still built once for the complete candidate. Bulks
+    only control which candidate leaves are allowed to initiate retrieval for one
+    verifier call and which untouched source span is shown as RAW_CANDIDATE.
+    Nothing is committed between bulks; the original candidate is committed only
+    after every bulk has been approved.
+    """
+
+    index: int
+    start: int
+    end: int
+    content: str
+    atom_ids: tuple[str, ...]
+    grouping_node_id: str
+
+
+@dataclass(frozen=True)
 class _EvidenceSource:
     source_id: str
     source_type: SourceType
@@ -186,6 +202,22 @@ class _ExecutionRecord:
 
 
 @dataclass(frozen=True)
+class _KnowledgeBaseRetrievalRecord:
+    """One completed knowledge-base retrieval captured by the sandbox boundary.
+
+    Unlike ordinary execution records, the retrieved content is semantically
+    decomposed into a dedicated persistent knowledge-base graph. Tool/query
+    provenance is retained as source metadata rather than prepended to the
+    retrieved text, so the graph represents the KB content itself.
+    """
+
+    record_id: str
+    tool_name: str
+    parameters_json: str
+    content: str
+
+
+@dataclass(frozen=True)
 class _ReasoningStepRecord:
     """One accepted temporary reasoning step owned by the verifier.
 
@@ -216,11 +248,24 @@ class _PromptVerificationState:
     ``state_context_signatures`` records the processed raw prefix so we can detect
     truncation or rewriting and safely fall back to a full state rebuild.
 
-    ``execution_graph`` is a separate append-only factual audit graph. Each node
-    is one already-completed tool invocation containing the tool name, exact
-    runtime parameters, and observed output in the same atomic statement. These
-    nodes are not decomposed and have no edges; they participate only in normal
-    candidate-conditioned retrieval.
+    ``execution_graph`` is a separate append-only factual audit graph for completed
+    non-KB tool invocations whose observations can matter to later verification.
+    Each node contains the tool name, exact runtime parameters, and observed output
+    in the same atomic statement. These nodes are not decomposed and have no edges;
+    they participate only in normal candidate-conditioned retrieval. Pure filesystem
+    navigation/maintenance ``shell`` operations are intentionally omitted from every
+    persistent verifier evidence graph because their listings, paths, permissions,
+    copy/move/delete acknowledgements, and similar workspace state are operational
+    scaffolding rather than user/domain evidence.
+
+    ``knowledge_base_graph`` is a separate persistent semantic graph containing
+    content returned by dedicated knowledge-base retrieval tools (``KB_search_*``)
+    plus successful ``shell`` invocations whose complete command is classified as
+    read-only knowledge-base content inspection. Those outputs are decomposed,
+    linked, and embedded like document evidence so large retrievals can be filtered
+    through the same graph retrieval/traversal pipeline. They are deliberately
+    excluded from ``execution_graph`` to avoid indexing the same retrieval output
+    twice.
 
     ``reasoning_graph`` is a separate temporary trajectory containing only
     accepted intermediate reasoning steps for the current internal generation
@@ -248,6 +293,9 @@ class _PromptVerificationState:
     execution_graph: MemoryGraph | None = None
     execution_records: list[_ExecutionRecord] = field(default_factory=list)
     execution_graph_cursor: int = 0
+    knowledge_base_graph: MemoryGraph | None = None
+    knowledge_base_records: list[_KnowledgeBaseRetrievalRecord] = field(default_factory=list)
+    knowledge_base_graph_cursor: int = 0
     reasoning_graph: MemoryGraph | None = None
     reasoning_steps: list[_ReasoningStepRecord] = field(default_factory=list)
     committed_reasoning_graph: MemoryGraph | None = None
@@ -258,10 +306,107 @@ _VERIFICATION_STATE = _PromptVerificationState()
 
 _PYTHON_BLOCK_RE = re.compile(r"```python\s*(.*?)```", flags=re.IGNORECASE | re.DOTALL)
 _REASONING_PREFIX_RE = re.compile(r"^\s*reasoning\s*:\s*", flags=re.IGNORECASE)
+# Dedicated KB retrieval tools always route into the semantic KB graph. ``shell``
+# is classified per invocation:
+#   1. successful read-only KB-content inspection -> knowledge_base_graph;
+#   2. pure filesystem navigation/maintenance -> omitted from persistent evidence;
+#   3. everything else -> ordinary execution evidence.
+_KNOWLEDGE_BASE_RETRIEVAL_TOOL_PREFIXES = ("KB_search_",)
+_SHELL_KB_READ_ONLY_EXECUTABLES = frozenset(
+    {
+        "cat",
+        "tac",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "ripgrep",
+        "less",
+        "more",
+        "head",
+        "tail",
+        "cut",
+        "sort",
+        "uniq",
+        "tr",
+        "paste",
+        "join",
+        "comm",
+        "wc",
+        "strings",
+        "nl",
+        "fold",
+        "fmt",
+        "column",
+    }
+)
+_SHELL_FILESYSTEM_ONLY_EXECUTABLES = frozenset(
+    {
+        # Navigation / discovery of workspace structure. These help the agent find
+        # files but do not establish Rho-Bank/user/domain facts.
+        "ls",
+        "la",
+        "ll",
+        "dir",
+        "tree",
+        "pwd",
+        "cd",
+        "dirs",
+        "pushd",
+        "popd",
+        "find",
+        "locate",
+        "stat",
+        "file",
+        "du",
+        "df",
+        "basename",
+        "dirname",
+        "realpath",
+        "readlink",
+        "which",
+        "whereis",
+        # Filesystem maintenance / mutation. Their outputs are operational state,
+        # not semantic evidence for this verifier.
+        "cp",
+        "mv",
+        "rm",
+        "rmdir",
+        "mkdir",
+        "touch",
+        "ln",
+        "chmod",
+        "chown",
+        "chgrp",
+        "install",
+        "truncate",
+        "sync",
+    }
+)
+_SHELL_COMMAND_SEPARATORS = frozenset({"|", "&&", "||", ";"})
+_SHELL_FORBIDDEN_CONTROL_TOKENS = frozenset({"&", ">", ">>", "<", "<<", "<<<", "<>"})
 # Rebuilding the graph is intentionally expensive in this first implementation.
 # Limit concurrent source builds so recursive graph construction does not fan out
 # into an unbounded number of simultaneous model-call chains.
 _GRAPH_BUILD_CONCURRENCY = 4
+
+# Optional peak-context control for non-code candidates. When enabled, terminal
+# and reasoning candidates are verified as a sequence of contiguous Stanza
+# composite units instead of one giant evidence union. Tool-execution candidates
+# deliberately keep the existing whole-code verification path so Python dataflow,
+# call ordering, and argument provenance remain visible together.
+#
+# Toggle with, for example:
+PROMPT_VERIFIER_BULK_VERIFICATION_ENABLED=1
+#
+# Default is OFF to preserve the previous verifier behavior unless explicitly
+# enabled for an experiment.
+PROMPT_VERIFIER_BULK_VERIFICATION_ENABLED = (
+    os.environ.get("PROMPT_VERIFIER_BULK_VERIFICATION_ENABLED", "0")
+    .strip()
+    .casefold()
+    in {"1", "true", "yes", "on"}
+)
 
 # Persist expensive, session-independent authority graphs between runs. The
 # graph index and graph JSON files live together so indexed relative paths remain
@@ -281,13 +426,6 @@ _VERIFIER_TOP_K = 5
 _VERIFIER_TRAVERSAL_CONFIG = TraversalConfig(
     max_nodes_per_mini_graph=50,
 )
-_VERIFIER_LOCAL_COMMUNITY_CONFIG = LocalCommunityConfig(
-    restart_probability=0.15,
-    max_accepted_conductance=0.45,
-    max_sweep_volume_fraction=0.5,
-)
-
-
 
 _SOURCE_CONTEXT_VERIFICATION_SYSTEM_PROMPT = """
 You are a strict verifier for a tool-using agent.
@@ -311,8 +449,9 @@ NOT assert that Y has already happened.
 [CANDIDATE_QUERY_CONTEXT]
 A deduplicated list of reconstructed source-level statements. Each item has a
 stable ID Q1, Q2, ... and an origin tag. Normal evidence statements are retrieved
-from four already-built graphs: CUGA policy, Playbook, verified conversational
-STATE, and completed tool-execution history. When present, one additional
+from five already-built graphs: CUGA policy, Playbook, retrieved knowledge-base
+content, verified conversational STATE, and completed non-KB tool-execution
+history. When present, one additional
 verifier_rejection statement is appended temporarily from the immediately prior
 verifier rejection in the current correction chain; it is not graph evidence.
 Candidate atomic fragments are not evidence and must never be reconstructed or
@@ -324,7 +463,15 @@ semantic dependency closure requires broader governing context.
 For context origins:
 - cuga_policy: binding behavioral/runtime instructions for the agent.
 - playbook: binding domain/playbook authority.
-- execution: deterministic completed tool-execution evidence. Each execution
+- knowledge_base: content returned by dedicated KB retrieval tools or by successful
+  read-only shell commands classified as knowledge-base content inspection. Treat
+  the retrieved content as domain/document evidence for the facts, rules, procedures,
+  and categorical definitions it contains. The retrieval tool name/query/command are
+  provenance metadata, not additional semantic claims, and the same KB output is
+  deliberately not duplicated in the execution graph. Pure filesystem navigation or
+  maintenance shell observations are intentionally absent from all evidence graphs;
+  do not infer anything from their omission.
+- execution: deterministic completed non-KB tool-execution evidence. Each execution
   statement keeps the exact tool identity, exact runtime parameters, and observed
   output together in one indivisible fact. The fact that a tool was invoked does
   not by itself mean its intended action succeeded; determine success or failure
@@ -343,8 +490,12 @@ For context origins:
   consistency across consecutive correction attempts and to recognize the issue
   that the replacement candidate is intended to resolve.
 
-Completed tool observations live only in the execution graph; they are not copied
-into conversational STATE. Provenance is semantically binding. When an applicable
+Completed verification-relevant non-KB tool observations live only in the execution
+graph. Completed ``KB_search_*`` retrieval outputs and successful read-only ``shell``
+KB-content-inspection outputs live only in the knowledge_base graph. Pure filesystem
+navigation/maintenance shell observations are not persisted in any evidence graph.
+None of these observations is copied into conversational STATE. Provenance is
+semantically binding. When an applicable
 requirement depends on the USER providing, knowing, confirming, or correctly giving
 information, a value originating only from execution or another internal source
 does NOT satisfy that requirement and must never be attributed to the user. When
@@ -378,8 +529,8 @@ in the same candidate.
 
 [REASONING_HISTORY]
 Previously accepted reasoning trajectory, when present. It may explain continuity
-but is not stronger than policy/playbook/user/execution evidence and must not
-self-ground external facts.
+but is not stronger than policy/playbook/knowledge_base/user/execution evidence
+and must not self-ground external facts.
 
 Decision task
 -------------
@@ -409,11 +560,33 @@ Important rules:
    independently supplied argument normally. A prior call result must not be
    treated as already-observed factual evidence before execution.
 7. Absence of a fact from selected context is not automatically proof of its
-   opposite. Reject for missing support only when an applicable supplied rule or
-   runtime requirement makes that support/precondition necessary.
-8. Use only supplied context/runtime evidence plus ordinary linguistic/logical
+   opposite. This closed-world caution does NOT permit the agent to assert an
+   unsupported externally grounded fact as true; positive factual assertions are
+   governed by Rule 8. Outside that factual-grounding requirement, reject for
+   missing support only when an applicable supplied rule or runtime requirement
+   makes that support/precondition necessary.
+8. Positive factual assertions require positive support. Whenever the RAW candidate
+   presents a material externally grounded factual claim as true -- about a user,
+   product, account, policy, document, prior event/action, tool result, status,
+   numerical value, limit, eligibility condition, feature, date, or other world/domain
+   fact -- identify at least one supplied Q statement or deterministic runtime fact
+   that directly states the claim or whose meaning reasonably entails it. For a
+   terminal candidate containing multiple material factual assertions, check each
+   such assertion separately. If no supplied evidence positively supports a factual
+   assertion, reject the candidate even when nothing in the supplied context
+   contradicts it. That rejection means only "not grounded by the supplied evidence";
+   it does NOT mean the opposite fact is true. Do not derive specific facts from
+   labels, categories, prestige, typical behavior, plausibility, or related features.
+   In particular, exact or bounded numbers, credit/transaction limits, prices/fees,
+   product capabilities, eligibility, dates, statuses, successful actions, tool
+   outcomes, and policy details require evidence strong enough to support the
+   specific claim being made. Support may come from one Q statement or from multiple
+   supplied statements whose combined meaning entails the claim; verbatim wording is
+   not required. Conditions, future plans, hypotheticals, requests, and prerequisites
+   remain governed by Rule 1 and must not be misread as present factual assertions.
+9. Use only supplied context/runtime evidence plus ordinary linguistic/logical
    reasoning. Do not import outside domain facts.
-9. Reconcile apparent conflicts and circular dependencies among applicable binding
+10. Reconcile apparent conflicts and circular dependencies among applicable binding
    statements before judging the candidate. If a literal reading would make two
    instructions mutually unsatisfiable, would require a prerequisite to already be
    true before performing the explicitly prescribed procedure for establishing that
@@ -432,9 +605,11 @@ Important rules:
    reconciliation can make the applicable statements jointly coherent, state the
    unresolved conflict in the rejection reason rather than silently choosing an
    arbitrary interpretation.
-10. Distinguish internal information access from user-facing disclosure. A read-only
-   internal tool call that retrieves information for the agent is not, by itself, a
-   disclosure of that information to the user. Likewise, information appearing in an
+11. Distinguish internal information access from user-facing disclosure. Invoking a
+   lookup tool does not count as accessing protected customer information and does not
+   require the user to be verified first. A read-only internal tool call that retrieves
+   information for the agent is not, by itself, a disclosure of that information to the
+   user. Likewise, information appearing in an
    execution result, internal runtime observation, or execution-protocol print()
    output is not user-facing merely because the agent can observe it. Do not treat
    such internal retrieval or required runtime output as a privacy leak unless an
@@ -444,7 +619,7 @@ Important rules:
    authentication, or non-disclosure requirement normally. This rule does not make
    read-only access universally permissible and does not override an explicit policy
    that forbids the internal lookup itself.
-11. When the candidate proposes a policy-controlled categorical value or choice
+12. When the candidate proposes a policy-controlled categorical value or choice
    (for example a reason code, status, route, mode, category, or tool selection),
    treat the proposed value as a hypothesis to verify, not as evidence for its own
    applicability. Do not approve merely because the proposed value is a valid option
@@ -467,7 +642,7 @@ Important rules:
       when a supplied higher-priority/more-specific alternative applies. When possible,
       cite both the Q statement establishing the selection/priority rule and the Q
       statement(s) establishing the competing applicable alternative.
-12. Use ordinary linguistic and logical inference when needed to combine supplied
+13. Use ordinary linguistic and logical inference when needed to combine supplied
    facts and apply supplied rules, but distinguish entailment from speculation. Do not
    introduce a new classification, equivalence, prerequisite, causal link, or factual
    premise merely because it seems plausible, typical, likely, or semantically similar
@@ -481,7 +656,7 @@ Important rules:
    the basis for rejection. This rule does not require every conclusion to be stated
    verbatim: ordinary entailments needed to connect facts to an applicable rule remain
    allowed.
-13. When a verifier_rejection Q statement is present, account for it explicitly when
+14. When a verifier_rejection Q statement is present, account for it explicitly when
    judging the replacement candidate. Do not oscillate back to a position that ignores
    the immediately preceding rejection. Determine whether the new candidate actually
    resolves, avoids, or still contains the issue recorded there. The prior rejection is
@@ -491,8 +666,11 @@ Important rules:
 If rejected, violated_context_ids should contain the Q IDs of the statements that
 make the candidate impermissible whenever such Q statements exist. Use only IDs
 actually supplied. If rejection is based solely on deterministic execution/runtime
-facts, the list may be empty. If approved, violated_context_ids must be empty and
-reason may be empty or omitted. If rejected, provide a concise reason when confident;
+facts, or solely because a material factual assertion has no positive supporting Q
+statement under Rule 8, the list may be empty. Do not cite an irrelevant Q merely to
+populate the list for an unsupported-fact rejection. If approved,
+violated_context_ids must be empty and reason may be empty or omitted. If rejected,
+provide a concise reason when confident;
 do not invent a corrective explanation merely to populate the field. A missing or
 empty reason alone is not a basis for changing the verdict. When a reason is given,
 describe the RAW candidate semantics, not retrieval fragments.
@@ -978,6 +1156,7 @@ def _logic_target_graphs(*, include_reasoning: bool = True) -> list[MemoryGraph]
     for graph in (
         _VERIFICATION_STATE.cuga_policy_graph,
         _VERIFICATION_STATE.playbook_graph,
+        _VERIFICATION_STATE.knowledge_base_graph,
         _VERIFICATION_STATE.state_graph,
         _VERIFICATION_STATE.reasoning_graph if include_reasoning else None,
     ):
@@ -2076,11 +2255,13 @@ async def _extract_candidate_calls(
 # Keep the verifier model independent from the model used by the main CUGA
 # agent. The existing transport/base-URL/auth settings are cloned below; only
 # verifier-specific model/runtime knobs are changed. The default verifier is
-# GPT-OSS-120B and _get_model() binds reasoning_effort="high" for GPT-OSS.
+# Gemini 3.8 Flash through the existing GCP/LiteLLM/OpenAI-compatible
+# transport. _get_model() explicitly binds reasoning_effort="high"; Gemini's
+# OpenAI-compatible API maps that to its high thinking level.
 # PROMPT_VERIFIER_MODEL_NAME remains environment-overridable for experiments.
 PROMPT_VERIFIER_MODEL_NAME = os.environ.get(
     "PROMPT_VERIFIER_MODEL_NAME",
-    "aws/gpt-oss-120b",
+    "gcp/gemini-3.8-flash",
 ).strip()
 
 # Claude Haiku 4.5 supports manual extended thinking rather than the newer
@@ -2134,6 +2315,16 @@ def _is_claude_model_name(model_name: str) -> bool:
     return "claude" in str(model_name or "").lower()
 
 
+def _is_gemini_model_name(model_name: str) -> bool:
+    """Whether a provider model alias denotes a Gemini model."""
+    return "gemini" in str(model_name or "").lower()
+
+
+def _is_gpt5_model_name(model_name: str) -> bool:
+    """Whether a provider model alias denotes a GPT-5-family model."""
+    return "gpt-5" in str(model_name or "").lower()
+
+
 def _runtime_model_name(model: Any) -> str:
     return str(
         getattr(model, "model_name", "")
@@ -2147,9 +2338,11 @@ def _verifier_model_settings() -> dict[str, Any]:
 
     Claude is reached through the same OpenAI-compatible provider transport used
     by CUGA. Do not forward settings that are specific to GPT reasoning models or
-    OpenAI sampling penalties. In particular, CUGA's LLM layer notes that Bedrock
-    Claude variants can reject requests containing both ``temperature`` and
-    ``top_p``; the verifier keeps the inherited temperature and removes ``top_p``.
+    OpenAI sampling penalties. Gemini 3.x uses ``reasoning_effort`` through the
+    OpenAI-compatible API and should keep its default sampling settings, so inherited
+    ``temperature``/``top_p``/``top_k`` knobs are removed. GPT-5-family reasoning
+    models also require inherited sampling knobs such as ``temperature`` and
+    ``top_p`` to be removed when reasoning is enabled.
     """
     configured = settings.agent.code.model
     to_dict = getattr(configured, "to_dict", None)
@@ -2202,15 +2395,77 @@ def _verifier_model_settings() -> dict[str, Any]:
         }
         model_settings["extra_params"] = sanitized_extra_params
 
+    elif _is_gemini_model_name(PROMPT_VERIFIER_MODEL_NAME):
+        # Gemini 3.x reasoning is controlled through the OpenAI-compatible
+        # reasoning_effort parameter bound in _get_model(). Google recommends
+        # leaving Gemini 3.x sampling at model defaults, so do not inherit
+        # CUGA temperature/top_p/top_k settings. Also remove any native Gemini
+        # thinking controls so they cannot conflict with reasoning_effort.
+        for key in (
+            "temperature",
+            "top_p",
+            "top_k",
+            "candidate_count",
+            "reasoning_effort",
+            "thinking_level",
+            "thinking_budget",
+            "thinking",
+        ):
+            model_settings.pop(key, None)
+
+        extra_params = model_settings.get("extra_params")
+        if isinstance(extra_params, dict):
+            sanitized_extra_params = dict(extra_params)
+            for key in (
+                "temperature",
+                "top_p",
+                "top_k",
+                "candidate_count",
+                "reasoning_effort",
+                "thinking_level",
+                "thinking_budget",
+                "thinking",
+            ):
+                sanitized_extra_params.pop(key, None)
+            model_settings["extra_params"] = sanitized_extra_params
+
+    elif _is_gpt5_model_name(PROMPT_VERIFIER_MODEL_NAME):
+        # GPT-5 / GPT-5 mini support configurable reasoning effort, but the
+        # pre-5.1 family rejects sampling fields such as temperature/top_p/logprobs
+        # when reasoning is enabled. CUGA's base model settings normally include
+        # temperature and top_p, so strip them from both the top-level settings
+        # and provider passthrough before constructing the verifier model.
+        for key in (
+            "temperature",
+            "top_p",
+            "logprobs",
+            "top_logprobs",
+        ):
+            model_settings.pop(key, None)
+
+        extra_params = model_settings.get("extra_params")
+        if isinstance(extra_params, dict):
+            sanitized_extra_params = dict(extra_params)
+            for key in (
+                "temperature",
+                "top_p",
+                "logprobs",
+                "top_logprobs",
+            ):
+                sanitized_extra_params.pop(key, None)
+            model_settings["extra_params"] = sanitized_extra_params
+
     return model_settings
 
 
 def _get_model(*, reasoning_effort: Literal["low", "medium", "high"] = "high"):
     """Get the dedicated verifier model using CUGA's existing provider transport.
 
-    ``reasoning_effort`` is retained only for backwards-compatible environment
-    overrides to GPT-OSS. Claude Haiku 4.5 instead receives Anthropic manual
-    extended thinking with the verifier's maximum configured thinking budget.
+    GPT-5-family models, GPT-OSS, and Gemini receive the OpenAI-compatible
+    ``reasoning_effort`` knob. The default Gemini 3.8 Flash verifier is
+    explicitly bound to ``reasoning_effort="high"``. Claude Haiku 4.5 instead receives
+    Anthropic manual extended thinking with the verifier's maximum configured
+    thinking budget.
     """
     model_settings = _verifier_model_settings()
     model = LLMManager().get_model(model_settings)
@@ -2232,7 +2487,19 @@ def _get_model(*, reasoning_effort: Literal["low", "medium", "high"] = "high"):
             "Prompt verifier LLM selected: model={} mode=structured_output",
             model_name,
         )
-    if "gpt-oss" in model_name.lower() or "gpt-oss" in PROMPT_VERIFIER_MODEL_NAME.lower():
+    if (
+        "gpt-oss" in model_name.lower()
+        or "gpt-oss" in PROMPT_VERIFIER_MODEL_NAME.lower()
+        or _is_gpt5_model_name(model_name)
+        or _is_gpt5_model_name(PROMPT_VERIFIER_MODEL_NAME)
+        or _is_gemini_model_name(model_name)
+        or _is_gemini_model_name(PROMPT_VERIFIER_MODEL_NAME)
+    ):
+        logger.info(
+            "Prompt verifier reasoning effort: model={} reasoning_effort={}",
+            model_name,
+            reasoning_effort,
+        )
         return model.bind(reasoning_effort=reasoning_effort)
     return model
 
@@ -2378,6 +2645,211 @@ def _json_snapshot(value: Any) -> str:
         return json.dumps(str(value), ensure_ascii=False)
 
 
+def _is_knowledge_base_retrieval_tool(tool_name: str) -> bool:
+    normalized = str(tool_name or "").strip()
+    return normalized.startswith(_KNOWLEDGE_BASE_RETRIEVAL_TOOL_PREFIXES)
+
+
+def _extract_shell_command(parameters: Any) -> str | None:
+    """Extract the concrete shell command from the runtime parameter snapshot."""
+    if isinstance(parameters, str):
+        command = parameters.strip()
+        return command or None
+
+    if isinstance(parameters, dict):
+        direct = parameters.get("command")
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+
+        positional = parameters.get("_args")
+        if isinstance(positional, (list, tuple)) and positional:
+            first = positional[0]
+            if isinstance(first, str) and first.strip():
+                return first.strip()
+
+    if isinstance(parameters, (list, tuple)) and parameters:
+        first = parameters[0]
+        if isinstance(first, str) and first.strip():
+            return first.strip()
+
+    return None
+
+
+def _shell_output_indicates_failure(output: Any) -> bool:
+    """Recognize the Tau shell wrapper's explicit failed-command observation."""
+    if not isinstance(output, str):
+        return False
+    normalized = output.lstrip()
+    return bool(
+        re.match(r"^Error\s*\(exit code\s+\d+\):", normalized, flags=re.IGNORECASE)
+    )
+
+
+def _is_filesystem_only_shell_command(command: str) -> bool:
+    """Return True for a conservative pure filesystem/navigation shell command.
+
+    These commands may help the agent navigate or maintain its KB workspace, but
+    their observations do not establish user/domain facts. Only simple commands
+    composed entirely of explicitly whitelisted filesystem executables qualify.
+    Mixed or opaque shell constructs stay eligible for ordinary execution evidence.
+    """
+    raw = str(command or "").strip()
+    if not raw:
+        return False
+
+    # Do not classify nested/opaque shell constructs as disposable evidence.
+    if "\n" in raw or "`" in raw or "$(" in raw or "${" in raw:
+        return False
+    if "(" in raw or ")" in raw or "{" in raw or "}" in raw:
+        return False
+
+    try:
+        lexer = shlex.shlex(raw, posix=True, punctuation_chars="|&;<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return False
+
+    if not tokens:
+        return False
+
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        # Redirection can turn an otherwise navigational command into a write/read
+        # dependency whose exact effect we should not silently discard.
+        if token in _SHELL_FORBIDDEN_CONTROL_TOKENS:
+            return False
+        if token in _SHELL_COMMAND_SEPARATORS:
+            if not segments[-1]:
+                return False
+            segments.append([])
+            continue
+        if token and all(ch in "|&;<>" for ch in token):
+            return False
+        segments[-1].append(token)
+
+    if not segments[-1]:
+        return False
+
+    return all(
+        Path(segment[0]).name.lower() in _SHELL_FILESYSTEM_ONLY_EXECUTABLES
+        for segment in segments
+    )
+
+
+def _should_omit_execution_from_evidence(
+    *,
+    tool_name: str,
+    parameters: Any,
+) -> tuple[bool, str | None]:
+    """Classify completed executions that should not persist in any graph."""
+    normalized = str(tool_name or "").strip()
+    if normalized != "shell":
+        return False, None
+
+    command = _extract_shell_command(parameters)
+    if command is None:
+        return False, None
+    if not _is_filesystem_only_shell_command(command):
+        return False, None
+    return True, "filesystem_navigation_or_maintenance"
+
+
+def _is_read_only_kb_shell_command(command: str) -> bool:
+    """Return True only for a conservative read-only KB-inspection shell command.
+
+    The classifier evaluates the complete command/pipeline rather than only its first
+    executable. Every command segment must start with a whitelisted read-only text
+    inspection utility. Write/background redirection, command substitution, grouping,
+    and other shell constructs stay in the ordinary execution graph.
+    """
+    raw = str(command or "").strip()
+    if not raw:
+        return False
+
+    # Keep classification intentionally conservative. These constructs can execute
+    # arbitrary nested commands or obscure side effects.
+    if "\n" in raw or "`" in raw or "$(" in raw or "${" in raw:
+        return False
+    if "(" in raw or ")" in raw or "{" in raw or "}" in raw:
+        return False
+
+    try:
+        lexer = shlex.shlex(raw, posix=True, punctuation_chars="|&;<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return False
+
+    if not tokens:
+        return False
+
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token in _SHELL_FORBIDDEN_CONTROL_TOKENS:
+            return False
+        if token in _SHELL_COMMAND_SEPARATORS:
+            if not segments[-1]:
+                return False
+            segments.append([])
+            continue
+        # shlex can coalesce punctuation, so reject any unrecognized punctuation
+        # token rather than trying to reason through it.
+        if token and all(ch in "|&;<>" for ch in token):
+            return False
+        segments[-1].append(token)
+
+    if not segments[-1]:
+        return False
+
+    for segment in segments:
+        executable = Path(segment[0]).name.lower()
+        if executable not in _SHELL_KB_READ_ONLY_EXECUTABLES:
+            return False
+
+        # ``sort -o/--output`` writes a file even without shell redirection.
+        if executable == "sort":
+            if "-o" in segment or "--output" in segment:
+                return False
+            if any(token.startswith("--output=") for token in segment):
+                return False
+
+    return True
+
+
+def _should_route_execution_to_knowledge_base(
+    *,
+    tool_name: str,
+    parameters: Any,
+    output: Any,
+) -> tuple[bool, str | None]:
+    """Classify one completed execution for semantic KB-graph routing."""
+    normalized = str(tool_name or "").strip()
+    if _is_knowledge_base_retrieval_tool(normalized):
+        return True, "dedicated_kb_tool"
+
+    if normalized != "shell":
+        return False, None
+
+    command = _extract_shell_command(parameters)
+    if command is None:
+        return False, None
+    if _shell_output_indicates_failure(output):
+        return False, None
+    if not _is_read_only_kb_shell_command(command):
+        return False, None
+    return True, "read_only_shell_kb_inspection"
+
+
+def _knowledge_base_output_text(output: Any) -> str:
+    """Preserve retrieved KB text without wrapping it as an execution sentence."""
+    if isinstance(output, str):
+        return output
+    return _json_snapshot(output)
+
+
 def record_tool_execution(
     *,
     tool_name: str,
@@ -2400,6 +2872,50 @@ def record_tool_execution(
         return
 
     parameters_json = _json_snapshot(parameters)
+
+    omit_from_evidence, omit_reason = _should_omit_execution_from_evidence(
+        tool_name=tool_name,
+        parameters=parameters,
+    )
+    if omit_from_evidence:
+        logger.info(
+            "[PROMPT_VERIFIER_EXECUTION_OMITTED] tool_name={} reason={} parameters={} "
+            "output_chars={}",
+            tool_name,
+            omit_reason,
+            parameters_json,
+            len(output) if isinstance(output, str) else len(_json_snapshot(output)),
+        )
+        return
+
+    route_to_kb, kb_route_reason = _should_route_execution_to_knowledge_base(
+        tool_name=tool_name,
+        parameters=parameters,
+        output=output,
+    )
+    if route_to_kb:
+        record_index = len(_VERIFICATION_STATE.knowledge_base_records) + 1
+        record_id = f"kb-retrieval-{record_index}"
+        content = _knowledge_base_output_text(output)
+        _VERIFICATION_STATE.knowledge_base_records.append(
+            _KnowledgeBaseRetrievalRecord(
+                record_id=record_id,
+                tool_name=str(tool_name),
+                parameters_json=parameters_json,
+                content=content,
+            )
+        )
+        logger.info(
+            "[PROMPT_VERIFIER_KB_CAPTURE] record_id={} tool_name={} route_reason={} "
+            "parameters={} output_chars={}",
+            record_id,
+            tool_name,
+            kb_route_reason,
+            parameters_json,
+            len(content),
+        )
+        return
+
     output_json = _json_snapshot(output)
     record_index = len(_VERIFICATION_STATE.execution_records) + 1
     record_id = f"execution-{record_index}"
@@ -2527,6 +3043,63 @@ def _materialize_execution_records_sync(
     return nodes
 
 
+async def _update_knowledge_base_graph(
+    *,
+    session_id: str,
+    semaphore: asyncio.Semaphore,
+) -> tuple[MemoryGraph, int]:
+    """Materialize newly captured KB retrievals into the persistent semantic graph."""
+    if _VERIFICATION_STATE.knowledge_base_graph is None:
+        _VERIFICATION_STATE.knowledge_base_graph = MemoryGraph()
+
+    graph = _VERIFICATION_STATE.knowledge_base_graph
+    cursor = _VERIFICATION_STATE.knowledge_base_graph_cursor
+    pending = _VERIFICATION_STATE.knowledge_base_records[cursor:]
+    if not pending:
+        return graph, 0
+
+    sources = [
+        _EvidenceSource(
+            source_id=record.record_id,
+            source_type=SourceType.DOCUMENT,
+            content=record.content,
+            metadata={
+                "knowledge_base_graph": True,
+                "retrieval_tool_name": record.tool_name,
+                "retrieval_parameters_json": record.parameters_json,
+                "retrieval_record_id": record.record_id,
+            },
+        )
+        for record in pending
+        if record.content.strip()
+    ]
+
+    if sources:
+        new_node_ids = await _append_sources_to_graph(
+            graph,
+            sources,
+            session_id=session_id,
+            semaphore=semaphore,
+        )
+    else:
+        new_node_ids = set()
+
+    # Advance over every captured record, including empty retrieval outputs, so an
+    # empty result is not repeatedly reconsidered on every verifier call.
+    _VERIFICATION_STATE.knowledge_base_graph_cursor += len(pending)
+
+    logger.info(
+        "Prompt verifier knowledge-base graph updated: retrieval_records={} "
+        "new_nodes={} total_nodes={} edges={} cursor={}",
+        len(pending),
+        len(new_node_ids),
+        len(graph.nodes),
+        len(graph.edges),
+        _VERIFICATION_STATE.knowledge_base_graph_cursor,
+    )
+    return graph, len(new_node_ids)
+
+
 async def _update_execution_graph(*, session_id: str) -> tuple[MemoryGraph, int]:
     """Materialize newly captured executions into the persistent flat graph."""
     if _VERIFICATION_STATE.execution_graph is None:
@@ -2589,8 +3162,8 @@ def _extract_state_sources(
             continue
 
         # Tool-role messages and CUGA sandbox execution-output messages are
-        # represented exclusively by execution_graph. Do not decompose/copy them
-        # into STATE.
+        # represented exclusively by execution_graph or knowledge_base_graph. Do
+        # not decompose/copy them into STATE.
         if role == "tool" or (role == "user" and _looks_like_tool_result(text)):
             continue
 
@@ -3313,6 +3886,9 @@ def _prepare_verification_session(session_id: str) -> str:
     _VERIFICATION_STATE.execution_graph = None
     _VERIFICATION_STATE.execution_records = []
     _VERIFICATION_STATE.execution_graph_cursor = 0
+    _VERIFICATION_STATE.knowledge_base_graph = None
+    _VERIFICATION_STATE.knowledge_base_records = []
+    _VERIFICATION_STATE.knowledge_base_graph_cursor = 0
     _VERIFICATION_STATE.reasoning_graph = None
     _VERIFICATION_STATE.reasoning_steps = []
     _VERIFICATION_STATE.committed_reasoning_graph = None
@@ -3556,12 +4132,14 @@ def initialize_verification_runtime(
 
     logger.info(
         "Prompt verifier runtime initialized: session={} prompt_tools={} "
-        "execution_tools={} find_tools_enabled={} variables_manager_registered={}",
+        "execution_tools={} find_tools_enabled={} variables_manager_registered={} "
+        "bulk_verification_enabled={}",
         session_id,
         prompt_tool_names,
         normalized_execution_names,
         bool(find_tools_enabled),
         variables_manager is not None,
+        PROMPT_VERIFIER_BULK_VERIFICATION_ENABLED,
     )
 
 
@@ -3943,12 +4521,16 @@ def _called_tool_retrieval_lines(
     calls: list[dict[str, Any]],
     runtime_facts: dict[str, Any] | None,
 ) -> list[str]:
-    """Render semantic retrieval text for the exact runtime tools being called.
+    """Render bounded retrieval text for each distinct called runtime tool.
 
-    Tool descriptions are runtime capability metadata, not verifier authority.
-    They are used only to explain what an otherwise code-only candidate action
-    means before policy/playbook/context retrieval runs. The final Q statements
-    still come exclusively from the normal evidence graphs.
+    Each called tool contributes only:
+    1. its exact function name; and
+    2. the first paragraph of its prompt-visible runtime description, when present.
+
+    The raw Python call syntax, assignment target, ``await``, arguments, examples,
+    return-value contract, and later description paragraphs do not participate in
+    candidate-graph retrieval. The untouched RAW_CANDIDATE and full runtime tool
+    description remain available later for final verifier judgment.
     """
     facts = dict(runtime_facts or {})
     prompt_tools = facts.get("prompt_visible_tools") or []
@@ -3969,6 +4551,11 @@ def _called_tool_retrieval_lines(
             continue
         seen.add(name)
 
+        # Preserve the exact callable identity as its own retrieval signal, even
+        # if no runtime description is available. Policies may mention a tool by
+        # its exact function name.
+        lines.append(name)
+
         tool = tool_by_name.get(name)
         if tool is None:
             continue
@@ -3977,11 +4564,11 @@ def _called_tool_retrieval_lines(
         if not description:
             continue
 
-        lines.append(
-            "Called runtime tool semantic context:\n"
-            f"Tool: {name}\n"
-            f"Description: {description}"
-        )
+        # Add only what the tool does: the first paragraph exactly as supplied by
+        # the runtime description. No arguments or additional tool context.
+        purpose = re.split(r"\n\s*\n", description, maxsplit=1)[0].strip()
+        if purpose:
+            lines.append(purpose)
 
     return lines
 
@@ -4220,6 +4807,260 @@ def _hierarchical_ancestor_ids_including_self(
             result.add(parent.id)
             frontier.append(parent.id)
     return result
+
+
+def _node_source_bounds(node: Any) -> tuple[int, int] | None:
+    """Return the outer source span for one candidate hierarchy node."""
+    spans = [
+        (int(ref.span.start), int(ref.span.end))
+        for ref in list(getattr(node, "source_refs", []) or [])
+        if getattr(ref, "span", None) is not None
+    ]
+    if not spans:
+        return None
+    return min(start for start, _ in spans), max(end for _, end in spans)
+
+
+def _candidate_semantic_ancestor_ids(
+    *,
+    graph: MemoryGraph,
+    node_id: str,
+) -> set[str]:
+    """Return candidate hierarchy ancestors while excluding RAW_SOURCE."""
+    return {
+        ancestor_id
+        for ancestor_id in _hierarchical_ancestor_ids_including_self(graph, node_id)
+        if ancestor_id in graph.nodes
+        and graph.nodes[ancestor_id].kind != NodeKind.RAW_SOURCE
+    }
+
+
+def _candidate_bulk_wrapper_id(
+    *,
+    graph: MemoryGraph,
+    candidate_atoms: list[Any],
+) -> str | None:
+    """Find the highest Stanza semantic wrapper shared by all candidate leaves.
+
+    Candidate graphs commonly contain one broad composite node spanning the whole
+    response, with paragraph/statement-like semantic units beneath it.  We use the
+    highest common non-RAW ancestor as that wrapper and form bulks from its direct
+    semantic children.  If Stanza produced multiple independent top-level units,
+    there is no common semantic wrapper and each atom is assigned to its own
+    highest semantic ancestor instead.
+    """
+    if not candidate_atoms:
+        return None
+
+    common_ids: set[str] | None = None
+    for atom in candidate_atoms:
+        ancestor_ids = _candidate_semantic_ancestor_ids(
+            graph=graph,
+            node_id=atom.id,
+        )
+        common_ids = (
+            set(ancestor_ids)
+            if common_ids is None
+            else common_ids.intersection(ancestor_ids)
+        )
+        if not common_ids:
+            return None
+
+    assert common_ids is not None
+    if not common_ids:
+        return None
+
+    # Lowest depth is the broadest/highest semantic node beneath RAW_SOURCE.
+    return min(
+        common_ids,
+        key=lambda node_id: (
+            int(getattr(graph.nodes[node_id], "depth", 0)),
+            node_id,
+        ),
+    )
+
+
+def _candidate_bulk_grouping_node_id(
+    *,
+    graph: MemoryGraph,
+    atom: Any,
+    wrapper_id: str | None,
+) -> str:
+    """Choose the Stanza hierarchy node whose source span defines one bulk."""
+    semantic_ancestor_ids = _candidate_semantic_ancestor_ids(
+        graph=graph,
+        node_id=atom.id,
+    )
+
+    if wrapper_id is None:
+        # Multiple top-level Stanza units: use the highest semantic ancestor for
+        # this leaf. This remains fully decomposition-driven and preserves order.
+        return min(
+            semantic_ancestor_ids,
+            key=lambda node_id: (
+                int(getattr(graph.nodes[node_id], "depth", 0)),
+                node_id,
+            ),
+        )
+
+    if atom.id == wrapper_id:
+        return atom.id
+
+    # Prefer an actual direct hierarchy child of the shared wrapper.  This is the
+    # paragraph/composite boundary Stanza already created, without inventing a new
+    # semantic classifier or fixed atom-count window.
+    direct_children: list[str] = []
+    for node_id in semantic_ancestor_ids:
+        if node_id == wrapper_id:
+            continue
+        parents = list(graph.parents(node_id))
+        if any(parent.id == wrapper_id for parent in parents):
+            direct_children.append(node_id)
+
+    if direct_children:
+        return min(
+            direct_children,
+            key=lambda node_id: (
+                int(getattr(graph.nodes[node_id], "depth", 0)),
+                node_id,
+            ),
+        )
+
+    # Defensive fallback for a non-tree hierarchy: choose the semantic ancestor
+    # closest below the wrapper by depth.  The atom itself is always available.
+    wrapper_depth = int(getattr(graph.nodes[wrapper_id], "depth", 0))
+    below_wrapper = [
+        node_id
+        for node_id in semantic_ancestor_ids
+        if node_id != wrapper_id
+        and int(getattr(graph.nodes[node_id], "depth", 0)) > wrapper_depth
+    ]
+    if not below_wrapper:
+        return atom.id
+    return min(
+        below_wrapper,
+        key=lambda node_id: (
+            int(getattr(graph.nodes[node_id], "depth", 0)),
+            node_id,
+        ),
+    )
+
+
+def _build_candidate_verification_bulks(
+    *,
+    candidate: str,
+    candidate_graph: MemoryGraph,
+    candidate_atoms: list[Any],
+) -> list[_CandidateVerificationBulk]:
+    """Build contiguous Stanza-derived verification bulks in source order.
+
+    No candidate text is regenerated. Stanza decides the semantic grouping; the
+    verifier sees the corresponding untouched original source slice. Candidate
+    leaves remain the retrieval queries for that bulk.
+    """
+    ordered_atoms = sorted(candidate_atoms, key=_candidate_atom_order_key)
+    if not ordered_atoms:
+        return []
+
+    wrapper_id = _candidate_bulk_wrapper_id(
+        graph=candidate_graph,
+        candidate_atoms=ordered_atoms,
+    )
+
+    provisional: list[dict[str, Any]] = []
+    for atom in ordered_atoms:
+        grouping_node_id = _candidate_bulk_grouping_node_id(
+            graph=candidate_graph,
+            atom=atom,
+            wrapper_id=wrapper_id,
+        )
+        if provisional and provisional[-1]["grouping_node_id"] == grouping_node_id:
+            provisional[-1]["atoms"].append(atom)
+        else:
+            provisional.append(
+                {
+                    "grouping_node_id": grouping_node_id,
+                    "atoms": [atom],
+                }
+            )
+
+    bulks: list[_CandidateVerificationBulk] = []
+    candidate_length = len(candidate)
+    for index, group in enumerate(provisional, start=1):
+        grouping_node_id = str(group["grouping_node_id"])
+        grouping_node = candidate_graph.nodes.get(grouping_node_id)
+        bounds = _node_source_bounds(grouping_node) if grouping_node is not None else None
+
+        atom_bounds = [
+            _node_source_bounds(atom)
+            for atom in group["atoms"]
+        ]
+        atom_bounds = [item for item in atom_bounds if item is not None]
+
+        if bounds is None:
+            if not atom_bounds:
+                raise PromptVerificationError(
+                    "Could not determine an original source span for a Stanza "
+                    f"candidate bulk: grouping_node_id={grouping_node_id}"
+                )
+            start = min(item[0] for item in atom_bounds)
+            end = max(item[1] for item in atom_bounds)
+        else:
+            start, end = bounds
+            if atom_bounds:
+                atom_start = min(item[0] for item in atom_bounds)
+                atom_end = max(item[1] for item in atom_bounds)
+                # Never let a malformed/incomplete composite source span omit a
+                # leaf whose retrieval evidence is being judged in this bulk.
+                start = min(start, atom_start)
+                end = max(end, atom_end)
+
+        start = max(0, min(start, candidate_length))
+        end = max(start, min(end, candidate_length))
+        while start < end and candidate[start].isspace():
+            start += 1
+        while end > start and candidate[end - 1].isspace():
+            end -= 1
+
+        bulk_content = candidate[start:end]
+        if not bulk_content.strip():
+            raise PromptVerificationError(
+                "Stanza candidate bulk resolved to an empty source slice: "
+                f"grouping_node_id={grouping_node_id} span=({start}, {end})"
+            )
+
+        bulks.append(
+            _CandidateVerificationBulk(
+                index=index,
+                start=start,
+                end=end,
+                content=bulk_content,
+                atom_ids=tuple(atom.id for atom in group["atoms"]),
+                grouping_node_id=grouping_node_id,
+            )
+        )
+
+    logger.info(
+        "[PROMPT_VERIFIER_BULK_PLAN] enabled=true candidate_atoms={} bulks={} "
+        "wrapper_id={} plan={}",
+        len(ordered_atoms),
+        len(bulks),
+        wrapper_id,
+        json.dumps(
+            [
+                {
+                    "bulk": bulk.index,
+                    "span": [bulk.start, bulk.end],
+                    "atoms": len(bulk.atom_ids),
+                    "grouping_node_id": bulk.grouping_node_id,
+                    "preview": _one_line(bulk.content)[:160],
+                }
+                for bulk in bulks
+            ],
+            ensure_ascii=False,
+        ),
+    )
+    return bulks
 
 
 def _covers_partition(
@@ -4613,85 +5454,6 @@ def _partition_mini_graph_by_source_root(
         partitions.setdefault(source_root_id, set()).add(node_id)
     return partitions
 
-def _partition_source_root_by_local_community(
-    *,
-    graph: MemoryGraph,
-    detector: LocalCommunityDetector,
-    source_root_node_ids: set[str],
-    preferred_seed_id: str | None,
-    node_depths: dict[str, int],
-) -> list[tuple[str, set[str], str, float | None, bool]]:
-    """Split one source-root mini-graph partition into local semantic hubs.
-
-    Community detection is performed on the full active atomic lateral graph,
-    treating every lateral edge as undirected. Only the nodes already reached by
-    the existing mini-graph traversal are retained for reconstruction. PPR
-    communities can overlap, so the retrieval anchor claims overlap first and
-    remaining reached nodes seed additional communities in traversal-depth order.
-
-    Returns tuples of:
-        (seed_id, selected_node_ids, community_id, sweep_conductance, accepted_cut)
-    """
-    atomic_ids = {
-        node_id
-        for node_id in source_root_node_ids
-        if node_id in graph.nodes
-        and graph.nodes[node_id].kind == NodeKind.ATOMIC_FACT
-    }
-    non_atomic_ids = set(source_root_node_ids) - atomic_ids
-
-    partitions: list[tuple[str, set[str], str, float | None, bool]] = []
-    for partition in detector.partition_selected_nodes(
-        atomic_ids,
-        preferred_seed_id=(
-            preferred_seed_id if preferred_seed_id in atomic_ids else None
-        ),
-        seed_priority=node_depths,
-    ):
-        result = partition.community
-        selected_ids = set(partition.selected_node_ids)
-        partitions.append(
-            (
-                partition.seed_id,
-                selected_ids,
-                result.community_id,
-                result.sweep_conductance,
-                result.accepted_sweep_cut,
-            )
-        )
-        logger.info(
-            "Prompt verifier local community: seed_id={} community_id={} "
-            "selected_nodes={} full_community_nodes={} connected_component_size={} "
-            "sweep_conductance={} accepted_sweep_cut={} sweep_prefix_size={} "
-            "pagerank_iterations={}",
-            partition.seed_id,
-            result.community_id,
-            sorted(selected_ids),
-            len(result.node_ids),
-            result.connected_component_size,
-            result.sweep_conductance,
-            result.accepted_sweep_cut,
-            result.sweep_prefix_size,
-            result.iterations,
-        )
-
-    # Lateral traversal is expected to operate on atomic nodes. Preserve safety
-    # if a future relation source introduces a non-atomic lateral endpoint: never
-    # let such nodes force unrelated atomic hubs to share a covering ancestor.
-    for node_id in sorted(non_atomic_ids):
-        partitions.append(
-            (
-                node_id,
-                {node_id},
-                f"non-atomic-{node_id}",
-                None,
-                False,
-            )
-        )
-
-    return partitions
-
-
 def _node_source_type(node: Any) -> str:
     source_refs = list(getattr(node, "source_refs", []) or [])
     if not source_refs:
@@ -4700,45 +5462,129 @@ def _node_source_type(node: Any) -> str:
     return getattr(source_type, "value", str(source_type or "unknown"))
 
 
+def _merge_query_context_entry_with_hierarchy_subsumption(
+    *,
+    ordered_entries: list[_CandidateQueryContextEntry],
+    graph_name: str,
+    graph: MemoryGraph,
+    new_entry: _CandidateQueryContextEntry,
+) -> None:
+    """Insert one reconstructed Q statement with hierarchy-aware deduplication.
+
+    Reconstruction happens independently for every top-k anchor mini-graph.  Only
+    after that reconstruction do we compare the resulting hierarchy nodes.  If an
+    existing statement is an ancestor of the new statement, the existing broader
+    statement subsumes it.  If the new statement is an ancestor of one or more
+    existing statements, it replaces those narrower descendants while absorbing
+    their coverage/trigger metadata.  Statements from incomparable branches remain
+    independent entries.
+    """
+    new_node = graph.nodes.get(new_entry.statement_node_id)
+    if new_node is None:
+        raise PromptVerificationError(
+            "Cannot deduplicate reconstructed verifier context for unknown node "
+            f"{new_entry.statement_node_id!r}"
+        )
+    new_source_root_id = str(
+        getattr(new_node, "source_root_id", "") or new_node.id
+    )
+    new_ancestor_ids = _hierarchical_ancestor_ids_including_self(
+        graph,
+        new_entry.statement_node_id,
+    )
+
+    descendant_indexes: list[int] = []
+    for index, existing in enumerate(ordered_entries):
+        if existing.graph_name != graph_name:
+            continue
+
+        existing_node = graph.nodes.get(existing.statement_node_id)
+        if existing_node is None:
+            continue
+        existing_source_root_id = str(
+            getattr(existing_node, "source_root_id", "") or existing_node.id
+        )
+        if existing_source_root_id != new_source_root_id:
+            continue
+
+        # Existing is equal to or above the new reconstruction: keep the existing
+        # broader statement and only merge bookkeeping from the new retrieval.
+        if existing.statement_node_id in new_ancestor_ids:
+            existing.covered_atomic_node_ids.update(
+                new_entry.covered_atomic_node_ids
+            )
+            existing.triggered_by_candidate_atom_ids.update(
+                new_entry.triggered_by_candidate_atom_ids
+            )
+            return
+
+        # New is above the existing reconstruction.  Delay removal until all
+        # descendants have been found so one broader statement can absorb several
+        # narrower Q candidates produced by different top-k anchors/atoms.
+        existing_ancestor_ids = _hierarchical_ancestor_ids_including_self(
+            graph,
+            existing.statement_node_id,
+        )
+        if new_entry.statement_node_id in existing_ancestor_ids:
+            descendant_indexes.append(index)
+
+    if descendant_indexes:
+        insert_at = min(descendant_indexes)
+        for index in descendant_indexes:
+            existing = ordered_entries[index]
+            new_entry.covered_atomic_node_ids.update(
+                existing.covered_atomic_node_ids
+            )
+            new_entry.triggered_by_candidate_atom_ids.update(
+                existing.triggered_by_candidate_atom_ids
+            )
+
+        for index in reversed(descendant_indexes):
+            del ordered_entries[index]
+        ordered_entries.insert(insert_at, new_entry)
+        return
+
+    ordered_entries.append(new_entry)
+
+
 def _build_candidate_query_context(
     *,
     candidate_atoms: list[Any],
     cuga_policy_graph: MemoryGraph,
     playbook_graph: MemoryGraph,
+    knowledge_base_graph: MemoryGraph,
     state_graph: MemoryGraph,
     execution_graph: MemoryGraph,
 ) -> list[_CandidateQueryContextEntry]:
-    """Retrieve per anchor and reconstruct one statement per local semantic hub.
+    """Retrieve top-k evidence and reconstruct each anchor independently.
 
     For each candidate atom and evidence graph:
       1. retrieve top-k anchors;
       2. expand each anchor into its existing relation-sensitive mini-graph;
-      3. split that mini-graph by ``source_root_id``;
-      4. within each source tree, separate reached atomic nodes using seeded
-         Personalized PageRank + conductance-sweep local communities;
-      5. emit the lowest covering hierarchy ancestor independently for each
-         resulting local-community partition.
+      3. reconstruct that mini-graph independently (splitting by source root only
+         if one traversal genuinely crossed into more than one source tree);
+      4. choose the lowest covering hierarchy ancestor for each such partition
+         after source-sentence and semantic-context closure;
+      5. deduplicate the reconstructed statements afterward by hierarchy
+         subsumption.
 
-    A lateral relation into another community therefore creates another local
-    hierarchy ascent instead of forcing the original ascent toward RAW_SOURCE.
-    Expanded atomic nodes never independently become Q statements.
+    There is deliberately no local-community/PPR partitioning, and top-k
+    mini-graphs are deliberately NOT unioned before reconstruction.  Therefore an
+    anchor cannot force another independently retrieved branch to share a common
+    ancestor.  If separate anchors reconstruct to an ancestor and one of its
+    descendants, the ancestor subsumes the descendant only in the final dedup pass.
+    Incomparable branches remain separate Q statements.
     """
     graph_specs = [
         ("cuga_policy", cuga_policy_graph),
         ("playbook", playbook_graph),
+        ("knowledge_base", knowledge_base_graph),
         ("context", state_graph),
         ("execution", execution_graph),
     ]
-    community_detectors = {
-        graph_name: LocalCommunityDetector(
-            evidence_graph,
-            config=_VERIFIER_LOCAL_COMMUNITY_CONFIG,
-        )
-        for graph_name, evidence_graph in graph_specs
-    }
 
     ordered_entries: list[_CandidateQueryContextEntry] = []
-    entry_by_key: dict[tuple[str, str], _CandidateQueryContextEntry] = {}
+
     for candidate_atom in sorted(candidate_atoms, key=_candidate_atom_order_key):
         for graph_name, evidence_graph in graph_specs:
             evidence = _select_evidence_for_atom(
@@ -4746,98 +5592,94 @@ def _build_candidate_query_context(
                 evidence_graph=evidence_graph,
                 evidence_space=graph_name,
             )
-            detector = community_detectors[graph_name]
+            mini_graphs = list(evidence["mini_graphs"])
+            if not mini_graphs:
+                continue
 
-            for mini_graph in evidence["mini_graphs"]:
-                anchor_id = str(mini_graph["anchor_id"])
-                node_depths = {
-                    str(node_id): int(depth)
-                    for node_id, depth in mini_graph.get("node_depths", [])
-                }
+            # IMPORTANT: each top-k anchor keeps its own reconstruction boundary.
+            # Traversal expansion may enrich this mini-graph, but evidence reached
+            # from a different top-k anchor is never merged into it before ascent.
+            for mini_graph in mini_graphs:
+                anchor_id = str(mini_graph.get("anchor_id") or "")
+                mini_graph_node_ids = [
+                    str(node_id)
+                    for node_id in mini_graph.get("node_ids", [])
+                    if str(node_id) in evidence_graph.nodes
+                ]
+                if not mini_graph_node_ids:
+                    continue
+
                 source_root_partitions = _partition_mini_graph_by_source_root(
                     graph=evidence_graph,
-                    node_ids=list(mini_graph["node_ids"]),
+                    node_ids=mini_graph_node_ids,
                 )
                 if not source_root_partitions:
                     continue
 
                 anchor_node = evidence_graph.nodes.get(anchor_id)
-                anchor_root_id = (
-                    str(getattr(anchor_node, "source_root_id", "") or anchor_id)
+                anchor_source_root_id = (
+                    str(
+                        getattr(anchor_node, "source_root_id", "")
+                        or anchor_node.id
+                    )
                     if anchor_node is not None
                     else None
                 )
                 ordered_root_ids = sorted(
                     source_root_partitions,
-                    key=lambda root_id: (0 if root_id == anchor_root_id else 1, root_id),
+                    key=lambda root_id: (
+                        0 if root_id == anchor_source_root_id else 1,
+                        root_id,
+                    ),
                 )
 
                 for source_root_id in ordered_root_ids:
-                    source_root_node_ids = source_root_partitions[source_root_id]
-                    hub_partitions = _partition_source_root_by_local_community(
+                    partition_node_ids = source_root_partitions[source_root_id]
+                    preferred_start_id = (
+                        anchor_id
+                        if anchor_id in partition_node_ids
+                        else None
+                    )
+                    ancestor = _closest_covering_ancestor(
                         graph=evidence_graph,
-                        detector=detector,
-                        source_root_node_ids=source_root_node_ids,
-                        preferred_seed_id=(
-                            anchor_id if source_root_id == anchor_root_id else None
-                        ),
-                        node_depths=node_depths,
+                        partition_node_ids=partition_node_ids,
+                        preferred_start_id=preferred_start_id,
                     )
 
-                    for (
-                        local_seed_id,
-                        partition_node_ids,
-                        community_id,
-                        sweep_conductance,
-                        accepted_cut,
-                    ) in hub_partitions:
-                        ancestor = _closest_covering_ancestor(
-                            graph=evidence_graph,
-                            partition_node_ids=partition_node_ids,
-                            preferred_start_id=local_seed_id,
+                    if ancestor.kind == NodeKind.RAW_SOURCE:
+                        logger.warning(
+                            "Prompt verifier per-anchor reconstruction reached "
+                            "RAW_SOURCE: candidate_atom_id={} evidence_space={} "
+                            "anchor_id={} source_root_id={} partition_nodes={} "
+                            "statement_chars={}",
+                            candidate_atom.id,
+                            graph_name,
+                            anchor_id,
+                            source_root_id,
+                            len(partition_node_ids),
+                            len(ancestor.content or ""),
                         )
 
-                        if ancestor.kind == NodeKind.RAW_SOURCE:
-                            logger.warning(
-                                "Prompt verifier local-community reconstruction reached "
-                                "RAW_SOURCE: candidate_atom_id={} evidence_space={} "
-                                "anchor_id={} local_seed_id={} source_root_id={} "
-                                "community_id={} sweep_conductance={} accepted_cut={} "
-                                "partition_nodes={} statement_chars={}",
-                                candidate_atom.id,
-                                graph_name,
-                                anchor_id,
-                                local_seed_id,
-                                source_root_id,
-                                community_id,
-                                sweep_conductance,
-                                accepted_cut,
-                                len(partition_node_ids),
-                                len(ancestor.content or ""),
-                            )
-
-                        key = (graph_name, ancestor.id)
-                        covered_atomic_ids = {
-                            node_id
-                            for node_id in partition_node_ids
-                            if node_id in evidence_graph.nodes
-                            and evidence_graph.nodes[node_id].kind == NodeKind.ATOMIC_FACT
-                        }
-                        entry = entry_by_key.get(key)
-                        if entry is None:
-                            entry = _CandidateQueryContextEntry(
-                                graph_name=graph_name,
-                                source_type=_node_source_type(ancestor),
-                                statement_node_id=ancestor.id,
-                                statement=ancestor.content.strip(),
-                                covered_atomic_node_ids=set(covered_atomic_ids),
-                                triggered_by_candidate_atom_ids={candidate_atom.id},
-                            )
-                            entry_by_key[key] = entry
-                            ordered_entries.append(entry)
-                        else:
-                            entry.covered_atomic_node_ids.update(covered_atomic_ids)
-                            entry.triggered_by_candidate_atom_ids.add(candidate_atom.id)
+                    covered_atomic_ids = {
+                        node_id
+                        for node_id in partition_node_ids
+                        if node_id in evidence_graph.nodes
+                        and evidence_graph.nodes[node_id].kind == NodeKind.ATOMIC_FACT
+                    }
+                    new_entry = _CandidateQueryContextEntry(
+                        graph_name=graph_name,
+                        source_type=_node_source_type(ancestor),
+                        statement_node_id=ancestor.id,
+                        statement=ancestor.content.strip(),
+                        covered_atomic_node_ids=set(covered_atomic_ids),
+                        triggered_by_candidate_atom_ids={candidate_atom.id},
+                    )
+                    _merge_query_context_entry_with_hierarchy_subsumption(
+                        ordered_entries=ordered_entries,
+                        graph_name=graph_name,
+                        graph=evidence_graph,
+                        new_entry=new_entry,
+                    )
 
     for index, entry in enumerate(ordered_entries, start=1):
         entry.context_id = f"Q{index}"
@@ -4856,11 +5698,13 @@ def _build_candidate_query_context(
 
     logger.info(
         "Prompt verifier candidate query context built: candidate_atoms={} "
-        "context_statements={} policy={} playbook={} context={} execution={}",
+        "context_statements={} policy={} playbook={} knowledge_base={} "
+        "context={} execution={}",
         len(candidate_atoms),
         len(ordered_entries),
         sum(1 for item in ordered_entries if item.graph_name == "cuga_policy"),
         sum(1 for item in ordered_entries if item.graph_name == "playbook"),
+        sum(1 for item in ordered_entries if item.graph_name == "knowledge_base"),
         sum(1 for item in ordered_entries if item.graph_name == "context"),
         sum(1 for item in ordered_entries if item.graph_name == "execution"),
     )
@@ -4936,6 +5780,27 @@ def _validate_context_decision(
     context_entries: list[_CandidateQueryContextEntry],
 ) -> None:
     valid_ids = {entry.context_id for entry in context_entries}
+
+    # Some structured-output models occasionally return a bare numeric Q ID
+    # (for example, "38" instead of "Q38"). Treat that as an unambiguous
+    # formatting variation only when the corresponding Q-prefixed ID actually
+    # exists in the current candidate-query context. Unknown IDs remain errors.
+    normalized_ids: list[str] = []
+    for raw_id in decision.violated_context_ids:
+        context_id = str(raw_id).strip()
+        if context_id not in valid_ids and context_id.isdigit():
+            prefixed_id = f"Q{context_id}"
+            if prefixed_id in valid_ids:
+                logger.info(
+                    "Prompt verifier normalized candidate-query-context ID: {} -> {}",
+                    context_id,
+                    prefixed_id,
+                )
+                context_id = prefixed_id
+        normalized_ids.append(context_id)
+
+    decision.violated_context_ids = normalized_ids
+
     invalid = sorted(set(decision.violated_context_ids) - valid_ids)
     if invalid:
         raise PromptVerificationError(
@@ -4948,7 +5813,13 @@ def _validate_context_decision(
 
 
 def _candidate_query_origin_label(entry: _CandidateQueryContextEntry) -> str:
-    if entry.graph_name in {"cuga_policy", "playbook", "execution", "verifier_rejection"}:
+    if entry.graph_name in {
+        "cuga_policy",
+        "playbook",
+        "knowledge_base",
+        "execution",
+        "verifier_rejection",
+    }:
         return entry.graph_name
 
     if entry.graph_name == "context":
@@ -5185,8 +6056,10 @@ async def _verify_with_graphs(
     candidate: str,
     candidate_kind: CandidateKind,
     candidate_graph: MemoryGraph,
+    candidate_atoms_override: list[Any] | None = None,
     state_graph: MemoryGraph,
     execution_graph: MemoryGraph,
+    knowledge_base_graph: MemoryGraph,
     cuga_policy_graph: MemoryGraph,
     playbook_graph: MemoryGraph,
     reasoning_graph: MemoryGraph | None = None,
@@ -5200,13 +6073,41 @@ async def _verify_with_graphs(
     the final verifier prompt and therefore cannot become claims merely because
     decomposition lost conditional/reference/temporal scope.
     """
-    candidate_atoms = sorted(
-        candidate_graph.atomic_nodes(active_only=True),
+    all_candidate_atoms = sorted(
+        (
+            list(candidate_atoms_override)
+            if candidate_atoms_override is not None
+            else candidate_graph.atomic_nodes(active_only=True)
+        ),
         key=_candidate_atom_order_key,
     )
+
+    # Verifier-added structural labels help frame the candidate during graph
+    # construction, but they are not semantic claims/actions from the agent and
+    # must not initiate evidence retrieval. The actual candidate remains present
+    # in [RAW_CANDIDATE], and candidate_kind is provided separately to the LLM.
+    verifier_scaffolding_labels = {
+        "proposed tool execution",
+    }
+    candidate_atoms = [
+        atom
+        for atom in all_candidate_atoms
+        if str(getattr(atom, "content", "")).strip().rstrip(":").casefold()
+        not in verifier_scaffolding_labels
+    ]
+    omitted_scaffolding_atoms = len(all_candidate_atoms) - len(candidate_atoms)
+    if omitted_scaffolding_atoms:
+        logger.debug(
+            "Prompt verifier excluded verifier-generated scaffolding from "
+            "retrieval: omitted_atoms={} remaining_retrieval_atoms={}",
+            omitted_scaffolding_atoms,
+            len(candidate_atoms),
+        )
+
     if not candidate_atoms:
         raise PromptVerificationError(
-            "Candidate decomposition produced no atomic retrieval propositions"
+            "Candidate decomposition produced no atomic retrieval propositions "
+            "after excluding verifier-generated scaffolding"
         )
 
     candidate_calls = await _extract_candidate_calls(
@@ -5227,6 +6128,7 @@ async def _verify_with_graphs(
         candidate_atoms=candidate_atoms,
         cuga_policy_graph=cuga_policy_graph,
         playbook_graph=playbook_graph,
+        knowledge_base_graph=knowledge_base_graph,
         state_graph=state_graph,
         execution_graph=execution_graph,
     )
@@ -5557,6 +6459,14 @@ async def verify_candidate(
     - ``None``: backwards-compatible inference; awaited calls imply
       ``tool_execution``, otherwise ``terminal``.
 
+    When ``PROMPT_VERIFIER_BULK_VERIFICATION_ENABLED`` is true, terminal and
+    reasoning candidates reuse their already-built Stanza hierarchy to form
+    contiguous composite verification bulks. Each bulk retrieves and verifies
+    only from its own candidate leaves, in original order, and verification stops
+    on the first rejection. No bulk is committed independently; the original
+    whole candidate is committed only if every bulk is approved. Tool-execution
+    candidates always bypass this feature and are verified as one code unit.
+
     Rejected candidates never enter the reasoning graph. Previously accepted
     reasoning steps are retained across rejections so orchestration code can pass
     only the latest rejected candidate + verifier feedback on the next attempt.
@@ -5639,11 +6549,17 @@ async def verify_candidate(
 
         missing_authority: list[str] = []
 
-        if (
-            not _VERIFICATION_STATE.playbook_initialized
-            or _VERIFICATION_STATE.playbook_graph is None
-        ):
-            missing_authority.append("playbook_graph")
+        # Playbooks are optional. When no Playbooks are enabled, the SDK may skip
+        # the Playbook-initialization hook entirely. Normalize that valid state to
+        # an initialized empty graph so verification can proceed using CUGA policy,
+        # STATE, execution, and knowledge-base evidence only.
+        if _VERIFICATION_STATE.playbook_graph is None:
+            _VERIFICATION_STATE.playbook_graph = MemoryGraph()
+            logger.info(
+                "Prompt verifier Playbook graph defaulted to empty: session={}",
+                _VERIFICATION_STATE.owner_session_id,
+            )
+        _VERIFICATION_STATE.playbook_initialized = True
 
         if (
             not _VERIFICATION_STATE.cuga_policy_initialized
@@ -5662,8 +6578,8 @@ async def verify_candidate(
                 "Verifier authority state is incomplete before candidate "
                 "verification. Missing: "
                 + ", ".join(missing_authority)
-                + ". The SDK must initialize Playbooks and the CugaLite prompt "
-                "path must initialize the CUGA-policy graph."
+                + ". The CugaLite prompt path must initialize the CUGA-policy "
+                "graph and verification runtime before verification begins."
             )
 
         cuga_policy_graph = _VERIFICATION_STATE.cuga_policy_graph
@@ -5678,26 +6594,20 @@ async def verify_candidate(
 
         candidate_graph_content = candidate_content
         if resolved_candidate_kind == "tool_execution":
-            # Query evidence with both the resolved executable action and the
-            # exact prompt-visible runtime description of every called tool.
-            # The tool description is only semantic retrieval metadata: it is
-            # never emitted as a Q statement and never treated as authority.
+            # Tool-execution retrieval is intentionally projected away from raw
+            # Python syntax. Each distinct called tool contributes only its exact
+            # function name and, when available, the first paragraph describing
+            # what the tool does. Assignment targets, ``await``, arguments, and
+            # all later tool-description context are excluded from retrieval. The
+            # untouched candidate and full tool specs remain available to Gemini.
             tool_retrieval_lines = _called_tool_retrieval_lines(
                 candidate_calls,
                 _VERIFICATION_STATE.runtime_facts,
             )
-            candidate_graph_content = "\n".join(
-                [
-                    *(
-                        f"Proposed tool execution: {_render_candidate_call(call)}"
-                        for call in candidate_calls
-                    ),
-                    *tool_retrieval_lines,
-                ]
-            )
+            candidate_graph_content = "\n".join(tool_retrieval_lines)
             logger.debug(
-                "Prompt verifier tool semantic retrieval augmentation: "
-                "called_tools={} descriptions_added={}",
+                "Prompt verifier tool-name/purpose retrieval projection: "
+                "called_tools={} retrieval_lines={}",
                 [str(call.get("call") or "") for call in candidate_calls],
                 len(tool_retrieval_lines),
             )
@@ -5746,6 +6656,12 @@ async def verify_candidate(
         execution_task = asyncio.create_task(
             _update_execution_graph(session_id=session_id)
         )
+        knowledge_base_task = asyncio.create_task(
+            _update_knowledge_base_graph(
+                session_id=session_id,
+                semaphore=semaphore,
+            )
+        )
         candidate_task = asyncio.create_task(
             _build_graph(
                 [candidate_source],
@@ -5755,14 +6671,21 @@ async def verify_candidate(
             )
         )
 
-        state_update, execution_update, candidate_graph = await asyncio.gather(
+        (
+            state_update,
+            execution_update,
+            knowledge_base_update,
+            candidate_graph,
+        ) = await asyncio.gather(
             state_task,
             execution_task,
+            knowledge_base_task,
             candidate_task,
         )
 
         state_graph, state_update_mode, state_new_nodes = state_update
         execution_graph, execution_new_nodes = execution_update
+        knowledge_base_graph, knowledge_base_new_nodes = knowledge_base_update
 
         if state_new_nodes:
             await asyncio.to_thread(
@@ -5779,6 +6702,7 @@ async def verify_candidate(
             "cuga_policy_nodes={} playbook_nodes={} state_update_mode={} "
             "state_new_nodes={} state_cursor={} state_nodes={} "
             "execution_new_nodes={} execution_nodes={} execution_edges={} "
+            "knowledge_base_new_nodes={} knowledge_base_nodes={} knowledge_base_edges={} "
             "reasoning_steps={} reasoning_nodes={} candidate_retrieval_nodes={} "
             "wall_time={:.3f}s",
             resolved_candidate_kind,
@@ -5791,6 +6715,9 @@ async def verify_candidate(
             execution_new_nodes,
             len(execution_graph.nodes),
             len(execution_graph.edges),
+            knowledge_base_new_nodes,
+            len(knowledge_base_graph.nodes),
+            len(knowledge_base_graph.edges),
             len(_VERIFICATION_STATE.reasoning_steps),
             (
                 len(_VERIFICATION_STATE.reasoning_graph.nodes)
@@ -5802,19 +6729,109 @@ async def verify_candidate(
         )
 
         verification_start = time.perf_counter()
-        decision = await _verify_with_graphs(
-            candidate=candidate_content,
-            candidate_kind=resolved_candidate_kind,
-            candidate_graph=candidate_graph,
-            state_graph=state_graph,
-            execution_graph=execution_graph,
-            cuga_policy_graph=cuga_policy_graph,
-            playbook_graph=playbook_graph,
-            reasoning_graph=_VERIFICATION_STATE.reasoning_graph,
-            runtime_facts=_VERIFICATION_STATE.runtime_facts,
-            runtime_variables=runtime_variables,
-            previous_rejection=previous_rejection,
-        )
+        if (
+            PROMPT_VERIFIER_BULK_VERIFICATION_ENABLED
+            and resolved_candidate_kind != "tool_execution"
+        ):
+            candidate_atoms_for_bulks = sorted(
+                candidate_graph.atomic_nodes(active_only=True),
+                key=_candidate_atom_order_key,
+            )
+            bulks = _build_candidate_verification_bulks(
+                candidate=candidate_content,
+                candidate_graph=candidate_graph,
+                candidate_atoms=candidate_atoms_for_bulks,
+            )
+            if not bulks:
+                raise PromptVerificationError(
+                    "Bulk verification is enabled but Stanza produced no "
+                    "verification bulks"
+                )
+
+            atom_by_id = {
+                atom.id: atom
+                for atom in candidate_atoms_for_bulks
+            }
+            decision = CandidateContextDecision(verdict="approved")
+            for bulk in bulks:
+                bulk_atoms = [
+                    atom_by_id[atom_id]
+                    for atom_id in bulk.atom_ids
+                    if atom_id in atom_by_id
+                ]
+                if not bulk_atoms:
+                    raise PromptVerificationError(
+                        "Stanza verification bulk contains no resolvable candidate "
+                        f"atoms: bulk={bulk.index} atom_ids={bulk.atom_ids}"
+                    )
+
+                logger.info(
+                    "[PROMPT_VERIFIER_BULK_VERIFY] bulk={}/{} span=({}, {}) "
+                    "atoms={} grouping_node_id={} chars={}",
+                    bulk.index,
+                    len(bulks),
+                    bulk.start,
+                    bulk.end,
+                    len(bulk_atoms),
+                    bulk.grouping_node_id,
+                    len(bulk.content),
+                )
+                decision = await _verify_with_graphs(
+                    candidate=bulk.content,
+                    candidate_kind=resolved_candidate_kind,
+                    candidate_graph=candidate_graph,
+                    candidate_atoms_override=bulk_atoms,
+                    state_graph=state_graph,
+                    execution_graph=execution_graph,
+                    knowledge_base_graph=knowledge_base_graph,
+                    cuga_policy_graph=cuga_policy_graph,
+                    playbook_graph=playbook_graph,
+                    reasoning_graph=_VERIFICATION_STATE.reasoning_graph,
+                    runtime_facts=_VERIFICATION_STATE.runtime_facts,
+                    runtime_variables=runtime_variables,
+                    previous_rejection=previous_rejection,
+                )
+                logger.info(
+                    "[PROMPT_VERIFIER_BULK_RESULT] bulk={}/{} verdict={} "
+                    "violated_context_ids={} reason={!r}",
+                    bulk.index,
+                    len(bulks),
+                    decision.verdict,
+                    decision.violated_context_ids,
+                    decision.reason,
+                )
+                if decision.verdict == "rejected":
+                    logger.info(
+                        "[PROMPT_VERIFIER_BULK_STOP] rejected_bulk={}/{}; "
+                        "remaining_bulks_skipped={}",
+                        bulk.index,
+                        len(bulks),
+                        len(bulks) - bulk.index,
+                    )
+                    break
+        else:
+            if (
+                PROMPT_VERIFIER_BULK_VERIFICATION_ENABLED
+                and resolved_candidate_kind == "tool_execution"
+            ):
+                logger.info(
+                    "Prompt verifier bulk verification enabled but bypassed for "
+                    "tool_execution so generated code is verified as one unit"
+                )
+            decision = await _verify_with_graphs(
+                candidate=candidate_content,
+                candidate_kind=resolved_candidate_kind,
+                candidate_graph=candidate_graph,
+                state_graph=state_graph,
+                execution_graph=execution_graph,
+                knowledge_base_graph=knowledge_base_graph,
+                cuga_policy_graph=cuga_policy_graph,
+                playbook_graph=playbook_graph,
+                reasoning_graph=_VERIFICATION_STATE.reasoning_graph,
+                runtime_facts=_VERIFICATION_STATE.runtime_facts,
+                runtime_variables=runtime_variables,
+                previous_rejection=previous_rejection,
+            )
         verification_time = time.perf_counter() - verification_start
 
         valid = decision.verdict == "approved"
