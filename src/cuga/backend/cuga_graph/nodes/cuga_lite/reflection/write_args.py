@@ -92,6 +92,22 @@ _MAX_EXPAND_VISITS = 256
 # far above that and below the depth where CPython's own recursion limit bites.
 _MAX_TREE_NODES = 20000
 _MAX_TREE_DEPTH = 120
+# Work budget, not an input budget. Mutually recursive helpers are re-walked
+# once per call site because a result computed inside a cycle is truncated and
+# must not be cached, so cost grows as fan-out^depth while the tree grows
+# linearly -- a 59-line block took 13 s, a 67-line one over a minute. No size
+# limit can see that, so count the work itself and bail when it runs out.
+_MAX_MUTATION_VISITS = 100000
+
+
+class _AnalysisBudgetExceeded(Exception):
+    """Raised when the mutation walk runs past ``_MAX_MUTATION_VISITS``."""
+
+
+# Fail open: the verifier is told the section cannot be trusted and judges the
+# source itself, rather than being shown a half-computed one it cannot tell
+# apart from a complete one.
+_UNRELIABLE = "(arguments unreliable: analysis budget exceeded — verify the source directly)"
 _MAX_EXPR_CHARS = 300
 _MAX_ROWS = 20
 # Registry tool names end in their HTTP verb (…_post, …_patch); these mutate.
@@ -396,9 +412,10 @@ def _mutated_names(
     _seen: frozenset = frozenset(),
     _helpers: Optional[Dict[str, ast.AST]] = None,
     _memo: Optional[Dict[int, tuple]] = None,
+    _budget: Optional[List[int]] = None,
 ) -> set:
     """Names whose object is changed in place somewhere in the block."""
-    names, _ = _mutated_names_impl(tree, _seen, _helpers, _memo)
+    names, _ = _mutated_names_impl(tree, _seen, _helpers, _memo, _budget)
     return names
 
 
@@ -407,6 +424,7 @@ def _mutated_names_impl(
     _seen: frozenset = frozenset(),
     _helpers: Optional[Dict[str, ast.AST]] = None,
     _memo: Optional[Dict[int, tuple]] = None,
+    _budget: Optional[List[int]] = None,
 ) -> tuple:
     """Names whose object is changed in place somewhere in the block.
 
@@ -436,10 +454,17 @@ def _mutated_names_impl(
     names: set = set()
     if _memo is None:
         _memo = {}
+    # One counter for the whole analysis, shared down every recursion, in the
+    # same shape the expander already uses for _MAX_EXPAND_VISITS.
+    if _budget is None:
+        _budget = [0]
     # Set when this analysis (or one nested inside it) was cut short by the
     # cycle guard, which makes the result a subset and unsafe to cache.
     truncated = False
     for node in ast.walk(tree):
+        _budget[0] += 1
+        if _budget[0] > _MAX_MUTATION_VISITS:
+            raise _AnalysisBudgetExceeded
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, (ast.Subscript, ast.Attribute)):
@@ -476,6 +501,9 @@ def _mutated_names_impl(
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n is not tree
         }
     for node in ast.walk(tree):
+        _budget[0] += 1
+        if _budget[0] > _MAX_MUTATION_VISITS:
+            raise _AnalysisBudgetExceeded
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
             continue
         fn = helpers.get(node.func.id)
@@ -493,7 +521,7 @@ def _mutated_names_impl(
         if entry is not None and entry[1]:
             inner = entry[0]
         else:
-            inner, complete = _mutated_names_impl(fn, _seen | {id(fn), id(tree)}, helpers, _memo)
+            inner, complete = _mutated_names_impl(fn, _seen | {id(fn), id(tree)}, helpers, _memo, _budget)
             if complete:
                 _memo[id(fn)] = (inner, True)
             else:
@@ -839,16 +867,16 @@ def describe_write_arguments(code: Optional[str]) -> str:
         return "(code does not parse; verify the source directly)"
 
     if _over_budget(tree):
-        return (
-            "(arguments unreliable: block too large or too deeply nested to "
-            "resolve — verify the source directly)"
-        )
+        return _UNRELIABLE
 
     chains = _scope_chains(tree)
     assigns = _assignments(tree, chains)
     unreliable = _unreliable_names(tree)
     shadowed = _shadowed_names(tree)
-    mutated = _mutated_names(tree)
+    try:
+        mutated = _mutated_names(tree)
+    except _AnalysisBudgetExceeded:
+        return _UNRELIABLE
     if mutated:
         shadowed.setdefault(None, set()).update(mutated)
     local_names = _bound_names(tree)

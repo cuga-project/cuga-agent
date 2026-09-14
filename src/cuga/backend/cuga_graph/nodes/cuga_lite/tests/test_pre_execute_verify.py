@@ -1403,3 +1403,57 @@ def test_ordinary_blocks_are_unaffected_by_the_budget():
     )
     assert "35.0" in out
     assert "unreliable" not in out.lower()
+
+
+# The input-size budget cannot see this case: mutually recursive helpers grow
+# the tree linearly while doubling the walks, because a result computed inside
+# a cycle is truncated and must not be cached. Measured before the work budget:
+# 13.7 s at depth 14, 60 s at depth 16, on a block of 376 AST nodes -- 53x under
+# the node limit at depth 8 of 120. The code is model-generated from task and
+# tool content, so this is reachable without anyone writing it by hand.
+def _cyclic_helper_block(depth: int) -> str:
+    lines = []
+    for i in range(depth):
+        nxt = f"h{(i + 1) % depth}"
+        lines.append(f"def h{i}(p):\n    {nxt}(p)\n    {nxt}(p)\n    p['a'] = {i}")
+    lines += [
+        "p = {'a': 0.0}",
+        "h0(p)",
+        "await venmo_create_payment_request_payment_requests_post(amount=p['a'])",
+    ]
+    return "\n".join(lines)
+
+
+@pytest.mark.unit
+def test_cyclic_helpers_bail_on_the_work_budget():
+    started = time.monotonic()
+    out = describe_write_arguments(_cyclic_helper_block(14))
+    assert time.monotonic() - started < 1.0
+    assert "unreliable" in out.lower()
+
+
+@pytest.mark.unit
+def test_work_budget_cost_does_not_grow_with_cycle_depth():
+    def elapsed(depth: int) -> float:
+        started = time.monotonic()
+        describe_write_arguments(_cyclic_helper_block(depth))
+        return time.monotonic() - started
+
+    # Each added helper used to double the work. Bounded, it must not.
+    assert elapsed(20) < 4 * max(elapsed(12), 0.01)
+
+
+@pytest.mark.unit
+def test_acyclic_helper_fan_out_is_still_analyzed_not_bailed():
+    lines = ["def h8(p):\n    p['a'] = 1"]
+    for i in range(7, -1, -1):
+        lines.append(f"def h{i}(p):\n    h{i + 1}(p)\n    h{i + 1}(p)")
+    lines += [
+        "p = {'a': 0.0}",
+        "h0(p)",
+        "await venmo_create_payment_request_payment_requests_post(amount=p['a'])",
+    ]
+    out = describe_write_arguments("\n".join(lines))
+    # Memoized, so it stays cheap and the mutation is still reported.
+    assert "unreliable" not in out.lower()
+    assert "0.0" not in out
