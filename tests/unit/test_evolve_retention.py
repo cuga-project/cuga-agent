@@ -577,3 +577,59 @@ def test_schedule_changes_require_management_access(client):
         )
     assert response.status_code == 403
     call.assert_not_awaited()
+
+
+def test_schedule_routes_with_real_evolve_catalog_are_revisioned_and_isolated(client, tmp_path):
+    from types import SimpleNamespace
+
+    from altk_evolve.retention.schedule_store import ScheduleStore
+    from altk_evolve.retention.service import RetentionError, RetentionService
+
+    evolve = SimpleNamespace(
+        config=SimpleNamespace(backend="filesystem"), backend=SimpleNamespace(data_dir=tmp_path)
+    )
+    store = ScheduleStore(evolve, sqlite_path=tmp_path / "schedules.sqlite")
+    for namespace in ("service-a", "service-b"):
+        store.put_policy(
+            namespace_id=namespace,
+            policy_id="custom",
+            name="Custom",
+            description=None,
+            enabled=True,
+            policy={"rules": [{"name": "old", "max_age_days": 7, "action": "delete"}]},
+        )
+
+    async def dispatch(tool, args):
+        args = dict(args)
+        service = RetentionService(evolve, args.pop("namespace_id"), store=store)
+        operation = tool.replace("_retention_", "_")
+        try:
+            if operation == "put_schedule":
+                return service.put_schedule(args.pop("schedule_id"), args.pop("definition"), **args)
+            return getattr(service, operation)(**args)
+        except RetentionError as error:
+            return error.payload()
+
+    path = "/api/manage/memory/retention/schedules/nightly"
+    with patch.object(EvolveIntegration, "_call_structured_tool", new=dispatch):
+        with patch("cuga.backend.server.memory_routes._namespace_id", return_value="service-a"):
+            created = client.put(
+                path, json={"policy_id": "custom", "spec": {"schedule": "@daily", "suspend": True}}
+            )
+            assert created.status_code == 200
+            assert created.json()["revision"] == 1
+            assert created.json()["definition"]["dry_run"] is False
+            started = client.post(path + "/start", json={"expected_revision": 1})
+            assert started.status_code == 200
+            assert started.json()["revision"] == 2
+            assert client.post(path + "/stop", json={"expected_revision": 1}).status_code == 409
+            assert len(client.get(path).json()["next_runs"]) == 5
+        with patch("cuga.backend.server.memory_routes._namespace_id", return_value="service-b"):
+            assert client.get(path).status_code == 404
+            assert client.get("/api/manage/memory/retention/schedules").json()["items"] == []
+            assert client.delete(path + "?expected_revision=2").status_code == 404
+        with patch("cuga.backend.server.memory_routes._namespace_id", return_value="service-a"):
+            stopped = client.post(path + "/stop", json={"expected_revision": 2})
+            assert stopped.status_code == 200
+            assert client.get(path).json()["next_runs"] == []
+            assert client.delete(path + "?expected_revision=3").json()["deleted"] is True
