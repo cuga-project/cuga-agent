@@ -202,7 +202,9 @@ class CugaLiteNode(BaseNode):
             "thanks",
             "thank you",
         )
-        if not any(pattern in answer_lower for pattern in signoff_patterns):
+        if not any(
+            re.search(rf"(?<!\w){re.escape(pattern)}(?!\w)", answer_lower) for pattern in signoff_patterns
+        ):
             return False
 
         def contains_scalar(value: Any) -> bool:

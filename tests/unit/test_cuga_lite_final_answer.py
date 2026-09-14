@@ -69,6 +69,23 @@ def test_unsigned_numeric_candidate_is_not_found_inside_signed_answer(answer):
     assert CugaLiteNode._should_regenerate_final_answer(state, answer, ["result"])
 
 
+@pytest.mark.parametrize("answer", ["Thanks!", "Thank you."])
+def test_common_terminal_signoffs_without_result_request_final_answer(answer):
+    state = _state_with_top_account()
+
+    assert CugaLiteNode._should_regenerate_final_answer(state, answer, ["top_account"])
+
+
+def test_signoff_phrase_inside_word_does_not_request_final_answer():
+    state = _state_with_top_account()
+
+    assert not CugaLiteNode._should_regenerate_final_answer(
+        state,
+        "No Thanksgiving update is available.",
+        ["top_account"],
+    )
+
+
 def test_signoff_with_result_value_keeps_fast_path():
     state = _state_with_top_account()
     answer = (
