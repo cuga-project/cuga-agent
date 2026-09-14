@@ -15,6 +15,8 @@ import {
   type RenderUserDefinedState,
   CarbonTheme,
   BusEventType,
+  MessageResponseTypes,
+  type MessageResponse,
 } from '@carbon/ai-chat';
 import { FileText, Loader2, Paperclip, RotateCcw, X } from "lucide-react";
 import {
@@ -840,6 +842,65 @@ const CarbonChat = ({
       }
     }
   }, [threadId]);
+
+  // ── Asynchronous flow fires land in the transcript ──────────────────────────────────────────────
+  // Arming a flow is only half the loop. It fires LATER — a cron tick at 09:05, a poll that finally
+  // saw a change — when no request is in flight to answer into. Slack and Discord get pushed into;
+  // a browser can only be drained, so the server delivers each fire to a per-thread mailbox and we
+  // poll it. Without this the flow ran and answered, the dashboard knew, and the chat that armed it
+  // never heard back: "it fired but I don't see it".
+  //
+  // Deliberately the ONLY renderer of fires — customLoadHistory does not include them. One path
+  // means no double-render on reload: a reopened tab starts at cursor 0, drains the whole backlog,
+  // and appends it. Fires therefore land at the END of the transcript rather than interleaved by
+  // time, which is nearly always the true order anyway (a flow fires after the chat that armed it).
+  useEffect(() => {
+    if (!threadId) return;
+    let cancelled = false;
+    let cursor = 0;
+
+    const drain = async () => {
+      const instance = chatInstanceRef.current;
+      if (!instance || cancelled) return;
+      try {
+        const res = await api.getEventsInbox(threadId, cursor);
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const messages: any[] = data?.messages ?? [];
+        if (!messages.length) return;
+        cursor = data.cursor ?? cursor;
+        const profile = await getResponseUserProfile(useDraft);
+        for (const m of messages) {
+          if (cancelled) break;
+          await instance.messaging.addMessage({
+            id: `fire-${m.id}`,
+            output: {
+              generic: [{ response_type: MessageResponseTypes.TEXT, text: String(m.text ?? '') }],
+            },
+            message_options: { response_user_profile: profile },
+          } as MessageResponse);
+        }
+      } catch {
+        /* an unreachable mailbox must never break the chat */
+      }
+    };
+
+    // Only poll when the events layer is mounted — vanilla CUGA has no /api/events/*.
+    let timer: ReturnType<typeof setInterval> | null = null;
+    let first: ReturnType<typeof setTimeout> | null = null;
+    api.getEventsStatus().then((s) => {
+      if (cancelled || !s) return;
+      // Hold the first drain briefly. Switching threads runs clearConversation() → insertHistory()
+      // asynchronously; injecting a fire into that window gets it wiped by the clear.
+      first = setTimeout(drain, 2500);
+      timer = setInterval(drain, 15000);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+      if (first) clearTimeout(first);
+      if (timer) clearInterval(timer);
+    };
+  }, [threadId, useDraft]);
 
   // Wrap customLoadHistory to pass threadId and disableHistory
   const handleCustomLoadHistory = useCallback(

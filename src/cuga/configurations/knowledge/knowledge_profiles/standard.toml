@@ -13,10 +13,21 @@ description = "The reliable default — right for most."
 # differs (speed 1000 vs standard 800) and chunk_size is part of
 # vector_config_hash. The UI surfaces this via the re-index hint.
 model = "BAAI/bge-small-en-v1.5"
-# 128 keeps p99 sane under concurrent prod traffic while still getting
-# most of fastembed's batch-size throughput benefit (256 is the
-# documented upper, 128 is the operations-friendly default).
-batch_size = 128
+# Memory, not throughput, is the binding constraint here. A local ONNX
+# embedder allocates intermediate tensors that scale as batch x sequence^2,
+# and onnxruntime's arena does not return that memory to the OS — so the
+# batch size sets the process's resident high-water mark, not just its
+# working set. Measured on 5x104KB markdown (2 ingest workers, 512-token
+# chunks): batch 128 peaked at 4,642 MB and OOM-killed a 4 GB pod; batch 32
+# peaked at 2,452 MB for ~8% more wall time. Below 32 the adapter makes
+# enough extra embed calls that wall time degrades sharply (batch 16 was
+# 2.4x slower) with little further memory saving.
+#
+# The old "larger = more throughput" reasoning holds for CLOUD embedders,
+# where a big batch amortizes HTTP round-trips. For a local ONNX model the
+# trade inverts: large batches buy nothing measurable and cost memory.
+# Peak scales with batch_size x max_ingest_workers (= 2 here). See #712.
+batch_size = 32
 concurrency = 4
 
 [chunking]

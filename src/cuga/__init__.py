@@ -38,6 +38,8 @@ __all__ = [
     "KnowledgeClient",
     "KnowledgeEngine",
     "KnowledgeConfig",
+    # Final answer: LLM guidance + deterministic function (CugaAgent final_answer=).
+    "FinalAnswerConfig",
     # Tool shortlisting: how a large tool set is shrunk before the model sees it.
     "Shortlister",
     "ShortlisterStrategy",
@@ -54,6 +56,7 @@ __all__ = [
 # For type checkers and IDEs — not executed at runtime.
 if TYPE_CHECKING:
     from cuga.sdk import CugaAgent, CugaSupervisor, run_agent, InvokeResult
+    from cuga.backend.cuga_graph.nodes.answer.answer_function import FinalAnswerConfig
     from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import tracked_tool
     from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import (
         Shortlister,
@@ -89,6 +92,10 @@ _import_map: dict = {
     "KnowledgeClient": ("cuga.backend.knowledge", "KnowledgeClient"),
     "KnowledgeEngine": ("cuga.backend.knowledge", "KnowledgeEngine"),
     "KnowledgeConfig": ("cuga.backend.knowledge.config", "KnowledgeConfig"),
+    "FinalAnswerConfig": (
+        "cuga.backend.cuga_graph.nodes.answer.answer_function",
+        "FinalAnswerConfig",
+    ),
     "Shortlister": (
         "cuga.backend.cuga_graph.nodes.cuga_lite.shortlister",
         "Shortlister",
