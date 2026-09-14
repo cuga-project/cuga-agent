@@ -628,9 +628,19 @@ Provide:
             # response_format paths. ChatOpenAI models with "GCP"/"Claude" in the
             # name return an unparsed chain and land in the exception fallback
             # below (nothing we ship uses that path for policy matching today).
+            #
+            # For LiteLLM the chain uses PydanticOutputParser which relies on the
+            # prompt containing explicit JSON format instructions — without them the
+            # model returns markdown prose and the parser fails.  Append those
+            # instructions here so all code-paths receive them.
+            from langchain_core.output_parsers import PydanticOutputParser as _POP
+
+            _fmt_instructions = _POP(pydantic_object=PolicyConflictResolution).get_format_instructions()
+            system_prompt_with_fmt = f"{system_prompt}\n\n{_fmt_instructions}"
+
             prompt_template = ChatPromptTemplate.from_messages(
                 [
-                    ("system", system_prompt),
+                    ("system", system_prompt_with_fmt),
                     ("human", "{user_prompt}"),
                 ]
             )
