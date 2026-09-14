@@ -84,6 +84,14 @@ _FOLD_NAMESPACE: Dict[str, Any] = {
 
 _MAX_EXPANSION_DEPTH = 8
 _MAX_EXPAND_VISITS = 256
+# Whole-analysis budget. Rather than model every Python binding form that can
+# make the walk blow up — each review round has found another — cap the input
+# and fail open: an over-budget block reports its arguments as unreliable, so
+# the verifier judges the source directly instead of a half-computed section.
+# Real blocks measured at AST depth 25 and a few hundred nodes; the limits sit
+# far above that and below the depth where CPython's own recursion limit bites.
+_MAX_TREE_NODES = 20000
+_MAX_TREE_DEPTH = 120
 _MAX_EXPR_CHARS = 300
 _MAX_ROWS = 20
 # Registry tool names end in their HTTP verb (…_post, …_patch); these mutate.
@@ -798,6 +806,28 @@ def _clip(text: str) -> str:
     return text if len(text) <= _MAX_EXPR_CHARS else text[: _MAX_EXPR_CHARS - 3] + "..."
 
 
+def _over_budget(tree: ast.AST) -> bool:
+    """True when the tree is too big or too deep to analyze within budget.
+
+    Depth is measured iteratively: a recursive measurement would hit the same
+    limit it exists to detect. Both counts stop early, so the check costs
+    nothing on ordinary blocks.
+    """
+    nodes = 0
+    max_depth = 0
+    stack = [(tree, 1)]
+    while stack:
+        node, depth = stack.pop()
+        nodes += 1
+        if depth > max_depth:
+            max_depth = depth
+        if nodes > _MAX_TREE_NODES or max_depth > _MAX_TREE_DEPTH:
+            return True
+        for child in ast.iter_child_nodes(node):
+            stack.append((child, depth + 1))
+    return False
+
+
 def describe_write_arguments(code: Optional[str]) -> str:
     """Render each write argument as the value it will actually be given."""
     text = (code or "").strip()
@@ -807,6 +837,12 @@ def describe_write_arguments(code: Optional[str]) -> str:
         tree = ast.parse(text)
     except SyntaxError:
         return "(code does not parse; verify the source directly)"
+
+    if _over_budget(tree):
+        return (
+            "(arguments unreliable: block too large or too deeply nested to "
+            "resolve — verify the source directly)"
+        )
 
     chains = _scope_chains(tree)
     assigns = _assignments(tree, chains)

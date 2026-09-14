@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1355,3 +1356,50 @@ def test_mutation_through_a_cycle_reaches_the_verify_section():
     assert "0.0" not in out.split("venmo_create_transaction")[-1], (
         "verifier shown the pre-mutation value as what the write will send:\n" + out
     )
+
+
+# ── a pathological block must bail, not hang or recurse ────────────────────
+#
+# Review of 02d20c98..f29a0f57: rather than chase each binding form that can
+# blow up the analysis, cap the whole walk. Over-budget input reports the
+# arguments as unreliable, which the verifier reads as "no resolved values" —
+# fail-open, the same shape as the existing _Expander visit budget.
+
+
+@pytest.mark.unit
+def test_deeply_nested_expression_bails_instead_of_raising():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    # ~1000-term chain: previously RecursionError out of _Expander.visit.
+    code = "x = " + "+".join(str(i) for i in range(1500)) + "\nawait pay_post(amount=x)"
+    out = describe_write_arguments(code)
+    assert "unreliable" in out.lower()
+
+
+@pytest.mark.unit
+def test_enormous_block_bails_instead_of_grinding():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    code = "\n".join(f"v{i} = v{i - 1} + 1" if i else "v0 = 1" for i in range(20000))
+    code += "\nawait pay_post(amount=v19999)"
+    started = time.monotonic()
+    out = describe_write_arguments(code)
+    assert time.monotonic() - started < 2.0
+    assert "unreliable" in out.lower()
+
+
+@pytest.mark.unit
+def test_ordinary_blocks_are_unaffected_by_the_budget():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    out = describe_write_arguments(
+        "share = round(140.0 / 4, 2)\nawait venmo_create_payment_request_payment_requests_post(amount=share)"
+    )
+    assert "35.0" in out
+    assert "unreliable" not in out.lower()
