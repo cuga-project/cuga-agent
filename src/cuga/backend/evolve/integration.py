@@ -397,24 +397,17 @@ class EvolveIntegration:
         cls,
         policy_id: str,
         *,
-        dry_run: bool = True,
-        as_of: Optional[str] = None,
         scan_limit: Optional[int] = None,
         run_id: Optional[str] = None,
         namespace_id: Optional[str] = None,
-        metadata_filters: Optional[dict[str, Any]] = None,
-        additional_matches: Optional[list[dict[str, Any]]] = None,
         initiated_by: Optional[str] = None,
     ) -> Optional[dict]:
         """Run an Evolve-owned policy and return its persisted report."""
-        args: dict[str, Any] = {"policy_id": policy_id, "dry_run": dry_run}
+        args: dict[str, Any] = {"policy_id": policy_id, "dry_run": False}
         optional = {
-            "as_of": as_of,
             "scan_limit": scan_limit,
             "run_id": run_id,
             "namespace_id": normalize_evolve_identifier(namespace_id),
-            "metadata_filters": json.dumps(metadata_filters) if metadata_filters else None,
-            "additional_matches": json.dumps(additional_matches) if additional_matches else None,
             "initiated_by": normalize_evolve_identifier(initiated_by),
         }
         args.update({key: value for key, value in optional.items() if value is not None})
