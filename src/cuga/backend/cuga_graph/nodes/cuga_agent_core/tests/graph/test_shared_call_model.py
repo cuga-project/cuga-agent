@@ -512,10 +512,38 @@ def _mock_settings_disposition(
     "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
     new_callable=AsyncMock,
 )
-async def test_autonomous_deferral_continues(mock_summarize):
+async def test_autonomous_deferral_falls_through_to_classifier(mock_summarize):
+    """The deterministic deferral regex was removed after live AppWorld
+    evidence showed it net-hurts task completion (#732 comments) — deferral
+    text now falls through to classify_auto_continue like any other
+    ambiguous finalize. With _LiteDispositionAdapter's stub classifier
+    (always False), that means it finalizes; see the paired test below for
+    the case where the classifier actually says continue."""
     mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
 
     adapter = _LiteDispositionAdapter()
+    state = _make_state()
+    model = _mock_model("Would you like me to continue processing the remaining actions?")
+    settings = _mock_settings_disposition(force_autonomous_mode=True)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert "Would you like" in result.update["final_answer"]
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_autonomous_deferral_continues_when_classifier_says_so(mock_summarize):
+    """Same deferral text, but with a classifier that says continue — the
+    turn continues, driven entirely by the mode-aware classifier now."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _ClassifierSaysContinue()
     state = _make_state()
     model = _mock_model("Would you like me to continue processing the remaining actions?")
     settings = _mock_settings_disposition(force_autonomous_mode=True)
@@ -639,6 +667,21 @@ class _ClassifierSaysContinue(_LiteDispositionAdapter):
         return True
 
 
+class _AutonomousCapturingClassifierAdapter(_LiteDispositionAdapter):
+    """Records the ``autonomous`` kwarg it was called with and always
+    continues — used to verify shared_nodes.py forwards the right mode flag
+    to the classifier (e.g. for sub-task turns) now that deferral routing
+    lives entirely there."""
+
+    def __init__(self):
+        super().__init__()
+        self.captured_autonomous: bool | None = None
+
+    async def classify_auto_continue(self, state, model, content, reasoning, *, autonomous: bool = False):
+        self.captured_autonomous = autonomous
+        return True
+
+
 @pytest.mark.asyncio
 @patch(
     "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
@@ -693,12 +736,15 @@ async def test_deferral_with_blocked_claim_falls_through_to_classifier(mock_summ
 )
 async def test_sub_task_treated_as_autonomous_for_deferral(mock_summarize):
     """A sub-task turn gets the "DO NOT ASK" prompt regardless of
-    force_autonomous_mode (see cuga_lite_node.py's is_autonomous_subtask) — the
-    finalize disposition must treat it as autonomous too, or deferral text
-    routes to ASK_USER with no interactive user present to answer (#732 review)."""
+    force_autonomous_mode (see cuga_lite_node.py's is_autonomous_subtask).
+    Now that deferral routing lives entirely in the classifier (the
+    deterministic regex was removed — #732 comments), this must be forwarded
+    as ``autonomous=True`` to classify_auto_continue, or a sub-task turn the
+    prompt told not to ask about could still get a classifier verdict that
+    assumes an interactive user is present to answer."""
     mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
 
-    adapter = _LiteDispositionAdapter()
+    adapter = _AutonomousCapturingClassifierAdapter()
     state = _make_state()
     state.sub_task = "book a flight"
     model = _mock_model("Would you like me to continue processing the remaining actions?")
@@ -707,5 +753,6 @@ async def test_sub_task_treated_as_autonomous_for_deferral(mock_summarize):
     node = _get_factory()(adapter, model, settings)
     result = await node(state, config=None)
 
+    assert adapter.captured_autonomous is True
     assert result.goto == "call_model"
     assert result.update["chat_messages"][-1].content == "continue"

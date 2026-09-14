@@ -1,6 +1,17 @@
-"""Broad positive/negative corpus for finalize disposition detectors (#445).
+"""Broad corpus regression test for finalize disposition (#445).
 
-Scoped to type-C deferral and interactive ask_user. Pattern B soft bounce is deferred.
+The deferral and ask-user detectors this corpus originally exercised
+(``looks_like_autonomous_deferral`` / ``looks_like_ask_user``) were removed
+after live AppWorld evidence showed the deterministic deferral regex
+net-hurts task completion — see ``finalize_disposition.py``'s module
+docstring and the #732 PR comments. ``resolve_finalize_disposition`` now
+only special-cases planning text; everything else — deferral, ask-user,
+genuine completion — resolves to ``FINALIZE`` and is left to the mode-aware
+LLM classifier.
+
+This file is kept as a regression guard: if a future change reintroduces a
+deterministic fast-path, it must not fire CONTINUE/ASK_USER on any of this
+corpus without re-litigating the live-AppWorld tradeoff documented above.
 """
 
 from __future__ import annotations
@@ -9,17 +20,15 @@ import pytest
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.finalize_disposition import (
     FinalizeDisposition,
-    looks_like_ask_user,
-    looks_like_autonomous_deferral,
     resolve_finalize_disposition,
 )
 
 pytestmark = pytest.mark.unit
 
 
-# ── Type C deferral: MUST detect ────────────────────────────────────────────
-
-DEFERRAL_POSITIVES = [
+# Deferral-shaped text (interrogative and statement-form) that a deterministic
+# fast-path could plausibly be tempted to force-continue on.
+DEFERRAL_SHAPED = [
     "Would you like me to continue processing the remaining unfriending actions?",
     "Would you like to continue searching for even earlier liked songs?",
     "Would you like me to keep going?",
@@ -31,30 +40,13 @@ DEFERRAL_POSITIVES = [
     "Let me know how you would like to proceed.",
     "I can retry the purchase for you. Let me know how you'd like to proceed.",
     "To proceed, I recommend: double-checking if it was sent from a different sender.",
-]
-
-DEFERRAL_NEGATIVES = [
-    "Hello!",
-    "The count is 96.",
-    "Task complete—no further action is needed.",
-    "We need to search student_loan app.",
-    "Evidence: count = 1. Answer: Done.",
-    "I liked the song and stopped.",
-    "Purchase completed successfully.",
-    # Chatty but complete — must not be treated as deferral
-    "All set—just let me know if you need anything else later.",
-    # PR #732 review (sami-marreed): dropped "once <condition>, i can ..." /
-    # "i can ... once you ..." — 6 of its 8 fires in a 797-task AppWorld
-    # replay were quoted third-party text (an email body the agent had
-    # already sent), not the agent deferring. Left to the LLM classifier.
     "Once a valid card is available, I can complete the order.",
     "Let me know if it looks good. I can place the order once you confirm. Best, Stephen Mccoy",
 ]
 
-
-# ── Ask-user (interactive): MUST detect ─────────────────────────────────────
-
-ASK_USER_POSITIVES = [
+# Ask-user-shaped text (clarifying questions, input requests) that a
+# deterministic fast-path could plausibly be tempted to force-continue on.
+ASK_USER_SHAPED = [
     "Which account should I use?",
     "What is your user id?",
     "Who is the recipient?",
@@ -68,78 +60,26 @@ ASK_USER_POSITIVES = [
     "Share your workspace id so I can continue.",
 ]
 
-ASK_USER_NEGATIVES = [
+# Genuine completions / chatty-but-done text that must never be forced to
+# continue either.
+COMPLETION_SHAPED = [
     "Hello!",
     "The count is 96.",
-    "We need to search student_loan app.",
-    "Evidence: ok. Answer: 1",
-    "I will call the hockey tools next.",
+    "Task complete—no further action is needed.",
+    "Evidence: count = 1. Answer: Done.",
+    "I liked the song and stopped.",
+    "Purchase completed successfully.",
+    "All set—just let me know if you need anything else later.",
+    "We have exhausted all discovered tools and none provide game-level event data.",
 ]
 
 
-def _disp(text: str, **kwargs) -> FinalizeDisposition:
-    defaults = dict(
-        autonomous=False,
-        nl_auto_continue=True,
-    )
-    defaults.update(kwargs)
-    return resolve_finalize_disposition(text, **defaults)
+@pytest.mark.parametrize("text", DEFERRAL_SHAPED + ASK_USER_SHAPED + COMPLETION_SHAPED)
+@pytest.mark.parametrize("autonomous", [True, False])
+def test_corpus_never_short_circuits_to_continue_or_ask_user(text, autonomous):
+    assert resolve_finalize_disposition(text, autonomous=autonomous) == FinalizeDisposition.FINALIZE
 
 
-# ── Deferral detector ───────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("text", DEFERRAL_POSITIVES)
-def test_deferral_positives(text):
-    assert looks_like_autonomous_deferral(text) is True
-
-
-@pytest.mark.parametrize("text", DEFERRAL_NEGATIVES)
-def test_deferral_negatives(text):
-    assert looks_like_autonomous_deferral(text) is False
-
-
-@pytest.mark.parametrize("text", DEFERRAL_POSITIVES)
-def test_deferral_autonomous_continues(text):
-    assert _disp(text, autonomous=True) == FinalizeDisposition.CONTINUE
-
-
-@pytest.mark.parametrize("text", DEFERRAL_POSITIVES[:5])
-def test_deferral_interactive_asks_user(text):
-    assert _disp(text, autonomous=False) == FinalizeDisposition.ASK_USER
-
-
-# ── Ask-user detector ───────────────────────────────────────────────────────
-
-
-ASK_USER_SOFT_GAPS = {
-    "Tell me which folder to use.",  # "tell me" without "your/you" — recall gap
-}
-
-
-@pytest.mark.parametrize("text", ASK_USER_POSITIVES)
-def test_ask_user_positives(text):
-    if text in ASK_USER_SOFT_GAPS:
-        pytest.xfail("ask_user recall gap — imperative without second person")
-    assert looks_like_ask_user(text) is True
-
-
-@pytest.mark.parametrize("text", ASK_USER_NEGATIVES)
-def test_ask_user_negatives(text):
-    assert looks_like_ask_user(text) is False
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Hello!",
-        "Which account should I use?",
-        "Evidence: count = 69. Answer: There are 69 matches.",
-        "Thanks!",
-        # Pattern B give-ups finalize (no bounce) under option 1
-        "We have exhausted all discovered tools and none provide game-level event data.",
-    ],
-)
-def test_chatbot_safe_resolves_finalize_or_ask_user(text):
-    disp = _disp(text)
-    assert disp in (FinalizeDisposition.FINALIZE, FinalizeDisposition.ASK_USER)
+def test_planning_text_still_continues():
+    """The one remaining deterministic path stays intact."""
+    assert resolve_finalize_disposition("We need to search student_loan app.") == FinalizeDisposition.CONTINUE

@@ -341,19 +341,24 @@ async def test_classify_auto_continue_forwards_autonomous_flag():
 # ── 8b. resolve_finalize_disposition hook (#445) ──────────────────────────
 
 
-def test_resolve_finalize_disposition_autonomous_deferral_continues():
+def test_resolve_finalize_disposition_deferral_falls_through_to_classifier():
+    """The deterministic deferral regex was removed after live AppWorld
+    evidence showed it net-hurts task completion (#732 comments; see
+    finalize_disposition.py's module docstring) — this text now falls
+    through to "finalize" (shared_nodes.py then consults
+    classify_auto_continue, the mode-aware classifier) regardless of mode."""
     adapter = _make_adapter()
     result = adapter.resolve_finalize_disposition(
         "Would you like me to continue processing the remaining actions?",
         autonomous=True,
         nl_auto_continue=True,
     )
-    assert result == "continue"
+    assert result == "finalize"
 
 
 def test_resolve_finalize_disposition_interactive_clarifying_question_falls_through():
-    """#732 review: ask_user-only text (no deferral) no longer short-circuits —
-    it returns "finalize" so shared_nodes.py consults classify_auto_continue."""
+    """Ask_user-only text (no deferral) also falls through — it returns
+    "finalize" so shared_nodes.py consults classify_auto_continue."""
     adapter = _make_adapter()
     result = adapter.resolve_finalize_disposition(
         "Which account should I use?",

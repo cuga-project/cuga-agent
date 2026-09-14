@@ -1,7 +1,13 @@
 """Unit tests for mode-aware finalize disposition (#445).
 
-Scoped to autonomous deferral (type C), interactive ask_user, and planning continue.
-Pattern B soft grounding bounce is deferred.
+The deterministic deferral regex (``_DEFERRAL_RE`` / ``looks_like_autonomous_
+deferral``) was removed after live AppWorld evidence (#732 comments) showed
+it net-hurts task completion — see the module docstring in
+``finalize_disposition.py``. Only the planning-text fast-path (#416) is
+deterministic here; ask-user, deferral, and genuine-completion text all fall
+through to ``FinalizeDisposition.FINALIZE`` and are resolved by the
+mode-aware LLM classifier instead (tested separately in
+``test_nl_auto_continue_classifier.py``).
 """
 
 from __future__ import annotations
@@ -10,82 +16,10 @@ import pytest
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.finalize_disposition import (
     FinalizeDisposition,
-    looks_like_ask_user,
-    looks_like_autonomous_deferral,
     resolve_finalize_disposition,
 )
 
 pytestmark = pytest.mark.unit
-
-
-# ── Detectors ──────────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Would you like me to continue processing the remaining unfriending actions?",
-        "Would you like to continue searching for even earlier liked songs?",
-        "Let me know how you'd like to proceed!",
-        "I can retry the purchase for you. Let me know how you'd like to proceed.",
-        "To proceed, I recommend: double-checking if it was sent from a different sender.",
-        "Shall I keep going with the remaining steps?",
-    ],
-)
-def test_autonomous_deferral_detected(text):
-    assert looks_like_autonomous_deferral(text) is True
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "",
-        "The count is 96.",
-        "Task complete—no further action is needed.",
-        "We need to search student_loan app.",
-        "Hello!",
-        # PR #732 review (sami-marreed): an "once <condition>, I can ..." / "I
-        # can ... once you ..." alternative shipped in an earlier revision and
-        # fired 8 times over a 797-task AppWorld replay, 6 of them on
-        # already-completed, passing tasks — the agent quoting the body of an
-        # email it had just sent to a third party. Dropped from the regex;
-        # these fall through to the mode-aware LLM classifier instead, which
-        # can tell "the agent is deferring" from "the agent is quoting a
-        # message drafted for someone else".
-        "Once a valid card is available, I can complete the order.",
-        "Let me know if it looks good. I can place the order once you confirm. Best, Stephen Mccoy",
-    ],
-)
-def test_autonomous_deferral_not_detected(text):
-    assert looks_like_autonomous_deferral(text) is False
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Which account should I use?",
-        "What is your user id?",
-        "Ok I will fetch the information, but first I require your ID",
-        "Please provide your email so I can continue.",
-    ],
-)
-def test_ask_user_detected(text):
-    assert looks_like_ask_user(text) is True
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Hello!",
-        "The count is 96.",
-        "We need to search student_loan app.",
-    ],
-)
-def test_ask_user_not_detected(text):
-    assert looks_like_ask_user(text) is False
-
-
-# ── resolve_finalize_disposition matrix ─────────────────────────────────────
 
 
 def _resolve(
@@ -105,45 +39,11 @@ def test_planning_continues():
     assert _resolve("We need to search student_loan app.") == FinalizeDisposition.CONTINUE
 
 
-def test_interactive_clarifying_question_falls_through_to_classifier():
-    """Pure ask_user text (no deferral) no longer short-circuits (#732 review:
-    the pattern proved over-broad in eval replay). It reads as FINALIZE here —
-    shared_nodes.py then consults classify_auto_continue, whose spec already
-    finalizes real clarifying questions correctly."""
-    assert _resolve("Which account should I use?") == FinalizeDisposition.FINALIZE
-
-
-def test_interactive_id_request_falls_through_to_classifier():
+def test_nl_auto_continue_off_skips_planning_continue():
     assert (
-        _resolve("Ok I will fetch the information, but first I require your ID")
+        _resolve("We need to search student_loan app.", nl_auto_continue=False)
         == FinalizeDisposition.FINALIZE
     )
-
-
-def test_autonomous_interrogative_deferral_continues():
-    text = "Would you like me to continue processing the remaining unfriending actions?"
-    assert _resolve(text, autonomous=True) == FinalizeDisposition.CONTINUE
-
-
-def test_interactive_same_deferral_asks_user():
-    text = "Would you like me to continue processing the remaining unfriending actions?"
-    assert _resolve(text, autonomous=False) == FinalizeDisposition.ASK_USER
-
-
-def test_autonomous_statement_deferral_continues():
-    text = "Let me know how you'd like to proceed!"
-    assert _resolve(text, autonomous=True) == FinalizeDisposition.CONTINUE
-
-
-def test_autonomous_statement_deferral_continues_curly_apostrophe():
-    text = "Let me know how you’d like to proceed!"
-    assert _resolve(text, autonomous=True) == FinalizeDisposition.CONTINUE
-
-
-def test_autonomous_clarifying_question_falls_through_to_classifier():
-    """Ask_user-only text no longer short-circuits CONTINUE in autonomous mode
-    either — it falls through to the classifier same as interactive mode."""
-    assert _resolve("Which account should I use?", autonomous=True) == FinalizeDisposition.FINALIZE
 
 
 def test_greeting_finalizes():
@@ -159,34 +59,42 @@ def test_give_up_finalizes_without_bounce():
     assert _resolve(text) == FinalizeDisposition.FINALIZE
 
 
-def test_nl_auto_continue_off_skips_planning_continue():
-    assert (
-        _resolve("We need to search student_loan app.", nl_auto_continue=False)
-        == FinalizeDisposition.FINALIZE
-    )
-
-
-def test_nl_auto_continue_off_skips_deferral_too():
-    """Kill switch (#732 review): with nl_auto_continue off, deferral text must
-    not force a continue even in autonomous mode — the operator's off-switch
-    should disable all interception, not just the classifier fallback."""
-    text = "Would you like me to continue processing the remaining unfriending actions?"
-    assert _resolve(text, autonomous=True, nl_auto_continue=False) == FinalizeDisposition.FINALIZE
-
-
-def test_deferral_with_unverified_blocker_falls_through_to_classifier():
-    """Issue #610: a false refusal phrased as a deferral question must not ship
-    an uncorrected bare "continue" — it needs classify_auto_continue's
-    blocked-claim override to fire instead (#732 review)."""
-    text = "I'm unable to access the Spotify tools. Would you like me to try a different approach?"
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Which account should I use?",
+        "Ok I will fetch the information, but first I require your ID",
+        "Would you like me to continue processing the remaining unfriending actions?",
+        "Let me know how you'd like to proceed!",
+        "Shall I keep going with the remaining steps?",
+        # #732 comments: this exact text regressed a live AppWorld task
+        # (325d6ec_1) from 3/3 passing to 3/3 failing when a deferral regex
+        # forced continuation here every time — the task's implicit stopping
+        # point was already satisfied. Now resolved by the classifier instead.
+        "Would you like to continue searching for even earlier liked songs?",
+        # Once/i-can phrasing that an earlier regex revision matched, including
+        # on quoted third-party text (sami-marreed's 797-task replay finding).
+        "Once a valid card is available, I can complete the order.",
+        "Let me know if it looks good. I can place the order once you confirm. Best, Stephen Mccoy",
+        # Issue #610: a false refusal phrased as a deferral question — must
+        # fall through so classify_auto_continue's blocked-claim override
+        # (not this layer) decides.
+        "I'm unable to access the Spotify tools. Would you like me to try a different approach?",
+    ],
+)
+def test_ask_user_and_deferral_text_falls_through_to_classifier(text):
+    """Neither autonomous mode nor interactive mode gets a deterministic
+    verdict here anymore for any of this text — resolve_finalize_disposition
+    only special-cases planning text; everything else is FINALIZE, which
+    routes shared_nodes.py to consult the mode-aware classifier."""
     assert _resolve(text, autonomous=True) == FinalizeDisposition.FINALIZE
     assert _resolve(text, autonomous=False) == FinalizeDisposition.FINALIZE
 
 
-def test_deferral_across_paragraphs_not_detected():
-    """No remaining _DEFERRAL_RE alternative can bridge separate sentences or
-    paragraphs (#732 review) — the "once ... i can" / "i can ... once you"
-    alternatives that could were dropped entirely (see
-    test_autonomous_deferral_not_detected)."""
-    text = "I can confirm the order shipped.\n\nOnce you receive the package, let me know."
-    assert _resolve(text, autonomous=True) == FinalizeDisposition.FINALIZE
+def test_nl_auto_continue_off_does_not_change_deferral_handling():
+    """The kill switch only ever gated the planning fast-path and the (now
+    removed) deferral fast-path; deferral text already falls through
+    regardless, so toggling it off changes nothing for this text."""
+    text = "Would you like me to continue processing the remaining unfriending actions?"
+    assert _resolve(text, autonomous=True, nl_auto_continue=False) == FinalizeDisposition.FINALIZE
+    assert _resolve(text, autonomous=True, nl_auto_continue=True) == FinalizeDisposition.FINALIZE

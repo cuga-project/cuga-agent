@@ -1,21 +1,34 @@
 """Mode-aware finalize disposition for NL-no-code turns (#445).
 
-Scoped to autonomous deferral (type C). Interactive ask-user routing for
-unambiguous clarifying questions is left to the LLM classifier rather than
-a deterministic short-circuit (#732 review — see ``looks_like_ask_user``).
-Pattern B soft grounding bounce is deferred — rare on M3 and regex-fragile.
+Only the planning-text fast-path (pre-existing, from #416) is deterministic
+here. Ask-user and deferral routing is left entirely to the mode-aware LLM
+classifier (``classify_nl_auto_continue_decision`` in
+``nl_auto_continue_classifier.py`` — see its ``CLASSIFIER_SYSTEM_PROMPT``
+"Session mode" line).
 
-Keeps the existing planning-text fast-path via ``looks_like_planning_text``.
+A deterministic deferral regex (``_DEFERRAL_RE`` / ``looks_like_autonomous_
+deferral``) shipped in an earlier revision of this PR and was removed after
+live AppWorld evidence (#732 comments) showed it net-hurts task completion:
+an offline replay over 797 saved final answers found it a safe, zero-
+false-positive verdict-matcher, but that replay could only check whether the
+disposition matched a hand-labeled expectation on already-recorded text — it
+could not detect that forcing continuation on a task the model had already
+effectively finished (e.g. "would you like me to continue searching for even
+earlier liked songs?" after the ground-truth-satisfying answer was already
+given) burns the step budget on live re-runs. Concretely: task `325d6ec_1`
+regressed from passing 3/3 runs (finalizes on the deferral, already correct)
+to failing 3/3 (forced to continue searching past the answer, hits the
+70-step ceiling) once the regex was in the loop; removing it recovered most
+of that and also improved a second task (`6474048_1`, 2/3 -> 3/3) via
+turn-by-turn classifier judgment instead of a blanket forced continue.
 """
 
 from __future__ import annotations
 
-import re
 from enum import Enum
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
     looks_like_planning_text,
-    looks_like_unverified_blocker,
 )
 
 
@@ -23,81 +36,6 @@ class FinalizeDisposition(str, Enum):
     CONTINUE = "continue"
     ASK_USER = "ask_user"
     FINALIZE = "finalize"
-
-
-# Deterministic detectors below run on the visible text only, never on
-# unbounded model output — cap the scan window so a pathological (or just
-# very long) response can't turn a fast regex check into measurable blocking
-# CPU (#732 review: 2.5-6.8s observed on ~200KB of untruncated text).
-_SCAN_MAX_LEN = 4000
-
-# Deferral language (#445) — interrogative and statement-form. Each
-# alternative is a direct phrase match with no cross-clause gap, so none of
-# them can bridge separate sentences or paragraphs. Apostrophes accept both
-# the ASCII and typographic forms — the latter is common in LLM output.
-#
-# Deliberately excludes an "once <condition>, I can ..." / "I can ... once
-# you ..." alternative that shipped in an earlier revision of this file: a
-# 797-task AppWorld replay (#732 review, sami-marreed) found it firing 8
-# times, 6 of them on already-completed, passing tasks where the agent was
-# quoting the body of an email it had just sent to a third party ("I can
-# place the order once you confirm"). Telling "the agent is deferring to
-# whoever reads this" from "the agent is quoting a message drafted for
-# someone else" needs semantic understanding a regex doesn't have — that
-# distinction is left to the mode-aware LLM classifier fallback instead.
-_DEFERRAL_RE = re.compile(
-    r"(?:"
-    r"would\s+you\s+like(?:\s+me)?\s+to\b|"
-    r"shall\s+i\b|"
-    r"should\s+i\s+(?:continue|keep\s+going|proceed)\b|"
-    r"let\s+me\s+know\s+how\s+you(?:['’]d| would)\s+like\s+to\b|"
-    r"to\s+proceed,?\s+i\s+recommend\b"
-    r")",
-    re.IGNORECASE,
-)
-
-_SECOND_PERSON_RE = re.compile(r"\b(?:you|your|yours)\b", re.IGNORECASE)
-_INPUT_REQUEST_RE = re.compile(
-    r"(?:"
-    r"\b(?:require|need|confirm|provide|tell\s+me|share)\b[^\n]{0,40}\b"
-    r"(?:your|you)\b|"
-    r"\b(?:please|first)\b[^\n]{0,40}\b(?:confirm|provide|send|share)\b|"
-    r"\bwhich\b[^\n]{0,40}\?"
-    r")",
-    re.IGNORECASE,
-)
-_CLARIFYING_Q_RE = re.compile(r"\b(?:which|what|who|where|when|whom)\b", re.IGNORECASE)
-
-
-def looks_like_autonomous_deferral(visible: str) -> bool:
-    """True when the turn hands control back to the user (deferral language)."""
-    t = (visible or "").strip()[:_SCAN_MAX_LEN]
-    if not t:
-        return False
-    return bool(_DEFERRAL_RE.search(t))
-
-
-def looks_like_ask_user(visible: str) -> bool:
-    """Broader "this reads like it wants user input" detector.
-
-    Not wired into ``resolve_finalize_disposition`` — replaying it over 3,736
-    AppWorld eval finals (#732 review) found it firing on 12 completed,
-    passing-task answers that merely mention "you"/"your" in passing (e.g.
-    "...the largest share of your liked songs"). Kept as a tested primitive;
-    callers that need this signal should treat it as a hint, not a verdict,
-    and prefer ``classify_auto_continue`` for anything ambiguous.
-    """
-    t = (visible or "").strip()[:_SCAN_MAX_LEN]
-    if not t:
-        return False
-    if looks_like_autonomous_deferral(t):
-        return True
-    if t.rstrip().endswith("?"):
-        if _SECOND_PERSON_RE.search(t) or _CLARIFYING_Q_RE.search(t):
-            return True
-    if _INPUT_REQUEST_RE.search(t) and _SECOND_PERSON_RE.search(t):
-        return True
-    return False
 
 
 def resolve_finalize_disposition(
@@ -108,29 +46,22 @@ def resolve_finalize_disposition(
 ) -> FinalizeDisposition:
     """Resolve disposition for an NL-no-code candidate final.
 
-    Order: planning -> deferral (narrow, mode-aware) -> finalize (classifier
-    fallback). Everything here is gated on ``nl_auto_continue`` — the
-    operator kill switch — so turning it off restores pre-#445 behaviour
-    (finalize as-is, no interception).
+    Only the planning-text fast-path short-circuits here; everything else
+    (ask-user, deferral, genuine completion) falls through to
+    ``FinalizeDisposition.FINALIZE``, which routes the caller to consult
+    ``classify_auto_continue`` — the mode-aware LLM classifier — instead of a
+    deterministic verdict. ``nl_auto_continue`` remains the operator kill
+    switch for the planning fast-path: turning it off restores pre-#445
+    behaviour (finalize as-is, no interception).
 
-    ``looks_like_ask_user`` deliberately does NOT short-circuit here (#732
-    review): its broader patterns proved over-broad in eval replay, so text
-    it flags now falls through to ``classify_auto_continue``, whose spec
-    already finalizes real clarifying questions correctly. Deferral text
-    that also reads as an unverified-blocker claim (issue #610, e.g. "I'm
-    unable to access the Spotify tools. Would you like me to try a different
-    approach?") likewise falls through, so the classifier's one-shot
-    corrective retry still gets a chance to fire instead of shipping a bare
-    "continue" for a false refusal.
+    ``autonomous`` is accepted for interface stability with callers and
+    tests that pass it, but no longer changes this function's own verdict —
+    mode-awareness now lives entirely in the classifier (see module
+    docstring).
     """
     text = (visible or "").strip()
 
     if nl_auto_continue and looks_like_planning_text(text):
         return FinalizeDisposition.CONTINUE
-
-    if nl_auto_continue and looks_like_autonomous_deferral(text) and not looks_like_unverified_blocker(text):
-        if autonomous:
-            return FinalizeDisposition.CONTINUE
-        return FinalizeDisposition.ASK_USER
 
     return FinalizeDisposition.FINALIZE
