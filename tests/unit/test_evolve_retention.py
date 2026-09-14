@@ -1,5 +1,4 @@
 import json
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -10,7 +9,6 @@ from cuga.backend.evolve.integration import EvolveIntegration
 from cuga.backend.evolve.retention import (
     DEFAULT_RETENTION_POLICY,
     DEFAULT_RETENTION_POLICY_ID,
-    find_orphaned_memory_entities,
 )
 from cuga.backend.server.auth import require_chat_access, require_manage_access
 from cuga.backend.server.auth.models import UserInfo
@@ -199,57 +197,6 @@ def test_manual_run_rejects_removed_preview_option(client):
 
     assert response.status_code == 422
     run_retention.assert_not_awaited()
-
-
-def test_orphan_detection_resolves_direct_and_derived_conversations():
-    old = "2026-08-01T00:00:00Z"
-    entities = [
-        {
-            "id": "trajectory-a",
-            "type": "trajectory",
-            "created_at": old,
-            "metadata": {"task_id": "task-a", "session_id": "thread-b"},
-        },
-        {
-            "id": "direct",
-            "type": "fact",
-            "created_at": old,
-            "metadata": {"thread_id": "thread-a", "user_id": "user-1"},
-        },
-        {
-            "id": "derived",
-            "type": "guideline",
-            "created_at": old,
-            "metadata": {"source_task_id": "task-a", "user_id": "user-1"},
-        },
-        {
-            "id": "wrong-owner",
-            "type": "fact",
-            "created_at": old,
-            "metadata": {"thread_id": "thread-a", "user_id": "user-2"},
-        },
-        {"id": "no-source", "type": "policy", "created_at": old, "metadata": {}},
-        {
-            "id": "fresh",
-            "type": "fact",
-            "created_at": "2026-09-01T00:00:00Z",
-            "metadata": {},
-        },
-        {
-            "id": "held",
-            "type": "fact",
-            "created_at": old,
-            "metadata": {"legal_hold": True},
-        },
-    ]
-
-    orphaned = find_orphaned_memory_entities(
-        entities,
-        {("thread-a", "user-1"), ("thread-b", "user-1")},
-        now=datetime(2026, 9, 3, tzinfo=timezone.utc),
-    )
-
-    assert [item["id"] for item in orphaned] == ["wrong-owner", "no-source"]
 
 
 def test_manual_run_discards_deleted_titles_and_uses_only_evolve_policy(client):
@@ -531,3 +478,41 @@ async def test_collection_transport_cannot_override_instance_namespace(monkeypat
             await EvolveIntegration._call_tool(
                 "sweep_retention", {"namespace_id": "other-tenant", "policy_id": "p"}
             )
+
+
+@pytest.mark.parametrize("bucket", ["flagged", "deleted", "skipped"])
+def test_report_projection_never_exposes_memory_labels(bucket):
+    from cuga.backend.evolve.retention import sanitize_retention_report
+
+    result = sanitize_retention_report(
+        {
+            bucket: [
+                {
+                    "entity_id": "memory-a",
+                    "outcome": "held",
+                    "title": "private title",
+                    "metadata": {"display_name": "private label"},
+                    "content": "private content",
+                }
+            ]
+        }
+    )
+    assert result[bucket][0]["entity_id"] == "memory-a"
+    assert "private" not in json.dumps(result)
+
+
+def test_report_rejects_malformed_items_instead_of_silently_dropping_them():
+    from pydantic import ValidationError
+    from cuga.backend.evolve.retention import sanitize_retention_report
+
+    with pytest.raises(ValidationError):
+        sanitize_retention_report({"deleted": ["not a report item"]})
+
+
+def test_invalid_provider_report_returns_safe_gateway_error():
+    from cuga.backend.server.memory_routes import _retention_report_response
+
+    with pytest.raises(HTTPException) as error:
+        _retention_report_response({"deleted": [{"entity_id": {"secret": "private content"}}]})
+    assert error.value.status_code == 502
+    assert error.value.detail == "Evolve returned an invalid retention report"
