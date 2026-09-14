@@ -105,3 +105,51 @@ async def test_get_thread_owners_for_agent_returns_distinct_scoped_keys(tmp_path
         ("thread-a", "user-a"),
         ("thread-a", "user-b"),
     }
+
+
+@pytest.mark.asyncio
+async def test_thread_deletion_outbox_is_atomic_and_owner_scoped(tmp_path):
+    db = _make_db(tmp_path)
+    await db.save_stream_events("agent", "thread", "user", [_event("UserMessage", 0)])
+    await db.save_stream_events("agent", "thread", "other", [_event("UserMessage", 0)])
+    store = db._get_store()
+    await store.execute(
+        "CREATE TRIGGER reject_delete BEFORE DELETE ON stream_events BEGIN SELECT RAISE(ABORT, 'crash'); END"
+    )
+    await store.commit()
+    assert not await db.delete_thread("agent", "thread", "user")
+    assert await db.pending_source_deletions() == []
+    assert await db.get_stream_events("agent", "thread", "user") is not None
+    await store.execute("DROP TRIGGER reject_delete")
+    await store.commit()
+    assert await db.delete_thread("agent", "thread", "user")
+    assert await db.delete_thread("agent", "thread", "user")
+    events = await db.pending_source_deletions()
+    assert len(events) == 1
+    assert events[0]["user_id"] == "user"
+    assert await db.get_stream_events("agent", "thread", "other") is not None
+    await db.acknowledge_source_deletion(events[0]["event_id"])
+    assert await db.pending_source_deletions() == []
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_source_deletion_delivery_retries_until_acknowledged(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from cuga.backend.evolve.integration import EvolveIntegration
+    from cuga.backend.evolve.deleted_sources import deliver_source_deletions
+
+    db = _make_db(tmp_path)
+    await db.save_stream_events("agent", "thread", "user", [_event("UserMessage", 0)])
+    await db.delete_thread("agent", "thread", "user")
+    monkeypatch.setattr("cuga.backend.server.conversation_history.get_conversation_db", lambda: db)
+    monkeypatch.setattr(EvolveIntegration, "is_enabled", lambda: True)
+    call = AsyncMock(side_effect=[RuntimeError("offline"), {"recorded": True}])
+    monkeypatch.setattr(EvolveIntegration, "_call_structured_tool", call)
+    with pytest.raises(RuntimeError):
+        await deliver_source_deletions()
+    assert len(await db.pending_source_deletions()) == 1
+    await deliver_source_deletions()
+    assert await db.pending_source_deletions() == []
+    assert call.call_args_list[0] == call.call_args_list[1]
+    await db._get_store().close()

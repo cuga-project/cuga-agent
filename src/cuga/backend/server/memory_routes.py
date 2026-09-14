@@ -543,42 +543,23 @@ async def run_admin_memory_retention(
 ):
     from cuga.backend.evolve.retention import (
         DEFAULT_RETENTION_POLICY_ID,
-        find_orphaned_memory_entities,
         project_retention_report,
-        retention_reference_time,
         sanitize_retention_report,
     )
-    from cuga.backend.server.conversation_history import get_conversation_db
 
-    try:
-        reference_time = retention_reference_time(body.as_of)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="as_of must be an ISO-8601 timestamp") from exc
-    orphaned: list[dict[str, Any]] = []
+    if body.as_of is not None:
+        raise HTTPException(
+            status_code=422, detail="Sweeping checks current eligibility; historical execution is unavailable"
+        )
     if body.policy_id == DEFAULT_RETENTION_POLICY_ID:
         await _retention_policies()
-        inventory = await _list_retention_inventory(agent_id=agent_id, scan_limit=body.scan_limit)
-        conversation_keys = await get_conversation_db().get_thread_owners_for_agent(agent_id)
-        orphaned = find_orphaned_memory_entities(inventory, conversation_keys, now=reference_time)
     result = _memory_result(
         await EvolveIntegration.run_retention(
             body.policy_id,
             dry_run=False,
-            as_of=body.as_of,
             scan_limit=body.scan_limit,
             namespace_id=_namespace_id(),
-            metadata_filters={"agent_id": agent_id},
-            additional_matches=[
-                {
-                    "entity_id": str(entity.get("id") or ""),
-                    "rule": "orphaned-conversations",
-                    "reason": "orphaned_conversation",
-                    "detail": "memory is older than 7 days and its source conversation is unavailable",
-                }
-                for entity in orphaned
-                if str(entity.get("id") or "")
-            ],
-            actor_id=_user_id(current_user),
+            initiated_by=_user_id(current_user),
         )
     )
     sanitized = sanitize_retention_report(result)
@@ -595,7 +576,6 @@ async def list_admin_memory_retention_runs(
 
     result = _memory_result(
         await EvolveIntegration.list_retention_runs(
-            agent_id=agent_id,
             namespace_id=_namespace_id(),
             limit=limit,
         )
@@ -606,7 +586,7 @@ async def list_admin_memory_retention_runs(
             "items": [
                 {
                     key: row[key]
-                    for key in ("run_id", "policy_id", "actor_id", "status", "created_at")
+                    for key in ("run_id", "policy_id", "initiated_by", "status", "created_at")
                     if key in row
                 }
                 | {
@@ -630,3 +610,42 @@ async def get_admin_memory_compliance_status(
 
     result = _memory_result(await EvolveIntegration.get_compliance_status(namespace_id=_namespace_id()))
     return JSONResponse(project_compliance_status(result))
+
+
+@router.get("/manage/memory/retention/candidates")
+async def list_retention_candidates(current_user: Optional[UserInfo] = Depends(require_manage_access)):
+    return _memory_result(
+        await EvolveIntegration._call_structured_tool(
+            "list_retention_candidates", {"namespace_id": _namespace_id(), "limit": 1000}
+        )
+    )
+
+
+@router.get("/manage/memory/retention/audit")
+async def list_retention_audit(current_user: Optional[UserInfo] = Depends(require_manage_access)):
+    return _memory_result(
+        await EvolveIntegration._call_structured_tool(
+            "list_retention_audit", {"namespace_id": _namespace_id(), "limit": 1000}
+        )
+    )
+
+
+@router.post("/manage/memory/retention/policies/{policy_id}/mark")
+async def mark_retention(policy_id: str, current_user: Optional[UserInfo] = Depends(require_manage_access)):
+    await _retention_policies()
+    return _memory_result(
+        await EvolveIntegration._call_structured_tool(
+            "mark_retention",
+            {"namespace_id": _namespace_id(), "policy_id": policy_id, "initiated_by": _user_id(current_user)},
+        )
+    )
+
+
+@router.post("/manage/memory/retention/policies/{policy_id}/sweep")
+async def sweep_retention(policy_id: str, current_user: Optional[UserInfo] = Depends(require_manage_access)):
+    return _memory_result(
+        await EvolveIntegration._call_structured_tool(
+            "sweep_retention",
+            {"namespace_id": _namespace_id(), "policy_id": policy_id, "initiated_by": _user_id(current_user)},
+        )
+    )
