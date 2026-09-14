@@ -8,6 +8,13 @@ import {
   Search,
   Select,
   SelectItem,
+  TabsVertical,
+  TabListVertical,
+  Tab,
+  TabPanels,
+  TabPanel,
+  UnorderedList,
+  ListItem,
 } from "@carbon/react";
 import { ArrowRight, Close, Renew } from "@carbon/icons-react";
 import {
@@ -98,12 +105,22 @@ function runStatus(run: RetentionRun): string {
 }
 
 function formatRule(rule: RetentionCapabilities["rules"][number]): string {
+  if (rule.sourceDeleted && rule.maxAgeDays != null)
+    return `Delete memories that are at least ${rule.maxAgeDays} days old if their original conversation has been deleted.`;
   if (rule.description) return rule.description;
-  const action = rule.action === "delete" ? "Delete" : rule.action === "flag" ? "Flag" : displayType(rule.action);
-  if (rule.sourceDeleted) return `After the source conversation is explicitly deleted, delete memories older than ${rule.maxAgeDays} days.`;
+  const action =
+    rule.action === "delete"
+      ? "Delete"
+      : rule.action === "flag"
+        ? "Flag"
+        : displayType(rule.action);
+  if (rule.sourceDeleted)
+    return `After the source conversation is explicitly deleted, delete memories older than ${rule.maxAgeDays} days.`;
   const days = rule.maxUnusedDays ?? rule.maxAgeDays;
   const qualifier = rule.maxUnusedDays != null ? " without use" : "";
-  const entityType = rule.entityType ? `${displayType(rule.entityType).toLowerCase()} memories` : "all memories";
+  const entityType = rule.entityType
+    ? `${displayType(rule.entityType).toLowerCase()} memories`
+    : "all memories";
   return `${action} ${entityType}${days != null ? ` after ${days} days${qualifier}` : ""}`;
 }
 
@@ -390,7 +407,13 @@ function MemoryDetail({
   );
 }
 
-function SettingsDetail({settings, capabilities, latestRun, runningRetention, onRunRetention}: {
+function SettingsDetail({
+  settings,
+  capabilities,
+  latestRun,
+  runningRetention,
+  onRunRetention,
+}: {
   settings: SettingsItem;
   capabilities: RetentionCapabilities | null;
   latestRun?: RetentionRun;
@@ -398,36 +421,104 @@ function SettingsDetail({settings, capabilities, latestRun, runningRetention, on
   onRunRetention: () => void;
 }) {
   const policy = settings.policy;
-  return <>
-    <DetailHeader eyebrow={settings.kind === "retention" ? "Retention" : settings.kind === "protection" ? "Protection" : "Lifecycle events"} title={settings.title} status={settings.status}/>
-    <div className="memory-workspace__detail-body">
-      <p>{settings.description}</p>
-      {settings.kind === "protection" && <>
-        <DefinitionList items={[
-          {label:"Status",value:settings.enabled ? "Enabled" : "Disabled"},
-          {label:"Health",value:settings.healthy ? "Healthy" : "Status unavailable"},
-          {label:"Applies to",value:"All users of this service instance"},
-          {label:"Configured plugins",value:String(settings.pluginCount ?? 0)},
-          {label:"Operation",value:"Continuous"},
-        ]}/>
-        <h3>Configured protections</h3>
-        {settings.plugins?.length ? settings.plugins.map(plugin => <div className="memory-schedules__card" key={plugin.name}><strong>{plugin.name}</strong><p>{plugin.enabled ? "Enabled" : "Disabled"} · {plugin.healthy ? "Healthy" : "Status unavailable"}</p></div>) : <p>No protection plugins reported.</p>}
-        <p className="memory-schedules__notice">Protection configuration is managed by the service operator. This view reports the active configuration.</p>
-      </>}
-      {policy && <>
-        <div className="memory-schedules__actions"><button className="memory-schedules__primary" disabled={runningRetention || !capabilities?.available || !policy.enabled} onClick={onRunRetention}>{runningRetention ? "Running retention…" : "Run retention now"}</button></div>
-        <details className="memory-schedules__rules"><summary>Policy rules · {policy.rules.length} {policy.rules.length === 1 ? "rule" : "rules"}</summary><ul>{policy.rules.map(rule => <li key={rule.name}>{formatRule(rule)}</li>)}</ul></details>
-        {capabilities?.available ? <RetentionSchedules key={policy.policyId} policyId={policy.policyId} enabled={policy.enabled}/> : <p>Retention is unavailable.</p>}
-        <p className="memory-schedules__footer">Latest run: {latestRun ? new Date(latestRun.createdAt).toLocaleString() : "None recorded"}. View marked memories and completed outcomes in Activity.</p>
-      </>}
-      {settings.kind === "events" && <>
-        <DefinitionList items={[{label:"Status",value:"Not available yet"},{label:"Destination",value:"Not configured"},{label:"Delivery history",value:"No deliveries recorded"}]}/>
-        <p className="memory-schedules__notice">Lifecycle event delivery is not integrated yet. Destination settings will be available here when delivery is supported.</p>
-        <button disabled>Configure destination</button>
-        <h3>Retention activity</h3><p>Marked memories and committed retention outcomes remain available in Activity, independently of external event delivery.</p>
-      </>}
-    </div>
-  </>;
+  if (settings.kind === "protection")
+    return (
+      <section className="memory-settings__filter-group">
+        <div className="memory-settings__row">
+          <div>
+            <h2>
+              {settings.id === "save-check"
+                ? "Before saving"
+                : "Before sending"}
+            </h2>
+            <p>{settings.description}</p>
+          </div>
+          <span>{settings.status}</span>
+        </div>
+        {settings.plugins?.length ? (
+          settings.plugins.map((plugin) => (
+            <div className="memory-settings__filter" key={plugin.name}>
+              <strong>{plugin.name}</strong>
+              <span>
+                {plugin.enabled ? "Enabled" : "Disabled"} ·{" "}
+                {plugin.healthy ? "Healthy" : "Status unavailable"}
+              </span>
+            </div>
+          ))
+        ) : (
+          <p>No protection plugins reported.</p>
+        )}
+      </section>
+    );
+  if (settings.kind === "events")
+    return (
+      <>
+        <p className="memory-settings__intro">
+          Connect memory activity to your audit and workflow systems.
+        </p>
+        <section className="memory-settings__empty">
+          <p>Not available yet</p>
+          <h2>Event delivery is coming later</h2>
+          <p>
+            External destinations are not supported yet. Retention outcomes
+            remain available in Activity.
+          </p>
+          <Button disabled kind="tertiary" size="md">
+            Configure destination
+          </Button>
+        </section>
+        <p className="memory-settings__note">
+          No destination configured · No deliveries recorded
+        </p>
+      </>
+    );
+  return (
+    <>
+      <div className="memory-settings__intro memory-settings__row">
+        <p>Manage memory retention for all users of this service instance.</p>
+        <Button
+          kind="tertiary"
+          size="md"
+          disabled={
+            runningRetention || !capabilities?.available || !policy?.enabled
+          }
+          onClick={onRunRetention}
+        >
+          {runningRetention ? "Running retention…" : "Run retention now"}
+        </Button>
+      </div>
+      {policy && (
+        <>
+          <section className="memory-schedules__rules">
+            <h2>Policy rules</h2>
+            <UnorderedList>
+              {policy.rules.map((rule) => (
+                <ListItem key={rule.name}>{formatRule(rule)}</ListItem>
+              ))}
+            </UnorderedList>
+          </section>
+          {capabilities?.available ? (
+            <RetentionSchedules
+              key={policy.policyId}
+              policyId={policy.policyId}
+              enabled={policy.enabled}
+            />
+          ) : (
+            <p>Retention is unavailable.</p>
+          )}
+          <section className="memory-schedules__footer">
+            <h2>Latest run</h2>
+            <p>
+              {latestRun
+                ? new Date(latestRun.createdAt).toLocaleString()
+                : "None recorded"}
+            </p>
+            <p>View marked memories and completed outcomes in Activity.</p>
+          </section>
+        </>
+      )}
+    </>
+  );
 }
 
 function ReportItems({
@@ -645,7 +736,7 @@ export function MemoryWorkspace({
   const [runs, setRuns] = useState<RetentionRun[]>([]);
   const [selectedMemoryId, setSelectedMemoryId] = useState("");
   const [selectedAdminMemoryId, setSelectedAdminMemoryId] = useState("");
-  const [selectedSettingsId, setSelectedSettingsId] = useState<SettingsId>("save-check");
+  const [selectedSettingsId, setSelectedSettingsId] = useState<SettingsId>("");
   const [selectedRunId, setSelectedRunId] = useState("");
   const [detailOpen, setDetailOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -896,7 +987,18 @@ export function MemoryWorkspace({
 
   const selectedMemory = visibleMemories.find((memory) => memory.id === selectedMemoryId) ?? visibleMemories[0];
   const selectedAdminMemory = visibleAdminMemories.find((memory) => memory.id === selectedAdminMemoryId) ?? visibleAdminMemories[0];
-  const selectedSettings = settingsItems.find((settings) => settings.id === selectedSettingsId) ?? settingsItems[0];
+  const settingsCategories = [
+    ...settingsItems.filter((item) => item.kind === "retention"),
+    { id: "filters", title: "Filters" },
+    { id: "events", title: "Lifecycle events" },
+  ];
+  const settingsIndex = Math.max(
+    0,
+    settingsCategories.findIndex((item) => item.id === selectedSettingsId),
+  );
+  const selectedSettings = settingsItems.find(
+    (settings) => settings.id === settingsCategories[settingsIndex]?.id,
+  );
   const selectedRun = runs.find((run) => run.runId === selectedRunId) ?? runs[0];
 
   React.useEffect(() => {
@@ -1192,62 +1294,95 @@ export function MemoryWorkspace({
           </div>
 
           {adminTab === "settings" && (
-            <div role="tabpanel" aria-label="Settings" className="memory-workspace__settings">
-              <Grid className="memory-workspace__page-head memory-workspace__page-head--admin">
-                <Column sm={4} md={8} lg={16} className="memory-workspace__page-copy">
-                  <p className="memory-workspace__eyebrow">Published configuration</p>
-                  <h1>Settings</h1>
-                  <p>Manage protection, retention policies, schedules, and lifecycle event delivery.</p>
+            <div
+              role="tabpanel"
+              aria-label="Settings"
+              className="memory-workspace__settings"
+            >
+              <div className="memory-settings__toolbar">
+                <Button
+                  kind="ghost"
+                  size="sm"
+                  renderIcon={Renew}
+                  disabled={loading}
+                  onClick={() => void refreshData()}
+                >
+                  Refresh
+                </Button>
+              </div>
+              <Grid fullWidth>
+                <Column sm={4} md={8} lg={16}>
+                  <TabsVertical
+                    selectedIndex={settingsIndex}
+                    onChange={({ selectedIndex }) =>
+                      setSelectedSettingsId(
+                        settingsCategories[selectedIndex].id,
+                      )
+                    }
+                  >
+                    <TabListVertical aria-label="Settings categories">
+                      {settingsCategories.map((item) => (
+                        <Tab key={item.id}>{item.title}</Tab>
+                      ))}
+                    </TabListVertical>
+                    <TabPanels>
+                      {settingsCategories.map((category) => (
+                        <TabPanel
+                          key={category.id}
+                          className="memory-settings__panel"
+                        >
+                          {category.id === "filters" ? (
+                            <>
+                              <p className="memory-settings__intro">
+                                Control what enters memory and what reaches the
+                                AI model.
+                              </p>
+                              <p className="memory-settings__note">
+                                All users of this service instance · Managed by
+                                the service operator
+                              </p>
+                              {settingsItems
+                                .filter((item) => item.kind === "protection")
+                                .map((item) => (
+                                  <SettingsDetail
+                                    key={item.id}
+                                    settings={item}
+                                    capabilities={capabilities}
+                                    runningRetention={runningRetention}
+                                    onRunRetention={() => {}}
+                                  />
+                                ))}
+                              <p className="memory-settings__note">
+                                This page reports the active configuration.
+                                Filter changes are managed by your service
+                                operator.
+                              </p>
+                            </>
+                          ) : (
+                            <SettingsDetail
+                              settings={
+                                settingsItems.find(
+                                  (item) => item.id === category.id,
+                                )!
+                              }
+                              capabilities={capabilities}
+                              latestRun={runs.find(
+                                (run) =>
+                                  run.policyId ===
+                                  settingsItems.find(
+                                    (item) => item.id === category.id,
+                                  )?.policy?.policyId,
+                              )}
+                              runningRetention={runningRetention}
+                              onRunRetention={() => void executeRetention()}
+                            />
+                          )}
+                        </TabPanel>
+                      ))}
+                    </TabPanels>
+                  </TabsVertical>
                 </Column>
               </Grid>
-
-              <section className="memory-workspace__section">
-                <div className="memory-workspace__section-head">
-                  <div>
-                    <h2>Categories</h2>
-                    <p>Select a settings category to inspect its configuration.</p>
-                  </div>
-                  <Button kind="ghost" size="sm" renderIcon={Renew} disabled={loading} onClick={() => void refreshData()}>Refresh</Button>
-                </div>
-                <MasterDetail
-                  listLabel="Settings"
-                  list={(
-                    <ul className="memory-workspace__list">
-                      {settingsItems.map((settings) => (
-                        <li key={settings.id}>
-                          <RecordRow
-                            id={settings.id}
-                            scope="settings"
-                            selected={settings.id === selectedSettings?.id}
-                            title={settings.title}
-                            meta={settings.description}
-                            status={settings.status}
-                            detail={settings.detail}
-                            muted={settings.kind === "events"}
-                            onSelect={() => {
-                              setSelectedSettingsId(settings.id);
-                              setDetailOpen(true);
-                            }}
-                          />
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  detail={selectedSettings ? (
-                    <SettingsDetail
-                      settings={selectedSettings}
-                      capabilities={capabilities}
-                      latestRun={runs.find((run) => run.policyId === selectedSettings.policy?.policyId)}
-                      runningRetention={runningRetention}
-                      onRunRetention={() => void executeRetention()}
-                    />
-                  ) : <p className="memory-workspace__empty">Select a settings category to view its details.</p>}
-                  detailLabel="Settings details"
-                  sheetOpen={detailOpen}
-                  closeSheet={() => setDetailOpen(false)}
-                />
-              </section>
-
             </div>
           )}
 
