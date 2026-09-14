@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,7 +14,9 @@ from fastapi.testclient import TestClient
 
 from cuga.backend.server.auth import require_auth
 from cuga.backend.server.config_store import reset_config_db
+from cuga.backend.server.manage_routes import helpers as draft_helpers
 from cuga.backend.server.manage_routes import router
+from cuga.backend.server.manage_routes.draft_routes import patch_draft_policies, save_manage_config_draft
 
 pytestmark = pytest.mark.unit
 
@@ -79,6 +84,11 @@ def test_patch_draft_tools_for_non_default_does_not_rebuild_default(monkeypatch)
         "cuga.backend.server.manage_routes.draft_routes.rebuild_agent_from_config",
         _rebuild,
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "cuga.backend.tools_env.registry.utils.api_utils",
+        SimpleNamespace(get_registry_base_url=lambda: "http://registry.test"),
+    )
     monkeypatch.setattr(
         "cuga.backend.server.manage_routes.draft_routes.httpx.AsyncClient",
         lambda **_kwargs: SimpleNamespace(
@@ -121,6 +131,110 @@ def test_patch_draft_policies_for_non_default_skips_shared_policy_system():
 
     assert response.status_code == 200
     assert ("sales-east", True) not in app_state.agent_graphs_cache
+
+
+@pytest.mark.asyncio
+async def test_full_named_agent_draft_blocks_newer_policy_patch_until_replacement_finishes(monkeypatch):
+    agent_id = "sales-east"
+    full_policies = [{"id": "full-save-policy"}]
+    patch_policies = [{"id": "newer-patch-policy"}]
+    stored_config = {}
+    stored_policies = []
+    full_replacement_started = asyncio.Event()
+    release_full_replacement = asyncio.Event()
+    patch_config_saved = asyncio.Event()
+    replacement_order = []
+
+    async def _load_draft(_agent_id):
+        assert _agent_id == agent_id
+        return copy.deepcopy(stored_config)
+
+    async def _save_draft(config, _agent_id):
+        assert _agent_id == agent_id
+        stored_config.clear()
+        stored_config.update(copy.deepcopy(config))
+        if stored_config.get("policies") == {"policies": patch_policies}:
+            patch_config_saved.set()
+
+    async def _create_agent_policy_system(*, agent_id: str, draft: bool, policies_data: list):
+        assert agent_id == "sales-east"
+        assert draft is True
+        if policies_data == full_policies:
+            full_replacement_started.set()
+            await release_full_replacement.wait()
+        replacement_order.append(copy.deepcopy(policies_data))
+        stored_policies[:] = copy.deepcopy(policies_data)
+
+    # Keep the production lock factory and registry behavior, but isolate this test's registry.
+    monkeypatch.setattr(draft_helpers, "AGENT_DRAFT_LOCKS", {})
+    monkeypatch.setattr("cuga.backend.server.config_store.load_draft", _load_draft)
+    monkeypatch.setattr("cuga.backend.server.config_store.save_draft", _save_draft)
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.policy.configurable.create_agent_policy_system",
+        _create_agent_policy_system,
+    )
+    monkeypatch.setattr(
+        "cuga.backend.server.manage_routes.draft_routes.invalidate_agent_graph_cache",
+        AsyncMock(),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "cuga.backend.tools_env.registry.utils.api_utils",
+        SimpleNamespace(get_registry_base_url=lambda: "http://registry.test"),
+    )
+    monkeypatch.setattr(
+        "cuga.backend.server.manage_routes.draft_routes.httpx.AsyncClient",
+        lambda **_kwargs: SimpleNamespace(
+            __aenter__=AsyncMock(
+                return_value=SimpleNamespace(
+                    post=AsyncMock(
+                        return_value=SimpleNamespace(raise_for_status=lambda: None, json=lambda: {})
+                    )
+                )
+            ),
+            __aexit__=AsyncMock(return_value=None),
+        ),
+    )
+
+    app = SimpleNamespace(state=SimpleNamespace(draft_app_state=None))
+    full_request = SimpleNamespace(
+        json=AsyncMock(return_value={"config": {"policies": {"policies": full_policies}}}),
+        app=app,
+    )
+    patch_request = SimpleNamespace(
+        json=AsyncMock(return_value={"policies": {"policies": patch_policies}}),
+        app=app,
+    )
+
+    full_save = asyncio.create_task(save_manage_config_draft(full_request, agent_id=agent_id))
+    policy_patch = None
+    try:
+        await asyncio.wait_for(full_replacement_started.wait(), timeout=1)
+        policy_patch = asyncio.create_task(patch_draft_policies(patch_request, agent_id=agent_id))
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(patch_config_saved.wait()), timeout=0.05)
+        assert not policy_patch.done()
+        assert stored_config["policies"] == {"policies": full_policies}
+
+        release_full_replacement.set()
+        full_response, patch_response = await asyncio.wait_for(
+            asyncio.gather(full_save, policy_patch),
+            timeout=1,
+        )
+
+        assert full_response.status_code == 200
+        assert patch_response.status_code == 200
+        assert replacement_order == [full_policies, patch_policies]
+        assert stored_config["policies"] == {"policies": patch_policies}
+        assert stored_policies == patch_policies
+    finally:
+        release_full_replacement.set()
+        tasks = [task for task in (full_save, policy_patch) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def test_patch_draft_instructions_for_non_default_does_not_overwrite_default():

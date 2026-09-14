@@ -63,6 +63,8 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
         data = await request.json()
         config = data.get("config", data)
         incoming = dict(config) if isinstance(config, dict) else {}
+        policy_errors = {}
+        apply_shared_draft = is_default_agent(agent_id)
 
         async with agent_draft_lock(agent_id):
             from cuga.backend.server.config_store import load_draft
@@ -73,30 +75,27 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
                     existing.get("supervisor"), incoming.get("supervisor")
                 )
             await save_draft(incoming, agent_id)
+
+            if not apply_shared_draft:
+                # Named agents: replace config and policies under the same lock so a
+                # concurrent policy PATCH cannot interleave with the full draft save.
+                raw_policies = incoming.get("policies")
+                if raw_policies is not None:
+                    try:
+                        from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
+
+                        policies_list = policies_list_from_config(raw_policies)
+                        await create_agent_policy_system(
+                            agent_id=agent_id,
+                            draft=True,
+                            policies_data=policies_list,
+                        )
+                    except Exception as policy_err:
+                        logger.warning(f"Failed to seed draft policy collection for {agent_id}: {policy_err}")
+                        policy_errors = {"policy_errors": [str(policy_err)]}
         config = incoming
 
         state_to_update = getattr(request.app.state, "draft_app_state", None)
-        policy_errors = {}
-        apply_shared_draft = is_default_agent(agent_id)
-
-        if not apply_shared_draft:
-            # Named agents: seed the per-agent draft policy collection so supervisor
-            # subagent construction (which is read-only) finds up-to-date policies.
-            # Mirrors the publish path in config_routes.py.
-            raw_policies = (config or {}).get("policies")
-            if raw_policies is not None:
-                try:
-                    from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
-
-                    policies_list = policies_list_from_config(raw_policies)
-                    await create_agent_policy_system(
-                        agent_id=agent_id,
-                        draft=True,
-                        policies_data=policies_list,
-                    )
-                except Exception as policy_err:
-                    logger.warning(f"Failed to seed draft policy collection for {agent_id}: {policy_err}")
-                    policy_errors = {"policy_errors": [str(policy_err)]}
 
         if apply_shared_draft and state_to_update and config:
             tools_list = (config or {}).get("tools") or []
