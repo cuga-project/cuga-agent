@@ -63,7 +63,6 @@ type RetentionCapabilitiesResponse = {
 type RetentionReportItemResponse = {
   entity_id?: string;
   entity_type?: string;
-  title?: string;
   action?: "flag" | "delete" | "skip";
   outcome?: string;
   reason?: string;
@@ -87,7 +86,6 @@ type RetentionRunResponse = {
   run_id: string;
   policy_id: string;
   initiated_by?: string;
-  actor_id?: string;
   status: string;
   created_at: string;
   report: RetentionReportResponse;
@@ -237,7 +235,6 @@ function mapReportItem(item: RetentionReportItemResponse): RetentionReportItem {
   return {
     entityId: item.entity_id,
     entityType: item.entity_type,
-    title: item.title,
     action: item.action,
     outcome: item.outcome,
     reason: item.reason,
@@ -253,8 +250,7 @@ function mapReport(report: RetentionReportResponse): RetentionReport {
     completedAt: report.completed_at,
     summary: report.summary ?? "Retention completed.",
     flagged: (report.flagged ?? []).map(mapReportItem),
-    // Discard deleted titles even when an older report supplies them.
-    deleted: (report.deleted ?? []).map((item) => ({ ...mapReportItem(item), title: undefined })),
+    deleted: (report.deleted ?? []).map(mapReportItem),
     skipped: (report.skipped ?? []).map(mapReportItem),
     errors: report.errors ?? [],
     warnings: report.warnings ?? [],
@@ -311,13 +307,13 @@ export async function loadProtectionStatus(): Promise<ProtectionStatus[]> {
   const definitions: Array<Pick<ProtectionStatus, "id" | "title" | "description"> & { hook: string }> = [
     {
       id: "save-check",
-      title: "Sensitive information before saving",
+      title: "Protection before saving",
       description: "Checks every memory before it is stored and stops saves rejected by configured protection plugins.",
       hook: "memory_pre_write",
     },
     {
       id: "send-check",
-      title: "Sensitive information before sending",
+      title: "Protection before sending",
       description: "Checks messages and tool inputs before they are sent to the AI model.",
       hook: "llm_pre_call",
     },
@@ -331,6 +327,7 @@ export async function loadProtectionStatus(): Promise<ProtectionStatus[]> {
       enabled: plugins.some((plugin) => plugin.enabled === true),
       healthy: plugins.length > 0 && plugins.every((plugin) => plugin.healthy === true),
       pluginCount: plugins.length,
+      plugins: plugins.map(plugin => ({name: plugin.name, enabled: plugin.enabled === true, healthy: plugin.healthy === true})),
     };
   });
 }
@@ -360,23 +357,23 @@ export async function loadRetentionPolicies(): Promise<RetentionPolicy[]> {
   }));
 }
 
-export async function loadRetentionRuns(agentId: string): Promise<RetentionRun[]> {
+export async function loadRetentionRuns(): Promise<RetentionRun[]> {
   const response = await requestJson<{ items: RetentionRunResponse[] }>(
-    scopedPath("/api/manage/memory/retention/runs?limit=100", agentId),
+    "/api/manage/memory/retention/runs?limit=100",
   );
   return (response.items ?? []).map((run) => ({
     ...mapReport(run.report),
     runId: run.run_id,
     policyId: run.report.policy_id ?? run.policy_id,
-    initiatedBy: run.initiated_by ?? run.actor_id,
+    initiatedBy: run.initiated_by,
     status: run.status,
     createdAt: run.created_at,
   }));
 }
 
-export async function runRetention(agentId: string, policyId: string): Promise<RetentionReport> {
+export async function runRetention(policyId: string): Promise<RetentionReport> {
   const response = await requestJson<RetentionReportResponse>(
-    scopedPath("/api/manage/memory/retention/runs", agentId),
+    "/api/manage/memory/retention/runs",
     {
       method: "POST",
       body: JSON.stringify({ policy_id: policyId }),
@@ -420,6 +417,31 @@ export async function loadRetentionCollection() {
   return {candidates: candidates.items, audit: audit.items};
 }
 
-export async function collectRetention(policyId: string, phase: "mark" | "sweep") {
-  return requestJson<{run_id: string}>(`/api/manage/memory/retention/policies/${encodeURIComponent(policyId)}/${phase}`, {method: "POST"});
+export type ScheduleSpec = {
+  schedule: string;
+  timeZone: string;
+  concurrencyPolicy: "Allow" | "Forbid" | "Replace";
+  startingDeadlineSeconds: number | null;
+  suspend: boolean;
+};
+export type RetentionSchedule = {
+  schedule_id: string;
+  revision: number;
+  definition: { policy_id: string; spec: ScheduleSpec; dry_run: boolean; agent_id: string | null };
+  next_runs?: string[];
+};
+const schedulesPath = "/api/manage/memory/retention/schedules";
+export async function loadSchedules(): Promise<RetentionSchedule[]> {
+  const result = await requestJson<{items: RetentionSchedule[]}>(schedulesPath);
+  return Promise.all(result.items.map(item => requestJson<RetentionSchedule>(`${schedulesPath}/${encodeURIComponent(item.schedule_id)}`)));
+}
+export function saveSchedule(id: string, policyId: string, spec: ScheduleSpec, revision: number) {
+  return requestJson<RetentionSchedule>(`${schedulesPath}/${encodeURIComponent(id)}`, {method: "PUT", body: JSON.stringify({policy_id: policyId, spec, expected_revision: revision})});
+}
+export function changeSchedule(item: RetentionSchedule, action: "start" | "stop" | "delete") {
+  const path = `${schedulesPath}/${encodeURIComponent(item.schedule_id)}`;
+  return requestJson(action === "delete" ? `${path}?expected_revision=${item.revision}` : `${path}/${action}`, {method: action === "delete" ? "DELETE" : "POST", ...(action === "delete" ? {} : {body: JSON.stringify({expected_revision: item.revision})})});
+}
+export function previewSchedule(spec: ScheduleSpec) {
+  return requestJson<{next_runs: string[]; timeZone: string; suspended: boolean}>(`${schedulesPath}/preview`, {method: "POST", body: JSON.stringify({spec})});
 }

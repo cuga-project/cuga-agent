@@ -37,6 +37,7 @@ export type ProtectionStatus = {
   enabled: boolean;
   healthy: boolean;
   pluginCount: number;
+  plugins: Array<{name: string; enabled: boolean; healthy: boolean}>;
 };
 
 export type MemoryPage = {
@@ -75,7 +76,6 @@ export type RetentionPolicy = {
 export type RetentionReportItem = {
   entityId?: string;
   entityType?: string;
-  title?: string;
   action?: "flag" | "delete" | "skip";
   outcome?: string;
   reason?: string;
