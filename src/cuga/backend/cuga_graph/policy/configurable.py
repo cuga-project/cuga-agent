@@ -1,6 +1,8 @@
 """LangGraph configurable integration for policy system."""
 
+import hashlib
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -14,27 +16,31 @@ from cuga.backend.llm.models import LLMManager
 from cuga.config import settings, DBS_DIR
 
 
+_POLICY_COLLECTION_BASE = "cuga_policies"
+
+
+def _named_agent_collection_name(agent_id: str, draft: bool) -> str:
+    """Build a bounded collection name that retains a readable agent prefix."""
+    draft_suffix = "__draft" if draft else ""
+    digest = hashlib.sha256(agent_id.encode("utf-8")).hexdigest()[:12]
+    readable_id = re.sub(r"[^a-z0-9]+", "_", agent_id.lower()).strip("_") or "agent"
+    digest_suffix = f"_{digest}{draft_suffix}"
+    readable_prefix = f"{_POLICY_COLLECTION_BASE}__agent_{readable_id}"
+    return f"{readable_prefix[: 63 - len(digest_suffix)]}{digest_suffix}"
+
+
 def get_agent_policy_collection_name(agent_id: Optional[str] = None, draft: bool = False) -> str:
-    """Return the policy collection name scoped to an agent_id.
+    """Return a deterministic, PostgreSQL-safe policy collection scoped to an agent ID.
 
-    Default agent (or None / 'cuga-default') maps to 'cuga_policies' (or 'cuga_policies_draft').
-    Named agents map to 'cuga_policies_<safe_agent_id>' (or 'cuga_policies_<safe_agent_id>_draft').
-
-    Assumes agent_id is a registry-issued slugified ID ([a-z0-9-]+). The hyphen-to-underscore
-    substitution is injective for that character set. Callers that accept agent IDs from external
-    input (e.g. X-Agent-ID header) must validate the ID against the registry before calling this
-    function to prevent distinct IDs mapping to the same collection.
+    The default agent always uses the compatibility names ``cuga_policies`` and
+    ``cuga_policies_draft``. Named agents use the same fixed namespace plus a normalized readable
+    prefix and digest; the general policy collection setting does not alter this mapping.
     """
-    base_name = getattr(settings.policy, "collection_name", None) or "cuga_policies"
     # Strip any '--version' suffix that config_store appends to draft agent IDs (e.g. 'crm--draft-3').
     clean_id = agent_id.split("--")[0] if agent_id else None
     if not clean_id or clean_id == "cuga-default":
-        return f"{base_name}_draft" if draft else base_name
-    safe_id = clean_id.replace("-", "_").replace(".", "_")
-    prefix = f"{base_name}_{safe_id}"
-    # Use '__draft' (double underscore) so agent 'crm-draft' published (..._crm_draft) never
-    # collides with agent 'crm' draft (..._crm__draft). Registry slugs are [a-z0-9-] only.
-    return f"{prefix}__draft" if draft else prefix
+        return f"{_POLICY_COLLECTION_BASE}_draft" if draft else _POLICY_COLLECTION_BASE
+    return _named_agent_collection_name(clean_id, draft)
 
 
 async def create_agent_policy_system(
@@ -181,9 +187,7 @@ class PolicyConfigurable:
 
         try:
             policy_config = getattr(settings, "policy", None)
-            final_collection_name = collection_name or (
-                policy_config.collection_name if policy_config else "cuga_policies"
-            )
+            final_collection_name = collection_name or get_agent_policy_collection_name()
 
             configured_path = (policy_db_path or getattr(policy_config, "policy_db_path", None) or "").strip()
             if configured_path:

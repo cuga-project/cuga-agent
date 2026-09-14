@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -9,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 from cuga.backend.cuga_graph.policy.configurable import (
+    PolicyConfigurable,
     create_agent_policy_system,
     get_agent_policy_collection_name,
 )
@@ -26,27 +28,95 @@ def _registry_on(monkeypatch):
     )
 
 
-def test_agent_policy_collection_name_scoping():
-    """Verify collection name generation for default vs named agents, draft vs published."""
-    assert get_agent_policy_collection_name(None, draft=False) == "cuga_policies"
-    assert get_agent_policy_collection_name("cuga-default", draft=False) == "cuga_policies"
-    assert get_agent_policy_collection_name(None, draft=True) == "cuga_policies_draft"
-    assert get_agent_policy_collection_name("cuga-default", draft=True) == "cuga_policies_draft"
-
-    # Hyphens are substituted with underscores for registry-issued slugified IDs ([a-z0-9-]).
-    assert get_agent_policy_collection_name("crm-agent", draft=False) == "cuga_policies_crm_agent"
-    assert get_agent_policy_collection_name("crm-agent", draft=True) == "cuga_policies_crm_agent__draft"
-
-    # '__draft' suffix (double underscore) is injective: agent 'crm-draft' published maps to
-    # 'cuga_policies_crm_draft', while agent 'crm' draft maps to 'cuga_policies_crm__draft'.
-    assert get_agent_policy_collection_name("crm-draft", draft=False) != get_agent_policy_collection_name(
-        "crm", draft=True
+def test_agent_policy_collection_name_scoping(monkeypatch):
+    """Verify every generated name is safe and defaults ignore the storage setting."""
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.policy.configurable.settings.policy.collection_name", "Custom-Policies"
     )
-    # Registry-issued IDs are [a-z0-9-] only (see _slugify in agents_routes.py); distinct
-    # IDs remain distinct after hyphen substitution.
-    assert get_agent_policy_collection_name("sales-eu", draft=False) != get_agent_policy_collection_name(
-        "sales-us", draft=False
+
+    default_names = [
+        get_agent_policy_collection_name(None, draft=False),
+        get_agent_policy_collection_name("cuga-default", draft=False),
+        get_agent_policy_collection_name(None, draft=True),
+        get_agent_policy_collection_name("cuga-default", draft=True),
+    ]
+    assert default_names == ["cuga_policies", "cuga_policies", "cuga_policies_draft", "cuga_policies_draft"]
+
+    named_draft = get_agent_policy_collection_name("draft", draft=False)
+    assert named_draft != get_agent_policy_collection_name(None, draft=True)
+
+    punctuation_variants = {
+        get_agent_policy_collection_name(agent_id, draft=False) for agent_id in ("a-b", "a_b", "a.b")
+    }
+    assert len(punctuation_variants) == 3
+
+    named_collection = get_agent_policy_collection_name("crm-agent", draft=False)
+    named_draft_collection = get_agent_policy_collection_name("crm-agent", draft=True)
+    assert named_collection == get_agent_policy_collection_name("crm-agent", draft=False)
+    assert named_draft_collection != named_collection
+    assert named_draft_collection.endswith("__draft")
+
+    generated_names = [
+        *default_names,
+        named_draft,
+        *punctuation_variants,
+        named_collection,
+        named_draft_collection,
+        get_agent_policy_collection_name("é" * 100, draft=False),
+        get_agent_policy_collection_name("é" * 100, draft=True),
+    ]
+    for collection_name in generated_names:
+        assert re.fullmatch(r"[a-z][a-z0-9_]{0,62}", collection_name, flags=re.ASCII)
+        assert len(collection_name.encode("ascii")) <= 63
+
+
+@pytest.mark.asyncio
+async def test_default_policy_runtime_ignores_configured_collection_name(monkeypatch):
+    """Default runtime storage uses exact published and draft names despite setting overrides."""
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.policy.configurable.settings.policy.collection_name", "Custom-Policies"
     )
+    configurable_storage_cls = patch("cuga.backend.cuga_graph.policy.configurable.PolicyStorage")
+    main_storage_cls = patch("cuga.backend.cuga_graph.policy.storage.PolicyStorage")
+    embedding_config = patch(
+        "cuga.backend.storage.embedding.get_embedding_config",
+        return_value={
+            "dim": 384,
+            "provider": "sentence_transformers",
+            "model": "unused",
+            "base_url": None,
+            "api_key": None,
+        },
+    )
+
+    with configurable_storage_cls as mock_configurable_storage_cls, main_storage_cls as mock_main_storage_cls:
+        published_storage = mock_configurable_storage_cls.return_value
+        published_storage.initialize_async = AsyncMock()
+        published_storage._embedding_function = None
+        draft_storage = mock_main_storage_cls.return_value
+        draft_storage.initialize_async = AsyncMock()
+        draft_policy_system = SimpleNamespace(initialize=AsyncMock())
+
+        with (
+            embedding_config,
+            patch(
+                "cuga.backend.cuga_graph.policy.configurable.PolicyConfigurable",
+                return_value=draft_policy_system,
+            ),
+        ):
+            published_policy_system = PolicyConfigurable(llm=object(), agent=object())
+            await published_policy_system.initialize()
+            (
+                initialized_draft_system,
+                draft_collection,
+            ) = await main_mod._initialize_default_draft_policy_system()
+
+    assert mock_configurable_storage_cls.call_args.kwargs["collection_name"] == "cuga_policies"
+    assert mock_main_storage_cls.call_args.kwargs["collection_name"] == "cuga_policies_draft"
+    assert initialized_draft_system is draft_policy_system
+    assert draft_collection == "cuga_policies_draft"
+    draft_storage.initialize_async.assert_awaited_once_with()
+    draft_policy_system.initialize.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -156,8 +226,9 @@ async def test_create_agent_policy_system_isolates_storage():
     ps_a = await create_agent_policy_system(agent_id="agent-a", draft=False, policies_data=policies_a)
     ps_b = await create_agent_policy_system(agent_id="agent-b", draft=False, policies_data=policies_b)
 
-    assert ps_a.storage.collection_name == "cuga_policies_agent_a"
-    assert ps_b.storage.collection_name == "cuga_policies_agent_b"
+    assert ps_a.storage.collection_name == get_agent_policy_collection_name("agent-a")
+    assert ps_b.storage.collection_name == get_agent_policy_collection_name("agent-b")
+    assert ps_a.storage.collection_name != ps_b.storage.collection_name
 
     policies_in_a = await ps_a.storage.list_policies(enabled_only=False)
     policies_in_b = await ps_b.storage.list_policies(enabled_only=False)
@@ -215,7 +286,9 @@ async def test_resolve_stream_agent_creates_isolated_policy_system():
 
     assert resolved_graph is not None
     assert resolved_graph.policy_system is not None
-    assert resolved_graph.policy_system.storage.collection_name == "cuga_policies_crm_agent"
+    assert resolved_graph.policy_system.storage.collection_name == get_agent_policy_collection_name(
+        "crm-agent"
+    )
 
     # Graph build is read-only: the collection is NOT seeded from the config snapshot.
     # Population is the responsibility of save/publish flows.
@@ -263,7 +336,7 @@ async def test_supervisor_subagents_have_isolated_policy_systems():
     agent = agents_dict["crm-sub"]
     assert agent._policy_system is not None
     # Verify the policy system is scoped to the correct per-agent collection.
-    assert agent._policy_system.storage.collection_name == "cuga_policies_crm_sub"
+    assert agent._policy_system.storage.collection_name == get_agent_policy_collection_name("crm-sub")
     # The supervisor build does NOT seed the collection from ref_config (to avoid overwriting
     # more-recent saves); the collection is empty at construction time.
     policies = await agent._policy_system.storage.list_policies(enabled_only=False)

@@ -351,6 +351,37 @@ def _skills_effective_enabled() -> bool:
     return getattr(settings.skills, "enabled", False)
 
 
+async def _initialize_default_draft_policy_system():
+    from cuga.backend.cuga_graph.policy.configurable import (
+        PolicyConfigurable,
+        get_agent_policy_collection_name,
+    )
+    from cuga.backend.cuga_graph.policy.storage import PolicyStorage
+    from cuga.backend.storage.embedding import get_embedding_config
+
+    draft_collection = get_agent_policy_collection_name(draft=True)
+    emb_cfg = get_embedding_config()
+    draft_storage = PolicyStorage(
+        collection_name=draft_collection,
+        embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
+        or os.getenv("POLICY_EMBEDDING_PROVIDER")
+        or emb_cfg["provider"],
+        embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
+        or os.getenv("POLICY_EMBEDDING_MODEL")
+        or emb_cfg["model"],
+        embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
+        or os.getenv("POLICY_EMBEDDING_BASE_URL")
+        or emb_cfg["base_url"],
+        embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
+        or os.getenv("POLICY_EMBEDDING_API_KEY")
+        or emb_cfg["api_key"],
+    )
+    await draft_storage.initialize_async()
+    policy_system = PolicyConfigurable(storage=draft_storage)
+    await policy_system.initialize()
+    return policy_system, draft_collection
+
+
 try:
     from langfuse.langchain import CallbackHandler
 except ImportError:
@@ -1036,33 +1067,7 @@ async def lifespan(app: FastAPI):
         )
 
     if settings.policy.enabled and app_state.policy_system:
-        from cuga.backend.cuga_graph.policy.storage import PolicyStorage
-        from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
-
-        policy_config = getattr(settings, "policy", None)
-        base_name = policy_config.collection_name if policy_config else "cuga_policies"
-        draft_collection = f"{base_name}_draft"
-        from cuga.backend.storage.embedding import get_embedding_config
-
-        emb_cfg = get_embedding_config()
-        draft_storage = PolicyStorage(
-            collection_name=draft_collection,
-            embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
-            or os.getenv("POLICY_EMBEDDING_PROVIDER")
-            or emb_cfg["provider"],
-            embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
-            or os.getenv("POLICY_EMBEDDING_MODEL")
-            or emb_cfg["model"],
-            embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
-            or os.getenv("POLICY_EMBEDDING_BASE_URL")
-            or emb_cfg["base_url"],
-            embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
-            or os.getenv("POLICY_EMBEDDING_API_KEY")
-            or emb_cfg["api_key"],
-        )
-        await draft_storage.initialize_async()
-        draft_app_state.policy_system = PolicyConfigurable(storage=draft_storage)
-        await draft_app_state.policy_system.initialize()
+        draft_app_state.policy_system, draft_collection = await _initialize_default_draft_policy_system()
         draft_app_state.policy_filesystem_sync = app_state.policy_filesystem_sync
         logger.info(f"Draft policy system initialized (collection: {draft_collection})")
 
