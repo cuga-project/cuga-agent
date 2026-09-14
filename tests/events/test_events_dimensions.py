@@ -13,6 +13,7 @@ fallback gating).
 
 import os
 import sys
+from urllib.parse import parse_qs, urlparse
 
 _EVENTS = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "src", "cuga", "backend", "events")
@@ -500,7 +501,12 @@ def test_oauth_registry_and_authorize_url():
     try:
         assert oauth.is_configured("gmail") is True
         url = oauth.authorize_url("gmail", "st123")
-        assert url and "accounts.google.com" in url and "client_id=cid" in url and "state=st123" in url
+        assert url
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        assert parsed.hostname == "accounts.google.com"
+        assert params.get("client_id") == ["cid"]
+        assert params.get("state") == ["st123"]
         assert oauth.redirect_uri("gmail").endswith("/api/events/connect/gmail/callback")
         assert oauth.decode_state(oauth.encode_state(scope="acme/·/alice", app="gmail"))["app"] == "gmail"
     finally:
