@@ -39,6 +39,7 @@ type EntityInventory = {
 
 type ComplianceStatusResponse = {
   plugins?: Array<{
+    name: string;
     hooks?: string[];
     enabled?: boolean;
     healthy?: boolean;
