@@ -790,8 +790,9 @@
 
 /* Settings uses the same navigation with a compact category list. */
 .memory-workspace__settings {
-  max-width: 75rem;
-  margin: 2rem auto;
+  width: 100%;
+  max-width: none;
+  margin: 2rem 0;
   padding: 0 2rem;
 }
 .memory-workspace__settings .memory-workspace__section-head,
