@@ -417,7 +417,15 @@ class PolicyStorage:
         policy_type: Optional[PolicyType] = None,
         enabled_only: bool = True,
         limit: int = 100,
+        *,
+        strict: bool = False,
     ) -> List[Policy]:
+        """List stored policies.
+
+        ``strict=True`` re-raises a backend failure instead of returning ``[]``.
+        A safety guard that must fail closed cannot tell "no policies" from
+        "the backend is down" otherwise.
+        """
         if not self._connected:
             await self.initialize_async()
         try:
@@ -426,6 +434,8 @@ class PolicyStorage:
             policies.sort(key=lambda x: x.priority, reverse=True)
             return policies
         except Exception as e:
+            if strict:
+                raise
             logger.error(f"Failed to list policies: {e}")
             return []
 

@@ -488,6 +488,10 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         _runtime_bundle = build_runtime_tools(thread_id=runtime_thread_id, backends=_runtime_backends)
         adapter._tools_context.update(_runtime_bundle.execution_callables)
         tools_for_prompt.extend(_runtime_bundle.prompt_tools)
+        # The catalogue find_tools was built with (above). Runtime apps appended
+        # below are not in its app_to_tools_map, so advertising them as
+        # ``app_name`` targets would only produce empty searches.
+        _find_tools_apps = list(apps_for_prompt) if apps_for_prompt is not None else None
         if _runtime_bundle.app_definitions and apps_for_prompt is not None:
             apps_for_prompt = list(apps_for_prompt) + _runtime_bundle.app_definitions
 
@@ -778,7 +782,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 fragments=_fragments,
                 skills_prompt_section=skills_prompt_section if skills_enabled else "",
                 agents_prompt_section=agents_prompt_section if agents_enabled else "",
-                apps=apps_for_prompt if enable_find_tools else None,
+                apps=_find_tools_apps if enable_find_tools else None,
             )
             logger.info(
                 "Prepared CugaLite function-calling prompt: step_discipline={} fragments={} prompt_chars={}",

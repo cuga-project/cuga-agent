@@ -30,6 +30,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import (
     FC_MODE_VIOLATION_CORRECTION,
     FC_STEP_LIMIT_CALL_REPLY,
     FC_TOOL_APPROVAL_UNSUPPORTED,
+    FC_TOOL_APPROVAL_UNVERIFIED,
     FC_UNANSWERED_CALL_REPLY,
     AgentGraphAdapter,
     _normalize_history_for_replay,
@@ -355,3 +356,41 @@ async def test_bind_advertises_the_executable_set_prepare_recorded():
     assert cfg["cuga_lite_bind_tools_tool_names"] == ["echo", "add"], (
         "bind what the sandbox could call, not the catalogue"
     )
+
+
+@pytest.mark.asyncio
+async def test_refuses_when_the_policy_query_fails(monkeypatch):
+    """Fail closed on infrastructure failure too: 'could not verify' is not 'no policies'."""
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.policy, "enabled", True, raising=False)
+    model = _Model(AIMessage(content="", tool_calls=[_CALL]))
+
+    with patch.object(
+        AgentGraphAdapter,
+        "_tool_approval_policies_exist",
+        new=AsyncMock(side_effect=RuntimeError("backend down")),
+    ):
+        cmd = await _turn(_adapter(), model, _state(), FC)
+
+    assert cmd.goto == END and model.seen == []
+    assert cmd.update["error"] == FC_TOOL_APPROVAL_UNVERIFIED.format(error="backend down")
+
+
+@pytest.mark.asyncio
+async def test_guard_asks_storage_strictly_so_a_backend_failure_is_not_an_empty_list():
+    """PolicyStorage.list_policies swallows backend errors by default; the guard must not."""
+    from types import SimpleNamespace
+
+    calls = []
+
+    async def list_policies(**kwargs):
+        calls.append(kwargs)
+        return []
+
+    fake_system = SimpleNamespace(agent=SimpleNamespace(storage=SimpleNamespace(list_policies=list_policies)))
+    with patch(
+        "cuga.backend.cuga_graph.policy.configurable.PolicyConfigurable.from_config", return_value=fake_system
+    ):
+        assert await _adapter()._tool_approval_policies_exist({}) is False
+    assert calls and calls[0]["strict"] is True

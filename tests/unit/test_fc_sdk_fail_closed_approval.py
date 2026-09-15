@@ -32,10 +32,14 @@ class _ScriptedModel:
         return self._responses.pop(0)
 
 
+RAN: list = []
+
+
 def _delete_record():
     async def delete_record(record_id: int) -> str:
         """Delete a record."""
-        raise AssertionError("a guarded tool ran without approval")
+        RAN.append(record_id)
+        return "deleted"
 
     return StructuredTool.from_function(
         coroutine=delete_record, name="delete_record", description="Delete a record."
@@ -48,6 +52,9 @@ def _settings(monkeypatch):
 
     monkeypatch.setattr(settings.policy, "enabled", True, raising=False)
     monkeypatch.setattr(settings.evolve, "enabled", False, raising=False)
+    RAN.clear()
+    yield
+    RAN.clear()
 
 
 @pytest.mark.asyncio
@@ -90,4 +97,5 @@ async def test_fc_refuses_with_a_stored_tool_approval_policy_and_codeact_still_a
     result = await agent.invoke("delete record 1", thread_id="codeact-approval", execution_mode="codeact")
 
     assert codeact_model.invocations == 1
-    assert "approval" in result.answer.lower(), result.answer
+    assert "Deleting needs approval." in result.answer, result.answer
+    assert RAN == [], "the guarded tool must not run on either path"
