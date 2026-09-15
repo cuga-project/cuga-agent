@@ -963,3 +963,8 @@
     padding: 1rem;
   }
 }
+
+.memory-preferences {
+  padding-block: var(--cds-spacing-05, 1rem);
+  border-bottom: 1px solid var(--cds-border-subtle-01);
+}
