@@ -1,5 +1,7 @@
 name: Tests
 
+# which targets main) still runs CI. Without it the filter matches nothing, GitHub reports an
+# EMPTY check list, and an empty check list is indistinguishable from an all-green one — the
 on:
   push:
     branches: [ main, develop ]

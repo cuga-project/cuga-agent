@@ -119,7 +119,7 @@ def test_synth_fire_disabled_by_env_is_403(monkeypatch):
     )
 
 
-def test_synth_fire_requires_the_gateway_token_401():
+def test_synth_fire_requires_the_gateway_token_401(closed_gates):
     c, _ = _client(gateway_token="gw")
     assert c.post("/api/events/synth-fire", json={"source": "github"}).status_code == 401
 

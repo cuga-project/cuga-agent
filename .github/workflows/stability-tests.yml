@@ -3,6 +3,7 @@ name: Stability Tests
 # "Stability Tests (Python 3.12)" and "(Python 3.13)" are required contexts in
 # main's branch protection. Do not add paths filters: a PR that skips this
 # workflow never reports those contexts and can never be merged.
+# yields an empty check list, which reads as green rather than as "never ran". Same hazard the
 on:
   push:
     branches: [ main, develop ]
