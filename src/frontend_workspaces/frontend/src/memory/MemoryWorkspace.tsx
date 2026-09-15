@@ -1,3 +1,4 @@
+import { MemoryPreferences } from "./MemoryPreferences";
 import React, { useMemo, useState } from "react";
 import {
   Accordion,
@@ -1203,6 +1204,7 @@ export function MemoryWorkspace({
             </Column>
           </Grid>
 
+          <MemoryPreferences />
           <Grid className="memory-workspace__toolbar">
             <Column sm={4} md={8} lg={5}>
               <Search
@@ -1299,6 +1301,7 @@ export function MemoryWorkspace({
               aria-label="Settings"
               className="memory-workspace__settings"
             >
+              <MemoryPreferences admin />
               <div className="memory-settings__toolbar">
                 <Button
                   kind="ghost"
