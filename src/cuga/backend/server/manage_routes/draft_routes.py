@@ -206,8 +206,7 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
 @router.patch("/config/draft/llm")
 async def patch_draft_llm(request: Request, agent_id: Optional[str] = None):
     """Update only the LLM section of the draft. No registry reload or agent rebuild."""
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     try:
         from cuga.backend.server.config_store import load_draft
 
@@ -247,8 +246,7 @@ async def patch_draft_llm(request: Request, agent_id: Optional[str] = None):
 @router.patch("/config/draft/tools")
 async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
     """Update only the tools section of the draft. Triggers registry reload and agent rebuild."""
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     try:
         from cuga.backend.server.config_store import _parse_agent_id
         from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
@@ -317,6 +315,8 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
         if tool_errors:
             response_data["tool_errors"] = tool_errors
         return JSONResponse(response_data)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to patch draft tools: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -325,8 +325,7 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
 @router.patch("/config/draft/agent")
 async def patch_draft_agent(request: Request, agent_id: Optional[str] = None):
     """Update only the agent (name, description) section of the draft."""
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     try:
         data = await request.json()
         agent_meta = data.get("agent", data)
@@ -337,6 +336,8 @@ async def patch_draft_agent(request: Request, agent_id: Optional[str] = None):
             await load_and_patch_draft(agent_id, "agent", agent_meta)
             await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to patch draft agent: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -347,8 +348,7 @@ async def patch_draft_supervisor(request: Request, agent_id: Optional[str] = Non
     """Update only the supervisor (subAgents, planApproval) section of the draft."""
     if not agent_registry.is_agent_registry_enabled():
         raise HTTPException(status_code=404, detail="Agent registry is disabled")
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     try:
         data = await request.json()
         supervisor = data.get("supervisor", data)
@@ -441,6 +441,8 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
                     logger.warning(f"Failed to apply non-default agent policies from PATCH: {policy_err}")
             await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to patch draft policies: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -449,8 +451,7 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
 @router.patch("/config/draft/special_instructions")
 async def patch_draft_special_instructions(request: Request, agent_id: Optional[str] = None):
     """Persist special_instructions to draft config."""
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     try:
         body = await request.json()
         value = body.get("special_instructions", "") or ""
@@ -463,6 +464,8 @@ async def patch_draft_special_instructions(request: Request, agent_id: Optional[
         else:
             await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to patch draft special_instructions: {e}")
         raise HTTPException(status_code=500, detail=str(e))

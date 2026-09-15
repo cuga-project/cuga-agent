@@ -37,12 +37,10 @@ async def get_manage_config(
     agent_id: Optional[str] = None,
 ):
     """Get config: ?draft=1 returns draft; ?version=N returns that version; ?agent_id=X for specific agent; else latest published."""
+    agent_id = await resolve_registered_agent_id(agent_id)
     try:
         from cuga.backend.server.config_store import load_config, load_draft
 
-        # Determine agent_id from parameter or X-Use-Draft header (backward compatibility)
-        if agent_id is None:
-            agent_id = "cuga-default"
         use_draft = str(draft or "").lower() in ("1", "true", "yes", "on")
         if use_draft:
             config = await load_draft(agent_id)
@@ -61,6 +59,8 @@ async def get_manage_config(
         merge_feature_flags_defaults(config)
         redact_secrets_in_config(config)
         return JSONResponse({"config": config, "version": ver, "agent_id": agent_id})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to load manage config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -611,13 +611,14 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
 @router.get("/config/history")
 async def get_manage_config_history(agent_id: Optional[str] = None):
     """List published config versions (newest first)."""
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     try:
         from cuga.backend.server.config_store import list_versions
 
         versions = await list_versions(agent_id)
         return JSONResponse({"versions": versions})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to list config history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -626,15 +627,18 @@ async def get_manage_config_history(agent_id: Optional[str] = None):
 @router.delete("/config")
 async def delete_manage_config(agent_id: Optional[str] = None, reset_db: Optional[bool] = None):
     """Delete all configs for agent, or reset entire config db. Use ?reset_db=1 for full reset."""
-    try:
-        from cuga.backend.server.config_store import delete_all_configs, reset_config_db
+    from cuga.backend.server.config_store import delete_all_configs, reset_config_db
 
-        if reset_db:
-            reset_config_db()
-            return JSONResponse({"status": "success", "message": "Config db reset"})
-        aid = agent_id or "cuga-default"
-        count = await delete_all_configs(aid)
-        return JSONResponse({"status": "success", "deleted": count, "agent_id": aid})
+    if reset_db:
+        reset_config_db()
+        return JSONResponse({"status": "success", "message": "Config db reset"})
+
+    resolved_id = await resolve_registered_agent_id(agent_id)
+    try:
+        count = await delete_all_configs(resolved_id)
+        return JSONResponse({"status": "success", "deleted": count, "agent_id": resolved_id})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to delete manage config: {e}")
         raise HTTPException(status_code=500, detail=str(e))

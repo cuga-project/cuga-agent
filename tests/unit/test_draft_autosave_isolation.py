@@ -131,6 +131,10 @@ def test_patch_draft_llm_for_non_default_invalidates_cache_only(monkeypatch):
         "cuga.backend.server.agent_registry.is_agent_registry_enabled",
         lambda: True,
     )
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.list_agents_with_configs",
+        AsyncMock(return_value=[{"agent_id": "sales-east"}]),
+    )
     app_state, draft_state, draft_agent = _states()
     client = _client(app_state, draft_state)
 
@@ -151,6 +155,10 @@ def test_patch_draft_tools_for_non_default_does_not_rebuild_default(monkeypatch)
     monkeypatch.setattr(
         "cuga.backend.server.agent_registry.is_agent_registry_enabled",
         lambda: True,
+    )
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.list_agents_with_configs",
+        AsyncMock(return_value=[{"agent_id": "sales-east"}]),
     )
     rebuilt = {"called": False}
 
@@ -324,7 +332,17 @@ async def test_full_named_agent_draft_blocks_newer_policy_patch_until_replacemen
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def test_patch_draft_instructions_for_non_default_does_not_overwrite_default():
+def test_patch_draft_instructions_for_non_default_does_not_overwrite_default(monkeypatch):
+    # Registry must be enabled and sales-east registered so the route resolves to
+    # "sales-east" (not cuga-default), ensuring the default draft agent is not mutated.
+    monkeypatch.setattr(
+        "cuga.backend.server.agent_registry.is_agent_registry_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.list_agents_with_configs",
+        AsyncMock(return_value=[{"agent_id": "sales-east"}]),
+    )
     app_state, draft_state, draft_agent = _states()
     client = _client(app_state, draft_state)
 
