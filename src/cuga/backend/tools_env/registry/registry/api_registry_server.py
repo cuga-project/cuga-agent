@@ -480,7 +480,12 @@ async def call_mcp_function(
                 # A genuinely successful mutating call changes server-side state,
                 # so previously-rejected signatures may now be valid (e.g. a
                 # payment retried after a balance top-up) — clear them.
-                rejected_call_guard.record_success(request.app_name, api_info.get("method"))
+                rejected_call_guard.record_success(
+                    request.app_name,
+                    api_info.get("method"),
+                    function_name=request.function_name,
+                    agent_id=agent_id,
+                )
             final_response = result_json
         logger.debug(f"Final response: {final_response}")
         tracker.collect_step_external(
