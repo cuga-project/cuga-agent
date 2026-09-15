@@ -241,7 +241,10 @@ class TestToolDispatch:
     @pytest.fixture(autouse=True)
     def enabled_preferences(self, monkeypatch):
         monkeypatch.setenv("DYNACONF_SERVICE__INSTANCE_ID", "service-a")
-        with patch("cuga.backend.evolve.preferences.memory_enabled", new=AsyncMock(return_value=True)):
+        with patch(
+            "cuga.backend.evolve.preferences.get_preferences",
+            new=AsyncMock(return_value={"instance_enabled": True, "effective_enabled": True}),
+        ):
             yield
 
     @pytest.mark.asyncio
