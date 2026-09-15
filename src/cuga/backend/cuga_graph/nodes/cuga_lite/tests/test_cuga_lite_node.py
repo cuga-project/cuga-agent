@@ -83,8 +83,9 @@ async def test_callback_node_async_save_uses_chat_message_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_callback_node_passes_multi_user_params_to_save_trajectory():
+async def test_callback_node_passes_multi_user_params_to_save_trajectory(monkeypatch):
     """Verify user_id, namespace_id, and session_id are extracted from state and passed to save_trajectory."""
+    monkeypatch.setenv("DYNACONF_SERVICE__INSTANCE_ID", "inst-1")
     state = AgentState(
         input="test request",
         url="https://example.com",
@@ -93,7 +94,11 @@ async def test_callback_node_passes_multi_user_params_to_save_trajectory():
         sub_task="task_1",
         user_id="user-123",
         thread_id="thread-456",
-        service_scope={"tenant_id": "tenant-789", "instance_id": "inst-1", "agent_id": "runtime-agent"},
+        service_scope={
+            "tenant_id": "tenant-789",
+            "instance_id": "stale-instance",
+            "agent_id": "runtime-agent",
+        },
     )
     node = CugaLiteNode()
 
