@@ -1140,10 +1140,9 @@ async def lifespan(app: FastAPI):
     # never blocks startup on failure.
     await warm_shortlister_catalogue()
 
-    if settings.evolve.enabled:
-        from cuga.backend.evolve.deleted_sources import source_deletion_delivery_loop
+    from cuga.backend.evolve.deleted_sources import source_deletion_delivery_loop
 
-        app_state.background_tasks.append(asyncio.create_task(source_deletion_delivery_loop()))
+    app_state.background_tasks.append(asyncio.create_task(source_deletion_delivery_loop()))
 
     yield
     logger.info("Application is shutting down...")
@@ -1880,7 +1879,7 @@ async def event_stream(
                             }
                             if event.sources:
                                 answer_payload["sources"] = event.sources
-                            if settings.evolve.enabled and memory_turn_id:
+                            if memory_turn_id:
                                 from cuga.backend.evolve.memory_store import get_turn_memory_usage
 
                                 try:
@@ -2229,7 +2228,7 @@ async def ui_config():
                 else ""
             ),
             "agent_registry": agent_registry.is_agent_registry_enabled(),
-            "evolve_memory_enabled": bool(settings.evolve.enabled),
+            "evolve_memory_enabled": True,
         }
     )
 
