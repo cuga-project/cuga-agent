@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import Request, APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,7 +20,19 @@ from cuga.config import get_service_instance_id
 from cuga.backend.server.evolve_native_routes import MemoryServiceRoute, router as native_router
 
 
-router = APIRouter(prefix="/api", route_class=MemoryServiceRoute, tags=["memory"])
+async def require_service_memory(request: Request) -> None:
+    # Settings must remain reachable so administrators can re-enable the service.
+    if request.method in {"GET", "HEAD"}:
+        return
+    if request.url.path.rstrip("/") in {"/api/memory/settings", "/api/manage/memory/settings"}:
+        return
+    from cuga.backend.evolve.preferences import get_preferences
+
+    if not (await get_preferences("default_user"))["instance_enabled"]:
+        raise HTTPException(status_code=403, detail="Memory is disabled for this service")
+
+
+router = APIRouter(prefix="/api", route_class=MemoryServiceRoute, tags=["memory"], dependencies=[Depends(require_service_memory)])
 
 _DEFAULT_USER_ID = "default_user"
 _MEMORY_METADATA_FIELDS = {
@@ -198,6 +210,10 @@ async def _retention_policies() -> list[dict[str, Any]]:
     )
     policies = [item for item in result.get("items", []) if isinstance(item, dict)]
     if any(policy.get("policy_id") == DEFAULT_RETENTION_POLICY_ID for policy in policies):
+        return policies
+    from cuga.backend.evolve.preferences import get_preferences
+
+    if not (await get_preferences("default_user"))["instance_enabled"]:
         return policies
     status = _memory_result(await EvolveIntegration.get_compliance_status(namespace_id=_namespace_id()))
     created = _memory_result(
