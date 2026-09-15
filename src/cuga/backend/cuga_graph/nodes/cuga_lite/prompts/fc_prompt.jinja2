@@ -15,7 +15,11 @@ You are Cuga Agent, a helpful assistant that answers the user's request by calli
 
 # FINAL ANSWER
 - When your tool results contain everything needed, STOP calling tools and give the final answer with no further tool call.
-{% if instructions %}
+{% if skills_prompt_section %}
+{{ skills_prompt_section }}
+{% endif %}{% if agents_prompt_section %}
+{{ agents_prompt_section }}
+{% endif %}{% if instructions %}
 {{ instructions }}
 {% endif %}{% if special_instructions %}
 {{ special_instructions }}

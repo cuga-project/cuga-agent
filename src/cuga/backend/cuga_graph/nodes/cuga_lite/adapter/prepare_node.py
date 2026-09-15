@@ -135,6 +135,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             configurable,
             model_name=_runtime_model_name,
         )
+        _execution_mode = resolve_execution_mode(configurable, _runtime_model_name)
         logger.debug(
             f"[APPROVAL DEBUG] prepare_tools_and_apps received cuga_lite_metadata: {state.cuga_lite_metadata}"
         )
@@ -295,6 +296,18 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         else:
             few_shot_examples = []
             logger.debug("MCP few-shots disabled (cuga_lite_enable_few_shots=false)")
+        if (
+            _execution_mode == EXECUTION_MODE_FUNCTION_CALLING
+            and few_shot_examples
+            and configurable.get("mcp_few_shot_examples") is None
+        ):
+            # The bundled demos are CodeAct-shaped (```python turns, "Execution output:"
+            # replies) and would contradict the function-calling prompt. Only demos the
+            # caller passes explicitly are replayed in this mode.
+            logger.info(
+                "Function-calling mode: bundled CodeAct few-shots withheld ({} turns)", len(few_shot_examples)
+            )
+            few_shot_examples = []
         if few_shot_examples:
             logger.debug(f"MCP few-shot examples: {len(few_shot_examples)} turns")
 
@@ -721,6 +734,15 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             lc_bind_tools_meta["_lc_bind_tools_overlay_structured_tools"] = [
                 t for t in (tools_for_prompt or []) if getattr(t, "name", None)
             ]
+            # Function-calling advertises exactly what generated code could call: the
+            # executable set (already filtered per sub-task / relevant apps, knowledge
+            # tools already popped when out of scope) plus the in-graph overlays.
+            _candidates = [getattr(t, "name", None) for t in (tools_for_execution or [])] + [
+                getattr(t, "name", None) for t in (tools_for_prompt or [])
+            ]
+            lc_bind_tools_meta["_lc_bind_tools_executable_names"] = [
+                n for n in dict.fromkeys(_candidates) if n and n in adapter._tools_context
+            ]
 
         # Use tools_for_execution, not tools_for_prompt: when find_tools shortlisting
         # is active (the common case once an app has more than a handful of tools),
@@ -738,7 +760,6 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # Create prompt dynamically
         dynamic_prompt = adapter._static_prompt
 
-        _execution_mode = resolve_execution_mode(configurable, _runtime_model_name)
         if not dynamic_prompt and _execution_mode == EXECUTION_MODE_FUNCTION_CALLING:
             # Function-calling mode: the CodeAct prompt is never rendered. Tools
             # travel natively via bind_tools, so this prompt is only the behavioural
@@ -755,6 +776,8 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 or is_autonomous_subtask,
                 step_discipline=_one_per_step,
                 fragments=_fragments,
+                skills_prompt_section=skills_prompt_section if skills_enabled else "",
+                agents_prompt_section=agents_prompt_section if agents_enabled else "",
             )
             logger.info(
                 "Prepared CugaLite function-calling prompt: step_discipline={} fragments={} prompt_chars={}",
@@ -795,6 +818,11 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 len(dynamic_prompt),
             )
         else:
+            if _execution_mode == EXECUTION_MODE_FUNCTION_CALLING:
+                logger.warning(
+                    "Function-calling mode with a static prompt: the prompt is used verbatim; "
+                    "make sure it does not instruct the model to write code"
+                )
             logger.info(
                 "Using static CugaLite prompt; dynamic few-shot injection skipped "
                 "(enable_find_tools={} few_shot_turns={})",

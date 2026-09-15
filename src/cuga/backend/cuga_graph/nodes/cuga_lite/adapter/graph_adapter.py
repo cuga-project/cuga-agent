@@ -20,8 +20,11 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
     format_task_todos_system_block,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
+    EMPTY_RESPONSE_CORRECTION,
+    EMPTY_RESPONSE_CORRECTION_KEY,
     EXECUTION_OUTPUT_PREFIX,
     CoreGraphAdapter,
+    create_error_command,
     enforce_step_limit,
 )
 from cuga.backend.cuga_graph.utils.harmony import contains_harmony_tokens, strip_harmony_tokens
@@ -61,37 +64,133 @@ FC_MODE_VIOLATION_CORRECTION = (
     "Code is never run here. Issue the tool call natively instead, or give the final answer as plain text."
 )
 
+FC_TOOL_APPROVAL_UNSUPPORTED = (
+    "Function-calling mode does not support tool-approval policies yet. An enabled tool-approval "
+    "policy exists, so this run was stopped before any tool ran. Use cuga_lite_execution_mode = "
+    '"codeact" for this agent, or disable the policy.'
+)
 
-def _sanitize_for_replay(messages: List[BaseMessage]) -> List[BaseMessage]:
-    """Copy history for replay to the provider.
+FC_STEP_LIMIT_CALL_REPLY = "Not executed: the step limit was reached before this call could run."
+FC_BUDGET_CALL_REPLY = (
+    "Not executed: the tool budget for this turn is spent. Answer from the data already retrieved."
+)
+FC_UNANSWERED_CALL_REPLY = "No result was recorded for this call."
 
-    Assistant turns are replayed verbatim (``tool_calls`` intact) — but their
-    ``reasoning_content`` is dropped and harmony framing stripped from string
-    content: gpt-oss emits both, and strict OpenAI-compatible proxies 400 when
-    they come back in a later round. Irrelevant in CodeAct, whose history is
-    flattened to text before it leaves; in function-calling mode the raw turns
-    are replayed from round 2 onward, so it matters here.
+
+def _message_role(m: Any) -> str:
+    if isinstance(m, dict):
+        return str(m.get("role") or m.get("type") or "")
+    return str(getattr(m, "type", "") or "")
+
+
+def _message_text(m: Any) -> str:
+    content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+    if content is None:
+        return ""
+    return content if isinstance(content, str) else str(content)
+
+
+def _message_name(m: Any) -> Optional[str]:
+    return m.get("name") if isinstance(m, dict) else getattr(m, "name", None)
+
+
+def _tool_result_as_text(name: Optional[str], content: str) -> str:
+    return f"Tool result ({name or 'tool'}):\n{content}"
+
+
+def _unanswered_call_replies(calls: List[Any], invalid: List[Any], reason: str) -> List[ToolMessage]:
+    """One error ``ToolMessage`` per id the model issued when nothing will execute them.
+
+    A persisted assistant turn whose ``tool_calls`` have no replies makes strict
+    providers reject the next replay of the thread, so every id is answered even
+    when the run ends here (step limit, spent budget).
+    """
+    out: List[ToolMessage] = []
+    for index, call in enumerate(list(calls or []) + list(invalid or [])):
+        call_id = (str(call.get("id") or "") if isinstance(call, dict) else "") or f"call_{index}"
+        name = (call.get("name") if isinstance(call, dict) else None) or "unknown"
+        out.append(ToolMessage(content=reason, tool_call_id=call_id, name=str(name), status="error"))
+    return out
+
+
+def _normalize_history_for_replay(messages: List[Any]) -> List[BaseMessage]:
+    """Persisted history as a provider-valid function-calling transcript.
+
+    Two things go wrong with history as persisted. State crosses the SDK and
+    server boundary through ``state.model_dump()`` against ``List[BaseMessage]``,
+    so pydantic serialises by the declared type: subclass fields are dropped and
+    the messages come back as bare ``BaseMessage`` shells — an assistant turn
+    without its ``tool_calls``, a tool turn without its ``tool_call_id``. And a
+    turn can end on a call nobody answered. Either makes a strict provider
+    reject the replay (or raise on the unknown message type), so rebuild it:
+
+    - bare shells become typed messages; a lost tool result is rendered as user
+      text, and an empty assistant shell (a lost tool-call turn) is dropped;
+    - every ``tool_calls`` id is followed by its ``ToolMessage`` — a synthetic
+      error reply when none was recorded;
+    - a ``ToolMessage`` that answers no open call is rendered as user text;
+    - assistant reasoning payloads are dropped and harmony framing stripped
+      (gpt-oss emits both; strict OpenAI-compatible proxies 400 on them).
     """
     out: List[BaseMessage] = []
-    for m in messages:
-        ak = getattr(m, "additional_kwargs", None) or {}
-        drop_reasoning = any(k in ak for k in _REASONING_KEYS)
-        content = getattr(m, "content", None)
-        new_content = (
-            strip_harmony_tokens(content) if isinstance(content, str) and "<|" in content else content
-        )
-        if not drop_reasoning and new_content is content:
+    pending: Dict[str, str] = {}  # call id -> tool name, from the last assistant turn
+
+    def close_pending() -> None:
+        for call_id, name in pending.items():
+            out.append(
+                ToolMessage(
+                    content=FC_UNANSWERED_CALL_REPLY,
+                    tool_call_id=call_id,
+                    name=name or "unknown",
+                    status="error",
+                )
+            )
+        pending.clear()
+
+    for m in messages or []:
+        if isinstance(m, ToolMessage):
+            if m.tool_call_id in pending:
+                pending.pop(m.tool_call_id, None)
+                out.append(m)
+            else:
+                close_pending()
+                out.append(HumanMessage(content=_tool_result_as_text(m.name, _message_text(m))))
+            continue
+        close_pending()
+        if isinstance(m, AIMessage):
+            ak = m.additional_kwargs or {}
+            update: Dict[str, Any] = {}
+            if any(k in ak for k in _REASONING_KEYS):
+                update["additional_kwargs"] = {k: v for k, v in ak.items() if k not in _REASONING_KEYS}
+            if isinstance(m.content, str) and "<|" in m.content:
+                update["content"] = strip_harmony_tokens(m.content)
+            msg = m.model_copy(update=update) if update else m
+            if msg.tool_calls:
+                for i, c in enumerate(msg.tool_calls):
+                    pending[str(c.get("id") or f"call_{i}")] = str(c.get("name") or "")
+                out.append(msg)
+            elif _message_text(msg).strip():
+                out.append(msg)
+            continue  # an empty assistant shell is dropped
+        if isinstance(m, (HumanMessage, SystemMessage)):
             out.append(m)
             continue
-        update: Dict[str, Any] = {}
-        if drop_reasoning:
-            update["additional_kwargs"] = {k: v for k, v in ak.items() if k not in _REASONING_KEYS}
-        if new_content is not content:
-            update["content"] = new_content
-        try:
-            out.append(m.model_copy(update=update))
-        except Exception:
-            out.append(m)
+        role = _message_role(m)
+        text = _message_text(m)
+        if role in ("human", "user"):
+            out.append(HumanMessage(content=text))
+        elif role in ("ai", "assistant"):
+            if "<|" in text:
+                text = strip_harmony_tokens(text)
+            if text.strip():
+                out.append(AIMessage(content=text))
+        elif role == "tool":
+            out.append(HumanMessage(content=_tool_result_as_text(_message_name(m), text)))
+        elif role == "system":
+            out.append(SystemMessage(content=text))
+        elif text.strip():
+            out.append(HumanMessage(content=text))
+    close_pending()
     return out
 
 
@@ -231,8 +330,25 @@ class AgentGraphAdapter(CoreGraphAdapter):
         # settings is respected. Additive: no effect in codeact.
         if self._execution_mode(configurable) == EXECUTION_MODE_FUNCTION_CALLING:
             if self._resolved_bind_mode(configurable) == "none":
-                configurable = {**(configurable or {}), "cuga_lite_bind_tools_mode": "all"}
-                logger.info("[fc] bind_tools mode was 'none'; upgraded to 'all' for function-calling mode")
+                # Advertise exactly the executable set prepare built (filtered per
+                # sub-task / relevant apps), not the registry-wide catalogue: a tool
+                # the model can see but the sandbox could not call is an
+                # "Unknown tool" reply waiting to happen.
+                names = list((self._tools_context_ref or {}).get("_lc_bind_tools_executable_names") or [])
+                if names:
+                    configurable = {
+                        **(configurable or {}),
+                        "cuga_lite_bind_tools_mode": "tools",
+                        "cuga_lite_bind_tools_tool_names": names,
+                    }
+                    logger.info(
+                        "[fc] bind_tools mode was 'none'; advertising the {} executable tool(s)", len(names)
+                    )
+                else:
+                    configurable = {**(configurable or {}), "cuga_lite_bind_tools_mode": "all"}
+                    logger.info(
+                        "[fc] bind_tools mode was 'none'; upgraded to 'all' for function-calling mode"
+                    )
         try:
             return await resolve_model_with_bind_tools(
                 active_model,
@@ -337,6 +453,27 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 return str(candidate).strip().lower()
         return _bind_tools_mode_from_settings()
 
+    async def _tool_approval_policies_exist(self, config: Any) -> bool:
+        """True when an enabled tool-approval policy is configured.
+
+        Function-calling has no approval interrupt yet — CodeAct's runs on the
+        generated code string, after the seam — so the mode refuses to start
+        rather than run a guarded tool unprompted. On a storage error this
+        warns and proceeds, exactly as CodeAct's own approval check does.
+        """
+        from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+        from cuga.backend.cuga_graph.policy.models import PolicyType
+
+        try:
+            policy_system = PolicyConfigurable.from_config(config or {})
+            policies = await policy_system.agent.storage.list_policies(
+                policy_type=PolicyType.TOOL_APPROVAL, enabled_only=True, limit=1
+            )
+            return bool(policies)
+        except Exception as exc:
+            logger.warning("[fc] could not query tool-approval policies ({}); proceeding", exc)
+            return False
+
     async def execute_call_model_fc(
         self,
         *,
@@ -350,19 +487,25 @@ class AgentGraphAdapter(CoreGraphAdapter):
         modified_messages: list,
         budget_exhausted: bool,
         playbook_fired: bool,
+        variables_addendum: str = "",
     ) -> Optional[Command]:
         """Function-calling turn: invoke with real message objects, route on ``tool_calls``.
 
         Returns ``None`` in codeact mode so the shared CodeAct path runs untouched.
         Otherwise builds the outbound list from ``system_content`` (the FC prompt
         that ``prepare`` selected), the few-shot demos as chat messages, and the
-        sanitized history — hands them straight to ``bound.ainvoke`` so the shared
-        dict serializer (which flattens ``tool_calls``) is never involved — then:
+        history normalised into a provider-valid transcript — hands them straight
+        to ``bound.ainvoke`` so the shared dict serializer is never involved — then:
 
         - ``tool_calls`` present  -> ``Command(goto="tool_exec")``, assistant turn kept verbatim
         - otherwise               -> final answer, ``END``
+        - an empty reply gets one corrective turn, like the CodeAct path
         - a fenced code block with no ``tool_calls`` is a mode violation: it is
           never executed; the model gets one corrective turn instead.
+
+        Refuses to start when an enabled tool-approval policy exists: there is
+        no approval interrupt on this path yet, and silently running a guarded
+        tool is worse than not running at all.
         """
         if self._execution_mode(configurable) != EXECUTION_MODE_FUNCTION_CALLING:
             return None
@@ -371,11 +514,31 @@ class AgentGraphAdapter(CoreGraphAdapter):
             TOOL_BUDGET_EXHAUSTED_INSTRUCTION,
         )
 
+        cfg = configurable or {}
+        history: list = list(modified_messages)
+
+        if settings.policy.enabled and await self._tool_approval_policies_exist(config):
+            logger.error(
+                "[fc] refusing to start: an enabled tool-approval policy exists and "
+                "function-calling mode has no approval interrupt"
+            )
+            return create_error_command(
+                self, history, AIMessage(content=FC_TOOL_APPROVAL_UNSUPPORTED), state.step_count
+            )
+
         msgs: List[BaseMessage] = [SystemMessage(content=system_content)]
         msgs.extend(_few_shot_to_messages(self.get_few_shot_messages(state)))
-        msgs.extend(_sanitize_for_replay(list(modified_messages)))
+        msgs.extend(_normalize_history_for_replay(history))
+        if variables_addendum:
+            # Outbound only, like call_model's CodeAct path (#600): never persisted.
+            for i in range(len(msgs) - 1, -1, -1):
+                if isinstance(msgs[i], HumanMessage):
+                    msgs[i] = msgs[i].model_copy(
+                        update={"content": _message_text(msgs[i]) + variables_addendum}
+                    )
+                    break
         if budget_exhausted:
-            # Outbound only, like call_model's CodeAct path: never persisted.
+            # Outbound only as well.
             msgs.append(HumanMessage(content=TOOL_BUDGET_EXHAUSTED_INSTRUCTION))
 
         clamp_watsonx_completion_for_messages(bound, msgs)
@@ -390,11 +553,18 @@ class AgentGraphAdapter(CoreGraphAdapter):
         if not isinstance(response, AIMessage):
             response = AIMessage(content=content, tool_calls=tool_calls)
 
-        if budget_exhausted:
-            # No tools were bound for the grace turn, so any tool_calls are noise.
+        max_steps = self.resolve_max_steps(state, cfg.get("cuga_lite_max_steps"))
+        new_step_count: int = state.step_count + 1
+        final_messages: list = history + [response]
+
+        if budget_exhausted and (tool_calls or invalid_tool_calls):
+            # No tools were bound for the grace turn, so the calls are noise — but
+            # every id still gets a reply, or the persisted thread cannot be replayed.
+            final_messages += _unanswered_call_replies(tool_calls, invalid_tool_calls, FC_BUDGET_CALL_REPLY)
             tool_calls, invalid_tool_calls = [], []
 
-        if tool_calls or invalid_tool_calls:
+        has_calls = bool(tool_calls or invalid_tool_calls)
+        if has_calls:
             try:
                 self._tracker.collect_step(
                     step=Step(
@@ -407,25 +577,30 @@ class AgentGraphAdapter(CoreGraphAdapter):
         else:
             self.on_response_processed(state, None, content, reasoning)
 
-        final_messages: list = list(modified_messages) + [response]
-        new_step_count: int = state.step_count + 1
+        # Step limit. On a breach with calls pending they are answered first, so
+        # the persisted transcript never ends on a dangling tool_calls turn.
         limit_cmd = (
             None
             if budget_exhausted
             else enforce_step_limit(
                 self,
                 state=state,
-                messages=final_messages,
+                messages=final_messages
+                + (
+                    _unanswered_call_replies(tool_calls, invalid_tool_calls, FC_STEP_LIMIT_CALL_REPLY)
+                    if has_calls
+                    else []
+                ),
                 new_step_count=new_step_count,
-                limit=self.resolve_max_steps(state, (configurable or {}).get("cuga_lite_max_steps")),
+                limit=max_steps,
             )
         )
         if limit_cmd is not None:
             return limit_cmd
 
-        meta_update = {self.metadata_key: self.build_metadata_update(state, playbook_fired=playbook_fired)}
+        base_meta = dict(self.build_metadata_update(state, playbook_fired=playbook_fired) or {})
 
-        if tool_calls or invalid_tool_calls:
+        if has_calls:
             logger.info("[fc] {} native tool_call(s) -> tool_exec", len(tool_calls) + len(invalid_tool_calls))
             return Command(
                 goto="tool_exec",
@@ -433,16 +608,34 @@ class AgentGraphAdapter(CoreGraphAdapter):
                     self.messages_key: final_messages,
                     "script": None,
                     "step_count": new_step_count,
-                    **meta_update,
+                    self.metadata_key: base_meta,
+                },
+            )
+
+        # Empty reply: one retry, same contract as the CodeAct path (#756).
+        both_blank = not content.strip() and not (reasoning or "").strip()
+        already_retried = bool(self.get_metadata(state).get(EMPTY_RESPONSE_CORRECTION_KEY))
+        if both_blank and not already_retried and not budget_exhausted and new_step_count < max_steps:
+            logger.warning(
+                "[fc] model returned an empty reply (no content, no reasoning, no tool_calls) — retrying once"
+            )
+            retry_meta = {**base_meta, EMPTY_RESPONSE_CORRECTION_KEY: True}
+            return Command(
+                goto="call_model",
+                update={
+                    self.messages_key: final_messages + [HumanMessage(content=EMPTY_RESPONSE_CORRECTION)],
+                    "script": None,
+                    "final_answer": "",
+                    "execution_complete": False,
+                    "step_count": new_step_count,
+                    self.metadata_key: retry_meta,
                 },
             )
 
         if "```" in content and not budget_exhausted:
             # Mode violation: never execute code here. One corrective turn, charged
             # as a step so it cannot loop past cuga_lite_max_steps.
-            meta = dict(self.get_metadata(state))
-            violations = int(meta.get("fc_mode_violations", 0) or 0) + 1
-            self.set_metadata(state, {**meta, "fc_mode_violations": violations})
+            violations = int(base_meta.get("fc_mode_violations", 0) or 0) + 1
             logger.warning("[fc] mode violation #{}: code block emitted in function-calling mode", violations)
             return Command(
                 goto="call_model",
@@ -452,7 +645,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
                     "final_answer": "",
                     "execution_complete": False,
                     "step_count": new_step_count,
-                    self.metadata_key: self.build_metadata_update(state, playbook_fired=playbook_fired),
+                    self.metadata_key: {**base_meta, "fc_mode_violations": violations},
                 },
             )
 
@@ -460,12 +653,12 @@ class AgentGraphAdapter(CoreGraphAdapter):
         if not final_answer.strip() and reasoning and not contains_harmony_tokens(reasoning):
             final_answer = reasoning.strip()
         if not final_answer.strip():
-            for m in reversed(modified_messages):
-                if isinstance(m, ToolMessage) and isinstance(m.content, str) and m.content.strip():
-                    final_answer = m.content
+            for m in reversed(history):
+                if _message_role(m) == "tool" and _message_text(m).strip():
+                    final_answer = _message_text(m)
                     break
         if not content.strip() and final_answer:
-            final_messages = list(modified_messages) + [AIMessage(content=final_answer)]
+            final_messages = history + [AIMessage(content=final_answer)]
 
         logger.info("[fc] no tool_calls -> final answer (END)")
         return Command(
@@ -476,7 +669,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 "final_answer": final_answer,
                 "execution_complete": True,
                 "step_count": new_step_count,
-                **meta_update,
+                self.metadata_key: base_meta,
             },
         )
 

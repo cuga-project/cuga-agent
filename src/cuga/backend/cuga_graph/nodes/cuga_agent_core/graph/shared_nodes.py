@@ -191,6 +191,22 @@ def create_call_model_node(
                 ai_content = msg.content if hasattr(msg, "content") else (msg.get("content") or "")
                 messages_for_model.append({"role": "assistant", "content": ai_content})
 
+            elif msg_role == "tool":
+                # A native tool result left by a function-calling turn on this thread.
+                # Matched on ``type``: persisted history crosses the SDK boundary as bare
+                # BaseMessage shells. Rendered like an execution output so a CodeAct
+                # turn on the same thread still sees what the tool returned.
+                modified_messages.append(msg)
+                tool_name = (
+                    getattr(msg, "name", None)
+                    or (msg.get("name") if isinstance(msg, dict) else None)
+                    or "tool"
+                )
+                tool_content = msg.content if hasattr(msg, "content") else (msg.get("content") or "")
+                messages_for_model.append(
+                    {"role": "user", "content": f"Tool result ({tool_name}):\n{tool_content}"}
+                )
+
             else:
                 modified_messages.append(msg)
                 logger.warning("call_model: skipping message {} with unknown role: {}", i, msg_role)
@@ -243,6 +259,7 @@ def create_call_model_node(
             modified_messages=modified_messages,
             budget_exhausted=budget_exhausted,
             playbook_fired=playbook_fired,
+            variables_addendum=variables_addendum,
         )
         if fc_command is not None:
             return fc_command

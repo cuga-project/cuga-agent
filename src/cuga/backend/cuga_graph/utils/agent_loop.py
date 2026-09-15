@@ -28,6 +28,28 @@ from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.observability.openlit_init import set_session_attribute
 
 
+def _native_tool_calls(messages: Any) -> list:
+    """``tool_calls`` on the last message of a function-calling turn (object or dict), else []."""
+    if not messages:
+        return []
+    last = messages[-1]
+    calls = last.get("tool_calls") if isinstance(last, dict) else getattr(last, "tool_calls", None)
+    return list(calls or [])
+
+
+def _tool_exec_step_output(messages: Any) -> str:
+    """Render the trailing run of tool results (one per native call) as execution output."""
+    lines: list = []
+    for msg in reversed(messages or []):
+        role = msg.get("type") if isinstance(msg, dict) else getattr(msg, "type", None)
+        if role != "tool":
+            break
+        name = (msg.get("name") if isinstance(msg, dict) else getattr(msg, "name", None)) or "tool"
+        content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+        lines.append(f"{name}: {content}")
+    return "\n".join(reversed(lines))
+
+
 class OutputFormat(str, Enum):
     WXO = "wxo"
     DEFAULT = "default"
@@ -394,6 +416,21 @@ class AgentLoop:
                             "variables": state_data.get("variables_storage", {}),
                         }
                         return StreamEvent(name="CodeAgent", data=json.dumps(output))
+                    elif _native_tool_calls(subgraph_messages):
+                        # Function-calling mode: show the native calls the way a code block is shown.
+                        calls_text = "\n".join(
+                            f"{c.get('name')}({json.dumps(c.get('args') or {}, ensure_ascii=False, default=str)})"
+                            for c in _native_tool_calls(subgraph_messages)
+                            if isinstance(c, dict)
+                        )
+                        output = {
+                            "code": calls_text,
+                            "execution_output": "",
+                            "steps_summary": [],
+                            "summary": "Tool calls issued, preparing to execute",
+                            "variables": state_data.get("variables_storage", {}),
+                        }
+                        return StreamEvent(name="CodeAgent", data=json.dumps(output))
                     else:
                         # Text/reasoning output - only when last chat turn is a non-empty assistant message
                         logger.info("call_model generated text response (no code)")
@@ -444,6 +481,21 @@ class AgentLoop:
                         # Skip empty sandbox events
                         logger.debug("Skipping empty sandbox event")
                         return StreamEvent(name="", data="")
+
+                # Function-calling mode: the step appended one ToolMessage per native call.
+                elif node_name == "tool_exec":
+                    tool_output = _tool_exec_step_output(subgraph_messages or [])
+                    if tool_output.strip():
+                        output = {
+                            "code": "",
+                            "execution_output": tool_output,
+                            "steps_summary": [],
+                            "summary": "Tool calls completed",
+                            "variables": state_data.get("variables_storage", {}),
+                        }
+                        return StreamEvent(name="CodeAgent", data=json.dumps(output))
+                    logger.debug("Skipping empty tool_exec event")
+                    return StreamEvent(name="", data="")
 
                 # Default handling for other subgraph nodes
                 logger.debug(f"Unhandled subgraph node: {node_name}")

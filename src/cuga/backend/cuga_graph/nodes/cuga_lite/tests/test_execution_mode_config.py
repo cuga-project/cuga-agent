@@ -70,12 +70,16 @@ def test_real_settings_resolve_to_the_defaults():
         ("function_calling", EXECUTION_MODE_FUNCTION_CALLING),
         (" Function-Calling ", EXECUTION_MODE_FUNCTION_CALLING),
         ("fc", EXECUTION_MODE_FUNCTION_CALLING),
-        ("native", EXECUTION_MODE_FUNCTION_CALLING),
-        ("tool_calling", EXECUTION_MODE_FUNCTION_CALLING),
     ],
 )
 def test_execution_mode_aliases(raw, expected):
     assert normalize_execution_mode(raw) == expected
+
+
+def test_execution_mode_accepts_only_the_documented_spellings():
+    """Two canonical values plus ``fc``; anything else is a typo and falls back loudly."""
+    for typo in ("native", "tool_calling", "functioncalling", "code", "sandbox", "1", "true"):
+        assert normalize_execution_mode(typo) == EXECUTION_MODE_CODEACT, typo
 
 
 def test_unknown_execution_mode_falls_back_to_codeact_without_raising():
@@ -90,12 +94,13 @@ def test_unknown_execution_mode_falls_back_to_codeact_without_raising():
         (None, STEP_DISCIPLINE_OFF),
         ("off", STEP_DISCIPLINE_OFF),
         (False, STEP_DISCIPLINE_OFF),
-        ("0", STEP_DISCIPLINE_OFF),
         ("bogus", STEP_DISCIPLINE_OFF),
+        ("1", STEP_DISCIPLINE_OFF),
+        ("stepwise", STEP_DISCIPLINE_OFF),
         ("one_tool_per_step", STEP_DISCIPLINE_ONE_TOOL_PER_STEP),
         ("One_Tool_Per_Step", STEP_DISCIPLINE_ONE_TOOL_PER_STEP),
+        ("one-tool-per-step", STEP_DISCIPLINE_ONE_TOOL_PER_STEP),
         (True, STEP_DISCIPLINE_ONE_TOOL_PER_STEP),
-        ("stepwise", STEP_DISCIPLINE_ONE_TOOL_PER_STEP),
     ],
 )
 def test_step_discipline_aliases(raw, expected):
@@ -141,7 +146,7 @@ def test_model_profile_sits_between_configurable_and_settings(monkeypatch):
         mrp,
         "runtime_defaults_for_model",
         lambda name: (
-            {"cuga_lite_execution_mode": "fc", "cuga_lite_step_discipline": "one"}
+            {"cuga_lite_execution_mode": "fc", "cuga_lite_step_discipline": "one_tool_per_step"}
             if name == "profiled-model"
             else {}
         ),
@@ -268,7 +273,7 @@ def test_build_agent_graph_adds_tool_exec_only_when_given():
         tool_exec_node=tool_exec,
     )
     assert "tool_exec" in with_node.nodes
-    assert ("tool_exec", "call_model") in with_node.edges, "tool results always go back to the model"
+    assert ("tool_exec", "call_model") not in with_node.edges, "it routes with a Command, no static edge"
 
 
 def test_cuga_lite_graph_always_wires_tool_exec_so_mode_can_switch_per_invoke():
@@ -281,4 +286,4 @@ def test_cuga_lite_graph_always_wires_tool_exec_so_mode_can_switch_per_invoke():
     graph = create_cuga_lite_graph(model=MagicMock(), tool_provider=provider, apps_list=[])
 
     assert {"prepare", "call_model", "sandbox", "tool_exec"} <= set(graph.nodes)
-    assert ("tool_exec", "call_model") in graph.edges
+    assert ("tool_exec", "call_model") not in graph.edges

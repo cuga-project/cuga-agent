@@ -13,7 +13,7 @@ from typing import Any, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.graph import END
 from langgraph.types import Command
 
@@ -136,3 +136,30 @@ async def test_a_command_from_the_hook_short_circuits_the_node(mock_summarize):
     )
     assert kw["configurable"] == {"cuga_lite_max_steps": 7}
     assert kw["budget_exhausted"] is False and kw["playbook_fired"] is False
+
+
+@pytest.mark.asyncio
+@patch(_SUMMARIZE, new_callable=AsyncMock)
+async def test_tool_results_left_by_a_function_calling_turn_reach_the_codeact_model(mock_summarize):
+    """Switching a thread from function-calling to codeact must not hide what the
+    tools returned. Both shapes occur: real ToolMessages inside one run, and bare
+    ``type="tool"`` shells after the SDK boundary dropped the subclass."""
+    mock_summarize.side_effect = lambda messages, *a, **kw: messages
+    model = _mock_model("Plain answer.")
+    state = _make_state()
+    state.chat_messages = [
+        HumanMessage(content="echo 7"),
+        AIMessage(
+            content="", tool_calls=[{"name": "echo", "args": {"value": 7}, "id": "c1", "type": "tool_call"}]
+        ),
+        ToolMessage(content="7", tool_call_id="c1", name="echo"),
+        BaseMessage(type="tool", content="8", name="echo"),
+        HumanMessage(content="what did the tools say?"),
+    ]
+    node = create_call_model_node(_BaseAdapter(), model, _mock_settings())
+
+    await node(state, config=None)
+
+    sent = model.ainvoke.await_args[0][0]
+    assert {"role": "user", "content": "Tool result (echo):\n7"} in sent
+    assert {"role": "user", "content": "Tool result (echo):\n8"} in sent
