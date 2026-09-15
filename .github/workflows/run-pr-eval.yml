@@ -1,0 +1,202 @@
+name: Run PR Evaluation
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: run-pr-eval-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  run-pr-eval:
+    name: Run PR Evaluation
+    if: >
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/run-pr-eval') &&
+      (
+        github.event.comment.author_association == 'OWNER' ||
+        github.event.comment.user.login == 'AnkitaNaik' ||
+        github.event.comment.user.login == 'Sergey-Zeltyn' ||
+        github.event.comment.user.login == 'haroldship'
+      )
+    runs-on: [self-hosted, linux, run-pr-eval]
+    timeout-minutes: 120
+
+    steps:
+      - name: Get PR head
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+
+            core.setOutput("head_repo", pr.data.head.repo.full_name);
+            core.setOutput("head_ref", pr.data.head.ref);
+            core.setOutput("head_sha", pr.data.head.sha);
+
+      - name: Checkout PR head commit
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          repository: ${{ steps.pr.outputs.head_repo }}
+          ref: ${{ steps.pr.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: Verify PR code
+        shell: bash
+        run: |
+          echo "Workspace: ${GITHUB_WORKSPACE}"
+          echo "PR SHA:"
+          git rev-parse HEAD
+
+          echo "CUGA source:"
+          if [[ -d "${GITHUB_WORKSPACE}/src/cuga" ]]; then
+            ls -la "${GITHUB_WORKSPACE}/src/cuga" | head
+          else
+            echo "${GITHUB_WORKSPACE}/src/cuga not found"
+          fi
+
+      - name: Parse eval provider
+        id: eval-provider
+        shell: bash
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          provider="rits"
+          normalized_comment="${COMMENT_BODY//$'\r'/ }"
+          normalized_comment="${normalized_comment//$'\n'/ }"
+
+          for token in ${normalized_comment}; do
+            case "${token}" in
+              provider=*)
+                provider="${token#provider=}"
+                ;;
+            esac
+          done
+
+          provider="$(printf '%s' "${provider}" | tr '[:upper:]' '[:lower:]')"
+          echo "provider=${provider}" >> "${GITHUB_OUTPUT}"
+
+      - name: Run AppWorld evaluation
+        id: evaluation
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ steps.eval-provider.outputs.provider == 'litellm' && secrets.OPENAI_API_KEY || '' }}
+          RITS_API_KEY: ${{ steps.eval-provider.outputs.provider == 'rits' && secrets.RITS_API_KEY || '' }}
+          LITE_LLM_KEY: ${{ steps.eval-provider.outputs.provider == 'litellm' && secrets.LITE_LLM_KEY || '' }}
+          AGENT_SETTING_CONFIG: settings.rits.toml
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          MODEL_NAME: ${{ vars.MODEL_NAME }}
+          ENVIRONMENT_URL: http://127.0.0.1:8000
+          APIS_URL: http://127.0.0.1:9000
+          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          set +e
+
+          mkdir -p "${HOME}/pr-regression-testing/logs"
+          run_started_at="$(date -u +"%Y%m%dT%H%M%SZ")"
+          short_sha="${PR_HEAD_SHA:0:12}"
+          log_prefix="pr-${PR_NUMBER}-${short_sha}-${run_started_at}"
+          output_log="${HOME}/pr-regression-testing/logs/${log_prefix}-run-pr-eval-output.md"
+          exit_code_log="${HOME}/pr-regression-testing/logs/${log_prefix}-run-pr-eval-exit-code.txt"
+
+          bash "${HOME}/pr-regression-testing/cuga-eval/scripts/pr-regression-testing/run-pr-regression-eval.sh" \
+            "${COMMENT_BODY}" \
+            > "${output_log}" 2>&1
+
+          status=$?
+
+          echo "${status}" > "${exit_code_log}"
+
+          echo "Saved output log: ${output_log}"
+          echo "Saved exit code log: ${exit_code_log}"
+
+          cp "${output_log}" "${GITHUB_WORKSPACE}/run-pr-eval-output.md"
+          cp "${exit_code_log}" "${GITHUB_WORKSPACE}/run-pr-eval-exit-code.txt"
+
+          exit "${status}"
+
+      - name: Upload full evaluation output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-pr-eval-output-pr-${{ github.event.issue.number }}-${{ github.run_id }}
+          path: |
+            run-pr-eval-output.md
+            run-pr-eval-exit-code.txt
+          if-no-files-found: warn
+
+      - name: Post result to PR
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          OUTPUT_PATH: ${{ github.workspace }}/run-pr-eval-output.md
+          EXIT_CODE_PATH: ${{ github.workspace }}/run-pr-eval-exit-code.txt
+        with:
+          script: |
+            const fs = require("fs");
+
+            const outputPath = process.env.OUTPUT_PATH;
+            const exitCodePath = process.env.EXIT_CODE_PATH;
+
+            let output = fs.existsSync(outputPath)
+              ? fs.readFileSync(outputPath, "utf8")
+              : "";
+
+            const exitCode = fs.existsSync(exitCodePath)
+              ? fs.readFileSync(exitCodePath, "utf8").trim()
+              : "unknown";
+
+            const startMarker = "######## REPORT START ########";
+            const endMarker = "######## REPORT END ########";
+            const escapedStart = startMarker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const escapedEnd = endMarker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const reportPattern = new RegExp(
+              `${escapedStart}\\s*([\\s\\S]*?)\\s*${escapedEnd}`,
+              "g"
+            );
+
+            const reportBlocks = [...output.matchAll(reportPattern)]
+              .map((match) => match[1].trim())
+              .filter(Boolean);
+
+            if (reportBlocks.length > 0) {
+              output = reportBlocks.join("\n\n");
+            } else {
+              output = "No report section found between REPORT START and REPORT END markers.";
+            }
+
+            if (output.length > 60000) {
+              output = `${output.slice(0, 60000)}\n\n...output truncated...`;
+            }
+
+            const result = exitCode === "0" ? "SUCCESS" : `FAILED (${exitCode})`;
+            const body = [
+              "## PR Evaluation",
+              "",
+              `- Triggered by: @${context.payload.comment.user.login}`,
+              `- Command: \`${context.payload.comment.body}\``,
+              `- PR head SHA: \`${{ steps.pr.outputs.head_sha }}\``,
+              `- Result: **${result}**`,
+              "",
+              output,
+            ].join("\n");
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
