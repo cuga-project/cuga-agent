@@ -4,10 +4,14 @@
 
 export function getApiBaseUrl(): string {
   if (typeof window === "undefined") return "http://localhost:7860";
-  const { hostname, protocol, origin, port } = window.location;
-  if (hostname !== "localhost" && hostname !== "127.0.0.1") return origin;
-  if (port === "3002") return origin;
-  return `${protocol}//${hostname}:7860`;
+  const { origin, protocol } = window.location;
+  // The SPA is served BY the FastAPI backend, so the API lives at the SAME origin — on whatever
+  // port served this page: 7860, 8100, the :3002 webpack dev server (which proxies /api → backend),
+  // or a production domain. This must NOT hardcode a port, or a CUGA server on any non-7860 port
+  // (e.g. the events server on :8100) has its API calls silently sent to :7860 instead.
+  // Only fall back to the default CUGA port for non-web origins (electron file://), which have none.
+  if (protocol === "http:" || protocol === "https:") return origin;
+  return "http://localhost:7860";
 }
 
 let authConfigCache: { enabled: boolean; authorization_enabled: boolean } | null = null;
@@ -45,12 +49,74 @@ export async function getUiConfig(): Promise<UiConfig> {
   return uiConfigCache;
 }
 
+// ── the eventing layer's origin ───────────────────────────────────────────────────────────────
+// EVENTS_API_URL unset: nothing to redirect to, so this resolves to same-origin — which is also
+// the safe fallback when /api/ui/config cannot be read. SPLIT deployment: the UI is served by cuga-core
+// while /api/events/*, /api/concierge and /invoke live on the events service, so those calls must
+// be sent there. The server tells us where via /api/ui/config (EVENTS_API_URL); resolved once and
+// cached, and any failure falls back to same-origin rather than breaking the page.
+const EVENTS_PATHS = ["/api/events", "/api/concierge", "/invoke"];
+// ...EXCEPT the admin endpoints. Those now require the gateway token on the eventing service
+// (they used to accept a caller-asserted identity, so an unauthenticated POST could create an
+// admin). A browser cannot hold that secret, so these go to CUGA instead, which attaches the
+// token and forwards — behind the same auth that protects the Manage UI. Routing them to the
+// events origin directly would simply 401.
+const CORE_ONLY_PATHS = ["/api/events/admin"];
+let eventsBaseCache: string | null = null;
+let eventsBaseInFlight: Promise<string> | null = null;
+
+// Resolution lives HERE, with the cache it mutates and the `apiFetch` that calls it, because it is
+// routing rather than an events endpoint: it answers "which origin does this path go to". Moving it
+// into ./events/api.ts once separated it from `eventsBaseCache`/`eventsBaseInFlight` above, leaving
+// an undefined identifier on both sides of the split — silent, because every caller wraps this in a
+// catch, so the only symptom was that events UI quietly stopped existing.
+export async function getEventsBaseUrl(): Promise<string> {
+  if (eventsBaseCache !== null) return eventsBaseCache;
+  if (!eventsBaseInFlight) {
+    eventsBaseInFlight = fetch(`${getApiBaseUrl()}/api/ui/config`, { credentials: "include" })
+      .then((r): Promise<Record<string, unknown>> => (r.ok ? r.json() : Promise.resolve({})))
+      .then((c): string => {
+        const configured = String(c?.events_api_url ?? "").replace(/\/$/, "");
+        const resolved = configured || getApiBaseUrl();
+        eventsBaseCache = resolved;
+        return resolved;
+      })
+      .catch((): string => {
+        const resolved = getApiBaseUrl();
+        eventsBaseCache = resolved;
+        return resolved;
+      });
+  }
+  return eventsBaseInFlight;
+}
+
+/** The resolved events origin, SYNCHRONOUSLY, for the few places that cannot await.
+ *
+ * `window.open(...)` must be called inside the click handler's user-gesture window; awaiting first
+ * hands the browser an un-gestured `open()` and Safari and Firefox block it. So the connect link
+ * reads the already-resolved cache instead — populated by the first `apiFetch` to an events path,
+ * which the Studio always issues before a Connect button can be on screen.
+ *
+ * Cold cache falls back to same-origin, which is exactly the old behaviour, and kicks off the
+ * resolution so a second attempt is right.
+ */
+export function eventsBaseUrlSync(): string {
+  if (eventsBaseCache !== null) return eventsBaseCache;
+  void getEventsBaseUrl();
+  return getApiBaseUrl();
+}
+
 export async function apiFetch(
   url: string | URL,
   init?: RequestInit
 ): Promise<Response> {
   const base = getApiBaseUrl();
-  const fullUrl = typeof url === "string" && !url.startsWith("http") ? `${base}${url.startsWith("/") ? "" : "/"}${url}` : url;
+  const isEvents =
+    typeof url === "string" &&
+    EVENTS_PATHS.some((p) => url.startsWith(p)) &&
+    !CORE_ONLY_PATHS.some((p) => url.startsWith(p));
+  const callBase = isEvents ? await getEventsBaseUrl() : base;
+  const fullUrl = typeof url === "string" && !url.startsWith("http") ? `${callBase}${url.startsWith("/") ? "" : "/"}${url}` : url;
   const res = await fetch(fullUrl, {
     ...init,
     credentials: "include",
@@ -715,3 +781,10 @@ export function deleteSessionKnowledgeCollection(
     method: "DELETE",
   }, threadId);
 }
+
+// ── the events layer's HTTP surface ────────────────────────────────────────────────────────────
+// Defined in ./events/api.ts and re-exported here so callers outside the events UI (App, the chat
+// landing page, the Manage pages — all of which ask `getEventsStatus()` whether to show a Studio
+// link) keep importing from one place. Delete the events layer and this block goes with it; nothing
+// above this line knows the events service exists.
+export * from "./events/api";

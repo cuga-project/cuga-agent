@@ -408,6 +408,37 @@ def knowledge_vector_backend_for_settings(settings: Any) -> str:
     return "storage_local"
 
 
+def _profile_key(
+    env_key: str,
+    profile: dict[str, Any],
+    fallback: dict[str, Any],
+    key: str,
+    default: Any,
+    cast: Any = None,
+) -> Any:
+    """Resolve a profile-owned key, letting an explicit env override win.
+
+    The RAG profile is deliberately the source of truth over
+    ``settings.toml`` so that switching ``rag_profile`` actually changes
+    behaviour. An environment variable is different in kind: it is an
+    explicit operator action, not a default sitting in a config file.
+
+    Without this, every ``cuga start`` flag documented as "Sets
+    DYNACONF_KNOWLEDGE__…" is silently dead whenever a profile is active —
+    which is always, since ``rag_profile`` defaults to ``standard``. That
+    left no working way to lower ``embedding_batch_size`` on a
+    memory-constrained deployment short of editing TOML inside the image.
+
+    Mirrors the ``CUGA_MAX_INGEST_WORKERS`` escape hatch already used for
+    ingest concurrency below. A bad value fails loudly at startup via the
+    cast plus the range checks in ``__post_init__``.
+    """
+    raw = os.environ.get(env_key)
+    if raw is not None and raw.strip() != "":
+        return cast(raw) if cast else raw
+    return profile.get(key, fallback.get(key, default))
+
+
 def load_profile(profile_name: str) -> dict[str, Any]:
     """Load a single RAG profile from its TOML file.
 
@@ -1085,8 +1116,22 @@ class KnowledgeConfig:
             gpu_required=embeddings.get("gpu_required", False),
             embedding_extra_params=dict(embeddings.get("extra_params", {}) or {}),
             pgvector_connection_string=kb.get("pgvector_connection_string", ""),
-            chunk_size=profile_chunking.get("chunk_size", chunking.get("chunk_size", 1000)),
-            chunk_overlap=profile_chunking.get("chunk_overlap", chunking.get("chunk_overlap", 200)),
+            chunk_size=_profile_key(
+                "DYNACONF_KNOWLEDGE__CHUNKING__CHUNK_SIZE",
+                profile_chunking,
+                chunking,
+                "chunk_size",
+                1000,
+                int,
+            ),
+            chunk_overlap=_profile_key(
+                "DYNACONF_KNOWLEDGE__CHUNKING__CHUNK_OVERLAP",
+                profile_chunking,
+                chunking,
+                "chunk_overlap",
+                200,
+                int,
+            ),
             rag_profile=profile_name,
             default_limit=profile_search.get("default_limit", search.get("default_limit", 10)),
             default_score_threshold=profile_search.get(
@@ -1104,13 +1149,44 @@ class KnowledgeConfig:
                 or profile_engine.get("max_ingest_workers", engine.get("max_ingest_workers", 2))
             ),
             max_pending_tasks=engine.get("max_pending_tasks", 10),
-            embedding_batch_size=profile_embeddings.get("batch_size", embeddings.get("batch_size", 64)),
-            embedding_concurrency=profile_embeddings.get("concurrency", embeddings.get("concurrency", 4)),
-            vector_insert_batch_size=profile_engine.get(
-                "vector_insert_batch_size", engine.get("vector_insert_batch_size", 200)
+            embedding_batch_size=_profile_key(
+                "DYNACONF_KNOWLEDGE__EMBEDDINGS__BATCH_SIZE",
+                profile_embeddings,
+                embeddings,
+                "batch_size",
+                64,
+                int,
             ),
-            docling_pdf_mode=profile_docling.get("pdf_mode", docling.get("pdf_mode", "accurate")),
-            docling_layout_engine=profile_docling.get("layout_engine", docling.get("layout_engine", "auto")),
+            embedding_concurrency=_profile_key(
+                "DYNACONF_KNOWLEDGE__EMBEDDINGS__CONCURRENCY",
+                profile_embeddings,
+                embeddings,
+                "concurrency",
+                4,
+                int,
+            ),
+            vector_insert_batch_size=_profile_key(
+                "DYNACONF_KNOWLEDGE__ENGINE__VECTOR_INSERT_BATCH_SIZE",
+                profile_engine,
+                engine,
+                "vector_insert_batch_size",
+                200,
+                int,
+            ),
+            docling_pdf_mode=_profile_key(
+                "DYNACONF_KNOWLEDGE__DOCLING__PDF_MODE",
+                profile_docling,
+                docling,
+                "pdf_mode",
+                "accurate",
+            ),
+            docling_layout_engine=_profile_key(
+                "DYNACONF_KNOWLEDGE__DOCLING__LAYOUT_ENGINE",
+                profile_docling,
+                docling,
+                "layout_engine",
+                "auto",
+            ),
             docling_drop_page_chrome=profile_docling.get(
                 "drop_page_chrome", docling.get("drop_page_chrome", "enforce")
             ),

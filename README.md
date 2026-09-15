@@ -37,6 +37,7 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Code generation profiles** (fast / balanced / accurate) | `[features] cuga_mode` in [`settings.toml`](src/cuga/settings.toml) · [`configurations/modes/`](src/cuga/configurations/modes/) |
 > | **Hybrid API + browser tasks** | `[advanced_features] mode = 'hybrid'` · Playwright + [browser extension](src/frontend_workspaces/extension/readme.md) |
 > | **Multi-agent (CugaSupervisor)** | `cuga start demo_supervisor` · `[supervisor]` in [`settings.toml`](src/cuga/settings.toml) |
+> | **Event-driven agents** (channels · triggers · standing flows) | `cuga start demo` **+** `python -m cuga.backend.events.service` — web chat, Slack/Discord/Telegram, webhooks, cron/poll/push flows armed from natural language with a human confirming each one, one supervisor agent over a YAML roster. Runs as **a second service beside CUGA** (:7860 + :8100); CUGA is unchanged when it is not deployed. Setup and the per-connector guides live in the events documentation repository. |
 > | **A2A & remote agents** | External agent entries in supervisor config · [CugaSupervisor](https://docs.cuga.dev/docs/sdk/cuga_supervisor) |
 > | **Policies & HITL** | [Policies SDK](https://docs.cuga.dev/docs/sdk/policies/) — Intent Guard, Playbook, Tool Approval, Tool Guide, Output Formatter |
 > | **Manage & publish** | `cuga start manager` · draft tools, MCP, LLM, and policies in the web UI, then **publish** a versioned config for production chat ([details](#manage-publish-and-self-hosting)) |
@@ -565,6 +566,49 @@ Enabling it puts tool tracking in a **timings-only** mode unless you passed
 arguments, results or errors. Coverage matches `track_tool_calls` (registry/MCP
 tools and `@tracked_tool` functions).
 
+### Configuring the final answer
+
+Everything about the final answer lives behind four knobs — this table is the map:
+
+| What | Where | Notes |
+|---|---|---|
+| Which LLM composes it | `[agent.final_answer.model]` (model TOMLs) | existing |
+| Whether the composer runs | `features.final_answer` (mode TOMLs) | `fast` mode disables it |
+| Guidance for the composer | `[final_answer].instructions` | fills the composer prompt's instructions slot — **ignored in default Lite mode**; use `special_instructions` / SDK `final_answer="..."` there |
+| Deterministic shaping | `[final_answer].function` | dotted path to a pure `(str) -> str` — imported **and called** with the answer, so point only at trusted code |
+
+```toml
+[final_answer]
+instructions = "Answer with the bare value only — no units, no prose."
+function = "my_pkg.formats.bare"   # applied to the delivered answer, before citations
+```
+
+Or from the SDK:
+
+```python
+agent = CugaAgent(final_answer="Answer with the bare value only.")   # LLM guidance
+agent = CugaAgent(final_answer=my_fn)                                 # deterministic function
+agent = CugaAgent(final_answer=FinalAnswerConfig(instructions="...", function=my_fn))
+```
+
+The function contract: **pure and deterministic** (idempotent recommended),
+applied once per delivered answer, and it can never break delivery — any
+failure logs and returns the answer unchanged. It runs after harmony-token
+sanitization and before citation resolution; sanitization is not replaceable.
+`instructions` guide the `FinalAnswerAgent` composer (full pipeline); in the
+default CugaLite mode the answer is composed by CugaLite itself — use
+`special_instructions` there (the SDK `final_answer="..."` form does this for
+you). Deterministic contracts (e.g. benchmark answer shapes) belong in
+`function`, not `instructions` — prompts cannot guarantee an exact string.
+
+Scope notes: answers synthesized by a `CugaSupervisor` itself (as opposed to
+forwarded sub-agent answers) are not shaped in this version. The AppWorld
+benchmark path keeps its own answer pipeline — its SDK post-processing
+re-extracts the answer and overwrites `InvokeResult.answer`, so in-graph
+shaping does not survive there. The chat transcript deliberately carries the
+pre-finalize text — the function shapes `result.answer`, and is not a
+redaction mechanism.
+
 ### Knowledge Base
 
 CUGA includes a built-in knowledge base powered by LangChain and local vector stores. **Docling** is integrated for document ingestion: it parses and normalizes PDFs, Office files, HTML, Markdown, images, and other supported types before chunking and embedding, so the pipeline stays self-contained with no external document services.
@@ -671,6 +715,20 @@ Orchestrate multiple agents with a single supervisor: delegate tasks to speciali
 ```bash
 cuga start demo_supervisor
 ```
+
+> [!IMPORTANT]
+> **Sub-agents are scoped to the registry apps they name.** An agent that lists `apps:` or
+> `mcp_servers:` receives tools from *those* only; an agent that lists neither still receives
+> everything.
+>
+> Scoping on `apps:` has worked this way since the multi-agent supervisor landed. What is new is
+> that **`mcp_servers:` entries now count as named apps too.** They did not before, so an agent
+> declaring only `mcp_servers:` and no `apps:` received the whole registry regardless — if such a
+> roster named one server while relying on tools from another, it worked by accident and will now
+> see only what it names. Add the missing entry to `apps:` or `mcp_servers:`.
+>
+> Names are matched exactly as written — an app name is whatever key your MCP config registers it
+> under, and nothing rewrites it in transit.
 
 ### Quick Start
 

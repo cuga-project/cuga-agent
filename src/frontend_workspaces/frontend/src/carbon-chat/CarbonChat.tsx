@@ -15,6 +15,8 @@ import {
   type RenderUserDefinedState,
   CarbonTheme,
   BusEventType,
+  MessageResponseTypes,
+  type MessageResponse,
 } from '@carbon/ai-chat';
 import { FileText, Loader2, Paperclip, RotateCcw, X } from "lucide-react";
 import {
@@ -34,6 +36,7 @@ import {
 } from "../knowledge/useSessionKnowledgeAttachments";
 import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './customSendMessage';
 import { customLoadHistory } from './customLoadHistory';
+import { useEventsInbox } from '../events/useEventsInbox';
 import { initAgentProfile, getResponseUserProfile } from './carbonChatHelpers';
 import { SlashCommandDropdown } from './SlashCommandDropdown';
 import { findShadowRoots } from './composerTextarea';
@@ -840,6 +843,10 @@ const CarbonChat = ({
       }
     }
   }, [threadId]);
+
+  // Armed-flow fires land in the transcript. The whole mechanism — mailbox, cursor, polling —
+  // lives in the events UI; this is the single line that connects it to the chat.
+  useEventsInbox(threadId, chatInstanceRef, getResponseUserProfile, useDraft);
 
   // Wrap customLoadHistory to pass threadId and disableHistory
   const handleCustomLoadHistory = useCallback(

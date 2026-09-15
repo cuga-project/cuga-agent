@@ -1,0 +1,306 @@
+"""Import a roster YAML into the agent config store, so there is ONE runtime path.
+
+WHY THIS EXISTS
+---------------
+There were two ways to describe "a supervisor and its sub-agents":
+
+    a roster YAML  → load_supervisor_config()          → used by /run   (events)
+    the config DB  → build_agents_from_stored_subagents() → used by /stream (#433)
+
+Both already ended in the same builder, so nothing was duplicated in the *code* — but the two
+config SOURCES meant `/run` and the Manage UI could disagree about what the roster is, and the
+9 events agents were invisible in a UI that lists every other agent.
+
+This collapses that. The store is the only thing read at runtime; the YAML is an import format,
+exactly like the JSON import the Manage UI already has. A deployment still boots from a file it
+ships in the image — set ``CUGA_SUPERVISOR_ROSTER`` and the roster is seeded before the first
+request — but nothing parses YAML to answer a request.
+
+OWNERSHIP RULE
+--------------
+An agent NAMED IN THE YAML is owned by the YAML *until a human edits it*. Seeding rewrites it on
+every boot, so the file stays the reviewed source of truth and a container replace restores it —
+but only while nobody has changed it in Manage. Each seeded record carries a hash of what the
+roster wrote (``_roster_seed_hash``); if the stored config no longer matches that hash, somebody
+edited it and seeding leaves it alone.
+
+Without that, every restart silently reverted the Manage UI to the YAML, and the edit looked like
+it had never been saved. An agent added through the UI has an id the YAML never mentions, so
+seeding never touches it either way.
+
+That covers each agent's own record, but NOT its membership of the supervisor, which lives in the
+supervisor's config — a record the YAML does own and does rewrite. Seeding the file's list verbatim
+dropped UI-added sub-agents on every restart: still in the registry, no longer in the supervisor,
+reachable by nobody.
+
+`_partition_prior` keeps them, and uses ROSTER_OWNED_KEY to stay honest in the other direction: a
+ref the file no longer names is kept only if the UI put it there. An agent the roster itself dropped
+is removed, so the file still owns its own entries and stale agents cannot accumulate.
+
+IDEMPOTENCE
+-----------
+``save_config`` bumps to ``max(version) + 1`` on every call, so naive re-seeding would add a
+version on every container restart. We compare against the published config first and use
+``update_published_config_at_version`` to rewrite in place, so a restart that changes nothing
+writes nothing.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any, Dict, List, Optional, Tuple
+
+import yaml
+from loguru import logger
+
+# The supervisor's own id in the store. The roster's supervisor block is not a sub-agent, and the
+# events layer addresses exactly one agent by name — see run_routes and the concierge.
+SUPERVISOR_AGENT_ID = "cuga"
+
+# Marks an agent record the seeder owns, so a re-seed can tell "the UI added this"
+# from "the roster used to declare this and no longer does".
+ROSTER_OWNED_KEY = "seeded_from_roster"
+
+
+def roster_path() -> str:
+    """The configured roster file, or "" when this server is not seeding one.
+
+    Same variable the events deployment already sets, so adopting the store path needs no
+    deployment change. ` # trailing comments` are stripped, as every other reader here does.
+    """
+    return (os.environ.get("CUGA_SUPERVISOR_ROSTER", "") or "").split(" #", 1)[0].strip()
+
+
+def _agent_id(name: str) -> str:
+    """The roster name, used VERBATIM as the store id.
+
+    Deliberately NOT ``agents_routes._slugify``, which rewrites anything outside ``[a-z0-9]`` to a
+    hyphen. That would rename half this roster — ``code_auditor`` → ``code-auditor`` — and the name
+    is the agent's identity everywhere else: the concierge routes on it, ``?agent=`` pins on it, and
+    live subscriptions are already armed against it. Renaming would break them silently.
+
+    It also has to equal the ``ref`` stored in ``supervisor.subAgents``, because that ref is what
+    ``build_agents_from_stored_subagents`` uses as the agent's name. When the two diverged, every
+    underscore-named agent came back from /run/agents with a blank description — i.e. unroutable.
+
+    ``--`` is the one sequence that cannot survive: ``config_store._parse_agent_id`` splits on it.
+    """
+    return str(name).strip().replace("--", "-")
+
+
+def _app_names(entry: Dict[str, Any]) -> List[str]:
+    """Registry apps this agent declares, from either `apps:` or `mcp_servers:`.
+
+    Stored configs express apps as ``tools: [{name: ...}]`` — the same shape the Manage UI writes
+    and ``build_agents_from_stored_subagents`` reads back.
+    """
+    names: List[str] = []
+    for key in ("apps", "mcp_servers"):
+        for item in entry.get(key) or []:
+            n = item.get("name") if isinstance(item, dict) else str(item)
+            if n:
+                names.append(n)
+    return names
+
+
+def _sub_agent_config(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """One roster entry → the stored config shape `create_agent` + the config editor produce."""
+    name = str(entry.get("name") or "").strip()
+    # A roster entry may carry either key; the old YAML reader accepted both, so accept both here
+    # or an entry written the other way loses its routing text.
+    instructions = (entry.get("special_instructions") or entry.get("description") or "").strip()
+    return {
+        "agent": {
+            "name": name,
+            # The roster's instructions double as the description: it is what the concierge reads
+            # to pick a specialist, and an agent with a blank one is effectively unroutable.
+            "description": instructions.split("\n", 1)[0][:300],
+            "kind": "single",
+            # PROVENANCE, and it is load-bearing. On a re-seed the supervisor's subAgents list is
+            # rewritten from the file, and a ref that is no longer in the file is ambiguous: it was
+            # either added in the UI (keep it) or deleted from the roster (drop it). Without this
+            # marker both look identical, so either UI additions are lost on every restart or the
+            # file can never remove one of its own agents. See `_partition_prior`.
+            ROSTER_OWNED_KEY: True,
+        },
+        "tools": [{"name": n} for n in _app_names(entry)],
+        "special_instructions": instructions,
+    }
+
+
+async def _partition_prior(prior: List[Dict[str, Any]], yaml_refs: List[str]) -> List[Dict[str, Any]]:
+    """The entries in the CURRENT supervisor that seeding must preserve.
+
+    A prior entry survives when the file does not name it AND it was not put there by an earlier
+    seed. The second half is what makes removal work: drop `weatherbot` from the roster and its
+    record still carries ROSTER_OWNED_KEY, so it is recognised as a roster agent the file has
+    dropped, not as something a human added in the Studio.
+
+    `a2a` entries have no ref and can only have come from the UI, so they are always kept.
+    """
+    from cuga.backend.server.config_store import load_config
+
+    named = set(yaml_refs)
+    keep: List[Dict[str, Any]] = []
+    for entry in prior or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("kind") == "a2a" and entry.get("name"):
+            keep.append(entry)
+            continue
+        ref = entry.get("ref")
+        if not ref or ref in named:
+            continue  # the file names it — it is re-added from the file below
+        try:
+            cfg, _ = await load_config(None, ref)
+        except Exception:  # noqa: BLE001 — an unreadable record is not evidence of ownership
+            cfg = None
+        was_seeded = bool(((cfg or {}).get("agent") or {}).get(ROSTER_OWNED_KEY))
+        if not was_seeded:
+            keep.append(entry)  # genuinely UI-added
+    return keep
+
+
+def _supervisor_config(
+    roster: Dict[str, Any], sub_ids: List[str], prior_subs: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
+    sup = roster.get("supervisor") or {}
+    return {
+        "agent": {
+            "name": sup.get("name") or SUPERVISOR_AGENT_ID,
+            "description": (sup.get("special_instructions") or "The CUGA supervisor").split("\n", 1)[0][:300],
+            "kind": "supervisor",
+        },
+        "supervisor": {
+            "subAgents": [{"kind": "internal", "ref": r} for r in sub_ids] + (prior_subs or []),
+            "planApproval": False,
+            **(
+                {"special_instructions": sup["special_instructions"]}
+                if sup.get("special_instructions")
+                else {}
+            ),
+        },
+    }
+
+
+_SEED_MARK = "_roster_seed_hash"
+
+
+def _body_hash(config: Dict[str, Any]) -> str:
+    """A stable hash of a config IGNORING the seed marker, so we can ask "has a human touched this
+    since we wrote it?" without the marker itself changing the answer."""
+    import hashlib
+    import json as _json
+
+    body = {k: v for k, v in (config or {}).items() if k != _SEED_MARK}
+    return hashlib.sha256(_json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+
+
+async def _upsert(config: Dict[str, Any], agent_id: str) -> str:
+    """Write `config` as the published config for `agent_id`, without churning versions.
+
+    Returns "created" | "updated" | "unchanged" | "skipped" — the caller logs a summary, and the
+    tests assert that a second identical seed is a no-op.
+
+    RESPECTS EDITS MADE IN MANAGE. This used to overwrite whenever `existing != config`, which is
+    exactly the shape of "a human changed it" — so every restart silently reverted the Manage UI to
+    the YAML and the edit looked like it had never been saved.
+
+    Each seeded config now carries a hash of what the roster wrote. On the next boot:
+
+      * no marker            → an agent we did not create. Never take it over.
+      * marker != body hash  → a human edited it since. Leave it alone.
+      * marker == body hash  → still ours and untouched, so a changed roster may update it.
+
+    The roster therefore self-heals when nobody has intervened, and defers the moment somebody has.
+    """
+    from cuga.backend.server.config_store import (
+        load_config,
+        save_config,
+        update_published_config_at_version,
+    )
+
+    config = {**config, _SEED_MARK: _body_hash(config)}
+    existing, version = await load_config(None, agent_id)
+    if existing is None or not version:
+        await save_config(config, agent_id=agent_id)
+        return "created"
+    prior_mark = (existing or {}).get(_SEED_MARK)
+    if prior_mark is None:
+        return "skipped"  # not roster-managed — a hand-made agent that happens to share the name
+    if prior_mark != _body_hash(existing):
+        return "skipped"  # edited in Manage since we wrote it; the human's version wins
+    if existing == config:
+        return "unchanged"
+    # `load_config(None, ...)` only ever returns a published (numeric) version, but
+    # `update_published_config_at_version` raises on anything else, and that would be a crash at
+    # startup rather than a bad roster. Fall back to a normal save instead.
+    if str(version).isdigit() and await update_published_config_at_version(config, agent_id, version):
+        return "updated"
+    # The published version could not be rewritten in place (deleted underneath us, or a store
+    # that does not support it). A new version is still correct, just noisier.
+    await save_config(config, agent_id=agent_id)
+    return "updated"
+
+
+async def seed_roster(path: Optional[str] = None) -> Tuple[int, Dict[str, int]]:
+    """Import the roster at `path` (default: $CUGA_SUPERVISOR_ROSTER) into the config store.
+
+    Returns ``(agents_seeded, {"created": n, "updated": n, "unchanged": n, "skipped": n})``. Never raises: a
+    malformed or missing roster must not stop the server from booting — it degrades to "no
+    supervisor", which is exactly what an unset variable does.
+    """
+    path = path if path is not None else roster_path()
+    if not path:
+        return 0, {}
+
+    try:
+        with open(path, "r") as f:
+            roster = yaml.safe_load(f) or {}
+    except Exception as e:  # noqa: BLE001 — a bad file must not break startup
+        logger.warning(f"roster seed: could not read {path!r}: {e}")
+        return 0, {}
+
+    entries = [a for a in (roster.get("agents") or []) if isinstance(a, dict) and a.get("name")]
+    if not entries:
+        logger.warning(f"roster seed: {path!r} declares no agents")
+        return 0, {}
+
+    tally: Dict[str, int] = {"created": 0, "updated": 0, "unchanged": 0, "skipped": 0}
+    sub_ids: List[str] = []
+
+    for entry in entries:
+        agent_id = _agent_id(entry["name"])
+        if not agent_id or agent_id == SUPERVISOR_AGENT_ID:
+            # The supervisor is written below from the roster's own `supervisor:` block; a
+            # sub-agent may not squat on its id.
+            continue
+        try:
+            tally[await _upsert(_sub_agent_config(entry), agent_id)] += 1
+            sub_ids.append(agent_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"roster seed: {agent_id!r} failed: {e}")
+
+    # Read what is already there so UI-added sub-agents keep their membership (see _merge_sub_agents).
+    try:
+        from cuga.backend.server.config_store import load_config
+
+        prior_cfg, _ = await load_config(None, SUPERVISOR_AGENT_ID)
+    except Exception:  # noqa: BLE001 — first boot, or an unreachable store; treat as "nothing prior"
+        prior_cfg = None
+    prior_subs = await _partition_prior(
+        ((prior_cfg or {}).get("supervisor") or {}).get("subAgents") or [], sub_ids
+    )
+
+    try:
+        tally[await _upsert(_supervisor_config(roster, sub_ids, prior_subs), SUPERVISOR_AGENT_ID)] += 1
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"roster seed: supervisor failed: {e}")
+        return len(sub_ids), tally
+
+    logger.info(
+        f"roster seed: {len(sub_ids)} sub-agent(s) + supervisor from {path} "
+        f"({tally['created']} created, {tally['updated']} updated, {tally['unchanged']} unchanged"
+        f"{', ' + str(tally['skipped']) + ' left alone (edited in Manage)' if tally['skipped'] else ''})"
+    )
+    return len(sub_ids) + 1, tally
