@@ -19,6 +19,7 @@ import {
 } from "@carbon/react";
 import { ArrowRight, Close, Renew } from "@carbon/icons-react";
 import {
+  loadMemoryPreferences,
   deleteMemory,
   loadAdminMemoryPage,
   loadMemoryEntity,
@@ -308,6 +309,7 @@ function MemoryDetail({
   onDelete,
   onOpenConversation,
   admin = false,
+  readOnly = false,
 }: {
   memory: MemoryRecord;
   capabilities: RetentionCapabilities | null;
@@ -315,6 +317,7 @@ function MemoryDetail({
   onDelete?: () => void;
   onOpenConversation?: (threadId: string) => void;
   admin?: boolean;
+  readOnly?: boolean;
 }) {
   const source = memory.sourceConversationId && onOpenConversation ? (
     <ReferenceLink
@@ -396,7 +399,7 @@ function MemoryDetail({
             <Button
               kind="danger"
               size="sm"
-              disabled={memory.legalHold || deleting}
+              disabled={readOnly || memory.legalHold || deleting}
               onClick={onDelete}
             >
               {deleting ? "Deleting..." : "Forget"}
@@ -414,12 +417,14 @@ function SettingsDetail({
   latestRun,
   runningRetention,
   onRunRetention,
+  readOnly = false,
 }: {
   settings: SettingsItem;
   capabilities: RetentionCapabilities | null;
   latestRun?: RetentionRun;
   runningRetention: boolean;
   onRunRetention: () => void;
+  readOnly?: boolean;
 }) {
   const policy = settings.policy;
   if (settings.kind === "protection")
@@ -481,7 +486,7 @@ function SettingsDetail({
           kind="tertiary"
           size="md"
           disabled={
-            runningRetention || !capabilities?.available || !policy?.enabled
+            readOnly || runningRetention || !capabilities?.available || !policy?.enabled
           }
           onClick={onRunRetention}
         >
@@ -501,6 +506,7 @@ function SettingsDetail({
           {capabilities?.available ? (
             <RetentionSchedules
               key={policy.policyId}
+              readOnly={readOnly}
               policyId={policy.policyId}
               enabled={policy.enabled}
             />
@@ -750,6 +756,26 @@ export function MemoryWorkspace({
   const [deleting, setDeleting] = useState(false);
   const [runningRetention, setRunningRetention] = useState(false);
   const [message, setMessage] = useState("");
+  const [serviceEnabled, setServiceEnabled] = useState(true);
+  React.useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const preferences = await loadMemoryPreferences();
+        if (!active) return;
+        setServiceEnabled(preferences.instance_enabled);
+
+      } catch { /* Settings controls display their own loading error. */ }
+    };
+    void refresh();
+    window.addEventListener("memory-preferences-changed", refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      active = false;
+      window.removeEventListener("memory-preferences-changed", refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, []);
   const focusEntityKey = Array.from(new Set(focusEntityIds.filter(Boolean))).join("\0");
 
   React.useLayoutEffect(() => {
@@ -990,9 +1016,9 @@ export function MemoryWorkspace({
   const selectedAdminMemory = visibleAdminMemories.find((memory) => memory.id === selectedAdminMemoryId) ?? visibleAdminMemories[0];
   const settingsCategories = [
     { id: "general", title: "General" },
-    ...settingsItems.filter((item) => item.kind === "retention"),
-    { id: "filters", title: "Filters" },
-    { id: "events", title: "Lifecycle events" },
+      ...settingsItems.filter((item) => item.kind === "retention"),
+      { id: "filters", title: "Filters" },
+      { id: "events", title: "Lifecycle events" },
   ];
   const settingsIndex = Math.max(
     0,
@@ -1161,6 +1187,7 @@ export function MemoryWorkspace({
 
   return (
     <main ref={rootRef} className="memory-workspace">
+      {!serviceEnabled && <p className="memory-workspace__message" role="status">Memory is off for this service. You can browse existing data, but changes and agent memory use are disabled.</p>}
       {message && (
         <div className="memory-workspace__message" role="status" aria-live="polite">
           <span>{message}</span>
@@ -1254,6 +1281,7 @@ export function MemoryWorkspace({
             list={memoryList}
             detail={selectedMemory ? (
               <MemoryDetail
+                readOnly={!serviceEnabled}
                 memory={selectedMemory}
                 capabilities={capabilities}
                 deleting={deleting}
@@ -1302,17 +1330,6 @@ export function MemoryWorkspace({
               aria-label="Settings"
               className="memory-workspace__settings"
             >
-              <div className="memory-settings__toolbar">
-                <Button
-                  kind="ghost"
-                  size="sm"
-                  renderIcon={Renew}
-                  disabled={loading}
-                  onClick={() => void refreshData()}
-                >
-                  Refresh
-                </Button>
-              </div>
               <Grid fullWidth>
                 <Column sm={4} md={8} lg={16}>
                   <TabsVertical
@@ -1350,6 +1367,7 @@ export function MemoryWorkspace({
                                 .filter((item) => item.kind === "protection")
                                 .map((item) => (
                                   <SettingsDetail
+                                    readOnly={!serviceEnabled}
                                     key={item.id}
                                     settings={item}
                                     capabilities={capabilities}
@@ -1365,6 +1383,7 @@ export function MemoryWorkspace({
                             </>
                           ) : (
                             <SettingsDetail
+                                    readOnly={!serviceEnabled}
                               settings={
                                 settingsItems.find(
                                   (item) => item.id === category.id,
@@ -1457,7 +1476,7 @@ export function MemoryWorkspace({
                   </div>
                 )}
                 detail={selectedAdminMemory
-                  ? <MemoryDetail memory={selectedAdminMemory} capabilities={capabilities} admin onOpenConversation={onOpenConversation} />
+                  ? <MemoryDetail readOnly={!serviceEnabled} memory={selectedAdminMemory} capabilities={capabilities} admin onOpenConversation={onOpenConversation} />
                   : <p className="memory-workspace__empty">Select a memory to view its details.</p>}
                 detailLabel="Admin memory details"
                 sheetOpen={detailOpen}
