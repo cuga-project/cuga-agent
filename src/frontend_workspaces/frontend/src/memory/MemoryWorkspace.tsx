@@ -989,6 +989,7 @@ export function MemoryWorkspace({
   const selectedMemory = visibleMemories.find((memory) => memory.id === selectedMemoryId) ?? visibleMemories[0];
   const selectedAdminMemory = visibleAdminMemories.find((memory) => memory.id === selectedAdminMemoryId) ?? visibleAdminMemories[0];
   const settingsCategories = [
+    { id: "general", title: "General" },
     ...settingsItems.filter((item) => item.kind === "retention"),
     { id: "filters", title: "Filters" },
     { id: "events", title: "Lifecycle events" },
@@ -1301,7 +1302,6 @@ export function MemoryWorkspace({
               aria-label="Settings"
               className="memory-workspace__settings"
             >
-              <MemoryPreferences admin />
               <div className="memory-settings__toolbar">
                 <Button
                   kind="ghost"
@@ -1334,7 +1334,9 @@ export function MemoryWorkspace({
                           key={category.id}
                           className="memory-settings__panel"
                         >
-                          {category.id === "filters" ? (
+                          {category.id === "general" ? (
+                            <MemoryPreferences admin />
+                          ) : category.id === "filters" ? (
                             <>
                               <p className="memory-settings__intro">
                                 Control what enters memory and what reaches the
