@@ -414,9 +414,9 @@ class CugaLiteNode(BaseNode):
                         success,
                         user_id=_evolve_user_id,
                         namespace_id=_evolve_namespace_id,
-                        agent_id=(state.service_scope or {}).get("agent_id") or None,
                         session_id=_evolve_session_id,
-                        agent_id=((config or {}).get("configurable") or {}).get("agent_id"),
+                        agent_id=((config or {}).get("configurable") or {}).get("agent_id")
+                        or (state.service_scope or {}).get("agent_id"),
                     )
                 )
                 self._background_tasks.add(task)
@@ -428,9 +428,9 @@ class CugaLiteNode(BaseNode):
                     success,
                     user_id=_evolve_user_id,
                     namespace_id=_evolve_namespace_id,
-                    agent_id=(state.service_scope or {}).get("agent_id") or None,
                     session_id=_evolve_session_id,
-                    agent_id=((config or {}).get("configurable") or {}).get("agent_id"),
+                    agent_id=((config or {}).get("configurable") or {}).get("agent_id")
+                    or (state.service_scope or {}).get("agent_id"),
                 )
 
         # Get metadata from state
