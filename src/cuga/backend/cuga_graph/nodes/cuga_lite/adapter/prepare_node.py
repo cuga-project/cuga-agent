@@ -41,6 +41,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
     thread_budget_exhausted,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
+    drop_examples_using_absent_helpers,
     PromptUtils,
     create_mcp_prompt,
     format_apps_for_prompt,
@@ -731,6 +732,11 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         dynamic_prompt = adapter._static_prompt
 
         if not dynamic_prompt:
+            # Few-shot turns are demonstrations the model imitates: drop any that
+            # call helpers this run will not inject, or it learns a NameError.
+            few_shot_examples = drop_examples_using_absent_helpers(
+                few_shot_examples, filesystem_enabled=_runtime_backends.filesystem != "none"
+            )
             dynamic_prompt = create_mcp_prompt(
                 tools_for_prompt,
                 allow_user_clarification=True,
@@ -747,6 +753,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 skills_enabled=skills_enabled,
                 skills_prompt_section=skills_prompt_section,
                 enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", False),
+                enable_filesystem_tools=_runtime_backends.filesystem != "none",
                 sandbox_env_info=get_sandbox_env_description(),
                 has_knowledge=has_knowledge_tools,
                 few_shot_examples=few_shot_examples,
