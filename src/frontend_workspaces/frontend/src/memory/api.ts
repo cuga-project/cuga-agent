@@ -446,3 +446,21 @@ export function changeSchedule(item: RetentionSchedule, action: "start" | "stop"
 export function previewSchedule(spec: ScheduleSpec) {
   return requestJson<{next_runs: string[]; timeZone: string; suspended: boolean}>(`${schedulesPath}/preview`, {method: "POST", body: JSON.stringify({spec})});
 }
+
+export type MemoryPreferencesState = {
+  operator_default: boolean;
+  instance_override: boolean | null;
+  instance_enabled: boolean;
+  user_enabled: boolean;
+  effective_enabled: boolean;
+};
+
+export function loadMemoryPreferences(admin = false): Promise<MemoryPreferencesState> {
+  return requestJson(admin ? "/api/manage/memory/settings" : "/api/memory/settings");
+}
+
+export function saveMemoryPreference(enabled: boolean | null, admin = false): Promise<MemoryPreferencesState> {
+  return requestJson(admin ? "/api/manage/memory/settings" : "/api/memory/settings", {
+    method: "PUT", body: JSON.stringify({ enabled }),
+  });
+}
