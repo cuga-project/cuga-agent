@@ -70,6 +70,11 @@ FC_TOOL_APPROVAL_UNSUPPORTED = (
     '"codeact" for this agent, or disable the policy.'
 )
 
+FC_TOOL_APPROVAL_UNVERIFIED = (
+    "Function-calling mode could not verify whether a tool-approval policy exists ({error}). "
+    "It fails closed: no tool ran. Fix policy storage, or use cuga_lite_execution_mode = \"codeact\"."
+)
+
 FC_STEP_LIMIT_CALL_REPLY = "Not executed: the step limit was reached before this call could run."
 FC_BUDGET_CALL_REPLY = (
     "Not executed: the tool budget for this turn is spent. Answer from the data already retrieved."
@@ -454,25 +459,23 @@ class AgentGraphAdapter(CoreGraphAdapter):
         return _bind_tools_mode_from_settings()
 
     async def _tool_approval_policies_exist(self, config: Any) -> bool:
-        """True when an enabled tool-approval policy is configured.
+        """True when an enabled tool-approval policy is stored.
 
         Function-calling has no approval interrupt yet — CodeAct's runs on the
         generated code string, after the seam — so the mode refuses to start
-        rather than run a guarded tool unprompted. On a storage error this
-        warns and proceeds, exactly as CodeAct's own approval check does.
+        rather than run a guarded tool unprompted. Raises when the answer
+        cannot be established (policy system not initialised, storage backend
+        down): ``strict=True`` keeps the storage layer from turning a backend
+        failure into an empty list, and the caller fails closed on any error.
         """
         from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
         from cuga.backend.cuga_graph.policy.models import PolicyType
 
-        try:
-            policy_system = PolicyConfigurable.from_config(config or {})
-            policies = await policy_system.agent.storage.list_policies(
-                policy_type=PolicyType.TOOL_APPROVAL, enabled_only=True, limit=1
-            )
-            return bool(policies)
-        except Exception as exc:
-            logger.warning("[fc] could not query tool-approval policies ({}); proceeding", exc)
-            return False
+        policy_system = PolicyConfigurable.from_config(config or {})
+        policies = await policy_system.agent.storage.list_policies(
+            policy_type=PolicyType.TOOL_APPROVAL, enabled_only=True, limit=1, strict=True
+        )
+        return bool(policies)
 
     async def execute_call_model_fc(
         self,
@@ -503,9 +506,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
         - a fenced code block with no ``tool_calls`` is a mode violation: it is
           never executed; the model gets one corrective turn instead.
 
-        Refuses to start when an enabled tool-approval policy exists: there is
-        no approval interrupt on this path yet, and silently running a guarded
-        tool is worse than not running at all.
+        Refuses to start when an enabled tool-approval policy exists — or when
+        that cannot be verified: there is no approval interrupt on this path
+        yet, and silently running a guarded tool is worse than not running.
         """
         if self._execution_mode(configurable) != EXECUTION_MODE_FUNCTION_CALLING:
             return None
@@ -517,14 +520,21 @@ class AgentGraphAdapter(CoreGraphAdapter):
         cfg = configurable or {}
         history: list = list(modified_messages)
 
-        if settings.policy.enabled and await self._tool_approval_policies_exist(config):
-            logger.error(
-                "[fc] refusing to start: an enabled tool-approval policy exists and "
-                "function-calling mode has no approval interrupt"
-            )
-            return create_error_command(
-                self, history, AIMessage(content=FC_TOOL_APPROVAL_UNSUPPORTED), state.step_count
-            )
+        if settings.policy.enabled:
+            # Fail closed, stricter than CodeAct's own check: a refusal here is
+            # cheap and explicit, a guarded tool running unprompted is not.
+            try:
+                blocked_reason = (
+                    FC_TOOL_APPROVAL_UNSUPPORTED if await self._tool_approval_policies_exist(config) else None
+                )
+            except Exception as exc:
+                logger.error("[fc] could not verify tool-approval policies ({}); refusing to start", exc)
+                blocked_reason = FC_TOOL_APPROVAL_UNVERIFIED.format(error=exc)
+            if blocked_reason:
+                logger.error("[fc] refusing to start: {}", blocked_reason)
+                return create_error_command(
+                    self, history, AIMessage(content=blocked_reason), state.step_count
+                )
 
         msgs: List[BaseMessage] = [SystemMessage(content=system_content)]
         msgs.extend(_few_shot_to_messages(self.get_few_shot_messages(state)))
