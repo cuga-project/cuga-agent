@@ -1,0 +1,55 @@
+# OpenRouter GLM-5.3-flash, pinned to GMICloud (fp8) with Z.AI as fallback.
+#
+# Why pin: OpenRouter's 23 providers do NOT serve the same build. Quantization
+# varies — 13 are fp8, 9 are "unknown", and DeepInfra is fp4. fp4 is faster but
+# lossier, and on an all-or-nothing metric a precision drop costs whole tasks.
+# Unpinned routing can silently move between them mid-run.
+#
+# GMICloud and Z.AI are both fp8 at $0.075/$0.250. Measured throughput:
+# GMICloud 45.5 tok/s, Z.AI 31.5 tok/s — same precision, ~44% faster.
+# Our 96.0 TGC / 90.9 SGC result on chal_1_hard_a came from Z.AI (fp8), so the
+# fallback reproduces the validated backend exactly if GMICloud throttles.
+#
+# Do NOT add DeepInfra to the order: fp4, different numerics, unvalidated here.
+
+[agent.planner.model]
+platform = "openrouter"
+model_name = "z-ai/glm-5.3-flash"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { extra_body = { provider = { order = ["GMICloud", "Z.AI"], allow_fallbacks = true } } }
+
+[agent.chat.model]
+platform = "openrouter"
+model_name = "z-ai/glm-5.3-flash"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { extra_body = { provider = { order = ["GMICloud", "Z.AI"], allow_fallbacks = true } } }
+
+[agent.final_answer.model]
+platform = "openrouter"
+model_name = "z-ai/glm-5.3-flash"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { extra_body = { provider = { order = ["GMICloud", "Z.AI"], allow_fallbacks = true } } }
+
+[agent.code.model]
+platform = "openrouter"
+model_name = "z-ai/glm-5.3-flash"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { extra_body = { provider = { order = ["GMICloud", "Z.AI"], allow_fallbacks = true } } }
+
+[agent.qa.model]
+platform = "openrouter"
+model_name = "z-ai/glm-5.3-flash"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { extra_body = { provider = { order = ["GMICloud", "Z.AI"], allow_fallbacks = true } } }
+
+[agent.action.model]
+platform = "openrouter"
+model_name = "z-ai/glm-5.3-flash"
+temperature = 0.1
+max_tokens = 400
+extra_params = { extra_body = { provider = { order = ["GMICloud", "Z.AI"], allow_fallbacks = true } } }

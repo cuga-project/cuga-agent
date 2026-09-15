@@ -9,10 +9,10 @@ Records land in `results/verification_data.json` keyed by (surface, capability) 
 the ledger updates itself every time a live harness runs, and a cell's date is always the date it
 was last PROVEN.
 
-`results/` is gitignored: this is local evidence, not a committed artifact. It used to be written
-into the events docs tree and rendered to HTML by a generator, but both the docs and the generator
-now live outside this repository. Writing into a directory this repo no longer has meant every
-record silently failed the `open()` below and the ledger recorded nothing at all.
+`results/` is gitignored: local evidence, not a committed artifact. The destination MUST be a
+directory this repo actually has — the docs tree now lives outside the repository again, and writing
+into a path the repo does not own made every record fail the `open()` below silently, leaving an
+empty ledger with no error. The `makedirs` is what stops that recurring.
 """
 
 from __future__ import annotations

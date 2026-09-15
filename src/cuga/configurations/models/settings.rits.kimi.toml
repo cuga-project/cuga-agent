@@ -1,0 +1,111 @@
+# RITS profile for Kimi K2.7 — thinking is required, not optional.
+#
+# Per Moonshot's guidance: temperature 1.0 (crucial for the internal reasoning
+# process), top_p 0.95, and thinking left enabled. Kimi returns a reasoning
+# trace even with no reasoning_effort set, so do NOT try to disable it —
+# reasoning_effort="none" would fight the model's design.
+#
+# Kimi accepts 'none', 'low', 'medium', 'high' (Mistral, by contrast, accepts
+# only 'none' and 'high'). We set 'high' explicitly.
+#
+# Note temperature 1.0 differs from every other profile here, which sit at 0.1.
+# That is deliberate and vendor-specified; lowering it degrades Kimi's reasoning.
+#
+# Use with:  AGENT_SETTING_CONFIG="settings.rits.kimi.toml"
+#            MODEL_NAME / RITS_BASE_URL still override model and endpoint.
+
+[agent.planner.model]
+platform = "rits"
+model_name = "moonshotai/Kimi-K2.7-Code"
+url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/moonshotai-kimi-k2-7/v1"
+apikey_name = "RITS_API_KEY"
+temperature = 1.0
+top_p = 0.95
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.chat.model]
+platform = "rits"
+model_name = "moonshotai/Kimi-K2.7-Code"
+url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/moonshotai-kimi-k2-7/v1"
+apikey_name = "RITS_API_KEY"
+temperature = 1.0
+top_p = 0.95
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.final_answer.model]
+platform = "rits"
+model_name = "moonshotai/Kimi-K2.7-Code"
+url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/moonshotai-kimi-k2-7/v1"
+apikey_name = "RITS_API_KEY"
+temperature = 1.0
+top_p = 0.95
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.code.model]
+platform = "rits"
+model_name = "moonshotai/Kimi-K2.7-Code"
+url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/moonshotai-kimi-k2-7/v1"
+apikey_name = "RITS_API_KEY"
+temperature = 1.0
+top_p = 0.95
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.qa.model]
+platform = "rits"
+model_name = "moonshotai/Kimi-K2.7-Code"
+url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/moonshotai-kimi-k2-7/v1"
+apikey_name = "RITS_API_KEY"
+temperature = 1.0
+top_p = 0.95
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.action.model]
+platform = "rits"
+model_name = "moonshotai/Kimi-K2.7-Code"
+url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/moonshotai-kimi-k2-7/v1"
+apikey_name = "RITS_API_KEY"
+temperature = 1.0
+top_p = 0.95
+max_tokens = 400
+extra_params = { reasoning_effort = "high" }
+
+[memory.mem0.model]
+platform = "rits"
+model_name = "google/gemma-4-31B-it"
+url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+top_p = 1.0
+max_tokens = 1000
+
+[memory.milvus.step_processing.model]
+platform = "rits"
+model_name = "google/gemma-4-31B-it"
+url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+top_p = 1.0
+max_tokens = 1000
+
+[memory.milvus.fact_extraction.model]
+platform = "rits"
+model_name = "google/gemma-4-31B-it"
+url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+top_p = 1.0
+max_tokens = 1000
+
+[memory.tips_extractor.model]
+platform = "rits"
+model_name = "google/gemma-4-31B-it"
+url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+top_p = 1.0
+max_tokens = 5000

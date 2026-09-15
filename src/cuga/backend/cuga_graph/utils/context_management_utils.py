@@ -36,6 +36,32 @@ def messages_to_history_text(messages: List[BaseMessage]) -> str:
     return "\n".join(parts) if parts else "No previous conversation history"
 
 
+def prepare_verify_context(
+    chat_messages: List[BaseMessage],
+    variables_snapshot: str,
+    proposed_code: str,
+    *,
+    max_chars: int,
+) -> tuple[str, str, str]:
+    """Trim chat, variables, and proposed code for pre-execute VERIFY. Never summarize."""
+    history = truncate_text_for_context(
+        messages_to_history_text(list(chat_messages)),
+        max_chars,
+        label="Agent history",
+    )
+    variables = truncate_text_for_context(
+        variables_snapshot or "(no variables)",
+        max_chars,
+        label="Variables",
+    )
+    code = truncate_text_for_context(
+        proposed_code or "",
+        max_chars,
+        label="Proposed code",
+    )
+    return history, variables, code
+
+
 async def prepare_reflection_context(
     chat_messages: List[BaseMessage],
     coder_agent_output: str,
