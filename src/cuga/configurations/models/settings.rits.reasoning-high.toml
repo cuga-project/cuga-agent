@@ -1,56 +1,77 @@
+# RITS profile with reasoning enabled — Mistral's "High Reasoning Mode".
+#
+# Differs from settings.rits.toml by exactly three things, per Mistral's guidance
+# for reasoning_effort=high: temperature 0.7, top_p 0.95, and
+# extra_params.reasoning_effort. Completion budgets stay at settings.rits.toml's
+# values so an A/B against it has reasoning as the variable, not the budget.
+#
+# Use with:  AGENT_SETTING_CONFIG="settings.rits.reasoning-high.toml"
+# Or per-run without switching profile:  REASONING_EFFORT=high
+#
+# Mistral accepts only 'none' and 'high'; low/medium/xhigh/max return a 400 even
+# though the generic validator advertises them. Whether an endpoint HONORS the
+# parameter is provider-specific — after a run, check that responses carry a
+# reasoning field; if it stays empty the endpoint is swallowing it.
+
 [agent.planner.model]
 platform = "rits"
 model_name = "google/gemma-4-31B-it"
 url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
 apikey_name = "RITS_API_KEY"
-temperature = 0.1
-top_p = 1.0
+temperature = 0.7
+top_p = 0.95
 max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
 
 [agent.chat.model]
 platform = "rits"
 model_name = "google/gemma-4-31B-it"
 url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
 apikey_name = "RITS_API_KEY"
-temperature = 0.1
-top_p = 1.0
+temperature = 0.7
+top_p = 0.95
 max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
 
 [agent.final_answer.model]
 platform = "rits"
 model_name = "google/gemma-4-31B-it"
 url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
 apikey_name = "RITS_API_KEY"
-temperature = 0.1
-top_p = 1.0
+temperature = 0.7
+top_p = 0.95
 max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
 
 [agent.code.model]
 platform = "rits"
 model_name = "google/gemma-4-31B-it"
 url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
 apikey_name = "RITS_API_KEY"
-temperature = 0.1
-top_p = 1.0
+temperature = 0.7
+top_p = 0.95
 max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
 
 [agent.qa.model]
 platform = "rits"
 model_name = "google/gemma-4-31B-it"
 url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
 apikey_name = "RITS_API_KEY"
-temperature = 0.1
-top_p = 1.0
+temperature = 0.7
+top_p = 0.95
 max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
 
 [agent.action.model]
 platform = "rits"
 model_name = "google/gemma-4-31B-it"
 url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
 apikey_name = "RITS_API_KEY"
-temperature = 0.1
-top_p = 1.0
+temperature = 0.7
+top_p = 0.95
 max_tokens = 400
+extra_params = { reasoning_effort = "high" }
 
 [memory.mem0.model]
 platform = "rits"

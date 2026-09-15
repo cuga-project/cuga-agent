@@ -91,12 +91,6 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
         clamp_watsonx_completion_for_messages(bound, messages)
         return await bound.ainvoke(messages, config=invoke_config)
 
-    def build_metadata_update(self, state: Any, *, playbook_fired: bool) -> dict:
-        meta = dict(self.get_metadata(state))
-        if playbook_fired:
-            return {**meta, "playbook_guidance_added": True}
-        return meta
-
     def record_delegation(
         self,
         state: Any,
