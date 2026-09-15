@@ -46,7 +46,7 @@ class EvolveIntegration:
 
     @classmethod
     def is_enabled(cls) -> bool:
-        """Check if Evolve integration is active based on settings."""
+        """Return the operator default; runtime use is governed by preferences.memory_enabled."""
         return bool(settings.evolve.enabled)
 
     @classmethod
@@ -58,8 +58,6 @@ class EvolveIntegration:
         session_id: Optional[str] = None,
     ) -> Optional[str]:
         """Fetch guidelines from Evolve for the given task description."""
-        if not cls.is_enabled():
-            return None
         try:
             user_id = normalize_evolve_identifier(user_id)
             namespace_id = normalize_evolve_identifier(namespace_id)
@@ -90,8 +88,6 @@ class EvolveIntegration:
         session_id: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """Fetch formatted guidelines and the entity IDs included in the prompt."""
-        if not cls.is_enabled():
-            return None
         try:
             args: dict[str, Any] = {"task": task}
             for key, value in {
@@ -126,8 +122,6 @@ class EvolveIntegration:
         namespace_id: Optional[str] = None,
     ) -> None:
         """Store durable user facts/preferences without interrupting lite execution."""
-        if not cls.is_enabled():
-            return
         if not user_id or not message:
             return
 
@@ -157,8 +151,6 @@ class EvolveIntegration:
         agent_id: Optional[str] = None,
     ) -> Optional[dict]:
         """Retrieve durable user facts/preferences without interrupting lite execution."""
-        if not cls.is_enabled():
-            return None
         if not user_id or not query:
             return None
 
@@ -192,8 +184,6 @@ class EvolveIntegration:
         agent_id: Optional[str] = None,
     ) -> None:
         """Save the agent trajectory to Evolve for tip generation."""
-        if not cls.is_enabled():
-            return
         if success and not settings.evolve.save_on_success:
             return
         if not success and not settings.evolve.save_on_failure:
@@ -245,7 +235,7 @@ class EvolveIntegration:
         namespace_id: Optional[str] = None,
     ) -> Optional[dict]:
         """Delete an entity through Evolve's ownership checks."""
-        if not cls.is_enabled() or not entity_id:
+        if not entity_id:
             return None
         args: dict[str, Any] = {"entity_id": entity_id}
         for key, value in {
@@ -407,8 +397,6 @@ class EvolveIntegration:
         tool_name: str,
         args: dict[str, Any],
     ) -> Optional[dict]:
-        if not cls.is_enabled():
-            return None
         try:
             result = await cls._call_tool(tool_name, args)
             return result if isinstance(result, dict) else None
@@ -445,6 +433,17 @@ class EvolveIntegration:
             if not namespace_id:
                 raise ValueError("Evolve requires a configured service instance ID")
             args = {**args, "namespace_id": namespace_id}
+        if tool_name in {
+            "get_guidelines",
+            "get_guidelines_with_attribution",
+            "store_user_facts",
+            "retrieve_user_facts",
+            "save_trajectory",
+        }:
+            from cuga.backend.evolve.preferences import memory_enabled
+
+            if not await memory_enabled(args.get("user_id")):
+                return None
         mode = cls._get_mode()
         registry_enabled = bool(getattr(settings.advanced_features, "registry", False))
 
