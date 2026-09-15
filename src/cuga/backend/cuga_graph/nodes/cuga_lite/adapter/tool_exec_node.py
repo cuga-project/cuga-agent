@@ -32,6 +32,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.types import Command
 from loguru import logger
 
 from cuga.backend.activity_tracker.tracker import Step
@@ -54,11 +55,11 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
 from cuga.config import settings
 
 DEFERRED_CALL_MESSAGE = (
-    "Deferred: step discipline is on, so only the first tool call of a turn runs. "
+    "Deferred: step discipline is on, so only the first tool call of a turn is attempted. "
     "Read that result, then re-issue this call in your next turn if you still need it."
 )
 
-TRUNCATION_MARKER = "\n... [result truncated to {limit} characters]"
+TRUNCATION_MARKER = "\n... [result truncated: {limit} characters of output remain for this batch]"
 
 
 def _tool_call_parts(call: Any) -> tuple[str, str, Any]:
@@ -95,17 +96,34 @@ def _coerce_args(args: Any) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
     return None, f"Tool arguments must be an object, got {type(args).__name__}."
 
 
-def _stringify(result: Any, limit: int) -> str:
+def _stringify(result: Any) -> str:
     if isinstance(result, str):
-        text = result
-    else:
-        try:
-            text = json.dumps(result, ensure_ascii=False, default=str)
-        except Exception:
-            text = str(result)
-    if limit and len(text) > limit:
-        return text[:limit] + TRUNCATION_MARKER.format(limit=limit)
-    return text
+        return result
+    try:
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except Exception:
+        return str(result)
+
+
+class _BatchOutputBudget:
+    """One turn's batch of results shares ``execution_output_max_length``, like one block.
+
+    Per-result truncation alone would let N calls return N x the limit; this keeps
+    the whole batch under the ceiling the sandbox applies to a block's output.
+    """
+
+    def __init__(self, limit: Any):
+        self.limit = int(limit or 0)
+        self.remaining = self.limit
+
+    def take(self, text: str) -> str:
+        if not self.limit:
+            return text
+        if len(text) > self.remaining:
+            cap = max(self.remaining, 0)
+            text = text[:cap] + TRUNCATION_MARKER.format(limit=cap)
+        self.remaining = max(self.remaining - len(text), 0)
+        return text
 
 
 def _error_message(text: str, *, call_id: str, name: str) -> ToolMessage:
@@ -115,14 +133,22 @@ def _error_message(text: str, *, call_id: str, name: str) -> ToolMessage:
 def create_tool_exec_node(adapter: Any) -> Callable:
     async def tool_exec(state: Any, config: Optional[RunnableConfig] = None):
         configurable = config.get("configurable", {}) if config else {}
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import sync_langfuse_callbacks_from_config
+
+        sync_langfuse_callbacks_from_config(config)
         track_tool_calls = configurable.get("track_tool_calls", False)
         max_steps = configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
         model_name = resolved_runtime_model_name(
             configurable_llm=configurable.get("llm"), graph_default_model=getattr(adapter, "_model", None)
         )
         one_per_step = resolve_step_discipline(configurable, model_name) == STEP_DISCIPLINE_ONE_TOOL_PER_STEP
-        timeout = getattr(settings.advanced_features, "tool_call_timeout", 30) or None
-        output_limit = int(getattr(settings.advanced_features, "execution_output_max_length", 0) or 0)
+        # One batch is the function-calling analogue of one code block, so the
+        # outer bound per call is the block wall clock. Registry tools keep their
+        # own inner ``tool_call_timeout``.
+        timeout = getattr(settings.advanced_features, "sandbox_execution_timeout", 30) or None
+        output_budget = _BatchOutputBudget(
+            getattr(settings.advanced_features, "execution_output_max_length", 0)
+        )
 
         messages = adapter.get_messages(state)
         last = messages[-1] if messages else None
@@ -147,134 +173,191 @@ def create_tool_exec_node(adapter: Any) -> Callable:
 
         results: List[ToolMessage] = []
         executed = 0
-        budget_stop: Optional[str] = None
+        execution_tool_calls: List[Dict[str, Any]] = []
         try:
-            for index, call in enumerate(calls):
-                call_id, name, raw_args = _tool_call_parts(call)
-                call_id = call_id or f"call_{index}"
-                if not name:
-                    results.append(
-                        _error_message("Tool call carried no tool name.", call_id=call_id, name="")
-                    )
-                    continue
-                if budget_stop:
-                    results.append(_error_message(budget_stop, call_id=call_id, name=name))
-                    continue
-                if one_per_step and executed >= 1:
-                    results.append(_error_message(DEFERRED_CALL_MESSAGE, call_id=call_id, name=name))
-                    continue
+            try:
+                executed = await _run_batch(
+                    adapter,
+                    calls,
+                    invalid,
+                    results,
+                    one_per_step=one_per_step,
+                    timeout=timeout,
+                    output_budget=output_budget,
+                )
+            finally:
+                execution_tool_calls = ToolCallTracker.stop_tracking()
 
-                fn = adapter._tools_context.get(name)
-                if fn is None or not callable(fn):
-                    known = ", ".join(sorted(k for k in adapter._tools_context if not k.startswith("_")))
-                    results.append(
-                        _error_message(
-                            f"Unknown tool '{name}'. Choose one of the provided tools: {known or '(none)'}.",
-                            call_id=call_id,
-                            name=name,
-                        )
-                    )
-                    continue
+            if not calls and not invalid:
+                # Nothing executable: advance the step and hand back to the model so a
+                # mis-route can never become an infinite no-op loop.
+                logger.warning("tool_exec entered with no tool_calls on the last message")
+                return Command(
+                    goto="call_model",
+                    update={"step_count": state.step_count + 1, "script": None, **_budget_updates()},
+                )
 
-                kwargs, arg_error = _coerce_args(raw_args)
-                if arg_error:
-                    results.append(_error_message(arg_error, call_id=call_id, name=name))
-                    continue
-
-                awaitable = fn if inspect.iscoroutinefunction(fn) else make_tool_awaitable(fn)
-                counted = counted_tool_call(awaitable)
-                try:
-                    result = await asyncio.wait_for(counted(**kwargs), timeout=timeout)
-                    executed += 1
-                    results.append(
-                        ToolMessage(content=_stringify(result, output_limit), tool_call_id=call_id, name=name)
-                    )
-                except asyncio.TimeoutError:
-                    results.append(
-                        _error_message(
-                            f"Tool '{name}' timed out after {timeout}s. Try a narrower call or a different tool.",
-                            call_id=call_id,
-                            name=name,
-                        )
-                    )
-                except ToolCallBudgetExceeded as exc:
-                    # Every remaining id still gets a reply — without invoking anything.
-                    if exc.scope != "block":
-                        budget_stop = str(exc)
-                    results.append(_error_message(str(exc), call_id=call_id, name=name))
-                except TypeError as exc:
-                    results.append(
-                        _error_message(
-                            f"Tool '{name}' rejected these arguments: {exc}. Check the parameter names and types.",
-                            call_id=call_id,
-                            name=name,
-                        )
-                    )
-                except Exception as exc:  # one failing call must not abort its siblings
-                    results.append(_error_message(f"Tool '{name}' failed: {exc}", call_id=call_id, name=name))
-
-            for index, bad in enumerate(invalid):
-                call_id, name, _ = _tool_call_parts(bad)
-                reason = (bad.get("error") if isinstance(bad, dict) else None) or "malformed tool call"
-                results.append(
-                    _error_message(
-                        f"The provider could not parse this tool call ({reason}). Re-issue it with valid arguments.",
-                        call_id=call_id or f"invalid_{index}",
-                        name=name,
+            try:
+                adapter._tracker.collect_step(
+                    step=Step(
+                        name="Tool_results",
+                        data=json.dumps(
+                            [
+                                {
+                                    "tool_call_id": m.tool_call_id,
+                                    "name": m.name,
+                                    "status": m.status,
+                                    "content": m.content,
+                                }
+                                for m in results
+                            ],
+                            ensure_ascii=False,
+                            default=str,
+                        ),
                     )
                 )
-        finally:
-            execution_tool_calls = ToolCallTracker.stop_tracking()
+            except Exception as exc:
+                logger.debug(f"tool_exec tracker error: {exc}")
 
-        if not calls and not invalid:
-            # Nothing executable: advance the step and hand back to the model so a
-            # mis-route can never become an infinite no-op loop.
-            logger.warning("tool_exec entered with no tool_calls on the last message")
-            return {"step_count": state.step_count + 1, "script": None, **_budget_updates()}
+            updated_messages, error_message = core_append_with_step_limit(adapter, state, results, max_steps)
+            accumulated_tool_calls = (state.tool_calls or []) + (
+                execution_tool_calls if track_tool_calls else []
+            )
 
-        try:
-            adapter._tracker.collect_step(
-                step=Step(
-                    name="Tool_results",
-                    data=json.dumps(
-                        [
-                            {
-                                "tool_call_id": m.tool_call_id,
-                                "name": m.name,
-                                "status": m.status,
-                                "content": m.content,
-                            }
-                            for m in results
-                        ],
-                        ensure_ascii=False,
-                        default=str,
-                    ),
+            if error_message:
+                return core_create_error_command(
+                    adapter,
+                    updated_messages,
+                    error_message,
+                    state.step_count,
+                    additional_updates={"tool_calls": accumulated_tool_calls, **_budget_updates()},
                 )
+
+            logger.info(
+                "[fc] tool_exec: {} call(s) -> {} ToolMessage(s), {} executed",
+                len(calls),
+                len(results),
+                executed,
+            )
+            return Command(
+                goto="call_model",
+                update={
+                    adapter.messages_key: updated_messages,
+                    "script": None,
+                    "step_count": state.step_count + 1,
+                    "tool_calls": accumulated_tool_calls,
+                    **_budget_updates(),
+                },
             )
         except Exception as exc:
-            logger.debug(f"tool_exec tracker error: {exc}")
-
-        updated_messages, error_message = core_append_with_step_limit(adapter, state, results, max_steps)
-        accumulated_tool_calls = (state.tool_calls or []) + (execution_tool_calls if track_tool_calls else [])
-
-        if error_message:
+            # Mirrors the sandbox's outer guard: a failure outside the per-call
+            # handling must still report the budget the batch spent, or the
+            # checkpoint keeps the pre-batch counts (see _budget_updates).
+            logger.error(f"tool_exec failed: {exc}")
             return core_create_error_command(
                 adapter,
-                updated_messages,
-                error_message,
+                adapter.get_messages(state),
+                AIMessage(content=f"Error during tool execution: {exc}"),
                 state.step_count,
-                additional_updates={"tool_calls": accumulated_tool_calls, **_budget_updates()},
+                additional_updates={
+                    "tool_calls": list(state.tool_calls or [])
+                    + (execution_tool_calls if track_tool_calls else []),
+                    **_budget_updates(),
+                },
             )
 
-        logger.info(
-            "[fc] tool_exec: {} call(s) -> {} ToolMessage(s), {} executed", len(calls), len(results), executed
-        )
-        return {
-            adapter.messages_key: updated_messages,
-            "script": None,
-            "step_count": state.step_count + 1,
-            "tool_calls": accumulated_tool_calls,
-            **_budget_updates(),
-        }
-
     return tool_exec
+
+
+async def _run_batch(
+    adapter: Any,
+    calls: List[Any],
+    invalid: List[Any],
+    results: List[ToolMessage],
+    *,
+    one_per_step: bool,
+    timeout: Optional[float],
+    output_budget: _BatchOutputBudget,
+) -> int:
+    """Run one turn's calls in order, appending one ``ToolMessage`` per id to ``results``.
+
+    Returns how many calls actually executed. Every outcome is a message, never
+    an exception, so one failing call cannot take its siblings down.
+    """
+    executed = 0
+    budget_stop: Optional[str] = None
+    for index, call in enumerate(calls):
+        call_id, name, raw_args = _tool_call_parts(call)
+        call_id = call_id or f"call_{index}"
+        if not name:
+            results.append(_error_message("Tool call carried no tool name.", call_id=call_id, name=""))
+            continue
+        if budget_stop:
+            results.append(_error_message(budget_stop, call_id=call_id, name=name))
+            continue
+        if one_per_step and index > 0:
+            # By position, not by success: an error on the first call is the result
+            # the model must read before it decides the next one.
+            results.append(_error_message(DEFERRED_CALL_MESSAGE, call_id=call_id, name=name))
+            continue
+
+        fn = adapter._tools_context.get(name)
+        if fn is None or not callable(fn):
+            known = ", ".join(sorted(k for k in adapter._tools_context if not k.startswith("_")))
+            results.append(
+                _error_message(
+                    f"Unknown tool '{name}'. Choose one of the provided tools: {known or '(none)'}.",
+                    call_id=call_id,
+                    name=name,
+                )
+            )
+            continue
+
+        kwargs, arg_error = _coerce_args(raw_args)
+        if arg_error:
+            results.append(_error_message(arg_error, call_id=call_id, name=name))
+            continue
+
+        awaitable = fn if inspect.iscoroutinefunction(fn) else make_tool_awaitable(fn)
+        counted = counted_tool_call(awaitable)
+        try:
+            result = await asyncio.wait_for(counted(**kwargs), timeout=timeout)
+            executed += 1
+            results.append(
+                ToolMessage(content=output_budget.take(_stringify(result)), tool_call_id=call_id, name=name)
+            )
+        except asyncio.TimeoutError:
+            results.append(
+                _error_message(
+                    f"Tool '{name}' timed out after {timeout}s. Try a narrower call or a different tool.",
+                    call_id=call_id,
+                    name=name,
+                )
+            )
+        except ToolCallBudgetExceeded as exc:
+            # Every remaining id still gets a reply — without invoking anything.
+            if exc.scope != "block":
+                budget_stop = str(exc)
+            results.append(_error_message(str(exc), call_id=call_id, name=name))
+        except TypeError as exc:
+            results.append(
+                _error_message(
+                    f"Tool '{name}' rejected these arguments: {exc}. Check the parameter names and types.",
+                    call_id=call_id,
+                    name=name,
+                )
+            )
+        except Exception as exc:  # one failing call must not abort its siblings
+            results.append(_error_message(f"Tool '{name}' failed: {exc}", call_id=call_id, name=name))
+
+    for index, bad in enumerate(invalid):
+        call_id, name, _ = _tool_call_parts(bad)
+        reason = (bad.get("error") if isinstance(bad, dict) else None) or "malformed tool call"
+        results.append(
+            _error_message(
+                f"The provider could not parse this tool call ({reason}). Re-issue it with valid arguments.",
+                call_id=call_id or f"invalid_{index}",
+                name=name,
+            )
+        )
+    return executed

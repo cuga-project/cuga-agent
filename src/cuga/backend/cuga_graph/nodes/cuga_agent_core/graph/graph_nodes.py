@@ -146,6 +146,7 @@ class CoreGraphAdapter(ABC):
         modified_messages: list,
         budget_exhausted: bool,
         playbook_fired: bool,
+        variables_addendum: str = "",
     ) -> Optional[Command]:
         """Native function-calling seam.
 

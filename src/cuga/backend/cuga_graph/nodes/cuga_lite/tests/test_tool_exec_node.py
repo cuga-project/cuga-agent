@@ -65,8 +65,14 @@ def _call(name: str, args: dict, call_id: str) -> dict:
     return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
 
 
+def _update(result) -> dict:
+    """Normal exits are ``Command(goto="call_model")``; error exits ``Command(goto=END)``."""
+    assert isinstance(result, Command), type(result)
+    return result.update
+
+
 def _tool_messages(result) -> List[ToolMessage]:
-    return [m for m in result["chat_messages"] if isinstance(m, ToolMessage)]
+    return [m for m in _update(result)["chat_messages"] if isinstance(m, ToolMessage)]
 
 
 @pytest.fixture(autouse=True)
@@ -111,12 +117,12 @@ async def test_every_call_runs_and_ids_are_preserved(monkeypatch):
         ("c1", "add", "3", "success"),
         ("c2", "greet", "hi bob", "success"),
     ]
-    assert result["chat_messages"][:2] == _state(last).chat_messages, (
+    assert _update(result)["chat_messages"][:2] == _state(last).chat_messages, (
         "history is appended to, never rewritten"
     )
-    assert result["script"] is None
-    assert result["step_count"] == 1
-    assert result["tool_calls_used_run"] == 2 and result["tool_budget_exhausted"] is False
+    assert _update(result)["script"] is None
+    assert _update(result)["step_count"] == 1
+    assert _update(result)["tool_calls_used_run"] == 2 and _update(result)["tool_budget_exhausted"] is False
 
 
 @pytest.mark.asyncio
@@ -202,7 +208,7 @@ async def test_timeout_is_an_error_toolmessage(monkeypatch):
     _caps(monkeypatch)
     from cuga.config import settings
 
-    monkeypatch.setattr(settings.advanced_features, "tool_call_timeout", 0.05, raising=False)
+    monkeypatch.setattr(settings.advanced_features, "sandbox_execution_timeout", 0.05, raising=False)
 
     async def slow() -> str:
         await asyncio.Event().wait()  # never set: immune to any asyncio.sleep patch elsewhere in the suite
@@ -267,8 +273,10 @@ async def test_bare_callables_are_still_budget_capped(monkeypatch):
     m1, m2 = _tool_messages(result)
     assert m1.content == "2" and calls == [(1, 1)], "the second call must be refused, not executed"
     assert m2.status == "error" and "Tool call limit reached" in m2.content
-    assert result["tool_calls_used_run"] == 1, "a refused call never inflates the counter"
-    assert result["tool_budget_exhausted"] is True, "call_model must see the exhaustion and end the turn"
+    assert _update(result)["tool_calls_used_run"] == 1, "a refused call never inflates the counter"
+    assert _update(result)["tool_budget_exhausted"] is True, (
+        "call_model must see the exhaustion and end the turn"
+    )
 
 
 @pytest.mark.asyncio
@@ -285,11 +293,13 @@ async def test_tracking_session_wraps_the_calls(monkeypatch):
 
     result = await node(_state(last), config={"configurable": {"track_tool_calls": True}})
 
-    assert [(c["name"], c["app_name"], c["result"]) for c in result["tool_calls"]] == [("add", "calc", 7)]
+    assert [(c["name"], c["app_name"], c["result"]) for c in _update(result)["tool_calls"]] == [
+        ("add", "calc", 7)
+    ]
     assert ToolCallTracker.is_enabled() is False
 
     untracked = await node(_state(last), config={"configurable": {}})
-    assert untracked["tool_calls"] == []
+    assert _update(untracked)["tool_calls"] == []
 
 
 # ── step discipline ──────────────────────────────────────────────────────────
@@ -323,7 +333,7 @@ async def test_step_discipline_runs_only_the_first_call_and_defers_the_rest(monk
     assert (m1.tool_call_id, m1.content, m1.status) == ("c1", "2", "success")
     assert (m2.tool_call_id, m2.content, m2.status) == ("c2", DEFERRED_CALL_MESSAGE, "error")
     assert (m3.tool_call_id, m3.content, m3.status) == ("c3", DEFERRED_CALL_MESSAGE, "error")
-    assert result["tool_calls_used_run"] == 1
+    assert _update(result)["tool_calls_used_run"] == 1
 
 
 @pytest.mark.asyncio
@@ -355,8 +365,9 @@ async def test_nothing_executable_still_advances_the_step(monkeypatch):
 
     result = await node(_state(AIMessage(content="no calls here"), step_count=4), config=None)
 
-    assert result["step_count"] == 5 and result["script"] is None
-    assert "chat_messages" not in result, "no ToolMessage is fabricated"
+    assert result.goto == "call_model"
+    assert _update(result)["step_count"] == 5 and _update(result)["script"] is None
+    assert "chat_messages" not in _update(result), "no ToolMessage is fabricated"
 
 
 @pytest.mark.asyncio
@@ -375,3 +386,102 @@ async def test_step_limit_ends_the_run_with_an_error_command(monkeypatch):
     assert "Maximum step limit" in result.update["error"]
     assert result.update["execution_complete"] is True
     assert "tool_calls_used_run" in result.update, "budget fields ride every exit"
+
+
+# ── outer guard + batch output budget ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_unexpected_failure_after_the_batch_still_reports_the_budget(monkeypatch):
+    """Same contract as the sandbox: whatever breaks after a call ran, the update
+    carries the spent budget, or the checkpoint keeps the pre-batch counts."""
+    _caps(monkeypatch)
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter import tool_exec_node as mod
+
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("history store unavailable")
+
+    monkeypatch.setattr(mod, "core_append_with_step_limit", boom)
+    node = create_tool_exec_node(_Adapter({"add": add}))
+    last = AIMessage(content="", tool_calls=[_call("add", {"a": 1, "b": 1}, "c1")])
+
+    result = await node(_state(last), config=None)
+
+    assert isinstance(result, Command)
+    assert "history store unavailable" in result.update["error"]
+    assert result.update["tool_calls_used_run"] == 1, "the call that ran must still be counted"
+    assert ToolCallTracker.is_enabled() is False
+
+
+@pytest.mark.asyncio
+async def test_one_batch_shares_one_output_limit(monkeypatch):
+    """N results share execution_output_max_length, like the N prints of one block."""
+    _caps(monkeypatch)
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.advanced_features, "execution_output_max_length", 10, raising=False)
+
+    async def text(n: int) -> str:
+        return "x" * n
+
+    node = create_tool_exec_node(_Adapter({"text": text}))
+    last = AIMessage(
+        content="",
+        tool_calls=[
+            _call("text", {"n": 8}, "c1"),
+            _call("text", {"n": 8}, "c2"),
+            _call("text", {"n": 3}, "c3"),
+        ],
+    )
+
+    result = await node(_state(last), config=None)
+
+    m1, m2, m3 = _tool_messages(result)
+    assert m1.content == "x" * 8, "under the limit: untouched"
+    assert m2.content.startswith("xx") and "truncated" in m2.content, "only the remaining budget is spent"
+    assert "truncated" in m3.content and not m3.content.startswith("x"), "nothing left for the third result"
+
+
+@pytest.mark.asyncio
+async def test_normal_exit_routes_to_call_model_and_error_exit_to_end(monkeypatch):
+    """One routing mechanism: no static edge, so a terminal error never schedules
+    one more model turn."""
+    _caps(monkeypatch)
+
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    node = create_tool_exec_node(_Adapter({"add": add}, max_steps=3))
+    last = AIMessage(content="", tool_calls=[_call("add", {"a": 1, "b": 1}, "c1")])
+
+    assert (await node(_state(last), config=None)).goto == "call_model"
+    from langgraph.graph import END
+
+    assert (await node(_state(last, step_count=3), config=None)).goto == END
+
+
+@pytest.mark.asyncio
+async def test_step_discipline_defers_by_position_even_when_the_first_call_fails(monkeypatch):
+    """An error on the first call is the result the model must read before the next
+    call — the second call must not run just because the first one failed."""
+    _caps(monkeypatch)
+    calls = []
+
+    async def add(a: int, b: int) -> int:
+        calls.append((a, b))
+        return a + b
+
+    node = create_tool_exec_node(_Adapter({"add": add}))
+    last = AIMessage(content="", tool_calls=[_call("nope", {}, "c1"), _call("add", {"a": 2, "b": 2}, "c2")])
+
+    result = await node(
+        _state(last), config={"configurable": {"cuga_lite_step_discipline": "one_tool_per_step"}}
+    )
+
+    m1, m2 = _tool_messages(result)
+    assert m1.status == "error" and "Unknown tool" in m1.content
+    assert (m2.tool_call_id, m2.content, m2.status) == ("c2", DEFERRED_CALL_MESSAGE, "error")
+    assert calls == []

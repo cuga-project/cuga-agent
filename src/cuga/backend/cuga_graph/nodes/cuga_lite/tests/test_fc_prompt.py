@@ -51,9 +51,20 @@ def test_instructions_then_special_instructions_close_the_prompt():
     assert "\n\n\n" not in text, "no blank-line runs from unset optional sections"
 
 
-def test_template_ships_no_benchmark_or_deployment_wording():
+def test_template_ships_no_placeholder_or_deployment_wording():
+    """Answer-format contracts belong in special_instructions, never in the shipped template."""
     text = _TEMPLATE.read_text()
-    assert "[[" not in text
-    assert "vakra" not in text.lower()
-    for module in ("adapter/tool_exec_node.py", "adapter/graph_adapter.py", "prompt_utils.py"):
-        assert "vakra" not in (_TEMPLATE.parents[1] / module).read_text().lower(), module
+    assert "[[" not in text and "]]" not in text
+    assert "{{ special_instructions }}" in text and "{{ instructions }}" in text
+
+
+def test_skill_and_agent_catalogues_are_rendered_when_given():
+    """``load_skill`` / ``delegate_to_*`` take a name; the model needs the catalogue to pick one."""
+    text = render_fc_prompt(
+        skills_prompt_section="## Available skills\n- deploy: ship it",
+        agents_prompt_section="## Available agents\n- researcher",
+        instructions="Be brief.",
+    )
+    assert "- deploy: ship it" in text and "- researcher" in text
+    assert text.index("- deploy") < text.index("- researcher") < text.index("Be brief.")
+    assert "Available skills" not in render_fc_prompt(), "absent when nothing is bound"

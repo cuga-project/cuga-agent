@@ -264,3 +264,32 @@ async def test_feature_off_is_the_old_codeact_run_and_tool_exec_is_never_entered
         "CodeAct still serialises turns through the dict path"
     )
     assert "```python" in result["prepared_prompt"], "the CodeAct prompt is unchanged"
+
+
+@pytest.mark.asyncio
+async def test_bundled_codeact_few_shots_are_withheld_in_fc_mode():
+    """With find_tools active the CodeAct path replays bundled ```python demos; in
+    function-calling mode they would contradict the prompt, so only demos passed
+    explicitly are sent."""
+    codeact = _ScriptedModel([AIMessage(content="done")])
+    await _run(codeact, _config("fs-codeact", shortlisting_tool_threshold=0), _echo_tool())
+    assert any("```python" in (m.get("content") or "") for m in codeact.seen[0] if isinstance(m, dict)), (
+        "precondition: the bundled CodeAct demos are in play"
+    )
+
+    fc = _ScriptedModel([AIMessage(content="done")])
+    await _run(
+        fc,
+        _config("fs-fc", cuga_lite_execution_mode="function_calling", shortlisting_tool_threshold=0),
+        _echo_tool(),
+    )
+    assert not any("```python" in getattr(m, "content", "") for m in fc.seen[0]), "CodeAct demos withheld"
+
+    explicit = _ScriptedModel([AIMessage(content="done")])
+    demos = [{"role": "user", "content": "demo q"}, {"role": "assistant", "content": "demo a"}]
+    await _run(
+        explicit,
+        _config("fs-explicit", cuga_lite_execution_mode="function_calling", mcp_few_shot_examples=demos),
+        _echo_tool(),
+    )
+    assert [m.content for m in explicit.seen[0][1:3]] == ["demo q", "demo a"], "explicit demos still replayed"
