@@ -1130,6 +1130,41 @@ See `docs/design/pluggable-shortlister.md` for the full design.
 </details>
 
 <details>
+<summary>🔁 Execution mode: CodeAct or native function calling</summary>
+
+## What it is
+
+By default CUGA Lite works in **CodeAct**: the model writes a Python block and the sandbox runs it. `cuga_lite_execution_mode = "function_calling"` switches to native tool calls: the model emits `tool_calls`, a `tool_exec` node runs them under the same budgets, tracker and timeout as the sandbox and replies with `ToolMessage`s, and the model reads the results before it calls again or answers. Tools are advertised through `bind_tools`; a short dedicated prompt replaces the CodeAct prompt.
+
+**Step discipline** (`cuga_lite_step_discipline = "one_tool_per_step"`) works in both modes: only the first tool call of a step is attempted — success or error, that is the result the model reads before it decides the next call. CodeAct keeps the block's variables (including that first result); function-calling answers the extra calls with a "deferred" reply.
+
+## Configuration
+
+| Key | Default | Values |
+|---|---|---|
+| `cuga_lite_execution_mode` | `"codeact"` | `codeact` \| `function_calling` (alias `fc`) |
+| `cuga_lite_step_discipline` | `"off"` | `off` \| `one_tool_per_step` |
+| `cuga_lite_fc_prompt_fragments` | `[]` | Opt-in prompt lines for function-calling mode. `evidence_first`: call a tool before answering, never answer from prior knowledge |
+
+Precedence, highest first: raw keys in `configurable` → per-invoke `invoke(..., execution_mode=..., step_discipline=...)` → constructor `CugaAgent(execution_mode=..., step_discipline=...)` → per-model runtime profile → `[advanced_features]` in `settings.toml` (also where `DYNACONF_ADVANCED_FEATURES__CUGA_LITE_EXECUTION_MODE` lands). An unknown value falls back to the default with a warning.
+
+```python
+agent = CugaAgent(tools=[...], execution_mode="function_calling", step_discipline="one_tool_per_step")
+result = await agent.invoke("...")                             # native tool calls
+result = await agent.invoke("...", execution_mode="codeact")   # per-call override
+```
+
+## Gotchas
+
+- **Tool-approval policies**: function-calling mode has no approval interrupt yet. If an enabled tool-approval policy exists — or policy storage cannot be checked — the run stops with a clear error before any tool runs (fail closed); use `codeact` for that agent or disable the policy.
+- Bind mode `none` (the default) is upgraded in function-calling mode to advertise exactly the tools the sandbox could call. Past `cuga_lite_bind_tools_max_count` (128) the bind-cap shortlister runs every turn; `[shortlister.bind_cap] strategy = "embedding"` avoids the extra LLM call.
+- The bundled CodeAct few-shot demos are not sent in function-calling mode; pass your own through `configurable["mcp_few_shot_examples"]`.
+- Tools run in-process and sequentially. The pre-execute VERIFY gate, reflection and the E2B / OpenSandbox executors are CodeAct-only; step discipline caps local-executor blocks only.
+- A thread can switch modes between turns: results from function-calling turns are shown to a later CodeAct turn as text.
+
+</details>
+
+<details>
 <summary>📝 Special Instructions Configuration</summary>
 
 ## How It Works

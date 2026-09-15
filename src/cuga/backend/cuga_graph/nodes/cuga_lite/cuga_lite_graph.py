@@ -229,6 +229,10 @@ def create_cuga_lite_graph(
     prepare_node = adapter.build_prepare_node(lc_bind_tools_meta)
     sandbox_node = adapter.build_sandbox_node(thread_id, apps_list)
     call_model_node = _create_shared_call_model_node(adapter, model, settings)
+    # Native function-calling node. Always wired so the mode can be switched per
+    # invoke without recompiling; call_model only routes to it in that mode, so
+    # it is dormant on every CodeAct run.
+    tool_exec_node = adapter.build_tool_exec_node()
 
     return build_agent_graph(
         adapter=adapter,
@@ -236,4 +240,5 @@ def create_cuga_lite_graph(
         prepare_node=prepare_node,
         call_model_node=call_model_node,
         execute_node=sandbox_node,
+        tool_exec_node=tool_exec_node,
     )
