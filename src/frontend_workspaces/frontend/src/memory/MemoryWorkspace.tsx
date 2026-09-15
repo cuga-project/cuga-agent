@@ -1412,13 +1412,6 @@ export function MemoryWorkspace({
 
           {adminTab === "memory" && (
             <div role="tabpanel" aria-label="Memory">
-              <Grid className="memory-workspace__page-head memory-workspace__page-head--admin">
-                <Column sm={4} md={8} lg={16} className="memory-workspace__page-copy">
-                  <p className="memory-workspace__eyebrow">Governed inventory</p>
-                  <h1>Agent memory</h1>
-                  <p>Inspect lifecycle metadata across the agent&apos;s memory inventory. Stored content is not shown in this view.</p>
-                </Column>
-              </Grid>
               <Grid className="memory-workspace__toolbar">
                 <Column sm={4} md={4} lg={5}>
                   <Select id="admin-memory-owner" labelText="Memory about" value={adminOwner} onChange={(event) => setAdminOwner(event.target.value)}>
@@ -1487,13 +1480,6 @@ export function MemoryWorkspace({
 
           {adminTab === "activity" && (
             <div role="tabpanel" aria-label="Activity">
-              <Grid className="memory-workspace__page-head memory-workspace__page-head--admin">
-                <Column sm={4} md={8} lg={16} className="memory-workspace__page-copy">
-                  <p className="memory-workspace__eyebrow">Lifecycle evidence</p>
-                  <h1>Activity</h1>
-                  <p>Review retention outcomes, policy attribution, and administrative audit records.</p>
-                </Column>
-              </Grid>
               <CollectionActivity memories={adminMemories} refreshKey={runs} onOpen={(id) => {
                 setAdminOwner("all"); setAdminState("all");
                 setSelectedAdminMemoryId(id); setAdminTab("memory"); setDetailOpen(true);
