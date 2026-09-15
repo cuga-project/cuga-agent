@@ -1550,7 +1550,7 @@ async def event_stream(
     from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
     from langchain_core.messages import AIMessage
 
-    memory_turn_id = str(uuid.uuid4())
+    memory_turn_id = str(uuid.uuid4()) if not resume else ""
     run_agent = agent if agent is not None else app_state.agent
     runtime_agent_id = agent_id or app_state.agent_id
     if current_llm is _RUNTIME_LLM_UNSET:
@@ -1625,6 +1625,8 @@ async def event_stream(
                 local_state.thread_id = thread_id
 
     if local_state:
+        if resume:
+            memory_turn_id = str((local_state.service_scope or {}).get("memory_turn_id") or "")
         apply_request_user_context(local_state, user_id)
         local_state.service_scope.update({"agent_id": runtime_agent_id, "memory_turn_id": memory_turn_id})
         # Route this run to the CugaSupervisor node when the resolved agent is a supervisor
@@ -1873,7 +1875,7 @@ async def event_stream(
                             }
                             if event.sources:
                                 answer_payload["sources"] = event.sources
-                            if settings.evolve.enabled:
+                            if settings.evolve.enabled and memory_turn_id:
                                 from cuga.backend.evolve.memory_store import get_turn_memory_usage
 
                                 try:
