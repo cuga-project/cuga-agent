@@ -20,17 +20,7 @@ from cuga.config import get_service_instance_id
 from cuga.backend.server.evolve_native_routes import MemoryServiceRoute, router as native_router
 
 
-def require_evolve_memory() -> None:
-    if not EvolveIntegration.is_enabled():
-        raise HTTPException(status_code=404, detail="Evolve memory is disabled")
-
-
-router = APIRouter(
-    prefix="/api",
-    route_class=MemoryServiceRoute,
-    tags=["memory"],
-    dependencies=[Depends(require_evolve_memory)],
-)
+router = APIRouter(prefix="/api", route_class=MemoryServiceRoute, tags=["memory"])
 
 _DEFAULT_USER_ID = "default_user"
 _MEMORY_METADATA_FIELDS = {
@@ -529,8 +519,6 @@ async def preview_retention_schedule(
 
     from pydantic import ValidationError
 
-    if not EvolveIntegration.is_enabled():
-        raise HTTPException(status_code=503, detail="Evolve memory is unavailable")
     try:
         from altk_evolve.retention.schedule import CronJobSpec
     except ImportError:
@@ -550,3 +538,41 @@ async def preview_retention_schedule(
 # Generic retention operations are owned by Evolve's native router.
 # This router already includes /api, so mount without the outer prefix.
 router.routes.extend(native_router.routes)
+
+
+class MemoryPreferenceUpdate(BaseModel):
+    enabled: bool | None
+
+    model_config = {"extra": "forbid"}
+
+
+@router.get("/memory/settings")
+async def get_memory_settings(current_user: Optional[UserInfo] = Depends(require_chat_access)):
+    from cuga.backend.evolve.preferences import get_preferences
+
+    return await get_preferences(_user_id(current_user))
+
+
+@router.put("/memory/settings")
+async def set_user_memory_settings(
+    body: MemoryPreferenceUpdate, current_user: Optional[UserInfo] = Depends(require_chat_access)
+):
+    from cuga.backend.evolve.preferences import set_preference
+
+    return await set_preference(user_id=_user_id(current_user), enabled=body.enabled)
+
+
+@router.put("/manage/memory/settings")
+async def set_instance_memory_settings(
+    body: MemoryPreferenceUpdate, current_user: Optional[UserInfo] = Depends(require_manage_access)
+):
+    from cuga.backend.evolve.preferences import set_preference
+
+    return await set_preference(user_id=_user_id(current_user), enabled=body.enabled, instance=True)
+
+
+@router.get("/manage/memory/settings")
+async def get_instance_memory_settings(current_user: Optional[UserInfo] = Depends(require_manage_access)):
+    from cuga.backend.evolve.preferences import get_preferences
+
+    return await get_preferences(_user_id(current_user))
