@@ -43,15 +43,17 @@ async def test_list_entities_serializes_filters_and_scope():
 
 
 @pytest.mark.asyncio
-async def test_structured_tools_do_nothing_when_feature_is_disabled():
+async def test_management_tools_remain_available_when_operator_default_is_disabled():
     with (
         patch.object(EvolveIntegration, "is_enabled", return_value=False),
-        patch.object(EvolveIntegration, "_call_tool", new=AsyncMock()) as call_tool,
+        patch.object(
+            EvolveIntegration, "_call_tool", new=AsyncMock(return_value={"id": "entity-a"})
+        ) as call_tool,
     ):
         result = await EvolveIntegration.get_entity("entity-a")
 
-    assert result is None
-    call_tool.assert_not_awaited()
+    assert result == {"id": "entity-a"}
+    call_tool.assert_awaited_once()
 
 
 @pytest.mark.asyncio
