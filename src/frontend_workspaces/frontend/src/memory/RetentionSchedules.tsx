@@ -63,9 +63,11 @@ function describe(spec: ScheduleSpec) {
 export function RetentionSchedules({
   policyId,
   enabled,
+  readOnly = false,
 }: {
   policyId: string;
   enabled: boolean;
+  readOnly?: boolean;
 }) {
   const inputId = React.useId();
   const [items, setItems] = useState<RetentionSchedule[]>([]);
@@ -152,7 +154,7 @@ export function RetentionSchedules({
   };
   return (
     <section className="memory-schedules" aria-label="Retention schedules">
-<div className="memory-settings__row"><div><h2>Schedules</h2><p>Schedules are stored and executed by Evolve.</p></div>      <Button size="md" disabled={busy || !enabled} onClick={() => edit("new")}>
+<div className="memory-settings__row"><div><h2>Schedules</h2><p>Schedules are stored and executed by Evolve.</p></div>      <Button size="md" disabled={readOnly || busy || !enabled} onClick={() => edit("new")}>
         Add schedule
       </Button>
 </div>
@@ -213,7 +215,7 @@ export function RetentionSchedules({
             <Button
               kind="ghost"
               size="sm"
-              disabled={busy}
+              disabled={readOnly || busy}
               onClick={() => edit(item)}
             >
               Edit
@@ -221,7 +223,7 @@ export function RetentionSchedules({
             <Button
               kind="ghost"
               size="sm"
-              disabled={busy || (!enabled && item.definition.spec.suspend)}
+              disabled={readOnly || busy || (!enabled && item.definition.spec.suspend)}
               onClick={() =>
                 void perform(async () => {
                   await changeSchedule(
@@ -237,7 +239,7 @@ export function RetentionSchedules({
             <Button
               size="sm"
               kind="danger--ghost"
-              disabled={busy}
+              disabled={readOnly || busy}
               onClick={() => setDeleteTarget(item)}
             >
               Delete
@@ -254,7 +256,7 @@ export function RetentionSchedules({
           <div className="memory-schedules__actions">
             <Button
               size="sm"
-              disabled={busy}
+              disabled={readOnly || busy}
               kind="danger--ghost"
               onClick={() =>
                 void perform(async () => {
@@ -269,7 +271,7 @@ export function RetentionSchedules({
             <Button
               kind="ghost"
               size="sm"
-              disabled={busy}
+              disabled={readOnly || busy}
               onClick={() => setDeleteTarget(null)}
             >
               Cancel
@@ -296,7 +298,7 @@ export function RetentionSchedules({
           onChange={() => setPreview([])}
         >
           <h3>{editing === "new" ? "Add schedule" : "Edit schedule"}</h3>
-          <fieldset disabled={busy}>
+          <fieldset disabled={readOnly || busy}>
             <Fields>
               <TextInput
                 id={`${inputId}-5`}
