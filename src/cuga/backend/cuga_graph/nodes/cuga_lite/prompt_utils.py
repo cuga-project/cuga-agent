@@ -923,6 +923,7 @@ def render_fc_prompt(
     fragments: Optional[List[str]] = None,
     skills_prompt_section: Optional[str] = None,
     agents_prompt_section: Optional[str] = None,
+    apps: Optional[list] = None,
 ) -> str:
     """System prompt for ``cuga_lite_execution_mode = "function_calling"``.
 
@@ -934,7 +935,8 @@ def render_fc_prompt(
     - the generic preamble (always),
     - the step-discipline line when ``cuga_lite_step_discipline`` is on,
     - opt-in fragments from ``cuga_lite_fc_prompt_fragments`` (``evidence_first``),
-    - the skill and agent catalogues when those tools are bound (``load_skill`` /
+    - the app catalogue when ``find_tools`` is bound (it takes an ``app_name``), and
+      the skill / agent catalogues when those tools are bound (``load_skill`` /
       ``delegate_to_*`` take a name; the model has to be able to pick a valid one),
     - then the agent's ``instructions`` and the caller's ``special_instructions``.
 
@@ -947,6 +949,7 @@ def render_fc_prompt(
         is_autonomous_subtask=bool(is_autonomous_subtask),
         step_discipline=bool(step_discipline),
         evidence_first="evidence_first" in frags,
+        apps=format_apps_for_prompt(apps) if apps else [],
         skills_prompt_section=(skills_prompt_section or "").strip(),
         agents_prompt_section=(agents_prompt_section or "").strip(),
         instructions=(instructions or "").strip(),

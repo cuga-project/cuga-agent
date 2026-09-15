@@ -68,3 +68,14 @@ def test_skill_and_agent_catalogues_are_rendered_when_given():
     assert "- deploy: ship it" in text and "- researcher" in text
     assert text.index("- deploy") < text.index("- researcher") < text.index("Be brief.")
     assert "Available skills" not in render_fc_prompt(), "absent when nothing is bound"
+
+
+def test_app_catalogue_is_rendered_when_find_tools_is_bound():
+    """``find_tools(query, app_name)`` requires an app name; the model needs the list."""
+    from types import SimpleNamespace
+
+    apps = [SimpleNamespace(name="crm", type="api", description="Customers and deals")]
+    text = render_fc_prompt(apps=apps)
+    assert "# AVAILABLE APPS" in text and "- crm (api): Customers and deals" in text
+    assert "`app_name`" in text
+    assert "AVAILABLE APPS" not in render_fc_prompt(), "absent when find_tools is not bound"

@@ -54,6 +54,7 @@ def _quiet(monkeypatch):
     from cuga.config import settings
 
     monkeypatch.setattr(settings.policy, "enabled", False, raising=False)
+    monkeypatch.setattr(settings.evolve, "enabled", False, raising=False)  # no registry round-trips
     CALLS.clear()
     yield
     CALLS.clear()

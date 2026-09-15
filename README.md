@@ -1136,7 +1136,7 @@ See `docs/design/pluggable-shortlister.md` for the full design.
 
 By default CUGA Lite works in **CodeAct**: the model writes a Python block and the sandbox runs it. `cuga_lite_execution_mode = "function_calling"` switches to native tool calls: the model emits `tool_calls`, a `tool_exec` node runs them under the same budgets, tracker and timeout as the sandbox and replies with `ToolMessage`s, and the model reads the results before it calls again or answers. Tools are advertised through `bind_tools`; a short dedicated prompt replaces the CodeAct prompt.
 
-**Step discipline** (`cuga_lite_step_discipline = "one_tool_per_step"`) works in both modes: only the first tool call of a step runs, so the model reads a result before it decides the next call. CodeAct keeps the block's variables (including that first result); function-calling answers the extra calls with a "deferred" reply.
+**Step discipline** (`cuga_lite_step_discipline = "one_tool_per_step"`) works in both modes: only the first tool call of a step is attempted — success or error, that is the result the model reads before it decides the next call. CodeAct keeps the block's variables (including that first result); function-calling answers the extra calls with a "deferred" reply.
 
 ## Configuration
 
