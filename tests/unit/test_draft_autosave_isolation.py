@@ -195,7 +195,12 @@ def test_patch_draft_tools_for_non_default_does_not_rebuild_default(monkeypatch)
     assert ("sales-east", True) not in app_state.agent_graphs_cache
 
 
-def test_patch_draft_policies_for_non_default_skips_shared_policy_system():
+def test_patch_draft_policies_for_non_default_skips_shared_policy_system(monkeypatch):
+    monkeypatch.setattr("cuga.backend.server.agent_registry.is_agent_registry_enabled", lambda: True)
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.list_agents_with_configs",
+        AsyncMock(return_value=[{"agent_id": "sales-east"}]),
+    )
     app_state, draft_state, _draft_agent = _states()
     draft_state.policy_system = SimpleNamespace(storage=object())
     client = _client(app_state, draft_state)

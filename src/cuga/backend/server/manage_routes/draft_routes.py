@@ -388,8 +388,7 @@ async def patch_draft_supervisor(request: Request, agent_id: Optional[str] = Non
 @router.patch("/config/draft/policies")
 async def patch_draft_policies(request: Request, agent_id: Optional[str] = None):
     """Update only the policies section of the draft. No registry reload or agent rebuild."""
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     try:
         data = await request.json()
         policies = data.get("policies", data)

@@ -15,6 +15,8 @@ from cuga.backend.cuga_graph.policy.configurable import (
     get_agent_policy_collection_name,
 )
 from cuga.backend.server import main as main_mod
+from cuga.backend.server.manage_routes import draft_routes
+from cuga.backend.server.manage_routes.draft_routes import patch_draft_policies
 from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
 
 pytestmark = pytest.mark.unit
@@ -170,6 +172,75 @@ async def test_resolve_policy_agent_id_accepts_default_without_registry_lookup(r
         assert await main_mod._resolve_policy_agent_id(requested_agent_id) == "cuga-default"
 
     list_agents.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_patch_draft_policies_rejects_unknown_agent_before_request_parsing_or_storage(monkeypatch):
+    request = SimpleNamespace(json=AsyncMock(), app=SimpleNamespace(state=SimpleNamespace()))
+    save_draft_section = AsyncMock()
+    create_policy_system = AsyncMock()
+    invalidate_cache = AsyncMock()
+    monkeypatch.setattr("cuga.backend.server.agent_registry.is_agent_registry_enabled", lambda: True)
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.list_agents_with_configs",
+        AsyncMock(return_value=[{"agent_id": "registered-agent"}]),
+    )
+    monkeypatch.setattr(draft_routes, "save_draft_section_unlocked", save_draft_section)
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.policy.configurable.create_agent_policy_system",
+        create_policy_system,
+    )
+    monkeypatch.setattr(draft_routes, "invalidate_agent_graph_cache", invalidate_cache)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await patch_draft_policies(request, agent_id="registered-agent'; DROP TABLE policies;--")
+
+    assert exc_info.value.status_code == 404
+    request.json.assert_not_awaited()
+    save_draft_section.assert_not_awaited()
+    create_policy_system.assert_not_awaited()
+    invalidate_cache.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_patch_draft_policies_passes_registry_owned_agent_id_to_policy_creation(monkeypatch):
+    registry_agent_id = "".join(["registered", "-agent"])
+    requested_agent_id = registry_agent_id.encode().decode()
+    assert requested_agent_id == registry_agent_id
+    assert requested_agent_id is not registry_agent_id
+    request = SimpleNamespace(
+        json=AsyncMock(return_value={"policies": {"policies": []}}),
+        app=SimpleNamespace(state=SimpleNamespace()),
+    )
+    captured = {}
+
+    async def _save_draft_section(agent_id, section, value):
+        captured["saved_agent_id"] = agent_id
+        assert section == "policies"
+        return {"policies": value}
+
+    async def _create_policy_system(*, agent_id, draft, policies_data):
+        captured["policy_agent_id"] = agent_id
+        assert draft is True
+        assert policies_data == []
+
+    monkeypatch.setattr("cuga.backend.server.agent_registry.is_agent_registry_enabled", lambda: True)
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.list_agents_with_configs",
+        AsyncMock(return_value=[{"agent_id": registry_agent_id}]),
+    )
+    monkeypatch.setattr(draft_routes, "save_draft_section_unlocked", _save_draft_section)
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.policy.configurable.create_agent_policy_system",
+        _create_policy_system,
+    )
+    monkeypatch.setattr(draft_routes, "invalidate_agent_graph_cache", AsyncMock())
+
+    response = await patch_draft_policies(request, agent_id=requested_agent_id)
+
+    assert response.status_code == 200
+    assert captured["saved_agent_id"] is registry_agent_id
+    assert captured["policy_agent_id"] is registry_agent_id
 
 
 @pytest.mark.asyncio
