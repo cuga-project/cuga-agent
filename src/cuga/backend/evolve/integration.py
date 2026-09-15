@@ -433,17 +433,32 @@ class EvolveIntegration:
             if not namespace_id:
                 raise ValueError("Evolve requires a configured service instance ID")
             args = {**args, "namespace_id": namespace_id}
-        if tool_name in {
+        from cuga.backend.evolve.preferences import get_preferences
+
+        preference = await get_preferences(args.get("user_id") or "default_user")
+        automatic_tools = {
             "get_guidelines",
             "get_guidelines_with_attribution",
             "store_user_facts",
             "retrieve_user_facts",
             "save_trajectory",
-        }:
-            from cuga.backend.evolve.preferences import memory_enabled
-
-            if not await memory_enabled(args.get("user_id")):
+        }
+        read_tools = {
+            "list_entities",
+            "get_entity",
+            "list_retention_policies",
+            "list_retention_runs",
+            "get_compliance_status",
+            "list_retention_candidates",
+            "list_retention_audit",
+            "list_retention_schedules",
+            "get_retention_schedule",
+        }
+        if tool_name in automatic_tools:
+            if not preference["effective_enabled"]:
                 return None
+        elif not preference["instance_enabled"] and tool_name not in read_tools:
+            raise RuntimeError("Memory is read-only while disabled for this service")
         mode = cls._get_mode()
         registry_enabled = bool(getattr(settings.advanced_features, "registry", False))
 
