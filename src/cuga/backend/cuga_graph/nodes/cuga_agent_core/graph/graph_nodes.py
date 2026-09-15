@@ -28,6 +28,12 @@ EMPTY_RESPONSE_CORRECTION = (
     "block, or state the final answer."
 )
 STEP_LIMIT_MESSAGE_PREFIX = "Maximum step limit ("
+# Metadata key counting consecutive NL turns that were auto-continued with no
+# code turn in between. Reset whenever the model emits code; capped by
+# ``advanced_features.cuga_lite_nl_auto_continue_max_consecutive`` (#445 /
+# PR #732: an autonomous-mode continue on a hard blocker otherwise re-asks the
+# absent user for the same missing resource until the step limit).
+NL_AUTO_CONTINUE_STREAK_KEY = "_nl_auto_continue_streak"
 
 
 class CoreGraphAdapter(ABC):

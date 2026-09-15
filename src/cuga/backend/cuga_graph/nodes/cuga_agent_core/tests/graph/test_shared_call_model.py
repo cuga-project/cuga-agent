@@ -864,3 +864,114 @@ async def test_sub_task_treated_as_autonomous_for_deferral(mock_summarize):
     assert adapter.captured_autonomous is True
     assert result.goto == "call_model"
     assert result.update["chat_messages"][-1].content == "continue"
+
+
+# ── 10. Consecutive NL auto-continue budget (#445 / PR #732 loop finding) ──
+#
+# Live AppWorld traces on gpt-4.1 showed autonomous mode re-asking an absent
+# user for the same missing card/email 36–56 times per task: the classifier
+# said "continue" on a hard blocker every time, and only the step limit ended
+# it. The cap counts consecutive NL turns auto-continued with no code turn in
+# between and finalizes when it is reached, without consulting the classifier.
+
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (  # noqa: E402
+    NL_AUTO_CONTINUE_STREAK_KEY as _STREAK_KEY,
+)
+
+
+class _CountingContinueAdapter(_TestAdapter):
+    def __init__(self):
+        super().__init__()
+        self.classifier_calls = 0
+
+    async def classify_auto_continue(self, state, model, content, reasoning, *, autonomous: bool = False):
+        self.classifier_calls += 1
+        return True
+
+
+def _mock_settings_streak(cap):
+    adv = SimpleNamespace(cuga_lite_max_steps=50, cuga_lite_nl_auto_continue_max_consecutive=cap)
+    return SimpleNamespace(advanced_features=adv, policy=SimpleNamespace(enabled=False))
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_auto_continue_increments_streak(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+    adapter = _CountingContinueAdapter()
+    state = _make_state(metadata={_STREAK_KEY: 1})
+    node = _get_factory()(adapter, _mock_model("Please provide a valid card."), _mock_settings_streak(3))
+    result = await node(state, config=None)
+    assert result.goto == "call_model"
+    assert result.update["cuga_lite_metadata"][_STREAK_KEY] == 2
+    assert adapter.classifier_calls == 1
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_streak_at_cap_finalizes_without_classifier(mock_summarize):
+    """The cap is reached: the NL turn is delivered as the final answer and
+    the classifier (which would say continue again) is never consulted."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+    adapter = _CountingContinueAdapter()
+    state = _make_state(metadata={_STREAK_KEY: 3})
+    node = _get_factory()(adapter, _mock_model("Please provide a valid card."), _mock_settings_streak(3))
+    result = await node(state, config=None)
+    assert result.goto == END
+    assert result.update["final_answer"] == "Please provide a valid card."
+    assert adapter.classifier_calls == 0
+    assert _STREAK_KEY not in result.update["cuga_lite_metadata"]
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_code_turn_resets_streak(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+    adapter = _CountingContinueAdapter()
+    state = _make_state(metadata={_STREAK_KEY: 2, "keep": "me"})
+    node = _get_factory()(adapter, _mock_model("```python\nprint(1)\n```"), _mock_settings_streak(3))
+    result = await node(state, config=None)
+    assert result.goto == "sandbox"
+    assert _STREAK_KEY not in result.update["cuga_lite_metadata"]
+    assert result.update["cuga_lite_metadata"]["keep"] == "me"
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_zero_cap_disables_streak_limit(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+    adapter = _CountingContinueAdapter()
+    state = _make_state(metadata={_STREAK_KEY: 500})
+    node = _get_factory()(adapter, _mock_model("Please provide a valid card."), _mock_settings_streak(0))
+    result = await node(state, config=None)
+    assert result.goto == "call_model"
+    assert result.update["cuga_lite_metadata"][_STREAK_KEY] == 501
+    assert adapter.classifier_calls == 1
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_missing_setting_defaults_to_cap_of_three(mock_summarize):
+    """Older settings files without the key still get the guard."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+    adapter = _CountingContinueAdapter()
+    state = _make_state(metadata={_STREAK_KEY: 3})
+    node = _get_factory()(adapter, _mock_model("Please provide a valid card."), _mock_settings())
+    result = await node(state, config=None)
+    assert result.goto == END
+    assert adapter.classifier_calls == 0

@@ -36,6 +36,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     EMPTY_RESPONSE_CORRECTION,
     EMPTY_RESPONSE_CORRECTION_KEY,
     EXECUTION_OUTPUT_PREFIX,
+    NL_AUTO_CONTINUE_STREAK_KEY,
     CoreGraphAdapter,
     enforce_step_limit,
 )
@@ -286,13 +287,16 @@ def create_call_model_node(
             code = None
 
         if code:
+            # A code turn is progress: the NL auto-continue streak starts over.
+            code_meta = dict(meta_update[adapter.metadata_key] or {})
+            code_meta.pop(NL_AUTO_CONTINUE_STREAK_KEY, None)
             return Command(
                 goto=adapter.execute_node_name,
                 update={
                     adapter.messages_key: final_messages,
                     "script": code,
                     "step_count": new_step_count,
-                    **meta_update,
+                    adapter.metadata_key: code_meta,
                 },
             )
 
@@ -341,7 +345,23 @@ def create_call_model_node(
         # Lite's resolve_finalize_disposition directly — this node is shared
         # with Supervisor, which must keep finalizing NL turns unconditionally.
         should_continue: bool | str = False
-        if not budget_exhausted:
+        # Attempt budget: consecutive NL turns already auto-continued without a
+        # code turn in between. Once the cap is hit the turn finalizes without
+        # consulting the classifier at all — in autonomous mode the classifier
+        # keeps saying "continue" to a hard blocker ("I cannot proceed without a
+        # valid card") and the agent re-asks the absent user until the step
+        # limit (observed 36–56 classifier calls per task, PR #732 comments).
+        nl_streak = int(adapter.get_metadata(state).get(NL_AUTO_CONTINUE_STREAK_KEY) or 0)
+        nl_streak_cap = int(
+            getattr(settings.advanced_features, "cuga_lite_nl_auto_continue_max_consecutive", 3) or 0
+        )
+        streak_exhausted = bool(nl_streak_cap) and nl_streak >= nl_streak_cap
+        if streak_exhausted:
+            logger.warning(
+                f"{adapter.sender_name}: {nl_streak} consecutive NL auto-continues with no code turn "
+                f"— finalizing (cuga_lite_nl_auto_continue_max_consecutive={nl_streak_cap})"
+            )
+        if not budget_exhausted and not streak_exhausted:
             nl_auto_continue = bool(getattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True))
             # Mirrors is_autonomous_subtask in cuga_lite_node.py / prepare_node.py: a
             # sub-task turn gets the "DO NOT ASK" system prompt regardless of the
@@ -379,10 +399,12 @@ def create_call_model_node(
             # state (Lite's spent-retry marker), and the meta_update above was
             # snapshotted before the classify call. build_metadata_update re-reads
             # state, so this is a no-op when nothing changed.
-            meta_update = {
-                adapter.metadata_key: adapter.build_metadata_update(state, playbook_fired=playbook_fired)
-            }
-            logger.info(f"{adapter.sender_name}: NL response disposition=continue — auto-continuing")
+            continue_meta = dict(adapter.build_metadata_update(state, playbook_fired=playbook_fired) or {})
+            continue_meta[NL_AUTO_CONTINUE_STREAK_KEY] = nl_streak + 1
+            logger.info(
+                f"{adapter.sender_name}: NL response disposition=continue — auto-continuing "
+                f"({nl_streak + 1}/{nl_streak_cap or '∞'} consecutive)"
+            )
             return Command(
                 goto="call_model",
                 update={
@@ -391,7 +413,7 @@ def create_call_model_node(
                     "final_answer": "",
                     "execution_complete": False,
                     "step_count": new_step_count,
-                    **meta_update,
+                    adapter.metadata_key: continue_meta,
                 },
             )
 
@@ -418,6 +440,9 @@ def create_call_model_node(
         if not (content or "").strip() and final_answer:
             final_messages = modified_messages + [AIMessage(content=final_answer)]
 
+        # The turn is over; the streak must not leak into the next user turn.
+        end_meta = dict(meta_update[adapter.metadata_key] or {})
+        end_meta.pop(NL_AUTO_CONTINUE_STREAK_KEY, None)
         return Command(
             goto=END,
             update={
@@ -426,7 +451,7 @@ def create_call_model_node(
                 "final_answer": final_answer,
                 "execution_complete": True,
                 "step_count": new_step_count,
-                **meta_update,
+                adapter.metadata_key: end_meta,
             },
         )
 
