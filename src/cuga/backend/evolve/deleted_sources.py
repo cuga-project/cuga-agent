@@ -8,8 +8,6 @@ async def deliver_source_deletions():
     from cuga.backend.evolve.integration import EvolveIntegration
     from cuga.backend.server.conversation_history import get_conversation_db
 
-    if not EvolveIntegration.is_enabled():
-        return
     db = get_conversation_db()
     for event in await db.pending_source_deletions():
         result = await EvolveIntegration._call_structured_tool(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import Request, APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,16 +19,19 @@ from cuga.backend.server.auth.models import UserInfo
 from cuga.config import get_service_instance_id
 
 
-def require_evolve_memory() -> None:
-    if not EvolveIntegration.is_enabled():
-        raise HTTPException(status_code=404, detail="Evolve memory is disabled")
+async def require_service_memory(request: Request) -> None:
+    # Settings must remain reachable so administrators can re-enable the service.
+    if request.method in {"GET", "HEAD"}:
+        return
+    if request.url.path.rstrip("/") in {"/api/memory/settings", "/api/manage/memory/settings"}:
+        return
+    from cuga.backend.evolve.preferences import get_preferences
+
+    if not (await get_preferences("default_user"))["instance_enabled"]:
+        raise HTTPException(status_code=403, detail="Memory is disabled for this service")
 
 
-router = APIRouter(
-    prefix="/api",
-    tags=["memory"],
-    dependencies=[Depends(require_evolve_memory)],
-)
+router = APIRouter(prefix="/api", tags=["memory"], dependencies=[Depends(require_service_memory)])
 
 _DEFAULT_USER_ID = "default_user"
 _MEMORY_METADATA_FIELDS = {
@@ -213,6 +216,10 @@ async def _retention_policies() -> list[dict[str, Any]]:
     )
     policies = [item for item in result.get("items", []) if isinstance(item, dict)]
     if any(policy.get("policy_id") == DEFAULT_RETENTION_POLICY_ID for policy in policies):
+        return policies
+    from cuga.backend.evolve.preferences import get_preferences
+
+    if not (await get_preferences("default_user"))["instance_enabled"]:
         return policies
     created = _memory_result(
         await EvolveIntegration.put_retention_policy(
@@ -656,8 +663,6 @@ async def preview_retention_schedule(
 
     from pydantic import ValidationError
 
-    if not EvolveIntegration.is_enabled():
-        raise HTTPException(status_code=503, detail="Evolve memory is unavailable")
     try:
         from altk_evolve.retention.schedule import CronJobSpec
     except ImportError:
@@ -746,3 +751,41 @@ async def delete_retention_schedule(
             expected_revision=expected_revision,
         )
     )
+
+
+class MemoryPreferenceUpdate(BaseModel):
+    enabled: bool | None
+
+    model_config = {"extra": "forbid"}
+
+
+@router.get("/memory/settings")
+async def get_memory_settings(current_user: Optional[UserInfo] = Depends(require_chat_access)):
+    from cuga.backend.evolve.preferences import get_preferences
+
+    return await get_preferences(_user_id(current_user))
+
+
+@router.put("/memory/settings")
+async def set_user_memory_settings(
+    body: MemoryPreferenceUpdate, current_user: Optional[UserInfo] = Depends(require_chat_access)
+):
+    from cuga.backend.evolve.preferences import set_preference
+
+    return await set_preference(user_id=_user_id(current_user), enabled=body.enabled)
+
+
+@router.put("/manage/memory/settings")
+async def set_instance_memory_settings(
+    body: MemoryPreferenceUpdate, current_user: Optional[UserInfo] = Depends(require_manage_access)
+):
+    from cuga.backend.evolve.preferences import set_preference
+
+    return await set_preference(user_id=_user_id(current_user), enabled=body.enabled, instance=True)
+
+
+@router.get("/manage/memory/settings")
+async def get_instance_memory_settings(current_user: Optional[UserInfo] = Depends(require_manage_access)):
+    from cuga.backend.evolve.preferences import get_preferences
+
+    return await get_preferences(_user_id(current_user))

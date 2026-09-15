@@ -32,7 +32,7 @@ def test_namespace_id_is_the_service_instance_id():
         assert _namespace_id() == "service-instance-1"
 
 
-def test_disabled_feature_returns_not_found_without_calling_evolve(client):
+def test_operator_default_off_keeps_inventory_available(client):
     with (
         patch(
             "cuga.backend.server.memory_routes.EvolveIntegration.is_enabled",
@@ -40,13 +40,13 @@ def test_disabled_feature_returns_not_found_without_calling_evolve(client):
         ),
         patch(
             "cuga.backend.server.memory_routes.EvolveIntegration.list_entities",
-            new=AsyncMock(),
+            new=AsyncMock(return_value={"items": [], "total": 0}),
         ) as list_entities,
     ):
         response = client.get("/api/memory/entities")
 
-    assert response.status_code == 404
-    list_entities.assert_not_awaited()
+    assert response.status_code == 200
+    list_entities.assert_awaited_once()
 
 
 def test_user_inventory_is_scoped_and_projected(client):
