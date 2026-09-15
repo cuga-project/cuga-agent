@@ -10,14 +10,15 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.mark.asyncio
-async def test_prompt_context_records_exact_attributed_memory_ids():
+async def test_prompt_context_records_exact_attributed_memory_ids(monkeypatch):
+    monkeypatch.setenv("DYNACONF_SERVICE__INSTANCE_ID", "namespace-a")
     state = SimpleNamespace(
         sub_task="Prepare a concise renewal summary",
         chat_messages=[],
         user_id="user-a",
         service_scope={
             "tenant_id": "tenant-a",
-            "instance_id": "namespace-a",
+            "instance_id": "stale-checkpoint-namespace",
             "agent_id": "agent-a",
             "memory_turn_id": "turn-a",
         },
@@ -67,7 +68,7 @@ async def test_prompt_context_records_exact_attributed_memory_ids():
     ):
         result = await build_evolve_special_instructions_extension(
             state=state,
-            configurable={"agent_id": "agent-a", "thread_id": "thread-a"},
+            configurable={"thread_id": "thread-a"},
             timeout=1,
         )
 
@@ -103,7 +104,7 @@ async def test_empty_attributed_guideline_text_is_not_recorded_as_used():
         user_id="user-a",
         service_scope={
             "tenant_id": "tenant-a",
-            "instance_id": "namespace-a",
+            "instance_id": "stale-checkpoint-namespace",
             "agent_id": "agent-a",
             "memory_turn_id": "turn-a",
         },
@@ -135,7 +136,7 @@ async def test_empty_attributed_guideline_text_is_not_recorded_as_used():
     ):
         result = await build_evolve_special_instructions_extension(
             state=state,
-            configurable={"agent_id": "agent-a", "thread_id": "thread-a"},
+            configurable={"thread_id": "thread-a"},
             timeout=1,
         )
 
