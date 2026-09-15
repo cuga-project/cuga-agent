@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -41,14 +42,20 @@ async def test_prompt_context_records_exact_attributed_memory_ids():
             "cuga.backend.evolve.memory.EvolveIntegration.retrieve_user_facts",
             new=AsyncMock(
                 return_value={
-                    "categories": {"preferences": [{"id": "fact-a", "content": "Prefers concise summaries."}]}
+                    "categories": {
+                        "preferences": [
+                            {"id": "fact-a", "content": "Prefers concise summaries."},
+                            {"id": "blank", "content": "  "},
+                            {"id": "empty"},
+                        ]
+                    }
                 }
             ),
-        ),
+        ) as retrieve_facts,
         patch(
             "cuga.backend.evolve.memory.EvolveIntegration.store_user_facts",
             new=AsyncMock(),
-        ),
+        ) as store_facts,
         patch(
             "cuga.backend.evolve.memory.EvolveIntegration.record_access",
             new=AsyncMock(),
@@ -64,6 +71,12 @@ async def test_prompt_context_records_exact_attributed_memory_ids():
             timeout=1,
         )
 
+    await asyncio.sleep(0)
+    retrieve_facts.assert_awaited_once_with(
+        "user-a", state.sub_task, namespace_id="namespace-a", agent_id="agent-a"
+    )
+    assert store_facts.await_args.kwargs["namespace_id"] == "namespace-a"
+    assert store_facts.await_args.kwargs["metadata"]["agent_id"] == "agent-a"
     assert "preferred account name" in result
     assert "concise summaries" in result
     record_usage.assert_awaited_once_with(
@@ -129,3 +142,17 @@ async def test_empty_attributed_guideline_text_is_not_recorded_as_used():
     assert result == ""
     record_usage.assert_not_awaited()
     record_access.assert_not_awaited()
+
+
+def test_blank_fact_categories_do_not_render_or_contribute_ids():
+    from cuga.backend.evolve.formatting import build_evolve_user_preference_with_attribution
+
+    assert build_evolve_user_preference_with_attribution({"empty": [{"id": "blank", "content": "  "}]}) == (
+        "",
+        [],
+    )
+    text, ids = build_evolve_user_preference_with_attribution(
+        {"preferences": [{"id": "pair", "key": "style", "value": "concise"}, {"id": "blank"}]}
+    )
+    assert "style: concise" in text
+    assert ids == ["pair"]
