@@ -1,5 +1,6 @@
 """Policy enactment helpers for applying policy actions in graph nodes."""
 
+import re
 from typing import Any, Dict, List, Optional
 from copy import deepcopy
 
@@ -27,6 +28,17 @@ from cuga.backend.cuga_graph.policy.observability import (
     decision_from_metadata,
 )
 from cuga.config import settings
+
+
+# Matches responses that start with a JSON object or array (possibly with leading
+# whitespace).  Only these need the output-formatter LLM rewrite; plain-text /
+# markdown responses are already clean and can be returned unchanged.
+_RAW_JSON_PATTERN = re.compile(r"^\s*[{\[]", re.MULTILINE)
+
+
+def _response_needs_formatting(response_text: str) -> bool:
+    """Return True only if the response contains raw JSON that needs reformatting."""
+    return bool(_RAW_JSON_PATTERN.search(response_text))
 
 
 class PolicyEnactment:
@@ -938,6 +950,14 @@ You have been provided with a step-by-step playbook for this task. Follow these 
                     chat_history.append(HumanMessage(content=msg))
                 elif hasattr(msg, "content"):
                     chat_history.append(msg)
+
+        # Fast pre-check: skip all LLM calls when the response is already clean
+        # plain text / markdown and the format_type is "markdown" (the case that
+        # fires unconditionally for "Plain English responses" style policies).
+        # Only raw-JSON responses genuinely need the formatter rewrite.
+        if format_type == "markdown" and not _response_needs_formatting(last_ai_message):
+            logger.info("Output formatter skipped: response is already clean plain text / markdown")
+            return None, None
 
         # Create formatting prompt based on format_type
         if format_type == "direct":
