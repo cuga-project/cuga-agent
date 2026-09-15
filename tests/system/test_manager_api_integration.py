@@ -714,13 +714,28 @@ class TestManagerAPIWorkflow:
         logger.info(f"✅ Configuration history retrieved: {len(data['versions'])} versions")
 
     def test_10_multiple_versions(self, http_client: httpx.Client, test_agent_config: Dict[str, Any]):
-        """Test creating multiple versions."""
+        """Test creating and retrieving consecutive published versions."""
         logger.info("Test 10: Testing multiple versions...")
 
-        # Publish version 2
-        modified_config = test_agent_config.copy()
-        modified_config["llm"]["temperature"] = 0.5
+        history_response = http_client.get(
+            f"{MANAGE_API_URL}/config/history",
+            params={"agent_id": TEST_AGENT_ID},
+        )
+        assert history_response.status_code == 200, history_response.text
+        versions = history_response.json()["versions"]
+        previous_version = max(int(item["version"]) for item in versions)
 
+        previous_response = http_client.get(
+            f"{MANAGE_API_URL}/config",
+            params={"agent_id": TEST_AGENT_ID, "version": str(previous_version)},
+        )
+        assert previous_response.status_code == 200, previous_response.text
+        previous_temperature = previous_response.json()["config"]["llm"]["temperature"]
+
+        modified_config = {
+            **test_agent_config,
+            "llm": {**test_agent_config["llm"], "temperature": 0.5},
+        }
         response = http_client.post(
             f"{MANAGE_API_URL}/config",
             params={"agent_id": TEST_AGENT_ID},
@@ -728,25 +743,22 @@ class TestManagerAPIWorkflow:
         )
 
         assert response.status_code == 200
-        data = response.json()
-        assert data["version"] == "3"  # v1 from manager startup, v2 from test_04, v3 from this publish
+        new_version = int(response.json()["version"])
+        assert new_version == previous_version + 1
 
-        # Verify we can get both versions (v2 from test_04 has temp 0.1, v3 has temp 0.5)
-        v2_response = http_client.get(
+        previous_response = http_client.get(
             f"{MANAGE_API_URL}/config",
-            params={"agent_id": TEST_AGENT_ID, "version": "2"},
+            params={"agent_id": TEST_AGENT_ID, "version": str(previous_version)},
         )
-        assert v2_response.status_code == 200
-        v2_data = v2_response.json()
-        assert v2_data["config"]["llm"]["temperature"] == 0.1
+        assert previous_response.status_code == 200
+        assert previous_response.json()["config"]["llm"]["temperature"] == previous_temperature
 
-        v3_response = http_client.get(
+        new_response = http_client.get(
             f"{MANAGE_API_URL}/config",
-            params={"agent_id": TEST_AGENT_ID, "version": "3"},
+            params={"agent_id": TEST_AGENT_ID, "version": str(new_version)},
         )
-        assert v3_response.status_code == 200
-        v3_data = v3_response.json()
-        assert v3_data["config"]["llm"]["temperature"] == 0.5
+        assert new_response.status_code == 200
+        assert new_response.json()["config"]["llm"]["temperature"] == 0.5
 
         logger.info("✅ Multiple versions working correctly")
 
