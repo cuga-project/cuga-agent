@@ -1,6 +1,8 @@
 """LangGraph configurable integration for policy system."""
 
+import hashlib
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -12,6 +14,76 @@ from cuga.backend.cuga_graph.policy.models import PolicyMatch, PolicyType
 from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 from cuga.backend.llm.models import LLMManager
 from cuga.config import settings, DBS_DIR
+
+
+_POLICY_COLLECTION_BASE = "cuga_policies"
+
+
+def _named_agent_collection_name(agent_id: str, draft: bool) -> str:
+    """Build a bounded collection name that retains a readable agent prefix."""
+    draft_suffix = "__draft" if draft else ""
+    digest = hashlib.sha256(agent_id.encode("utf-8")).hexdigest()[:12]
+    readable_id = re.sub(r"[^a-z0-9]+", "_", agent_id.lower()).strip("_") or "agent"
+    digest_suffix = f"_{digest}{draft_suffix}"
+    readable_prefix = f"{_POLICY_COLLECTION_BASE}__agent_{readable_id}"
+    return f"{readable_prefix[: 63 - len(digest_suffix)]}{digest_suffix}"
+
+
+def get_agent_policy_collection_name(agent_id: Optional[str] = None, draft: bool = False) -> str:
+    """Return a deterministic, PostgreSQL-safe policy collection scoped to an agent ID.
+
+    The default agent always uses the compatibility names ``cuga_policies`` and
+    ``cuga_policies_draft``. Named agents use the same fixed namespace plus a normalized readable
+    prefix and digest; the general policy collection setting does not alter this mapping.
+    """
+    # Strip any '--version' suffix that config_store appends to draft agent IDs (e.g. 'crm--draft-3').
+    clean_id = agent_id.split("--")[0] if agent_id else None
+    if not clean_id or clean_id == "cuga-default":
+        return f"{_POLICY_COLLECTION_BASE}_draft" if draft else _POLICY_COLLECTION_BASE
+    return _named_agent_collection_name(clean_id, draft)
+
+
+async def create_agent_policy_system(
+    agent_id: Optional[str] = None,
+    draft: bool = False,
+    policies_data: Optional[List[Dict[str, Any]]] = None,
+) -> "PolicyConfigurable":
+    """Create and initialize a PolicyConfigurable instance scoped to an agent_id."""
+    from cuga.backend.storage.embedding import get_embedding_config
+
+    collection = get_agent_policy_collection_name(agent_id, draft=draft)
+    emb_cfg = get_embedding_config()
+    storage = PolicyStorage(
+        collection_name=collection,
+        embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
+        or os.getenv("POLICY_EMBEDDING_PROVIDER")
+        or emb_cfg["provider"],
+        embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
+        or os.getenv("POLICY_EMBEDDING_MODEL")
+        or emb_cfg["model"],
+        embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
+        or os.getenv("POLICY_EMBEDDING_BASE_URL")
+        or emb_cfg["base_url"],
+        embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
+        or os.getenv("POLICY_EMBEDDING_API_KEY")
+        or emb_cfg["api_key"],
+    )
+    await storage.initialize_async()
+    ps = PolicyConfigurable(storage=storage)
+    await ps.initialize()
+
+    if policies_data is not None:
+        from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+        await apply_policies_data_to_storage(
+            storage,
+            policies_data,
+            clear_existing=True,
+            filesystem_sync=None,
+        )
+        await ps.initialize()
+
+    return ps
 
 
 class PolicyConfigurable:
@@ -115,8 +187,9 @@ class PolicyConfigurable:
 
         try:
             policy_config = getattr(settings, "policy", None)
-            final_collection_name = collection_name or (
-                policy_config.collection_name if policy_config else "cuga_policies"
+            configured_collection_name = getattr(policy_config, "collection_name", None)
+            final_collection_name = (
+                collection_name or configured_collection_name or get_agent_policy_collection_name()
             )
 
             configured_path = (policy_db_path or getattr(policy_config, "policy_db_path", None) or "").strip()

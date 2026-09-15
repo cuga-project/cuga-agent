@@ -3,7 +3,9 @@
 import asyncio
 from typing import Any, Optional
 
-from fastapi import Request
+from fastapi import HTTPException, Request
+
+from cuga.backend.server import agent_registry
 
 DEFAULT_AGENT_ID = "cuga-default"
 
@@ -14,6 +16,23 @@ def resolve_agent_id(agent_id: Optional[str]) -> str:
 
 def is_default_agent(agent_id: Optional[str]) -> bool:
     return resolve_agent_id(agent_id) == DEFAULT_AGENT_ID
+
+
+async def resolve_registered_agent_id(requested_agent_id: Optional[str]) -> str:
+    """Resolve an external agent ID to a server-owned registry value."""
+    if not agent_registry.is_agent_registry_enabled():
+        return DEFAULT_AGENT_ID
+    if not requested_agent_id or requested_agent_id == DEFAULT_AGENT_ID:
+        return DEFAULT_AGENT_ID
+
+    from cuga.backend.server.config_store import list_agents_with_configs
+
+    for row in await list_agents_with_configs():
+        registered_agent_id = row["agent_id"]
+        if registered_agent_id == requested_agent_id:
+            return registered_agent_id
+
+    raise HTTPException(status_code=404, detail=f"Agent '{requested_agent_id}' not found")
 
 
 def app_state(request: Request):
