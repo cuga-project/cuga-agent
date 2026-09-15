@@ -20,10 +20,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import time
 
 import httpx
+
+log = logging.getLogger("cuga.events.slack")
 
 
 def bot_token() -> str:
@@ -48,7 +51,22 @@ def verify_signature(headers, raw_body: str) -> tuple[bool, str]:
     set SLACK_SIGNING_SECRET to lock this down."""
     secret = signing_secret()
     if not secret:
-        return True, "unverified (SLACK_SIGNING_SECRET not set)"
+        # FAIL CLOSED. This returned True — "allow it but flag it" — so a missing signing secret
+        # disabled verification entirely and the endpoint accepted forged Slack events from anyone
+        # who could reach it. The events URL is public on Code Engine, so "flag it" meant a log
+        # line next to an unauthenticated agent-execution path.
+        #
+        # Opening it now requires saying so, the same way /run's dev opt-out works.
+        import os
+
+        if (os.environ.get("EVENTS_ALLOW_UNAUTHENTICATED", "") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return True, "unverified (EVENTS_ALLOW_UNAUTHENTICATED=1)"
+        return False, "SLACK_SIGNING_SECRET not set — refusing unverified Slack events"
     ts = headers.get("x-slack-request-timestamp") or headers.get("X-Slack-Request-Timestamp") or ""
     sig = headers.get("x-slack-signature") or headers.get("X-Slack-Signature") or ""
     if not ts or not sig:
@@ -170,6 +188,55 @@ async def _bot_in_thread(channel: str, thread_ts: str, uid: str) -> bool:
         remember_thread(channel, thread_ts)
         return True
     return False
+
+
+async def fetch_message_text(channel: str, ts: str) -> str:
+    """The text of the message at ``ts`` — "" if it can't be read.
+
+    POINTER-SHAPED EVENTS. Slack's `reaction_added` / `reaction_removed` / `star_added` carry only
+    `item.channel` + `item.ts`; the message itself is NOT in the payload. So a watcher armed as
+    "when someone reacts :bug:, review the code" reached the agent with a reaction and no code, and
+    the agent truthfully answered that it had nothing to review — no error anywhere.
+
+    Resolving the pointer here (rather than giving the agent a Slack tool) keeps the bot token in
+    the one module that already owns it, and fixes every pointer-shaped trigger at once.
+
+    Needs `channels:history` — the same scope SLACK.md already requires for `message.channels`, so
+    no new permission. Returns "" on any failure: a watcher that fires with less context is better
+    than one that does not fire.
+    """
+    tok = bot_token()
+    if not (tok and channel and ts):
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(
+                "https://slack.com/api/conversations.replies",
+                # NO `limit=1`. conversations.replies returns the THREAD — parent first — so when the
+                # reacted message is a reply, limit=1 returns the parent and the agent reviewed the
+                # wrong message with no error anywhere. Ask for a bounded window and pick by ts.
+                # conversations.history is NOT the alternative: it does not return thread replies at
+                # all, so a reaction on a reply would resolve to nothing.
+                params={"channel": channel, "ts": ts, "limit": 50, "inclusive": "true"},
+                headers={"Authorization": f"Bearer {tok}"},
+            )
+        payload = r.json() or {}
+    except Exception:  # noqa: BLE001
+        return ""
+    # A Slack API error is HTTP 200 with ok=false. Treating that as "no text" turned a fixable
+    # configuration problem — missing_scope, channel_not_found — into a watcher that fires with
+    # empty context forever and never says why.
+    if not payload.get("ok"):
+        log.warning("slack fetch_message_text failed for %s/%s: %s", channel, ts, payload.get("error"))
+        return ""
+    msgs = payload.get("messages") or []
+    for m in msgs:
+        if isinstance(m, dict) and str(m.get("ts") or "") == str(ts):
+            return str(m.get("text") or "")
+    # No exact match: only trust a single-message thread, where there is nothing else it could be.
+    if len(msgs) == 1 and isinstance(msgs[0], dict):
+        return str(msgs[0].get("text") or "")
+    return ""
 
 
 async def send_message(channel: str, text: str, thread_ts: str | None = None) -> dict:

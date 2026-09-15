@@ -1,4 +1,6 @@
 import copy
+
+import pytest
 from langchain_core.messages import HumanMessage, AIMessage
 
 from cuga.backend.evolve.formatting import (
@@ -27,6 +29,30 @@ def test_get_latest_memory_query_skips_internal_execution_output():
     messages = [
         HumanMessage(content="user preference"),
         HumanMessage(content="Execution output: internal loop"),
+    ]
+
+    assert get_latest_memory_query(messages) == "user preference"
+
+
+@pytest.mark.unit
+def test_get_latest_memory_query_skips_verify_blocked_feedback():
+    messages = [
+        HumanMessage(content="user preference"),
+        HumanMessage(content="VERIFY blocked this code block before execution.\namount 35.0 is ungrounded"),
+    ]
+
+    assert get_latest_memory_query(messages) == "user preference"
+
+
+@pytest.mark.unit
+def test_get_latest_memory_query_skips_empty_response_correction():
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
+        EMPTY_RESPONSE_CORRECTION,
+    )
+
+    messages = [
+        HumanMessage(content="user preference"),
+        HumanMessage(content=EMPTY_RESPONSE_CORRECTION),
     ]
 
     assert get_latest_memory_query(messages) == "user preference"

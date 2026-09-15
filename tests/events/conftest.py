@@ -72,3 +72,24 @@ def _isolated_store(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("EVENTS_DB", str(tmp_path / "events.db"))
     monkeypatch.setenv("EVENTS_RUN_LOG_DIR", str(tmp_path / "run_logs"))
+    # The offline suite builds apps with no GATEWAY_TOKEN / EVENTS_WEBHOOK_KEY / SLACK_SIGNING_SECRET
+    # and asserts on behaviour BEHIND those gates. Those gates now fail CLOSED (an unset secret
+    # refuses rather than waves everything through), so the suite has to declare what it is: a local
+    # dev environment. This is the same switch an operator would use, not a test-only bypass — which
+    # is the point, because it means the tests exercise the real code path.
+    #
+    # Tests that assert the CLOSED behaviour delete this themselves (test_fail_closed.py).
+    monkeypatch.setenv("EVENTS_ALLOW_UNAUTHENTICATED", "1")
+
+
+@pytest.fixture
+def closed_gates(monkeypatch):
+    """Opt OUT of the suite-wide dev switch, for tests that assert a gate actually REFUSES.
+
+    `_isolated_store` sets EVENTS_ALLOW_UNAUTHENTICATED=1 for the whole suite, because the offline
+    tests build apps with no secrets and assert on what is behind the gates. A test about the gate
+    itself needs the opposite, and saying so per-test keeps that visible rather than depending on
+    ordering.
+    """
+    monkeypatch.delenv("EVENTS_ALLOW_UNAUTHENTICATED", raising=False)
+    return monkeypatch

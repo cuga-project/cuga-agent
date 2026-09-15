@@ -83,7 +83,7 @@ from cuga.backend.server.workspace_sandbox import (
     workspace_tree_is_native_backed,
     workspace_tree_is_sandbox_backed,
 )
-from cuga.backend.server.auth import require_auth, require_chat_access
+from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
 from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled
 from cuga.backend.server.auth.models import TokenResponse, UserInfo
 from cuga.backend.server.tool_guard_generation import (
@@ -2102,6 +2102,31 @@ app.include_router(agents_routes.router)
 # events_bridge is the ONE module in core that knows the eventing layer exists, and it only
 # knows a URL: it detects `/automate …` and POSTs it. Inert when EVENTS_API_URL is unset.
 from cuga.backend.server import events_bridge  # noqa: E402
+
+
+# ── the Studio's admin proxy ───────────────────────────────────────────────────────────────────
+# The eventing service's /api/events/admin/* endpoints now require X-Gateway-Token, because they
+# previously trusted a caller-asserted identity — an unauthenticated POST could create an admin.
+# A browser cannot hold that token, so CUGA (which does, and which is already the door for
+# everything else) forwards on the Studio's behalf.
+#
+# Gated by require_manage_access — the SAME dependency that protects the Manage UI. That is the
+# whole point: an ungated proxy would not fix anything, it would move the open door to another
+# port. When auth is disabled the deployment was already open by choice, and this inherits that
+# posture rather than inventing its own.
+#
+# Mounted only when eventing is configured, so vanilla CUGA gains no new surface. A BRIDGE: once
+# the events service can verify a CUGA session itself, the browser talks to it directly again.
+if events_bridge.events_enabled():
+
+    @app.api_route("/api/events/admin/{path:path}", methods=["GET", "POST"])
+    async def events_admin_proxy(
+        path: str,
+        request: Request,
+        current_user: Optional[UserInfo] = Depends(require_manage_access),
+    ):
+        status, body = await events_bridge.proxy_admin(request, path, current_user)
+        return JSONResponse(body, status_code=status)
 
 
 if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
