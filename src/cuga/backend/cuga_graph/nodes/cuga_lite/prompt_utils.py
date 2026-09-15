@@ -5,6 +5,7 @@ Prompt utilities for CugaLite - handles prompt creation and tool discovery.
 import functools
 import json
 import os
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from cuga.config import settings
@@ -897,3 +898,49 @@ def create_mcp_prompt(
         }
     ).to_string()
     return prompt
+
+
+# ── Function-calling prompt ───────────────────────────────────────────────────
+
+
+@lru_cache(maxsize=1)
+def _fc_prompt_template():
+    from pathlib import Path
+
+    from cuga.backend.llm.utils.helpers import load_one_prompt
+
+    path = Path(__file__).parent / "prompts" / "fc_prompt.jinja2"
+    return load_one_prompt(str(path), relative_to_caller=False)
+
+
+def render_fc_prompt(
+    *,
+    instructions: Optional[str] = None,
+    special_instructions: Optional[str] = None,
+    base_prompt: Optional[str] = None,
+    is_autonomous_subtask: bool = False,
+    fragments: Optional[List[str]] = None,
+) -> str:
+    """System prompt for ``cuga_lite_execution_mode = "function_calling"``.
+
+    Deliberately short. Tool names, parameters and types travel in the API's
+    native ``tools`` parameter (``bind_tools``), which the model was trained to
+    read — so, unlike the CodeAct prompt, nothing about the tool catalog is
+    rendered as text. The prompt only sets the behavioural contract:
+
+    - the generic preamble (always),
+    - opt-in fragments from ``cuga_lite_fc_prompt_fragments`` (``evidence_first``),
+    - then the agent's ``instructions`` and the caller's ``special_instructions``.
+
+    Answer-format contracts belong in ``special_instructions``; no
+    benchmark- or deployment-specific wording ships in the template.
+    """
+    frags = {f.strip().lower() for f in (fragments or [])}
+    rendered = _fc_prompt_template().format(
+        base_prompt=base_prompt or "",
+        is_autonomous_subtask=bool(is_autonomous_subtask),
+        evidence_first="evidence_first" in frags,
+        instructions=(instructions or "").strip(),
+        special_instructions=(special_instructions or "").strip(),
+    )
+    return rendered.strip() + "\n"

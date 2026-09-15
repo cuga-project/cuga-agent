@@ -33,7 +33,12 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import (
     _get_knowledge_tool_scope_context,
     _knowledge_scope_instruction,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import resolved_runtime_model_name
+from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
+    EXECUTION_MODE_FUNCTION_CALLING,
+    resolve_execution_mode,
+    resolve_fc_prompt_fragments,
+    resolved_runtime_model_name,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ToolGuardingToolProvider
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
@@ -45,6 +50,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     create_mcp_prompt,
     format_apps_for_prompt,
     normalize_mcp_few_shot_examples,
+    render_fc_prompt,
     resolve_cuga_lite_few_shots_enabled,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.app_auth import call_authenticate_apps
@@ -730,7 +736,25 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # Create prompt dynamically
         dynamic_prompt = adapter._static_prompt
 
-        if not dynamic_prompt:
+        _execution_mode = resolve_execution_mode(configurable, _runtime_model_name)
+        if not dynamic_prompt and _execution_mode == EXECUTION_MODE_FUNCTION_CALLING:
+            # Function-calling mode: the CodeAct prompt is never rendered. Tools
+            # travel natively via bind_tools, so this prompt is only the behavioural
+            # contract plus the same instructions / special_instructions.
+            _fragments = resolve_fc_prompt_fragments(configurable, _runtime_model_name)
+            dynamic_prompt = render_fc_prompt(
+                instructions=effective_instructions,
+                special_instructions=special_instructions_final,
+                is_autonomous_subtask=settings.advanced_features.force_autonomous_mode
+                or is_autonomous_subtask,
+                fragments=_fragments,
+            )
+            logger.info(
+                "Prepared CugaLite function-calling prompt: fragments={} prompt_chars={}",
+                _fragments,
+                len(dynamic_prompt),
+            )
+        elif not dynamic_prompt:
             dynamic_prompt = create_mcp_prompt(
                 tools_for_prompt,
                 allow_user_clarification=True,

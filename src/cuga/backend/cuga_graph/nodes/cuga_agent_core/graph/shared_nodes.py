@@ -226,6 +226,27 @@ def create_call_model_node(
         # Pass the full node config so LangChain keeps parent_run_id linkage for
         # Langfuse. Passing only {"callbacks": [...]} starts orphan root traces.
         invoke_config = config if config is not None else {}
+
+        # ── Native function-calling seam ───────────────────────────────────
+        # The base adapter returns None, so this is a no-op for the Supervisor
+        # graph and for every CodeAct run. CugaLite returns a Command here when
+        # cuga_lite_execution_mode resolves to function_calling, and the CodeAct
+        # path below is skipped entirely — never blended.
+        fc_command = await adapter.execute_call_model_fc(
+            state=state,
+            config=config,
+            configurable=configurable,
+            active_model=active_model,
+            bound=bound,
+            invoke_config=invoke_config,
+            system_content=system_content,
+            modified_messages=modified_messages,
+            budget_exhausted=budget_exhausted,
+            playbook_fired=playbook_fired,
+        )
+        if fc_command is not None:
+            return fc_command
+
         response = await adapter.ainvoke_model(bound, messages_for_model, invoke_config)
 
         # ── Normalise response ─────────────────────────────────────────────

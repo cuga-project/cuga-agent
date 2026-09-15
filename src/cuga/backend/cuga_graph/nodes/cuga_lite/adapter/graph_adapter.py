@@ -6,9 +6,12 @@ logic live in ``prepare_node.py`` and ``sandbox_node.py``.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional, Tuple
 
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.graph import END
+from langgraph.types import Command
 from loguru import logger
 
 from cuga.backend.activity_tracker.tracker import Step
@@ -19,15 +22,26 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     EXECUTION_OUTPUT_PREFIX,
     CoreGraphAdapter,
+    enforce_step_limit,
 )
-from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
+from cuga.backend.cuga_graph.utils.harmony import contains_harmony_tokens, strip_harmony_tokens
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import create_prepare_tools_and_apps_node
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import (
     clean_empty_response_retry_meta,
     extract_code_from_response_tool_calls,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
-from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import resolve_model_with_bind_tools
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.tool_exec_node import create_tool_exec_node
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import (
+    _bind_tools_mode_from_settings,
+    resolve_model_with_bind_tools,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
+    EXECUTION_MODE_FUNCTION_CALLING,
+    resolve_execution_mode,
+    resolved_runtime_model_name,
+    runtime_defaults_for_model,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import _first_user_message_text
 from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
     BLOCKED_CLAIM_CORRECTION,
@@ -38,6 +52,64 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import 
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 from cuga.backend.llm.errors import extract_code_from_tool_use_failed
 from cuga.config import settings
+
+
+_REASONING_KEYS = ("reasoning_content", "reasoning")
+
+FC_MODE_VIOLATION_CORRECTION = (
+    "You wrote a code block, but this session executes tools through native function-calling only. "
+    "Code is never run here. Issue the tool call natively instead, or give the final answer as plain text."
+)
+
+
+def _sanitize_for_replay(messages: List[BaseMessage]) -> List[BaseMessage]:
+    """Copy history for replay to the provider.
+
+    Assistant turns are replayed verbatim (``tool_calls`` intact) — but their
+    ``reasoning_content`` is dropped and harmony framing stripped from string
+    content: gpt-oss emits both, and strict OpenAI-compatible proxies 400 when
+    they come back in a later round. Irrelevant in CodeAct, whose history is
+    flattened to text before it leaves; in function-calling mode the raw turns
+    are replayed from round 2 onward, so it matters here.
+    """
+    out: List[BaseMessage] = []
+    for m in messages:
+        ak = getattr(m, "additional_kwargs", None) or {}
+        drop_reasoning = any(k in ak for k in _REASONING_KEYS)
+        content = getattr(m, "content", None)
+        new_content = (
+            strip_harmony_tokens(content) if isinstance(content, str) and "<|" in content else content
+        )
+        if not drop_reasoning and new_content is content:
+            out.append(m)
+            continue
+        update: Dict[str, Any] = {}
+        if drop_reasoning:
+            update["additional_kwargs"] = {k: v for k, v in ak.items() if k not in _REASONING_KEYS}
+        if new_content is not content:
+            update["content"] = new_content
+        try:
+            out.append(m.model_copy(update=update))
+        except Exception:
+            out.append(m)
+    return out
+
+
+def _few_shot_to_messages(few_shot: List[Any]) -> List[BaseMessage]:
+    """The prepare node's normalized ``{role, content}`` demos, as real chat messages."""
+    msgs: List[BaseMessage] = []
+    for ex in few_shot or []:
+        if not isinstance(ex, dict):
+            continue
+        role = (ex.get("role") or "").strip().lower()
+        content = ex.get("content") or ""
+        if not content:
+            continue
+        if role in ("user", "human"):
+            msgs.append(HumanMessage(content=content))
+        elif role in ("assistant", "ai"):
+            msgs.append(AIMessage(content=content))
+    return msgs
 
 
 def _format_observed_tool_shapes_block(shapes: Dict[str, str]) -> str:
@@ -153,6 +225,14 @@ class AgentGraphAdapter(CoreGraphAdapter):
         configurable: dict,
         config: Any = None,
     ) -> Any:
+        # Function-calling mode is inert without advertised tools, and the shipped
+        # default is bind mode "none". Upgrade only when the *resolved* mode is none
+        # — an explicit non-none choice from configurable, a model profile or
+        # settings is respected. Additive: no effect in codeact.
+        if self._execution_mode(configurable) == EXECUTION_MODE_FUNCTION_CALLING:
+            if self._resolved_bind_mode(configurable) == "none":
+                configurable = {**(configurable or {}), "cuga_lite_bind_tools_mode": "all"}
+                logger.info("[fc] bind_tools mode was 'none'; upgraded to 'all' for function-calling mode")
         try:
             return await resolve_model_with_bind_tools(
                 active_model,
@@ -238,6 +318,170 @@ class AgentGraphAdapter(CoreGraphAdapter):
             if isinstance(content, str) and content.startswith(EXECUTION_OUTPUT_PREFIX):
                 return True
         return False
+
+    # ── Native function-calling mode ──────────────────────────────────────
+
+    def _runtime_model_name(self, configurable: dict) -> str:
+        return resolved_runtime_model_name(
+            configurable_llm=(configurable or {}).get("llm"), graph_default_model=self._model
+        )
+
+    def _execution_mode(self, configurable: dict) -> str:
+        return resolve_execution_mode(configurable, self._runtime_model_name(configurable))
+
+    def _resolved_bind_mode(self, configurable: dict) -> str:
+        cfg = configurable or {}
+        prof = runtime_defaults_for_model(self._runtime_model_name(configurable))
+        for candidate in (cfg.get("cuga_lite_bind_tools_mode"), prof.get("cuga_lite_bind_tools_mode")):
+            if candidate is not None and str(candidate).strip():
+                return str(candidate).strip().lower()
+        return _bind_tools_mode_from_settings()
+
+    async def execute_call_model_fc(
+        self,
+        *,
+        state: Any,
+        config: Any,
+        configurable: dict,
+        active_model: Any,
+        bound: Any,
+        invoke_config: dict,
+        system_content: str,
+        modified_messages: list,
+        budget_exhausted: bool,
+        playbook_fired: bool,
+    ) -> Optional[Command]:
+        """Function-calling turn: invoke with real message objects, route on ``tool_calls``.
+
+        Returns ``None`` in codeact mode so the shared CodeAct path runs untouched.
+        Otherwise builds the outbound list from ``system_content`` (the FC prompt
+        that ``prepare`` selected), the few-shot demos as chat messages, and the
+        sanitized history — hands them straight to ``bound.ainvoke`` so the shared
+        dict serializer (which flattens ``tool_calls``) is never involved — then:
+
+        - ``tool_calls`` present  -> ``Command(goto="tool_exec")``, assistant turn kept verbatim
+        - otherwise               -> final answer, ``END``
+        - a fenced code block with no ``tool_calls`` is a mode violation: it is
+          never executed; the model gets one corrective turn instead.
+        """
+        if self._execution_mode(configurable) != EXECUTION_MODE_FUNCTION_CALLING:
+            return None
+
+        from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
+            TOOL_BUDGET_EXHAUSTED_INSTRUCTION,
+        )
+
+        msgs: List[BaseMessage] = [SystemMessage(content=system_content)]
+        msgs.extend(_few_shot_to_messages(self.get_few_shot_messages(state)))
+        msgs.extend(_sanitize_for_replay(list(modified_messages)))
+        if budget_exhausted:
+            # Outbound only, like call_model's CodeAct path: never persisted.
+            msgs.append(HumanMessage(content=TOOL_BUDGET_EXHAUSTED_INSTRUCTION))
+
+        clamp_watsonx_completion_for_messages(bound, msgs)
+        response = await bound.ainvoke(msgs, config=invoke_config)
+
+        tool_calls = list(getattr(response, "tool_calls", None) or [])
+        invalid_tool_calls = list(getattr(response, "invalid_tool_calls", None) or [])
+        content = strip_harmony_tokens(normalize_assistant_text(getattr(response, "content", "")) or "")
+        reasoning = normalize_assistant_text(
+            (getattr(response, "additional_kwargs", None) or {}).get("reasoning_content")
+        )
+        if not isinstance(response, AIMessage):
+            response = AIMessage(content=content, tool_calls=tool_calls)
+
+        if budget_exhausted:
+            # No tools were bound for the grace turn, so any tool_calls are noise.
+            tool_calls, invalid_tool_calls = [], []
+
+        if tool_calls or invalid_tool_calls:
+            try:
+                self._tracker.collect_step(
+                    step=Step(
+                        name="Assistant_tool_calls",
+                        data=json.dumps(tool_calls, ensure_ascii=False, default=str),
+                    )
+                )
+            except Exception as exc:
+                logger.debug(f"AgentGraphAdapter fc tracker error: {exc}")
+        else:
+            self.on_response_processed(state, None, content, reasoning)
+
+        final_messages: list = list(modified_messages) + [response]
+        new_step_count: int = state.step_count + 1
+        limit_cmd = (
+            None
+            if budget_exhausted
+            else enforce_step_limit(
+                self,
+                state=state,
+                messages=final_messages,
+                new_step_count=new_step_count,
+                limit=self.resolve_max_steps(state, (configurable or {}).get("cuga_lite_max_steps")),
+            )
+        )
+        if limit_cmd is not None:
+            return limit_cmd
+
+        meta_update = {self.metadata_key: self.build_metadata_update(state, playbook_fired=playbook_fired)}
+
+        if tool_calls or invalid_tool_calls:
+            logger.info("[fc] {} native tool_call(s) -> tool_exec", len(tool_calls) + len(invalid_tool_calls))
+            return Command(
+                goto="tool_exec",
+                update={
+                    self.messages_key: final_messages,
+                    "script": None,
+                    "step_count": new_step_count,
+                    **meta_update,
+                },
+            )
+
+        if "```" in content and not budget_exhausted:
+            # Mode violation: never execute code here. One corrective turn, charged
+            # as a step so it cannot loop past cuga_lite_max_steps.
+            meta = dict(self.get_metadata(state))
+            violations = int(meta.get("fc_mode_violations", 0) or 0) + 1
+            self.set_metadata(state, {**meta, "fc_mode_violations": violations})
+            logger.warning("[fc] mode violation #{}: code block emitted in function-calling mode", violations)
+            return Command(
+                goto="call_model",
+                update={
+                    self.messages_key: final_messages + [HumanMessage(content=FC_MODE_VIOLATION_CORRECTION)],
+                    "script": None,
+                    "final_answer": "",
+                    "execution_complete": False,
+                    "step_count": new_step_count,
+                    self.metadata_key: self.build_metadata_update(state, playbook_fired=playbook_fired),
+                },
+            )
+
+        final_answer = content
+        if not final_answer.strip() and reasoning and not contains_harmony_tokens(reasoning):
+            final_answer = reasoning.strip()
+        if not final_answer.strip():
+            for m in reversed(modified_messages):
+                if isinstance(m, ToolMessage) and isinstance(m.content, str) and m.content.strip():
+                    final_answer = m.content
+                    break
+        if not content.strip() and final_answer:
+            final_messages = list(modified_messages) + [AIMessage(content=final_answer)]
+
+        logger.info("[fc] no tool_calls -> final answer (END)")
+        return Command(
+            goto=END,
+            update={
+                self.messages_key: final_messages,
+                "script": None,
+                "final_answer": final_answer,
+                "execution_complete": True,
+                "step_count": new_step_count,
+                **meta_update,
+            },
+        )
+
+    def build_tool_exec_node(self):
+        return create_tool_exec_node(self)
 
     def build_prepare_node(self, lc_bind_tools_meta: dict):
         return create_prepare_tools_and_apps_node(self, lc_bind_tools_meta)

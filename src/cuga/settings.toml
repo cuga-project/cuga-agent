@@ -53,6 +53,13 @@ cuga_lite_bind_tools_include_find_tools = false  # Also bind find_tools alongsid
 cuga_lite_bind_tools_max_count = 128
 # Pad shortlister output to fill the cap. Off by default for code-execution mode.
 cuga_lite_bind_tools_pad_to_cap = false
+# Execution mode: codeact (write Python, run it in the sandbox — default) | function_calling (the model
+# issues native tool_calls, a tool_exec node runs them and replies with ToolMessages). Aliases: fc, native.
+# Per-invoke: config["configurable"]["cuga_lite_execution_mode"]. Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_EXECUTION_MODE
+cuga_lite_execution_mode = "codeact"
+# Opt-in prompt fragments for function_calling mode. Known: "evidence_first" (call a tool before answering; never
+# answer from prior knowledge). Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_FC_PROMPT_FRAGMENTS='["evidence_first"]'
+cuga_lite_fc_prompt_fragments = []
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 cuga_lite_blocked_claim_retry = true  # When an NL turn claims tools/data are unavailable but no code has executed and tools ARE bound, retry once with a corrective message instead of finalizing the false refusal (issue #610). Only active when cuga_lite_nl_auto_continue is on.
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)

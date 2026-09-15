@@ -114,3 +114,125 @@ def resolve_bind_tools_fields(
         inc = settings_include_fn()
 
     return mode_s, apps_list, tool_names_list, _bool_coerce(inc)
+
+
+# ── Execution mode ───────────────────────────────────────────────────────────
+#
+# Same three-layer resolution as the bind_tools keys above: ``configurable``
+# (per invoke) overrides the per-model runtime profile overrides ``settings``.
+# Unknown values never raise — they fall back to the default with a warning,
+# so a typo in an env var cannot take an agent down.
+
+EXECUTION_MODE_CODEACT = "codeact"
+EXECUTION_MODE_FUNCTION_CALLING = "function_calling"
+
+_EXECUTION_MODE_ALIASES: Dict[str, str] = {
+    "codeact": EXECUTION_MODE_CODEACT,
+    "code_act": EXECUTION_MODE_CODEACT,
+    "code": EXECUTION_MODE_CODEACT,
+    "sandbox": EXECUTION_MODE_CODEACT,
+    "function_calling": EXECUTION_MODE_FUNCTION_CALLING,
+    "functioncalling": EXECUTION_MODE_FUNCTION_CALLING,
+    "function-calling": EXECUTION_MODE_FUNCTION_CALLING,
+    "fc": EXECUTION_MODE_FUNCTION_CALLING,
+    "native": EXECUTION_MODE_FUNCTION_CALLING,
+    "native_tool_calling": EXECUTION_MODE_FUNCTION_CALLING,
+    "tool_calling": EXECUTION_MODE_FUNCTION_CALLING,
+    "toolcalling": EXECUTION_MODE_FUNCTION_CALLING,
+}
+
+FC_PROMPT_FRAGMENT_EVIDENCE_FIRST = "evidence_first"
+KNOWN_FC_PROMPT_FRAGMENTS = frozenset({FC_PROMPT_FRAGMENT_EVIDENCE_FIRST})
+
+
+def _settings_value(key: str, default: Any) -> Any:
+    """Read ``settings.advanced_features.<key>`` lazily; never raises."""
+    try:
+        from cuga.config import settings
+
+        return getattr(settings.advanced_features, key, default)
+    except Exception:
+        return default
+
+
+def _layered(
+    key: str,
+    configurable: Optional[Dict[str, Any]],
+    model_name: Optional[str],
+    settings_fn: Optional[Callable[[], Any]],
+    default: Any,
+) -> Any:
+    """configurable > per-model profile > settings > default, skipping empties."""
+    cfg = configurable or {}
+    prof = runtime_defaults_for_model((model_name or "").strip())
+    for candidate in (
+        cfg.get(key),
+        prof.get(key),
+        settings_fn() if settings_fn else _settings_value(key, None),
+    ):
+        if candidate is None:
+            continue
+        if isinstance(candidate, str) and not candidate.strip():
+            continue
+        if isinstance(candidate, (list, tuple)) and len(candidate) == 0:
+            continue
+        return candidate
+    return default
+
+
+def normalize_execution_mode(raw: Any) -> str:
+    """Map any accepted spelling to a canonical mode; unknown -> codeact + warning."""
+    if raw is None:
+        return EXECUTION_MODE_CODEACT
+    key = str(raw).strip().lower()
+    if key in _EXECUTION_MODE_ALIASES:
+        return _EXECUTION_MODE_ALIASES[key]
+    try:
+        from loguru import logger
+
+        logger.warning(
+            "cuga_lite_execution_mode={!r} is not recognised; falling back to {!r}",
+            raw,
+            EXECUTION_MODE_CODEACT,
+        )
+    except Exception:
+        pass
+    return EXECUTION_MODE_CODEACT
+
+
+def resolve_execution_mode(
+    configurable: Optional[Dict[str, Any]],
+    model_name: Optional[str] = None,
+    *,
+    settings_mode_fn: Optional[Callable[[], Any]] = None,
+) -> str:
+    """Resolved execution mode: ``codeact`` or ``function_calling``."""
+    raw = _layered(
+        "cuga_lite_execution_mode", configurable, model_name, settings_mode_fn, EXECUTION_MODE_CODEACT
+    )
+    return normalize_execution_mode(raw)
+
+
+def resolve_fc_prompt_fragments(
+    configurable: Optional[Dict[str, Any]],
+    model_name: Optional[str] = None,
+    *,
+    settings_fn: Optional[Callable[[], Any]] = None,
+) -> List[str]:
+    """Opt-in function-calling prompt fragments, unknown names dropped with a warning."""
+    raw = _layered("cuga_lite_fc_prompt_fragments", configurable, model_name, settings_fn, [])
+    names = _normalize_bind_tools_string_list(raw)
+    out: List[str] = []
+    for n in names:
+        key = n.strip().lower()
+        if key in KNOWN_FC_PROMPT_FRAGMENTS:
+            if key not in out:
+                out.append(key)
+        else:
+            try:
+                from loguru import logger
+
+                logger.warning("Unknown cuga_lite_fc_prompt_fragments entry {!r} ignored", n)
+            except Exception:
+                pass
+    return out
