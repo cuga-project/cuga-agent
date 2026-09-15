@@ -238,6 +238,12 @@ class TestUserFacts:
 class TestToolDispatch:
     """Test transport selection and fallback behavior."""
 
+    @pytest.fixture(autouse=True)
+    def enabled_preferences(self, monkeypatch):
+        monkeypatch.setenv("DYNACONF_SERVICE__INSTANCE_ID", "service-a")
+        with patch("cuga.backend.evolve.preferences.memory_enabled", new=AsyncMock(return_value=True)):
+            yield
+
     @pytest.mark.asyncio
     @patch.object(EvolveIntegration, "_call_tool_direct", new_callable=AsyncMock)
     @patch.object(EvolveIntegration, "_call_tool_via_registry", new_callable=AsyncMock)
@@ -251,7 +257,9 @@ class TestToolDispatch:
         result = await EvolveIntegration._call_tool("get_guidelines", {"task": "demo"})
 
         assert result == "guideline"
-        mock_registry_call.assert_called_once_with("get_guidelines", {"task": "demo"})
+        mock_registry_call.assert_called_once_with(
+            "get_guidelines", {"task": "demo", "namespace_id": "service-a"}
+        )
         mock_direct_call.assert_not_called()
 
     @pytest.mark.asyncio
@@ -268,7 +276,9 @@ class TestToolDispatch:
         result = await EvolveIntegration._call_tool("get_guidelines", {"task": "demo"})
 
         assert result == "guideline"
-        mock_direct_call.assert_called_once_with("get_guidelines", {"task": "demo"})
+        mock_direct_call.assert_called_once_with(
+            "get_guidelines", {"task": "demo", "namespace_id": "service-a"}
+        )
 
     @pytest.mark.asyncio
     @patch.object(EvolveIntegration, "_call_tool_direct", new_callable=AsyncMock)
