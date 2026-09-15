@@ -1500,3 +1500,25 @@ def test_extra_field_rule_requires_an_explicit_restriction():
     text = _verify_prompt_text()
     assert "explicitly restricts which" in text
     assert 'follows from the task or from retrieved\n   data is not "extra"' in text
+
+
+# Rule 1 names "an amount" while the Do NOT flag list excludes choices, and
+# quantity=1 satisfies both. Measured across 1,234 real rule-1 revises, the
+# model resolved that conflict by flagging: 148 revises over 53 tasks named a
+# quantity, the largest false-revise family. A blanket carve-out would be wrong
+# too -- quantity=12 derived from "9 friends + 3 roommates" is a correct catch --
+# so the prompt has to separate a number the task implies from one it does not.
+
+
+@pytest.mark.unit
+def test_an_unspecified_quantity_is_a_choice_not_a_fact():
+    text = _verify_prompt_text()
+    assert "neither states nor implies" in text
+    assert "quantity=1" in text
+
+
+@pytest.mark.unit
+def test_a_quantity_the_task_implies_stays_in_scope():
+    carve_outs = _verify_prompt_text().split("Do NOT flag:", 1)[1]
+    assert "does* imply stays in scope" in carve_outs
+    assert "count of people, items, or shares" in carve_outs
