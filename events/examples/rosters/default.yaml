@@ -7,7 +7,7 @@
 #
 # The six the live harnesses exercise are load-bearing: pricebot, weatherbot, geobot,
 # wiki_dive, incident_triage, pr_reviewer. The full 27-agent example lives at
-# rosters/supervisor_agents_full.yaml.
+# events/examples/rosters/supervisor_agents_full.yaml.
 supervisor:
   name: cuga
   special_instructions: 'You are CUGA. You coordinate specialist sub-agents. For EVERY task — even one

@@ -165,3 +165,80 @@ async def forward_slash_to_events(
         else:
             _events_open_threads.discard(thread_id)  # armed / cancelled / plain answer → done
     return data.get("reply") or data.get("answer") or data.get("message") or ""
+
+
+# ── the admin proxy: the browser's way to reach admin endpoints it cannot authenticate to ──────
+#
+# /api/events/admin/* on the eventing service now requires X-Gateway-Token (it used to accept a
+# caller-asserted identity, which let an unauthenticated POST create an admin). A browser cannot
+# hold that secret, so the Studio's OAuth-app, credential and user screens would simply 401.
+#
+# CUGA holds the token, and CUGA is already the door for everything else, so it forwards. The
+# route in main.py gates this behind `require_manage_access` — the SAME dependency protecting the
+# Manage UI — so the proxy inherits whatever posture the deployment chose rather than inventing
+# its own. It is NOT an open relay: without that gate this would simply move the hole to a
+# different port.
+#
+# This is a BRIDGE. Once the events service can verify a CUGA session directly (the "Studio has no
+# real login" work), the browser talks to it again and this goes away.
+_ADMIN_PREFIX = "/api/events/admin"
+
+
+async def proxy_admin(request, path: str, current_user=None):
+    """Forward an admin call to the eventing service with the gateway token attached.
+
+    Returns (status_code, json_body). Never raises: a proxy failure must read as a failed admin
+    action, not a 500 from CUGA itself.
+
+    ``current_user`` is the principal ``require_manage_access`` verified, and it OVERRIDES the
+    caller's ``X-User-Id``. That override is the point, not a detail: the events side builds its
+    admin principal from ``X-User-Id`` and then checks that principal's roles, so forwarding a
+    header the caller chose would let an authenticated user act as anyone simply by setting it —
+    the self-asserted-identity half of the finding the gateway-token gate only half closed. When
+    authentication is off ``current_user`` is None and the header is used as before, which is no
+    worse than the unauthenticated deployment it belongs to.
+    """
+    import httpx
+
+    base = events_api_url()
+    if not base:
+        return 503, {"ok": False, "error": "eventing service not configured (EVENTS_API_URL unset)"}
+    tok = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
+    hdrs = {"Content-Type": "application/json"}
+    if tok:
+        hdrs["X-Gateway-Token"] = tok
+    # Carry identity through so the events side attributes the action to a real person rather than
+    # the fallback principal — the same headers /run forwards.
+    for h in ("X-Tenant-Id", "X-Instance-Id", "X-User-Id"):
+        v = request.headers.get(h)
+        if v:
+            hdrs[h] = v
+    verified = getattr(current_user, "sub", None) or getattr(current_user, "email", None)
+    if verified:
+        hdrs["X-User-Id"] = str(verified)
+    # CONFINE the forwarded path to the admin prefix. `{path:path}` captures slashes, uvicorn does
+    # NOT normalise `..`, and httpx collapses `/api/events/admin/../../invoke` on the wire to
+    # `/api/invoke` — so without this a caller past the auth gate could pivot the gateway token onto
+    # any events endpoint (/invoke, /api/concierge), not just the six admin routes. Reject any dot
+    # segment or an already-encoded one rather than trying to re-normalise after the fact.
+    clean = path.strip("/")
+    segments = clean.split("/")
+    if any(seg in ("", ".", "..") for seg in segments) or "%2f" in path.lower() or "%2e" in path.lower():
+        return 400, {"ok": False, "error": "invalid admin path"}
+    url = f"{base}{_ADMIN_PREFIX}/{clean}"
+    try:
+        body = await request.body()
+        async with httpx.AsyncClient(timeout=60) as c:
+            r = await c.request(
+                request.method, url, content=body or None, headers=hdrs, params=dict(request.query_params)
+            )
+    except Exception as e:  # noqa: BLE001
+        # log_error_ref logs the full exception behind a reference code and returns only that code
+        # — the body stays free of `str(e)` (CodeQL py/stack-trace-exposure), and because it is a
+        # module-level import it also settles the `NameError: logger` this path once hit in CI.
+        ref = log_error_ref(e, context=f"proxy_admin → {url}")
+        return 502, {"ok": False, "error": f"could not reach the eventing service (ref {ref})"}
+    try:
+        return r.status_code, r.json()
+    except Exception:  # noqa: BLE001
+        return r.status_code, {"ok": r.status_code < 400, "body": r.text[:500]}
