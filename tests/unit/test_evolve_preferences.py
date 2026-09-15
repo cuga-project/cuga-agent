@@ -57,7 +57,7 @@ async def test_precedence_and_replica_refresh(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_automatic_dispatch_gated_but_management_available():
+async def test_service_allows_reads_but_blocks_mutations_and_agent_retrieval():
     automatic = [
         "get_guidelines",
         "get_guidelines_with_attribution",
@@ -72,9 +72,18 @@ async def test_automatic_dispatch_gated_but_management_available():
         ) as transport,
     ):
         for tool in automatic:
-            await EvolveIntegration._call_tool(tool, {"user_id": "alice"})
+            assert await EvolveIntegration._call_tool(tool, {"user_id": "alice"}) is None
+        for tool in [
+            "run_retention",
+            "sweep_retention",
+            "delete_entity",
+            "record_access",
+            "start_retention_schedule",
+        ]:
+            with pytest.raises(RuntimeError, match="read-only"):
+                await EvolveIntegration._call_tool(tool, {"user_id": "alice"})
         transport.assert_not_awaited()
-        await EvolveIntegration.list_entities(user_id="alice")
+        assert await EvolveIntegration.list_entities(user_id="alice") == {"items": []}
         assert transport.await_count == 1
         await preferences.set_preference(user_id="admin", enabled=True, instance=True)
         for tool in automatic:
@@ -98,6 +107,8 @@ def test_routes_use_authenticated_identity_and_require_admin():
     app.dependency_overrides[require_manage_access] = deny_admin
     with TestClient(app) as client:
         assert client.get("/api/memory/settings").status_code == 200
+        assert client.delete("/api/memory/entities/fact-a").status_code == 403
+        assert client.get("/api/manage/memory/retention/schedules").status_code == 403
         assert client.put("/api/manage/memory/settings", json={"enabled": True}).status_code == 403
         assert (
             client.put("/api/memory/settings", json={"enabled": False, "user_id": "bob"}).status_code == 422
@@ -117,3 +128,22 @@ def test_routes_use_authenticated_identity_and_require_admin():
 async def test_storage_failure_disables_automatic_memory():
     with patch.object(preferences, "get_preferences", new=AsyncMock(side_effect=RuntimeError("offline"))):
         assert not await preferences.memory_enabled("alice")
+
+
+def test_disabled_service_browsing_does_not_register_retention_policy():
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[require_manage_access] = lambda: UserInfo(sub="admin")
+    app.dependency_overrides[require_chat_access] = lambda: UserInfo(sub="alice")
+    with (
+        TestClient(app) as client,
+        patch.object(
+            EvolveIntegration, "list_entities", new=AsyncMock(return_value={"items": [], "total": 0})
+        ),
+        patch.object(EvolveIntegration, "list_retention_policies", new=AsyncMock(return_value={"items": []})),
+        patch.object(EvolveIntegration, "put_retention_policy", new=AsyncMock()) as create,
+    ):
+        assert client.get("/api/memory/entities").status_code == 200
+        assert client.get("/api/manage/memory/retention/policies").json() == {"items": []}
+        create.assert_not_awaited()
+        assert client.post("/api/manage/memory/retention/runs", json={"policy_id": "p"}).status_code == 403
