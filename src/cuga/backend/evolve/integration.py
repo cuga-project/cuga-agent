@@ -123,6 +123,7 @@ class EvolveIntegration:
         user_id: str,
         message: str,
         metadata: dict | None = None,
+        namespace_id: Optional[str] = None,
     ) -> None:
         """Store durable user facts/preferences without interrupting lite execution."""
         if not cls.is_enabled():
@@ -135,6 +136,7 @@ class EvolveIntegration:
                 "user_id": user_id,
                 "message": message,
                 "metadata": json.dumps(metadata or {}),
+                "namespace_id": namespace_id,
             }
             result = await cls._call_tool("store_user_facts", payload)
             if isinstance(result, dict):
@@ -151,6 +153,8 @@ class EvolveIntegration:
         user_id: str,
         query: str,
         limit: int = 5,
+        namespace_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> Optional[dict]:
         """Retrieve durable user facts/preferences without interrupting lite execution."""
         if not cls.is_enabled():
@@ -165,6 +169,8 @@ class EvolveIntegration:
                     "user_id": user_id,
                     "query": query,
                     "limit": limit,
+                    "namespace_id": namespace_id,
+                    "agent_id": agent_id,
                 },
             )
             if result:
@@ -183,6 +189,7 @@ class EvolveIntegration:
         user_id: Optional[str] = None,
         namespace_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> None:
         """Save the agent trajectory to Evolve for tip generation."""
         if not cls.is_enabled():
@@ -222,6 +229,8 @@ class EvolveIntegration:
                 args["namespace_id"] = namespace_id
             if session_id:
                 args["session_id"] = session_id
+            if agent_id:
+                args["agent_id"] = agent_id
             await cls._call_tool("save_trajectory", args)
             logger.info("Evolve: Trajectory saved successfully")
         except Exception as e:
