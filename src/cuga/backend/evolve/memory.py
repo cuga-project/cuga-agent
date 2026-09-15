@@ -12,7 +12,7 @@ from loguru import logger
 
 from cuga.backend.evolve.formatting import (
     build_evolve_guidelines_section,
-    build_evolve_user_preference_section,
+    build_evolve_user_preference_with_attribution,
     get_first_human_message_content,
     get_latest_memory_query,
 )
@@ -94,7 +94,12 @@ async def build_evolve_special_instructions_extension(
 
         try:
             retrieved_preferences = await asyncio.wait_for(
-                EvolveIntegration.retrieve_user_facts(current_user_id, memory_query),
+                EvolveIntegration.retrieve_user_facts(
+                    current_user_id,
+                    memory_query,
+                    namespace_id=service_scope.get("instance_id") or None,
+                    agent_id=current_agent_id or None,
+                ),
                 timeout=timeout,
             )
         except Exception:
@@ -110,6 +115,7 @@ async def build_evolve_special_instructions_extension(
             EvolveIntegration.store_user_facts(
                 current_user_id,
                 memory_query,
+                namespace_id=service_scope.get("instance_id") or None,
                 metadata={
                     "thread_id": thread_id_for_memory,
                     "agent_id": current_agent_id,
@@ -122,18 +128,7 @@ async def build_evolve_special_instructions_extension(
         categories = (
             retrieved_preferences.get("categories") if isinstance(retrieved_preferences, dict) else None
         )
-        retrieved_fact_ids = (
-            [
-                str(fact["id"])
-                for facts in categories.values()
-                if isinstance(facts, list)
-                for fact in facts
-                if isinstance(fact, dict) and fact.get("id")
-            ]
-            if isinstance(categories, dict)
-            else []
-        )
-        preference_section = build_evolve_user_preference_section(categories)
+        preference_section, retrieved_fact_ids = build_evolve_user_preference_with_attribution(categories)
         if preference_section:
             extra += preference_section
             used_entity_ids.extend(retrieved_fact_ids)
