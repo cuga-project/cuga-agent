@@ -11,7 +11,10 @@ from ..base_executor import BaseExecutor
 from ..common.restricted_environment import RestrictedEnvironment
 from ..common.security import CodeSyntaxError, SecurityValidator
 from ..common.benchmark_mode import is_relaxed_execution
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import BlockToolCallCounter
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
+    BlockToolCallCounter,
+    ToolCallBudgetExceeded,
+)
 
 
 class _BlockSystemExit:
@@ -180,6 +183,11 @@ class LocalExecutor(BaseExecutor):
             captured = stdout_buf.getvalue()
             if captured:
                 e.captured_stdout = captured  # type: ignore[attr-defined]
+            if isinstance(e, ToolCallBudgetExceeded):
+                # A refused tool call is not a bug in the block: keep what it
+                # computed before the refusal (same as a timeout / exit()), so
+                # under step discipline the one call that did run is not lost.
+                context_locals.update(self._locals_from_frame(e, "_async_main"))
             raise
 
         result = stdout_buf.getvalue()

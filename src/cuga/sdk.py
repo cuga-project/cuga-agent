@@ -1856,6 +1856,7 @@ class CugaAgent:
         shortlister: Optional["Shortlister"] = None,
         final_answer: "Optional[Union[str, Callable[[str], str], FinalAnswerConfig]]" = None,
         execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -1882,6 +1883,9 @@ class CugaAgent:
                 Python that calls tools in the sandbox) or `"function_calling"` (the model emits
                 native tool calls, executed one round-trip at a time). None = use
                 `advanced_features.cuga_lite_execution_mode`. Overridable per invoke()/stream().
+            step_discipline: `"one_tool_per_step"` lets the model run only one tool per step
+                (in both execution modes); `"off"` (default) allows any number. None = use
+                `advanced_features.cuga_lite_step_discipline`. Overridable per invoke()/stream().
             final_answer: How the final answer is shaped. A `str` adds guidance for the
                 answer-composing LLM; a callable `(str) -> str` deterministically
                 post-processes the composed answer before delivery (must be pure;
@@ -1989,9 +1993,10 @@ class CugaAgent:
         # is the pre-feature behavior.
         self._shortlister = shortlister
 
-        # Execution mode. None => settings.toml (default "codeact", i.e. the
-        # pre-feature behavior).
+        # Execution mode / step discipline. None => settings.toml (defaults:
+        # "codeact" / "off", i.e. the pre-feature behavior).
         self._execution_mode = execution_mode
+        self._step_discipline = step_discipline
 
         # Setup tool provider. ToolGuard is installed immediately as a transparent
         # provider-level decorator so create-agent-first, add-guard-later flows work.
@@ -2138,18 +2143,22 @@ class CugaAgent:
         self,
         run_config: dict,
         execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
     ) -> None:
-        """Merge the execution mode into ``run_config['configurable']``.
+        """Merge execution mode / step discipline into ``run_config['configurable']``.
 
-        A per-invoke value overrides the constructor default. A raw
-        ``cuga_lite_execution_mode`` key already set by the caller wins over
-        both — we ``setdefault`` rather than overwrite.
+        Per-invoke values override the constructor defaults. Raw
+        ``cuga_lite_execution_mode`` / ``cuga_lite_step_discipline`` keys already
+        set by the caller win over both — we ``setdefault`` rather than overwrite.
         No-op when nothing is configured, so settings.toml decides.
         """
         configurable = run_config["configurable"]
         mode = execution_mode if execution_mode is not None else self._execution_mode
         if mode is not None:
             configurable.setdefault("cuga_lite_execution_mode", mode)
+        discipline = step_discipline if step_discipline is not None else self._step_discipline
+        if discipline is not None:
+            configurable.setdefault("cuga_lite_step_discipline", discipline)
 
     def _apply_callbacks(
         self, run_config: dict, extra_callbacks: Optional[List[BaseCallbackHandler]] = None
@@ -2610,6 +2619,7 @@ class CugaAgent:
         variables: Optional[Dict[str, Any]] = None,
         shortlister: Optional["Shortlister"] = None,
         execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
     ) -> InvokeResult:
         """
         Invoke the agent with a message and get the response.
@@ -2629,6 +2639,8 @@ class CugaAgent:
             shortlister: Overrides the agent's shortlister for this call only, e.g.
                 `Shortlister(strategy="hybrid")`. None = use the agent default.
             execution_mode: `"codeact"` or `"function_calling"` for this call only.
+                None = use the agent default.
+            step_discipline: `"off"` or `"one_tool_per_step"` for this call only.
                 None = use the agent default.
 
         Returns:
@@ -2705,7 +2717,7 @@ class CugaAgent:
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
         self._apply_shortlister(run_config, shortlister)
-        self._apply_execution_mode(run_config, execution_mode)
+        self._apply_execution_mode(run_config, execution_mode, step_discipline)
 
         # Pass track_tool_calls flag via configurable
         run_config["configurable"]["track_tool_calls"] = track_tool_calls
@@ -3136,6 +3148,7 @@ class CugaAgent:
         action_response: Optional[Any] = None,  # ActionResponse for resuming after HITL
         shortlister: Optional["Shortlister"] = None,
         execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
     ):
         """
         Stream the agent's execution step by step.
@@ -3152,6 +3165,8 @@ class CugaAgent:
             shortlister: Overrides the agent's shortlister for this call only, e.g.
                 `Shortlister(strategy="hybrid")`. None = use the agent default.
             execution_mode: `"codeact"` or `"function_calling"` for this call only.
+                None = use the agent default.
+            step_discipline: `"off"` or `"one_tool_per_step"` for this call only.
                 None = use the agent default.
 
         Yields:
@@ -3185,7 +3200,7 @@ class CugaAgent:
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
         self._apply_shortlister(run_config, shortlister)
-        self._apply_execution_mode(run_config, execution_mode)
+        self._apply_execution_mode(run_config, execution_mode, step_discipline)
 
         # Pass skills configuration via configurable (overrides settings when set)
         if self._enable_skills is not None:

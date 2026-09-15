@@ -11,6 +11,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import render_fc_promp
 pytestmark = pytest.mark.unit
 
 _TEMPLATE = Path(__file__).resolve().parents[1] / "prompts" / "fc_prompt.jinja2"
+_STEP_LINE = "Make exactly ONE tool call at a time"
 _EVIDENCE_LINE = "You MUST call at least one tool before giving a final answer"
 
 
@@ -19,8 +20,12 @@ def test_default_prompt_is_the_bare_contract():
     assert text.startswith("# ROLE")
     assert "native function-calling" in text and "# FINAL ANSWER" in text
     assert "Do NOT write Python code" in text
-    assert _EVIDENCE_LINE not in text
+    assert _STEP_LINE not in text and _EVIDENCE_LINE not in text
     assert "autonomously" not in text
+
+
+def test_step_discipline_adds_the_one_call_line():
+    assert _STEP_LINE in render_fc_prompt(step_discipline=True)
 
 
 def test_fragments_are_opt_in_and_unknown_names_are_ignored():
@@ -35,13 +40,14 @@ def test_autonomous_subtask_line():
 
 def test_instructions_then_special_instructions_close_the_prompt():
     text = render_fc_prompt(
+        step_discipline=True,
         fragments=["evidence_first"],
         instructions="  Agent instructions.  ",
         special_instructions="Answer format: one line.",
     )
     body = text.rstrip("\n")
     assert body.endswith("Agent instructions.\n\nAnswer format: one line.")
-    assert text.index(_EVIDENCE_LINE) < text.index("# FINAL ANSWER")
+    assert text.index(_STEP_LINE) < text.index(_EVIDENCE_LINE) < text.index("# FINAL ANSWER")
     assert "\n\n\n" not in text, "no blank-line runs from unset optional sections"
 
 

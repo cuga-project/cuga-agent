@@ -35,8 +35,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
     EXECUTION_MODE_FUNCTION_CALLING,
+    STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
     resolve_execution_mode,
     resolve_fc_prompt_fragments,
+    resolve_step_discipline,
     resolved_runtime_model_name,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
@@ -742,15 +744,21 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             # travel natively via bind_tools, so this prompt is only the behavioural
             # contract plus the same instructions / special_instructions.
             _fragments = resolve_fc_prompt_fragments(configurable, _runtime_model_name)
+            _one_per_step = (
+                resolve_step_discipline(configurable, _runtime_model_name)
+                == STEP_DISCIPLINE_ONE_TOOL_PER_STEP
+            )
             dynamic_prompt = render_fc_prompt(
                 instructions=effective_instructions,
                 special_instructions=special_instructions_final,
                 is_autonomous_subtask=settings.advanced_features.force_autonomous_mode
                 or is_autonomous_subtask,
+                step_discipline=_one_per_step,
                 fragments=_fragments,
             )
             logger.info(
-                "Prepared CugaLite function-calling prompt: fragments={} prompt_chars={}",
+                "Prepared CugaLite function-calling prompt: step_discipline={} fragments={} prompt_chars={}",
+                _one_per_step,
                 _fragments,
                 len(dynamic_prompt),
             )

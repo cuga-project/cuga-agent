@@ -1,4 +1,4 @@
-"""Configuration surfaces for ``cuga_lite_execution_mode``.
+"""Configuration surfaces for ``cuga_lite_execution_mode`` / ``cuga_lite_step_discipline``.
 
 One assertion per control plane — settings.toml, validators, ``configurable``,
 the per-model runtime profile, the SDK constructor / ``invoke`` / ``stream`` —
@@ -19,9 +19,13 @@ from cuga.backend.cuga_graph.nodes.cuga_lite import model_runtime_profile as mrp
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
     EXECUTION_MODE_CODEACT,
     EXECUTION_MODE_FUNCTION_CALLING,
+    STEP_DISCIPLINE_OFF,
+    STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
     normalize_execution_mode,
+    normalize_step_discipline,
     resolve_execution_mode,
     resolve_fc_prompt_fragments,
+    resolve_step_discipline,
 )
 
 pytestmark = pytest.mark.unit
@@ -30,10 +34,11 @@ pytestmark = pytest.mark.unit
 # ── 1. settings.toml + validators: the shipped default is the old behaviour ──
 
 
-def test_settings_toml_defaults_to_codeact():
+def test_settings_toml_defaults_to_codeact_and_no_discipline():
     from cuga.config import settings
 
     assert settings.advanced_features.cuga_lite_execution_mode == "codeact"
+    assert settings.advanced_features.cuga_lite_step_discipline == "off"
     assert list(settings.advanced_features.cuga_lite_fc_prompt_fragments) == []
 
 
@@ -43,11 +48,13 @@ def test_validators_supply_the_same_defaults_without_the_keys():
 
     declared = {v.names[0]: v.default for v in validators if v.names}
     assert declared["advanced_features.cuga_lite_execution_mode"] == "codeact"
+    assert declared["advanced_features.cuga_lite_step_discipline"] == "off"
     assert declared["advanced_features.cuga_lite_fc_prompt_fragments"] == []
 
 
 def test_real_settings_resolve_to_the_defaults():
     assert resolve_execution_mode({}) == EXECUTION_MODE_CODEACT
+    assert resolve_step_discipline({}) == STEP_DISCIPLINE_OFF
     assert resolve_fc_prompt_fragments({}) == []
 
 
@@ -77,6 +84,24 @@ def test_unknown_execution_mode_falls_back_to_codeact_without_raising():
     assert normalize_execution_mode(42) == EXECUTION_MODE_CODEACT
 
 
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (None, STEP_DISCIPLINE_OFF),
+        ("off", STEP_DISCIPLINE_OFF),
+        (False, STEP_DISCIPLINE_OFF),
+        ("0", STEP_DISCIPLINE_OFF),
+        ("bogus", STEP_DISCIPLINE_OFF),
+        ("one_tool_per_step", STEP_DISCIPLINE_ONE_TOOL_PER_STEP),
+        ("One_Tool_Per_Step", STEP_DISCIPLINE_ONE_TOOL_PER_STEP),
+        (True, STEP_DISCIPLINE_ONE_TOOL_PER_STEP),
+        ("stepwise", STEP_DISCIPLINE_ONE_TOOL_PER_STEP),
+    ],
+)
+def test_step_discipline_aliases(raw, expected):
+    assert normalize_step_discipline(raw) == expected
+
+
 def test_fragments_are_normalised_deduped_and_unknown_dropped():
     cfg = {"cuga_lite_fc_prompt_fragments": ["evidence_first", "Evidence_First", "not_a_fragment"]}
     assert resolve_fc_prompt_fragments(cfg) == ["evidence_first"]
@@ -92,6 +117,10 @@ def test_configurable_beats_settings():
     assert (
         resolve_execution_mode({"cuga_lite_execution_mode": "fc"}, settings_mode_fn=lambda: "codeact")
         == EXECUTION_MODE_FUNCTION_CALLING
+    )
+    assert (
+        resolve_step_discipline({"cuga_lite_step_discipline": "off"}, settings_fn=lambda: "one_tool_per_step")
+        == STEP_DISCIPLINE_OFF
     )
 
 
@@ -111,11 +140,18 @@ def test_model_profile_sits_between_configurable_and_settings(monkeypatch):
     monkeypatch.setattr(
         mrp,
         "runtime_defaults_for_model",
-        lambda name: {"cuga_lite_execution_mode": "fc"} if name == "profiled-model" else {},
+        lambda name: (
+            {"cuga_lite_execution_mode": "fc", "cuga_lite_step_discipline": "one"}
+            if name == "profiled-model"
+            else {}
+        ),
     )
     # profile beats settings
     assert resolve_execution_mode({}, "profiled-model", settings_mode_fn=lambda: "codeact") == (
         EXECUTION_MODE_FUNCTION_CALLING
+    )
+    assert resolve_step_discipline({}, "profiled-model", settings_fn=lambda: "off") == (
+        STEP_DISCIPLINE_ONE_TOOL_PER_STEP
     )
     # configurable beats profile
     assert (
@@ -134,46 +170,55 @@ def test_model_profile_sits_between_configurable_and_settings(monkeypatch):
 # ── 4. SDK: constructor default, per-call override, raw keys win ─────────────
 
 
-def test_cuga_agent_accepts_execution_mode_everywhere():
+def test_cuga_agent_accepts_execution_mode_and_step_discipline_everywhere():
     from cuga.sdk import CugaAgent
 
     for method in (CugaAgent.__init__, CugaAgent.invoke, CugaAgent.stream):
         params = inspect.signature(method).parameters
         assert "execution_mode" in params, method.__name__
+        assert "step_discipline" in params, method.__name__
         assert params["execution_mode"].default is None
+        assert params["step_discipline"].default is None
 
 
-def test_apply_execution_mode_writes_the_configurable_key():
+def test_apply_execution_mode_writes_the_configurable_keys():
     from cuga.sdk import CugaAgent
 
-    agent = SimpleNamespace(_execution_mode="function_calling")
+    agent = SimpleNamespace(_execution_mode="function_calling", _step_discipline="one_tool_per_step")
     run_config = {"configurable": {}}
     CugaAgent._apply_execution_mode(agent, run_config)
-    assert run_config["configurable"] == {"cuga_lite_execution_mode": "function_calling"}
+    assert run_config["configurable"] == {
+        "cuga_lite_execution_mode": "function_calling",
+        "cuga_lite_step_discipline": "one_tool_per_step",
+    }
 
 
-def test_per_invoke_value_overrides_the_constructor_default():
+def test_per_invoke_values_override_the_constructor_default():
     from cuga.sdk import CugaAgent
 
-    agent = SimpleNamespace(_execution_mode="function_calling")
+    agent = SimpleNamespace(_execution_mode="function_calling", _step_discipline=None)
     run_config = {"configurable": {}}
-    CugaAgent._apply_execution_mode(agent, run_config, execution_mode="codeact")
+    CugaAgent._apply_execution_mode(
+        agent, run_config, execution_mode="codeact", step_discipline="one_tool_per_step"
+    )
     assert run_config["configurable"]["cuga_lite_execution_mode"] == "codeact"
+    assert run_config["configurable"]["cuga_lite_step_discipline"] == "one_tool_per_step"
 
 
 def test_explicit_raw_keys_are_never_clobbered():
     from cuga.sdk import CugaAgent
 
-    agent = SimpleNamespace(_execution_mode="function_calling")
-    run_config = {"configurable": {"cuga_lite_execution_mode": "codeact"}}
+    agent = SimpleNamespace(_execution_mode="function_calling", _step_discipline="one_tool_per_step")
+    run_config = {"configurable": {"cuga_lite_execution_mode": "codeact", "cuga_lite_step_discipline": "off"}}
     CugaAgent._apply_execution_mode(agent, run_config, execution_mode="fc")
     assert run_config["configurable"]["cuga_lite_execution_mode"] == "codeact"
+    assert run_config["configurable"]["cuga_lite_step_discipline"] == "off"
 
 
 def test_apply_execution_mode_is_a_noop_when_unconfigured():
     from cuga.sdk import CugaAgent
 
-    agent = SimpleNamespace(_execution_mode=None)
+    agent = SimpleNamespace(_execution_mode=None, _step_discipline=None)
     run_config = {"configurable": {}}
     CugaAgent._apply_execution_mode(agent, run_config)
     assert run_config["configurable"] == {}, "settings.toml must decide when nothing is passed"

@@ -5,7 +5,7 @@ mirror what #560 pinned for the sandbox: budgets and the tracker apply to every
 call even though the callables in ``_tools_context`` are bare, and every exit
 carries the budget fields. On top of that, the FC-specific contract: ids are
 preserved, one failing call never aborts its siblings, provider-side invalid
-calls are answered.
+calls are answered, and step discipline defers everything but the first call.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langgraph.types import Command
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.tool_exec_node import (
+    DEFERRED_CALL_MESSAGE,
     create_tool_exec_node,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking import tracker as tracker_module
@@ -74,6 +75,7 @@ def _reset_budget_contexts():
     tracker_module._tool_call_budget_context.set(None)
     tracker_module._thread_tool_call_budget_context.set(None)
     tracker_module._block_tool_call_budget_context.set(None)
+    tracker_module._block_tool_call_cap_override_context.set(None)
 
 
 def _caps(monkeypatch, *, block=0, run=0, thread=0):
@@ -288,6 +290,58 @@ async def test_tracking_session_wraps_the_calls(monkeypatch):
 
     untracked = await node(_state(last), config={"configurable": {}})
     assert untracked["tool_calls"] == []
+
+
+# ── step discipline ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_step_discipline_runs_only_the_first_call_and_defers_the_rest(monkeypatch):
+    _caps(monkeypatch)
+    calls = []
+
+    async def add(a: int, b: int) -> int:
+        calls.append((a, b))
+        return a + b
+
+    node = create_tool_exec_node(_Adapter({"add": add}))
+    last = AIMessage(
+        content="",
+        tool_calls=[
+            _call("add", {"a": 1, "b": 1}, "c1"),
+            _call("add", {"a": 2, "b": 2}, "c2"),
+            _call("add", {"a": 3, "b": 3}, "c3"),
+        ],
+    )
+
+    result = await node(
+        _state(last), config={"configurable": {"cuga_lite_step_discipline": "one_tool_per_step"}}
+    )
+
+    m1, m2, m3 = _tool_messages(result)
+    assert calls == [(1, 1)]
+    assert (m1.tool_call_id, m1.content, m1.status) == ("c1", "2", "success")
+    assert (m2.tool_call_id, m2.content, m2.status) == ("c2", DEFERRED_CALL_MESSAGE, "error")
+    assert (m3.tool_call_id, m3.content, m3.status) == ("c3", DEFERRED_CALL_MESSAGE, "error")
+    assert result["tool_calls_used_run"] == 1
+
+
+@pytest.mark.asyncio
+async def test_step_discipline_off_runs_every_call(monkeypatch):
+    _caps(monkeypatch)
+    calls = []
+
+    async def add(a: int, b: int) -> int:
+        calls.append((a, b))
+        return a + b
+
+    node = create_tool_exec_node(_Adapter({"add": add}))
+    last = AIMessage(
+        content="", tool_calls=[_call("add", {"a": 1, "b": 1}, "c1"), _call("add", {"a": 2, "b": 2}, "c2")]
+    )
+
+    await node(_state(last), config={"configurable": {"cuga_lite_step_discipline": "off"}})
+    assert calls == [(1, 1), (2, 2)]
 
 
 # ── routing edge cases ───────────────────────────────────────────────────────
