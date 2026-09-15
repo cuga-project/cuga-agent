@@ -414,6 +414,7 @@ class CugaLiteNode(BaseNode):
                         success,
                         user_id=_evolve_user_id,
                         namespace_id=_evolve_namespace_id,
+                        agent_id=(state.service_scope or {}).get("agent_id") or None,
                         session_id=_evolve_session_id,
                     )
                 )
@@ -426,6 +427,7 @@ class CugaLiteNode(BaseNode):
                     success,
                     user_id=_evolve_user_id,
                     namespace_id=_evolve_namespace_id,
+                    agent_id=(state.service_scope or {}).get("agent_id") or None,
                     session_id=_evolve_session_id,
                 )
 
