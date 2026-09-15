@@ -209,17 +209,20 @@ class AgentGraphAdapter(CoreGraphAdapter):
         return meta
 
     async def classify_auto_continue(
-        self, state: Any, model: Any, content: str, reasoning: Optional[str]
+        self, state: Any, model: Any, content: str, reasoning: Optional[str], *, autonomous: bool = False
     ) -> bool | str:
         """Bool as in the base contract; a non-empty ``str`` means "continue, and
         use this text as the synthetic user message" (unverified-blocker retry,
-        issue #610)."""
+        issue #610). ``autonomous`` (#445) makes the LLM classifier's verdict on
+        ask-user / deferral text mode-aware — see ``CLASSIFIER_SYSTEM_PROMPT``."""
         evidence = BlockedClaimEvidence(
             tools_available=bool(self._tools_context),
             code_executed=self._any_execution_ran(state),
             retry_used=bool(self.get_metadata(state).get("_blocked_claim_retry")),
         )
-        decision = await classify_nl_auto_continue_decision(model, content, reasoning, evidence=evidence)
+        decision = await classify_nl_auto_continue_decision(
+            model, content, reasoning, evidence=evidence, autonomous=autonomous
+        )
         if decision.blocked_override:
             # One-shot: record the spent retry so a second refusal finalizes.
             # shared_nodes re-reads metadata after this call, so the marker
@@ -227,6 +230,19 @@ class AgentGraphAdapter(CoreGraphAdapter):
             self.set_metadata(state, {**self.get_metadata(state), "_blocked_claim_retry": True})
             return BLOCKED_CLAIM_CORRECTION
         return decision.auto_continue
+
+    def resolve_finalize_disposition(
+        self, content: str, *, autonomous: bool, nl_auto_continue: bool
+    ) -> Optional[str]:
+        from cuga.backend.cuga_graph.nodes.cuga_lite.finalize_disposition import (
+            resolve_finalize_disposition as _resolve_disposition,
+        )
+
+        return _resolve_disposition(
+            content,
+            autonomous=autonomous,
+            nl_auto_continue=nl_auto_continue,
+        )
 
     def _any_execution_ran(self, state: Any) -> bool:
         """Has any sandbox execution produced feedback this task? Detected via the

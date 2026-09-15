@@ -98,6 +98,72 @@ async def test_non_planning_falls_through_to_llm():
     llm.ainvoke.assert_called_once()
 
 
+# ── Mode-aware classifier prompt (#445) ──────────────────────────────────────
+#
+# Deferral / ask-user text is routed entirely by this LLM classifier, so it
+# must know whether a real user is present. The mode-specific text is an
+# addendum that is only sent in autonomous mode: the interactive prompt and
+# user message are exactly what shipped before #445, so an interactive caller
+# cannot be perturbed by autonomous-only rules (#732: the earlier single
+# shared prompt regressed the interactive classifier on the regression set).
+
+
+def _messages_sent(llm) -> list[dict]:
+    call = llm.ainvoke.call_args
+    return call.args[0] if call.args else call.kwargs["messages"]
+
+
+def _user_prompt_sent(llm) -> str:
+    return next(m["content"] for m in _messages_sent(llm) if m["role"] == "user")
+
+
+def _system_prompt_sent(llm) -> str:
+    return next(m["content"] for m in _messages_sent(llm) if m["role"] == "system")
+
+
+@pytest.mark.asyncio
+async def test_autonomous_flag_adds_mode_line_and_addendum():
+    llm = MagicMock()
+    resp = MagicMock()
+    resp.content = '{"auto_continue": true}'
+    llm.ainvoke = AsyncMock(return_value=resp)
+    await classify_nl_auto_continue(llm, "The count is 96.", None, autonomous=True)
+    assert "Session mode: autonomous" in _user_prompt_sent(llm)
+    system = _system_prompt_sent(llm)
+    assert system.startswith(mod.CLASSIFIER_SYSTEM_PROMPT)
+    assert system == mod.CLASSIFIER_SYSTEM_PROMPT + mod.AUTONOMOUS_MODE_ADDENDUM
+    assert "Session mode: AUTONOMOUS" in system
+
+
+@pytest.mark.asyncio
+async def test_interactive_sends_exactly_the_pre_445_prompt():
+    """Callers that don't pass ``autonomous`` get no mode line and no addendum:
+    the system prompt and user message are byte-identical to pre-#445."""
+    llm = MagicMock()
+    resp = MagicMock()
+    resp.content = '{"auto_continue": false}'
+    llm.ainvoke = AsyncMock(return_value=resp)
+    await classify_nl_auto_continue(llm, "The count is 96.", None)
+    assert _system_prompt_sent(llm) == mod.CLASSIFIER_SYSTEM_PROMPT
+    assert "Session mode" not in _user_prompt_sent(llm)
+    assert _user_prompt_sent(llm) == (
+        "Classify this assistant output (content + reasoning below).\n\n"
+        "## Assistant content (user-visible)\nThe count is 96.\n\n"
+        'Respond with JSON only: {"auto_continue": true} or {"auto_continue": false}'
+    )
+
+
+def test_interactive_prompt_carries_no_autonomous_text():
+    """Guard against the mode text leaking back into the shared prompt."""
+    for needle in ("autonomous", "Session mode", "no user is present"):
+        assert needle not in mod.CLASSIFIER_SYSTEM_PROMPT
+    assert mod.build_classifier_system_prompt(False) == mod.CLASSIFIER_SYSTEM_PROMPT
+    assert (
+        mod.build_classifier_system_prompt(True)
+        == mod.CLASSIFIER_SYSTEM_PROMPT + mod.AUTONOMOUS_MODE_ADDENDUM
+    )
+
+
 @pytest.mark.asyncio
 async def test_disabled_flag_finalizes_planning_text(monkeypatch):
     """With the feature flag off, even planning text must finalize (return False)

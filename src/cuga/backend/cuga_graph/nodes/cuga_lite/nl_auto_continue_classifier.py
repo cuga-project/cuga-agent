@@ -47,6 +47,65 @@ Examples (visible content → decision):
 - "Which account should I use?" → {"auto_continue": false} — clarifying question.
 - "Done. All 15 artists are followed on Spotify." → {"auto_continue": false} — completed result with no next agent phase."""
 
+# ── Autonomous-mode addendum (#445) ─────────────────────────────────────────
+#
+# ``CLASSIFIER_SYSTEM_PROMPT`` above is the interactive prompt, unchanged from
+# before #445, and it is what every interactive call still sends. The blocks
+# below are appended ONLY when the caller says no user is present
+# (``autonomous=True``), so interactive behaviour is identical by construction
+# and the mode-specific text cannot perturb it (an earlier revision of #732
+# put all of this into the one shared prompt and measurably regressed the
+# interactive classifier on the auto-continue regression set).
+#
+# They are separate named pieces so an ablation can assemble variants
+# (see ``build_classifier_system_prompt``).
+
+AUTONOMOUS_MODE_HEADER = (
+    "\n\nSession mode: AUTONOMOUS — no user is present; the task must run to "
+    "completion unassisted. The rules and examples below apply on top of the ones above."
+)
+
+AUTONOMOUS_DEFERRAL_RULES = """
+
+Additional auto_continue true rule (autonomous mode):
+- the turn hands control to a user who isn't there — a clarifying question, a request for missing input, or deferral language ("would you like me to continue?", "shall I…", "let me know how you'd like to proceed") — UNLESS it is also a hard stop (see below); there is no one to answer, so the agent must proceed unassisted rather than stall. The interactive rule "user question, missing input, or a choice the user must make → false" does not apply here: no user can answer."""
+
+AUTONOMOUS_HARD_STOP_RULES = """
+
+Additional auto_continue false rules (autonomous mode):
+- if ANY clause says the agent cannot / is unable to continue (or tools are not available), prefer false even when the same text also asks the absent user for something — an unverified inability claim is handled by a separate corrective-retry mechanism, not by auto-continuing here
+- text that only quotes or drafts a message addressed to someone else (e.g. the body of an email the agent already sent), even if that quoted text itself asks a question or defers — the agent itself is not the one deferring, and the task it was asked to do is done"""
+
+AUTONOMOUS_EXAMPLES = """
+
+Autonomous-mode examples (visible content → decision):
+- "Ok I will fetch the information, but first I require your ID" → {"auto_continue": true} — no user is present to supply the ID; the agent must proceed rather than stall.
+- "…Would you like me to continue processing the remaining unfriending actions, or is there anything else you'd like to do?" → {"auto_continue": true} — deferral to an absent user; nothing stops the agent from continuing itself.
+- "Let me know how you'd like to proceed!" → {"auto_continue": true} — statement-form deferral; no user to notify.
+- "…Let me know if it looks good. I can place the order once you confirm. Best, Stephen Mccoy" → {"auto_continue": false} — this is the body of an email the agent already sent to a third party, not the agent deferring to you; the task (sending the email) is already done."""
+
+AUTONOMOUS_MODE_ADDENDUM = (
+    AUTONOMOUS_MODE_HEADER + AUTONOMOUS_DEFERRAL_RULES + AUTONOMOUS_HARD_STOP_RULES + AUTONOMOUS_EXAMPLES
+)
+
+_USER_BLOCK_PREAMBLE = "Classify this assistant output (content + reasoning below).\n\n"
+_USER_BLOCK_AUTONOMOUS_LINE = "Session mode: autonomous (no user is present to answer)\n\n"
+_USER_BLOCK_SUFFIX = 'Respond with JSON only: {"auto_continue": true} or {"auto_continue": false}'
+
+
+def build_classifier_system_prompt(autonomous: bool) -> str:
+    """Interactive: the pre-#445 prompt verbatim. Autonomous: that plus the addendum."""
+    if not autonomous:
+        return CLASSIFIER_SYSTEM_PROMPT
+    return CLASSIFIER_SYSTEM_PROMPT + AUTONOMOUS_MODE_ADDENDUM
+
+
+def build_classifier_user_block(combined: str, autonomous: bool) -> str:
+    """Interactive: the pre-#445 user message verbatim. Autonomous: adds the mode line."""
+    mode_line = _USER_BLOCK_AUTONOMOUS_LINE if autonomous else ""
+    return f"{_USER_BLOCK_PREAMBLE}{mode_line}{combined}\n\n{_USER_BLOCK_SUFFIX}"
+
+
 _VISIBLE_MAX = 12000
 _REASONING_MAX = 8000
 _COMBINED_MAX = 20000
@@ -271,11 +330,18 @@ async def classify_nl_auto_continue_decision(
     reasoning_excerpt: Optional[Any],
     *,
     evidence: Optional[BlockedClaimEvidence] = None,
+    autonomous: bool = False,
 ) -> AutoContinueDecision:
     """Full decision: whether to auto-continue, and whether the blocked-claim override fired.
 
     ``evidence`` is what the harness knows about the turn; without it the
     unverified-blocker override never fires and behavior is unchanged.
+
+    ``autonomous`` (#445) tells the classifier whether a real user is present.
+    Interactive (the default) sends exactly the pre-#445 prompt and user
+    message. Autonomous appends ``AUTONOMOUS_MODE_ADDENDUM`` to the system
+    prompt and a mode line to the user message, so ask-user / deferral text
+    is continued (no one can answer) while hard stops still finalize.
     """
     if not getattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True):
         return AutoContinueDecision(auto_continue=False)
@@ -287,18 +353,14 @@ async def classify_nl_auto_continue_decision(
     combined = build_combined_content_and_reasoning(visible, reasoning)
     if not combined.strip():
         return AutoContinueDecision(auto_continue=False)
-    user_block = (
-        "Classify this assistant output (content + reasoning below).\n\n"
-        f"{combined}\n\n"
-        'Respond with JSON only: {"auto_continue": true} or {"auto_continue": false}'
-    )
+    user_block = build_classifier_user_block(combined, autonomous)
     finalize = AutoContinueDecision(auto_continue=False)
     try:
         from cuga.backend.cuga_graph.utils.langfuse_tracing import get_langfuse_invoke_config
 
         resp = await llm.ainvoke(
             [
-                {"role": "system", "content": CLASSIFIER_SYSTEM_PROMPT},
+                {"role": "system", "content": build_classifier_system_prompt(autonomous)},
                 {"role": "user", "content": user_block},
             ],
             config=get_langfuse_invoke_config(),
@@ -333,7 +395,11 @@ async def classify_nl_auto_continue(
     llm: BaseChatModel,
     assistant_visible: Any,
     reasoning_excerpt: Optional[Any],
+    *,
+    autonomous: bool = False,
 ) -> bool:
     """Return True if the graph should append a user ``continue`` message and re-invoke the coder model."""
-    decision = await classify_nl_auto_continue_decision(llm, assistant_visible, reasoning_excerpt)
+    decision = await classify_nl_auto_continue_decision(
+        llm, assistant_visible, reasoning_excerpt, autonomous=autonomous
+    )
     return decision.auto_continue
