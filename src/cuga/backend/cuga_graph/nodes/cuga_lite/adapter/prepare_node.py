@@ -778,6 +778,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 fragments=_fragments,
                 skills_prompt_section=skills_prompt_section if skills_enabled else "",
                 agents_prompt_section=agents_prompt_section if agents_enabled else "",
+                apps=apps_for_prompt if enable_find_tools else None,
             )
             logger.info(
                 "Prepared CugaLite function-calling prompt: step_discipline={} fragments={} prompt_chars={}",
