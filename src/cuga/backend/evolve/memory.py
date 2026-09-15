@@ -18,7 +18,7 @@ from cuga.backend.evolve.formatting import (
 )
 from cuga.backend.evolve.integration import EvolveIntegration, normalize_evolve_identifier
 from cuga.backend.evolve.memory_store import record_memory_usage
-from cuga.config import settings
+from cuga.config import get_service_instance_id, settings
 
 
 async def build_evolve_special_instructions_extension(
@@ -49,7 +49,7 @@ async def build_evolve_special_instructions_extension(
         try:
             # Extract multi-user parameters from state for Evolve attribution
             _evolve_user_id = normalize_evolve_identifier(getattr(state, 'user_id', None))
-            _evolve_namespace_id = service_scope.get("instance_id") or None
+            _evolve_namespace_id = get_service_instance_id() or None
             _evolve_session_id = getattr(state, 'thread_id', None)
 
             attributed_guidelines = await asyncio.wait_for(
@@ -87,7 +87,7 @@ async def build_evolve_special_instructions_extension(
     memory_query = state.sub_task or get_latest_memory_query(state.chat_messages)
     current_user_id = normalize_evolve_identifier(getattr(state, "user_id", None))
     if current_user_id and memory_query:
-        current_agent_id = str(configurable.get("agent_id") or "").strip()
+        current_agent_id = str(service_scope.get("agent_id") or "").strip()
         thread_id_for_memory = str(
             configurable.get("thread_id") or getattr(state, "thread_id", "") or ""
         ).strip()
@@ -97,7 +97,7 @@ async def build_evolve_special_instructions_extension(
                 EvolveIntegration.retrieve_user_facts(
                     current_user_id,
                     memory_query,
-                    namespace_id=service_scope.get("instance_id") or None,
+                    namespace_id=get_service_instance_id() or None,
                     agent_id=current_agent_id or None,
                 ),
                 timeout=timeout,
@@ -115,7 +115,7 @@ async def build_evolve_special_instructions_extension(
             EvolveIntegration.store_user_facts(
                 current_user_id,
                 memory_query,
-                namespace_id=service_scope.get("instance_id") or None,
+                namespace_id=get_service_instance_id() or None,
                 metadata={
                     "thread_id": thread_id_for_memory,
                     "agent_id": current_agent_id,
@@ -136,7 +136,7 @@ async def build_evolve_special_instructions_extension(
             logger.debug(f"Evolve: Injected user preference section ({len(preference_section)} chars)")
 
     turn_id = str(service_scope.get("memory_turn_id") or "").strip()
-    agent_id = str(configurable.get("agent_id") or service_scope.get("agent_id") or "").strip()
+    agent_id = str(service_scope.get("agent_id") or "").strip()
     usage_user_id = str(getattr(state, "user_id", "") or "").strip()
     unique_entity_ids = list(dict.fromkeys(used_entity_ids))
     if unique_entity_ids and turn_id and usage_user_id and agent_id:
@@ -153,7 +153,7 @@ async def build_evolve_special_instructions_extension(
                 unique_entity_ids,
                 user_id=current_user_id,
                 agent_id=agent_id,
-                namespace_id=service_scope.get("instance_id") or None,
+                namespace_id=get_service_instance_id() or None,
             )
         except Exception as exc:
             logger.warning(f"Evolve: failed to record memory usage (non-fatal): {exc}")
