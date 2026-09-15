@@ -116,7 +116,7 @@ def resolve_bind_tools_fields(
     return mode_s, apps_list, tool_names_list, _bool_coerce(inc)
 
 
-# ── Execution mode ───────────────────────────────────────────────────────────
+# ── Execution mode / step discipline ─────────────────────────────────────────
 #
 # Same three-layer resolution as the bind_tools keys above: ``configurable``
 # (per invoke) overrides the per-model runtime profile overrides ``settings``.
@@ -139,6 +139,23 @@ _EXECUTION_MODE_ALIASES: Dict[str, str] = {
     "native_tool_calling": EXECUTION_MODE_FUNCTION_CALLING,
     "tool_calling": EXECUTION_MODE_FUNCTION_CALLING,
     "toolcalling": EXECUTION_MODE_FUNCTION_CALLING,
+}
+
+STEP_DISCIPLINE_OFF = "off"
+STEP_DISCIPLINE_ONE_TOOL_PER_STEP = "one_tool_per_step"
+
+_STEP_DISCIPLINE_ALIASES: Dict[str, str] = {
+    "off": STEP_DISCIPLINE_OFF,
+    "none": STEP_DISCIPLINE_OFF,
+    "false": STEP_DISCIPLINE_OFF,
+    "0": STEP_DISCIPLINE_OFF,
+    "one_tool_per_step": STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
+    "one_tool_per_turn": STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
+    "one_tool_per_block": STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
+    "stepwise": STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
+    "one": STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
+    "true": STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
+    "1": STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
 }
 
 FC_PROMPT_FRAGMENT_EVIDENCE_FIRST = "evidence_first"
@@ -200,6 +217,25 @@ def normalize_execution_mode(raw: Any) -> str:
     return EXECUTION_MODE_CODEACT
 
 
+def normalize_step_discipline(raw: Any) -> str:
+    if raw is None:
+        return STEP_DISCIPLINE_OFF
+    if isinstance(raw, bool):
+        return STEP_DISCIPLINE_ONE_TOOL_PER_STEP if raw else STEP_DISCIPLINE_OFF
+    key = str(raw).strip().lower()
+    if key in _STEP_DISCIPLINE_ALIASES:
+        return _STEP_DISCIPLINE_ALIASES[key]
+    try:
+        from loguru import logger
+
+        logger.warning(
+            "cuga_lite_step_discipline={!r} is not recognised; falling back to {!r}", raw, STEP_DISCIPLINE_OFF
+        )
+    except Exception:
+        pass
+    return STEP_DISCIPLINE_OFF
+
+
 def resolve_execution_mode(
     configurable: Optional[Dict[str, Any]],
     model_name: Optional[str] = None,
@@ -211,6 +247,17 @@ def resolve_execution_mode(
         "cuga_lite_execution_mode", configurable, model_name, settings_mode_fn, EXECUTION_MODE_CODEACT
     )
     return normalize_execution_mode(raw)
+
+
+def resolve_step_discipline(
+    configurable: Optional[Dict[str, Any]],
+    model_name: Optional[str] = None,
+    *,
+    settings_fn: Optional[Callable[[], Any]] = None,
+) -> str:
+    """Resolved step discipline: ``off`` or ``one_tool_per_step``. Applies to both modes."""
+    raw = _layered("cuga_lite_step_discipline", configurable, model_name, settings_fn, STEP_DISCIPLINE_OFF)
+    return normalize_step_discipline(raw)
 
 
 def resolve_fc_prompt_fragments(

@@ -24,6 +24,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import (
     FC_MODE_VIOLATION_CORRECTION,
     AgentGraphAdapter,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.tool_exec_node import DEFERRED_CALL_MESSAGE
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import CugaLiteState, create_cuga_lite_graph
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking import tracker as tracker_module
 
@@ -100,6 +101,7 @@ def _quiet(monkeypatch):
     tracker_module._tool_call_budget_context.set(None)
     tracker_module._thread_tool_call_budget_context.set(None)
     tracker_module._block_tool_call_budget_context.set(None)
+    tracker_module._block_tool_call_cap_override_context.set(None)
 
 
 def _run(model, config, *tools):
@@ -187,6 +189,34 @@ async def test_three_hop_chain_each_hop_depends_on_the_previous_result():
         "c3",
     ]
     assert model.invocations == 4
+
+
+@pytest.mark.asyncio
+async def test_step_discipline_in_fc_mode_runs_one_call_per_turn():
+    model = _ScriptedModel(
+        [
+            AIMessage(
+                content="", tool_calls=[_tc("echo", {"value": 1}, "c1"), _tc("echo", {"value": 2}, "c2")]
+            ),
+            AIMessage(content="", tool_calls=[_tc("echo", {"value": 2}, "c3")]),
+            AIMessage(content="1 and 2."),
+        ]
+    )
+    config = _config(
+        "fc-sd", cuga_lite_execution_mode="function_calling", cuga_lite_step_discipline="one_tool_per_step"
+    )
+
+    result = await _run(model, config, _echo_tool())
+
+    assert CALLS == [("echo", 1), ("echo", 2)], "the second call of turn 1 is deferred, then re-issued"
+    tool_msgs = [m for m in result["chat_messages"] if isinstance(m, ToolMessage)]
+    assert [(m.tool_call_id, m.content) for m in tool_msgs][:2] == [
+        ("c1", "1"),
+        ("c2", DEFERRED_CALL_MESSAGE),
+    ]
+    assert tool_msgs[2].tool_call_id == "c3" and tool_msgs[2].content == "2"
+    assert "exactly ONE tool call" in result["prepared_prompt"]
+    assert result["final_answer"] == "1 and 2."
 
 
 @pytest.mark.asyncio

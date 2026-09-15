@@ -73,6 +73,13 @@ _block_tool_call_budget_context: contextvars.ContextVar[Optional[List[int]]] = c
     "block_tool_call_budget", default=None
 )
 
+# Per-execution override of max_tool_calls_per_block. Step discipline
+# (cuga_lite_step_discipline = "one_tool_per_step") sets it to 1 around each
+# code block; None means settings.toml decides.
+_block_tool_call_cap_override_context: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+    "block_tool_call_cap_override", default=None
+)
+
 # Holds a mutable counter dict so the count survives context copies:
 # ``asyncio.wait_for`` runs each code block in a new Task whose context is a
 # *copy* of the executor's, but the copy references the SAME dict, so
@@ -276,6 +283,21 @@ class ToolCallTracker:
         _block_tool_call_budget_context.set([0])
 
     @staticmethod
+    def set_block_cap_override(cap: Optional[int]) -> contextvars.Token:
+        """Override ``max_tool_calls_per_block`` for the current execution context.
+
+        Step discipline sets ``cap=1`` so a code block can make exactly one tool
+        call. Returns the token for :meth:`reset_block_cap_override`, so a
+        delegated child graph that runs on the caller's Task restores its
+        caller's cap on the way out instead of clearing it.
+        """
+        return _block_tool_call_cap_override_context.set(cap)
+
+    @staticmethod
+    def reset_block_cap_override(token: contextvars.Token) -> None:
+        _block_tool_call_cap_override_context.reset(token)
+
+    @staticmethod
     def get_run_budget_used() -> int:
         """Tool calls made so far this turn (0 when no budget is active)."""
         box = _tool_call_budget_context.get()
@@ -337,7 +359,12 @@ class ToolCallTracker:
 
         max_tool_calls_per_run = getattr(settings.advanced_features, "max_tool_calls_per_run", 256)
         max_per_thread = getattr(settings.advanced_features, "max_tool_calls_per_thread", 2000)
-        max_per_block = getattr(settings.advanced_features, "max_tool_calls_per_block", 100)
+        cap_override = _block_tool_call_cap_override_context.get()
+        max_per_block = (
+            cap_override
+            if cap_override is not None
+            else getattr(settings.advanced_features, "max_tool_calls_per_block", 100)
+        )
 
         thread_box = _thread_tool_call_budget_context.get()
         block_box = _block_tool_call_budget_context.get()
@@ -354,6 +381,16 @@ class ToolCallTracker:
                 f"Tool call limit reached: this run (one user turn) has already made {max_tool_calls_per_run} tool calls. "
                 "Do not call any more tools — produce a final answer from the data already retrieved. "
                 "(Configurable via advanced_features.max_tool_calls_per_run; 0 disables.)"
+            )
+        if max_per_block == 1 and block_box is not None and block_box[0] >= 1:
+            # Step discipline: one verified hop per block. The executor keeps the
+            # variables computed before the refused call, so the first call's
+            # result is not lost — the model just has to use it in a new block.
+            raise BlockToolCallBudgetExceeded(
+                "One tool call per step: this code block already made its one tool call, so this "
+                "call was refused and nothing after it ran. The variables computed before it — "
+                "including the result of the call that did run — were kept and are available in "
+                "the next block. Read that result, then make your next single tool call in a new block."
             )
         if max_per_block and block_box is not None and block_box[0] >= max_per_block:
             raise BlockToolCallBudgetExceeded(

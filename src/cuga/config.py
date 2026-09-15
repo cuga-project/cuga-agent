@@ -219,8 +219,9 @@ validators = [
     Validator("advanced_features.cuga_lite_bind_tools_tool_names", default=[]),
     Validator("advanced_features.cuga_lite_bind_tools_max_count", default=128),
     Validator("advanced_features.cuga_lite_bind_tools_pad_to_cap", default=False),
-    # Native function-calling execution mode (default off).
+    # Native function-calling execution mode + step discipline (both default off).
     Validator("advanced_features.cuga_lite_execution_mode", default="codeact"),
+    Validator("advanced_features.cuga_lite_step_discipline", default="off"),
     Validator("advanced_features.cuga_lite_fc_prompt_fragments", default=[]),
     # Read at prepare_node without a getattr guard; without this a settings.toml
     # missing the key raises AttributeError mid-run instead of using the default.

@@ -919,6 +919,7 @@ def render_fc_prompt(
     special_instructions: Optional[str] = None,
     base_prompt: Optional[str] = None,
     is_autonomous_subtask: bool = False,
+    step_discipline: bool = False,
     fragments: Optional[List[str]] = None,
 ) -> str:
     """System prompt for ``cuga_lite_execution_mode = "function_calling"``.
@@ -929,6 +930,7 @@ def render_fc_prompt(
     rendered as text. The prompt only sets the behavioural contract:
 
     - the generic preamble (always),
+    - the step-discipline line when ``cuga_lite_step_discipline`` is on,
     - opt-in fragments from ``cuga_lite_fc_prompt_fragments`` (``evidence_first``),
     - then the agent's ``instructions`` and the caller's ``special_instructions``.
 
@@ -939,6 +941,7 @@ def render_fc_prompt(
     rendered = _fc_prompt_template().format(
         base_prompt=base_prompt or "",
         is_autonomous_subtask=bool(is_autonomous_subtask),
+        step_discipline=bool(step_discipline),
         evidence_first="evidence_first" in frags,
         instructions=(instructions or "").strip(),
         special_instructions=(special_instructions or "").strip(),

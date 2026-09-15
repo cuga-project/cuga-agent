@@ -41,12 +41,22 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     create_error_command as core_create_error_command,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import _budget_updates
+from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
+    STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
+    resolve_step_discipline,
+    resolved_runtime_model_name,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
     ToolCallBudgetExceeded,
     ToolCallTracker,
     counted_tool_call,
 )
 from cuga.config import settings
+
+DEFERRED_CALL_MESSAGE = (
+    "Deferred: step discipline is on, so only the first tool call of a turn runs. "
+    "Read that result, then re-issue this call in your next turn if you still need it."
+)
 
 TRUNCATION_MARKER = "\n... [result truncated to {limit} characters]"
 
@@ -107,6 +117,10 @@ def create_tool_exec_node(adapter: Any) -> Callable:
         configurable = config.get("configurable", {}) if config else {}
         track_tool_calls = configurable.get("track_tool_calls", False)
         max_steps = configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
+        model_name = resolved_runtime_model_name(
+            configurable_llm=configurable.get("llm"), graph_default_model=getattr(adapter, "_model", None)
+        )
+        one_per_step = resolve_step_discipline(configurable, model_name) == STEP_DISCIPLINE_ONE_TOOL_PER_STEP
         timeout = getattr(settings.advanced_features, "tool_call_timeout", 30) or None
         output_limit = int(getattr(settings.advanced_features, "execution_output_max_length", 0) or 0)
 
@@ -145,6 +159,9 @@ def create_tool_exec_node(adapter: Any) -> Callable:
                     continue
                 if budget_stop:
                     results.append(_error_message(budget_stop, call_id=call_id, name=name))
+                    continue
+                if one_per_step and executed >= 1:
+                    results.append(_error_message(DEFERRED_CALL_MESSAGE, call_id=call_id, name=name))
                     continue
 
                 fn = adapter._tools_context.get(name)
