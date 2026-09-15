@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Button, Column, Grid, InlineNotification, Toggle } from "@carbon/react";
+import { Column, Grid, InlineNotification, Toggle } from "@carbon/react";
 import { loadMemoryPreferences, saveMemoryPreference, type MemoryPreferencesState } from "./api";
 
 export function MemoryPreferences({ admin = false }: { admin?: boolean }) {
@@ -42,19 +42,13 @@ export function MemoryPreferences({ admin = false }: { admin?: boolean }) {
             onToggle={(enabled) => void save(enabled)}
           />
           <p className="memory-settings__note">
-            {admin ? "Allow agents to save and use memories for all users of this service."
+            {admin ? "Enable memory features for this service."
               : preferences && !preferences.instance_enabled ? "Memory is disabled for this service. Your preference is saved."
               : "Allow agents to save and use memories for your conversations across this service."}
           </p>
-          <p className="memory-settings__note">Turning memory off keeps existing memories available to review and delete. Retention continues.</p>
+          {!admin && <p className="memory-settings__note">This controls whether agents save and use your memories.</p>}
         </div>
-        {admin && preferences && <div>
-          <p className="memory-settings__note">
-            {preferences.instance_override === null ? "Using operator default" : "Administrator override"}
-            {` (operator default: ${preferences.operator_default ? "on" : "off"})`}
-          </p>
-          {preferences.instance_override !== null && <Button kind="ghost" size="sm" disabled={saving} onClick={() => void save(null)}>Use operator default</Button>}
-        </div>}
+
       </div>
       {error && <InlineNotification kind="error" title={error} lowContrast hideCloseButton />}
     </Column>
