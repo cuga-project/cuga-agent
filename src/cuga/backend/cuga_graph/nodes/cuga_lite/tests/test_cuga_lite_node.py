@@ -93,7 +93,7 @@ async def test_callback_node_passes_multi_user_params_to_save_trajectory():
         sub_task="task_1",
         user_id="user-123",
         thread_id="thread-456",
-        service_scope={"tenant_id": "tenant-789", "instance_id": "inst-1"},
+        service_scope={"tenant_id": "tenant-789", "instance_id": "inst-1", "agent_id": "runtime-agent"},
     )
     node = CugaLiteNode()
 
@@ -124,6 +124,7 @@ async def test_callback_node_passes_multi_user_params_to_save_trajectory():
     kwargs = call_args.kwargs
     assert kwargs["user_id"] == "user-123"
     assert kwargs["namespace_id"] == "inst-1"
+    assert kwargs["agent_id"] == "runtime-agent"
     assert kwargs["session_id"] == "thread-456"
 
 
