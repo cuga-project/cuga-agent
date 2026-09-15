@@ -187,7 +187,10 @@ class PolicyConfigurable:
 
         try:
             policy_config = getattr(settings, "policy", None)
-            final_collection_name = collection_name or get_agent_policy_collection_name()
+            configured_collection_name = getattr(policy_config, "collection_name", None)
+            final_collection_name = (
+                collection_name or configured_collection_name or get_agent_policy_collection_name()
+            )
 
             configured_path = (policy_db_path or getattr(policy_config, "policy_db_path", None) or "").strip()
             if configured_path:

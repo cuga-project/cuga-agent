@@ -72,48 +72,112 @@ def test_agent_policy_collection_name_scoping(monkeypatch):
         assert len(collection_name.encode("ascii")) <= 63
 
 
+_EMBEDDING_CONFIG_PATCH = dict(
+    dim=384,
+    provider="sentence_transformers",
+    model="unused",
+    base_url=None,
+    api_key=None,
+)
+
+
+def _make_mock_storage(mock_cls):
+    """Wire up the standard async stubs on a MagicMock storage class."""
+    storage = mock_cls.return_value
+    storage.initialize_async = AsyncMock()
+    storage._embedding_function = None
+    storage._embedding_initialized = False
+    return storage
+
+
 @pytest.mark.asyncio
-async def test_default_policy_runtime_ignores_configured_collection_name(monkeypatch):
-    """Default runtime storage uses exact published and draft names despite setting overrides."""
+@pytest.mark.parametrize(
+    "configured_value, expected_collection",
+    [
+        ("custom_policies", "custom_policies"),  # truthy configured value is honoured
+        ("", "cuga_policies"),  # empty string falls back to helper default
+        (None, "cuga_policies"),  # None falls back to helper default
+    ],
+)
+async def test_default_policy_runtime_uses_configured_collection_name(
+    monkeypatch, configured_value, expected_collection
+):
+    """initialize() without an explicit argument must respect settings.policy.collection_name.
+
+    Precedence (highest → lowest):
+      1. explicit collection_name argument
+      2. settings.policy.collection_name (truthy)
+      3. get_agent_policy_collection_name() → "cuga_policies"
+    """
     monkeypatch.setattr(
-        "cuga.backend.cuga_graph.policy.configurable.settings.policy.collection_name", "Custom-Policies"
-    )
-    configurable_storage_cls = patch("cuga.backend.cuga_graph.policy.configurable.PolicyStorage")
-    main_storage_cls = patch("cuga.backend.cuga_graph.policy.storage.PolicyStorage")
-    embedding_config = patch(
-        "cuga.backend.storage.embedding.get_embedding_config",
-        return_value={
-            "dim": 384,
-            "provider": "sentence_transformers",
-            "model": "unused",
-            "base_url": None,
-            "api_key": None,
-        },
+        "cuga.backend.cuga_graph.policy.configurable.settings.policy.collection_name",
+        configured_value,
     )
 
-    with configurable_storage_cls as mock_configurable_storage_cls, main_storage_cls as mock_main_storage_cls:
-        published_storage = mock_configurable_storage_cls.return_value
-        published_storage.initialize_async = AsyncMock()
-        published_storage._embedding_function = None
+    with (
+        patch("cuga.backend.cuga_graph.policy.configurable.PolicyStorage") as mock_storage_cls,
+        patch(
+            "cuga.backend.storage.embedding.get_embedding_config",
+            return_value=_EMBEDDING_CONFIG_PATCH,
+        ),
+    ):
+        _make_mock_storage(mock_storage_cls)
+        ps = PolicyConfigurable(llm=object(), agent=object())
+        await ps.initialize()
+
+    assert mock_storage_cls.call_args.kwargs["collection_name"] == expected_collection
+
+
+@pytest.mark.asyncio
+async def test_default_policy_runtime_explicit_arg_overrides_configured_collection(monkeypatch):
+    """An explicit collection_name argument beats settings.policy.collection_name."""
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.policy.configurable.settings.policy.collection_name",
+        "custom_policies",
+    )
+
+    with (
+        patch("cuga.backend.cuga_graph.policy.configurable.PolicyStorage") as mock_storage_cls,
+        patch(
+            "cuga.backend.storage.embedding.get_embedding_config",
+            return_value=_EMBEDDING_CONFIG_PATCH,
+        ),
+    ):
+        _make_mock_storage(mock_storage_cls)
+        ps = PolicyConfigurable(llm=object(), agent=object())
+        await ps.initialize(collection_name="explicit_policies")
+
+    assert mock_storage_cls.call_args.kwargs["collection_name"] == "explicit_policies"
+
+
+@pytest.mark.asyncio
+async def test_default_policy_runtime_draft_unaffected_by_configured_collection(monkeypatch):
+    """Default draft initialization always uses cuga_policies_draft regardless of the setting."""
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.policy.configurable.settings.policy.collection_name",
+        "custom_policies",
+    )
+    main_storage_cls = patch("cuga.backend.cuga_graph.policy.storage.PolicyStorage")
+    with (
+        main_storage_cls as mock_main_storage_cls,
+        patch(
+            "cuga.backend.storage.embedding.get_embedding_config",
+            return_value=_EMBEDDING_CONFIG_PATCH,
+        ),
+    ):
         draft_storage = mock_main_storage_cls.return_value
         draft_storage.initialize_async = AsyncMock()
         draft_policy_system = SimpleNamespace(initialize=AsyncMock())
 
-        with (
-            embedding_config,
-            patch(
-                "cuga.backend.cuga_graph.policy.configurable.PolicyConfigurable",
-                return_value=draft_policy_system,
-            ),
+        with patch(
+            "cuga.backend.cuga_graph.policy.configurable.PolicyConfigurable",
+            return_value=draft_policy_system,
         ):
-            published_policy_system = PolicyConfigurable(llm=object(), agent=object())
-            await published_policy_system.initialize()
             (
                 initialized_draft_system,
                 draft_collection,
             ) = await main_mod._initialize_default_draft_policy_system()
 
-    assert mock_configurable_storage_cls.call_args.kwargs["collection_name"] == "cuga_policies"
     assert mock_main_storage_cls.call_args.kwargs["collection_name"] == "cuga_policies_draft"
     assert initialized_draft_system is draft_policy_system
     assert draft_collection == "cuga_policies_draft"
