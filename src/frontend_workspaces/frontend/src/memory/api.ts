@@ -108,6 +108,9 @@ async function readJson<T>(response: Response, fallback: string): Promise<T> {
     const detail = body && typeof body.detail === "string" ? body.detail : fallback;
     throw new Error(detail);
   }
+  if (body === null) {
+    throw new Error("The memory backend returned an invalid response. Check that the backend is up to date.");
+  }
   return body as T;
 }
 
