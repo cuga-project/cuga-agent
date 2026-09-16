@@ -50,12 +50,23 @@ def split_execution_note(plan: "ExecutionPlan") -> str:
     """
     if not plan.split_execution_active:
         return ""
+    remote_operations = []
+    if plan.shell_backend in ("native", "opensandbox", "e2b"):
+        remote_operations.append("shell commands (`run_command`)")
+    if plan.filesystem_backend == "sandbox_remote":
+        remote_operations.append("filesystem operations (`read_file`, `write_file`, `list_files`, etc.)")
+    guidance = (
+        "Use `await run_command(...)` for anything that must happen inside the sandbox; "
+        if plan.shell_backend in ("native", "opensandbox", "e2b")
+        else "Use the filesystem tools for sandbox files; "
+    )
     return (
         "**Split-execution mode is active**: your Python code runs in the local environment, "
-        "but shell commands (`run_command`) and filesystem operations (`read_file`, `write_file`, "
-        "`list_files`, etc.) execute inside the remote sandbox. "
-        "Use `await run_command(...)` for anything that must happen inside the sandbox; "
-        "avoid `os.path`, `open()`, or other local-filesystem calls when targeting sandbox paths."
+        "but "
+        + " and ".join(remote_operations)
+        + " execute inside the remote sandbox. "
+        + guidance
+        + "avoid `os.path`, `open()`, or other local-filesystem calls when targeting sandbox paths."
     )
 
 
