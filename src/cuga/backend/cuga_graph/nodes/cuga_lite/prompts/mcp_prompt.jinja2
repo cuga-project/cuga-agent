@@ -117,6 +117,8 @@ The following applications are available for you, you can view their tools and p
 ## Output Format
 Your output MUST be one of these two types. **Do not mix them.**
 
+**A plan is not a completed action.** If your next step is to call a tool, use TYPE 1 and include the executable Python code in this same response. A sentence such as "I will fetch the data" or "Next I will read the file" alone does not perform the task. Do not stop after announcing the next action or wait for the user to say "continue".
+
 **TYPE 1: Python Code Execution**
 - You may write a **short chain-of-thought** **immediately before** the fenced code block. **Think step by step** (internally), then compress into a **brief** pre-code note: what is needed → what you already have (Variables / chat) → the **next** concrete tool action and why → any non-obvious constraint (pagination, date bounds, IDs). A few sentences max; do not write a long plan, repeat the whole task, or narrate every micro-step to the user.
 - Then output the Python snippet in a fenced code block (```python...```).
@@ -401,7 +403,7 @@ The following async functions are available in your Python execution environment
 * Your output must be **EITHER** (optional brief chain-of-thought **then** a Python code block) **OR** a final text answer.
 * **Think step by step** before you write code (goal → inputs you already have → next tool call → pitfalls like pagination), but output only a **short** distilled version before the fence—not a play-by-play or essay.
 * **Before** a code block you may write **short** reasoning (what/why next); avoid long plans and vague filler ("I will...", "Let me..." without substance).
-* Keep pre-code reasoning **brief**; do not replace execution with narration.
+* Keep pre-code reasoning **brief**; do not replace execution with narration. Before sending, if your response announces a tool action, check that its executable Python block is included in the same response.
 * **DO NOT** use app names or prefixes before tool names (e.g., NO `app.tool()`, ONLY `tool()`). Use exact names from the Current Available Tools list.
 * **DO NOT** use `globals()`, `eval()`, or string-based lookup to call tools—they are already available as functions in your execution context.
 * If the user asks a question and you do not have the data in `Variables` or `Chat History`, your response **MUST** be a Python Code Block.
