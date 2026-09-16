@@ -58,7 +58,7 @@ def split_execution_note(plan: "ExecutionPlan") -> str:
     guidance = (
         "Use `await run_command(...)` for anything that must happen inside the sandbox; "
         if plan.shell_backend in ("native", "opensandbox", "e2b")
-        else "Use the filesystem tools for sandbox files; "
+        else ""
     )
     return (
         "**Split-execution mode is active**: your Python code runs in the local environment, "
