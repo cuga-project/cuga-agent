@@ -315,7 +315,7 @@ class OpenSandboxExecutor(RemoteExecutor):
                     "or `uv pip show pkg` — not `python -m pip` or `pip show`. "
                     "Run with `python ./script.py` first; retry with `uv run --no-project ...` if that fails. "
                     "Uploaded files live under `./uploads/` (manifest `shell_path`); `/workspace/...` paths "
-                    "are rewritten for shell automatically. "
+                    "from `read_file`/`list_files` are rewritten for shell automatically. "
                     "Node commands must start with plain `node ...`; npm commands must start with plain `npm ...`. "
                     "Never use `uv npm`, `uv run node`, or `uv run npm`."
                 ),
