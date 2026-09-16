@@ -204,26 +204,42 @@ def test_no_changes_returns_original_object(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_route_normalizes_before_guard_and_call(monkeypatch):
-    """Two facts pinned here: (1) the registry receives the canonical path,
+    """Three facts pinned here: (1) the registry receives the canonical path,
     not the model's malformed one; (2) guard signatures are computed on
     canonical args, so a malformed and an already-canonical spelling of the
-    same call share one rejection counter."""
+    same call share one rejection counter; (3) the persisted api_call trace
+    keeps the raw args the model produced — normalization must stay below the
+    trace step."""
     from cuga.backend.tools_env.registry.registry import api_registry_server as srv
     from cuga.backend.tools_env.registry.registry.rejected_call_guard import RejectedCallGuard
 
-    monkeypatch.delenv("DYNACONF_ADVANCED_FEATURES__BENCHMARK", raising=False)
-    monkeypatch.setattr(
-        "cuga.config.settings",
-        SimpleNamespace(
-            advanced_features=SimpleNamespace(
+    class _FakeSettings:
+        """Stands in for both cuga.config.settings (read lazily by the guard)
+        and srv's module-global settings (endpoint's settings.update call)."""
+
+        def __init__(self):
+            self.advanced_features = SimpleNamespace(
                 benchmark="appworld",
                 rejected_call_escalate_after=1,
                 rejected_call_block_after=2,
             )
-        ),
-    )
+
+        def update(self, *args, **kwargs):  # tracker enablement — irrelevant here
+            pass
+
+    fake_settings = _FakeSettings()
+    monkeypatch.delenv("DYNACONF_ADVANCED_FEATURES__BENCHMARK", raising=False)
+    monkeypatch.setattr("cuga.config.settings", fake_settings)
+    monkeypatch.setattr(srv, "settings", fake_settings)
     monkeypatch.setattr(srv, "rejected_call_guard", RejectedCallGuard())
     monkeypatch.setattr(srv, "database_mode", False)
+
+    traced_steps = []
+    monkeypatch.setattr(
+        srv,
+        "tracker",
+        SimpleNamespace(collect_step_external=lambda step, full_path: traced_steps.append((step, full_path))),
+    )
 
     rejection_text = json.dumps(
         {
@@ -255,9 +271,17 @@ async def test_route_normalizes_before_guard_and_call(monkeypatch):
     malformed = srv.FunctionCallRequest(
         app_name="file_system", function_name="show_file", args={"file_path": "./owe_list.csv"}
     )
-    first = await srv.call_mcp_function(malformed)
+    first = await srv.call_mcp_function(malformed, trajectory_path="/traj/task.json")
     assert first["status"] == "exception"
     assert seen_args[-1]["file_path"] == "~/owe_list.csv"  # canonical on the wire
+
+    # The persisted api_call trace keeps the raw argument the model produced,
+    # while the wire (asserted above) got the canonical form.
+    api_call_steps = [(st, path) for st, path in traced_steps if st.name == "api_call"]
+    assert api_call_steps, "api_call trace step was not recorded"
+    step, path = api_call_steps[0]
+    assert path == "/traj/task.json"
+    assert json.loads(step.data)["args"]["file_path"] == "./owe_list.csv"
 
     # Same logical call, already-canonical spelling: shares the signature,
     # so this second rejection escalates.
