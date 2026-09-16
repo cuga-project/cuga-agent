@@ -1,13 +1,15 @@
 """Exercise runtime helper gating through the real prepare node and prompt template."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import HumanMessage
+from langchain_core.tools import StructuredTool
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import FILESYSTEM_TOOL_NAMES
+from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import FILESYSTEM_TOOL_NAMES
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_sandbox_executor import (
     LocalSandboxExecutor,
 )
@@ -60,12 +62,21 @@ def prepare_runtime(monkeypatch):
     monkeypatch.delenv("CUGA_POLICIES_CONTENT", raising=False)
 
     async def run(
-        *, filesystem, shell, mode="native", settings_fs=False, static=False, examples=None, opensandbox=False
+        *,
+        filesystem,
+        shell,
+        mode="native",
+        settings_fs=False,
+        static=False,
+        examples=None,
+        opensandbox=False,
+        find_tools=False,
     ):
         advanced.enable_filesystem_tools = settings_fs
         advanced.enable_shell_tool = shell
         advanced.sandbox_mode = mode
         advanced.opensandbox_sandbox = opensandbox
+        advanced.shortlisting_tool_threshold = 0 if find_tools else 35
         adapter = MagicMock()
         adapter._task_todos_ref = []
         adapter._tools_context = {}
@@ -73,7 +84,10 @@ def prepare_runtime(monkeypatch):
         adapter._special_instructions = None
         adapter._static_prompt = "Custom static prompt" if static else None
         adapter._thread_id = "runtime-gating-test"
-        adapter._base_tool_provider.get_all_tools = AsyncMock(return_value=[])
+        tool = StructuredTool.from_function(
+            lambda query: query, name="lookup", description="Look up a record"
+        )
+        adapter._base_tool_provider.get_all_tools = AsyncMock(return_value=[tool])
         adapter._base_tool_provider.get_tools = AsyncMock(return_value=[])
         adapter._base_tool_provider.get_apps = AsyncMock(return_value=[])
         template = Path(__file__).resolve().parents[1] / "prompts" / "mcp_prompt.jinja2"
@@ -92,8 +106,9 @@ def prepare_runtime(monkeypatch):
             "skills_enabled": False,
             "knowledge_engine": SimpleNamespace(_config=None),
             "cuga_lite_enable_few_shots": True,
-            "mcp_few_shot_examples": examples or [],
         }
+        if examples is not None:
+            config["mcp_few_shot_examples"] = examples
         node = prepare_node.create_prepare_tools_and_apps_node(adapter, lc_bind_tools_meta={})
         result = await node(state, config={"configurable": config})
         return adapter._tools_context, result.update
@@ -143,3 +158,30 @@ async def test_prepare_filters_few_shots_for_static_and_dynamic_prompts(prepare_
     assert update["mcp_few_shot_messages"] == (turns if filesystem else [])
     if static:
         assert update["prepared_prompt"] == "Custom static prompt"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filesystem", [False, True])
+@pytest.mark.parametrize("find_tools", [False, True])
+async def test_find_tools_and_bundled_examples_follow_separate_flags(prepare_runtime, filesystem, find_tools):
+    """Filesystem gating must not disable find_tools or strip compatible bundled turns."""
+    context, update = await prepare_runtime(filesystem=filesystem, shell=False, find_tools=find_tools)
+    assert ("find_tools" in context) is find_tools
+    assert update["reflection_enable_find_tools"] is find_tools
+    assert ("read_file" in context) is filesystem
+    fixture = Path(__file__).resolve().parents[1] / "prompts/find_tools_few_shot_examples.json"
+    raw = json.loads(fixture.read_text())
+    turns = raw if isinstance(raw, list) else raw["examples"]
+    assert len(turns) == 8
+    assert update["mcp_few_shot_messages"] == (turns if find_tools and filesystem else [])
+
+
+@pytest.mark.asyncio
+async def test_prepare_keeps_filesystem_free_find_tools_example(prepare_runtime):
+    turns = [
+        {"role": "user", "content": "Find the account lookup tool"},
+        {"role": "assistant", "content": '```python\nprint(await find_tools("account lookup"))\n```'},
+    ]
+    context, update = await prepare_runtime(filesystem=False, shell=False, find_tools=True, examples=turns)
+    assert "find_tools" in context
+    assert update["mcp_few_shot_messages"] == turns
