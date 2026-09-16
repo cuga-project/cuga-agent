@@ -22,7 +22,6 @@ from .paths import (
     skills_enabled,
     thread_workspace_root,
 )
-from .tool_definitions import FILESYSTEM_TOOL_DESCRIPTIONS, FILESYSTEM_TOOL_NAMES
 from .workspace_fs import (
     WorkspaceFilesystem,
     create_filesystem_tools,
@@ -32,8 +31,6 @@ from .workspace_fs import (
 )
 
 __all__ = [
-    "FILESYSTEM_TOOL_NAMES",
-    "FILESYSTEM_TOOL_DESCRIPTIONS",
     "FilesystemBackend",
     "HostWorkspaceBackend",
     "RemoteSandboxBackend",
