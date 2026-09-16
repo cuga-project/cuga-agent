@@ -793,6 +793,18 @@ def normalize_mcp_few_shot_examples(raw: Any) -> List[Dict[str, str]]:
     return out
 
 
+FILESYSTEM_TOOL_NAMES = (
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_files",
+    "make_directory",
+    "move_file",
+    "search_files",
+    "get_file_info",
+)
+
+
 def drop_examples_using_absent_helpers(
     examples: Optional[List[Dict[str, str]]], *, filesystem_enabled: bool, shell_enabled: bool = True
 ) -> List[Dict[str, str]]:
@@ -804,8 +816,6 @@ def drop_examples_using_absent_helpers(
     """
     if not examples or (filesystem_enabled and shell_enabled):
         return list(examples or [])
-
-    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import FILESYSTEM_TOOL_NAMES
 
     absent = list(FILESYSTEM_TOOL_NAMES) if not filesystem_enabled else []
     if not shell_enabled:
@@ -876,6 +886,12 @@ def create_mcp_prompt(
     for tool in tools:
         tool_name = tool.name if hasattr(tool, 'name') else str(tool)
         tool_desc = tool.description if hasattr(tool, 'description') else "No description"
+        if tool_name == "run_command" and not enable_filesystem_tools:
+            tool_desc = (
+                tool_desc.replace("Write scripts with write_file before running them. ", "")
+                .replace("; `read_file` accepts both.", ".")
+                .replace("from `read_file`/`list_files` ", "")
+            )
 
         params_str = PromptUtils.get_tool_params_str(tool)
         params_doc, response_doc = PromptUtils.get_tool_docs(tool)
