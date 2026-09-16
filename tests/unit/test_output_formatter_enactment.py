@@ -67,8 +67,9 @@ async def test_markdown_prompt_prioritizes_format_config_over_preserve_rules():
 
     replace_instructions = "Replace the entire response with: You are not allowed to view this sensitive data"
     policy_match = _policy_match("markdown", replace_instructions)
-    # Use a JSON-containing response so the plain-text pre-check does not short-circuit
-    state, context = _state_and_context(content='{"revenue": 1500000, "company": "Acme"}')
+    # format_config contains "Replace" — content-modifying guard keeps the LLM path active
+    # even for a clean plain-text response (security fix: no sensitive-data bypass)
+    state, context = _state_and_context(content="The revenue for Acme was $1,500,000.")
 
     mock_resp = MagicMock()
     mock_resp.content = "You are not allowed to view this sensitive data"
@@ -109,3 +110,30 @@ async def test_markdown_skips_llm_for_clean_plain_text():
     mock_llm.ainvoke.assert_not_called()
     assert result is None
     assert metadata is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_markdown_content_modifying_policy_runs_llm_for_plain_text():
+    """Redaction/replacement policies must run the LLM even for clean plain-text responses.
+
+    Ensures the _is_presentation_only guard does not bypass content-modifying
+    format_config instructions (CWE-200 fix: no sensitive-data exposure).
+    """
+    from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
+
+    for keyword in ("redact", "replace", "withhold", "block", "remove", "filter"):
+        instructions = f"{keyword.capitalize()} any SSNs in the response."
+        policy_match = _policy_match("markdown", instructions)
+        state, context = _state_and_context(content="Call John at SSN 123-45-6789.")
+
+        mock_resp = MagicMock()
+        mock_resp.content = "Call John at SSN [REDACTED]."
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=mock_resp)
+
+        with patch("cuga.backend.llm.models.LLMManager") as mock_mgr:
+            mock_mgr.return_value.get_model.return_value = mock_llm
+            await PolicyEnactment._enact_format_output(state, policy_match, MagicMock(), context)
+
+        mock_llm.ainvoke.assert_awaited_once(), f"LLM must be called for '{keyword}' policy"
