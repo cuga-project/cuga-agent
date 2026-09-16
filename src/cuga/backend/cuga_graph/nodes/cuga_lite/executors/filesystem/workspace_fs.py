@@ -27,7 +27,6 @@ from langchain_core.tools import StructuredTool
 
 from .backends import FilesystemBackend, HostWorkspaceBackend
 from .models import ReadFileInput
-from .tool_definitions import FILESYSTEM_TOOL_DESCRIPTIONS, FILESYSTEM_TOOL_NAMES
 
 
 def _apply_slice_and_grep(
@@ -263,12 +262,77 @@ class WorkspaceFilesystem:
         """The 8 LLM-facing filesystem tools (no download/upload)."""
         return [
             StructuredTool.from_function(
-                coroutine=getattr(self, name),
-                name=name,
-                description=FILESYSTEM_TOOL_DESCRIPTIONS[name],
-                args_schema=ReadFileInput if name == "read_file" else None,
-            )
-            for name in FILESYSTEM_TOOL_NAMES
+                coroutine=self.read_file,
+                name="read_file",
+                description=(
+                    "Read a text file from the workspace. Pass a relative path "
+                    "(e.g. `./output.txt`). Optionally pass start_line and end_line "
+                    "(1-based, inclusive) to read a slice, and/or grep_pattern (Python "
+                    "regex per line) to filter lines. When grep_pattern is set, matching "
+                    "lines are prefixed with 'LINE|'."
+                ),
+                args_schema=ReadFileInput,
+            ),
+            StructuredTool.from_function(
+                coroutine=self.write_file,
+                name="write_file",
+                description=(
+                    "Write text content into a file in the workspace. Use relative paths "
+                    "(e.g. `./script.js`). Overwrites existing files; parent directories "
+                    "are created automatically. For `.py` scripts, content is syntax-checked "
+                    "before write — top-level lines must start at column 0 (no leading indent "
+                    "from triple-quoted strings in your code block)."
+                ),
+            ),
+            StructuredTool.from_function(
+                coroutine=self.edit_file,
+                name="edit_file",
+                description=(
+                    "Make exact-text edits to a file. `edits` is a list of "
+                    "{oldText, newText}; each oldText must occur exactly once. Returns a "
+                    "git-style diff. Pass dryRun=true to preview without writing."
+                ),
+            ),
+            StructuredTool.from_function(
+                coroutine=self.list_files,
+                name="list_files",
+                description=(
+                    "List files and directories in the workspace as JSON. Pass a relative "
+                    "path (default `.` = workspace root) and an optional glob pattern."
+                ),
+            ),
+            StructuredTool.from_function(
+                coroutine=self.make_directory,
+                name="make_directory",
+                description="Create a directory (and parents) in the workspace.",
+            ),
+            StructuredTool.from_function(
+                coroutine=self.move_file,
+                name="move_file",
+                description=(
+                    "Move or rename a file/directory within the workspace. Fails if the "
+                    "destination already exists."
+                ),
+            ),
+            StructuredTool.from_function(
+                coroutine=self.search_files,
+                name="search_files",
+                description=(
+                    "Recursively search the workspace for entries matching a glob pattern "
+                    "(use `**/*.ext` for recursion). Returns a single newline-separated "
+                    "string of matching relative paths (one per line) — NOT a list. Empty "
+                    "string means no matches; use `.splitlines()` to get individual paths, "
+                    "and check with `if not result:` rather than indexing into it."
+                ),
+            ),
+            StructuredTool.from_function(
+                coroutine=self.get_file_info,
+                name="get_file_info",
+                description=(
+                    "Return metadata (size, timestamps, permissions, type) for a file or "
+                    "directory in the workspace."
+                ),
+            ),
         ]
 
 
