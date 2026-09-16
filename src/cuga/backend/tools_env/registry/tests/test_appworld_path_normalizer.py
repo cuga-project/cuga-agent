@@ -19,7 +19,12 @@ from cuga.backend.tools_env.registry.registry.appworld_path_normalizer import (
 
 
 def _set_settings(monkeypatch, benchmark="appworld", **extra):
-    """Pin cuga.config.settings (read lazily inside the normalizer)."""
+    """Pin cuga.config.settings (read lazily inside the normalizer).
+
+    The env var is cleared so these cases exercise the settings fallback of
+    ``resolved_benchmark()`` regardless of the shell the suite runs in.
+    """
+    monkeypatch.delenv("DYNACONF_ADVANCED_FEATURES__BENCHMARK", raising=False)
     monkeypatch.setattr(
         "cuga.config.settings",
         SimpleNamespace(advanced_features=SimpleNamespace(benchmark=benchmark, **extra)),
@@ -162,6 +167,29 @@ def test_other_benchmarks_never_touched(monkeypatch):
 
 
 @pytest.mark.unit
+def test_benchmark_set_after_import_still_normalizes(monkeypatch):
+    """The gate goes through resolved_benchmark(), so a benchmark exported
+    after cuga.config was imported still enables normalization — settings
+    captured at import time would leave it permanently off."""
+    _set_settings(monkeypatch, benchmark="default")
+    monkeypatch.setenv("DYNACONF_ADVANCED_FEATURES__BENCHMARK", "appworld")
+    args, changes = normalize_file_system_path_args("file_system", dict(ARGS))
+    assert args["file_path"] == "~/downloads/x.csv"
+    assert changes == {"file_path": ("./downloads/x.csv", "~/downloads/x.csv")}
+
+
+@pytest.mark.unit
+def test_env_benchmark_overrides_stale_appworld_settings(monkeypatch):
+    """The reverse direction: an environment that has moved off appworld wins
+    over a stale settings value, keeping the rewrite scoped."""
+    _set_settings(monkeypatch, benchmark="appworld")
+    monkeypatch.setenv("DYNACONF_ADVANCED_FEATURES__BENCHMARK", "default")
+    args, changes = normalize_file_system_path_args("file_system", dict(ARGS))
+    assert args["file_path"] == "./downloads/x.csv"
+    assert changes == {}
+
+
+@pytest.mark.unit
 def test_no_changes_returns_original_object(monkeypatch):
     _set_settings(monkeypatch)
     clean = {"file_path": "~/downloads/x.csv"}
@@ -183,6 +211,7 @@ async def test_route_normalizes_before_guard_and_call(monkeypatch):
     from cuga.backend.tools_env.registry.registry import api_registry_server as srv
     from cuga.backend.tools_env.registry.registry.rejected_call_guard import RejectedCallGuard
 
+    monkeypatch.delenv("DYNACONF_ADVANCED_FEATURES__BENCHMARK", raising=False)
     monkeypatch.setattr(
         "cuga.config.settings",
         SimpleNamespace(

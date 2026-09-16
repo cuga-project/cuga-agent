@@ -23,8 +23,8 @@ never short-circuited by rejections recorded under a malformed form):
   echo of an agent-sent cwd-relative path,
 - clean ``~/...`` and absolute ``/...`` paths pass through unchanged.
 
-Scope is deliberately narrow: only when ``advanced_features.benchmark`` is
-``appworld``, only the ``file_system`` app, and only string arguments whose
+Scope is deliberately narrow: only when ``cuga.config.resolved_benchmark()``
+is ``appworld``, only the ``file_system`` app, and only string arguments whose
 key is ``path`` or ends with ``_path`` (every path parameter in the
 ``file_system`` API follows that naming). Paths containing backslashes are
 left untouched — rewriting Windows-style separators would be guesswork.
@@ -100,9 +100,12 @@ def normalize_file_system_path_args(
     """
     if app_name != _FILE_SYSTEM_APP or not isinstance(args, dict):
         return args, {}
-    from cuga.config import settings
+    from cuga.config import resolved_benchmark
 
-    if getattr(settings.advanced_features, "benchmark", None) != "appworld":
+    # resolved_benchmark() reads DYNACONF_ADVANCED_FEATURES__BENCHMARK from the
+    # process environment first, so a benchmark selected after cuga.config was
+    # imported still enables normalization (settings alone would be stale).
+    if resolved_benchmark() != "appworld":
         return args, {}
     changes: Dict[str, Tuple[str, str]] = {}
     for key, value in args.items():
