@@ -43,13 +43,13 @@ def _render(**kwargs) -> str:
 
 @pytest.mark.parametrize("shell_enabled", [False, True])
 @pytest.mark.parametrize("filesystem_enabled", [False, True])
-def test_runtime_guidance_is_independently_gated(shell_enabled, filesystem_enabled):
-    """Each capability has its own guidance, with write-before-run requiring both."""
+def test_runtime_guidance_preserves_original_shell_gate(shell_enabled, filesystem_enabled):
+    """Only remove unavailable guidance; never expose the original shell-only paragraph."""
     rendered = _render(tools=[], enable_filesystem_tools=filesystem_enabled, enable_shell_tool=shell_enabled)
     assert ("run_command" in rendered) is shell_enabled
     assert ("write_file" in rendered) is filesystem_enabled
-    assert ("column 0" in rendered) is filesystem_enabled
-    assert ("**Workspace paths**" in rendered) is filesystem_enabled
+    assert ("column 0" in rendered) is (shell_enabled and filesystem_enabled)
+    assert ("**Workspace paths**" in rendered) is (shell_enabled and filesystem_enabled)
     assert ("**Write before run**" in rendered) is (shell_enabled and filesystem_enabled)
     if not filesystem_enabled:
         assert all(helper not in rendered for helper in FILESYSTEM_TOOL_NAMES)
