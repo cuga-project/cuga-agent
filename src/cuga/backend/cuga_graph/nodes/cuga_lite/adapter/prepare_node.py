@@ -455,7 +455,13 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # gated by enable_filesystem_tools / enable_shell_tool.
         _runtime_backends = resolve_runtime_backends(settings, configurable)
 
-        if _runtime_backends.filesystem != "none" or _runtime_backends.shell != "none":
+        filesystem_enabled = _runtime_backends.filesystem != "none"
+        shell_enabled = _runtime_backends.shell != "none"
+        few_shot_examples = drop_examples_using_absent_helpers(
+            few_shot_examples, filesystem_enabled=filesystem_enabled, shell_enabled=shell_enabled
+        )
+
+        if filesystem_enabled or shell_enabled:
             cfg = config.get("configurable", {}) if config else {}
             # Spawn may set workspace_thread_id to the parent thread while keeping a
             # fresh conversation thread_id for checkpointer/chat isolation.
@@ -515,7 +521,15 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         from cuga.backend.evolve.memory import build_evolve_special_instructions_extension
 
         special_instructions_final = effective_special or ""
-        _split_note = split_execution_note(ExecutionRouter.resolve(settings))
+        # The note must describe the same backends used for tool injection,
+        # including per-invocation filesystem overrides and unavailable shells.
+        execution_plan = ExecutionRouter.resolve(settings).model_copy(
+            update={
+                "shell_backend": _runtime_backends.shell,
+                "filesystem_backend": _runtime_backends.filesystem,
+            }
+        )
+        _split_note = split_execution_note(execution_plan)
         if _split_note:
             special_instructions_final = (special_instructions_final + "\n\n" + _split_note).strip()
         evolve_extension = await build_evolve_special_instructions_extension(
@@ -732,11 +746,6 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         dynamic_prompt = adapter._static_prompt
 
         if not dynamic_prompt:
-            # Few-shot turns are demonstrations the model imitates: drop any that
-            # call helpers this run will not inject, or it learns a NameError.
-            few_shot_examples = drop_examples_using_absent_helpers(
-                few_shot_examples, filesystem_enabled=_runtime_backends.filesystem != "none"
-            )
             dynamic_prompt = create_mcp_prompt(
                 tools_for_prompt,
                 allow_user_clarification=True,
@@ -752,8 +761,8 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 special_instructions=special_instructions_final,
                 skills_enabled=skills_enabled,
                 skills_prompt_section=skills_prompt_section,
-                enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", False),
-                enable_filesystem_tools=_runtime_backends.filesystem != "none",
+                enable_shell_tool=shell_enabled,
+                enable_filesystem_tools=filesystem_enabled,
                 sandbox_env_info=get_sandbox_env_description(),
                 has_knowledge=has_knowledge_tools,
                 few_shot_examples=few_shot_examples,
@@ -771,7 +780,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             )
         else:
             logger.info(
-                "Using static CugaLite prompt; dynamic few-shot injection skipped "
+                "Using static CugaLite prompt with filtered few-shot messages "
                 "(enable_find_tools={} few_shot_turns={})",
                 enable_find_tools,
                 len(few_shot_examples),
