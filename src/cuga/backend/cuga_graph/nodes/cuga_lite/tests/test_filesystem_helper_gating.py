@@ -11,7 +11,6 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy impor
     split_execution_note,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import (
-    FILESYSTEM_TOOL_NAMES,
     create_filesystem_tools,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_sandbox_executor import (
@@ -24,6 +23,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.opensandbox.opensandbox_e
     OpenSandboxExecutor,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
+    FILESYSTEM_TOOL_NAMES,
     create_mcp_prompt,
     drop_examples_using_absent_helpers,
 )
@@ -96,8 +96,8 @@ def test_shell_few_shots_follow_shell_availability():
     assert drop_examples_using_absent_helpers(turns, filesystem_enabled=False, shell_enabled=True) == turns
 
 
-def test_shared_names_match_filesystem_tool_surface():
-    """The shared registry must include exactly the eight injected tools and their schemas."""
+def test_filtered_names_match_filesystem_tool_surface():
+    """The filter must cover exactly the eight injected tools and their schemas."""
     tools = create_filesystem_tools(backend=MagicMock())
     assert len(tools) == 8
     assert tuple(t.name for t in tools) == FILESYSTEM_TOOL_NAMES
@@ -110,8 +110,11 @@ def test_shared_names_match_filesystem_tool_surface():
     assert set(next(t for t in tools if t.name == "write_file").args) == {"path", "content"}
 
 
+@pytest.mark.parametrize("filesystem_enabled", [False, True])
 @pytest.mark.parametrize("executor_type", [LocalSandboxExecutor, NativeSandboxExecutor, OpenSandboxExecutor])
-def test_shell_description_does_not_advertise_filesystem_helpers(executor_type, monkeypatch):
+def test_shell_description_only_removes_disabled_filesystem_helpers(
+    executor_type, filesystem_enabled, monkeypatch
+):
     """Render the actual shell tool description together with the split-execution note."""
     executor = executor_type()
     if isinstance(executor, OpenSandboxExecutor):
@@ -123,14 +126,20 @@ def test_shell_description_does_not_advertise_filesystem_helpers(executor_type, 
     plan = ExecutionPlan(
         requested_backend="local", python_backend="local", shell_backend="native", filesystem_backend="none"
     )
+    tools = executor.create_sandbox_tools()
+    original_description = tools[0].description
     rendered = _render(
-        tools=executor.create_sandbox_tools(),
-        enable_filesystem_tools=False,
+        tools=tools,
+        enable_filesystem_tools=filesystem_enabled,
         enable_shell_tool=True,
         special_instructions=split_execution_note(plan),
     )
     assert "run_command" in rendered
-    assert all(helper not in rendered for helper in FILESYSTEM_TOOL_NAMES)
+    assert tools[0].description == original_description
+    if filesystem_enabled:
+        assert original_description in rendered
+    else:
+        assert all(helper not in rendered for helper in FILESYSTEM_TOOL_NAMES)
 
 
 @pytest.mark.parametrize("shell", ["none", "local", "native", "opensandbox", "e2b"])
