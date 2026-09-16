@@ -3558,6 +3558,16 @@ async def generate_tool_guard_for_policy(
 _CUGA_LITE_SHELL_TOOLS: tuple[tuple[str, str], ...] = (
     ("run_command", "Run a shell command in the Cuga Lite workspace."),
 )
+_CUGA_LITE_FILESYSTEM_TOOLS: tuple[tuple[str, str], ...] = (
+    ("read_file", "Read a text file from the workspace."),
+    ("write_file", "Write a file in the workspace."),
+    ("edit_file", "Apply exact-text edits to a workspace file."),
+    ("list_files", "List files/directories in the workspace."),
+    ("make_directory", "Create a directory in the workspace."),
+    ("move_file", "Move or rename a workspace file/directory."),
+    ("search_files", "Recursively search the workspace by glob pattern."),
+    ("get_file_info", "Get metadata for a workspace file/directory."),
+)
 
 
 async def _runtime_tools_flags(agent_id: Optional[str], use_draft: bool) -> tuple[bool, bool]:
@@ -3669,14 +3679,8 @@ async def get_tools_list(
             if added:
                 apps_list.append({"name": "cuga_lite_shell", "type": "CUGA_LITE", "tool_count": added})
         if fs_on:
-            from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import (
-                FILESYSTEM_TOOL_DESCRIPTIONS,
-                FILESYSTEM_TOOL_NAMES,
-            )
-
             added = 0
-            for tool_name in FILESYSTEM_TOOL_NAMES:
-                descr = FILESYSTEM_TOOL_DESCRIPTIONS[tool_name]
+            for tool_name, descr in _CUGA_LITE_FILESYSTEM_TOOLS:
                 if tool_name not in existing_names:
                     tools_list.append(
                         {
