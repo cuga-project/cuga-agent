@@ -5,6 +5,7 @@ Prompt utilities for CugaLite - handles prompt creation and tool discovery.
 import functools
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from cuga.config import settings
@@ -793,25 +794,28 @@ def normalize_mcp_few_shot_examples(raw: Any) -> List[Dict[str, str]]:
 
 
 def drop_examples_using_absent_helpers(
-    examples: Optional[List[Dict[str, str]]], *, filesystem_enabled: bool
+    examples: Optional[List[Dict[str, str]]], *, filesystem_enabled: bool, shell_enabled: bool = True
 ) -> List[Dict[str, str]]:
-    """Remove few-shot turns that demonstrate helpers the executor will not inject.
+    """Drop the whole transcript if it calls an unavailable runtime helper.
 
-    A few-shot example is a demonstration the model imitates. Showing
-    ``await read_file(...)`` while the filesystem helpers are disabled teaches a
-    call that raises ``NameError`` at runtime, so those turns are dropped rather
-    than left to mislead.
+    Turns form a conversation: removing individual calls leaves orphaned outputs
+    and final answers claiming work that was never shown. Match complete helper
+    calls, so prose such as "do not use read_file" and longer tool names survive.
     """
-    if filesystem_enabled or not examples:
+    if not examples or (filesystem_enabled and shell_enabled):
         return list(examples or [])
-    absent = ("read_file", "write_file", "list_files")
-    kept = [ex for ex in examples if not any(name in str(ex.get("content", "")) for name in absent)]
-    if len(kept) != len(examples):
-        logger.debug(
-            "Dropped {} few-shot turn(s) demonstrating disabled filesystem helpers",
-            len(examples) - len(kept),
-        )
-    return kept
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import FILESYSTEM_TOOL_NAMES
+
+    absent = list(FILESYSTEM_TOOL_NAMES) if not filesystem_enabled else []
+    if not shell_enabled:
+        absent.append("run_command")
+    if examples and absent:
+        calls = re.compile(r"(?<![\w.])(?:" + "|".join(map(re.escape, absent)) + r")\s*\(")
+        if any(calls.search(str(ex.get("content", ""))) for ex in examples):
+            logger.debug("Dropped few-shot conversation demonstrating disabled runtime helpers")
+            return []
+    return list(examples or [])
 
 
 def create_mcp_prompt(
