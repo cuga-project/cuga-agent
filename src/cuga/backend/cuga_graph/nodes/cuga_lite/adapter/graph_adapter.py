@@ -18,6 +18,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     EXECUTION_OUTPUT_PREFIX,
+    NL_AUTO_CONTINUE_STREAK_KEY,
     CoreGraphAdapter,
 )
 from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
@@ -214,11 +215,17 @@ class AgentGraphAdapter(CoreGraphAdapter):
         """Bool as in the base contract; a non-empty ``str`` means "continue, and
         use this text as the synthetic user message" (unverified-blocker retry,
         issue #610). ``autonomous`` (#445) makes the LLM classifier's verdict on
-        ask-user / deferral text mode-aware — see ``CLASSIFIER_SYSTEM_PROMPT``."""
+        ask-user / deferral text mode-aware — see ``AUTONOMOUS_CLASSIFIER_SYSTEM_PROMPT``."""
+        meta = self.get_metadata(state)
+        task = (getattr(state, "sub_task", None) or "").strip() or (
+            _first_user_message_text(self.get_messages(state)) or ""
+        )
         evidence = BlockedClaimEvidence(
             tools_available=bool(self._tools_context),
             code_executed=self._any_execution_ran(state),
-            retry_used=bool(self.get_metadata(state).get("_blocked_claim_retry")),
+            retry_used=bool(meta.get("_blocked_claim_retry")),
+            task=task,
+            nl_streak=int(meta.get(NL_AUTO_CONTINUE_STREAK_KEY) or 0),
         )
         decision = await classify_nl_auto_continue_decision(
             model, content, reasoning, evidence=evidence, autonomous=autonomous

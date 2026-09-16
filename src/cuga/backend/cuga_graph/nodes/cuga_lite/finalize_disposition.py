@@ -3,8 +3,8 @@
 Only the planning-text fast-path (pre-existing, from #416) is deterministic
 here. Ask-user and deferral routing is left entirely to the mode-aware LLM
 classifier (``classify_nl_auto_continue_decision`` in
-``nl_auto_continue_classifier.py`` — see its ``CLASSIFIER_SYSTEM_PROMPT``
-"Session mode" line).
+``nl_auto_continue_classifier.py`` — in autonomous mode it answers five
+factual questions and ``decide_autonomous`` applies the policy).
 
 A deterministic deferral regex (``_DEFERRAL_RE`` / ``looks_like_autonomous_
 deferral``) shipped in an earlier revision of this PR and was removed after
