@@ -96,6 +96,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# acp-sdk 1.0.3 references uvicorn.config.LoopSetupType, removed in uvicorn 0.36.0.
+# No newer acp-sdk<2 release fixes this; cap uvicorn at <0.36 for the ACP extra.
+# Compatible combination: acp-sdk==1.0.3, uvicorn==0.35.0.
+acp = ["acp-sdk>=1.0.3,<2; python_version >= '3.11'", "uvicorn<0.36; python_version >= '3.11'"]
 evaluation = ["rapidfuzz"]
 e2b = ["e2b-code-interpreter>=2.4.1"]
 knowledge = []  # knowledge is now built-in, no extra dependencies needed

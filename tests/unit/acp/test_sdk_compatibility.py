@@ -38,11 +38,39 @@ def test_memory_store_construction() -> None:
 
 @pytest.mark.unit
 def test_create_app_returns_fastapi_app() -> None:
-    """create_app with a minimal decorated echo agent must return a FastAPI app."""
+    """create_app with a minimal echo AgentManifest must return a FastAPI app."""
+    from typing import Any, AsyncGenerator
+
     from fastapi import FastAPI
 
-    @create_app()
-    async def echo_agent(input: Message) -> Message:  # noqa: A002
-        return input
+    from acp_sdk.models import AgentName
+    from acp_sdk.server import AgentManifest
 
-    assert isinstance(echo_agent, FastAPI)
+    class _EchoAgent(AgentManifest):
+        @property
+        def name(self) -> AgentName:
+            return AgentName("echo")
+
+        @property
+        def description(self) -> str:
+            return "Echo agent"
+
+        @property
+        def input_content_types(self) -> list[str]:
+            return ["text/plain"]
+
+        @property
+        def output_content_types(self) -> list[str]:
+            return ["text/plain"]
+
+        async def run(
+            self,
+            input: list[Message],  # noqa: A002
+            context: Any,
+        ) -> AsyncGenerator[Any, Any]:
+            for msg in input:
+                yield msg
+
+    store = MemoryStore(limit=10, ttl=timedelta(seconds=60))
+    app = create_app(_EchoAgent(), store=store)
+    assert isinstance(app, FastAPI)
