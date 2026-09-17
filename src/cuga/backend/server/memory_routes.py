@@ -17,6 +17,7 @@ from cuga.backend.evolve.memory_store import (
 from cuga.backend.server.auth import require_chat_access, require_manage_access
 from cuga.backend.server.auth.models import UserInfo
 from cuga.config import get_service_instance_id
+from cuga.backend.server.evolve_native_routes import MemoryServiceRoute, router as native_router
 
 
 def require_evolve_memory() -> None:
@@ -26,6 +27,7 @@ def require_evolve_memory() -> None:
 
 router = APIRouter(
     prefix="/api",
+    route_class=MemoryServiceRoute,
     tags=["memory"],
     dependencies=[Depends(require_evolve_memory)],
 )
@@ -55,13 +57,6 @@ class MemoryMetadataPatchRequest(BaseModel):
 
 class MemoryAccessRequest(BaseModel):
     entity_ids: list[str] = Field(min_length=1, max_length=200)
-
-
-class RetentionRunRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    policy_id: str = Field(min_length=1, max_length=128)
-    scan_limit: Optional[int] = Field(default=None, ge=1, le=100_000)
 
 
 def _user_id(current_user: Optional[UserInfo]) -> str:
@@ -472,7 +467,7 @@ async def get_user_memory_retention(
     return JSONResponse(retention_capabilities(status or {}))
 
 
-@router.get("/manage/memory/retention")
+@router.get("/manage/retention")
 async def get_admin_memory_retention(
     current_user: Optional[UserInfo] = Depends(require_manage_access),
 ):
@@ -482,17 +477,7 @@ async def get_admin_memory_retention(
     return JSONResponse(retention_capabilities(status or {}))
 
 
-@router.get("/manage/memory/retention/policies")
-async def list_admin_retention_policies(
-    current_user: Optional[UserInfo] = Depends(require_manage_access),
-):
-    from cuga.backend.evolve.retention import project_retention_policy
-
-    policies = await _retention_policies()
-    return JSONResponse({"items": [project_retention_policy(policy) for policy in policies]})
-
-
-@router.post("/manage/memory/retention/validate")
+@router.post("/manage/retention/validate")
 async def validate_admin_retention_policy(
     current_user: Optional[UserInfo] = Depends(require_manage_access),
 ):
@@ -504,64 +489,6 @@ async def validate_admin_retention_policy(
     )
     return JSONResponse(
         {key: result[key] for key in ("valid", "errors", "warnings", "normalized_policy") if key in result}
-    )
-
-
-def _retention_report_response(report: dict) -> dict:
-    from pydantic import ValidationError
-
-    from cuga.backend.evolve.retention import project_retention_report
-
-    try:
-        return project_retention_report(report)
-    except ValidationError:
-        raise HTTPException(status_code=502, detail="Evolve returned an invalid retention report") from None
-
-
-@router.post("/manage/memory/retention/runs")
-async def run_admin_memory_retention(
-    body: RetentionRunRequest,
-    current_user: Optional[UserInfo] = Depends(require_manage_access),
-):
-    from cuga.backend.evolve.retention import DEFAULT_RETENTION_POLICY_ID
-
-    if body.policy_id == DEFAULT_RETENTION_POLICY_ID:
-        await _retention_policies()
-    result = _memory_result(
-        await EvolveIntegration.run_retention(
-            body.policy_id,
-            scan_limit=body.scan_limit,
-            namespace_id=_namespace_id(),
-            initiated_by=_user_id(current_user),
-        )
-    )
-    return JSONResponse(_retention_report_response(result))
-
-
-@router.get("/manage/memory/retention/runs")
-async def list_admin_memory_retention_runs(
-    limit: int = Query(default=50, ge=1, le=200),
-    current_user: Optional[UserInfo] = Depends(require_manage_access),
-):
-    result = _memory_result(
-        await EvolveIntegration.list_retention_runs(
-            namespace_id=_namespace_id(),
-            limit=limit,
-        )
-    )
-    rows = [row for row in result.get("items", []) if isinstance(row, dict)]
-    return JSONResponse(
-        {
-            "items": [
-                {
-                    key: row[key]
-                    for key in ("run_id", "policy_id", "initiated_by", "status", "created_at")
-                    if key in row
-                }
-                | {"report": _retention_report_response(row.get("report", {}))}
-                for row in rows
-            ]
-        }
     )
 
 
@@ -585,81 +512,13 @@ async def _require_durable_retention() -> None:
         )
 
 
-@router.get("/manage/memory/retention/candidates")
-async def list_retention_candidates(current_user: Optional[UserInfo] = Depends(require_manage_access)):
-    await _require_durable_retention()
-    return _memory_result(
-        await EvolveIntegration._call_structured_tool(
-            "list_retention_candidates", {"namespace_id": _namespace_id(), "limit": 1000}
-        )
-    )
-
-
-@router.get("/manage/memory/retention/audit")
-async def list_retention_audit(current_user: Optional[UserInfo] = Depends(require_manage_access)):
-    await _require_durable_retention()
-    return _memory_result(
-        await EvolveIntegration._call_structured_tool(
-            "list_retention_audit", {"namespace_id": _namespace_id(), "limit": 1000}
-        )
-    )
-
-
-@router.post("/manage/memory/retention/policies/{policy_id}/mark")
-async def mark_retention(policy_id: str, current_user: Optional[UserInfo] = Depends(require_manage_access)):
-    await _require_durable_retention()
-    await _retention_policies()
-    return _memory_result(
-        await EvolveIntegration._call_structured_tool(
-            "mark_retention",
-            {"namespace_id": _namespace_id(), "policy_id": policy_id, "initiated_by": _user_id(current_user)},
-        )
-    )
-
-
-@router.post("/manage/memory/retention/policies/{policy_id}/sweep")
-async def sweep_retention(policy_id: str, current_user: Optional[UserInfo] = Depends(require_manage_access)):
-    await _require_durable_retention()
-    return _memory_result(
-        await EvolveIntegration._call_structured_tool(
-            "sweep_retention",
-            {"namespace_id": _namespace_id(), "policy_id": policy_id, "initiated_by": _user_id(current_user)},
-        )
-    )
-
-
-class RetentionScheduleWrite(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    policy_id: str = Field(min_length=1, max_length=128)
-    spec: dict[str, Any]
-    expected_revision: int = Field(default=0, ge=0)
-
-
-class RetentionScheduleRevision(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    expected_revision: int = Field(ge=1)
-
-
 class RetentionSchedulePreview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     spec: dict[str, Any]
 
 
-async def _schedule_call(tool: str, **arguments: Any) -> dict:
-    return _memory_result(
-        await EvolveIntegration._call_structured_tool(tool, {**arguments, "namespace_id": _namespace_id()})
-    )
-
-
-@router.get("/manage/memory/retention/schedules")
-async def list_retention_schedules(current_user: Optional[UserInfo] = Depends(require_manage_access)):
-    return JSONResponse(await _schedule_call("list_retention_schedules"))
-
-
-@router.post("/manage/memory/retention/schedules/preview")
+@router.post("/manage/retention/schedules/preview")
 async def preview_retention_schedule(
     body: RetentionSchedulePreview,
     current_user: Optional[UserInfo] = Depends(require_manage_access),
@@ -688,75 +547,6 @@ async def preview_retention_schedule(
     return JSONResponse({"next_runs": occurrences, "timeZone": spec.timeZone, "suspended": spec.suspend})
 
 
-@router.get("/manage/memory/retention/schedules/{schedule_id}")
-async def get_retention_schedule(
-    schedule_id: str,
-    current_user: Optional[UserInfo] = Depends(require_manage_access),
-):
-    return JSONResponse(await _schedule_call("get_retention_schedule", schedule_id=schedule_id))
-
-
-@router.put("/manage/memory/retention/schedules/{schedule_id}")
-async def save_retention_schedule(
-    schedule_id: str,
-    body: RetentionScheduleWrite,
-    current_user: Optional[UserInfo] = Depends(require_manage_access),
-):
-    if body.policy_id == "cuga-standard":
-        await _retention_policies()
-    return JSONResponse(
-        await _schedule_call(
-            "put_retention_schedule",
-            schedule_id=schedule_id,
-            definition={"policy_id": body.policy_id, "spec": body.spec, "dry_run": False, "agent_id": None},
-            expected_revision=body.expected_revision,
-            initiated_by=_user_id(current_user),
-        )
-    )
-
-
-@router.post("/manage/memory/retention/schedules/{schedule_id}/start")
-async def start_retention_schedule(
-    schedule_id: str,
-    body: RetentionScheduleRevision,
-    current_user: Optional[UserInfo] = Depends(require_manage_access),
-):
-    return JSONResponse(
-        await _schedule_call(
-            "start_retention_schedule",
-            schedule_id=schedule_id,
-            expected_revision=body.expected_revision,
-            initiated_by=_user_id(current_user),
-        )
-    )
-
-
-@router.post("/manage/memory/retention/schedules/{schedule_id}/stop")
-async def stop_retention_schedule(
-    schedule_id: str,
-    body: RetentionScheduleRevision,
-    current_user: Optional[UserInfo] = Depends(require_manage_access),
-):
-    return JSONResponse(
-        await _schedule_call(
-            "stop_retention_schedule",
-            schedule_id=schedule_id,
-            expected_revision=body.expected_revision,
-            initiated_by=_user_id(current_user),
-        )
-    )
-
-
-@router.delete("/manage/memory/retention/schedules/{schedule_id}")
-async def delete_retention_schedule(
-    schedule_id: str,
-    expected_revision: int = Query(ge=1),
-    current_user: Optional[UserInfo] = Depends(require_manage_access),
-):
-    return JSONResponse(
-        await _schedule_call(
-            "delete_retention_schedule",
-            schedule_id=schedule_id,
-            expected_revision=expected_revision,
-        )
-    )
+# Generic retention operations are owned by Evolve's native router.
+# This router already includes /api, so mount without the outer prefix.
+router.routes.extend(native_router.routes)
