@@ -1167,6 +1167,27 @@ This flow is:
 - **Non-blocking** - Evolve failures do not fail the task
 - **Optional integration** - install `cuga[evolve]` if you want the upstream Evolve package available locally, or let `uvx` fetch it on demand
 
+### Airgapped container deployment
+
+Build `Dockerfile.ubi` while connected, then transfer the resulting image into your
+isolated environment. The build installs Evolve and preloads the default Evolve
+MiniLM embeddings, FastEmbed embeddings, Docling layout/table/OCR models (including
+EasyOCR), and all registered tiktoken encodings. Required download failures abort
+the build. A final `RUN --network=none` loads the cached models and launches
+Chromium as the runtime user, so missing assets fail before publication.
+
+In the container, configure the Evolve MCP command as `/app/.venv/bin/evolve-mcp`
+with no package-launcher arguments. Do not use `uvx --from altk-evolve`: that creates
+a separate environment instead of using the installed package. The image enables
+`UV_OFFLINE`, `HF_HUB_OFFLINE`, and `TRANSFORMERS_OFFLINE` and uses a bundled LiteLLM
+cost map. Model caches live under `/app/.cache`, and Playwright under `/app/.playwright`.
+
+Connect your LLM, database, and other services to endpoints available inside the
+isolated network. Custom embedding models, optional Evolve `sbert_large` consistency
+models, optional Docling enrichment/VLM models, and user-added MCP tools are not
+covered by the default asset set; preload/install those in a derived image before
+enabling them. Runtime configuration cannot download new models in offline mode.
+
 ### Setup Steps:
 
 1. Choose how Evolve will be started.
@@ -1179,6 +1200,7 @@ This flow is:
    Important: this command starts Evolve in `stdio` mode through the upstream Evolve package. It is intended to be launched by the CUGA registry, not run manually in a separate terminal.
    Alternative for standalone/manual debugging: run Evolve yourself as an SSE server:
    If you run Evolve from a checked-out `altk-evolve` repo instead of `uvx`, install the Postgres extras first with `uv sync --extra pgvector`.
+
 2. Add these environment values in the MCP tool UI:
 
 ```env

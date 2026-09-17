@@ -27,11 +27,21 @@ def test_preload_docling_downloads_onnx_layout_model(tmp_path: Path, monkeypatch
         output_dir=tmp_path,
         with_code_formula=False,
         with_picture_classifier=False,
+        with_easyocr=True,
     )
     mock_download_hf.assert_called_once_with(
         repo_id=onnx_repo,
         local_dir=tmp_path / onnx_repo.replace("/", "--"),
     )
+
+
+@pytest.mark.unit
+def test_preload_docling_fails_build_when_download_fails() -> None:
+    from scripts.preload_models import preload_docling
+
+    with patch("docling.utils.model_downloader.download_models", side_effect=RuntimeError("download failed")):
+        with pytest.raises(RuntimeError, match="download failed"):
+            preload_docling()
 
 
 def _required_layout_repo_ids_for_cuga() -> set[str]:

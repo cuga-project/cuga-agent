@@ -11,6 +11,10 @@ ENV PATH="/usr/local/bin:$PATH"
 USER root
 WORKDIR /app
 
+# EasyOCR imports OpenCV while downloading weights; its native libraries must
+# be available in the builder as well as the runtime image.
+RUN microdnf install -y mesa-libGL libxcb glib2 libXext libSM libXrender && microdnf clean all
+
 COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 COPY docs/ ./docs/
@@ -33,7 +37,9 @@ RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright uv run --no-sync playwright instal
 # Pinned to /app/.cache so paths survive the multi-stage copy and match runtime ENV below.
 ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
     DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
-    HF_HOME=/app/.cache/huggingface
+    HF_HOME=/app/.cache/huggingface \
+    TIKTOKEN_CACHE_DIR=/app/.cache/tiktoken \
+    LITELLM_LOCAL_MODEL_COST_MAP=True
 RUN uv run --no-sync python src/scripts/preload_models.py
 
 # Remove Python bytecode cache — regenerated on first run, adds nothing at build time
@@ -77,7 +83,7 @@ RUN microdnf install -y \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uvx /usr/local/bin/uvx
 
-ENV PATH="/usr/local/bin:$PATH"
+ENV PATH="/app/.venv/bin:/usr/local/bin:$PATH"
 
 WORKDIR /app
 
@@ -121,7 +127,14 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
 ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
     DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
     HF_HOME=/app/.cache/huggingface \
-    HF_HUB_OFFLINE=1
+    TIKTOKEN_CACHE_DIR=/app/.cache/tiktoken \
+    LITELLM_LOCAL_MODEL_COST_MAP=True \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    UV_OFFLINE=1
+
+# Exercise the copied assets as the runtime user without network access.
+RUN --network=none /app/.venv/bin/python /app/src/scripts/verify_airgap.py
 
 ENTRYPOINT ["/bin/sh", "/app/scripts/docker-entrypoint.sh"]
 CMD []
