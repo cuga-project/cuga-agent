@@ -14,7 +14,7 @@ import aiohttp
 from loguru import logger
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
-from cuga.config import settings
+from cuga.config import get_service_instance_id, settings
 
 # Placeholder user identifiers that must not reach Evolve as real users:
 # "default" is AgentState.user_id's default; "default_user" is the server's
@@ -346,6 +346,102 @@ class EvolveIntegration:
         return await cls._call_structured_tool("record_access", args)
 
     @classmethod
+    async def validate_retention_policy(cls, policy: dict[str, Any]) -> Optional[dict]:
+        """Validate and normalize an Evolve retention policy."""
+        return await cls._call_structured_tool(
+            "validate_retention_policy",
+            {"policy": json.dumps(policy)},
+        )
+
+    @classmethod
+    async def put_retention_policy(
+        cls,
+        policy_id: str,
+        name: str,
+        policy: dict[str, Any],
+        *,
+        description: Optional[str] = None,
+        enabled: bool = True,
+        namespace_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Create or replace an Evolve-owned retention policy."""
+        args: dict[str, Any] = {
+            "policy_id": policy_id,
+            "name": name,
+            "policy": json.dumps(policy),
+            "enabled": enabled,
+        }
+        optional = {
+            "description": description,
+            "namespace_id": normalize_evolve_identifier(namespace_id),
+        }
+        args.update({key: value for key, value in optional.items() if value is not None})
+        return await cls._call_structured_tool("put_retention_policy", args)
+
+    @classmethod
+    async def list_retention_policies(
+        cls,
+        *,
+        namespace_id: Optional[str] = None,
+        include_disabled: bool = False,
+    ) -> Optional[dict]:
+        """List Evolve-owned retention policies for a namespace."""
+        args: dict[str, Any] = {"include_disabled": include_disabled}
+        namespace_id = normalize_evolve_identifier(namespace_id)
+        if namespace_id:
+            args["namespace_id"] = namespace_id
+        return await cls._call_structured_tool("list_retention_policies", args)
+
+    @classmethod
+    async def run_retention(
+        cls,
+        policy_id: str,
+        *,
+        scan_limit: Optional[int] = None,
+        run_id: Optional[str] = None,
+        namespace_id: Optional[str] = None,
+        initiated_by: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Run an Evolve-owned policy and return its persisted report."""
+        args: dict[str, Any] = {"policy_id": policy_id, "dry_run": False}
+        optional = {
+            "scan_limit": scan_limit,
+            "run_id": run_id,
+            "namespace_id": normalize_evolve_identifier(namespace_id),
+            "initiated_by": normalize_evolve_identifier(initiated_by),
+        }
+        args.update({key: value for key, value in optional.items() if value is not None})
+        return await cls._call_structured_tool("run_retention", args)
+
+    @classmethod
+    async def list_retention_runs(
+        cls,
+        *,
+        agent_id: Optional[str] = None,
+        policy_id: Optional[str] = None,
+        namespace_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> Optional[dict]:
+        """List Evolve-owned retention run history."""
+        args: dict[str, Any] = {"limit": limit}
+        optional = {
+            "agent_id": normalize_evolve_identifier(agent_id),
+            "policy_id": policy_id,
+            "namespace_id": normalize_evolve_identifier(namespace_id),
+        }
+        args.update({key: value for key, value in optional.items() if value is not None})
+        return await cls._call_structured_tool("list_retention_runs", args)
+
+    @classmethod
+    async def get_compliance_status(cls, namespace_id: Optional[str] = None) -> Optional[dict]:
+        """Return Evolve backend, retention, and protection-hook health."""
+        args: dict[str, Any] = {}
+        namespace_id = normalize_evolve_identifier(namespace_id)
+        if namespace_id:
+            args["namespace_id"] = namespace_id
+        return await cls._call_structured_tool("get_compliance_status", args)
+
+    @classmethod
     async def _call_structured_tool(
         cls,
         tool_name: str,
@@ -384,6 +480,11 @@ class EvolveIntegration:
     @classmethod
     async def _call_tool(cls, tool_name: str, args: dict):
         """Call an Evolve MCP tool via the registry or direct SSE."""
+        if tool_name != "validate_retention_policy":
+            namespace_id = get_service_instance_id().strip()
+            if not namespace_id:
+                raise ValueError("Evolve requires a configured service instance ID")
+            args = {**args, "namespace_id": namespace_id}
         mode = cls._get_mode()
         registry_enabled = bool(getattr(settings.advanced_features, "registry", False))
 
