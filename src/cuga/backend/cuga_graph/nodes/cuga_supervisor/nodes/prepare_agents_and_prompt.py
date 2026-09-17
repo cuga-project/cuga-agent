@@ -150,13 +150,41 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
 
         for agent_name, agent_or_config in adapter._agents.items():
             agent_card = None
+            acp_manifest = None
             if isinstance(agent_or_config, CugaAgent):
                 agent_type = "internal"
                 description = getattr(agent_or_config, "description", f"Internal agent: {agent_name}")
             elif isinstance(agent_or_config, dict):
                 agent_type = agent_or_config.get("type", "external")
-                a2a_cfg = agent_or_config.get("config", {}).get("a2a_protocol", {})
-                if agent_type == "external" and HAS_A2A_SDK and a2a_cfg.get("transport") == "http":
+                agent_config = agent_or_config.get("config", {})
+                acp_cfg = agent_config.get("acp_protocol", {})
+                a2a_cfg = agent_config.get("a2a_protocol", {})
+                if agent_type == "external" and acp_cfg.get("endpoint"):
+                    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
+                        HAS_ACP_SDK,
+                        fetch_agent_manifest,
+                        format_manifest_for_prompt,
+                    )
+
+                    if HAS_ACP_SDK:
+                        remote_agent_name = acp_cfg.get("agent_name", agent_name)
+                        try:
+                            acp_manifest = await fetch_agent_manifest(
+                                endpoint=acp_cfg["endpoint"],
+                                agent_name=remote_agent_name,
+                                auth=acp_cfg.get("auth"),
+                                timeout=float(acp_cfg.get("timeout", 30)),
+                                verify_tls=bool(acp_cfg.get("verify_tls", True)),
+                            )
+                            description = format_manifest_for_prompt(acp_manifest)
+                        except Exception as exc:
+                            logger.warning(
+                                f"ACP manifest discovery failed for {agent_name}: {type(exc).__name__}"
+                            )
+                            description = agent_or_config.get("description", f"External agent: {agent_name}")
+                    else:
+                        description = agent_or_config.get("description", f"External agent: {agent_name}")
+                elif agent_type == "external" and HAS_A2A_SDK and a2a_cfg.get("transport") == "http":
                     endpoint = a2a_cfg.get("endpoint")
                     if endpoint:
                         try:
@@ -188,8 +216,17 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
             )
             adapter._agent_tools_context[tool_name] = tool_func
 
+            is_acp_agent = acp_manifest is not None
             is_a2a_agent = agent_card is not None
-            if is_a2a_agent and pass_variables_a2a:
+            if is_acp_agent:
+                tool_info = {
+                    "name": tool_name,
+                    "description": f"Delegate a task to {agent_name}. {description}",
+                    "params_str": "task: str",
+                    "params_doc": f"- task (str): The task description to send to {agent_name}.",
+                    "response_doc": f"Returns the result from {agent_name}.",
+                }
+            elif is_a2a_agent and pass_variables_a2a:
                 tool_info = {
                     "name": tool_name,
                     "description": (

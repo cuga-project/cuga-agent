@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 from acp_sdk.client import Client
-from acp_sdk.models import RunStatus
+from acp_sdk.models import AgentManifest, RunStatus
 from acp_sdk.models.errors import ACPError
 from loguru import logger
 
@@ -32,6 +32,84 @@ _TERMINAL_STATUSES = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED
 
 # Statuses that require us to keep polling.
 _PENDING_STATUSES = {RunStatus.CREATED, RunStatus.IN_PROGRESS, RunStatus.CANCELLING}
+
+# ---------------------------------------------------------------------------
+# Manifest helpers
+# ---------------------------------------------------------------------------
+
+HAS_ACP_SDK = True
+
+
+def format_manifest_for_prompt(manifest: "AgentManifest") -> str:
+    """Render an ACP AgentManifest as a compact description for the supervisor prompt.
+
+    Uses name, description, and input/output content types.
+    """
+    parts: list[str] = []
+    name = getattr(manifest, "name", None)
+    if name:
+        parts.append(str(name))
+    description = getattr(manifest, "description", None)
+    if description:
+        parts.append(str(description))
+    input_types = getattr(manifest, "input_content_types", None) or []
+    output_types = getattr(manifest, "output_content_types", None) or []
+    if input_types:
+        parts.append(f"Accepts: {', '.join(input_types)}")
+    if output_types:
+        parts.append(f"Returns: {', '.join(output_types)}")
+    return " | ".join(parts) if parts else "ACP agent"
+
+
+async def fetch_agent_manifest(
+    endpoint: str,
+    agent_name: str,
+    auth: Mapping[str, Any] | None = None,
+    timeout: float = 30.0,
+    verify_tls: bool = True,
+    client_factory: Callable[..., Client] = Client,
+) -> "AgentManifest":
+    """Fetch the ACP AgentManifest for *agent_name* from *endpoint*.
+
+    Parameters
+    ----------
+    endpoint:
+        Base URL of the remote ACP server.
+    agent_name:
+        Name of the agent whose manifest to retrieve.
+    auth:
+        Optional bearer-token auth mapping (same shape accepted by
+        :func:`delegate_task_via_acp`).
+    timeout:
+        HTTP timeout in seconds.
+    verify_tls:
+        Passed through to the underlying HTTP client.
+    client_factory:
+        Callable that returns an ACP Client context-manager; injectable for
+        testing.
+    """
+    headers: dict[str, str] = {}
+    token: str | None = None
+    if auth is not None:
+        if auth.get("type") == "bearer":
+            if auth.get("token"):
+                token = str(auth["token"])
+            elif auth.get("token_env_var"):
+                token = os.environ.get(str(auth["token_env_var"]))
+    else:
+        token = os.environ.get("ACP_AUTH_TOKEN") or None
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    client = client_factory(
+        base_url=endpoint,
+        headers=headers,
+        timeout=min(timeout, _HTTP_REQUEST_TIMEOUT),
+        verify=verify_tls,
+        follow_redirects=False,
+    )
+    async with client:
+        return await client.agent(name=agent_name)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
