@@ -12,32 +12,47 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
-import httpx
-from acp_sdk.client import Client
-from acp_sdk.models import AgentManifest, RunStatus
-from acp_sdk.models.errors import ACPError
 from loguru import logger
 
+# ---------------------------------------------------------------------------
+# SDK availability guard — mirrors the a2a_protocol.py pattern.
+# Users without cuga[acp] installed must be able to import this module
+# safely; the SDK symbols are only required when an ACP agent is configured.
+# ---------------------------------------------------------------------------
+
+try:
+    import httpx
+    from acp_sdk.client import Client
+    from acp_sdk.models import AgentManifest, RunStatus
+    from acp_sdk.models.errors import ACPError
+
+    HAS_ACP_SDK = True
+except ImportError:
+    HAS_ACP_SDK = False
+    Client = None  # type: ignore[assignment,misc]
+    AgentManifest = None  # type: ignore[assignment,misc]
+    RunStatus = None  # type: ignore[assignment,misc]
+    ACPError = None  # type: ignore[assignment,misc]
+    httpx = None  # type: ignore[assignment]
+
 # ──────────────────────────────────────────────────────────────────────────────
-# Constants
+# Constants (defined lazily to avoid NameError when SDK absent)
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Maximum per-request HTTP timeout we ever pass to the SDK client.  The
-# outer poll loop is bounded by the caller-supplied *timeout* parameter;
-# individual HTTP calls use a smaller cap so they can't block a cancellation.
+# Maximum per-request HTTP timeout we ever pass to the SDK client.
 _HTTP_REQUEST_TIMEOUT = 10.0
 
-# Terminal statuses — we stop polling immediately upon reaching any of these.
-_TERMINAL_STATUSES = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
+# Terminal and pending statuses — populated only when SDK is available.
+_TERMINAL_STATUSES: set = set()
+_PENDING_STATUSES: set = set()
 
-# Statuses that require us to keep polling.
-_PENDING_STATUSES = {RunStatus.CREATED, RunStatus.IN_PROGRESS, RunStatus.CANCELLING}
+if HAS_ACP_SDK and RunStatus is not None:
+    _TERMINAL_STATUSES = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
+    _PENDING_STATUSES = {RunStatus.CREATED, RunStatus.IN_PROGRESS, RunStatus.CANCELLING}
 
 # ---------------------------------------------------------------------------
 # Manifest helpers
 # ---------------------------------------------------------------------------
-
-HAS_ACP_SDK = True
 
 
 def format_manifest_for_prompt(manifest: "AgentManifest") -> str:
