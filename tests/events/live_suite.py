@@ -47,6 +47,7 @@ from live_e2e import (  # noqa: E402
     env,
     flow_alive,
     gw_headers,
+    hook_path,
     http,
     srv,
 )
@@ -739,7 +740,7 @@ def phase_push(r: Report, ap_live: bool, conn: dict, created: list):
     # generic inbound webhook — direct, no AP
     code, rep = srv(
         "POST",
-        "/api/events/hook/monitoring",
+        hook_path("monitoring"),
         {"alert": "HighCPU", "service": "checkout-api", "value": "97%", "threshold": "85%"},
         timeout=240,
     )
