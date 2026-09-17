@@ -22,12 +22,10 @@ pytestmark = pytest.mark.unit
         "List my accounts and count them.",
     ],
 )
-@pytest.mark.parametrize("enabled", [None, False])
+@pytest.mark.parametrize("enabled", [True, False])
 async def test_planning_reply_continues_before_final_answer(monkeypatch, reply, enabled):
-    # None deliberately uses the shipped default: the CI failures happened with
-    # this feature disabled, before the classifier or any tool could run.
-    if enabled is not None:
-        monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", enabled)
+    # Exercise the opt-in and opt-out explicitly without changing the shipped default.
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", enabled)
     monkeypatch.setattr(settings.policy, "enabled", False)
     monkeypatch.setattr(
         shared_nodes,
