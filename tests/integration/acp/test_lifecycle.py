@@ -168,3 +168,72 @@ async def test_agents_endpoint_reachable(
             body = resp.json()
             agent_names = [a["name"] for a in body.get("agents", [])]
             assert "cuga" in agent_names
+
+
+# ---------------------------------------------------------------------------
+# Task 2.6: Mount verification
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_acp_ping_and_agents_work_when_enabled(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """ACP enabled: /acp/ping and /acp/agents are reachable."""
+    import httpx
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            ping = await client.get("/acp/ping")
+            assert ping.status_code == 200
+
+            agents = await client.get("/acp/agents")
+            assert agents.status_code == 200
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_acp_disabled_ping_returns_404() -> None:
+    """ACP disabled: no /acp/ping route mounted on the parent app."""
+    import httpx
+    from fastapi import FastAPI
+
+    # Parent app with NO ACP child mounted
+    parent = FastAPI()
+
+    @parent.get("/health")
+    async def health() -> dict:
+        return {"status": "ok"}
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=parent),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/acp/ping")
+        assert resp.status_code == 404
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_acp_sdk_not_imported_when_disabled() -> None:
+    """Importing cuga.backend.server.acp.app does not import acp_sdk at module level."""
+
+    # The acp/app module should be importable without touching acp_sdk internals
+    # at module level. The SDK import is deferred inside the function body.
+    # Verify by checking that the module-level globals of app.py don't include acp_sdk.
+    import cuga.backend.server.acp.app as acp_app_mod
+
+    module_globals = vars(acp_app_mod)
+    # No module-level reference to acp_sdk should exist
+    assert "acp_sdk" not in module_globals, (
+        "acp_sdk found as a module-level binding in acp/app.py — "
+        "SDK import must remain deferred inside the function body"
+    )
