@@ -216,7 +216,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
             )
             adapter._agent_tools_context[tool_name] = tool_func
 
-            is_acp_agent = acp_manifest is not None
+            is_acp_agent = bool(acp_cfg.get("endpoint"))
             is_a2a_agent = agent_card is not None
             if is_acp_agent:
                 tool_info = {

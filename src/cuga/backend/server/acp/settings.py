@@ -9,6 +9,7 @@ lazily inside the enabled branch.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 _RESERVED_PREFIXES: frozenset[str] = frozenset(
@@ -49,11 +50,15 @@ def normalize_acp_settings(raw: object) -> ACPSettings:  # noqa: PLR0912
     auth_required: bool = bool(getattr(raw, "auth_required", True))
     enable_playground_cors: bool = bool(getattr(raw, "enable_playground_cors", False))
 
-    # Validate agent name (non-empty string with no whitespace)
-    if not agent_name or not agent_name.strip():
+    # Validate agent_name: RFC 1123 DNS-label (lowercase alphanumeric and hyphens,
+    # no leading/trailing hyphens, 1–63 characters).
+    if not agent_name:
         raise ValueError("acp.agent_name must be a non-empty string")
-    if agent_name != agent_name.strip():
-        raise ValueError("acp.agent_name must not have leading or trailing whitespace")
+    if not re.match(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", agent_name):
+        raise ValueError(
+            "acp.agent_name must be a valid RFC 1123 DNS label: lowercase alphanumeric "
+            "and hyphens only, no leading/trailing hyphens, 1–63 characters"
+        )
 
     # Normalize path prefix
     raw_prefix: str = str(getattr(raw, "path_prefix", "/acp"))

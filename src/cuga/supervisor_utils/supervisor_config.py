@@ -460,7 +460,3 @@ def _validate_acp_protocol(agent_name: str, acp_cfg: Dict[str, Any]) -> None:
 
     # Default verify_tls=True
     acp_cfg.setdefault("verify_tls", True)
-
-    # Exactly one enabled protocol block: if both acp_protocol and a2a_protocol are
-    # enabled on the same entry the caller (build_agents_from_list) already picks
-    # acp_protocol first via the if/elif chain, but we still guard the presence of both.
