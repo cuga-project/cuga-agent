@@ -15,7 +15,7 @@ from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.cuga_graph.utils.nodes_names import NodeNames, ActionIds
 from langchain_core.messages import HumanMessage
 from cuga.backend.llm.utils.helpers import load_one_prompt
-from cuga.config import settings
+from cuga.config import get_service_instance_id, settings
 from cuga.backend.cuga_graph.policy.models import PolicyDecisionOutcome
 from cuga.backend.cuga_graph.policy.observability import (
     append_policy_decisions,
@@ -404,7 +404,7 @@ class CugaLiteNode(BaseNode):
             success = not (self._has_error(state.final_answer or "") or bool(state_error))
             messages_snapshot = list(state.chat_messages)
             _evolve_user_id = normalize_evolve_identifier(state.user_id)
-            _evolve_namespace_id = (state.service_scope or {}).get("tenant_id") or None
+            _evolve_namespace_id = get_service_instance_id() or None
             _evolve_session_id = state.thread_id or None
             if settings.evolve.async_save:
                 task = _asyncio.create_task(
@@ -414,6 +414,7 @@ class CugaLiteNode(BaseNode):
                         success,
                         user_id=_evolve_user_id,
                         namespace_id=_evolve_namespace_id,
+                        agent_id=(state.service_scope or {}).get("agent_id") or None,
                         session_id=_evolve_session_id,
                     )
                 )
@@ -426,6 +427,7 @@ class CugaLiteNode(BaseNode):
                     success,
                     user_id=_evolve_user_id,
                     namespace_id=_evolve_namespace_id,
+                    agent_id=(state.service_scope or {}).get("agent_id") or None,
                     session_id=_evolve_session_id,
                 )
 
