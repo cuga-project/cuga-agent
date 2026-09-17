@@ -7,6 +7,7 @@ execution logic live in ``cuga_supervisor/nodes/`` and ``delegation.py``.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.messages import BaseMessage
@@ -29,6 +30,8 @@ from cuga.config import settings
 
 # Backward-compatible alias for tests and callers that imported the private helper.
 _resolve_names_from_caller_frame = resolve_names_from_caller_frame
+
+_RESULT_PLACEHOLDER = re.compile(r"(?<!\{)\{[A-Za-z_]\w*\}(?!\})")
 
 
 class SupervisorGraphAdapter(CoreGraphAdapter):
@@ -90,6 +93,33 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
     async def ainvoke_model(self, bound: Any, messages: list, invoke_config: dict) -> Any:
         clamp_watsonx_completion_for_messages(bound, messages)
         return await bound.ainvoke(messages, config=invoke_config)
+
+    async def classify_auto_continue(
+        self, state: Any, model: Any, content: str, reasoning: Optional[str]
+    ) -> bool | str:
+        """Correct an unexecuted playbook answer containing result placeholders once.
+
+        A model can claim completion with literal ``{variable_name}`` fields on
+        its first turn. This is neither executable code nor a completed result.
+        The step guard bounds the correction to one extra call per invocation;
+        prepare resets the step count for a new task. Ordinary text replies and
+        answers after execution keep their existing routing.
+        """
+        if (
+            state.step_count != 0
+            or not self._agents
+            or self.get_metadata(state).get("policy_type") != "playbook"
+            or not _RESULT_PLACEHOLDER.search(content or "")
+        ):
+            return False
+        return (
+            "Your answer contains unresolved result placeholders, but you have not executed the playbook. "
+            "Complete the requested work using the available delegation functions in fenced Python code, "
+            "then return the actual results. Reuse existing results if available. "
+            "Do not claim completion using placeholders or invented values. "
+            "If execution is blocked or user input is required, explain that instead. "
+            "If the user explicitly requested a template, return the template without executing it."
+        )
 
     def record_delegation(
         self,
