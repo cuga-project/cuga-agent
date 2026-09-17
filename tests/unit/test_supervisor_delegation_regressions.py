@@ -1,5 +1,6 @@
 """Exercise supervisor response routing through the compiled delegation graph."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -109,3 +110,38 @@ async def test_placeholder_correction_respects_step_limit(worker):
     result = await run_supervisor(worker, [UNEXECUTED_ANSWER, DELEGATION_CODE], max_steps=1)
     assert "Maximum step limit" in result["final_answer"]
     worker.invoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sub_agent_can_outlive_a_normal_sandbox_block(worker, monkeypatch):
+    monkeypatch.setattr(settings.advanced_features, "sandbox_execution_timeout", 0.05)
+    monkeypatch.setattr(settings.supervisor, "execution_timeout", 1, raising=False)
+
+    async def slow_agent(*args, **kwargs):
+        await asyncio.sleep(0.15)
+        return SimpleNamespace(answer="user_alice_99", variables={}, chat_messages=[])
+
+    worker.invoke.side_effect = slow_agent
+    result = await run_supervisor(worker, [DELEGATION_CODE, "Alice: user_alice_99."])
+    assert result["selected_agents"] == ["user_finder"]
+    assert result["metrics"]["delegation_count"] == 1
+    assert settings.advanced_features.sandbox_execution_timeout == 0.05
+
+
+@pytest.mark.asyncio
+async def test_supervisor_delegation_deadline_still_cancels_stalled_agent(worker, monkeypatch):
+    monkeypatch.setattr(settings.supervisor, "execution_timeout", 0.05)
+    cancelled = []
+
+    async def stalled_agent(*args, **kwargs):
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    worker.invoke.side_effect = stalled_agent
+    result = await run_supervisor(worker, [DELEGATION_CODE, "The delegation timed out."])
+    assert cancelled == [True]
+    assert result["selected_agents"] == []
+    assert any("timed out after 0.05" in message.content for message in result["supervisor_chat_messages"])
