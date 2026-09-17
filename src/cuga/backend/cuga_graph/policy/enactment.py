@@ -1,5 +1,6 @@
 """Policy enactment helpers for applying policy actions in graph nodes."""
 
+import re
 from typing import Any, Dict, List, Optional
 from copy import deepcopy
 
@@ -27,6 +28,33 @@ from cuga.backend.cuga_graph.policy.observability import (
     decision_from_metadata,
 )
 from cuga.config import settings
+
+
+# Matches responses that start with a JSON object or array (possibly with leading
+# whitespace).  Only these need the output-formatter LLM rewrite; plain-text /
+# markdown responses are already clean and can be returned unchanged.
+_RAW_JSON_PATTERN = re.compile(r"^\s*[{\[]", re.MULTILINE)
+
+# Keywords that indicate format_config contains content-modifying instructions
+# (redaction, replacement, blocking).  Such policies must always run the LLM
+# even when the response is already plain text, so the guard is skipped.
+_CONTENT_MODIFYING_PATTERN = re.compile(r"\b(replace|redact|withhold|block|remove|filter)\b", re.IGNORECASE)
+
+
+def _response_needs_formatting(response_text: str) -> bool:
+    """Return True only if the response contains raw JSON that needs reformatting."""
+    return bool(_RAW_JSON_PATTERN.search(response_text))
+
+
+def _is_presentation_only(format_config: str) -> bool:
+    """Return True if format_config contains no content-modifying instructions.
+
+    Presentation-only policies (e.g. "respond in plain English") are safe to
+    skip when the response is already clean text.  Policies that replace, redact,
+    withhold, block, remove, or filter content must always run the LLM so that
+    sensitive data is not passed through unchanged.
+    """
+    return not bool(_CONTENT_MODIFYING_PATTERN.search(format_config))
 
 
 class PolicyEnactment:
@@ -938,6 +966,22 @@ You have been provided with a step-by-step playbook for this task. Follow these 
                     chat_history.append(HumanMessage(content=msg))
                 elif hasattr(msg, "content"):
                     chat_history.append(msg)
+
+        # Fast pre-check: skip the formatter LLM when ALL of the following hold:
+        #   1. format_type is "markdown" (the unconditionally-triggering case)
+        #   2. format_config contains only presentation instructions (no redaction /
+        #      replacement / blocking keywords) — content-modifying policies must
+        #      always run so sensitive data is not passed through unchanged
+        #   3. the response is already clean plain text / markdown (no raw JSON)
+        if (
+            format_type == "markdown"
+            and _is_presentation_only(format_config)
+            and not _response_needs_formatting(last_ai_message)
+        ):
+            logger.info(
+                "Output formatter skipped: presentation-only policy, response is already clean plain text / markdown"
+            )
+            return None, None
 
         # Create formatting prompt based on format_type
         if format_type == "direct":
