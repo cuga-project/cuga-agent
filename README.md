@@ -39,6 +39,7 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Multi-agent (CugaSupervisor)** | `cuga start demo_supervisor` · `[supervisor]` in [`settings.toml`](src/cuga/settings.toml) |
 > | **Event-driven agents** (channels · triggers · standing flows) | `cuga start demo` **+** `python -m cuga.backend.events.service` — web chat, Slack/Discord/Telegram, webhooks, cron/poll/push flows armed from natural language with a human confirming each one, one supervisor agent over a YAML roster. Runs as **a second service beside CUGA** (:7860 + :8100); CUGA is unchanged when it is not deployed. Setup and the per-connector guides live in the events documentation repository. |
 > | **A2A & remote agents** | External agent entries in supervisor config · [CugaSupervisor](https://docs.cuga.dev/docs/sdk/cuga_supervisor) |
+> | **ACP (i-am-bee, merged into A2A)** | `pip install "cuga[acp]"` (Python 3.11+) · `[acp] enabled = true` in `settings.toml` · [ACP support](#acp-agent-communication-protocol-support) |
 > | **Policies & HITL** | [Policies SDK](https://docs.cuga.dev/docs/sdk/policies/) — Intent Guard, Playbook, Tool Approval, Tool Guide, Output Formatter |
 > | **Manage & publish** | `cuga start manager` · draft tools, MCP, LLM, and policies in the web UI, then **publish** a versioned config for production chat ([details](#manage-publish-and-self-hosting)) |
 > | **Reflection** | `[advanced_features] reflection_enabled` in [`settings.toml`](src/cuga/settings.toml) |
@@ -783,6 +784,118 @@ To add a remote agent via A2A, pass an external config in `agents`: `"analytics"
 - **Agent cards**: For A2A agents, capabilities and description are taken from the agent card and shown in the supervisor prompt.
 
 You can also load agents from YAML with `CugaSupervisor.from_yaml("path/to/config.yaml")`. Enable the supervisor in `settings.toml` under `[supervisor]` when using the server.
+
+---
+
+## ACP (Agent Communication Protocol) Support
+
+CUGA supports inbound and outbound [i-am-bee ACP](https://github.com/i-am-bee/acp)
+(SDK v1.0.3). ACP originated in the i-am-bee project and has since **merged into the
+[Agent2Agent (A2A)](https://google.github.io/A2A/) specification**. CUGA's ACP support
+targets the `acp-sdk==1.0.3` wire format; the native A2A protocol is a separate,
+independently supported integration.
+
+> **Official SDK:** [`acp-sdk`](https://pypi.org/project/acp-sdk/) — pinned to `>=1.0.3,<2`.
+> Base CUGA is unaffected when the extra is not installed.
+
+### Requirements
+
+| Requirement | Detail |
+|---|---|
+| **Python version** | 3.11 or newer (ACP extra is not installed on Python 3.10) |
+| **Optional extra** | `pip install "cuga[acp]"` or `uv sync --extra acp` |
+| **Uvicorn constraint** | `acp-sdk==1.0.3` references a symbol removed in `uvicorn>=0.36`; the extra pins `uvicorn<0.36` |
+
+### Inbound ACP server settings
+
+Add to `settings.toml` (or override with `DYNACONF_ACP__*` environment variables):
+
+```toml
+[acp]
+enabled = false                  # set true to mount /acp
+path_prefix = "/acp"             # base URL for all ACP routes
+agent_name = "cuga"              # name advertised in the AgentManifest
+agent_description = "CUGA agent exposed over ACP."
+supervisor_config_path = ""      # path to a supervisor YAML (optional)
+auto_approve = false
+store = "memory"                 # only "memory" is supported in this release
+store_limit = 1000
+store_ttl_seconds = 3600
+auth_required = true             # set false only for local development
+enable_playground_cors = false
+```
+
+| Setting | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Mount `/acp` when `true`. |
+| `path_prefix` | `"/acp"` | Base URL for all ACP routes. Cannot be `/`, `/api`, `/a2a`, `/docs`, `/health`, `/openapi.json`, `/redoc`, `/run`, or `/stream`. |
+| `agent_name` | `"cuga"` | Agent name in the ACP manifest. |
+| `agent_description` | `"CUGA agent exposed over ACP."` | Description in the ACP manifest. |
+| `supervisor_config_path` | `""` | Path to a supervisor YAML. When set, inbound ACP requests are routed through that supervisor. When empty, the standard CUGA agent handles them. |
+| `store` | `"memory"` | Session store type. Only `"memory"` is supported in this release. |
+| `store_limit` | `1000` | Maximum number of sessions held in memory. |
+| `store_ttl_seconds` | `3600` | Session TTL. Expired sessions are evicted automatically. |
+| `auth_required` | `true` | When `true`, all ACP endpoints (`/ping`, discovery, runs, sessions, resources) require the same CUGA bearer-token credential as the rest of the API. |
+| `enable_playground_cors` | `false` | Enable CORS for the ACP playground. Off by default. |
+
+### Authentication behavior
+
+When `auth_required = true`, every ACP endpoint shares the same
+`require_chat_access` policy used by the rest of the CUGA API. No
+separate token is created. Pass the same bearer token in the
+`Authorization: Bearer <token>` header.
+
+When `auth_required = false`, all endpoints are reachable without
+credentials — suitable only for local development.
+
+### External-agent YAML schema (outbound ACP)
+
+To make a CUGA supervisor delegate tasks to a remote ACP agent, add an
+entry to your supervisor YAML with an `acp_protocol` block:
+
+```yaml
+agents:
+  - name: remote-acp
+    description: "Remote ACP agent"
+    acp_protocol:
+      enabled: true
+      endpoint: "https://agent.example.com/acp"   # http or https only
+      agent_name: "remote-agent"                  # name to look up in /acp/agents
+      timeout: 30                                  # seconds; max 600
+      verify_tls: true                             # default true
+      auth:
+        type: bearer
+        token_env_var: REMOTE_ACP_TOKEN            # env var name, never the value
+```
+
+| Field | Required | Default | Notes |
+|---|---|---|---|
+| `enabled` | yes | — | `true` makes this entry an external ACP agent. |
+| `endpoint` | yes | — | Full base URL of the remote ACP server including `/acp` path. `http` and `https` only. |
+| `agent_name` | yes | — | Name advertised by the remote agent. |
+| `timeout` | no | `30` | Request timeout in seconds. Must be > 0 and ≤ 600. |
+| `verify_tls` | no | `true` | TLS certificate verification. Do not disable in production. |
+| `auth.type` | no | — | Only `bearer` is supported. |
+| `auth.token_env_var` | no | — | Name of the environment variable holding the bearer token. Resolved at call time, not at YAML load time. |
+
+> **Token rotation:** Tokens are resolved from `token_env_var` at
+> every invocation. Update the environment variable and the new value
+> is used on the next call without a restart.
+
+### Known limitations
+
+| Limitation | Notes |
+|---|---|
+| **Text-only I/O** | Only `text/plain` ACP message parts with inline `content` are accepted. URL-backed parts (`content_url`) and non-text MIME types are rejected at the input-extraction stage. |
+| **No outbound HITL** | When the supervisor delegates outbound to a remote ACP agent and that agent reaches an `awaiting` (HITL) state, the delegation returns a failure result rather than stalling the supervisor indefinitely. In-process HITL on the inbound side (direct-agent mode) works normally. |
+| **Memory store** | This release uses an in-memory ACP session store. Sessions are lost on provider restart. |
+| **Single worker** | The in-memory store is not shared across Uvicorn workers. Run the provider with `--workers 1` (the default). |
+
+### Example: two CUGAs over ACP
+
+See [`docs/examples/acp_two_cuga/`](docs/examples/acp_two_cuga/README.md) for a
+worked example with a full setup walkthrough. For the equivalent example using the
+native A2A protocol, see [`docs/examples/a2a_two_cuga/`](docs/examples/a2a_two_cuga/README.md).
 
 ---
 
