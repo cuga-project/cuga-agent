@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+from contextlib import closing
 from typing import Any, List, Optional
 
 
@@ -39,12 +40,14 @@ class LocalRelationalStore:
         """Commit a batch atomically on a dedicated connection."""
 
         def batch():
-            with sqlite3.connect(self._db_path, timeout=30) as conn:
-                for sql, params in statements:
-                    conn.execute(sql, params)
+            with closing(sqlite3.connect(self._db_path, timeout=30)) as conn:
+                with conn:
+                    for sql, params in statements:
+                        conn.execute(sql, params)
 
-        async with self._lock:
-            await asyncio.to_thread(batch)
+        # This connection does not access self._conn. Holding its lock here
+        # would block commit() while SQLite waits for that same pending writer.
+        await asyncio.to_thread(batch)
 
     async def fetchall(self, sql: str, params: tuple = ()) -> List[Any]:
         async with self._lock:

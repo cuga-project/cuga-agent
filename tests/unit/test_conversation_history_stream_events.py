@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import asyncio
+import sqlite3
+import threading
 
 import pytest
 
@@ -10,6 +13,33 @@ from cuga.backend.server.conversation_history import ConversationHistoryDB
 from cuga.backend.storage.relational.local import LocalRelationalStore
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.asyncio
+async def test_delete_batch_allows_pending_writer_to_commit(tmp_path, monkeypatch):
+    store = LocalRelationalStore(str(tmp_path / "concurrent.db"))
+    await store.execute("CREATE TABLE records (id INTEGER)")
+    await store.commit()
+    await store.execute("INSERT INTO records VALUES (1)")
+    batch_started = threading.Event()
+    connect = sqlite3.connect
+
+    def batch_connection(*args, **kwargs):
+        kwargs["timeout"] = 0.5
+        conn = connect(*args, **kwargs)
+        batch_started.set()
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", batch_connection)
+    batch = asyncio.create_task(store.execute_batch([("DELETE FROM records", ())]))
+    try:
+        assert await asyncio.to_thread(batch_started.wait, 2)
+        results = await asyncio.gather(batch, store.commit(), return_exceptions=True)
+        assert results == [None, None]
+        assert await store.fetchall("SELECT * FROM records") == []
+    finally:
+        await asyncio.gather(batch, return_exceptions=True)
+        await store.close()
 
 
 def _make_db(tmp_path) -> ConversationHistoryDB:
@@ -144,8 +174,22 @@ async def test_source_deletion_delivery_retries_until_acknowledged(tmp_path, mon
     await db.delete_thread("agent", "thread", "user")
     monkeypatch.setattr("cuga.backend.server.conversation_history.get_conversation_db", lambda: db)
     monkeypatch.setattr(EvolveIntegration, "is_enabled", lambda: True)
+    monkeypatch.setattr(
+        EvolveIntegration,
+        "get_compliance_status",
+        AsyncMock(
+            side_effect=[
+                {"backend": "filesystem", "retention_available": True},
+                {"backend": "postgres", "retention_available": True},
+                {"backend": "postgres", "retention_available": True},
+            ]
+        ),
+    )
     call = AsyncMock(side_effect=[RuntimeError("offline"), {"recorded": True}])
     monkeypatch.setattr(EvolveIntegration, "_call_structured_tool", call)
+    await deliver_source_deletions()
+    assert len(await db.pending_source_deletions()) == 1
+    call.assert_not_awaited()
     with pytest.raises(RuntimeError):
         await deliver_source_deletions()
     assert len(await db.pending_source_deletions()) == 1

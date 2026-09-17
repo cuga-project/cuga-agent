@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from copy import deepcopy
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -34,6 +35,18 @@ DEFAULT_RETENTION_POLICY: dict[str, Any] = {
 DEFAULT_RETENTION_POLICY_ID = "cuga-standard"
 DEFAULT_RETENTION_POLICY_NAME = "Standard retention"
 DEFAULT_RETENTION_POLICY_DESCRIPTION = "CUGA's default memory lifecycle policy"
+
+
+def supports_durable_retention(status: dict[str, Any]) -> bool:
+    """Evolve 1.2 implements collection and source receipts only on PostgreSQL."""
+    return status.get("backend") == "postgres" and bool(status.get("retention_available"))
+
+
+def default_retention_policy(status: dict[str, Any]) -> dict[str, Any]:
+    policy = deepcopy(DEFAULT_RETENTION_POLICY)
+    if not supports_durable_retention(status):
+        policy["rules"] = [rule for rule in policy["rules"] if not rule.get("source_deleted")]
+    return policy
 
 
 class RetentionReportItem(BaseModel):
@@ -132,10 +145,13 @@ def project_retention_policy(policy: dict[str, Any]) -> dict[str, Any]:
     } | {"rules": projected_rules}
 
 
-def retention_capabilities(*, retention_available: bool) -> dict[str, Any]:
+def retention_capabilities(status: dict[str, Any]) -> dict[str, Any]:
+    retention_available = bool(status.get("retention_available"))
     return {
         "retention_available": retention_available,
         "scheduling_supported": retention_available,
+        "mark_sweep_supported": supports_durable_retention(status),
+        "source_deletion_supported": supports_durable_retention(status),
         "schedule": {
             "state": "managed_by_evolve",
             "label": "Schedules are stored and executed by Evolve.",
@@ -153,7 +169,7 @@ def retention_capabilities(*, retention_available: bool) -> dict[str, Any]:
                     else {"max_age_days": rule["max_age_days"]}
                 ),
             }
-            for rule in DEFAULT_RETENTION_POLICY["rules"]
+            for rule in default_retention_policy(status)["rules"]
         ],
     }
 
@@ -165,6 +181,8 @@ def project_compliance_status(result: dict[str, Any]) -> dict[str, Any]:
         "backend": result.get("backend"),
         "retention_available": bool(result.get("retention_available")),
         "scheduling_supported": bool(result.get("retention_available")),
+        "mark_sweep_supported": supports_durable_retention(result),
+        "source_deletion_supported": supports_durable_retention(result),
         "plugins": [
             {key: plugin.get(key) for key in ("name", "protection_class", "hooks", "enabled", "healthy")}
             for plugin in result.get("plugins", [])

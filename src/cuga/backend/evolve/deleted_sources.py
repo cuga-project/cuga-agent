@@ -6,12 +6,20 @@ from loguru import logger
 
 async def deliver_source_deletions():
     from cuga.backend.evolve.integration import EvolveIntegration
+    from cuga.backend.evolve.retention import supports_durable_retention
     from cuga.backend.server.conversation_history import get_conversation_db
 
     if not EvolveIntegration.is_enabled():
         return
     db = get_conversation_db()
-    for event in await db.pending_source_deletions():
+    events = await db.pending_source_deletions()
+    if not events:
+        return
+    status = await EvolveIntegration.get_compliance_status(namespace_id=events[0]["instance_id"])
+    if not supports_durable_retention(status or {}):
+        # Preserve receipts for later delivery if the service moves to PostgreSQL.
+        return
+    for event in events:
         result = await EvolveIntegration._call_structured_tool(
             "record_source_deletion",
             {

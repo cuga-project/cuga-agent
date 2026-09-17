@@ -18,7 +18,12 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def auth_overrides():
+def auth_overrides(monkeypatch):
+    monkeypatch.setattr(
+        EvolveIntegration,
+        "get_compliance_status",
+        AsyncMock(return_value={"backend": "postgres", "retention_available": True}),
+    )
     app.dependency_overrides[require_chat_access] = lambda: UserInfo(sub="user-1")
     app.dependency_overrides[require_manage_access] = lambda: UserInfo(sub="admin-1", roles=["ServiceAdmin"])
     yield
@@ -28,6 +33,72 @@ def auth_overrides():
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+@pytest.mark.unit
+def test_default_policy_runs_on_real_filesystem_backend(client, tmp_path):
+    from altk_evolve.config.evolve import EvolveConfig
+    from altk_evolve.config.filesystem import FilesystemSettings
+    from altk_evolve.frontend.client.evolve_client import EvolveClient
+    from altk_evolve.retention.execution import execute_policy
+
+    evolve = EvolveClient(
+        EvolveConfig(backend="filesystem", settings=FilesystemSettings(data_dir=str(tmp_path)))
+    )
+    service = evolve.retention("instance-a")
+
+    async def list_policies(**kwargs):
+        return service.list_policies(include_disabled=kwargs["include_disabled"])
+
+    async def put_policy(policy_id, name, policy, **kwargs):
+        return service.put_policy(policy_id, name=name, policy=policy)
+
+    async def run_policy(policy_id, **kwargs):
+        return execute_policy(evolve, service.store, "instance-a", policy_id, dry_run=False)
+
+    with (
+        patch.object(EvolveIntegration, "is_enabled", return_value=True),
+        patch.object(
+            EvolveIntegration,
+            "get_compliance_status",
+            new=AsyncMock(return_value={"backend": "filesystem", "retention_available": True}),
+        ),
+        patch.object(EvolveIntegration, "list_retention_policies", new=list_policies),
+        patch.object(EvolveIntegration, "put_retention_policy", new=put_policy),
+        patch.object(EvolveIntegration, "run_retention", new=run_policy),
+        patch("cuga.backend.server.memory_routes._namespace_id", return_value="instance-a"),
+    ):
+        response = client.post("/api/manage/memory/retention/runs", json={"policy_id": "cuga-standard"})
+        assert response.status_code == 200, response.text
+        assert response.json()["errors"] == []
+        capabilities = client.get("/api/manage/memory/retention").json()
+        assert capabilities["retention_available"] is True
+        assert capabilities["mark_sweep_supported"] is False
+        assert capabilities["source_deletion_supported"] is False
+    policy = service.get_policy("cuga-standard")["policy"]
+    assert not any(rule.get("source_deleted") for rule in policy["rules"])
+    assert len(policy["rules"]) == 3
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "path,method",
+    [("candidates", "get"), ("audit", "get"), ("policies/p/mark", "post"), ("policies/p/sweep", "post")],
+)
+def test_filesystem_rejects_postgres_only_operations_before_calling_evolve(client, path, method):
+    with (
+        patch.object(EvolveIntegration, "is_enabled", return_value=True),
+        patch.object(
+            EvolveIntegration,
+            "get_compliance_status",
+            new=AsyncMock(return_value={"backend": "filesystem", "retention_available": True}),
+        ),
+        patch.object(EvolveIntegration, "_call_structured_tool", new=AsyncMock()) as call,
+    ):
+        response = getattr(client, method)(f"/api/manage/memory/retention/{path}")
+    assert response.status_code == 409
+    assert "PostgreSQL" in response.json()["detail"]
+    call.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -330,7 +401,7 @@ def test_retention_capabilities_report_evolve_schedule_management(client):
         ),
         patch(
             "cuga.backend.server.memory_routes.EvolveIntegration.get_compliance_status",
-            new=AsyncMock(return_value={"retention_available": True}),
+            new=AsyncMock(return_value={"backend": "postgres", "retention_available": True}),
         ),
     ):
         response = client.get("/api/manage/memory/retention")

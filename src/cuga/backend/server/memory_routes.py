@@ -199,7 +199,7 @@ def _validate_metadata_patch(metadata: dict[str, Any], allowed: set[str], audien
 async def _retention_policies() -> list[dict[str, Any]]:
     """Return the Evolve catalog, registering CUGA's built-in policy once."""
     from cuga.backend.evolve.retention import (
-        DEFAULT_RETENTION_POLICY,
+        default_retention_policy,
         DEFAULT_RETENTION_POLICY_DESCRIPTION,
         DEFAULT_RETENTION_POLICY_ID,
         DEFAULT_RETENTION_POLICY_NAME,
@@ -214,11 +214,12 @@ async def _retention_policies() -> list[dict[str, Any]]:
     policies = [item for item in result.get("items", []) if isinstance(item, dict)]
     if any(policy.get("policy_id") == DEFAULT_RETENTION_POLICY_ID for policy in policies):
         return policies
+    status = _memory_result(await EvolveIntegration.get_compliance_status(namespace_id=_namespace_id()))
     created = _memory_result(
         await EvolveIntegration.put_retention_policy(
             DEFAULT_RETENTION_POLICY_ID,
             DEFAULT_RETENTION_POLICY_NAME,
-            DEFAULT_RETENTION_POLICY,
+            default_retention_policy(status),
             description=DEFAULT_RETENTION_POLICY_DESCRIPTION,
             namespace_id=_namespace_id(),
         )
@@ -468,9 +469,7 @@ async def get_user_memory_retention(
     from cuga.backend.evolve.retention import retention_capabilities
 
     status = await EvolveIntegration.get_compliance_status(namespace_id=_namespace_id())
-    return JSONResponse(
-        retention_capabilities(retention_available=bool(status and status.get("retention_available")))
-    )
+    return JSONResponse(retention_capabilities(status or {}))
 
 
 @router.get("/manage/memory/retention")
@@ -480,9 +479,7 @@ async def get_admin_memory_retention(
     from cuga.backend.evolve.retention import retention_capabilities
 
     status = await EvolveIntegration.get_compliance_status(namespace_id=_namespace_id())
-    return JSONResponse(
-        retention_capabilities(retention_available=bool(status and status.get("retention_available")))
-    )
+    return JSONResponse(retention_capabilities(status or {}))
 
 
 @router.get("/manage/memory/retention/policies")
@@ -499,9 +496,12 @@ async def list_admin_retention_policies(
 async def validate_admin_retention_policy(
     current_user: Optional[UserInfo] = Depends(require_manage_access),
 ):
-    from cuga.backend.evolve.retention import DEFAULT_RETENTION_POLICY
+    from cuga.backend.evolve.retention import default_retention_policy
 
-    result = _memory_result(await EvolveIntegration.validate_retention_policy(DEFAULT_RETENTION_POLICY))
+    status = _memory_result(await EvolveIntegration.get_compliance_status(namespace_id=_namespace_id()))
+    result = _memory_result(
+        await EvolveIntegration.validate_retention_policy(default_retention_policy(status))
+    )
     return JSONResponse(
         {key: result[key] for key in ("valid", "errors", "warnings", "normalized_policy") if key in result}
     )
@@ -575,8 +575,19 @@ async def get_admin_memory_compliance_status(
     return JSONResponse(project_compliance_status(result))
 
 
+async def _require_durable_retention() -> None:
+    from cuga.backend.evolve.retention import supports_durable_retention
+
+    status = _memory_result(await EvolveIntegration.get_compliance_status(namespace_id=_namespace_id()))
+    if not supports_durable_retention(status):
+        raise HTTPException(
+            status_code=409, detail="This retention operation requires Evolve's PostgreSQL backend"
+        )
+
+
 @router.get("/manage/memory/retention/candidates")
 async def list_retention_candidates(current_user: Optional[UserInfo] = Depends(require_manage_access)):
+    await _require_durable_retention()
     return _memory_result(
         await EvolveIntegration._call_structured_tool(
             "list_retention_candidates", {"namespace_id": _namespace_id(), "limit": 1000}
@@ -586,6 +597,7 @@ async def list_retention_candidates(current_user: Optional[UserInfo] = Depends(r
 
 @router.get("/manage/memory/retention/audit")
 async def list_retention_audit(current_user: Optional[UserInfo] = Depends(require_manage_access)):
+    await _require_durable_retention()
     return _memory_result(
         await EvolveIntegration._call_structured_tool(
             "list_retention_audit", {"namespace_id": _namespace_id(), "limit": 1000}
@@ -595,6 +607,7 @@ async def list_retention_audit(current_user: Optional[UserInfo] = Depends(requir
 
 @router.post("/manage/memory/retention/policies/{policy_id}/mark")
 async def mark_retention(policy_id: str, current_user: Optional[UserInfo] = Depends(require_manage_access)):
+    await _require_durable_retention()
     await _retention_policies()
     return _memory_result(
         await EvolveIntegration._call_structured_tool(
@@ -606,6 +619,7 @@ async def mark_retention(policy_id: str, current_user: Optional[UserInfo] = Depe
 
 @router.post("/manage/memory/retention/policies/{policy_id}/sweep")
 async def sweep_retention(policy_id: str, current_user: Optional[UserInfo] = Depends(require_manage_access)):
+    await _require_durable_retention()
     return _memory_result(
         await EvolveIntegration._call_structured_tool(
             "sweep_retention",
