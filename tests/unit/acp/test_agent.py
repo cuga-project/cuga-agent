@@ -70,11 +70,9 @@ def test_order_preserved():
     assert result == "ab\nc"
 
 
-def test_agent_messages_ignored():
-    """Agent-role messages must be silently skipped."""
-    msgs = [_agent_msg("ignore me"), _user_msg("keep")]
-    result = _extract_text_input(msgs)
-    assert result == "keep"
+def test_agent_messages_rejected_when_mixed_with_user_input():
+    """Every inbound message must use the supported user role."""
+    _assert_rejects([_agent_msg("ignore me"), _user_msg("keep")])
 
 
 # ---------------------------------------------------------------------------
@@ -96,11 +94,25 @@ def test_wrong_role_only():
 
 
 def test_non_text_mime_type():
-    """Parts with a non text/plain MIME type must be ignored; if nothing remains → rejected."""
+    """Parts with a non text/plain MIME type must be rejected."""
     msg = Message(
         role="user",
         parts=[
             MessagePart(content_type="application/json", content='{"key":"value"}', content_encoding="plain")
+        ],
+    )
+    _assert_rejects([msg])
+
+
+def test_non_text_mime_type_rejected_when_mixed_with_plain_text():
+    """Unsupported parts must not be silently dropped from an otherwise valid message."""
+    msg = Message(
+        role="user",
+        parts=[
+            MessagePart(content_type="text/plain", content="keep", content_encoding="plain"),
+            MessagePart(
+                content_type="application/json", content='{"ignored":true}', content_encoding="plain"
+            ),
         ],
     )
     _assert_rejects([msg])
