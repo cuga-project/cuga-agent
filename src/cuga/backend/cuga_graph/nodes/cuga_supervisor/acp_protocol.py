@@ -211,7 +211,7 @@ async def delegate_task_via_acp(
                             if text_str:
                                 msg_parts.append(text_str)
                         if msg_parts:
-                            parts_text.append(" ".join(msg_parts))
+                            parts_text.append("\n".join(msg_parts))
                     result_text = "\n".join(parts_text)
                     return {
                         "result": result_text,

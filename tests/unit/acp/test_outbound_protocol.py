@@ -501,6 +501,28 @@ async def test_auth_from_env_variable(monkeypatch: pytest.MonkeyPatch) -> None:
     # and must succeed without a token being explicitly provided.
 
 
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_auth_token_env_var_resolved_to_bearer_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    """token_env_var must be resolved from the environment and passed as Authorization: Bearer."""
+    monkeypatch.setenv("TEST_ACP_TOKEN", "secret_value")
+    captured_kwargs: dict[str, Any] = {}
+
+    def _capturing_factory(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _make_client()
+
+    await delegate_task_via_acp(
+        endpoint=_ENDPOINT,
+        agent_name=_AGENT,
+        task="token env var task",
+        auth={"type": "bearer", "token_env_var": "TEST_ACP_TOKEN"},
+        poll_interval=0.0,
+        client_factory=_capturing_factory,
+    )
+    assert captured_kwargs.get("headers") == {"Authorization": "Bearer secret_value"}
+
+
 # ---------------------------------------------------------------------------
 # 10. Missing token / malformed output / ACP error / transport error sanitized
 # ---------------------------------------------------------------------------
