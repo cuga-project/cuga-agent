@@ -542,6 +542,12 @@ def format_time_custom():
     return f"{now.hour:02d}-{now.minute:02d}-{now.second:02d}"
 
 
+# Module-level ACP child application reference.  Set only when ACP is enabled.
+# No acp_sdk import at module level — the SDK is loaded lazily inside the
+# enabled branch at the bottom of this file.
+_acp_app: "FastAPI | None" = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Asynchronous context manager for application startup and shutdown."""
@@ -1140,7 +1146,20 @@ async def lifespan(app: FastAPI):
     # never blocks startup on failure.
     await warm_shortlister_catalogue()
 
-    yield
+    # Integrate ACP child lifespan when ACP is enabled.  Starlette-mounted
+    # sub-applications do not reliably receive lifespan events, so we enter
+    # the child's lifespan context explicitly through an AsyncExitStack.
+    if _acp_app is not None:
+        from contextlib import AsyncExitStack
+
+        async with AsyncExitStack() as _acp_stack:
+            await _acp_stack.enter_async_context(_acp_app.router.lifespan_context(_acp_app))
+            logger.info("ACP child lifespan started")
+            yield
+            logger.info("ACP child lifespan stopping")
+    else:
+        yield
+
     logger.info("Application is shutting down...")
 
     for task in app_state.background_tasks:
@@ -2137,6 +2156,24 @@ if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
     from cuga.backend.server.a2a.runner import build_a2a_router_for_settings  # noqa: E402
 
     app.include_router(build_a2a_router_for_settings(settings.a2a, app_state))
+
+
+if getattr(settings, "acp", None) and getattr(settings.acp, "enabled", False):
+    # The ACP SDK is only imported when explicitly enabled.  All wiring lives
+    # in cuga.backend.server.acp — main.py just builds and mounts the child.
+    # _acp_app is set here so the lifespan() function above can enter the
+    # child's lifespan context via AsyncExitStack.
+    from cuga.backend.server.acp.app import build_acp_app_for_settings  # noqa: E402
+    from cuga.backend.server.acp.settings import normalize_acp_settings  # noqa: E402
+
+    _acp_settings = normalize_acp_settings(settings.acp)
+    _acp_app = build_acp_app_for_settings(  # noqa: F841 — read by lifespan()
+        _acp_settings,
+        app_state,
+        event_stream_func=event_stream,
+    )
+    app.mount(_acp_settings.path_prefix, _acp_app)
+    logger.info("ACP child application mounted at %s", _acp_settings.path_prefix)
 
 
 @app.get("/health")
