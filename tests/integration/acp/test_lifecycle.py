@@ -547,21 +547,104 @@ async def test_session_id_reused_across_runs(
     )
 
 
-# ── Case 8: HITL in direct-agent mode — skipped for fake runner ───────────
+# ── Case 8: HITL in direct-agent mode ──────────────────────────────────────
 
 
 @pytest.mark.anyio
 @pytest.mark.unit
-@pytest.mark.skip(
-    reason="HITL requires a real runner that yields MessageAwaitRequest; fake runner returns answers directly"
-)
-async def test_hitl_direct_agent_mode(
-    acp_settings: Any,
-    mock_app_state: Any,
-    fake_event_stream: Any,
-) -> None:
-    """HITL: awaiting → resume via POST /runs/{run_id} → completed on same thread."""
-    ...  # requires a runner that yields MessageAwaitRequest
+async def test_hitl_direct_agent_mode(acp_settings: Any) -> None:
+    """HITL reaches awaiting, resumes over HTTP, and completes on the same thread."""
+    import json
+    from types import SimpleNamespace
+
+    import httpx
+    from acp_sdk.models import (
+        Message,
+        MessageAwaitResume,
+        MessagePart,
+        Run,
+        RunMode,
+        RunResumeRequest,
+        RunStatus,
+    )
+
+    calls: list[tuple[str | None, Any]] = []
+    parked_threads: set[str] = set()
+
+    class _Graph:
+        def get_state(self, config: dict[str, Any]) -> Any:
+            thread_id = config["configurable"]["thread_id"]
+            if thread_id not in parked_threads:
+                return SimpleNamespace(next=(), values={})
+            return SimpleNamespace(
+                next=("wait_for_response",),
+                values={
+                    "hitl_action": {
+                        "action_id": "approve-1",
+                        "type": "confirmation",
+                        "description": "Run the protected action",
+                    }
+                },
+            )
+
+    app_state = SimpleNamespace(agent=SimpleNamespace(graph=_Graph()), output_format=None)
+
+    async def _hitl_event_stream(
+        query: str | None,
+        api_mode: bool = False,
+        thread_id: str | None = None,
+        agent: Any = None,
+        disable_history: bool = False,
+        user_id: str = "test_user",
+        user_attachments: Any = None,
+        resume: Any = None,
+    ) -> AsyncGenerator[bytes, None]:
+        calls.append((thread_id, resume))
+        if resume is None:
+            parked_threads.add(str(thread_id))
+            if False:
+                yield b""
+            return
+        parked_threads.discard(str(thread_id))
+        payload = json.dumps({"data": "Approved and completed", "variables": {}, "active_policies": []})
+        yield f"event: Answer\ndata: {payload}\n\n".encode()
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, app_state, _hitl_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            create_response = await client.post("/acp/runs", json=_run_request(RunMode.SYNC))
+            assert create_response.status_code in (200, 201), create_response.text[:300]
+            awaiting_run = Run(**create_response.json())
+            assert awaiting_run.status == RunStatus.AWAITING
+            assert awaiting_run.await_request is not None
+
+            resume_request = RunResumeRequest(
+                await_resume=MessageAwaitResume(
+                    message=Message(
+                        role="user",
+                        parts=[MessagePart(content_type="text/plain", content="approve")],
+                    )
+                ),
+                mode=RunMode.SYNC,
+            )
+            resume_response = await client.post(
+                f"/acp/runs/{awaiting_run.run_id}",
+                json=resume_request.model_dump(mode="json"),
+            )
+            assert resume_response.status_code == 200, resume_response.text[:300]
+            completed_run = Run(**resume_response.json())
+
+    assert completed_run.status == RunStatus.COMPLETED
+    assert len(calls) == 2
+    assert calls[0][0] == calls[1][0] == str(awaiting_run.session_id)
+    assert calls[0][1] is None
+    assert calls[1][1] is not None
+    assert calls[1][1].action_id == "approve-1"
+    assert calls[1][1].confirmed is True
 
 
 # ── Case 9: Cancellation of active run ───────────────────────────────────
