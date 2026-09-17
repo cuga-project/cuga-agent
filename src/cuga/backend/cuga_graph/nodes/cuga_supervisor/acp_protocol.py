@@ -51,8 +51,30 @@ if HAS_ACP_SDK and RunStatus is not None:
     _PENDING_STATUSES = {RunStatus.CREATED, RunStatus.IN_PROGRESS, RunStatus.CANCELLING}
 
 # ---------------------------------------------------------------------------
-# Manifest helpers
+# Authentication and manifest helpers
 # ---------------------------------------------------------------------------
+
+
+def _build_auth_headers(auth: Mapping[str, Any] | None) -> dict[str, str]:
+    """Resolve bearer authentication without silently dropping configured credentials."""
+    if auth is None:
+        token = (os.environ.get("ACP_AUTH_TOKEN") or "").strip() or None
+        return {"Authorization": f"Bearer {token}"} if token else {}
+
+    if auth.get("type") != "bearer":
+        return {}
+
+    token = str(auth["token"]).strip() or None if auth.get("token") else None
+    token_env_var = str(auth["token_env_var"]) if auth.get("token_env_var") else None
+    if token is None and token_env_var is not None:
+        token = (os.environ.get(token_env_var) or "").strip() or None
+        if token is None:
+            raise ValueError(f"ACP bearer token environment variable '{token_env_var}' is not set")
+
+    if token is None:
+        raise ValueError("ACP bearer authentication requires token or token_env_var")
+
+    return {"Authorization": f"Bearer {token}"}
 
 
 def format_manifest_for_prompt(manifest: "AgentManifest") -> str:
@@ -103,18 +125,7 @@ async def fetch_agent_manifest(
         Callable that returns an ACP Client context-manager; injectable for
         testing.
     """
-    headers: dict[str, str] = {}
-    token: str | None = None
-    if auth is not None:
-        if auth.get("type") == "bearer":
-            if auth.get("token"):
-                token = str(auth["token"])
-            elif auth.get("token_env_var"):
-                token = os.environ.get(str(auth["token_env_var"]))
-    else:
-        token = os.environ.get("ACP_AUTH_TOKEN") or None
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    headers = _build_auth_headers(auth)
 
     client = client_factory(
         base_url=endpoint,
@@ -188,21 +199,7 @@ async def delegate_task_via_acp(
         raise ValueError("agent_name must not be empty")
 
     # ── 2. Resolve bearer token → headers ───────────────────────────────────
-    headers: dict[str, str] = {}
-    token: str | None = None
-
-    if auth is not None:
-        if auth.get("type") == "bearer":
-            if auth.get("token"):
-                token = str(auth["token"])
-            elif auth.get("token_env_var"):
-                token = os.environ.get(str(auth["token_env_var"]))
-    else:
-        # Fall back to well-known env variable
-        token = os.environ.get("ACP_AUTH_TOKEN") or None
-
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    headers = _build_auth_headers(auth)
 
     # ── 3. Instantiate client (bounded HTTP timeout) ─────────────────────────
     http_timeout = min(_HTTP_REQUEST_TIMEOUT, timeout)
