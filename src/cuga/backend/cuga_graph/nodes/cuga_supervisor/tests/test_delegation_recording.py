@@ -350,6 +350,7 @@ _ACP_CONFIG = {
     "type": "external",
     "config": {
         "acp_protocol": {
+            "enabled": True,
             "endpoint": "https://acp.example.com",
             "agent_name": "remote-agent",
             "auth": {"type": "bearer", "token": "tok"},

@@ -147,7 +147,7 @@ def create_agent_delegation_func(
 
         if isinstance(agent_or_config, dict) and agent_or_config.get("type") == "external":
             acp_config = agent_or_config.get("config", {}).get("acp_protocol", {})
-            if acp_config.get("enabled", True) and acp_config.get("endpoint"):
+            if acp_config.get("enabled", False) and acp_config.get("endpoint"):
                 from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
                     delegate_task_via_acp,
                 )
@@ -169,8 +169,13 @@ def create_agent_delegation_func(
                     )
                     answer = result.get("result", "")
                 except Exception as exc:
-                    logger.warning(f"ACP delegation to {agent_name} failed: {exc}")
-                    answer = f"Error: ACP delegation failed for {agent_name}: {exc}"
+                    logger.warning(
+                        "ACP delegation to %s failed: %s",
+                        agent_name,
+                        type(exc).__name__,
+                    )
+                    logger.debug("ACP delegation exception detail", exc_info=True)
+                    answer = f"Error: ACP delegation failed for {agent_name}."
                 _record_delegation(adapter, agent_name, answer=answer)
                 return answer
 
