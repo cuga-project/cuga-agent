@@ -1163,32 +1163,11 @@ Evolve can bring task-specific guidance into the prompt before execution and sav
 
 This flow is:
 
-- **Container deployment** - Evolve is installed and started automatically by `Dockerfile.ubi`
-- **Non-blocking calls** - individual Evolve call failures do not fail the task; the container restarts if either service exits
-- **Local development** - install `cuga[evolve]` or use the manual setup below
+- **Opt-in** - disabled by default
+- **Non-blocking** - Evolve failures do not fail the task
+- **Optional integration** - install `cuga[evolve]` if you want the upstream Evolve package available locally, or let `uvx` fetch it on demand
 
-### Container deployment
-
-Run the image with your normal LLM credentials and storage configuration. Evolve
-starts automatically, and CUGA connects to it after it becomes ready. No manager
-MCP entry or custom command is required. If either service exits, the container
-stops so Kubernetes can restart it.
-
-Evolve stores its default filesystem data in `/data/dbs/evolve`, covered by the
-Helm chart's existing PVC. To use PostgreSQL/pgvector, supply `EVOLVE_BACKEND=postgres`
-and `EVOLVE_PG_*` connection variables. To use an external Evolve service, set
-`CUGA_EMBEDDED_EVOLVE=false` and configure CUGA's Evolve URL/mode.
-
-For airgapped deployment, build the image while connected. Default embedding,
-document-processing, OCR, tokenizer, and browser assets are downloaded and
-verified without networking during the build. Custom models and optional model-based
-features need preloading before use; LLM and database endpoints must be reachable
-inside your isolated network.
-
-### Manual setup for local development (outside the container)
-
-These steps are for running CUGA directly from a Python environment. Skip them
-when using the container image.
+### Setup Steps:
 
 1. Choose how Evolve will be started.
   Recommended for normal CUGA usage: let the CUGA MCP registry launch Evolve for you.
@@ -1200,7 +1179,6 @@ when using the container image.
    Important: this command starts Evolve in `stdio` mode through the upstream Evolve package. It is intended to be launched by the CUGA registry, not run manually in a separate terminal.
    Alternative for standalone/manual debugging: run Evolve yourself as an SSE server:
    If you run Evolve from a checked-out `altk-evolve` repo instead of `uvx`, install the Postgres extras first with `uv sync --extra pgvector`.
-
 2. Add these environment values in the MCP tool UI:
 
 ```env
