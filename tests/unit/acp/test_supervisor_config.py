@@ -102,6 +102,38 @@ def test_no_scheme_raises():
         _validate_acp_protocol("my-agent", cfg)
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http:///acp",
+        "https://bad host/acp",
+        "https://bad\nhost/acp",
+        "https://bad\thost/acp",
+        "https://example.com/acp\x00suffix",
+        "https://example.com/acp\x7fsuffix",
+        "https://example.com/acp\x80suffix",
+        "https://example.com/acp\x9fsuffix",
+        "https://-bad.example/acp",
+        "https://999.999.999.999/acp",
+        "https://0x7f000001/acp",
+        "https://0x7f.0.0.1/acp",
+        "https://example.com:notaport/acp",
+        "https://example.com:70000/acp",
+    ],
+)
+def test_invalid_endpoint_raises(endpoint: str):
+    cfg = {"endpoint": endpoint, "agent_name": "remote"}
+    with pytest.raises(ValueError, match="valid"):
+        _validate_acp_protocol("my-agent", cfg)
+
+
+@pytest.mark.parametrize("remote_name", ["INVALID_NAME", "-remote", "remote-", "a" * 64])
+def test_invalid_agent_name_raises(remote_name: str):
+    cfg = {"endpoint": "https://agent.example.com/acp", "agent_name": remote_name}
+    with pytest.raises(ValueError, match="RFC 1123"):
+        _validate_acp_protocol("my-agent", cfg)
+
+
 # ---------------------------------------------------------------------------
 # Timeout validation and capping
 # ---------------------------------------------------------------------------
