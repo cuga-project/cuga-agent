@@ -70,3 +70,31 @@ def acp_settings() -> Any:
         enable_playground_cors: bool = False
 
     return normalize_acp_settings(_RawSettings())
+
+
+@pytest.fixture
+def tracking_event_stream() -> tuple[Any, list[str | None]]:
+    """Event-stream fixture that records every thread_id it receives.
+
+    Returns a (event_stream_func, captured_thread_ids) tuple so tests can
+    assert which thread_ids the runner was called with.
+    """
+    captured_thread_ids: list[str | None] = []
+
+    async def _event_stream(
+        query: str,
+        api_mode: bool = False,
+        thread_id: str | None = None,
+        agent: Any = None,
+        disable_history: bool = False,
+        user_id: str = "test_user",
+        user_attachments: Any = None,
+        resume: Any = None,
+    ) -> AsyncIterator[bytes]:
+        captured_thread_ids.append(thread_id)
+        yield b"event: AgentThinking\ndata: Processing request...\n\n"
+        answer = f"The answer to '{query}' is 42"
+        payload = json.dumps({"data": answer, "variables": {}, "active_policies": []})
+        yield f"event: Answer\ndata: {payload}\n\n".encode()
+
+    return _event_stream, captured_thread_ids
