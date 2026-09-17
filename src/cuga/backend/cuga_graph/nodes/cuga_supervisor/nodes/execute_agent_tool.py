@@ -196,6 +196,10 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                 apps_list=None,
                 variable_manager=var_manager,
                 plan=exec_plan,
+                # A delegation awaits a whole multi-turn agent, not one API call.
+                # Keep this deadline local to the parent: the child retains its
+                # normal sandbox/tool limits, and concurrent runs share no overrides.
+                execution_timeout=float(settings.supervisor.execution_timeout),
             )
 
             logger.debug(f"Execution output: {output.strip()[:500]}...")
