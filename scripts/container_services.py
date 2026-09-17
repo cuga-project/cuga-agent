@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -99,16 +100,18 @@ def main() -> int:
     command = sys.argv[1:]
     if not command:
         raise SystemExit("Missing CUGA command")
-    if os.environ.get("CUGA_EMBEDDED_EVOLVE", "true").lower() in {"0", "false", "no"}:
+    evolve_command = shutil.which("evolve-mcp")
+    if evolve_command is None:
         os.execvp(command[0], command)
     data_dir = Path(os.environ.setdefault("EVOLVE_DATA_DIR", "/data/dbs/evolve"))
     data_dir.mkdir(parents=True, exist_ok=True)
-    os.environ["DYNACONF_EVOLVE__ENABLED"] = "true"
+    # The deployer owns the integration toggle. Provision the installed service
+    # and its connection settings without enabling or disabling CUGA memory.
     os.environ["DYNACONF_EVOLVE__MODE"] = "direct"
     os.environ["DYNACONF_EVOLVE__URL"] = "http://127.0.0.1:8201/sse"
     return supervise(
         command,
-        ["/app/.venv/bin/evolve-mcp", "--transport", "sse", "--host", "127.0.0.1", "--port", "8201"],
+        [evolve_command, "--transport", "sse", "--host", "127.0.0.1", "--port", "8201"],
     )
 
 

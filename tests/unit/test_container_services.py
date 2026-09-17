@@ -18,6 +18,64 @@ spec.loader.exec_module(services)
 
 
 @pytest.mark.unit
+def test_missing_evolve_runs_cuga_without_changing_configuration(monkeypatch, tmp_path):
+    command = ["cuga", "start", "manager"]
+    monkeypatch.setattr(sys, "argv", [str(SUPERVISOR), *command])
+    monkeypatch.setattr(services.shutil, "which", lambda name: None)
+    monkeypatch.setenv("EVOLVE_DATA_DIR", str(tmp_path / "unused"))
+    monkeypatch.setenv("DYNACONF_EVOLVE__MODE", "registry")
+    monkeypatch.setenv("DYNACONF_EVOLVE__ENABLED", "false")
+    before = dict(os.environ)
+
+    class ExecCalled(Exception):
+        pass
+
+    def exec_cuga(executable, args):
+        assert executable == "cuga"
+        assert args == command
+        raise ExecCalled
+
+    monkeypatch.setattr(os, "execvp", exec_cuga)
+    with pytest.raises(ExecCalled):
+        services.main()
+    assert dict(os.environ) == before
+    assert not (tmp_path / "unused").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("enabled", [None, "true", "false"])
+def test_installed_evolve_is_configured_without_overriding_deployer_toggle(monkeypatch, tmp_path, enabled):
+    monkeypatch.setattr(sys, "argv", [str(SUPERVISOR), "cuga", "start", "manager"])
+    monkeypatch.setattr(services.shutil, "which", lambda name: "/custom/bin/evolve-mcp")
+    monkeypatch.setenv("EVOLVE_DATA_DIR", str(tmp_path / "evolve"))
+    monkeypatch.delenv("DYNACONF_EVOLVE__ENABLED", raising=False)
+    monkeypatch.setenv("DYNACONF_EVOLVE__MODE", "auto")
+    monkeypatch.setenv("DYNACONF_EVOLVE__URL", "http://unused/sse")
+    if enabled is not None:
+        monkeypatch.setenv("DYNACONF_EVOLVE__ENABLED", enabled)
+
+    def supervise(cuga, evolve):
+        assert cuga == ["cuga", "start", "manager"]
+        assert evolve == [
+            "/custom/bin/evolve-mcp",
+            "--transport",
+            "sse",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8201",
+        ]
+        assert os.environ.get("DYNACONF_EVOLVE__ENABLED") == enabled
+        assert os.environ["DYNACONF_EVOLVE__MODE"] == "direct"
+        assert os.environ["DYNACONF_EVOLVE__URL"] == "http://127.0.0.1:8201/sse"
+        assert (tmp_path / "evolve").is_dir()
+        return 0
+
+    monkeypatch.setattr(services, "supervise", supervise)
+    assert services.main() == 0
+
+
+@pytest.mark.unit
 def test_cuga_is_not_started_when_evolve_never_becomes_ready(tmp_path):
     marker = tmp_path / "cuga-started"
     result = services.supervise(
