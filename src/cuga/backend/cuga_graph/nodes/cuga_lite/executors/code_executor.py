@@ -118,6 +118,7 @@ class CodeExecutor:
         mode: Optional[Literal['local', 'e2b', 'opensandbox']] = None,
         plan: Optional[ExecutionPlan] = None,
         variable_manager: Optional[Any] = None,
+        execution_timeout: Optional[float] = None,
     ) -> tuple[str, dict[str, Any]]:
         """Execute code with async tools available in the local namespace.
 
@@ -133,6 +134,8 @@ class CodeExecutor:
                 Python execution path unless ``mode`` is given explicitly.
             variable_manager: Variable manager to record new variables into.
                 Defaults to ``state.variables_manager`` (preserves prior behavior).
+            execution_timeout: Per-call wall-clock deadline. Defaults to the
+                configured sandbox deadline; supervisors use an agent-task deadline.
 
         Returns:
             Tuple of (execution result, new variables dictionary)
@@ -176,6 +179,7 @@ class CodeExecutor:
                 mode=mode,
                 plan=plan,
                 variable_manager=variable_manager,
+                execution_timeout=execution_timeout,
                 skills_on=skills_on,
             )
         finally:
@@ -194,6 +198,7 @@ class CodeExecutor:
         mode: Optional[Literal['local', 'e2b', 'opensandbox']] = None,
         plan: Optional[ExecutionPlan] = None,
         variable_manager: Optional[Any] = None,
+        execution_timeout: Optional[float] = None,
         skills_on: bool,
     ) -> tuple[str, dict[str, Any]]:
         result = ""
@@ -249,6 +254,7 @@ class CodeExecutor:
                     state=state,
                     thread_id=thread_id,
                     apps_list=apps_list,
+                    **({"execution_timeout": execution_timeout} if execution_timeout is not None else {}),
                 )
                 _locals.update(parsed_locals)
             else:
@@ -256,7 +262,11 @@ class CodeExecutor:
                 result = await executor.execute(
                     wrapped_code=wrapped_code,
                     context_locals=_locals,
-                    timeout=settings.advanced_features.sandbox_execution_timeout,
+                    timeout=(
+                        execution_timeout
+                        if execution_timeout is not None
+                        else settings.advanced_features.sandbox_execution_timeout
+                    ),
                 )
 
         except Exception as e:
