@@ -50,21 +50,14 @@ def test_installed_evolve_is_configured_without_overriding_deployer_toggle(monke
     monkeypatch.setenv("EVOLVE_DATA_DIR", str(tmp_path / "evolve"))
     monkeypatch.delenv("DYNACONF_EVOLVE__ENABLED", raising=False)
     monkeypatch.setenv("DYNACONF_EVOLVE__MODE", "auto")
-    monkeypatch.setenv("DYNACONF_EVOLVE__URL", "http://unused/sse")
+    monkeypatch.delenv("DYNACONF_EVOLVE__URL", raising=False)
     if enabled is not None:
         monkeypatch.setenv("DYNACONF_EVOLVE__ENABLED", enabled)
 
     def supervise(cuga, evolve):
         assert cuga == ["cuga", "start", "manager"]
-        assert evolve == [
-            "/custom/bin/evolve-mcp",
-            "--transport",
-            "sse",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "8201",
-        ]
+        assert evolve == [sys.executable, "-m", "cuga.backend.evolve.http_worker"]
+        assert len(os.environ["CUGA_EVOLVE_API_TOKEN"]) >= 32
         assert os.environ.get("DYNACONF_EVOLVE__ENABLED") == enabled
         assert os.environ["DYNACONF_EVOLVE__MODE"] == "direct"
         assert os.environ["DYNACONF_EVOLVE__URL"] == "http://127.0.0.1:8201/sse"
@@ -140,3 +133,28 @@ def test_sigterm_stops_both_services(tmp_path):
         if proc.poll() is None:
             proc.terminate()
             proc.wait(timeout=5)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "mode,url",
+    [("registry", ""), ("direct", "https://external.example/sse"), ("auto", "https://external.example/sse")],
+)
+def test_external_evolve_is_preserved(monkeypatch, mode, url):
+    monkeypatch.setattr(sys, "argv", [str(SUPERVISOR), "cuga", "start", "manager"])
+    monkeypatch.setenv("DYNACONF_EVOLVE__MODE", mode)
+    monkeypatch.setenv("DYNACONF_EVOLVE__URL", url)
+    before = dict(os.environ)
+
+    class ExecCalled(Exception):
+        pass
+
+    def exec_cuga(executable, command):
+        assert executable == "cuga"
+        assert command == ["cuga", "start", "manager"]
+        raise ExecCalled
+
+    monkeypatch.setattr(os, "execvp", exec_cuga)
+    with pytest.raises(ExecCalled):
+        services.main()
+    assert dict(os.environ) == before
