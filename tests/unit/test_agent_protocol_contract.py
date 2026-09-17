@@ -7,6 +7,7 @@ Covers:
 
 from __future__ import annotations
 
+import json as _json
 from typing import Any, AsyncIterator
 
 import pytest
@@ -151,3 +152,129 @@ def test_package_exports_agent_runner() -> None:
     from cuga.backend.server.agent_protocol import AgentRunner as AR
 
     assert AR is AgentRunner
+
+
+# ── SimpleAgentRunner caller_user_id ──────────────────────────────────────────
+
+
+class _Snap:
+    def __init__(self, next_, values):
+        self.next = next_
+        self.values = values
+
+
+class _Graph:
+    def __init__(self, snaps):
+        self._snaps = snaps
+        self.calls = 0
+
+    def get_state(self, _config):
+        snap = self._snaps[min(self.calls, len(self._snaps) - 1)]
+        self.calls += 1
+        return snap
+
+
+class _Agent:
+    def __init__(self, graph):
+        self.graph = graph
+
+
+class _AppState:
+    def __init__(self, graph):
+        self.agent = _Agent(graph)
+        self.output_format = None
+
+
+def _answer_frame(text: str) -> bytes:
+    payload = _json.dumps({"data": text, "variables": {}, "active_policies": []})
+    return f"event: Answer\ndata: {payload}\n\n".encode()
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_simple_agent_runner_passes_configured_caller_id() -> None:
+    """SimpleAgentRunner should pass its configured caller_user_id to event_stream."""
+    from cuga.backend.server.agent_protocol.simple_runner import SimpleAgentRunner
+
+    captured_user_ids: list[str] = []
+    graph = _Graph([_Snap((), {})])
+
+    async def event_stream(**kwargs):
+        captured_user_ids.append(kwargs.get("user_id", ""))
+        yield _answer_frame("response")
+
+    runner = SimpleAgentRunner(
+        _AppState(graph),
+        event_stream,
+        auto_approve=False,
+        caller_user_id="custom_caller",
+    )
+    events = [ev async for ev in runner.run("hello", "ctx-1")]
+
+    assert events[-1].name == "final_answer"
+    assert captured_user_ids == ["custom_caller"]
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_simple_agent_runner_default_caller_id() -> None:
+    """SimpleAgentRunner defaults to 'agent_protocol_user' when no caller_user_id given."""
+    from cuga.backend.server.agent_protocol.simple_runner import SimpleAgentRunner
+
+    captured_user_ids: list[str] = []
+    graph = _Graph([_Snap((), {})])
+
+    async def event_stream(**kwargs):
+        captured_user_ids.append(kwargs.get("user_id", ""))
+        yield _answer_frame("response")
+
+    runner = SimpleAgentRunner(_AppState(graph), event_stream)
+    events = [ev async for ev in runner.run("hello", "ctx-2")]
+
+    assert events[-1].name == "final_answer"
+    assert captured_user_ids == ["agent_protocol_user"]
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_a2a_wrapper_passes_a2a_user() -> None:
+    """SimpleA2ARunner compatibility wrapper must always pass caller_user_id='a2a_user'."""
+    from cuga.backend.server.a2a.simple_runner import SimpleA2ARunner
+
+    captured_user_ids: list[str] = []
+    graph = _Graph([_Snap((), {})])
+
+    async def event_stream(**kwargs):
+        captured_user_ids.append(kwargs.get("user_id", ""))
+        yield _answer_frame("a2a response")
+
+    runner = SimpleA2ARunner(_AppState(graph), event_stream)
+    events = [ev async for ev in runner.run("hello", "ctx-3")]
+
+    assert events[-1].name == "final_answer"
+    assert captured_user_ids == ["a2a_user"]
+
+
+@pytest.mark.unit
+def test_package_exports_simple_agent_runner() -> None:
+    """SimpleAgentRunner must be importable from the package root."""
+    from cuga.backend.server.agent_protocol import SimpleAgentRunner as SAR
+
+    assert SAR.__name__ == "SimpleAgentRunner"
+
+
+@pytest.mark.unit
+def test_package_exports_supervisor_agent_runner() -> None:
+    """SupervisorAgentRunner must be importable from the package root."""
+    from cuga.backend.server.agent_protocol import SupervisorAgentRunner as SUAR
+
+    assert SUAR.__name__ == "SupervisorAgentRunner"
+
+
+@pytest.mark.unit
+def test_a2a_stream_event_is_agent_stream_event_alias() -> None:
+    """A2AStreamEvent in a2a/runner.py must be the same object as AgentStreamEvent."""
+    from cuga.backend.server.a2a.runner import A2AStreamEvent
+    from cuga.backend.server.agent_protocol import AgentStreamEvent
+
+    assert A2AStreamEvent is AgentStreamEvent
