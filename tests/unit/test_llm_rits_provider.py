@@ -28,7 +28,7 @@ def test_rits_chat_openai_uses_canonical_kwargs(monkeypatch):
             )
 
     kwargs = mock_chat_openai.call_args.kwargs
-    assert kwargs["api_key"] == "/"
+    assert kwargs["api_key"] == "dummy"
     assert kwargs["base_url"] == "https://rits.example.test"
     assert kwargs["model"] == "openai/gpt-oss-120b-a100"
     assert kwargs["default_headers"] == {"RITS_API_KEY": "test-rits-key"}
