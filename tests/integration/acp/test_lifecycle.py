@@ -305,6 +305,8 @@ def raising_event_stream() -> Any:
 # ── Case 1: Agent listing and manifest lookup ──────────────────────────────
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 async def test_agent_listing_returns_cuga(
     acp_settings: Any,
     mock_app_state: Any,
@@ -339,6 +341,8 @@ async def test_agent_listing_returns_cuga(
 # ── Case 2: Unknown agent returns 404 ─────────────────────────────────────
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 async def test_unknown_agent_returns_404(
     acp_settings: Any,
     mock_app_state: Any,
@@ -361,6 +365,8 @@ async def test_unknown_agent_returns_404(
 # ── Case 3: Synchronous run returns text output ────────────────────────────
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 async def test_sync_run_returns_agent_message(
     acp_settings: Any,
     mock_app_state: Any,
@@ -389,6 +395,8 @@ async def test_sync_run_returns_agent_message(
 # ── Case 4: Asynchronous run — 202, then poll to completion ───────────────
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 async def test_async_run_returns_202_then_completes(
     acp_settings: Any,
     mock_app_state: Any,
@@ -429,6 +437,8 @@ async def test_async_run_returns_202_then_completes(
 # ── Case 5: Stream run — SSE events contain expected discriminators ────────
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 async def test_stream_run_sse_events(
     acp_settings: Any,
     mock_app_state: Any,
@@ -458,6 +468,8 @@ async def test_stream_run_sse_events(
 # ── Case 6: Event-history endpoint returns JSON (not SSE) ─────────────────
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 async def test_event_history_returns_json(
     acp_settings: Any,
     mock_app_state: Any,
@@ -490,16 +502,19 @@ async def test_event_history_returns_json(
 # ── Case 7: Session ID reused across two runs ─────────────────────────────
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 async def test_session_id_reused_across_runs(
     acp_settings: Any,
     mock_app_state: Any,
-    fake_event_stream: Any,
+    tracking_event_stream: Any,
 ) -> None:
-    """Two runs with the same session_id share the same session."""
+    """Two runs with the same session_id share the same session and thread_id."""
     import httpx
     from acp_sdk.models import Run, RunMode
 
-    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
+    event_stream_func, captured_thread_ids = tracking_event_stream
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, event_stream_func)
 
     async with parent.router.lifespan_context(parent):
         async with httpx.AsyncClient(
@@ -523,10 +538,20 @@ async def test_session_id_reused_across_runs(
             )
             assert run2.run_id != run1.run_id, "Two runs must have distinct run IDs"
 
+    # Both runs must have passed the same context_id (thread_id) to the runner
+    assert len(captured_thread_ids) == 2, f"Expected 2 runner invocations, got {len(captured_thread_ids)}"
+    assert captured_thread_ids[0] is not None, "First run must pass a non-None thread_id"
+    assert captured_thread_ids[0] == captured_thread_ids[1], (
+        f"Both runs must use the same thread_id (context_id). "
+        f"Got {captured_thread_ids[0]!r} vs {captured_thread_ids[1]!r}"
+    )
+
 
 # ── Case 8: HITL in direct-agent mode — skipped for fake runner ───────────
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 @pytest.mark.skip(
     reason="HITL requires a real runner that yields MessageAwaitRequest; fake runner returns answers directly"
 )
@@ -542,6 +567,8 @@ async def test_hitl_direct_agent_mode(
 # ── Case 9: Cancellation of active run ───────────────────────────────────
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 async def test_cancel_active_run(
     acp_settings: Any,
     mock_app_state: Any,
@@ -574,6 +601,8 @@ async def test_cancel_active_run(
 # ── Case 10: Cancellation after completion ───────────────────────────────
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 async def test_cancel_completed_run_returns_rejection(
     acp_settings: Any,
     mock_app_state: Any,
@@ -604,12 +633,16 @@ async def test_cancel_completed_run_returns_rejection(
 # ── Case 11: Unknown run ID returns 404 ──────────────────────────────────
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 async def test_unknown_run_id_returns_404(
     acp_settings: Any,
     mock_app_state: Any,
     fake_event_stream: Any,
 ) -> None:
-    """GET /acp/runs/{unknown} returns 404."""
+    """GET /acp/runs/{unknown} returns 404 for never-created and different UUIDs."""
+    import uuid
+
     import httpx
 
     parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
@@ -619,13 +652,101 @@ async def test_unknown_run_id_returns_404(
             transport=httpx.ASGITransport(app=parent),
             base_url="http://test",
         ) as client:
+            # A nil UUID that was never created
             resp = await client.get("/acp/runs/00000000-0000-0000-0000-000000000000")
             assert resp.status_code == 404
+
+            # A random valid-looking UUID also never created
+            random_id = str(uuid.uuid4())
+            resp2 = await client.get(f"/acp/runs/{random_id}")
+            assert resp2.status_code == 404, (
+                f"Expected 404 for random UUID {random_id}, got {resp2.status_code}"
+            )
+
+
+# ── Case 11b: Expired run ID returns 404 (slow — TTL wall-clock) ──────────
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+@pytest.mark.slow
+@pytest.mark.skip(reason="Requires real wall-clock TTL; run manually with -m slow")
+async def test_expired_run_id_returns_404(
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """A run that existed but whose TTL has elapsed returns 404."""
+    import asyncio
+
+    import httpx
+    from acp_sdk.models import Run, RunMode
+    from cuga.backend.server.acp.app import build_acp_app_for_settings
+    from cuga.backend.server.acp.settings import normalize_acp_settings
+
+    # Build settings with a 1-second TTL
+    from dataclasses import dataclass
+
+    @dataclass
+    class _ShortTTLSettings:
+        enabled: bool = True
+        path_prefix: str = "/acp"
+        agent_name: str = "cuga"
+        agent_description: str = "TTL test"
+        supervisor_config_path: str = ""
+        auto_approve: bool = False
+        store: str = "memory"
+        store_limit: int = 100
+        store_ttl_seconds: int = 1
+        auth_required: bool = False
+        enable_playground_cors: bool = False
+
+    short_ttl_settings = normalize_acp_settings(_ShortTTLSettings())
+    acp_child = build_acp_app_for_settings(
+        short_ttl_settings, mock_app_state, event_stream_func=fake_event_stream
+    )
+
+    from contextlib import asynccontextmanager
+    from fastapi import FastAPI
+
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI):
+        from contextlib import AsyncExitStack
+
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(acp_child.router.lifespan_context(acp_child))
+            yield
+
+    parent = FastAPI(lifespan=_lifespan)
+    parent.mount("/acp", acp_child)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            # Create a run
+            resp = await client.post(
+                "/acp/runs",
+                json={"agent_name": "cuga", "input": _AGENT_INPUT, "mode": RunMode.SYNC},
+            )
+            assert resp.status_code in (200, 201)
+            run_id = str(Run(**resp.json()).run_id)
+
+            # Wait for TTL to expire (2 × the configured TTL)
+            await asyncio.sleep(2)
+
+            # The run should now be gone from the store
+            expired_resp = await client.get(f"/acp/runs/{run_id}")
+            assert expired_resp.status_code == 404, (
+                f"Expected 404 for expired run {run_id}, got {expired_resp.status_code}"
+            )
 
 
 # ── Case 12: Two concurrent runs do not mix events ───────────────────────
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 async def test_concurrent_runs_do_not_mix_events(
     acp_settings: Any,
     mock_app_state: Any,
@@ -684,6 +805,8 @@ async def test_concurrent_runs_do_not_mix_events(
 # ── Case 13: Memory-store TTL expiry — marked slow, skipped by default ────
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 @pytest.mark.slow
 @pytest.mark.skip(reason="Requires real wall-clock time; run manually with -m slow")
 async def test_memory_store_ttl_expiry(
@@ -698,6 +821,8 @@ async def test_memory_store_ttl_expiry(
 # ── Case 14: Invalid inputs return ACP errors without reflecting values ────
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 async def test_invalid_input_returns_acp_error(
     acp_settings: Any,
     mock_app_state: Any,
@@ -752,6 +877,8 @@ async def test_invalid_input_returns_acp_error(
 # ── Case 15: Runner exception creates a failed run with sanitized message ─
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
 async def test_runner_exception_creates_failed_run(
     acp_settings: Any,
     mock_app_state: Any,
@@ -772,6 +899,11 @@ async def test_runner_exception_creates_failed_run(
 
     # The SDK wraps the error; the run may complete (with an error message) or fail
     assert resp.status_code in (200, 201, 500), resp.text[:300]
+
+    # Raw exception text must never leak in the response body regardless of status
+    assert "Simulated runner crash" not in resp.text, (
+        "Raw exception message must not appear in the response body"
+    )
 
     if resp.status_code in (200, 201):
         run = Run(**resp.json())
