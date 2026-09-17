@@ -142,6 +142,7 @@ opensandbox_timeout_seconds = 600
 
 [supervisor]
 enabled = false  # Enable CugaSupervisor for multi-agent coordination
+execution_timeout = 300  # Seconds per delegation code block, including the sub-agent's multi-turn work; does not change child sandbox/tool limits.
 config_path = "src/cuga/backend/tools_env/registry/config/supervisor_demo_crm.yaml"  # Path to supervisor YAML config (e.g., "config/supervisor_demo_crm.yaml"). If empty, uses default supervisor setup
 agent_approval = true  # Require user approval before executing any sub-agent (human-in-the-loop)
 pass_variables_a2a = false  # When true, A2A delegate tool accepts variables and sends them in request metadata (A2A protocol extension)
