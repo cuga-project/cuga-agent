@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import signal
 import shutil
+import secrets
 import subprocess
 import sys
 import time
@@ -100,6 +101,12 @@ def main() -> int:
     command = sys.argv[1:]
     if not command:
         raise SystemExit("Missing CUGA command")
+    # Explicit operator endpoints remain external, even when the image includes
+    # Evolve. Never replace their storage/namespace with the bundled service.
+    mode = os.environ.get("DYNACONF_EVOLVE__MODE", "auto").lower()
+    url = os.environ.get("DYNACONF_EVOLVE__URL", "").rstrip("/")
+    if mode == "registry" or (url and url != "http://127.0.0.1:8201/sse"):
+        os.execvp(command[0], command)
     evolve_command = shutil.which("evolve-mcp")
     if evolve_command is None:
         os.execvp(command[0], command)
@@ -109,9 +116,12 @@ def main() -> int:
     # and its connection settings without enabling or disabling CUGA memory.
     os.environ["DYNACONF_EVOLVE__MODE"] = "direct"
     os.environ["DYNACONF_EVOLVE__URL"] = "http://127.0.0.1:8201/sse"
+    # A fresh credential authenticates CUGA-supplied scope on the private API.
+    # It is never sent to the browser or reused for external Evolve deployments.
+    os.environ["CUGA_EVOLVE_API_TOKEN"] = secrets.token_urlsafe(32)
     return supervise(
         command,
-        [evolve_command, "--transport", "sse", "--host", "127.0.0.1", "--port", "8201"],
+        [sys.executable, "-m", "cuga.backend.evolve.http_worker"],
     )
 
 
