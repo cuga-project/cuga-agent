@@ -4,10 +4,7 @@ on:
   issue_comment:
     types: [created]
 
-permissions:
-  contents: read
-  issues: write
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: run-pr-eval-${{ github.event.issue.number }}
@@ -27,98 +24,218 @@ jobs:
       )
     runs-on: [self-hosted, linux, run-pr-eval]
     timeout-minutes: 120
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      command_body: ${{ steps.command.outputs.command_body }}
+      provider: ${{ steps.command.outputs.provider }}
+      requested_sha: ${{ steps.command.outputs.requested_sha }}
 
     steps:
-      - name: Get PR head
-        id: pr
-        uses: actions/github-script@v7
+      - name: Validate PR evaluation command
+        id: command
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
+            const body = context.payload.comment.body || "";
+            const repoFullName = `${context.repo.owner}/${context.repo.repo}`;
+            const commandLine = body
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .find((line) => line.includes("/run-pr-eval"));
+
+            if (!commandLine) {
+              core.setFailed("No /run-pr-eval command found.");
+              return;
+            }
+
             const pr = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: context.issue.number,
             });
 
-            core.setOutput("head_repo", pr.data.head.repo.full_name);
-            core.setOutput("head_ref", pr.data.head.ref);
-            core.setOutput("head_sha", pr.data.head.sha);
+            if (pr.data.head.repo.full_name !== repoFullName) {
+              core.setFailed("Refusing to run PR evaluation for forked PR heads.");
+              return;
+            }
 
-      - name: Checkout PR head commit
+            const normalizedCommand = commandLine
+              .slice(commandLine.indexOf("/run-pr-eval"))
+              .replace(/`/g, "")
+              .replace(/\s*=\s*/g, "=")
+              .replace(/,\s+/g, ",")
+              .replace(/\s+/g, " ")
+              .trim();
+
+            const tokens = normalizedCommand.split(" ");
+            const params = new Map();
+            const supportedParams = new Set([
+              "agent",
+              "benchmark",
+              "eval_key",
+              "model_name",
+              "num_tasks",
+              "provider",
+              "sha",
+              "task_id",
+              "task_ids",
+            ]);
+
+            for (const token of tokens.slice(1)) {
+              if (!token) {
+                continue;
+              }
+              const separatorIndex = token.indexOf("=");
+              if (separatorIndex === -1) {
+                core.setFailed(`Unsupported argument: ${token}`);
+                return;
+              }
+
+              const key = token.slice(0, separatorIndex);
+              const value = token.slice(separatorIndex + 1);
+              if (!supportedParams.has(key)) {
+                core.setFailed(`Unsupported parameter: ${key}`);
+                return;
+              }
+              if (!value) {
+                core.setFailed(`Missing value for parameter: ${key}`);
+                return;
+              }
+              if (!/^[A-Za-z0-9._,/:+-]+$/.test(value)) {
+                core.setFailed(`Unsupported value for parameter: ${key}`);
+                return;
+              }
+              params.set(key, value);
+            }
+
+            const requestedSha = params.get("sha");
+            if (!requestedSha || !/^[0-9a-f]{40}$/i.test(requestedSha)) {
+              core.setFailed("The /run-pr-eval command must include sha=<40-character PR head SHA>.");
+              return;
+            }
+            if (requestedSha.toLowerCase() !== pr.data.head.sha.toLowerCase()) {
+              core.setFailed(`Requested sha ${requestedSha} does not match current PR head ${pr.data.head.sha}.`);
+              return;
+            }
+
+            const provider = (params.get("provider") || "rits").toLowerCase();
+            if (!["rits", "litellm"].includes(provider)) {
+              core.setFailed("provider must be one of: rits, litellm.");
+              return;
+            }
+
+            const agent = (params.get("agent") || "react").toLowerCase();
+            if (!["react", "cuga", "codeact"].includes(agent)) {
+              core.setFailed("agent must be one of: react, cuga, codeact.");
+              return;
+            }
+
+            const benchmark = (params.get("benchmark") || "appworld").toLowerCase();
+            if (!["appworld", "m3"].includes(benchmark)) {
+              core.setFailed("benchmark must be one of: appworld, m3.");
+              return;
+            }
+
+            const numTasks = params.get("num_tasks");
+            if (numTasks && !/^[1-9][0-9]*$/.test(numTasks)) {
+              core.setFailed("num_tasks must be a positive integer.");
+              return;
+            }
+
+            params.set("provider", provider);
+            params.set("agent", agent);
+            params.set("benchmark", benchmark);
+
+            const forwardedKeys = [
+              "model_name",
+              "task_id",
+              "task_ids",
+              "eval_key",
+              "benchmark",
+              "num_tasks",
+              "agent",
+              "provider",
+            ];
+            const forwardedCommand = [
+              "/run-pr-eval",
+              ...forwardedKeys
+                .filter((key) => params.has(key))
+                .map((key) => `${key}=${params.get(key)}`),
+            ].join(" ");
+
+            core.setOutput("command_body", forwardedCommand);
+            core.setOutput("provider", provider);
+            core.setOutput("requested_sha", requestedSha.toLowerCase());
+            core.setOutput("head_repo", pr.data.head.repo.full_name);
+
+      - name: Checkout requested PR commit
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
-          repository: ${{ steps.pr.outputs.head_repo }}
-          ref: ${{ steps.pr.outputs.head_sha }}
+          repository: ${{ steps.command.outputs.head_repo }}
+          ref: ${{ steps.command.outputs.requested_sha }}
           persist-credentials: false
 
-      - name: Verify PR code
-        shell: bash
-        run: |
-          echo "Workspace: ${GITHUB_WORKSPACE}"
-          echo "PR SHA:"
-          git rev-parse HEAD
-
-          echo "CUGA source:"
-          if [[ -d "${GITHUB_WORKSPACE}/src/cuga" ]]; then
-            ls -la "${GITHUB_WORKSPACE}/src/cuga" | head
-          else
-            echo "${GITHUB_WORKSPACE}/src/cuga not found"
-          fi
-
-      - name: Parse eval provider
-        id: eval-provider
+      - name: Verify checked-out commit
         shell: bash
         env:
-          COMMENT_BODY: ${{ github.event.comment.body }}
+          REQUESTED_SHA: ${{ steps.command.outputs.requested_sha }}
         run: |
-          provider="rits"
-          normalized_comment="${COMMENT_BODY//$'\r'/ }"
-          normalized_comment="${normalized_comment//$'\n'/ }"
+          set -euo pipefail
 
-          for token in ${normalized_comment}; do
-            case "${token}" in
-              provider=*)
-                provider="${token#provider=}"
-                ;;
-            esac
-          done
+          actual_sha="$(git rev-parse HEAD)"
+          if [[ "${actual_sha}" != "${REQUESTED_SHA}" ]]; then
+            echo "Checked out ${actual_sha}, expected ${REQUESTED_SHA}" >&2
+            exit 1
+          fi
 
-          provider="$(printf '%s' "${provider}" | tr '[:upper:]' '[:lower:]')"
-          echo "provider=${provider}" >> "${GITHUB_OUTPUT}"
+          echo "Workspace: ${GITHUB_WORKSPACE}"
+          echo "Checked out PR SHA: ${actual_sha}"
 
-      - name: Run AppWorld evaluation
+      - name: Run PR evaluation
         id: evaluation
         shell: bash
         env:
-          OPENAI_API_KEY: ${{ steps.eval-provider.outputs.provider == 'litellm' && secrets.OPENAI_API_KEY || '' }}
-          RITS_API_KEY: ${{ steps.eval-provider.outputs.provider == 'rits' && secrets.RITS_API_KEY || '' }}
-          LITE_LLM_KEY: ${{ steps.eval-provider.outputs.provider == 'litellm' && secrets.LITE_LLM_KEY || '' }}
+          OPENAI_API_KEY: ${{ steps.command.outputs.provider == 'litellm' && secrets.OPENAI_API_KEY || '' }}
+          RITS_API_KEY: ${{ steps.command.outputs.provider == 'rits' && secrets.RITS_API_KEY || '' }}
+          LITE_LLM_KEY: ${{ steps.command.outputs.provider == 'litellm' && secrets.LITE_LLM_KEY || '' }}
           AGENT_SETTING_CONFIG: settings.rits.toml
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           MODEL_NAME: ${{ vars.MODEL_NAME }}
           ENVIRONMENT_URL: http://127.0.0.1:8000
           APIS_URL: http://127.0.0.1:9000
           PR_NUMBER: ${{ github.event.issue.number }}
-          PR_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
+          PR_HEAD_SHA: ${{ steps.command.outputs.requested_sha }}
+          COMMENT_BODY: ${{ steps.command.outputs.command_body }}
           PYTHONPATH: ${{ github.workspace }}/src
+          GITHUB_TOKEN: ""
         run: |
           set +e
 
-          mkdir -p "${HOME}/pr-regression-testing/logs"
+          mkdir -p "${GITHUB_WORKSPACE}/pr-eval-logs"
           run_started_at="$(date -u +"%Y%m%dT%H%M%SZ")"
           short_sha="${PR_HEAD_SHA:0:12}"
           log_prefix="pr-${PR_NUMBER}-${short_sha}-${run_started_at}"
-          output_log="${HOME}/pr-regression-testing/logs/${log_prefix}-run-pr-eval-output.md"
-          exit_code_log="${HOME}/pr-regression-testing/logs/${log_prefix}-run-pr-eval-exit-code.txt"
+          output_log="${GITHUB_WORKSPACE}/pr-eval-logs/${log_prefix}-run-pr-eval-output.md"
+          exit_code_log="${GITHUB_WORKSPACE}/pr-eval-logs/${log_prefix}-run-pr-eval-exit-code.txt"
 
           bash "${HOME}/pr-regression-testing/cuga-eval/scripts/pr-regression-testing/run-pr-regression-eval.sh" \
             "${COMMENT_BODY}" \
             > "${output_log}" 2>&1
 
           status=$?
-
           echo "${status}" > "${exit_code_log}"
+
+          redact_file() {
+            local path="$1"
+            if [[ -f "${path}" ]]; then
+              perl -0pi -e 'BEGIN { @secrets = grep { defined && length } @ENV{qw(OPENAI_API_KEY RITS_API_KEY LITE_LLM_KEY)} } for my $secret (@secrets) { s/\Q$secret\E/***REDACTED***/g }' "${path}"
+            fi
+          }
+
+          redact_file "${output_log}"
+          redact_file "${exit_code_log}"
 
           echo "Saved output log: ${output_log}"
           echo "Saved exit code log: ${exit_code_log}"
@@ -128,70 +245,121 @@ jobs:
 
           exit "${status}"
 
+      - name: Cleanup PR evaluation processes
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          if command -v lsof >/dev/null 2>&1; then
+            for port in 8000 9000 9111; do
+              pids="$(lsof -ti :"${port}" 2>/dev/null || true)"
+              if [[ -n "${pids}" ]]; then
+                kill ${pids} 2>/dev/null || true
+              fi
+            done
+          fi
+
       - name: Upload full evaluation output
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: run-pr-eval-output-pr-${{ github.event.issue.number }}-${{ github.run_id }}
           path: |
             run-pr-eval-output.md
             run-pr-eval-exit-code.txt
+            pr-eval-logs/
           if-no-files-found: warn
+
+  report-pr-eval:
+    name: Report PR Evaluation
+    if: always() && needs.run-pr-eval.result != 'skipped'
+    needs: run-pr-eval
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Download evaluation output
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: run-pr-eval-output-pr-${{ github.event.issue.number }}-${{ github.run_id }}
+          path: pr-eval-output
 
       - name: Post result to PR
         if: always()
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
-          OUTPUT_PATH: ${{ github.workspace }}/run-pr-eval-output.md
-          EXIT_CODE_PATH: ${{ github.workspace }}/run-pr-eval-exit-code.txt
+          COMMAND_BODY: ${{ needs.run-pr-eval.outputs.command_body }}
+          REQUESTED_SHA: ${{ needs.run-pr-eval.outputs.requested_sha }}
+          EVAL_JOB_RESULT: ${{ needs.run-pr-eval.result }}
+          ARTIFACT_AVAILABLE: ${{ steps.download.outcome == 'success' }}
+          OUTPUT_PATH: pr-eval-output/run-pr-eval-output.md
+          EXIT_CODE_PATH: pr-eval-output/run-pr-eval-exit-code.txt
         with:
           script: |
             const fs = require("fs");
 
-            const outputPath = process.env.OUTPUT_PATH;
+            const escapeInlineCode = (value) =>
+              String(value || "")
+                .replace(/`/g, "\\`")
+                .replace(/@/g, "@\u200b");
+
             const exitCodePath = process.env.EXIT_CODE_PATH;
-
-            let output = fs.existsSync(outputPath)
-              ? fs.readFileSync(outputPath, "utf8")
-              : "";
-
             const exitCode = fs.existsSync(exitCodePath)
               ? fs.readFileSync(exitCodePath, "utf8").trim()
               : "unknown";
+            const result = exitCode === "0"
+              ? "SUCCESS"
+              : process.env.EVAL_JOB_RESULT === "failure"
+                ? `FAILED (${exitCode})`
+                : process.env.EVAL_JOB_RESULT.toUpperCase();
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const artifactAvailable = process.env.ARTIFACT_AVAILABLE === "true";
+            const outputPath = process.env.OUTPUT_PATH;
+            let report = "";
 
-            const startMarker = "######## REPORT START ########";
-            const endMarker = "######## REPORT END ########";
-            const escapedStart = startMarker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-            const escapedEnd = endMarker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-            const reportPattern = new RegExp(
-              `${escapedStart}\\s*([\\s\\S]*?)\\s*${escapedEnd}`,
-              "g"
-            );
+            if (artifactAvailable && fs.existsSync(outputPath)) {
+              const output = fs.readFileSync(outputPath, "utf8");
+              const startMarker = "######## REPORT START ########";
+              const endMarker = "######## REPORT END ########";
+              const escapedStart = startMarker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              const escapedEnd = endMarker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              const reportPattern = new RegExp(
+                `${escapedStart}\\s*([\\s\\S]*?)\\s*${escapedEnd}`,
+                "g"
+              );
+              const reportBlocks = [...output.matchAll(reportPattern)]
+                .map((match) => match[1].trim())
+                .filter(Boolean);
 
-            const reportBlocks = [...output.matchAll(reportPattern)]
-              .map((match) => match[1].trim())
-              .filter(Boolean);
-
-            if (reportBlocks.length > 0) {
-              output = reportBlocks.join("\n\n");
+              report = reportBlocks.length > 0
+                ? reportBlocks.join("\n\n")
+                : "No report section found between REPORT START and REPORT END markers.";
             } else {
-              output = "No report section found between REPORT START and REPORT END markers.";
+              report = "No evaluation output artifact was available.";
             }
 
-            if (output.length > 60000) {
-              output = `${output.slice(0, 60000)}\n\n...output truncated...`;
+            if (report.length > 58000) {
+              report = `${report.slice(0, 58000)}\n\n...output truncated; see workflow artifact for full output...`;
             }
 
-            const result = exitCode === "0" ? "SUCCESS" : `FAILED (${exitCode})`;
             const body = [
               "## PR Evaluation",
               "",
-              `- Triggered by: @${context.payload.comment.user.login}`,
-              `- Command: \`${context.payload.comment.body}\``,
-              `- PR head SHA: \`${{ steps.pr.outputs.head_sha }}\``,
-              `- Result: **${result}**`,
+              `- Triggered by: @${escapeInlineCode(context.payload.comment.user.login)}`,
+              `- Command: \`${escapeInlineCode(process.env.COMMAND_BODY)}\``,
+              `- Requested SHA: \`${escapeInlineCode(process.env.REQUESTED_SHA)}\``,
+              `- Result: **${escapeInlineCode(result)}**`,
+              artifactAvailable
+                ? `- Full output: [workflow artifact](${runUrl})`
+                : "- Full output: no artifact was produced",
               "",
-              output,
+              report,
             ].join("\n");
 
             await github.rest.issues.createComment({
