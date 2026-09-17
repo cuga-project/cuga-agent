@@ -393,46 +393,6 @@ class EvolveIntegration:
         return await cls._call_structured_tool("list_retention_policies", args)
 
     @classmethod
-    async def run_retention(
-        cls,
-        policy_id: str,
-        *,
-        scan_limit: Optional[int] = None,
-        run_id: Optional[str] = None,
-        namespace_id: Optional[str] = None,
-        initiated_by: Optional[str] = None,
-    ) -> Optional[dict]:
-        """Run an Evolve-owned policy and return its persisted report."""
-        args: dict[str, Any] = {"policy_id": policy_id, "dry_run": False}
-        optional = {
-            "scan_limit": scan_limit,
-            "run_id": run_id,
-            "namespace_id": normalize_evolve_identifier(namespace_id),
-            "initiated_by": normalize_evolve_identifier(initiated_by),
-        }
-        args.update({key: value for key, value in optional.items() if value is not None})
-        return await cls._call_structured_tool("run_retention", args)
-
-    @classmethod
-    async def list_retention_runs(
-        cls,
-        *,
-        agent_id: Optional[str] = None,
-        policy_id: Optional[str] = None,
-        namespace_id: Optional[str] = None,
-        limit: int = 50,
-    ) -> Optional[dict]:
-        """List Evolve-owned retention run history."""
-        args: dict[str, Any] = {"limit": limit}
-        optional = {
-            "agent_id": normalize_evolve_identifier(agent_id),
-            "policy_id": policy_id,
-            "namespace_id": normalize_evolve_identifier(namespace_id),
-        }
-        args.update({key: value for key, value in optional.items() if value is not None})
-        return await cls._call_structured_tool("list_retention_runs", args)
-
-    @classmethod
     async def get_compliance_status(cls, namespace_id: Optional[str] = None) -> Optional[dict]:
         """Return Evolve backend, retention, and protection-hook health."""
         args: dict[str, Any] = {}
