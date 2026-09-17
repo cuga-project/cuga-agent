@@ -503,6 +503,44 @@ async def test_auth_from_env_variable(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+@pytest.mark.parametrize("token", ["   ", "\t"])
+async def test_configured_blank_inline_token_fails_before_delegation(token: str) -> None:
+    """Whitespace-only inline credentials are missing credentials, not bearer values."""
+    with pytest.raises(ValueError, match="requires token"):
+        await delegate_task_via_acp(
+            endpoint=_ENDPOINT,
+            agent_name=_AGENT,
+            task="authenticated task",
+            auth={"type": "bearer", "token": token},
+            client_factory=lambda **_: pytest.fail("client must not be created"),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("token", ["   ", "\t"])
+async def test_blank_default_token_is_ignored(monkeypatch: pytest.MonkeyPatch, token: str) -> None:
+    """Whitespace-only optional ACP_AUTH_TOKEN values must not create malformed headers."""
+    monkeypatch.setenv("ACP_AUTH_TOKEN", token)
+    captured_kwargs: dict[str, Any] = {}
+
+    def _capturing_factory(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _make_client()
+
+    await delegate_task_via_acp(
+        endpoint=_ENDPOINT,
+        agent_name=_AGENT,
+        task="anonymous task",
+        auth=None,
+        poll_interval=0.0,
+        client_factory=_capturing_factory,
+    )
+    assert captured_kwargs["headers"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_auth_token_env_var_resolved_to_bearer_header(monkeypatch: pytest.MonkeyPatch) -> None:
     """token_env_var must be resolved from the environment and passed as Authorization: Bearer."""
     monkeypatch.setenv("TEST_ACP_TOKEN", "secret_value")
@@ -521,6 +559,47 @@ async def test_auth_token_env_var_resolved_to_bearer_header(monkeypatch: pytest.
         client_factory=_capturing_factory,
     )
     assert captured_kwargs.get("headers") == {"Authorization": "Bearer secret_value"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("token", [None, "", "   ", "\t"])
+async def test_configured_missing_token_env_var_fails_before_delegation(
+    monkeypatch: pytest.MonkeyPatch, token: str | None
+) -> None:
+    """An explicitly configured blank bearer token must not send an anonymous request."""
+    if token is None:
+        monkeypatch.delenv("MISSING_ACP_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("MISSING_ACP_TOKEN", token)
+
+    with pytest.raises(ValueError, match="MISSING_ACP_TOKEN"):
+        await delegate_task_via_acp(
+            endpoint=_ENDPOINT,
+            agent_name=_AGENT,
+            task="authenticated task",
+            auth={"type": "bearer", "token_env_var": "MISSING_ACP_TOKEN"},
+            client_factory=lambda **_: pytest.fail("client must not be created"),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_configured_missing_token_env_var_fails_before_manifest_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Manifest discovery enforces the same configured bearer-token requirement."""
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import fetch_agent_manifest
+
+    monkeypatch.setenv("EMPTY_ACP_TOKEN", "")
+
+    with pytest.raises(ValueError, match="EMPTY_ACP_TOKEN"):
+        await fetch_agent_manifest(
+            endpoint=_ENDPOINT,
+            agent_name=_AGENT,
+            auth={"type": "bearer", "token_env_var": "EMPTY_ACP_TOKEN"},
+            client_factory=lambda **_: pytest.fail("client must not be created"),
+        )
 
 
 # ---------------------------------------------------------------------------
