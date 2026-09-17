@@ -1163,44 +1163,32 @@ Evolve can bring task-specific guidance into the prompt before execution and sav
 
 This flow is:
 
-- **Opt-in** - disabled by default
-- **Non-blocking** - Evolve failures do not fail the task
-- **Optional integration** - install `cuga[evolve]` if you want the upstream Evolve package available locally, or let `uvx` fetch it on demand
+- **Container deployment** - Evolve is installed and started automatically by `Dockerfile.ubi`
+- **Non-blocking calls** - individual Evolve call failures do not fail the task; the container restarts if either service exits
+- **Local development** - install `cuga[evolve]` or use the manual setup below
 
-### Airgapped container deployment
+### Container deployment
 
-Build `Dockerfile.ubi` while connected, then transfer the resulting image into your
-isolated environment. The build installs Evolve and preloads the default Evolve
-MiniLM embeddings, FastEmbed embeddings, Docling layout/table/OCR models (including
-EasyOCR), and all registered tiktoken encodings. Required download failures abort
-the build. A final `RUN --network=none` loads the cached models and launches
-Chromium as the runtime user, so missing assets fail before publication.
+Run the image with your normal LLM credentials and storage configuration. Evolve
+starts automatically, and CUGA connects to it after it becomes ready. No manager
+MCP entry or custom command is required. If either service exits, the container
+stops so Kubernetes can restart it.
 
-The image starts Evolve automatically before CUGA. Its supervisor launches the
-installed `evolve-mcp` server on `127.0.0.1:8201`, waits for SSE readiness, and
-configures CUGA to use that endpoint in direct mode. No manager MCP entry, custom
-command, or extra Kubernetes container is required. If either process exits, the
-container stops with a failure so Kubernetes can restart it. SIGTERM shuts down
-both process groups.
+Evolve stores its default filesystem data in `/data/dbs/evolve`, covered by the
+Helm chart's existing PVC. To use PostgreSQL/pgvector, supply `EVOLVE_BACKEND=postgres`
+and `EVOLVE_PG_*` connection variables. To use an external Evolve service, set
+`CUGA_EMBEDDED_EVOLVE=false` and configure CUGA's Evolve URL/mode.
 
-Evolve defaults to filesystem storage at `/data/dbs/evolve`, covered by the Helm
-chart's existing `/data/dbs` PVC. For a shared PostgreSQL/pgvector backend, supply
-`EVOLVE_BACKEND=postgres` and the `EVOLVE_PG_*` connection variables through your
-normal deployment configuration. LLM credentials and endpoints are also supplied
-as environment variables. For an externally managed Evolve service, explicitly set
-`CUGA_EMBEDDED_EVOLVE=false` and configure CUGA's Evolve URL/mode yourself.
+For airgapped deployment, build the image while connected. Default embedding,
+document-processing, OCR, tokenizer, and browser assets are downloaded and
+verified without networking during the build. Custom models and optional model-based
+features need preloading before use; LLM and database endpoints must be reachable
+inside your isolated network.
 
-The image enables `UV_OFFLINE`, `HF_HUB_OFFLINE`, and `TRANSFORMERS_OFFLINE` and
-uses a bundled LiteLLM cost map. Model caches live under `/app/.cache`, and
-Playwright under `/app/.playwright`.
+### Manual setup for local development (outside the container)
 
-Connect your LLM, database, and other services to endpoints available inside the
-isolated network. Custom embedding models, optional Evolve `sbert_large` consistency
-models, optional Docling enrichment/VLM models, and user-added MCP tools are not
-covered by the default asset set; preload/install those in a derived image before
-enabling them. Runtime configuration cannot download new models in offline mode.
-
-### Setup Steps:
+These steps are for running CUGA directly from a Python environment. Skip them
+when using the container image.
 
 1. Choose how Evolve will be started.
   Recommended for normal CUGA usage: let the CUGA MCP registry launch Evolve for you.
