@@ -15,8 +15,8 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 COPY docs/ ./docs/
 
-# Default deps omit openlit (optional `observability` extra; keeps pip/uvx core resolvable with litellm 1.83.x).
-RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + && uv sync --no-editable --no-dev --extra observability
+# Include observability and Evolve memory support in the published image.
+RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + && uv sync --no-editable --no-dev --extra observability --extra evolve
 
 # Slim down torch: remove test suite and C++ headers (not needed at runtime) ~143MB
 # NOTE: torch/bin must be kept — contains torch_shm_manager required at import time
@@ -27,7 +27,7 @@ RUN rm -rf /app/.venv/lib/python3.12/site-packages/torch/test \
 RUN find /app/.venv -type f \( -name "*.so" -o -name "*.so.*" \) -exec strip --strip-unneeded {} \; 2>/dev/null || true
 
 # Download only the headless_shell binary (no full Chromium, no ffmpeg) — ~3x smaller than default.
-RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright uv run playwright install --only-shell chromium
+RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright uv run --no-sync playwright install --only-shell chromium
 
 # Bake ML model weights into the image for airgapped operation.
 # Pinned to /app/.cache so paths survive the multi-stage copy and match runtime ENV below.
