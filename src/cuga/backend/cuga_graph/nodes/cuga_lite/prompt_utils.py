@@ -5,6 +5,7 @@ Prompt utilities for CugaLite - handles prompt creation and tool discovery.
 import functools
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from cuga.config import settings
@@ -792,6 +793,41 @@ def normalize_mcp_few_shot_examples(raw: Any) -> List[Dict[str, str]]:
     return out
 
 
+FILESYSTEM_TOOL_NAMES = (
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_files",
+    "make_directory",
+    "move_file",
+    "search_files",
+    "get_file_info",
+)
+
+
+def drop_examples_using_absent_helpers(
+    examples: Optional[List[Dict[str, str]]], *, filesystem_enabled: bool, shell_enabled: bool = True
+) -> List[Dict[str, str]]:
+    """Drop the whole transcript if it calls an unavailable runtime helper.
+
+    Turns form a conversation: removing individual calls leaves orphaned outputs
+    and final answers claiming work that was never shown. Match complete helper
+    calls, so prose such as "do not use read_file" and longer tool names survive.
+    """
+    if not examples or (filesystem_enabled and shell_enabled):
+        return list(examples or [])
+
+    absent = list(FILESYSTEM_TOOL_NAMES) if not filesystem_enabled else []
+    if not shell_enabled:
+        absent.append("run_command")
+    if examples and absent:
+        calls = re.compile(r"(?<![\w.])(?:" + "|".join(map(re.escape, absent)) + r")\s*\(")
+        if any(calls.search(str(ex.get("content", ""))) for ex in examples):
+            logger.debug("Dropped few-shot conversation demonstrating disabled runtime helpers")
+            return []
+    return list(examples or [])
+
+
 def create_mcp_prompt(
     tools,
     base_prompt=None,
@@ -808,6 +844,7 @@ def create_mcp_prompt(
     skills_enabled: bool = False,
     skills_prompt_section: str = "",
     enable_shell_tool: bool = False,
+    enable_filesystem_tools: bool = False,
     sandbox_workspace: str = "/workspace",
     sandbox_env_info: str = "",
     has_knowledge=False,
@@ -834,6 +871,7 @@ def create_mcp_prompt(
         skills_enabled: If True, render the skills block (load_skill, available skills list)
         skills_prompt_section: Pre-formatted markdown/XML block from the skills registry
         enable_shell_tool: If True, include run_command / npm / sandbox workspace bullets in the prompt (OpenSandbox shell tools; defaults False in settings)
+        enable_filesystem_tools: If True, the workspace filesystem helpers (read_file, write_file, list_files) are injected into the execution context and may be described in the prompt. Defaults False, matching settings.toml.
         sandbox_workspace: Path prefix shown to the agent for sandbox files. Use "/workspace" for opensandbox/e2b (real Docker path) and "." for native/local (relative cwd).
         sandbox_env_info: Human-readable OS/environment string shown to the model when shell tools are enabled (e.g. "macOS 14.5" or "Linux (Ubuntu, Docker container)").
         has_knowledge: If True, include knowledge-base search guidance in the prompt
@@ -848,6 +886,12 @@ def create_mcp_prompt(
     for tool in tools:
         tool_name = tool.name if hasattr(tool, 'name') else str(tool)
         tool_desc = tool.description if hasattr(tool, 'description') else "No description"
+        if tool_name == "run_command" and not enable_filesystem_tools:
+            tool_desc = (
+                tool_desc.replace("Write scripts with write_file before running them. ", "")
+                .replace("; `read_file` accepts both.", ".")
+                .replace("from `read_file`/`list_files` ", "")
+            )
 
         params_str = PromptUtils.get_tool_params_str(tool)
         params_doc, response_doc = PromptUtils.get_tool_docs(tool)
@@ -889,6 +933,7 @@ def create_mcp_prompt(
             "skills_enabled": skills_enabled,
             "skills_prompt_section": skills_prompt_section,
             "enable_shell_tool": enable_shell_tool,
+            "enable_filesystem_tools": enable_filesystem_tools,
             "sandbox_workspace": sandbox_workspace,
             "sandbox_env_info": sandbox_env_info,
             "has_knowledge": has_knowledge,
