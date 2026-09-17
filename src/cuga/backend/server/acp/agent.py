@@ -44,8 +44,8 @@ def _extract_text_input(messages: list[Message]) -> str:
 
     Rules
     -----
-    - Only ``role == "user"`` messages are considered.
-    - Only parts with ``content_type == "text/plain"`` are accepted.
+    - Every message must have ``role == "user"``.
+    - Every part must have ``content_type == "text/plain"``.
     - ``content_encoding`` must be ``"plain"`` or absent (``None``).
     - Parts must have inline ``content``; ``content_url`` is rejected.
     - Message and part order is preserved.
@@ -65,12 +65,12 @@ def _extract_text_input(messages: list[Message]) -> str:
 
     for message in messages:
         if message.role != "user":
-            continue
+            _reject()
 
         parts_text: list[str] = []
         for part in message.parts:
             if part.content_type != "text/plain":
-                continue
+                _reject()
             if part.content_encoding not in ("plain", None):
                 _reject()
             if part.content_url is not None:
