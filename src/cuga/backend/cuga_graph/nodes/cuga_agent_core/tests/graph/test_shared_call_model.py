@@ -28,6 +28,8 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
     EMPTY_RESPONSE_CORRECTION_KEY as _EMPTY_KEY,
 )
 
+pytestmark = pytest.mark.unit
+
 
 # ── Shared test adapter ────────────────────────────────────────────────────
 
@@ -47,6 +49,24 @@ class _TestAdapter(CoreGraphAdapter):
 class _ProbingAdapter(_TestAdapter):
     def get_tools_needing_probing(self) -> frozenset:
         return frozenset({"file_readfile"})
+
+
+class _LiteDispositionAdapter(_TestAdapter):
+    """Exercises Lite's mode-aware finalize disposition (#445) through the
+    ``CoreGraphAdapter.resolve_finalize_disposition`` hook — the same seam
+    ``AgentGraphAdapter`` overrides in production, kept separate from
+    ``_TestAdapter`` so Supervisor-equivalent tests stay on the base no-op."""
+
+    def resolve_finalize_disposition(self, content, *, autonomous, nl_auto_continue):
+        from cuga.backend.cuga_graph.nodes.cuga_lite.finalize_disposition import (
+            resolve_finalize_disposition,
+        )
+
+        return resolve_finalize_disposition(
+            content,
+            autonomous=autonomous,
+            nl_auto_continue=nl_auto_continue,
+        )
 
 
 # ── Test state factory ─────────────────────────────────────────────────────
@@ -213,7 +233,7 @@ async def test_step_limit_in_no_code_path_routes_to_end_with_error(mock_summariz
 
 class _AutoContinueAdapter(_TestAdapter):
     async def classify_auto_continue(
-        self, state: Any, model: Any, content: str, reasoning: Optional[str]
+        self, state: Any, model: Any, content: str, reasoning: Optional[str], *, autonomous: bool = False
     ) -> bool:
         return True  # always continue
 
@@ -575,3 +595,383 @@ async def test_reasoning_mentioning_other_special_tokens_is_still_surfaced(mock_
 
     assert result.goto == END
     assert result.update["final_answer"] == reasoning
+
+
+# ── 9. Mode-aware finalize disposition (#445: deferral + ask_user) ────────
+
+
+def _mock_settings_disposition(
+    *,
+    force_autonomous_mode=False,
+    cuga_lite_nl_auto_continue=True,
+    policy_enabled=False,
+):
+    adv = SimpleNamespace(
+        cuga_lite_max_steps=50,
+        force_autonomous_mode=force_autonomous_mode,
+        cuga_lite_nl_auto_continue=cuga_lite_nl_auto_continue,
+    )
+    policy = SimpleNamespace(enabled=policy_enabled)
+    return SimpleNamespace(advanced_features=adv, policy=policy)
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_autonomous_deferral_falls_through_to_classifier(mock_summarize):
+    """The deterministic deferral regex was removed after live AppWorld
+    evidence showed it net-hurts task completion (#732 comments) — deferral
+    text now falls through to classify_auto_continue like any other
+    ambiguous finalize. With _LiteDispositionAdapter's stub classifier
+    (always False), that means it finalizes; see the paired test below for
+    the case where the classifier actually says continue."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _LiteDispositionAdapter()
+    state = _make_state()
+    model = _mock_model("Would you like me to continue processing the remaining actions?")
+    settings = _mock_settings_disposition(force_autonomous_mode=True)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert "Would you like" in result.update["final_answer"]
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_autonomous_deferral_continues_when_classifier_says_so(mock_summarize):
+    """Same deferral text, but with a classifier that says continue — the
+    turn continues, driven entirely by the mode-aware classifier now."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _ClassifierSaysContinue()
+    state = _make_state()
+    model = _mock_model("Would you like me to continue processing the remaining actions?")
+    settings = _mock_settings_disposition(force_autonomous_mode=True)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == "call_model"
+    assert result.update["chat_messages"][-1].content == "continue"
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_interactive_clarifying_question_finalizes(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _LiteDispositionAdapter()
+    state = _make_state()
+    model = _mock_model("Which account should I use?")
+    settings = _mock_settings_disposition(force_autonomous_mode=False)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert "Which account" in result.update["final_answer"]
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_interactive_deferral_finalizes(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _LiteDispositionAdapter()
+    state = _make_state()
+    model = _mock_model("Would you like me to continue processing the remaining actions?")
+    settings = _mock_settings_disposition(force_autonomous_mode=False)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert "Would you like" in result.update["final_answer"]
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_give_up_finalizes_without_bounce(mock_summarize):
+    """Pattern B deferred — ungrounded give-ups end the turn (no soft bounce)."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _LiteDispositionAdapter()
+    state = _make_state()
+    model = _mock_model(
+        "We have exhausted all discovered tools and none provide game-level event data. "
+        "The number cannot be determined from this API."
+    )
+    settings = _mock_settings_disposition()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_greeting_finalizes(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _LiteDispositionAdapter()
+    state = _make_state()
+    model = _mock_model("Hello!")
+    settings = _mock_settings_disposition()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert result.update["final_answer"] == "Hello!"
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_supervisor_planning_text_still_finalizes(mock_summarize):
+    """Regression: the disposition resolver is Lite-only. A plain CoreGraphAdapter
+    (Supervisor-equivalent, no override) must keep finalizing NL turns even when the
+    text matches Lite's planning-text pattern — it must not be routed through
+    Lite's resolve_finalize_disposition via the shared node."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state()
+    model = _mock_model("We need to search student_loan app.")
+    settings = _mock_settings_disposition(force_autonomous_mode=False)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert result.update["final_answer"] == "We need to search student_loan app."
+
+
+class _ClassifierSaysContinue(_LiteDispositionAdapter):
+    async def classify_auto_continue(self, state, model, content, reasoning, *, autonomous: bool = False):
+        return True
+
+
+class _AutonomousCapturingClassifierAdapter(_LiteDispositionAdapter):
+    """Records the ``autonomous`` kwarg it was called with and always
+    continues — used to verify shared_nodes.py forwards the right mode flag
+    to the classifier (e.g. for sub-task turns) now that deferral routing
+    lives entirely there."""
+
+    def __init__(self):
+        super().__init__()
+        self.captured_autonomous: bool | None = None
+
+    async def classify_auto_continue(self, state, model, content, reasoning, *, autonomous: bool = False):
+        self.captured_autonomous = autonomous
+        return True
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_ask_user_text_falls_through_to_classifier(mock_summarize):
+    """#732 review: ask_user-only text (no deferral) is no longer a deterministic
+    short-circuit — it falls through to classify_auto_continue like any other
+    ambiguous finalize, so a classifier that says continue is honored."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _ClassifierSaysContinue()
+    state = _make_state()
+    model = _mock_model("Which account should I use?")
+    settings = _mock_settings_disposition(force_autonomous_mode=False)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == "call_model"
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_deferral_with_blocked_claim_falls_through_to_classifier(mock_summarize):
+    """Issue #610: deferral text that also reads as an unverified-blocker claim
+    must not ship a bare "continue" — it needs classify_auto_continue's
+    corrective-retry path (#732 review)."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _ClassifierSaysContinue()
+    state = _make_state()
+    model = _mock_model(
+        "I'm unable to access the Spotify tools. Would you like me to try a different approach?"
+    )
+    settings = _mock_settings_disposition(force_autonomous_mode=True)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == "call_model"
+    assert result.update["chat_messages"][-1].content == "continue"
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_sub_task_treated_as_autonomous_for_deferral(mock_summarize):
+    """A sub-task turn gets the "DO NOT ASK" prompt regardless of
+    force_autonomous_mode (see cuga_lite_node.py's is_autonomous_subtask).
+    Now that deferral routing lives entirely in the classifier (the
+    deterministic regex was removed — #732 comments), this must be forwarded
+    as ``autonomous=True`` to classify_auto_continue, or a sub-task turn the
+    prompt told not to ask about could still get a classifier verdict that
+    assumes an interactive user is present to answer."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _AutonomousCapturingClassifierAdapter()
+    state = _make_state()
+    state.sub_task = "book a flight"
+    model = _mock_model("Would you like me to continue processing the remaining actions?")
+    settings = _mock_settings_disposition(force_autonomous_mode=False)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert adapter.captured_autonomous is True
+    assert result.goto == "call_model"
+    assert result.update["chat_messages"][-1].content == "continue"
+
+
+# ── 10. Consecutive NL auto-continue budget (#445 / PR #732 loop finding) ──
+#
+# Live AppWorld traces on gpt-4.1 showed autonomous mode re-asking an absent
+# user for the same missing card/email 36–56 times per task: the classifier
+# said "continue" on a hard blocker every time, and only the step limit ended
+# it. The cap counts consecutive NL turns auto-continued with no code turn in
+# between and finalizes when it is reached, without consulting the classifier.
+
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (  # noqa: E402
+    NL_AUTO_CONTINUE_STREAK_KEY as _STREAK_KEY,
+)
+
+
+class _CountingContinueAdapter(_TestAdapter):
+    def __init__(self):
+        super().__init__()
+        self.classifier_calls = 0
+
+    async def classify_auto_continue(self, state, model, content, reasoning, *, autonomous: bool = False):
+        self.classifier_calls += 1
+        return True
+
+
+def _mock_settings_streak(cap):
+    adv = SimpleNamespace(cuga_lite_max_steps=50, cuga_lite_nl_auto_continue_max_consecutive=cap)
+    return SimpleNamespace(advanced_features=adv, policy=SimpleNamespace(enabled=False))
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_auto_continue_increments_streak(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+    adapter = _CountingContinueAdapter()
+    state = _make_state(metadata={_STREAK_KEY: 1})
+    node = _get_factory()(adapter, _mock_model("Please provide a valid card."), _mock_settings_streak(3))
+    result = await node(state, config=None)
+    assert result.goto == "call_model"
+    assert result.update["cuga_lite_metadata"][_STREAK_KEY] == 2
+    assert adapter.classifier_calls == 1
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_streak_at_cap_finalizes_without_classifier(mock_summarize):
+    """The cap is reached: the NL turn is delivered as the final answer and
+    the classifier (which would say continue again) is never consulted."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+    adapter = _CountingContinueAdapter()
+    state = _make_state(metadata={_STREAK_KEY: 3})
+    node = _get_factory()(adapter, _mock_model("Please provide a valid card."), _mock_settings_streak(3))
+    result = await node(state, config=None)
+    assert result.goto == END
+    assert result.update["final_answer"] == "Please provide a valid card."
+    assert adapter.classifier_calls == 0
+    assert _STREAK_KEY not in result.update["cuga_lite_metadata"]
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_code_turn_resets_streak(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+    adapter = _CountingContinueAdapter()
+    state = _make_state(metadata={_STREAK_KEY: 2, "keep": "me"})
+    node = _get_factory()(adapter, _mock_model("```python\nprint(1)\n```"), _mock_settings_streak(3))
+    result = await node(state, config=None)
+    assert result.goto == "sandbox"
+    assert _STREAK_KEY not in result.update["cuga_lite_metadata"]
+    assert result.update["cuga_lite_metadata"]["keep"] == "me"
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_zero_cap_disables_streak_limit(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+    adapter = _CountingContinueAdapter()
+    state = _make_state(metadata={_STREAK_KEY: 500})
+    node = _get_factory()(adapter, _mock_model("Please provide a valid card."), _mock_settings_streak(0))
+    result = await node(state, config=None)
+    assert result.goto == "call_model"
+    assert result.update["cuga_lite_metadata"][_STREAK_KEY] == 501
+    assert adapter.classifier_calls == 1
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_missing_setting_defaults_to_cap_of_three(mock_summarize):
+    """Older settings files without the key still get the guard."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+    adapter = _CountingContinueAdapter()
+    state = _make_state(metadata={_STREAK_KEY: 3})
+    node = _get_factory()(adapter, _mock_model("Please provide a valid card."), _mock_settings())
+    result = await node(state, config=None)
+    assert result.goto == END
+    assert adapter.classifier_calls == 0

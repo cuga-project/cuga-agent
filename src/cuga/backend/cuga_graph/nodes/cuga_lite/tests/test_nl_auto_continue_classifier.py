@@ -98,6 +98,164 @@ async def test_non_planning_falls_through_to_llm():
     llm.ainvoke.assert_called_once()
 
 
+# ── Mode-aware classifier prompt (#445) ──────────────────────────────────────
+#
+# Deferral / ask-user text is routed entirely by this LLM classifier, so it
+# must know whether a real user is present. Interactive callers get exactly the
+# pre-#445 prompt and user message and a bool verdict. Autonomous callers get
+# the structured-verdict prompt: five factual answers, with the continue-vs-
+# finalize policy in ``decide_autonomous`` (#732: an earlier revision appended
+# rules to the shared prompt and regressed 77 completed final answers on the
+# regression set; the structured form held every one).
+
+
+def _messages_sent(llm) -> list[dict]:
+    call = llm.ainvoke.call_args
+    return call.args[0] if call.args else call.kwargs["messages"]
+
+
+def _user_prompt_sent(llm) -> str:
+    return next(m["content"] for m in _messages_sent(llm) if m["role"] == "user")
+
+
+def _system_prompt_sent(llm) -> str:
+    return next(m["content"] for m in _messages_sent(llm) if m["role"] == "system")
+
+
+def _fields(**over) -> dict:
+    base = dict(
+        outcome_achieved=False,
+        defers_to_user=False,
+        agent_can_proceed=False,
+        announces_pending_action=False,
+        hard_stop=False,
+    )
+    base.update(over)
+    return base
+
+
+_STRUCTURED_CONTINUE = (
+    '{"outcome_achieved": false, "defers_to_user": true, "agent_can_proceed": true, '
+    '"announces_pending_action": false, "hard_stop": false}'
+)
+
+
+@pytest.mark.asyncio
+async def test_autonomous_sends_structured_prompt_and_evidence():
+    llm = MagicMock()
+    resp = MagicMock()
+    resp.content = _STRUCTURED_CONTINUE
+    llm.ainvoke = AsyncMock(return_value=resp)
+    evidence = BlockedClaimEvidence(
+        tools_available=True, code_executed=True, retry_used=False, task="Buy a microwave", nl_streak=2
+    )
+    result = await classify_nl_auto_continue_decision(
+        llm, "Would you like me to relax the rating?", None, evidence=evidence, autonomous=True
+    )
+    assert result.auto_continue is True
+    assert _system_prompt_sent(llm) == mod.AUTONOMOUS_CLASSIFIER_SYSTEM_PROMPT
+    user = _user_prompt_sent(llm)
+    assert "## Harness evidence" in user
+    assert "Session mode: autonomous" in user
+    assert '"Buy a microwave"' in user
+    assert "Code has executed earlier in this run: yes" in user
+    assert "Code executed since the previous natural-language turn: no" in user
+    assert "auto-continued in a row without code: 2" in user
+    assert user.endswith(mod._USER_BLOCK_AUTONOMOUS_SUFFIX)
+
+
+@pytest.mark.asyncio
+async def test_autonomous_unparsable_verdict_finalizes():
+    llm = MagicMock()
+    resp = MagicMock()
+    resp.content = '{"auto_continue": true}'  # the interactive shape is not a structured verdict
+    llm.ainvoke = AsyncMock(return_value=resp)
+    result = await classify_nl_auto_continue(llm, "Would you like me to continue?", None, autonomous=True)
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_interactive_sends_exactly_the_pre_445_prompt():
+    """Callers that don't pass ``autonomous`` get no evidence block and the bool
+    verdict format: the system prompt and user message are byte-identical to pre-#445."""
+    llm = MagicMock()
+    resp = MagicMock()
+    resp.content = '{"auto_continue": false}'
+    llm.ainvoke = AsyncMock(return_value=resp)
+    await classify_nl_auto_continue(llm, "The count is 96.", None)
+    assert _system_prompt_sent(llm) == mod.CLASSIFIER_SYSTEM_PROMPT
+    assert "Session mode" not in _user_prompt_sent(llm)
+    assert _user_prompt_sent(llm) == (
+        "Classify this assistant output (content + reasoning below).\n\n"
+        "## Assistant content (user-visible)\nThe count is 96.\n\n"
+        'Respond with JSON only: {"auto_continue": true} or {"auto_continue": false}'
+    )
+
+
+def test_interactive_prompt_carries_no_autonomous_text():
+    """Guard against the mode text leaking back into the shared prompt."""
+    for needle in ("autonomous", "Session mode", "no user is present", "Harness evidence"):
+        assert needle not in mod.CLASSIFIER_SYSTEM_PROMPT
+    assert mod.build_classifier_system_prompt(False) == mod.CLASSIFIER_SYSTEM_PROMPT
+    assert mod.build_classifier_system_prompt(True) == mod.AUTONOMOUS_CLASSIFIER_SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (_STRUCTURED_CONTINUE, _fields(defers_to_user=True, agent_can_proceed=True)),
+        ("```json\n" + _STRUCTURED_CONTINUE + "\n```", _fields(defers_to_user=True, agent_can_proceed=True)),
+        (
+            '{"outcome_achieved": "true", "defers_to_user": "false", "agent_can_proceed": "false", '
+            '"announces_pending_action": "false", "hard_stop": "false"}',
+            _fields(outcome_achieved=True),
+        ),
+        ('{"outcome_achieved": true}', None),  # missing fields
+        ('{"auto_continue": true}', None),
+        ("not json", None),
+        ("", None),
+    ],
+)
+def test_parse_autonomous_verdict(raw, expected):
+    assert mod.parse_autonomous_verdict(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "fields, expected, why",
+    [
+        (_fields(announces_pending_action=True, agent_can_proceed=True), True, "plain plan"),
+        (_fields(defers_to_user=True, agent_can_proceed=True), True, "deferral the agent can resolve itself"),
+        (_fields(defers_to_user=True, agent_can_proceed=False), False, "needs input only the user has"),
+        (
+            _fields(defers_to_user=True, agent_can_proceed=False, announces_pending_action=True),
+            False,
+            "'provide the card, then I will add it': blocked deferral beats the announced action",
+        ),
+        (_fields(outcome_achieved=True), False, "completed result"),
+        (
+            _fields(outcome_achieved=True, announces_pending_action=True),
+            False,
+            "completed result plus an optional extra",
+        ),
+        (_fields(hard_stop=True, announces_pending_action=True), False, "hard stop overrides a plan"),
+        (_fields(), False, "exhausted search, no question, no plan"),
+    ],
+)
+def test_decide_autonomous_policy(fields, expected, why):
+    assert mod.decide_autonomous(fields) is expected, why
+
+
+def test_harness_evidence_block_defaults():
+    block = mod.build_harness_evidence_block(None)
+    assert "Task given to the agent: unknown" in block
+    assert "Code has executed earlier in this run: no" in block
+    assert "auto-continued in a row without code: 0" in block
+    first_nl_after_code = BlockedClaimEvidence(tools_available=True, code_executed=True, retry_used=False)
+    assert "since the previous natural-language turn: yes" in mod.build_harness_evidence_block(
+        first_nl_after_code
+    )
+
+
 @pytest.mark.asyncio
 async def test_disabled_flag_finalizes_planning_text(monkeypatch):
     """With the feature flag off, even planning text must finalize (return False)

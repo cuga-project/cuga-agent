@@ -28,6 +28,12 @@ EMPTY_RESPONSE_CORRECTION = (
     "block, or state the final answer."
 )
 STEP_LIMIT_MESSAGE_PREFIX = "Maximum step limit ("
+# Metadata key counting consecutive NL turns that were auto-continued with no
+# code turn in between. Reset whenever the model emits code; capped by
+# ``advanced_features.cuga_lite_nl_auto_continue_max_consecutive`` (#445 /
+# PR #732: an autonomous-mode continue on a hard blocker otherwise re-asks the
+# absent user for the same missing resource until the step limit).
+NL_AUTO_CONTINUE_STREAK_KEY = "_nl_auto_continue_streak"
 
 
 class CoreGraphAdapter(ABC):
@@ -189,14 +195,28 @@ class CoreGraphAdapter(ABC):
         return meta
 
     async def classify_auto_continue(
-        self, state: Any, model: Any, content: str, reasoning: Optional[str]
+        self, state: Any, model: Any, content: str, reasoning: Optional[str], *, autonomous: bool = False
     ) -> bool | str:
         """Return ``True`` when the NL response should loop back automatically.
         A truthy ``str`` also loops back, but is used verbatim as the synthetic
         user message instead of the plain ``"continue"`` (Lite's unverified-
-        blocker retry, issue #610). Default: ``False`` (Supervisor never
-        auto-continues). Lite overrides with ``classify_nl_auto_continue_decision``."""
+        blocker retry, issue #610). ``autonomous`` (#445) tells overriding
+        classifiers whether a real user is present to answer a clarifying
+        question or deferral; the base default ignores it. Default: ``False``
+        (Supervisor never auto-continues). Lite overrides with
+        ``classify_nl_auto_continue_decision``."""
         return False
+
+    def resolve_finalize_disposition(
+        self, content: str, *, autonomous: bool, nl_auto_continue: bool
+    ) -> Optional[str]:
+        """Mode-aware finalize disposition for an NL-no-code turn, checked before
+        falling back to ``classify_auto_continue``. Return ``"continue"`` /
+        ``"ask_user"`` / ``"finalize"``, or ``None`` to skip straight to
+        ``classify_auto_continue`` (default — Supervisor never overrides this,
+        so it always finalizes exactly as before). Lite overrides with
+        ``finalize_disposition.resolve_finalize_disposition`` (issue #445)."""
+        return None
 
 
 def append_chat_messages_with_step_limit(
