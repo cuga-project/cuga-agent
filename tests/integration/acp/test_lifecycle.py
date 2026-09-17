@@ -237,3 +237,553 @@ async def test_acp_sdk_not_imported_when_disabled() -> None:
         "acp_sdk found as a module-level binding in acp/app.py — "
         "SDK import must remain deferred inside the function body"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 2.7: Comprehensive inbound lifecycle tests
+# ---------------------------------------------------------------------------
+
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+_AGENT_INPUT = [
+    {
+        "role": "user",
+        "parts": [{"content_type": "text/plain", "content": "hello"}],
+    }
+]
+
+
+def _run_request(mode: str, agent_name: str = "cuga") -> dict:
+    return {"agent_name": agent_name, "input": _AGENT_INPUT, "mode": mode}
+
+
+def _parse_sse_events(body: bytes) -> list[dict]:
+    """Parse a raw SSE body into a list of {event, data} dicts."""
+    import json
+
+    events: list[dict] = []
+    current: dict = {}
+    for raw_line in body.decode().splitlines():
+        line = raw_line.strip()
+        if line.startswith("data:"):
+            try:
+                current["data"] = json.loads(line[5:].strip())
+            except Exception:
+                current["data"] = line[5:].strip()
+        elif line == "" and current:
+            events.append(current)
+            current = {}
+    return events
+
+
+# ── fixture: event stream that raises an exception ──────────────────────────
+
+
+@pytest.fixture
+def raising_event_stream() -> Any:
+    """Event-stream fixture that raises an exception during streaming."""
+    import json
+
+    async def _event_stream(
+        query: str,
+        api_mode: bool = False,
+        thread_id: str | None = None,
+        agent: Any = None,
+        disable_history: bool = False,
+        user_id: str = "test_user",
+        user_attachments: Any = None,
+        resume: Any = None,
+    ) -> Any:
+        # yield one valid byte so the stream starts before raising
+        payload = json.dumps({"data": "thinking…", "variables": {}, "active_policies": []})
+        yield f"event: AgentThinking\ndata: {payload}\n\n".encode()
+        raise RuntimeError("Simulated runner crash")
+
+    return _event_stream
+
+
+# ── Case 1: Agent listing and manifest lookup ──────────────────────────────
+
+
+async def test_agent_listing_returns_cuga(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """GET /acp/agents lists agents; GET /acp/agents/cuga returns the manifest."""
+    import httpx
+    from acp_sdk.models import AgentManifest
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            # List
+            resp_list = await client.get("/acp/agents")
+            assert resp_list.status_code == 200
+            body = resp_list.json()
+            agent_names = [a["name"] for a in body.get("agents", [])]
+            assert "cuga" in agent_names
+
+            # Single manifest
+            resp_one = await client.get("/acp/agents/cuga")
+            assert resp_one.status_code == 200
+            manifest = AgentManifest(**resp_one.json())
+            assert manifest.name == "cuga"
+            assert "text/plain" in manifest.input_content_types
+
+
+# ── Case 2: Unknown agent returns 404 ─────────────────────────────────────
+
+
+async def test_unknown_agent_returns_404(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """GET /acp/agents/nonexistent returns 404."""
+    import httpx
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            resp = await client.get("/acp/agents/nonexistent")
+            assert resp.status_code == 404
+
+
+# ── Case 3: Synchronous run returns text output ────────────────────────────
+
+
+async def test_sync_run_returns_agent_message(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """A SYNC run completes and the Run body contains an agent message."""
+    import httpx
+    from acp_sdk.models import Run, RunMode, RunStatus
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            resp = await client.post("/acp/runs", json=_run_request(RunMode.SYNC))
+            assert resp.status_code in (200, 201), resp.text[:300]
+            run = Run(**resp.json())
+            assert run.status == RunStatus.COMPLETED
+            assert run.output, "Expected at least one output message"
+            text = "".join(p.content for msg in run.output for p in msg.parts if p.content)
+            assert text, "Expected non-empty text in output"
+
+
+# ── Case 4: Asynchronous run — 202, then poll to completion ───────────────
+
+
+async def test_async_run_returns_202_then_completes(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """ASYNC run returns 202 immediately; polling /runs/{id} reaches completed."""
+    import asyncio
+
+    import httpx
+    from acp_sdk.models import Run, RunMode, RunStatus
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            resp = await client.post("/acp/runs", json=_run_request(RunMode.ASYNC))
+            assert resp.status_code == 202, resp.text[:300]
+            run = Run(**resp.json())
+            run_id = str(run.run_id)
+
+            # Poll until terminal, with a short timeout
+            for _ in range(20):
+                poll = await client.get(f"/acp/runs/{run_id}")
+                assert poll.status_code == 200
+                polled_run = Run(**poll.json())
+                if polled_run.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED):
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                pytest.fail(f"Run did not reach a terminal status. Last status: {polled_run.status}")
+
+            assert polled_run.status == RunStatus.COMPLETED
+
+
+# ── Case 5: Stream run — SSE events contain expected discriminators ────────
+
+
+async def test_stream_run_sse_events(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """STREAM run SSE body includes run.created, run.in-progress, and run.completed events."""
+    import httpx
+    from acp_sdk.models import RunMode
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            resp = await client.post("/acp/runs", json=_run_request(RunMode.STREAM))
+            assert resp.status_code == 200, resp.text[:300]
+
+    events = _parse_sse_events(resp.content)
+    event_types = [e.get("data", {}).get("type") for e in events if isinstance(e.get("data"), dict)]
+    assert "run.created" in event_types, f"run.created missing from SSE. Got types: {event_types}"
+    assert "run.in-progress" in event_types, f"run.in-progress missing from SSE. Got types: {event_types}"
+    assert "run.completed" in event_types, f"run.completed missing from SSE. Got types: {event_types}"
+
+
+# ── Case 6: Event-history endpoint returns JSON (not SSE) ─────────────────
+
+
+async def test_event_history_returns_json(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """GET /acp/runs/{run_id}/events returns a JSON list, not SSE."""
+    import httpx
+    from acp_sdk.models import RunMode
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            run_resp = await client.post("/acp/runs", json=_run_request(RunMode.SYNC))
+            assert run_resp.status_code in (200, 201)
+            run_id = run_resp.headers.get("run-id") or run_resp.json()["run_id"]
+
+            events_resp = await client.get(f"/acp/runs/{run_id}/events")
+            assert events_resp.status_code == 200
+            assert "application/json" in events_resp.headers.get("content-type", "")
+            body = events_resp.json()
+            assert "events" in body, f"Expected 'events' key, got: {list(body.keys())}"
+            assert isinstance(body["events"], list)
+            assert len(body["events"]) > 0
+
+
+# ── Case 7: Session ID reused across two runs ─────────────────────────────
+
+
+async def test_session_id_reused_across_runs(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """Two runs with the same session_id share the same session."""
+    import httpx
+    from acp_sdk.models import Run, RunMode
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            # Create first run to get a session_id
+            r1 = await client.post("/acp/runs", json=_run_request(RunMode.SYNC))
+            assert r1.status_code in (200, 201)
+            run1 = Run(**r1.json())
+            session_id = str(run1.session_id)
+
+            # Second run reuses the same session_id
+            req2 = {**_run_request(RunMode.SYNC), "session_id": session_id}
+            r2 = await client.post("/acp/runs", json=req2)
+            assert r2.status_code in (200, 201)
+            run2 = Run(**r2.json())
+
+            assert str(run2.session_id) == session_id, (
+                f"Expected session_id {session_id}, got {run2.session_id}"
+            )
+            assert run2.run_id != run1.run_id, "Two runs must have distinct run IDs"
+
+
+# ── Case 8: HITL in direct-agent mode — skipped for fake runner ───────────
+
+
+@pytest.mark.skip(
+    reason="HITL requires a real runner that yields MessageAwaitRequest; fake runner returns answers directly"
+)
+async def test_hitl_direct_agent_mode(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """HITL: awaiting → resume via POST /runs/{run_id} → completed on same thread."""
+    ...  # requires a runner that yields MessageAwaitRequest
+
+
+# ── Case 9: Cancellation of active run ───────────────────────────────────
+
+
+async def test_cancel_active_run(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """DELETE (cancel) an active run via POST /acp/runs/{run_id}/cancel returns 202."""
+    import httpx
+    from acp_sdk.models import Run, RunMode, RunStatus
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            # Use ASYNC so the run is briefly in-progress
+            resp = await client.post("/acp/runs", json=_run_request(RunMode.ASYNC))
+            assert resp.status_code == 202
+            run_id = str(Run(**resp.json()).run_id)
+
+            cancel_resp = await client.post(f"/acp/runs/{run_id}/cancel")
+            # SDK returns 202 or 403 if already terminal; both are valid here
+            assert cancel_resp.status_code in (202, 403), cancel_resp.text[:300]
+            if cancel_resp.status_code == 202:
+                cancelled_run = Run(**cancel_resp.json())
+                assert cancelled_run.status in (RunStatus.CANCELLING, RunStatus.CANCELLED)
+
+
+# ── Case 10: Cancellation after completion ───────────────────────────────
+
+
+async def test_cancel_completed_run_returns_rejection(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """Cancelling a completed run returns 403 (SDK-defined rejection for terminal status)."""
+    import httpx
+    from acp_sdk.models import Run, RunMode
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            # Synchronous run completes before we can cancel
+            resp = await client.post("/acp/runs", json=_run_request(RunMode.SYNC))
+            assert resp.status_code in (200, 201)
+            run_id = str(Run(**resp.json()).run_id)
+
+            cancel_resp = await client.post(f"/acp/runs/{run_id}/cancel")
+            assert cancel_resp.status_code == 403, (
+                f"Expected 403 for cancel-after-completion, got {cancel_resp.status_code}: {cancel_resp.text[:200]}"
+            )
+
+
+# ── Case 11: Unknown run ID returns 404 ──────────────────────────────────
+
+
+async def test_unknown_run_id_returns_404(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """GET /acp/runs/{unknown} returns 404."""
+    import httpx
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            resp = await client.get("/acp/runs/00000000-0000-0000-0000-000000000000")
+            assert resp.status_code == 404
+
+
+# ── Case 12: Two concurrent runs do not mix events ───────────────────────
+
+
+async def test_concurrent_runs_do_not_mix_events(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """Two concurrent SYNC runs return independent run_ids and distinct output."""
+    import asyncio
+
+    import httpx
+    from acp_sdk.models import Run, RunMode, RunStatus
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            req_a = {
+                "agent_name": "cuga",
+                "input": [
+                    {"role": "user", "parts": [{"content_type": "text/plain", "content": "query_alpha"}]}
+                ],
+                "mode": RunMode.SYNC,
+            }
+            req_b = {
+                "agent_name": "cuga",
+                "input": [
+                    {"role": "user", "parts": [{"content_type": "text/plain", "content": "query_beta"}]}
+                ],
+                "mode": RunMode.SYNC,
+            }
+
+            resp_a, resp_b = await asyncio.gather(
+                client.post("/acp/runs", json=req_a),
+                client.post("/acp/runs", json=req_b),
+            )
+
+    assert resp_a.status_code in (200, 201), resp_a.text[:200]
+    assert resp_b.status_code in (200, 201), resp_b.text[:200]
+
+    run_a = Run(**resp_a.json())
+    run_b = Run(**resp_b.json())
+
+    assert run_a.run_id != run_b.run_id, "Concurrent runs must have distinct run IDs"
+    assert run_a.status == RunStatus.COMPLETED
+    assert run_b.status == RunStatus.COMPLETED
+
+    text_a = "".join(p.content for msg in (run_a.output or []) for p in msg.parts if p.content)
+    text_b = "".join(p.content for msg in (run_b.output or []) for p in msg.parts if p.content)
+    # fake_event_stream echoes the query back in the answer
+    assert "query_alpha" in text_a, f"Expected 'query_alpha' in run A output. Got: {text_a!r}"
+    assert "query_beta" in text_b, f"Expected 'query_beta' in run B output. Got: {text_b!r}"
+
+
+# ── Case 13: Memory-store TTL expiry — marked slow, skipped by default ────
+
+
+@pytest.mark.slow
+@pytest.mark.skip(reason="Requires real wall-clock time; run manually with -m slow")
+async def test_memory_store_ttl_expiry(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """After TTL seconds, a completed run ID is no longer retrievable."""
+    ...  # would need acp_settings.store_ttl_seconds = 1 and asyncio.sleep(2)
+
+
+# ── Case 14: Invalid inputs return ACP errors without reflecting values ────
+
+
+async def test_invalid_input_returns_acp_error(
+    acp_settings: Any,
+    mock_app_state: Any,
+    fake_event_stream: Any,
+) -> None:
+    """A run with no user text returns an ACP error; input is never echoed back."""
+    import httpx
+    from acp_sdk.models import RunMode
+
+    INJECTED = "THIS_SECRET_MUST_NOT_APPEAR"
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, fake_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            # No user parts — only agent-role message → should be rejected
+            bad_input_resp = await client.post(
+                "/acp/runs",
+                json={
+                    "agent_name": "cuga",
+                    "input": [
+                        {
+                            "role": "agent",
+                            "parts": [{"content_type": "text/plain", "content": INJECTED}],
+                        }
+                    ],
+                    "mode": RunMode.SYNC,
+                },
+            )
+
+    # The SDK wraps ACPError inside the run: HTTP 200 with Run.status == "failed"
+    assert bad_input_resp.status_code in (200, 201, 400, 422), (
+        f"Unexpected status for invalid input: {bad_input_resp.status_code}"
+    )
+    body_text = bad_input_resp.text
+    assert INJECTED not in body_text, "Input value must not be reflected in the error response"
+    if bad_input_resp.status_code in (200, 201):
+        from acp_sdk.models import Run, RunStatus
+
+        run = Run(**bad_input_resp.json())
+        assert run.status == RunStatus.FAILED, f"Expected failed run, got {run.status}"
+        assert run.error is not None, "Expected error object in failed run"
+        # The error message must be the constant sanitized string, not the injected value
+        assert INJECTED not in (run.error.message or ""), (
+            "Injected input must not appear in the error message"
+        )
+
+
+# ── Case 15: Runner exception creates a failed run with sanitized message ─
+
+
+async def test_runner_exception_creates_failed_run(
+    acp_settings: Any,
+    mock_app_state: Any,
+    raising_event_stream: Any,
+) -> None:
+    """When the runner raises, the ACP run completes with a constant sanitized error."""
+    import httpx
+    from acp_sdk.models import Run, RunMode, RunStatus
+
+    parent, _, _, _ = _build_child_and_parent(acp_settings, mock_app_state, raising_event_stream)
+
+    async with parent.router.lifespan_context(parent):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=parent),
+            base_url="http://test",
+        ) as client:
+            resp = await client.post("/acp/runs", json=_run_request(RunMode.SYNC))
+
+    # The SDK wraps the error; the run may complete (with an error message) or fail
+    assert resp.status_code in (200, 201, 500), resp.text[:300]
+
+    if resp.status_code in (200, 201):
+        run = Run(**resp.json())
+        # Either the run failed with a sanitized error, or completed with the error message yielded
+        if run.status == RunStatus.FAILED:
+            assert run.error is not None, "Failed run must carry an error object"
+            assert "Simulated runner crash" not in (run.error.message or ""), (
+                "Raw exception message must not be exposed"
+            )
+        else:
+            # CugaACPAgent catches the exception and yields _CUGA_ERROR constant message
+            output_text = "".join(p.content for msg in (run.output or []) for p in msg.parts if p.content)
+            assert "Simulated runner crash" not in output_text, (
+                "Raw exception message must not be in run output"
+            )
