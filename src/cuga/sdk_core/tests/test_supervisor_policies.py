@@ -346,7 +346,26 @@ class TestSupervisorPolicyE2E:
 
     @pytest.mark.slow
     @pytest.mark.asyncio
-    async def test_e2e_playbook_orchestrates_sub_agents(self):
+    @pytest.mark.parametrize("attempt", range(5))
+    async def test_e2e_playbook_orchestrates_sub_agents(self, monkeypatch, attempt):
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import (
+            SupervisorGraphAdapter,
+        )
+
+        responses = []
+        normalize_response = SupervisorGraphAdapter.normalize_response
+
+        def capture_response(adapter, response):
+            responses.append(
+                {
+                    "content": response.content,
+                    "tool_calls": getattr(response, "tool_calls", None),
+                    "additional_kwargs": getattr(response, "additional_kwargs", None),
+                }
+            )
+            return normalize_response(adapter, response)
+
+        monkeypatch.setattr(SupervisorGraphAdapter, "normalize_response", capture_response)
         supervisor = _isolated_supervisor(
             agents=_onboarding_agents(),
             special_instructions=(
@@ -376,7 +395,8 @@ class TestSupervisorPolicyE2E:
         assert metadata.get("playbook_guidance") or metadata.get("playbook_guidance_added")
         assert len(selected) >= 1 or delegation_count >= 1, (
             f"Supervisor did not delegate: answer={result.answer!r}, error={result.error!r}, "
-            f"messages={values.get('supervisor_chat_messages')!r}"
+            f"messages={values.get('supervisor_chat_messages')!r}, "
+            f"[DEBUG-supervisor] attempt={attempt}, responses={responses!r}"
         )
         assert result.error is None
 
