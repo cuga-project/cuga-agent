@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import * as api from "./api";
+import { useAuth } from "./AuthContext";
 import { ConfigHeader } from "./ConfigHeader";
 import CarbonChat, { generateUUID } from "./carbon-chat/CarbonChat";
+import { MemoryWorkspace } from "./memory/MemoryWorkspace";
 import {
   IconButton,
   Tag,
@@ -360,8 +362,15 @@ export function ChatLanding() {
   // carry the right X-Agent-ID before paint, without mutating module state during render.
   const { agentId: routeAgentId } = useParams<{ agentId?: string }>();
   const navigate = useNavigate();
+  const { user, isLoading: authLoading, authorizationEnabled } = useAuth();
   const [agentRegistry, setAgentRegistry] = useState<boolean | null>(null);
+  const [memoryEnabled, setMemoryEnabled] = useState(false);
+  const [activeView, setActiveView] = useState<"chat" | "memory">("chat");
+  const [focusedMemoryIds, setFocusedMemoryIds] = useState<string[]>([]);
   const effectiveChatAgentId = agentRegistry === false ? "cuga-default" : (routeAgentId || "cuga-default");
+  const canManageMemory =
+    !authLoading &&
+    (!authorizationEnabled || user?.canManage === true);
   useLayoutEffect(() => {
     api.setKnowledgeAgentId(effectiveChatAgentId);
   }, [effectiveChatAgentId]);
@@ -375,6 +384,7 @@ export function ChatLanding() {
       .then((c) => {
         if (cancelled) return;
         setAgentRegistry(!!c.agent_registry);
+        setMemoryEnabled(!!c.evolve_memory_enabled);
         if (!c.agent_registry) {
           if (routeAgentId && routeAgentId !== "cuga-default") {
             navigate("/chat", { replace: true });
@@ -396,12 +406,22 @@ export function ChatLanding() {
           });
       })
       .catch(() => {
-        if (!cancelled) setAgentRegistry(false);
+        if (!cancelled) {
+          setAgentRegistry(false);
+          setMemoryEnabled(false);
+        }
       });
     return () => {
       cancelled = true;
     };
   }, [routeAgentId, navigate]);
+
+  useEffect(() => {
+    if (!memoryEnabled) {
+      setActiveView("chat");
+      setFocusedMemoryIds([]);
+    }
+  }, [memoryEnabled]);
 
   const [draftThread, setDraftThread] = useState<DraftThreadState>(
     () => loadDraftThreadState(effectiveChatAgentId) ?? createDraftThreadState(effectiveChatAgentId),
@@ -457,6 +477,7 @@ export function ChatLanding() {
     setWorkspaceTree([]);
     setWorkspaceExpandedDirs(new Set());
     setFileModal(null);
+    setFocusedMemoryIds([]);
   }, [effectiveChatAgentId]);
 
   useEffect(() => {
@@ -1167,23 +1188,30 @@ export function ChatLanding() {
     [handleFileClick, handleWorkspaceDirToggle, handleWorkspaceFileDownload, workspaceExpandedDirs],
   );
 
-  const handleToggleLeft = () => canShowLeft && setLeftOpen((v) => !v);
+  const handleToggleLeft = () => {
+    setActiveView("chat");
+    if (canShowLeft) setLeftOpen((v) => !v);
+  };
   const handleToggleWorkspace = () => {
+    setActiveView("chat");
     if (!canShowRight) return;
     setRightSection("workspace");
     setRightOpen(true);
   };
   const handleToggleKnowledge = () => {
+    setActiveView("chat");
     if (!canShowRight) return;
     setRightSection("knowledge");
     setRightOpen(true);
   };
   const handleToggleConfiguration = () => {
+    setActiveView("chat");
     if (!canShowRight) return;
     setRightSection("configuration");
     setRightOpen(true);
   };
   const handleToggleSkills = () => {
+    setActiveView("chat");
     if (!canShowRight) return;
     setRightSection("skills");
     setRightOpen(true);
@@ -1203,6 +1231,10 @@ export function ChatLanding() {
         <ConfigHeader
           onToggleLeftSidebar={handleToggleLeft}
           onToggleWorkspace={handleToggleWorkspace}
+          onOpenMemory={memoryEnabled ? () => {
+            setFocusedMemoryIds([]);
+            setActiveView("memory");
+          } : undefined}
           agentId={routeAgentId}
         />
 
@@ -1226,7 +1258,7 @@ export function ChatLanding() {
           <Chat size={16} style={{ color: "var(--cds-text-secondary)", flexShrink: 0 }} />
           <Select
             id="chat-agent-switcher"
-            labelText=""
+            labelText="Agent"
             hideLabel
             size="sm"
             inline
@@ -1250,28 +1282,51 @@ export function ChatLanding() {
         </div>
         )}
 
-      {/* ── Full-width chat — panels float on top ─────────────────────────── */}
-      <div className="chat-content-area" style={{ position: "relative", height: `calc(100vh - ${headerHeight}px)` }}>
-        <CarbonChat
-          contained={true}
-          threadId={effectiveChatThreadId}
-          attachmentScope="session"
-          knowledgeEnabled={knowledgeEnabled}
-          sessionKnowledgeEnabled={sessionKnowledgeEnabled}
-          isReadonly={selectedThreadId != null && selectedThreadId !== activeThreadId}
-          onThreadChange={handleThreadChange}
-          homescreen={homescreenConfig}
-          sessionDocsVersion={sessionDocsVersion}
-          onSessionDocsChanged={handleSessionDocsChanged}
-          onOpenKnowledge={handleToggleKnowledge}
-          onPreviewKnowledgeAttachment={handlePreviewKnowledgeAttachment}
-        />
-      </div>
+      {activeView === "memory" && memoryEnabled ? (
+        <div
+          className="memory-workspace-shell"
+          style={{ marginTop: headerHeight, height: `calc(100vh - ${headerHeight}px)` }}
+        >
+          <MemoryWorkspace
+            agentId={effectiveChatAgentId}
+            agentName={agentConfig.name}
+            canManage={canManageMemory}
+            focusEntityIds={focusedMemoryIds}
+            onClearFocus={() => setFocusedMemoryIds([])}
+            onClose={() => setActiveView("chat")}
+            onOpenConversation={(threadId) => {
+              setSelectedThreadId(threadId);
+              setActiveView("chat");
+            }}
+          />
+        </div>
+      ) : (
+        <div className="chat-content-area" style={{ position: "relative", height: `calc(100vh - ${headerHeight}px)` }}>
+          <CarbonChat
+            contained={true}
+            threadId={effectiveChatThreadId}
+            attachmentScope="session"
+            knowledgeEnabled={knowledgeEnabled}
+            sessionKnowledgeEnabled={sessionKnowledgeEnabled}
+            isReadonly={selectedThreadId != null && selectedThreadId !== activeThreadId}
+            onThreadChange={handleThreadChange}
+            homescreen={homescreenConfig}
+            sessionDocsVersion={sessionDocsVersion}
+            onSessionDocsChanged={handleSessionDocsChanged}
+            onOpenKnowledge={handleToggleKnowledge}
+            onOpenMemoryUsage={memoryEnabled ? (entityIds) => {
+              setFocusedMemoryIds(entityIds);
+              setActiveView("memory");
+            } : undefined}
+            onPreviewKnowledgeAttachment={handlePreviewKnowledgeAttachment}
+          />
+        </div>
+      )}
 
       {/* ══════════════════════════════════════════════════════════════════════
           LEFT PANEL — fixed, transparent, slides over chat
           ══════════════════════════════════════════════════════════════════════ */}
-      {canShowLeft && (
+      {activeView === "chat" && canShowLeft && (
         <div style={panelStyle("left", headerHeight, LEFT_W, leftOpen)}>
           {/* Header */}
           <div style={panelHeader}>
@@ -1408,7 +1463,7 @@ export function ChatLanding() {
       {/* ══════════════════════════════════════════════════════════════════════
           RIGHT PANEL — fixed, transparent, slides over chat
           ══════════════════════════════════════════════════════════════════════ */}
-      {canShowRight && (
+      {activeView === "chat" && canShowRight && (
         <div style={panelStyle("right", headerHeight, RIGHT_W, rightOpen)}>
           {/* Agent identity header */}
           <div style={panelHeader}>
@@ -1832,7 +1887,7 @@ export function ChatLanding() {
       )}
 
       {/* ── Floating re-open buttons when panels are closed ──────────────── */}
-      {canShowLeft && !leftOpen && (
+      {activeView === "chat" && canShowLeft && !leftOpen && (
         <button
           onClick={() => setLeftOpen(true)}
           title="Open conversations"
@@ -1856,7 +1911,7 @@ export function ChatLanding() {
         </button>
       )}
 
-      {canShowRight && !rightOpen && (
+      {activeView === "chat" && canShowRight && !rightOpen && (
         <button
           onClick={() => setRightOpen(true)}
           title="Open agent panel"
