@@ -381,20 +381,13 @@ def test_missing_acp_sdk_raises_import_error_with_actionable_message() -> None:
 
 @pytest.mark.unit
 def test_auth_required_true_applies_dependency() -> None:
-    """When auth_required=True, build_auth_dependencies returns a non-empty list."""
+    """When auth_required=True, build_auth_dependencies returns one dependency wrapping require_chat_access."""
     from cuga.backend.server.acp.dependencies import build_auth_dependencies
+    from cuga.backend.server.auth.dependencies import require_chat_access
 
-    with patch(
-        "cuga.backend.server.acp.dependencies.build_auth_dependencies",
-        wraps=build_auth_dependencies,
-    ):
-        # Import require_chat_access to confirm it is used.
-        from cuga.backend.server.auth.dependencies import require_chat_access
-
-        deps = build_auth_dependencies(auth_required=True)
-        assert len(deps) == 1
-        # The single dependency wraps require_chat_access.
-        assert deps[0].dependency is require_chat_access
+    deps = build_auth_dependencies(auth_required=True)
+    assert len(deps) == 1
+    assert deps[0].dependency is require_chat_access
 
 
 @pytest.mark.unit

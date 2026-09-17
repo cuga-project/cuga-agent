@@ -8,10 +8,12 @@ discovery, runs, sessions, and resources — shares one auth policy.
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import Depends
 
 
-def build_auth_dependencies(*, auth_required: bool) -> list[Depends]:
+def build_auth_dependencies(*, auth_required: bool) -> list[Any]:
     """Return a dependency list appropriate for the given auth setting.
 
     When *auth_required* is True the list contains ``Depends(require_chat_access)``

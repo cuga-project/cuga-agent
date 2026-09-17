@@ -58,8 +58,7 @@ def build_acp_app_for_settings(
         from acp_sdk.server import MemoryStore
     except ImportError as exc:
         raise ImportError(
-            "The ACP integration requires the acp_sdk package. "
-            "Install it with: pip install cuga[acp]"
+            "The ACP integration requires the acp_sdk package. Install it with: pip install cuga[acp]"
         ) from exc
 
     from datetime import timedelta
@@ -100,7 +99,7 @@ def build_acp_app_for_settings(
         agent,
         store=store,
         enable_playground_cors=False,
-        dependencies=dependencies if dependencies else None,
+        dependencies=dependencies or None,
     )
 
     logger.info(
