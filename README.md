@@ -1176,11 +1176,23 @@ EasyOCR), and all registered tiktoken encodings. Required download failures abor
 the build. A final `RUN --network=none` loads the cached models and launches
 Chromium as the runtime user, so missing assets fail before publication.
 
-In the container, configure the Evolve MCP command as `/app/.venv/bin/evolve-mcp`
-with no package-launcher arguments. Do not use `uvx --from altk-evolve`: that creates
-a separate environment instead of using the installed package. The image enables
-`UV_OFFLINE`, `HF_HUB_OFFLINE`, and `TRANSFORMERS_OFFLINE` and uses a bundled LiteLLM
-cost map. Model caches live under `/app/.cache`, and Playwright under `/app/.playwright`.
+The image starts Evolve automatically before CUGA. Its supervisor launches the
+installed `evolve-mcp` server on `127.0.0.1:8201`, waits for SSE readiness, and
+configures CUGA to use that endpoint in direct mode. No manager MCP entry, custom
+command, or extra Kubernetes container is required. If either process exits, the
+container stops with a failure so Kubernetes can restart it. SIGTERM shuts down
+both process groups.
+
+Evolve defaults to filesystem storage at `/data/dbs/evolve`, covered by the Helm
+chart's existing `/data/dbs` PVC. For a shared PostgreSQL/pgvector backend, supply
+`EVOLVE_BACKEND=postgres` and the `EVOLVE_PG_*` connection variables through your
+normal deployment configuration. LLM credentials and endpoints are also supplied
+as environment variables. For an externally managed Evolve service, explicitly set
+`CUGA_EMBEDDED_EVOLVE=false` and configure CUGA's Evolve URL/mode yourself.
+
+The image enables `UV_OFFLINE`, `HF_HUB_OFFLINE`, and `TRANSFORMERS_OFFLINE` and
+uses a bundled LiteLLM cost map. Model caches live under `/app/.cache`, and
+Playwright under `/app/.playwright`.
 
 Connect your LLM, database, and other services to endpoints available inside the
 isolated network. Custom embedding models, optional Evolve `sbert_large` consistency
