@@ -218,9 +218,11 @@ jobs:
           short_sha="${PR_HEAD_SHA:0:12}"
           log_prefix="pr-${PR_NUMBER}-${short_sha}-${run_started_at}"
           output_log="${GITHUB_WORKSPACE}/pr-eval-logs/${log_prefix}-run-pr-eval-output.md"
+          report_log="${GITHUB_WORKSPACE}/pr-eval-logs/${log_prefix}-run-pr-eval-report.md"
           exit_code_log="${GITHUB_WORKSPACE}/pr-eval-logs/${log_prefix}-run-pr-eval-exit-code.txt"
+          eval_script="${HOME}/pr-regression-testing/cuga-eval/scripts/pr-regression-testing/run-pr-regression-eval.sh"
 
-          bash "${HOME}/pr-regression-testing/cuga-eval/scripts/pr-regression-testing/run-pr-regression-eval.sh" \
+          bash "${eval_script}" \
             "${COMMENT_BODY}" \
             > "${output_log}" 2>&1
 
@@ -236,11 +238,21 @@ jobs:
 
           redact_file "${output_log}"
           redact_file "${exit_code_log}"
+          if ! bash "${eval_script}" --extract-report "${output_log}" "${report_log}" || [[ ! -f "${report_log}" ]]; then
+            {
+              echo "No parsed evaluation report was produced."
+              echo
+              echo "See the workflow artifact for the full evaluation output."
+            } > "${report_log}"
+          fi
+          redact_file "${report_log}"
 
           echo "Saved output log: ${output_log}"
+          echo "Saved report log: ${report_log}"
           echo "Saved exit code log: ${exit_code_log}"
 
           cp "${output_log}" "${GITHUB_WORKSPACE}/run-pr-eval-output.md"
+          cp "${report_log}" "${GITHUB_WORKSPACE}/run-pr-eval-report.md"
           cp "${exit_code_log}" "${GITHUB_WORKSPACE}/run-pr-eval-exit-code.txt"
 
           exit "${status}"
@@ -267,6 +279,7 @@ jobs:
           name: run-pr-eval-output-pr-${{ github.event.issue.number }}-${{ github.run_id }}
           path: |
             run-pr-eval-output.md
+            run-pr-eval-report.md
             run-pr-eval-exit-code.txt
             pr-eval-logs/
           if-no-files-found: warn
@@ -298,7 +311,7 @@ jobs:
           REQUESTED_SHA: ${{ needs.run-pr-eval.outputs.requested_sha }}
           EVAL_JOB_RESULT: ${{ needs.run-pr-eval.result }}
           ARTIFACT_AVAILABLE: ${{ steps.download.outcome == 'success' }}
-          OUTPUT_PATH: pr-eval-output/run-pr-eval-output.md
+          REPORT_PATH: pr-eval-output/run-pr-eval-report.md
           EXIT_CODE_PATH: pr-eval-output/run-pr-eval-exit-code.txt
         with:
           script: |
@@ -313,35 +326,31 @@ jobs:
             const exitCode = fs.existsSync(exitCodePath)
               ? fs.readFileSync(exitCodePath, "utf8").trim()
               : "unknown";
-            const result = exitCode === "0"
-              ? "SUCCESS"
-              : process.env.EVAL_JOB_RESULT === "failure"
-                ? `FAILED (${exitCode})`
-                : process.env.EVAL_JOB_RESULT.toUpperCase();
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
             const artifactAvailable = process.env.ARTIFACT_AVAILABLE === "true";
-            const outputPath = process.env.OUTPUT_PATH;
+            const reportPath = process.env.REPORT_PATH;
             let report = "";
+            let reportAvailable = false;
 
-            if (artifactAvailable && fs.existsSync(outputPath)) {
-              const output = fs.readFileSync(outputPath, "utf8");
-              const startMarker = "######## REPORT START ########";
-              const endMarker = "######## REPORT END ########";
-              const escapedStart = startMarker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-              const escapedEnd = endMarker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-              const reportPattern = new RegExp(
-                `${escapedStart}\\s*([\\s\\S]*?)\\s*${escapedEnd}`,
-                "g"
-              );
-              const reportBlocks = [...output.matchAll(reportPattern)]
-                .map((match) => match[1].trim())
-                .filter(Boolean);
-
-              report = reportBlocks.length > 0
-                ? reportBlocks.join("\n\n")
-                : "No report section found between REPORT START and REPORT END markers.";
+            if (artifactAvailable && fs.existsSync(reportPath)) {
+              report = fs.readFileSync(reportPath, "utf8").trim();
+              reportAvailable = report.length > 0;
             } else {
-              report = "No evaluation output artifact was available.";
+              report = "No parsed evaluation report artifact was available.";
+            }
+
+            const evalJobResult = String(process.env.EVAL_JOB_RESULT || "unknown").toLowerCase();
+            let result = "UNKNOWN";
+            if (evalJobResult !== "success") {
+              result = exitCode === "unknown"
+                ? evalJobResult.toUpperCase()
+                : `FAILED (${exitCode})`;
+            } else if (exitCode !== "0") {
+              result = `FAILED (${exitCode})`;
+            } else if (!reportAvailable) {
+              result = "FAILED (report unavailable)";
+            } else {
+              result = "SUCCESS";
             }
 
             if (report.length > 58000) {
