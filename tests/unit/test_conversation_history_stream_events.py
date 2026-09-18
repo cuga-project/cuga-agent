@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import asyncio
+import sqlite3
+import threading
 
 import pytest
 
@@ -10,6 +13,33 @@ from cuga.backend.server.conversation_history import ConversationHistoryDB
 from cuga.backend.storage.relational.local import LocalRelationalStore
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.asyncio
+async def test_delete_batch_allows_pending_writer_to_commit(tmp_path, monkeypatch):
+    store = LocalRelationalStore(str(tmp_path / "concurrent.db"))
+    await store.execute("CREATE TABLE records (id INTEGER)")
+    await store.commit()
+    await store.execute("INSERT INTO records VALUES (1)")
+    batch_started = threading.Event()
+    connect = sqlite3.connect
+
+    def batch_connection(*args, **kwargs):
+        kwargs["timeout"] = 0.5
+        conn = connect(*args, **kwargs)
+        batch_started.set()
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", batch_connection)
+    batch = asyncio.create_task(store.execute_batch([("DELETE FROM records", ())]))
+    try:
+        assert await asyncio.to_thread(batch_started.wait, 2)
+        results = await asyncio.gather(batch, store.commit(), return_exceptions=True)
+        assert results == [None, None]
+        assert await store.fetchall("SELECT * FROM records") == []
+    finally:
+        await asyncio.gather(batch, return_exceptions=True)
+        await store.close()
 
 
 def _make_db(tmp_path) -> ConversationHistoryDB:
@@ -90,3 +120,80 @@ async def test_save_stream_events_tolerates_non_list_stored_payload(tmp_path):
     assert history is not None
     assert [e.event_name for e in history.events] == ["Answer"]
     assert [e.sequence for e in history.events] == [0]
+
+
+@pytest.mark.asyncio
+async def test_get_thread_owners_for_agent_returns_distinct_scoped_keys(tmp_path):
+    db = _make_db(tmp_path)
+
+    assert await db.save_conversation("agent-a", "thread-a", 1, "user-a", [])
+    assert await db.save_conversation("agent-a", "thread-a", 2, "user-a", [])
+    assert await db.save_conversation("agent-a", "thread-a", 1, "user-b", [])
+    assert await db.save_conversation("agent-b", "thread-b", 1, "user-a", [])
+
+    assert await db.get_thread_owners_for_agent("agent-a") == {
+        ("thread-a", "user-a"),
+        ("thread-a", "user-b"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_thread_deletion_outbox_is_atomic_and_owner_scoped(tmp_path):
+    db = _make_db(tmp_path)
+    await db.save_stream_events("agent", "thread", "user", [_event("UserMessage", 0)])
+    await db.save_stream_events("agent", "thread", "other", [_event("UserMessage", 0)])
+    store = db._get_store()
+    await store.execute(
+        "CREATE TRIGGER reject_delete BEFORE DELETE ON stream_events BEGIN SELECT RAISE(ABORT, 'crash'); END"
+    )
+    await store.commit()
+    assert not await db.delete_thread("agent", "thread", "user")
+    assert await db.pending_source_deletions() == []
+    assert await db.get_stream_events("agent", "thread", "user") is not None
+    await store.execute("DROP TRIGGER reject_delete")
+    await store.commit()
+    assert await db.delete_thread("agent", "thread", "user")
+    assert await db.delete_thread("agent", "thread", "user")
+    events = await db.pending_source_deletions()
+    assert len(events) == 1
+    assert events[0]["user_id"] == "user"
+    assert await db.get_stream_events("agent", "thread", "other") is not None
+    await db.acknowledge_source_deletion(events[0]["event_id"])
+    assert await db.pending_source_deletions() == []
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_source_deletion_delivery_retries_until_acknowledged(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from cuga.backend.evolve.integration import EvolveIntegration
+    from cuga.backend.evolve.deleted_sources import deliver_source_deletions
+
+    db = _make_db(tmp_path)
+    await db.save_stream_events("agent", "thread", "user", [_event("UserMessage", 0)])
+    await db.delete_thread("agent", "thread", "user")
+    monkeypatch.setattr("cuga.backend.server.conversation_history.get_conversation_db", lambda: db)
+    monkeypatch.setattr(EvolveIntegration, "is_enabled", lambda: True)
+    monkeypatch.setattr(
+        EvolveIntegration,
+        "get_compliance_status",
+        AsyncMock(
+            side_effect=[
+                {"backend": "filesystem", "retention_available": True},
+                {"backend": "postgres", "retention_available": True},
+                {"backend": "postgres", "retention_available": True},
+            ]
+        ),
+    )
+    call = AsyncMock(side_effect=[RuntimeError("offline"), {"recorded": True}])
+    monkeypatch.setattr(EvolveIntegration, "_call_structured_tool", call)
+    await deliver_source_deletions()
+    assert len(await db.pending_source_deletions()) == 1
+    call.assert_not_awaited()
+    with pytest.raises(RuntimeError):
+        await deliver_source_deletions()
+    assert len(await db.pending_source_deletions()) == 1
+    await deliver_source_deletions()
+    assert await db.pending_source_deletions() == []
+    assert call.call_args_list[0] == call.call_args_list[1]
+    await db._get_store().close()
