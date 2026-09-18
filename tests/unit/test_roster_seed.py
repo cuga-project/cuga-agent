@@ -279,7 +279,10 @@ async def test_an_edit_made_in_manage_survives_a_restart(roster_file):
 
     after, _ = await config_store.load_config(None, "pricebot")
     assert after["special_instructions"] == "EDITED BY A HUMAN IN MANAGE", "the restart clobbered it"
-    assert tally["skipped"] >= 1
+    # Seed-once: the YAML is unchanged since the last import, so the whole re-seed is skipped — the
+    # human's edit is never even a candidate to be overwritten. (Per-agent protection when the roster
+    # DOES change is covered by test_a_human_edit_wins_even_when_the_roster_is_re_applied.)
+    assert tally["created"] == 0 and tally["updated"] == 0
 
 
 @pytest.mark.asyncio

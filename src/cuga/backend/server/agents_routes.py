@@ -125,6 +125,26 @@ async def delete_agent(agent_id: str, request: Request):
     if agent_id not in existing_ids:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
     await delete_all_configs(agent_id)
+
+    # Also drop the agent from the supervisor's sub-agent list, if one references it. Two reasons:
+    #   1. /run/agents (and the live supervisor) otherwise keep pointing at a now-deleted agent.
+    #   2. saving the supervisor config bumps its version, which invalidates the cached CugaSupervisor
+    #      (keyed on that version in run_routes), so the delete takes effect WITHOUT a restart.
+    # Purely additive: a no-op in plain core CUGA, where there is no supervisor config to load.
+    try:
+        from cuga.backend.server.config_store import load_config, save_config
+        from cuga.supervisor_utils.roster_seed import SUPERVISOR_AGENT_ID
+
+        sup, _ = await load_config(None, SUPERVISOR_AGENT_ID)
+        subs = ((sup or {}).get("supervisor") or {}).get("subAgents") or []
+        kept = [s for s in subs if (s or {}).get("ref") != agent_id]
+        if sup and len(kept) != len(subs):
+            sup["supervisor"]["subAgents"] = kept
+            await save_config(sup, agent_id=SUPERVISOR_AGENT_ID)
+            logger.info(f"Removed '{agent_id}' from supervisor '{SUPERVISOR_AGENT_ID}' sub-agents")
+    except Exception as e:  # noqa: BLE001 — ref cleanup is best-effort; the agent is already deleted
+        logger.warning(f"delete_agent: could not update supervisor refs for '{agent_id}': {e}")
+
     from cuga.backend.server.manage_routes.helpers import invalidate_agent_graph_cache
 
     await invalidate_agent_graph_cache(request, agent_id, draft=True, published=True)
