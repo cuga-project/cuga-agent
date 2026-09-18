@@ -139,3 +139,66 @@ def test_list_agents_allows_chat_access_without_manage():
     assert client.get("/api/agents").status_code == 200
     assert client.post("/api/agents", json={"name": "Flight Booker"}).status_code == 403
     assert client.delete("/api/agents/cuga-default").status_code == 403
+
+
+async def test_delete_cleanup_does_not_clobber_a_concurrent_supervisor_publish(monkeypatch):
+    """The supervisor ref cleanup on delete is a read-modify-write, and ``save_config`` is blind —
+    it appends MAX(version)+1 and never compares the version that was loaded. So the cleanup must
+    run under ``agent_draft_lock(SUPERVISOR_AGENT_ID)``, the same lock the publish path holds across
+    its own load-modify-write of that config.
+
+    Without the lock, a publish landing between the cleanup's load and its save is silently reverted
+    (or, as staged here, the cleanup's removal is): this test drives exactly that interleaving.
+    """
+    import asyncio
+
+    from cuga.backend.server import agents_routes, events_bridge
+    from cuga.backend.server.config_store import load_config, save_config
+    from cuga.backend.server.manage_routes import helpers as manage_helpers
+    from cuga.backend.server.manage_routes.helpers import agent_draft_lock
+    from cuga.supervisor_utils.roster_seed import SUPERVISOR_AGENT_ID
+
+    reset_config_db()
+    monkeypatch.setattr(events_bridge, "events_enabled", lambda: True)
+
+    async def _no_cache_invalidation(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(manage_helpers, "invalidate_agent_graph_cache", _no_cache_invalidation)
+
+    await save_config({"agent": {"name": "Doomed"}}, agent_id="doomed")
+    await save_config(
+        {
+            "agent": {"name": "Sup", "kind": "supervisor"},
+            "supervisor": {"subAgents": [{"ref": "doomed"}, {"ref": "keeper"}], "planApproval": False},
+        },
+        agent_id=SUPERVISOR_AGENT_ID,
+    )
+
+    # A publish takes the lock and reads the config it is about to rewrite.
+    lock = agent_draft_lock(SUPERVISOR_AGENT_ID)
+    await lock.acquire()
+    try:
+        publishing, _ = await load_config(None, SUPERVISOR_AGENT_ID)
+
+        task = asyncio.create_task(agents_routes.delete_agent("doomed", request=object()))
+        # Let the delete get past delete_all_configs (observable: the agent's config is gone) and up
+        # to the supervisor lock, where it must now block until the publish below has landed.
+        for _ in range(400):
+            await asyncio.sleep(0.005)
+            gone, _ = await load_config(None, "doomed")
+            if gone is None or task.done():
+                break
+        await asyncio.sleep(0.05)
+
+        publishing["supervisor"]["planApproval"] = True
+        await save_config(publishing, agent_id=SUPERVISOR_AGENT_ID)
+    finally:
+        lock.release()
+
+    await task
+
+    final, _ = await load_config(None, SUPERVISOR_AGENT_ID)
+    refs = [s["ref"] for s in final["supervisor"]["subAgents"]]
+    assert refs == ["keeper"], "the publish clobbered the cleanup — the deleted agent is still listed"
+    assert final["supervisor"]["planApproval"] is True, "the cleanup wrote a stale snapshot over the publish"

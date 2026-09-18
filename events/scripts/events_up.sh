@@ -45,12 +45,17 @@ start_events_service() {
 #     the flapping quick-tunnel. We start ngrok (not cloudflared) for :7860 and pin the URL.
 #   • unset → a cloudflared quick-tunnel (random per run); we auto-detect + feed the live one in.
 env_val() { grep -E "^$1=" "$REPO/.env" 2>/dev/null | tail -1 | cut -d= -f2- \
-  | sed -e 's/ *#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//'; }
+  | sed -e 's/ *#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//' || true; }
+# ^ `|| true`: an ABSENT key makes `grep` exit 1, which `set -o pipefail` turns into a fatal error
+#   that kills `make up-noap` before it prints anything. An empty result is the correct answer here.
 NGROK_DOMAIN="$(env_val EVENTS_NGROK_DOMAIN)"
 
 cuga_tunnel_url() {
   [ -n "$NGROK_DOMAIN" ] && { echo "https://$NGROK_DOMAIN"; return; }   # stable ngrok URL is known
-  grep -ao 'https://[a-z0-9-]*\.trycloudflare\.com' "$RUN/cuga_tunnel.log" 2>/dev/null | tail -1;
+  grep -ao 'https://[a-z0-9-]*\.trycloudflare\.com' "$RUN/cuga_tunnel.log" 2>/dev/null | tail -1 || true;
+  # ^ `|| true`: no-tunnel mode has no cuga_tunnel.log, so grep exits 2; without this the pipeline's
+  #   failure (set -o pipefail) propagates through `url="$(cuga_tunnel_url)"` and set -e reports a
+  #   spurious "Error 2" AFTER both servers are already up. Empty output is the right answer here.
 }
 
 # Export EVENTS_PUBLIC_URL so the server matches the live tunnel without editing .env. With a stable
@@ -125,6 +130,21 @@ if [ "${1:-}" = "--reload" ]; then
   # with no /run and no roster, and every fire answers as a bare agent with no tools.
   export CUGA_EVENTS_ENABLED="${CUGA_EVENTS_ENABLED:-true}"
   export MCP_SERVERS_FILE="$REPO/$CFG" CUGA_SUPERVISOR_ROSTER="${CUGA_SUPERVISOR_ROSTER:-events/examples/rosters/default.yaml}"
+  # The supervisor roster seeds sub-agents into the config store; the registry flag is what makes
+  # them VISIBLE and manageable (list/edit/delete) in the Manage UX — without it list_agents
+  # short-circuits to cuga-default and the roster is invisible. The Code Engine deploy sets this;
+  # set it here too so local matches deployed. Default it to true, but respect an explicit override
+  # (DYNACONF_SUPERVISOR__REGISTRY_ENABLED=false) — it exposes create/delete-agent to anyone with
+  # manage access, so turn it OFF on a shared/exposed host until auth is on.
+  export DYNACONF_SUPERVISOR__REGISTRY_ENABLED="${DYNACONF_SUPERVISOR__REGISTRY_ENABLED:-true}"
+  # PERSIST THE AGENT CONFIG STORE across restarts. `cuga start demo` (below) resets cuga.db on
+  # every boot UNLESS storage.preserve_configs_on_startup matches storage.mode — and its default
+  # is "prod", so locally (mode="local") the store is wiped each restart. That re-runs the roster
+  # seed from scratch and UNDOES any agent you deleted/edited in the Manage UX. "any" preserves
+  # the store whenever rows already exist, so UX deletes/edits stick across a local restart — the
+  # same durability Code Engine gets for free (mode="prod" already preserves). Override to "prod"
+  # to restore the throwaway-demo behaviour (clean slate + full roster re-seed each boot).
+  export DYNACONF_STORAGE__PRESERVE_CONFIGS_ON_STARTUP="${DYNACONF_STORAGE__PRESERVE_CONFIGS_ON_STARTUP:-any}"
   # CUGA IS THE DOOR: /run and /stream forward slash verbs (and open arming dialogues) to the
   # eventing service. Without EVENTS_API_URL that forward is disabled and "/automate …" is
   # handed to the plain agent, which tries to IMPLEMENT the schedule.
@@ -222,6 +242,21 @@ echo "== 1/2 CUGA server :$CUGA_PORT  (registry :$REGISTRY_PORT boots inside it)
 # it here is what makes `make up` behave the same on a machine with no .env.
 export CUGA_EVENTS_ENABLED="${CUGA_EVENTS_ENABLED:-true}"
 export MCP_SERVERS_FILE="$REPO/$CFG" CUGA_SUPERVISOR_ROSTER="${CUGA_SUPERVISOR_ROSTER:-events/examples/rosters/default.yaml}"
+  # The supervisor roster seeds sub-agents into the config store; the registry flag is what makes
+  # them VISIBLE and manageable (list/edit/delete) in the Manage UX — without it list_agents
+  # short-circuits to cuga-default and the roster is invisible. The Code Engine deploy sets this;
+  # set it here too so local matches deployed. Default it to true, but respect an explicit override
+  # (DYNACONF_SUPERVISOR__REGISTRY_ENABLED=false) — it exposes create/delete-agent to anyone with
+  # manage access, so turn it OFF on a shared/exposed host until auth is on.
+  export DYNACONF_SUPERVISOR__REGISTRY_ENABLED="${DYNACONF_SUPERVISOR__REGISTRY_ENABLED:-true}"
+  # PERSIST THE AGENT CONFIG STORE across restarts. `cuga start demo` (below) resets cuga.db on
+  # every boot UNLESS storage.preserve_configs_on_startup matches storage.mode — and its default
+  # is "prod", so locally (mode="local") the store is wiped each restart. That re-runs the roster
+  # seed from scratch and UNDOES any agent you deleted/edited in the Manage UX. "any" preserves
+  # the store whenever rows already exist, so UX deletes/edits stick across a local restart — the
+  # same durability Code Engine gets for free (mode="prod" already preserves). Override to "prod"
+  # to restore the throwaway-demo behaviour (clean slate + full roster re-seed each boot).
+  export DYNACONF_STORAGE__PRESERVE_CONFIGS_ON_STARTUP="${DYNACONF_STORAGE__PRESERVE_CONFIGS_ON_STARTUP:-any}"
   # CUGA IS THE DOOR: /run and /stream forward slash verbs (and open arming dialogues) to the
   # eventing service. Without EVENTS_API_URL that forward is disabled and "/automate …" is
   # handed to the plain agent, which tries to IMPLEMENT the schedule.
@@ -243,7 +278,7 @@ echo "READY:"
 echo "  CUGA        http://localhost:$CUGA_PORT   (Studio: /manage → Studio)"
 echo "  eventing    http://localhost:$EVENTS_PORT/health   (triggers · scheduler · channels)"
 echo "  registry    http://localhost:$REGISTRY_PORT/applications"
-echo "  AP tunnel   $(grep -ao 'https://[a-z0-9-]*\.trycloudflare\.com' "$RUN/ap_tunnel.log" | tail -1)   → for channel webhooks"
+echo "  AP tunnel   $(grep -ao 'https://[a-z0-9-]*\.trycloudflare\.com' "$RUN/ap_tunnel.log" 2>/dev/null | tail -1 || echo none)   → for channel webhooks"
 print_public_url
 echo ""
 echo "next: 'make channels' to arm inbound chat channels · logs in $RUN/*.log · stop: events/scripts/events_up.sh --stop"

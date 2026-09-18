@@ -184,16 +184,34 @@ def _supervisor_config(
 
 
 _SEED_MARK = "_roster_seed_hash"
+# Stamped on the SUPERVISOR config: a hash of the whole roster the LAST import wrote. On the next
+# boot, an unchanged fingerprint means "already imported, nothing new in the YAML" → the DB is the
+# source of truth and we do NOT re-seed. This is what makes UI deletes/edits STICK across restarts
+# and redeploys: the checked-in YAML is a first-boot SEED, not the runtime source (a microservice
+# cannot write back to an image-baked, git-managed file). A DELIBERATE roster change (new
+# fingerprint) re-applies on the next boot, so roster-as-code updates still ship via redeploy.
+_ROSTER_FP = "_roster_fingerprint"
 
 
 def _body_hash(config: Dict[str, Any]) -> str:
-    """A stable hash of a config IGNORING the seed marker, so we can ask "has a human touched this
-    since we wrote it?" without the marker itself changing the answer."""
+    """A stable hash of a config IGNORING the seed markers, so we can ask "has a human touched this
+    since we wrote it?" without a marker itself changing the answer."""
     import hashlib
     import json as _json
 
-    body = {k: v for k, v in (config or {}).items() if k != _SEED_MARK}
+    body = {k: v for k, v in (config or {}).items() if k not in (_SEED_MARK, _ROSTER_FP)}
     return hashlib.sha256(_json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _roster_fingerprint(roster: Dict[str, Any], entries: List[Dict[str, Any]]) -> str:
+    """A stable hash of the roster's meaningful content (its agents + supervisor block). Changes
+    only when the checked-in YAML changes — a normal redeploy of the same image keeps it identical,
+    so UI deletes survive; an intentional roster edit changes it and triggers a re-apply."""
+    import hashlib
+    import json as _json
+
+    payload = {"agents": entries, "supervisor": roster.get("supervisor")}
+    return hashlib.sha256(_json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
 async def _upsert(config: Dict[str, Any], agent_id: str) -> str:
@@ -266,6 +284,26 @@ async def seed_roster(path: Optional[str] = None) -> Tuple[int, Dict[str, int]]:
         logger.warning(f"roster seed: {path!r} declares no agents")
         return 0, {}
 
+    # SEED-ONCE. If this roster was already imported and the YAML has not changed since, the DB is
+    # the source of truth — do NOT re-seed. Without this, a UI delete is undone on the next restart
+    # (a missing row looks identical to "never seeded", so _upsert re-creates it). The fingerprint
+    # is stored on the supervisor config; an intentional roster edit changes it and re-applies below.
+    try:
+        from cuga.backend.server.config_store import load_config as _load_config
+
+        _existing_sup, _ = await _load_config(None, SUPERVISOR_AGENT_ID)
+    except Exception:  # noqa: BLE001 — first boot / unreachable store → treat as "nothing prior"
+        _existing_sup = None
+    current_fp = _roster_fingerprint(roster, entries)
+    if _existing_sup and _existing_sup.get(_ROSTER_FP) == current_fp:
+        preserved = len(((_existing_sup.get("supervisor") or {}).get("subAgents")) or [])
+        total = len(entries) + 1  # the roster's sub-agents + supervisor: all left as-is
+        logger.info(
+            f"roster seed: roster unchanged since last import — DB is the source of truth "
+            f"({preserved} sub-agent(s) preserved as stored); skipping re-seed"
+        )
+        return total, {"created": 0, "updated": 0, "unchanged": total, "skipped": 0}
+
     tally: Dict[str, int] = {"created": 0, "updated": 0, "unchanged": 0, "skipped": 0}
     sub_ids: List[str] = []
 
@@ -293,7 +331,8 @@ async def seed_roster(path: Optional[str] = None) -> Tuple[int, Dict[str, int]]:
     )
 
     try:
-        tally[await _upsert(_supervisor_config(roster, sub_ids, prior_subs), SUPERVISOR_AGENT_ID)] += 1
+        sup_config = {**_supervisor_config(roster, sub_ids, prior_subs), _ROSTER_FP: current_fp}
+        tally[await _upsert(sup_config, SUPERVISOR_AGENT_ID)] += 1
     except Exception as e:  # noqa: BLE001
         logger.warning(f"roster seed: supervisor failed: {e}")
         return len(sub_ids), tally
