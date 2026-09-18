@@ -7,7 +7,6 @@ execution logic live in ``cuga_supervisor/nodes/`` and ``delegation.py``.
 
 from __future__ import annotations
 
-import re
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.messages import BaseMessage
@@ -17,6 +16,9 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import CoreGraphAdapter
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.delegation import resolve_names_from_caller_frame
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.helpers.placeholder_claim import (
+    has_unresolved_result_claim,
+)
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool import (
     create_execute_agent_tool_node,
 )
@@ -30,9 +32,6 @@ from cuga.config import settings
 
 # Backward-compatible alias for tests and callers that imported the private helper.
 _resolve_names_from_caller_frame = resolve_names_from_caller_frame
-
-_RESULT_PLACEHOLDER = re.compile(r"(?<!\{)\{[A-Za-z_]\w*\}(?!\})")
-
 
 class SupervisorGraphAdapter(CoreGraphAdapter):
     """CoreGraphAdapter implementation for the CugaSupervisor multi-agent graph."""
@@ -102,14 +101,15 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
         A model can claim completion with literal ``{variable_name}`` fields on
         its first turn. This is neither executable code nor a completed result.
         The step guard bounds the correction to one extra call per invocation;
-        prepare resets the step count for a new task. Ordinary text replies and
-        answers after execution keep their existing routing.
+        prepare resets the step count for a new task. Only explicit result
+        claims qualify; input requests, blockers, templates, and answers after
+        execution keep their existing routing.
         """
         if (
             state.step_count != 0
             or not self._agents
             or self.get_metadata(state).get("policy_type") != "playbook"
-            or not _RESULT_PLACEHOLDER.search(content or "")
+            or not has_unresolved_result_claim(content or "")
         ):
             return False
         return (

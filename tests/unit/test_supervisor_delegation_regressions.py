@@ -29,6 +29,7 @@ UNEXECUTED_ANSWER = (
 
 @pytest.fixture
 def worker(monkeypatch):
+    """Provide a real SDK child with deterministic delegation responses."""
     monkeypatch.setattr(settings.policy, "enabled", False)
     monkeypatch.setattr(settings.advanced_features, "registry", False)
     agent = CugaAgent(
@@ -44,6 +45,7 @@ def worker(monkeypatch):
 
 
 async def run_supervisor(worker, responses, *, playbook=True, max_steps=10):
+    """Replay model responses through the real compiled supervisor graph."""
     model = FakeListChatModel(responses=responses)
     graph = create_cuga_supervisor_graph(
         model,
@@ -63,10 +65,12 @@ async def run_supervisor(worker, responses, *, playbook=True, max_steps=10):
 
 
 @pytest.mark.asyncio
-async def test_unexecuted_playbook_answer_does_not_end_before_delegation(worker):
+@pytest.mark.parametrize("reply", [UNEXECUTED_ANSWER, "User ID: {user_id}", "The user ID is `{user_id}`."])
+async def test_unexecuted_playbook_answer_does_not_end_before_delegation(worker, reply):
+    """Correct explicit result placeholders by executing the requested delegation."""
     result = await run_supervisor(
         worker,
-        [UNEXECUTED_ANSWER, DELEGATION_CODE, "Alice: user_alice_99."],
+        [reply, DELEGATION_CODE, "Alice: user_alice_99."],
     )
     assert result["selected_agents"] == ["user_finder"]
     assert result["metrics"]["delegation_count"] == 1
@@ -76,6 +80,7 @@ async def test_unexecuted_playbook_answer_does_not_end_before_delegation(worker)
 
 @pytest.mark.asyncio
 async def test_direct_code_records_delegation(worker):
+    """Record delegation when the first model response already contains code."""
     result = await run_supervisor(worker, [DELEGATION_CODE, "Alice: user_alice_99."])
     assert result["selected_agents"] == ["user_finder"]
     assert result["metrics"]["delegation_count"] == 1
@@ -85,6 +90,7 @@ async def test_direct_code_records_delegation(worker):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reply", ["Hello!", "Which Alice do you mean?", "I cannot proceed without consent."])
 async def test_completed_or_blocked_reply_does_not_force_delegation(worker, reply):
+    """Return conversational and blocked replies without invoking a child."""
     result = await run_supervisor(worker, [reply])
     assert result["final_answer"] == reply
     assert result["selected_agents"] == []
@@ -92,7 +98,31 @@ async def test_completed_or_blocked_reply_does_not_force_delegation(worker, repl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "I need the customer's {account_number} before I can continue.",
+        "Please provide {account_number} so I can find the account.",
+        "What is the customer's {account_number}?",
+        "I cannot proceed without {consent}.",
+        "Her user ID is {user_id}, but I need your consent before continuing.",
+        "Her user ID is {user_id}. Awaiting customer approval.",
+        "The required account number is {account_number}.",
+        "Use {user_id} in the template.",
+    ],
+)
+async def test_placeholder_input_or_template_does_not_retry(worker, reply):
+    """Input requests must finish before a subsequent model reply can delegate."""
+    result = await run_supervisor(worker, [reply, DELEGATION_CODE, "Done."])
+    assert result["final_answer"] == reply
+    assert result["step_count"] == 1
+    assert result["selected_agents"] == []
+    worker.invoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_repeated_placeholder_answer_is_not_retried_forever(worker):
+    """Spend at most one corrective retry on an unresolved result."""
     result = await run_supervisor(worker, [UNEXECUTED_ANSWER])
     assert result["step_count"] == 2
     worker.invoke.assert_not_awaited()
@@ -100,6 +130,7 @@ async def test_repeated_placeholder_answer_is_not_retried_forever(worker):
 
 @pytest.mark.asyncio
 async def test_template_outside_playbook_is_not_retried(worker):
+    """Leave non-playbook placeholder templates unchanged."""
     result = await run_supervisor(worker, ["Use {user_id} in the template."], playbook=False)
     assert result["step_count"] == 1
     worker.invoke.assert_not_awaited()
@@ -107,6 +138,7 @@ async def test_template_outside_playbook_is_not_retried(worker):
 
 @pytest.mark.asyncio
 async def test_placeholder_correction_respects_step_limit(worker):
+    """Honor the model step budget before attempting a corrective delegation."""
     result = await run_supervisor(worker, [UNEXECUTED_ANSWER, DELEGATION_CODE], max_steps=1)
     assert "Maximum step limit" in result["final_answer"]
     worker.invoke.assert_not_awaited()
@@ -114,6 +146,7 @@ async def test_placeholder_correction_respects_step_limit(worker):
 
 @pytest.mark.asyncio
 async def test_sub_agent_can_outlive_a_normal_sandbox_block(worker, monkeypatch):
+    """Allow a child to finish beyond the ordinary sandbox deadline."""
     monkeypatch.setattr(settings.advanced_features, "sandbox_execution_timeout", 0.05)
     monkeypatch.setattr(settings.supervisor, "execution_timeout", 1, raising=False)
 
@@ -130,6 +163,7 @@ async def test_sub_agent_can_outlive_a_normal_sandbox_block(worker, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_supervisor_delegation_deadline_still_cancels_stalled_agent(worker, monkeypatch):
+    """Cancel stalled children at the supervisor-specific deadline."""
     monkeypatch.setattr(settings.supervisor, "execution_timeout", 0.05)
     cancelled = []
 
