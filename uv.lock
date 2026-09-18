@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'darwin'",
@@ -328,21 +328,27 @@ wheels = [
 
 [[package]]
 name = "altk-evolve"
-version = "1.1.0"
+version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "arize-phoenix", marker = "python_full_version >= '3.12'" },
+    { name = "croniter", marker = "python_full_version >= '3.12'" },
     { name = "fastmcp", marker = "python_full_version >= '3.12'" },
     { name = "jinja2", marker = "python_full_version >= '3.12'" },
     { name = "litellm", marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pydantic", marker = "python_full_version >= '3.12'" },
+    { name = "pyyaml", marker = "python_full_version >= '3.12'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "sentence-transformers", marker = "python_full_version >= '3.12'" },
     { name = "typer", marker = "python_full_version >= '3.12'" },
+    { name = "tzdata", marker = "python_full_version >= '3.12'" },
     { name = "uvicorn", marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/61/bf/f922d54f8174621f256fad0e8bf737a0b58174f5022a87186e3a1858b658/altk_evolve-1.1.0.tar.gz", hash = "sha256:afdd7010dfb90e72b6c311eb06eef720b9f542063d1ae4fbfbf89ac35fcd4cfe", size = 260021, upload-time = "2026-05-01T13:23:21.809Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e6/2b/6c7d8c0fe8d1403e384545b52affaf5bee68bff5946a846777dc6c79721b/altk_evolve-1.2.0.tar.gz", hash = "sha256:6f14907cc6fc5e081088f58cd8794fcb29c75d097e4fe8b3764f33b28506b9cc", size = 389836, upload-time = "2026-09-14T17:35:58.886Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/fc/e0e074ab51b17919b6d2b2d6b7147591526289c3f9437c1c2b0d9d0a01f5/altk_evolve-1.1.0-py3-none-any.whl", hash = "sha256:fd448398d76a803e50cf429ac8020f86f51e90f2eecc71f4c5695c17c9c96dbe", size = 275712, upload-time = "2026-05-01T13:23:19.679Z" },
+    { url = "https://files.pythonhosted.org/packages/37/44/16ce543176012635bcb3ae08b23c4d105bd114f2d5608ac677fcbc2bae05/altk_evolve-1.2.0-py3-none-any.whl", hash = "sha256:b4beea58625669ab7d42e4a082c541a3b73c9d04d9e22e5578e79180f148902e", size = 425232, upload-time = "2026-09-14T17:35:57.289Z" },
 ]
 
 [[package]]
@@ -1174,6 +1180,18 @@ wheels = [
 ]
 
 [[package]]
+name = "croniter"
+version = "6.2.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil", marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/37/57/2e2a65aee2a70483cb28e2b7e15a072d00a523207593b44400d4717bb100/croniter-6.2.4.tar.gz", hash = "sha256:fc124f751b1b04805c2a04b061898b436b45ab2320b045e1e052ea895de65189", size = 166267, upload-time = "2026-07-10T09:52:59.955Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/ba/d678e5bd329646ca51d3c92addbc77804e86d21f4b6b6a027218e6abb010/croniter-6.2.4-py3-none-any.whl", hash = "sha256:8ef3d544107a5c05a150a2d78f8bf5a8eb9c5c4d93405a736b824109574e3f4d", size = 46677, upload-time = "2026-07-10T09:52:58.425Z" },
+]
+
+[[package]]
 name = "cross-web"
 version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1359,7 +1377,7 @@ requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], specifier = ">=0.3.22" },
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "aiosmtpd" },
-    { name = "altk-evolve", marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = ">=1.1.0" },
+    { name = "altk-evolve", marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = ">=1.2,<2" },
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "boto3", specifier = ">=1.34.0" },

@@ -47,52 +47,50 @@ def get_latest_memory_query(messages: Sequence[BaseMessage] | None) -> str:
     return ""
 
 
-def format_evolve_user_preference(categories: dict[str, list[dict[str, Any]]] | None) -> str:
-    if not categories:
-        return ""
-
-    lines = [
-        "Use this as durable user preference/profile context when it is relevant to the answer or decision-making.",
-        "If any remembered preference conflicts with the latest user message, follow the latest user message.",
-        "",
-    ]
-
-    for category, facts in categories.items():
-        if not facts:
+def _format_user_preferences(categories: dict | None) -> tuple[str, list[str]]:
+    """Render facts and collect IDs in the same pass so omitted facts never count as used."""
+    sections = []
+    entity_ids = []
+    for category, facts in (categories or {}).items():
+        if not isinstance(facts, list):
             continue
-        category_title = str(category or "misc").replace("_", " ").title()
-        lines.append(f"{category_title}:")
+        lines = []
         for fact in facts:
-            content = str((fact or {}).get("content") or "").strip()
-            key = str((fact or {}).get("key") or "").strip()
-            value = str((fact or {}).get("value") or "").strip()
+            if not isinstance(fact, dict):
+                continue
+            content = str(fact.get("content") or "").strip()
+            key = str(fact.get("key") or "").strip()
+            value = str(fact.get("value") or "").strip()
+            text = content or (f"{key}: {value}" if key and value else key or value)
+            if not text:
+                continue
+            lines.append(f"- {text}")
+            if fact.get("id"):
+                entity_ids.append(str(fact["id"]))
+        if lines:
+            title = str(category or "misc").replace("_", " ").title()
+            sections.append(f"{title}:\n" + "\n".join(lines))
+    if not sections:
+        return "", []
+    return (
+        "Use this as durable user preference/profile context when it is relevant to the answer or decision-making.\n"
+        "If any remembered preference conflicts with the latest user message, follow the latest user message.\n\n"
+        + "\n\n".join(sections),
+        list(dict.fromkeys(entity_ids)),
+    )
 
-            if content:
-                lines.append(f"- {content}")
-            elif key and value:
-                lines.append(f"- {key}: {value}")
-            elif key:
-                lines.append(f"- {key}")
-            elif value:
-                lines.append(f"- {value}")
-        lines.append("")
 
-    while lines and not lines[-1]:
-        lines.pop()
-
-    if len(lines) <= 2:
-        return ""
-
-    return "\n".join(lines)
+def format_evolve_user_preference(categories: dict[str, list[dict[str, Any]]] | None) -> str:
+    return _format_user_preferences(categories)[0]
 
 
-def build_evolve_user_preference_section(
-    categories: dict[str, list[dict[str, Any]]] | None,
-) -> str:
-    preference_text = format_evolve_user_preference(categories)
-    if not preference_text:
-        return ""
-    return f"\n\n## Evolve User Preference\n{preference_text}"
+def build_evolve_user_preference_with_attribution(categories: dict | None) -> tuple[str, list[str]]:
+    text, entity_ids = _format_user_preferences(categories)
+    return (f"\n\n## Evolve User Preference\n{text}", entity_ids) if text else ("", [])
+
+
+def build_evolve_user_preference_section(categories: dict[str, list[dict[str, Any]]] | None) -> str:
+    return build_evolve_user_preference_with_attribution(categories)[0]
 
 
 def parse_evolve_guideline_items(raw_guidelines: str) -> list[str]:
