@@ -131,6 +131,7 @@ ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
     DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
     HF_HOME=/app/.cache/huggingface \
     TIKTOKEN_CACHE_DIR=/app/.cache/tiktoken \
+    CUSTOM_TIKTOKEN_CACHE_DIR=/app/.cache/tiktoken \
     LITELLM_LOCAL_MODEL_COST_MAP=True \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
