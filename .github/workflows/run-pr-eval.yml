@@ -258,6 +258,13 @@ jobs:
           echo "Saved report log: ${report_log}"
           echo "Saved exit code log: ${exit_code_log}"
 
+          vm_log_dir="${HOME}/pr-regression-testing/pr-eval-logs/cuga-agent/pr-${PR_NUMBER}"
+          mkdir -p "${vm_log_dir}"
+          cp "${output_log}" "${vm_log_dir}/"
+          cp "${report_log}" "${vm_log_dir}/"
+          cp "${exit_code_log}" "${vm_log_dir}/"
+          echo "Saved VM log archive: ${vm_log_dir}"
+
           cp "${output_log}" "${GITHUB_WORKSPACE}/run-pr-eval-output.md"
           cp "${report_log}" "${GITHUB_WORKSPACE}/run-pr-eval-report.md"
           cp "${exit_code_log}" "${GITHUB_WORKSPACE}/run-pr-eval-exit-code.txt"
