@@ -197,11 +197,10 @@ jobs:
         id: evaluation
         shell: bash
         env:
-          OPENAI_API_KEY: ${{ steps.command.outputs.provider == 'litellm' && secrets.OPENAI_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ steps.command.outputs.provider == 'litellm' && (secrets.LITE_LLM_KEY || secrets.OPENAI_API_KEY) || '' }}
+          OPENAI_BASE_URL: ${{ steps.command.outputs.provider == 'litellm' && vars.LITELLM_BASE_URL || '' }}
           RITS_API_KEY: ${{ steps.command.outputs.provider == 'rits' && secrets.RITS_API_KEY || '' }}
-          LITE_LLM_KEY: ${{ steps.command.outputs.provider == 'litellm' && secrets.LITE_LLM_KEY || '' }}
-          AGENT_SETTING_CONFIG: settings.rits.toml
-          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          RITS_BASE_URL: ${{ steps.command.outputs.provider == 'rits' && vars.RITS_BASE_URL || '' }}
           MODEL_NAME: ${{ vars.MODEL_NAME }}
           ENVIRONMENT_URL: http://127.0.0.1:8000
           APIS_URL: http://127.0.0.1:9000
@@ -232,7 +231,7 @@ jobs:
           redact_file() {
             local path="$1"
             if [[ -f "${path}" ]]; then
-              perl -0pi -e 'BEGIN { @secrets = grep { defined && length } @ENV{qw(OPENAI_API_KEY RITS_API_KEY LITE_LLM_KEY)} } for my $secret (@secrets) { s/\Q$secret\E/***REDACTED***/g }' "${path}"
+              perl -0pi -e 'BEGIN { @secrets = grep { defined && length } @ENV{qw(OPENAI_API_KEY RITS_API_KEY)} } for my $secret (@secrets) { s/\Q$secret\E/***REDACTED***/g }' "${path}"
             fi
           }
 
