@@ -33,6 +33,7 @@ from cuga.config import settings
 # Backward-compatible alias for tests and callers that imported the private helper.
 _resolve_names_from_caller_frame = resolve_names_from_caller_frame
 
+
 class SupervisorGraphAdapter(CoreGraphAdapter):
     """CoreGraphAdapter implementation for the CugaSupervisor multi-agent graph."""
 
