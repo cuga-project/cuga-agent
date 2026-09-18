@@ -194,8 +194,8 @@ class CoreGraphAdapter(ABC):
         """Return ``True`` when the NL response should loop back automatically.
         A truthy ``str`` also loops back, but is used verbatim as the synthetic
         user message instead of the plain ``"continue"`` (Lite's unverified-
-        blocker retry, issue #610). Default: ``False`` (Supervisor never
-        auto-continues). Lite overrides with ``classify_nl_auto_continue_decision``."""
+        blocker retry, issue #610). Default: ``False``. Adapters override for
+        graph-specific continuation or bounded response corrections."""
         return False
 
 
