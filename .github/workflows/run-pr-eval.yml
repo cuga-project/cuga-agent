@@ -33,6 +33,14 @@ jobs:
       requested_sha: ${{ steps.command.outputs.requested_sha }}
 
     steps:
+      - name: Clear previous PR evaluation artifacts
+        shell: bash
+        run: |
+          rm -f run-pr-eval-output.md
+          rm -f run-pr-eval-report.md
+          rm -f run-pr-eval-exit-code.txt
+          rm -rf pr-eval-logs
+
       - name: Validate PR evaluation command
         id: command
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
