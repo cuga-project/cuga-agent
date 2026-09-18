@@ -126,24 +126,31 @@ async def delete_agent(agent_id: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
     await delete_all_configs(agent_id)
 
-    # Also drop the agent from the supervisor's sub-agent list, if one references it. Two reasons:
+    # When the events layer is ON, also drop the agent from the supervisor's sub-agent list, if one
+    # references it. Two reasons:
     #   1. /run/agents (and the live supervisor) otherwise keep pointing at a now-deleted agent.
     #   2. saving the supervisor config bumps its version, which invalidates the cached CugaSupervisor
     #      (keyed on that version in run_routes), so the delete takes effect WITHOUT a restart.
-    # Purely additive: a no-op in plain core CUGA, where there is no supervisor config to load.
-    try:
-        from cuga.backend.server.config_store import load_config, save_config
-        from cuga.supervisor_utils.roster_seed import SUPERVISOR_AGENT_ID
+    # Explicitly gated on the events master switch: a roster/supervisor only ever exists under events
+    # (seed_roster is itself behind this switch), so this is SKIPPED ENTIRELY in plain core CUGA —
+    # default CUGA's delete path is unchanged. The inner `if sup` is a second guard (no-op when no
+    # supervisor is stored even with events on).
+    from cuga.backend.server import events_bridge as _eb
 
-        sup, _ = await load_config(None, SUPERVISOR_AGENT_ID)
-        subs = ((sup or {}).get("supervisor") or {}).get("subAgents") or []
-        kept = [s for s in subs if (s or {}).get("ref") != agent_id]
-        if sup and len(kept) != len(subs):
-            sup["supervisor"]["subAgents"] = kept
-            await save_config(sup, agent_id=SUPERVISOR_AGENT_ID)
-            logger.info(f"Removed '{agent_id}' from supervisor '{SUPERVISOR_AGENT_ID}' sub-agents")
-    except Exception as e:  # noqa: BLE001 — ref cleanup is best-effort; the agent is already deleted
-        logger.warning(f"delete_agent: could not update supervisor refs for '{agent_id}': {e}")
+    if _eb.events_enabled():
+        try:
+            from cuga.backend.server.config_store import load_config, save_config
+            from cuga.supervisor_utils.roster_seed import SUPERVISOR_AGENT_ID
+
+            sup, _ = await load_config(None, SUPERVISOR_AGENT_ID)
+            subs = ((sup or {}).get("supervisor") or {}).get("subAgents") or []
+            kept = [s for s in subs if (s or {}).get("ref") != agent_id]
+            if sup and len(kept) != len(subs):
+                sup["supervisor"]["subAgents"] = kept
+                await save_config(sup, agent_id=SUPERVISOR_AGENT_ID)
+                logger.info(f"Removed '{agent_id}' from supervisor '{SUPERVISOR_AGENT_ID}' sub-agents")
+        except Exception as e:  # noqa: BLE001 — ref cleanup is best-effort; the agent is already deleted
+            logger.warning(f"delete_agent: could not update supervisor refs for '{agent_id}': {e}")
 
     from cuga.backend.server.manage_routes.helpers import invalidate_agent_graph_cache
 
