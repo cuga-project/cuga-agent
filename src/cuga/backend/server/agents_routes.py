@@ -140,15 +140,22 @@ async def delete_agent(agent_id: str, request: Request):
     if _eb.events_enabled():
         try:
             from cuga.backend.server.config_store import load_config, save_config
+            from cuga.backend.server.manage_routes.helpers import agent_draft_lock
             from cuga.supervisor_utils.roster_seed import SUPERVISOR_AGENT_ID
 
-            sup, _ = await load_config(None, SUPERVISOR_AGENT_ID)
-            subs = ((sup or {}).get("supervisor") or {}).get("subAgents") or []
-            kept = [s for s in subs if (s or {}).get("ref") != agent_id]
-            if sup and len(kept) != len(subs):
-                sup["supervisor"]["subAgents"] = kept
-                await save_config(sup, agent_id=SUPERVISOR_AGENT_ID)
-                logger.info(f"Removed '{agent_id}' from supervisor '{SUPERVISOR_AGENT_ID}' sub-agents")
+            # Under the SUPERVISOR's own lock, because this is a read-modify-write and save_config is
+            # blind: it appends MAX(version)+1 without comparing the version we loaded. The publish
+            # path mutates this same config under this same lock, so without it a publish landing
+            # between our load and our save would be silently reverted by our stale snapshot. Loading
+            # INSIDE the lock is the other half — we always remove the ref from the newest version.
+            async with agent_draft_lock(SUPERVISOR_AGENT_ID):
+                sup, _ = await load_config(None, SUPERVISOR_AGENT_ID)
+                subs = ((sup or {}).get("supervisor") or {}).get("subAgents") or []
+                kept = [s for s in subs if (s or {}).get("ref") != agent_id]
+                if sup and len(kept) != len(subs):
+                    sup["supervisor"]["subAgents"] = kept
+                    await save_config(sup, agent_id=SUPERVISOR_AGENT_ID)
+                    logger.info(f"Removed '{agent_id}' from supervisor '{SUPERVISOR_AGENT_ID}' sub-agents")
         except Exception as e:  # noqa: BLE001 — ref cleanup is best-effort; the agent is already deleted
             logger.warning(f"delete_agent: could not update supervisor refs for '{agent_id}': {e}")
 
