@@ -7,6 +7,9 @@ from pathlib import Path
 def main() -> None:
     from scripts.preload_models import preload_evolve, preload_fastembed, preload_tiktoken
 
+    from scripts.verify_evolve_hooks import verify_evolve_hooks
+
+    verify_evolve_hooks()
     preload_evolve()
     preload_fastembed()
     preload_tiktoken()
