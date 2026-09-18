@@ -123,6 +123,8 @@ ENV UV_CACHE_DIR=/tmp/uv-cache
 ENV UV_TOOL_DIR=/tmp/uv-tools
 ENV CUGA_LOGGING_DIR=/tmp/cuga-logging
 ENV CUGA_DBS_DIR=/data/dbs
+# Evolve loads CUGA defaults; deployers may override this with a mounted file.
+ENV EVOLVE_HOOKS_CONFIG=/app/src/cuga/configurations/evolve/hooks.yaml
 ENV DYNACONF_CRM_DB_PATH=/tmp/crm_tmp/crm_db_default
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
 ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
