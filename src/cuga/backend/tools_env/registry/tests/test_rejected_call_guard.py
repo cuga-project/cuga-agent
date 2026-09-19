@@ -343,3 +343,131 @@ def test_defaults_used_when_settings_missing(monkeypatch):
     assert _reject(guard) is None
     assert _reject(guard) is not None  # escalate_after defaults to 1
     assert guard.check("amazon", "post_orders", ARGS) is not None  # block_after defaults to 2
+
+
+# ── Same error, different arguments ────────────────────────────────────────
+#
+# The tiers above key on the exact argument set, so an agent that varies one
+# argument each attempt never repeats a signature. Observed on AppWorld hard:
+# 311 rejections of "The payment card has expired" in one run, each naming a
+# different card, none of them stopped.
+
+
+def _set_all_thresholds(monkeypatch, escalate_after=1, block_after=2, distinct_after=3):
+    monkeypatch.setattr(
+        "cuga.config.settings",
+        SimpleNamespace(
+            advanced_features=SimpleNamespace(
+                rejected_call_escalate_after=escalate_after,
+                rejected_call_block_after=block_after,
+                rejected_call_distinct_args_block_after=distinct_after,
+            )
+        ),
+    )
+
+
+def _reject_card(guard, card, message="The payment card has expired."):
+    return guard.record_rejection("shop", "place_order", {"card": card}, 422, message)
+
+
+@pytest.mark.unit
+def test_blocks_after_n_distinct_argument_sets_with_the_same_error(monkeypatch):
+    _set_all_thresholds(monkeypatch)
+    guard = RejectedCallGuard()
+    for card in (1, 2, 3):
+        assert guard.check("shop", "place_order", {"card": card}) is None
+        _reject_card(guard, card)
+    blocked = guard.check("shop", "place_order", {"card": 4})
+    assert blocked is not None
+    assert blocked["error_type"] == "RepeatedEndpointError"
+    assert "3 different argument sets" in blocked["message"]
+
+
+@pytest.mark.unit
+def test_ids_and_quoted_values_do_not_split_the_error_shape(monkeypatch):
+    _set_all_thresholds(monkeypatch)
+    guard = RejectedCallGuard()
+    for i, card in enumerate((11, 22, 33)):
+        _reject_card(guard, card, message=f'Card "{card}" has expired in 20{i}0.')
+    assert guard.check("shop", "place_order", {"card": 44}) is not None
+
+
+@pytest.mark.unit
+def test_different_errors_do_not_accumulate(monkeypatch):
+    _set_all_thresholds(monkeypatch)
+    guard = RejectedCallGuard()
+    _reject_card(guard, 1, message="The payment card has expired.")
+    _reject_card(guard, 2, message="The cart is empty.")
+    _reject_card(guard, 3, message="The promo code is not valid.")
+    assert guard.check("shop", "place_order", {"card": 4}) is None
+
+
+@pytest.mark.unit
+def test_other_endpoints_are_unaffected(monkeypatch):
+    _set_all_thresholds(monkeypatch)
+    guard = RejectedCallGuard()
+    for card in (1, 2, 3):
+        _reject_card(guard, card)
+    assert guard.check("shop", "add_to_cart", {"card": 4}) is None
+
+
+@pytest.mark.unit
+def test_success_on_the_same_endpoint_clears_its_tally(monkeypatch):
+    _set_all_thresholds(monkeypatch)
+    guard = RejectedCallGuard()
+    for card in (1, 2, 3):
+        _reject_card(guard, card)
+    guard.record_success("shop", "POST", function_name="place_order")
+    assert guard.check("shop", "place_order", {"card": 4}) is None
+
+
+@pytest.mark.unit
+def test_success_elsewhere_does_not_reset_the_endpoint_tally(monkeypatch):
+    """The observed failure mode: a successful add_to_cart between failing
+    order attempts reset the count before it could ever be reached."""
+    _set_all_thresholds(monkeypatch)
+    guard = RejectedCallGuard()
+    for card in (1, 2, 3):
+        _reject_card(guard, card)
+        guard.record_success("shop", "POST", function_name="add_to_cart")
+    assert guard.check("shop", "place_order", {"card": 4}) is not None
+
+
+@pytest.mark.unit
+def test_success_still_clears_the_exact_signature_tiers(monkeypatch):
+    """State changed, so a specific call that failed may now be valid."""
+    _set_all_thresholds(monkeypatch, block_after=1)
+    guard = RejectedCallGuard()
+    _reject_card(guard, 1)
+    assert guard.check("shop", "place_order", {"card": 1}) is not None
+    guard.record_success("shop", "POST", function_name="add_to_cart")
+    assert guard.check("shop", "place_order", {"card": 1}) is None
+
+
+@pytest.mark.unit
+def test_success_without_a_function_name_leaves_the_endpoint_tier_intact(monkeypatch):
+    _set_all_thresholds(monkeypatch)
+    guard = RejectedCallGuard()
+    for card in (1, 2, 3):
+        _reject_card(guard, card)
+    guard.record_success("shop", "POST")
+    assert guard.check("shop", "place_order", {"card": 4}) is not None
+
+
+@pytest.mark.unit
+def test_reset_clears_the_endpoint_tier(monkeypatch):
+    _set_all_thresholds(monkeypatch)
+    guard = RejectedCallGuard()
+    for card in (1, 2, 3):
+        _reject_card(guard, card)
+    guard.reset()
+    assert guard.check("shop", "place_order", {"card": 4}) is None
+
+
+@pytest.mark.unit
+def test_zero_disables_the_tier(monkeypatch):
+    _set_all_thresholds(monkeypatch, distinct_after=0)
+    guard = RejectedCallGuard()
+    for card in (1, 2, 3, 4, 5):
+        _reject_card(guard, card)
+    assert guard.check("shop", "place_order", {"card": 6}) is None
