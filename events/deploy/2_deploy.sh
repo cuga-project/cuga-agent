@@ -251,6 +251,7 @@ ev_args=(
   --env "EVENTS_TELEGRAM_BACKEND=$EVENTS_TELEGRAM_BACKEND"
   --env "EVENTS_DISCORD_BACKEND=$EVENTS_DISCORD_BACKEND"
   --env "EVENTS_SLACK_BACKEND=$EVENTS_SLACK_BACKEND"
+  --env "EVENTS_BOX_BACKEND=$EVENTS_BOX_BACKEND"
   --env "EVENTS_DISCORD_MEMBERS_INTENT=1"
   --env "DEPLOY_REV=$DEPLOY_REV"
   # The Studio UI is served by cuga-core and calls this service cross-origin — allow it.

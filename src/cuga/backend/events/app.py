@@ -2918,38 +2918,6 @@ def register_events_routes(
             _bg.append(_native_scheduler)
             app.state.events_background = _bg
 
-    # OAuth token renewal. Refresh-on-use (oauth_tokens.access_token) covers anything actively
-    # called, but a grant belonging to a poller that runs every 15 minutes can still lapse between
-    # ticks — and a lapsed grant needs a human to reconnect. This pass renews slightly ahead of
-    # expiry so that never becomes the user's problem.
-    #
-    # Cheap and idempotent: it only touches grants inside the window, and `due()` skips any with
-    # no refresh token (there is nothing to renew and nothing to log about repeatedly).
-    if os.environ.get("EVENTS_OAUTH_RENEW", "1").strip().lower() not in ("0", "false", "no", "off"):
-
-        async def _oauth_renewal():
-            import asyncio
-
-            from . import oauth_tokens as _ot
-
-            try:
-                tokens = _ot.TokenStore(os.environ.get("EVENTS_DB", "") or ":memory:")
-            except Exception as e:  # noqa: BLE001 — no store, no renewal; everything else still runs
-                _elog.warning("oauth renewal: cannot open the token store (%s) — disabled", e)
-                return
-            while True:
-                try:
-                    n = await tokens.renew_due(within=900.0)
-                    if n:
-                        _elog.info("oauth renewal: refreshed %s token(s)", n)
-                except Exception as e:  # noqa: BLE001
-                    _elog.warning("oauth renewal pass failed (%s)", e)
-                await asyncio.sleep(300)
-
-        _bg2 = list(getattr(app.state, "events_background", []) or [])
-        _bg2.append(_oauth_renewal)
-        app.state.events_background = _bg2
-
     # Auto-connect .env USER tokens (single-operator convenience): a token set in .env becomes the
     # operator's AP connection on startup, so "set in .env" == "connected". Multi-user deployments
     # leave these blank and each user connects their own in the Studio.
