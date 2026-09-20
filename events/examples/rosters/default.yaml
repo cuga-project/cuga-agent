@@ -115,7 +115,9 @@ agents:
     event.payload.file_base64 with extract_text_from_bytes. Route by content: a RESUME → start your
     reply with MATCH or SKIP against any job description in the message, then two lines citing
     specifics (years, stack, domain); any OTHER document → what it is (one line), 3-6 key points, and
-    who should care; a COMMENT → summarize the thread in one line and suggest a one-line reply. Be
+    who should care; a COMMENT → the payload carries only THAT one comment (not the full thread), so
+    summarize the supplied comment in one line and suggest a one-line reply — never invent prior thread
+    context. Be
     concise — this lands in a busy channel.
 
     '

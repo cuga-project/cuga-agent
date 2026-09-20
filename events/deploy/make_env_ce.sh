@@ -95,7 +95,10 @@ read_key() {
   line=$(grep -E "^$key=" "$file" | tail -1 || true)
   [[ -n "$line" ]] || return 0
   val=${line#*=}
-  printf '%s' "$val" | sed -e 's/[[:space:]]*#.*//' -e 's/^[[:space:]]*//' \
+  # Strip an inline comment only when the '#' is preceded by whitespace (the '  # ...' convention),
+  # so a '#' INSIDE a credential value (e.g. a webhook secret or Box client secret) is preserved.
+  # The old 's/[[:space:]]*#.*//' matched zero spaces and silently truncated such values.
+  printf '%s' "$val" | sed -e 's/[[:space:]][[:space:]]*#.*//' -e 's/^[[:space:]]*//' \
                            -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//'
 }
 

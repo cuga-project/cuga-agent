@@ -164,7 +164,7 @@ def main():
         )
     else:
         print("  [INFO] set WHATSAPP_WABA_ID=<waba id> to check the app→WABA subscription")
-        print("         (the step that fails SILENTLY — see events_docs/setup/WHATSAPP.md)")
+        print("         (the step that fails SILENTLY — see the WhatsApp setup guide)")
 
     # ── the descriptor + delivery leg ─────────────────────────────────────────
     st, d = _http("GET", f"{SERVER}/api/events/channels")

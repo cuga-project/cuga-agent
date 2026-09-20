@@ -37,7 +37,14 @@ def report(remote_agents: list[str] | None = None) -> list[str]:
     no = lambda s: lines.append(f"  ✗ {s}")  # noqa: E731
 
     _tg_direct = os.environ.get("EVENTS_TELEGRAM_BACKEND", "direct").split(" #", 1)[0].strip() != "ap"
-    _wa = bool((os.environ.get("WHATSAPP_TOKEN") or "").strip())
+    # WhatsApp is only usable as a channel when it can BOTH receive securely and send: the verify
+    # token gates the webhook handshake, the app secret validates inbound signatures, and the token
+    # sends replies. Reporting "available" on WHATSAPP_TOKEN alone would greenlight a channel that
+    # cannot securely receive.
+    _wa = all(
+        (os.environ.get(k) or "").strip()
+        for k in ("WHATSAPP_TOKEN", "WHATSAPP_VERIFY_TOKEN", "WHATSAPP_APP_SECRET")
+    )
     ok(
         "web chat · webhooks (/api/events/hook/…) · GitHub-direct (14 triggers, signed) · "
         "direct channels (Slack/Discord/Box-direct"

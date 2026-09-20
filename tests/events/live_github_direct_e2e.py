@@ -118,21 +118,25 @@ def http(method, url, body=None, headers=None, timeout=120):
             return e.code, {}
 
 
-def _fired_in_logs(since_epoch: float) -> bool:
-    """Definitive direct-path signal: grep the events service log for a github.direct match on REPO."""
+def _match_count() -> int:
+    """How many 'github.direct … matched=N (N>0)' lines for REPO are currently in the tail.
+
+    Returns a COUNT, not a bool, so the caller can compare against a baseline captured BEFORE it
+    opens the PR. A bare "is there a match?" would be satisfied by a matching line from an EARLIER
+    run still in the last 200 log entries, making the current run pass without its own delivery.
+    """
     try:
         out = subprocess.run(
             ["ibmcloud", "ce", "app", "logs", "-n", CE_APP, "--tail", "200"],
             capture_output=True, text=True, timeout=60,
         ).stdout
     except Exception:  # noqa: BLE001
-        return False
+        return -1  # unreadable — never let this look like "the count went up"
+    n = 0
     for line in out.splitlines():
-        if "github.direct" in line and REPO.split("/")[-1] in line and "matched=" in line:
-            # matched=0 means received-but-no-watcher; we want a real match
-            if "matched=0" not in line:
-                return True
-    return False
+        if "github.direct" in line and REPO.split("/")[-1] in line and "matched=" in line and "matched=0" not in line:
+            n += 1
+    return n
 
 
 def main() -> int:
@@ -145,7 +149,6 @@ def main() -> int:
     sub_id = pr_num = None
     branch_created = False
     ok = False
-    t0 = time.time()
     try:
         # 1) ARM — through the concierge, like a user would (github → a DIRECT subscription)
         # Arming is a two-step human-in-the-loop gate (by design, so nothing schedules itself):
@@ -218,6 +221,9 @@ def main() -> int:
                 ok = fire_synthetic(f"repo {REPO} is ARCHIVED (read-only); App write cred is valid")
             else:
                 default = repo.get("default_branch", "main")
+                # Baseline the log matches BEFORE we fire, so only a NEW match (from THIS PR) counts —
+                # a match line from an earlier run still in the tail must not make this run pass.
+                log_base = _match_count()
                 _, ref = http("GET", f"{API}/repos/{REPO}/git/ref/heads/{default}", headers=GH)
                 base_sha = (ref.get("object") or {}).get("sha")
                 assert base_sha, f"could not read {default} head: {ref}"
@@ -245,8 +251,8 @@ def main() -> int:
                     deadline = time.time() + 300
                     while time.time() < deadline and not ok:
                         time.sleep(15)
-                        ok = _fired_in_logs(t0)
-                    assert ok, "no 'github.direct … matched' in the log within 5 min"
+                        ok = _match_count() > log_base  # a NEW match since the baseline
+                    assert ok, "no NEW 'github.direct … matched' in the log within 5 min"
                     print("  ✓ FIRED — github-direct matched the REAL PR and dispatched to the agent")
                     real = True
     finally:

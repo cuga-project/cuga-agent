@@ -1814,7 +1814,7 @@ def register_events_routes(
         mcp = [m if isinstance(m, dict) else str(m) for m in (body.get("mcp_servers") or [])]
         mcp = mcp_catalog.migrate_legacy_names(mcp)  # cuga-web → cuga_web, if a client still sends it
         channels = [str(c) for c in (body.get("channels") or [])]
-        bad_ch = [c for c in channels if c not in ("web", "telegram", "slack", "discord")]
+        bad_ch = [c for c in channels if c not in ("web", "telegram", "slack", "discord", "whatsapp")]
         if bad_ch:
             return None, f"unknown channels: {bad_ch}"
         from . import triggers as _tr
