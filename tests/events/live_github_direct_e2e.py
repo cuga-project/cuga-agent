@@ -31,7 +31,6 @@ import hashlib
 import hmac
 import json
 import os
-import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -39,7 +38,6 @@ import urllib.request
 REPO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:8100").rstrip("/")
 REPO = os.environ.get("GITHUB_E2E_REPO", "anupamamurthi/cuga-apps")
-CE_APP = os.environ.get("EVENTS_CE_APP", "cuga-events-svc")  # for the log-based verify
 API = "https://api.github.com"
 
 
@@ -118,25 +116,47 @@ def http(method, url, body=None, headers=None, timeout=120):
             return e.code, {}
 
 
-def _match_count() -> int:
-    """How many 'github.direct … matched=N (N>0)' lines for REPO are currently in the tail.
+def _jwt_header() -> dict:
+    """App-JWT auth header for the App-level deliveries API (needs the JWT, not the install token)."""
+    app_id, pem = _env("GITHUB_APP_ID"), _env("GITHUB_APP_PRIVATE_KEY").replace("\\n", "\n")
+    if not (app_id and pem):
+        return {}
+    return {"Authorization": f"Bearer {_app_jwt(app_id, pem)}", "Accept": "application/vnd.github+json"}
 
-    Returns a COUNT, not a bool, so the caller can compare against a baseline captured BEFORE it
-    opens the PR. A bare "is there a match?" would be satisfied by a matching line from an EARLIER
-    run still in the last 200 log entries, making the current run pass without its own delivery.
-    """
-    try:
-        out = subprocess.run(
-            ["ibmcloud", "ce", "app", "logs", "-n", CE_APP, "--tail", "200"],
-            capture_output=True, text=True, timeout=60,
-        ).stdout
-    except Exception:  # noqa: BLE001
-        return -1  # unreadable — never let this look like "the count went up"
-    n = 0
-    for line in out.splitlines():
-        if "github.direct" in line and REPO.split("/")[-1] in line and "matched=" in line and "matched=0" not in line:
-            n += 1
-    return n
+
+def _pr_opened_delivery_ids() -> set:
+    """IDs of recent `pull_request/opened` App-webhook deliveries — a baseline to diff against."""
+    h = _jwt_header()
+    if not h:
+        return set()
+    rc, lst = http("GET", f"{API}/app/hook/deliveries?per_page=30", headers=h)
+    if rc != 200 or not isinstance(lst, list):
+        return set()
+    return {x["id"] for x in lst if x.get("event") == "pull_request" and x.get("action") == "opened"}
+
+
+def _new_delivery_matched(baseline_ids: set) -> bool:
+    """AUTHORITATIVE real-PR verify: find a NEW `pull_request/opened` delivery (not in the baseline)
+    and read the RESPONSE BODY our endpoint returned to GitHub — it carries `matched=N`. This is
+    immune to CE log flooding/rotation and to stale lines from earlier runs (the delivery is THIS
+    PR's), unlike grepping the service log."""
+    h = _jwt_header()
+    if not h:
+        return False
+    rc, lst = http("GET", f"{API}/app/hook/deliveries?per_page=30", headers=h)
+    if rc != 200 or not isinstance(lst, list):
+        return False
+    for x in lst:
+        if x.get("event") != "pull_request" or x.get("action") != "opened" or x["id"] in baseline_ids:
+            continue
+        rc2, rec = http("GET", f"{API}/app/hook/deliveries/{x['id']}", headers=h)
+        payload = (rec.get("response") or {}).get("payload") or "" if rc2 == 200 else ""
+        try:
+            if int((json.loads(payload) or {}).get("matched", 0)) >= 1:
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
 
 
 def main() -> int:
@@ -221,9 +241,9 @@ def main() -> int:
                 ok = fire_synthetic(f"repo {REPO} is ARCHIVED (read-only); App write cred is valid")
             else:
                 default = repo.get("default_branch", "main")
-                # Baseline the log matches BEFORE we fire, so only a NEW match (from THIS PR) counts —
-                # a match line from an earlier run still in the tail must not make this run pass.
-                log_base = _match_count()
+                # Baseline GitHub's delivery log BEFORE we fire, so we verify THIS PR's own delivery
+                # (not an earlier run's) and never depend on scraping the CE service log.
+                dlv_base = _pr_opened_delivery_ids()
                 _, ref = http("GET", f"{API}/repos/{REPO}/git/ref/heads/{default}", headers=GH)
                 base_sha = (ref.get("object") or {}).get("sha")
                 assert base_sha, f"could not read {default} head: {ref}"
@@ -246,14 +266,15 @@ def main() -> int:
                     pr_num = pr.get("number")
                     assert c == 201 and pr_num, f"PR create failed HTTP {c}: {pr}"
                     print(f"  REAL PR opened: #{pr_num}  {pr.get('html_url')}")
-                    # verify via the events log (the App webhook's delivery reaches github-direct, not us)
-                    print("  waiting for GitHub App webhook → github-direct match (events log) …")
+                    # verify via GitHub's OWN delivery record — the response body our endpoint returned
+                    # carries matched=N. Authoritative + immune to CE log flooding and stale lines.
+                    print("  waiting for GitHub App webhook → github-direct match (GitHub delivery log) …")
                     deadline = time.time() + 300
                     while time.time() < deadline and not ok:
                         time.sleep(15)
-                        ok = _match_count() > log_base  # a NEW match since the baseline
-                    assert ok, "no NEW 'github.direct … matched' in the log within 5 min"
-                    print("  ✓ FIRED — github-direct matched the REAL PR and dispatched to the agent")
+                        ok = _new_delivery_matched(dlv_base)
+                    assert ok, "GitHub delivered no NEW pull_request:opened with matched>=1 within 5 min"
+                    print("  ✓ FIRED — github-direct matched the REAL PR (matched>=1) and dispatched")
                     real = True
     finally:
         # 3) CLEANUP — PR + branch (only if we opened one) + subscription. NEVER the App webhook.

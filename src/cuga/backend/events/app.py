@@ -344,14 +344,19 @@ def register_events_routes(
         # 0007); else fall back to headers.
         scope = env.scope
         if not scope and env.source.type == "channel" and identity is not None:
-            from .principal import channel_user_id, resolve_channel
+            from .principal import channel_user_id, resolve_channel, unlinked_principal
 
             nid = channel_user_id(env.source)  # the AUTHOR (per-user), not the channel
             cp = resolve_channel(env.source.name, nid, identity) if nid else None
             if cp is not None:
                 scope = cp.scope
             else:
-                tr("channel.unlinked", channel=env.source.name, native=nid)
+                # ADR 0009 — isolate the unlinked sender by their native id rather than collapsing
+                # onto the shared default identity (which would share memory/creds across senders).
+                up = unlinked_principal(env.source.name, nid) if nid else None
+                if up is not None:
+                    scope = up.scope
+                tr("channel.unlinked", channel=env.source.name, native=nid, isolated=up is not None)
         if not scope:
             scope = resolve_principal(headers=request.headers).scope
         tr(
@@ -870,13 +875,19 @@ def register_events_routes(
         principal = resolve_principal(headers=request.headers)
         _ch = (body or {}).get("channel")
         if isinstance(_ch, dict) and _ch.get("name") and identity is not None:
-            from .principal import resolve_channel
+            from .principal import resolve_channel, unlinked_principal
 
-            _cp = resolve_channel(str(_ch["name"]), str(_ch.get("user") or ""), identity)
+            _nid = str(_ch.get("user") or _ch.get("native_id") or "")  # AUTHOR id, else the chat id
+            _cp = resolve_channel(str(_ch["name"]), _nid, identity)
             if _cp is not None:
                 principal = _cp
             else:
-                tr("channel.unlinked", channel=_ch.get("name"), native=_ch.get("user"))
+                # ADR 0009 — isolate the unlinked sender by their native id (see unlinked_principal);
+                # otherwise a channel arming/chat runs as the shared default user.
+                _up = unlinked_principal(str(_ch["name"]), _nid)
+                if _up is not None:
+                    principal = _up
+                tr("channel.unlinked", channel=_ch.get("name"), native=_nid, isolated=_up is not None)
         # `?flow=1` → also return the flow(s) this utterance armed, so a caller can check the pieces
         # are right without a second round trip to /subscriptions/<id>/flow. `?flow=full` adds the
         # raw Activepieces flow JSON. Off by default: it costs one AP call per new subscription.
