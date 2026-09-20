@@ -235,3 +235,54 @@ def test_the_map_covers_a_realistic_delivery():
     hdrs = {"x-github-event": "pull_request"}
     assert gh.event_of(hdrs, payload) == "new_pr"
     assert gh.repo_of(payload) == "octo/demo"
+
+
+# ── the arm→fire loop through the ROUTE (mock, no tokens) ─────────────────────────────────────────
+def test_route_matches_an_armed_watch_by_repo_and_dispatches(monkeypatch, tmp_path):
+    """The arm→fire loop, OFFLINE: a signed pull_request:opened for a watched repo is matched to the
+    armed DIRECT subscription (and dispatched); the same event on another repo matches nothing. No
+    tokens, no network — the CE integration test (live_github_direct_e2e.py) proves it with a real PR.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from cuga.backend.events import direct_events
+    from cuga.backend.events.app import register_events_routes
+    from cuga.backend.events.subscriptions import Subscription, SubscriptionStore
+
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "s3cr3t")
+    store = SubscriptionStore(str(tmp_path / "subs.db"))
+    store.upsert(
+        Subscription(
+            id="pr_reviewer-abc", mode="PUSH", target_agent="pr_reviewer",
+            source_type="integration", source_connector="github", event="new_pr",
+            config={"repo": "octo/demo"}, status="active", ap_flow_id="",
+        )
+    )
+
+    fired: list = []
+
+    async def _fake_dispatch(subs, **kw):  # avoid a real /invoke in the background task
+        fired.append((kw.get("app"), kw.get("event"), [s.target_agent for s in subs]))
+        return len(subs)
+
+    monkeypatch.setattr(direct_events, "dispatch_all", _fake_dispatch)
+
+    app = FastAPI()
+    register_events_routes(app, runtime=object(), store=store, concierge=None, engine=None, gateway_token="gw")
+    c = TestClient(app)
+
+    def _pr(repo: str, num: int) -> "tuple[int,dict]":
+        body = json.dumps(
+            {"action": "opened", "repository": {"full_name": repo},
+             "pull_request": {"number": num, "title": "t"}}
+        ).encode()
+        r = c.post("/api/events/github/events", data=body,
+                   headers={"X-GitHub-Event": "pull_request", "X-Hub-Signature-256": _sig("s3cr3t", body),
+                            "Content-Type": "application/json"})
+        return r.status_code, r.json()
+
+    st, d = _pr("octo/demo", 1)         # the watched repo → matches the armed sub
+    assert st == 200 and d.get("event") == "new_pr" and d.get("matched") == 1, d
+    st, d = _pr("octo/other", 2)        # a different repo → the filter ignores it
+    assert st == 200 and d.get("matched") == 0, d

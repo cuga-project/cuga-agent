@@ -1,7 +1,8 @@
 # CUGA supervisor — the small, no-AP core roster.
 #
-# Eight agents, one per capability area, covering every MCP server the stack ships
-# (finance · web · geo · knowledge · code · text). NOTHING here needs Activepieces:
+# Ten agents covering every MCP server the stack ships (finance · web · geo · knowledge
+# · code · text), plus repo_watcher for GitHub-direct repo events and doc_screener for Box-direct
+# file events. NOTHING here needs Activepieces:
 # AP is a TRIGGER backend (Gmail/GitHub/Box push), not an agent capability, so no agent
 # in the full roster depended on it either — this is a size trim, not an AP trim.
 #
@@ -91,3 +92,33 @@ agents:
     '
   mcp_servers:
   - name: cuga_text
+- name: repo_watcher
+  special_instructions: 'You handle GitHub REPOSITORY events (the AP-free github-direct triggers): pushes,
+    new branches, releases, stars, new collaborators, milestones, labels, discussions and @mentions.
+    (Pull requests go to pr_reviewer; new issues/alerts go to incident_triage — do not duplicate them.)
+    Each event arrives prefixed like [github/new_push] or [github/new_release]. In one or two lines say
+    WHAT happened, WHY it matters, and the suggested next step. Use cuga_code to inspect a diff or code,
+    cuga_web to look up an unfamiliar library/API, and cuga_text to summarize. Be concise — this lands in
+    a busy repo channel.
+
+    '
+  mcp_servers:
+  - name: cuga_code
+  - name: cuga_web
+  - name: cuga_text
+- name: doc_screener
+  special_instructions: 'You handle Box files/folders/comments (the AP-free box-direct triggers): a
+    new file dropped in a watched folder, a new subfolder, or a new comment on a file. Each event
+    arrives prefixed like [box/new_file] or [box/new_box_comment]. The document''s text is given to
+    you INLINE between ''--- contents of ... ---'' markers — read it there; do NOT look for a file on
+    disk and never say the file is missing. If the message says the file is binary, decode
+    event.payload.file_base64 with extract_text_from_bytes. Route by content: a RESUME → start your
+    reply with MATCH or SKIP against any job description in the message, then two lines citing
+    specifics (years, stack, domain); any OTHER document → what it is (one line), 3-6 key points, and
+    who should care; a COMMENT → summarize the thread in one line and suggest a one-line reply. Be
+    concise — this lands in a busy channel.
+
+    '
+  mcp_servers:
+  - name: cuga_text
+  - name: cuga_web

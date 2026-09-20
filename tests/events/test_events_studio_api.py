@@ -68,7 +68,12 @@ def test_integrations_endpoint_no_ap():
     r = _client().get("/api/events/integrations")
     assert r.status_code == 200  # never 500 even with engine=None
     for i in r.json()["integrations"]:
-        assert i["status"] == "ap_not_configured"
+        if i["name"] == "github":
+            # github is a DIRECT backend (no AP): with no GITHUB_WEBHOOK_SECRET it reports
+            # 'not_connected' (direct), NOT 'ap_not_configured' — which would wrongly imply it needs AP.
+            assert i["status"] == "not_connected" and i["backend"] == "direct", i
+        else:
+            assert i["status"] == "ap_not_configured"
 
 
 def test_examples_endpoint():
@@ -467,7 +472,8 @@ def test_inbound_webhook_triages_and_delivers():
         )
         c = TestClient(app)
         r = c.post(
-            "/api/events/hook/monitoring?agent=incident_triage&deliver_to=slack&target=C1",
+            # ?wait=1 → synchronous: return the agent's answer inline (the default is ack-fast+async).
+            "/api/events/hook/monitoring?agent=incident_triage&deliver_to=slack&target=C1&wait=1",
             json={"alert": "HighCPU", "service": "checkout-api", "value": "97%"},
         )
         assert r.status_code == 200, r.text
@@ -524,7 +530,8 @@ def test_inbound_webhook_routed_uses_the_concierge():
         )
         c = TestClient(app)
         r = c.post(
-            "/api/events/hook/stripe?route=1&deliver_to=slack&target=C1",
+            # ?wait=1 → synchronous: surface the concierge's chosen agent + answer inline.
+            "/api/events/hook/stripe?route=1&deliver_to=slack&target=C1&wait=1",
             json={"type": "charge.dispute.created", "amount": 48000, "reason": "fraudulent"},
         )
         assert r.status_code == 200, r.text
@@ -540,6 +547,48 @@ def test_inbound_webhook_routed_uses_the_concierge():
         assert "call the one best-suited pre-built agent tool" in inv["text"].lower()
         assert "do not answer it yourself" in inv["text"].lower()
         assert inv["event"]["payload"]["reason"] == "fraudulent"
+    finally:
+        _httpx.AsyncClient = _orig
+        os.environ.pop("GATEWAY_TOKEN", None)
+
+
+def test_inbound_webhook_acks_fast_by_default():
+    """The DEFAULT (no ?wait) is ack-fast + async: the POST returns 202 'accepted' immediately and runs
+    the agent in the BACKGROUND — the shape a real webhook source (CI, monitoring, a form) needs, since
+    a synchronous agent run is too slow to hold the connection for and makes the caller time out/retry.
+    ?wait=1 (exercised above) is the opt-in synchronous mode that returns the answer inline."""
+    import httpx as _httpx
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True, "answer": "done"}
+
+    class _C:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            return _Resp()
+
+    _orig = _httpx.AsyncClient
+    _httpx.AsyncClient = lambda *a, **k: _C()
+    os.environ["GATEWAY_TOKEN"] = "gw"
+    try:
+        app = FastAPI()
+        register_events_routes(
+            app, runtime=object(), store=None, concierge=None, engine=None, gateway_token="gw"
+        )
+        c = TestClient(app)
+        r = c.post("/api/events/hook/monitoring?agent=incident_triage", json={"alert": "HighCPU"})
+        assert r.status_code == 202, r.text
+        b = r.json()
+        assert b["ok"] is True and b["accepted"] is True and b["webhook"] == "monitoring"
+        assert "answer" not in b  # async default: the answer is delivered/logged, never returned inline
     finally:
         _httpx.AsyncClient = _orig
         os.environ.pop("GATEWAY_TOKEN", None)

@@ -92,24 +92,24 @@ def main():
     st, d = _graph(f"debug_token?input_token={urllib.parse.quote(tok)}", tok)
     info = (d or {}).get("data") or {}
     expires = info.get("expires_at")
-    ok("token is valid", st == 200 and info.get("is_valid"), f"type={info.get('type')}")
+    ok("token is valid", st == 200 and info.get("is_valid"), "" if info.get("is_valid") else f"HTTP {st}")
     # A 24-hour dev token is THE recurring footgun: it works all afternoon and dies overnight,
     # resurfacing as an unexplained 401. A System User token reports expires_at = 0.
     ok(
         "token does not expire (System User, not the 24h dev token)",
         expires == 0,
-        "expires_at=0" if expires == 0 else f"expires_at={expires} — this token WILL die",
+        "non-expiring" if expires == 0 else "this token WILL expire — use a System User token",
     )
     scopes = set(info.get("scopes") or [])
     need = {"whatsapp_business_messaging"}
-    ok("token has whatsapp_business_messaging", need <= scopes, ", ".join(sorted(need - scopes)) or "ok")
+    ok("token has whatsapp_business_messaging", need <= scopes, "ok" if need <= scopes else "missing required scope")
 
     # ── the number ───────────────────────────────────────────────────────────
     st, d = _graph(f"{pnid}?fields=display_phone_number,verified_name,quality_rating", tok)
     ok(
         "phone number id resolves",
         st == 200,
-        f"{d.get('display_phone_number')} ({d.get('verified_name')}) quality={d.get('quality_rating')}"
+        f"quality={d.get('quality_rating')}"  # phone number + verified name omitted (PII / clear-text logging)
         if st == 200
         else str((d.get("error") or {}).get("message"))[:90],
     )

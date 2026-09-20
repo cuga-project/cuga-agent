@@ -1667,9 +1667,25 @@ def register_events_routes(
                         "DIRECT backend — CUGA polls Box with BOX_DEV_TOKEN (no AP, no OAuth). "
                         "Fires via POST /api/events/box/poll; test with live_box_direct_check.py."
                     )
-        # No INTEGRATION auto-connects from an env token any more: github is OAuth (piece-github takes
-        # OAUTH2 only — GITHUB_TOKEN does NOT connect it), gmail/box are OAuth, box-direct uses its own
-        # token path. So an unconnected integration means "connect it" (OAuth consent), never "wait for
+        # DIRECT-backend override: github is ALWAYS direct now (its AP piece is retired for triggers).
+        # The SIGNED webhook is what makes it work, so reflect GITHUB_WEBHOOK_SECRET — an AP-derived
+        # status would wrongly read 'ap_not_configured' for a working direct setup.
+        from . import github_direct as _ghd
+
+        _gh_ok = bool(_ghd.webhook_secret())
+        for r in rows:
+            if r["name"] == "github":
+                r["status"] = "connected" if _gh_ok else "not_connected"
+                r["connected"] = _gh_ok
+                r["backend"] = "direct"
+                r["note"] = (
+                    "DIRECT backend — signed webhook at /api/events/github/events "
+                    "(GITHUB_WEBHOOK_SECRET; 14 triggers, no AP). API read-back: "
+                    + ("configured" if _ghd.configured() else "none (a PAT or App creds are optional)")
+                )
+        # No INTEGRATION auto-connects from an env token any more: gmail is OAuth-on-AP; box and
+        # github run DIRECT (their own secret/token paths above). So an unconnected AP integration
+        # means "connect it" (OAuth consent), never "wait for
         # auto-connect". The env-token auto-connect path now applies only to CHANNELS (telegram/discord
         # bot tokens), which are reported by channels_status, not here.
         return {"integrations": rows}
@@ -1961,6 +1977,9 @@ def register_events_routes(
             from . import box_direct
 
             st["box"] = "connected" if box_direct.configured() else "not_connected"
+        from . import github_direct as _ghd  # github is ALWAYS direct — its status is the signed-webhook secret
+
+        st["github"] = "connected" if _ghd.webhook_secret() else "not_connected"
         out = []
 
         def _cred_scope(key: str) -> str:
@@ -2744,9 +2763,40 @@ def register_events_routes(
             "source": src,
             "event": {"kind": "message", "payload": payload if isinstance(payload, dict) else {}},
         }
+        import asyncio
+
+        async def _run(timeout: float) -> "httpx.Response":
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                return await c.post(
+                    f"http://127.0.0.1:{port}/invoke", headers={"X-Gateway-Token": gw}, json=inv
+                )
+
+        # ACK-FAST BY DEFAULT. A webhook caller (CI, monitoring, a form, a payment provider) expects a
+        # quick 2xx; a real agent run is far too slow to hold the connection for, so a synchronous
+        # reply makes the caller time out and RETRY — duplicate fires, or a fire the caller believes
+        # failed. So we ack 202 immediately and run the agent in the background (the GitHub/Slack
+        # receivers above do exactly this). The result reaches the operator via ?deliver_to=<channel>,
+        # or the run log/inbox otherwise. `?wait=1` opts into the old synchronous behaviour for a
+        # scripted caller that wants the agent's answer inline in the HTTP response.
+        wait = (request.query_params.get("wait") or "").strip().lower() in ("1", "true", "yes", "sync")
+        if not wait:
+
+            async def _bg() -> None:
+                try:
+                    await _run(600.0)
+                except Exception as e:  # noqa: BLE001 — no caller to return to; log and move on
+                    tr.error("hook", err=str(e))
+
+            asyncio.create_task(_bg())
+            return JSONResponse(
+                {"ok": True, "accepted": True, "webhook": name, "routed": routed,
+                 "delivered": deliver, "trace_id": tr.id},
+                202,
+            )
+
+        # ?wait=1 — synchronous: block for the agent run and return its answer.
         try:
-            async with httpx.AsyncClient(timeout=180) as c:
-                r = await c.post(f"http://127.0.0.1:{port}/invoke", headers={"X-Gateway-Token": gw}, json=inv)
+            r = await _run(600.0)
             j = r.json() if r.status_code == 200 else {}
         except Exception as e:  # noqa: BLE001
             tr.error("hook", err=str(e))
