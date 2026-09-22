@@ -8,7 +8,7 @@ logged as warnings and never crash the agent.
 """
 
 import json
-from typing import Optional, List
+from typing import Any, List, Optional
 
 import aiohttp
 from loguru import logger
@@ -82,11 +82,48 @@ class EvolveIntegration:
             return None
 
     @classmethod
+    async def get_guidelines_with_attribution(
+        cls,
+        task: str,
+        user_id: Optional[str] = None,
+        namespace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Fetch formatted guidelines and the entity IDs included in the prompt."""
+        if not cls.is_enabled():
+            return None
+        try:
+            args: dict[str, Any] = {"task": task}
+            for key, value in {
+                "user_id": normalize_evolve_identifier(user_id),
+                "namespace_id": normalize_evolve_identifier(namespace_id),
+                "session_id": normalize_evolve_identifier(session_id),
+            }.items():
+                if value:
+                    args[key] = value
+            result = await cls._call_tool("get_guidelines_with_attribution", args)
+            if isinstance(result, str):
+                result = json.loads(result)
+            if not isinstance(result, dict):
+                return None
+            return {
+                "text": str(result.get("text") or ""),
+                "entity_ids": [
+                    str(entity_id) for entity_id in result.get("entity_ids", []) if str(entity_id).strip()
+                ],
+                "namespace_id": result.get("namespace_id"),
+            }
+        except Exception as e:
+            logger.warning(f"Evolve attributed guideline retrieval failed (non-fatal): {e}")
+            return None
+
+    @classmethod
     async def store_user_facts(
         cls,
         user_id: str,
         message: str,
         metadata: dict | None = None,
+        namespace_id: Optional[str] = None,
     ) -> None:
         """Store durable user facts/preferences without interrupting lite execution."""
         if not cls.is_enabled():
@@ -99,6 +136,7 @@ class EvolveIntegration:
                 "user_id": user_id,
                 "message": message,
                 "metadata": json.dumps(metadata or {}),
+                "namespace_id": namespace_id,
             }
             result = await cls._call_tool("store_user_facts", payload)
             if isinstance(result, dict):
@@ -115,6 +153,8 @@ class EvolveIntegration:
         user_id: str,
         query: str,
         limit: int = 5,
+        namespace_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> Optional[dict]:
         """Retrieve durable user facts/preferences without interrupting lite execution."""
         if not cls.is_enabled():
@@ -129,6 +169,8 @@ class EvolveIntegration:
                     "user_id": user_id,
                     "query": query,
                     "limit": limit,
+                    "namespace_id": namespace_id,
+                    "agent_id": agent_id,
                 },
             )
             if result:
@@ -147,6 +189,7 @@ class EvolveIntegration:
         user_id: Optional[str] = None,
         namespace_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> None:
         """Save the agent trajectory to Evolve for tip generation."""
         if not cls.is_enabled():
@@ -186,10 +229,136 @@ class EvolveIntegration:
                 args["namespace_id"] = namespace_id
             if session_id:
                 args["session_id"] = session_id
+            if agent_id:
+                args["agent_id"] = agent_id
             await cls._call_tool("save_trajectory", args)
             logger.info("Evolve: Trajectory saved successfully")
         except Exception as e:
             logger.warning(f"Evolve save_trajectory failed (non-fatal): {e}")
+
+    @classmethod
+    async def delete_entity(
+        cls,
+        entity_id: str,
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        namespace_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Delete an entity through Evolve's ownership checks."""
+        if not cls.is_enabled() or not entity_id:
+            return None
+        args: dict[str, Any] = {"entity_id": entity_id}
+        for key, value in {
+            "user_id": normalize_evolve_identifier(user_id),
+            "agent_id": normalize_evolve_identifier(agent_id),
+            "namespace_id": normalize_evolve_identifier(namespace_id),
+        }.items():
+            if value:
+                args[key] = value
+        return await cls._call_structured_tool("delete_entity", args)
+
+    @classmethod
+    async def list_entities(
+        cls,
+        entity_types: Optional[list[str]] = None,
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        metadata_filters: Optional[dict[str, Any]] = None,
+        cursor: Optional[str] = None,
+        limit: int = 50,
+        include_content: bool = False,
+        namespace_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Return a structured Evolve entity inventory."""
+        args: dict[str, Any] = {"limit": limit, "include_content": include_content}
+        optional = {
+            "entity_types": entity_types,
+            "user_id": normalize_evolve_identifier(user_id),
+            "agent_id": normalize_evolve_identifier(agent_id),
+            "session_id": normalize_evolve_identifier(session_id),
+            "metadata_filters": json.dumps(metadata_filters) if metadata_filters else None,
+            "cursor": cursor,
+            "namespace_id": normalize_evolve_identifier(namespace_id),
+        }
+        args.update({key: value for key, value in optional.items() if value is not None})
+        return await cls._call_structured_tool("list_entities", args)
+
+    @classmethod
+    async def get_entity(
+        cls,
+        entity_id: str,
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        namespace_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Return one Evolve entity without mutating its access timestamp."""
+        args: dict[str, Any] = {"entity_id": entity_id, "record_access": False}
+        for key, value in {
+            "user_id": normalize_evolve_identifier(user_id),
+            "agent_id": normalize_evolve_identifier(agent_id),
+            "namespace_id": normalize_evolve_identifier(namespace_id),
+        }.items():
+            if value:
+                args[key] = value
+        return await cls._call_structured_tool("get_entity", args)
+
+    @classmethod
+    async def patch_entity_metadata(
+        cls,
+        entity_id: str,
+        metadata_patch: dict[str, Any],
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        namespace_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Patch entity metadata through Evolve's authorization layer."""
+        args: dict[str, Any] = {
+            "entity_id": entity_id,
+            "metadata_patch": json.dumps(metadata_patch),
+        }
+        for key, value in {
+            "user_id": normalize_evolve_identifier(user_id),
+            "agent_id": normalize_evolve_identifier(agent_id),
+            "namespace_id": normalize_evolve_identifier(namespace_id),
+        }.items():
+            if value:
+                args[key] = value
+        return await cls._call_structured_tool("patch_entity_metadata", args)
+
+    @classmethod
+    async def record_access(
+        cls,
+        entity_ids: list[str],
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        namespace_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Record actual use of entities for retention and audit purposes."""
+        args: dict[str, Any] = {"entity_ids": entity_ids}
+        for key, value in {
+            "user_id": normalize_evolve_identifier(user_id),
+            "agent_id": normalize_evolve_identifier(agent_id),
+            "namespace_id": normalize_evolve_identifier(namespace_id),
+        }.items():
+            if value:
+                args[key] = value
+        return await cls._call_structured_tool("record_access", args)
+
+    @classmethod
+    async def _call_structured_tool(
+        cls,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> Optional[dict]:
+        if not cls.is_enabled():
+            return None
+        try:
+            result = await cls._call_tool(tool_name, args)
+            return result if isinstance(result, dict) else None
+        except Exception as e:
+            logger.warning(f"Evolve {tool_name} failed (non-fatal): {e}")
+            return None
 
     @staticmethod
     def _convert_messages(chat_messages: List[BaseMessage]) -> list:
