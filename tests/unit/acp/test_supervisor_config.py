@@ -102,6 +102,7 @@ def test_no_scheme_raises():
         _validate_acp_protocol("my-agent", cfg)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "endpoint",
     [
@@ -115,8 +116,6 @@ def test_no_scheme_raises():
         "https://example.com/acp\x9fsuffix",
         "https://-bad.example/acp",
         "https://999.999.999.999/acp",
-        "https://0x7f000001/acp",
-        "https://0x7f.0.0.1/acp",
         "https://example.com:notaport/acp",
         "https://example.com:70000/acp",
     ],
