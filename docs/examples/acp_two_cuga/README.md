@@ -47,25 +47,6 @@ The `[acp]` extra pulls in `acp-sdk>=1.0.3,<2` and pins `uvicorn<0.36`
 to resolve a compatibility issue with `uvicorn==0.36.0`.
 Base CUGA (Python 3.10+) remains installable without this extra.
 
-## Token setup
-
-The consumer reads the provider's bearer token from an environment
-variable at **invocation time** (not at YAML-load time), so credential
-rotation does not require a restart.
-
-Set the variable before starting the consumer — use a placeholder
-value when no auth is required on the provider:
-
-```bash
-# If the provider runs with auth_required=false (see below), any
-# non-empty value works, or omit the variable entirely.
-export PROVIDER_ACP_TOKEN="<your-token-here>"
-```
-
-> **Do not store real tokens in configuration files or commit them to
-> version control.**  `token_env_var` names the environment variable;
-> the token value is never written to disk.
-
 ## Run
 
 Open **three** terminals:
@@ -132,7 +113,6 @@ Expected (abbreviated):
 ### Terminal 3 — consumer CUGA (port 7860)
 
 ```bash
-export PROVIDER_ACP_TOKEN=""    # provider runs with auth_required=false in this example
 export DYNACONF_SUPERVISOR__ENABLED=true
 export DYNACONF_SUPERVISOR__CONFIG_PATH="docs/examples/acp_two_cuga/consumer.supervisor.yaml"
 export DYNACONF_SERVER_PORTS__DEMO=7860
@@ -173,11 +153,6 @@ the consumer chat UI.
   delegation tool, and uses `delegate_task_via_acp()` to submit each
   delegation as an async ACP run and poll it to completion.
 
-- **Token flow** — `auth.token_env_var: PROVIDER_ACP_TOKEN` tells the
-  outbound wrapper which environment variable holds the bearer token.
-  The value is resolved at call time and injected as
-  `Authorization: Bearer <token>`. It is never logged or stored.
-
 ## Known limitations
 
 | Limitation | Notes |
@@ -198,6 +173,3 @@ the consumer chat UI.
   first, then provider, then consumer. The consumer supervisor fetches
   the provider's manifest at startup; if the provider isn't up yet, the
   consumer logs a warning and falls back to the YAML description.
-- **Authentication errors (401)** — if `AUTH_REQUIRED=true` on the
-  provider, `PROVIDER_ACP_TOKEN` must be set on the consumer side and
-  match the token accepted by CUGA's `require_chat_access` policy.
