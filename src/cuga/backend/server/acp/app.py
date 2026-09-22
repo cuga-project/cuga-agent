@@ -72,6 +72,7 @@ def build_acp_app_for_settings(
     store_limit: int = int(getattr(acp_settings, "store_limit", 1000))
     store_ttl_seconds: int = int(getattr(acp_settings, "store_ttl_seconds", 3600))
     auth_required: bool = bool(getattr(acp_settings, "auth_required", True))
+    enable_playground_cors: bool = bool(getattr(acp_settings, "enable_playground_cors", False))
     agent_name: str = str(getattr(acp_settings, "agent_name", "cuga"))
     agent_description: str = str(getattr(acp_settings, "agent_description", ""))
 
@@ -98,7 +99,7 @@ def build_acp_app_for_settings(
     app: FastAPI = acp_sdk.server.create_app(
         agent,
         store=store,
-        enable_playground_cors=False,
+        enable_playground_cors=enable_playground_cors,
         dependencies=dependencies or None,
     )
 
