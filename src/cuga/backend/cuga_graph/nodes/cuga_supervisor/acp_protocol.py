@@ -7,10 +7,12 @@ normalised result dict compatible with the supervisor graph.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import os
 import time
 from collections.abc import Callable, Mapping
 from typing import Any
+from urllib.parse import urlsplit
 
 from loguru import logger
 
@@ -53,6 +55,45 @@ if HAS_ACP_SDK and RunStatus is not None:
 # ---------------------------------------------------------------------------
 # Authentication and manifest helpers
 # ---------------------------------------------------------------------------
+
+
+def _require_acp_sdk() -> None:
+    """Raise an actionable error when the optional ACP SDK is unavailable."""
+    if not HAS_ACP_SDK:
+        raise ImportError(
+            "The ACP integration requires the acp_sdk package. Install it with: pip install cuga[acp]"
+        )
+
+
+def _is_loopback_host(hostname: str) -> bool:
+    """Return whether *hostname* identifies the local loopback interface."""
+    if hostname.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _validate_bearer_transport(endpoint: str, headers: Mapping[str, str]) -> None:
+    """Prevent bearer credentials from being transmitted over cleartext networks."""
+    if "Authorization" not in headers:
+        return
+
+    parsed = urlsplit(endpoint)
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("ACP bearer authentication requires a valid endpoint URL") from exc
+    if not parsed.hostname:
+        raise ValueError("ACP bearer authentication requires a valid endpoint URL")
+
+    scheme = parsed.scheme.casefold()
+    if scheme == "https":
+        return
+    if scheme == "http" and _is_loopback_host(parsed.hostname):
+        return
+    raise ValueError("ACP bearer authentication requires HTTPS or an HTTP loopback endpoint")
 
 
 def _build_auth_headers(auth: Mapping[str, Any] | None) -> dict[str, str]:
@@ -125,7 +166,9 @@ async def fetch_agent_manifest(
         Callable that returns an ACP Client context-manager; injectable for
         testing.
     """
+    _require_acp_sdk()
     headers = _build_auth_headers(auth)
+    _validate_bearer_transport(endpoint, headers)
 
     client = client_factory(
         base_url=endpoint,
@@ -192,6 +235,8 @@ async def delegate_task_via_acp(
     dict with keys ``result`` (str), ``status`` (``"success"`` or
     ``"failed"``), and ``variables`` (always ``{}``).
     """
+    _require_acp_sdk()
+
     # ── 1. Validate configuration ────────────────────────────────────────────
     if not endpoint:
         raise ValueError("endpoint must not be empty")
@@ -200,6 +245,7 @@ async def delegate_task_via_acp(
 
     # ── 2. Resolve bearer token → headers ───────────────────────────────────
     headers = _build_auth_headers(auth)
+    _validate_bearer_transport(endpoint, headers)
 
     # ── 3. Instantiate client (bounded HTTP timeout) ─────────────────────────
     http_timeout = min(_HTTP_REQUEST_TIMEOUT, timeout)
