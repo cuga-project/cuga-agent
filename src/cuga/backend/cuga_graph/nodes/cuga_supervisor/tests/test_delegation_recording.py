@@ -419,3 +419,20 @@ async def test_acp_failure_is_recorded():
     assert "worker" in state.selected_agents
     recorded = state.agent_results.get("worker", "")
     assert "ACP delegation failed" in recorded
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_acp_failure_uses_loguru_formatting_and_exception_context():
+    """ACP failures retain agent context and attach the active traceback at debug level."""
+    logger_path = "cuga.backend.cuga_graph.nodes.cuga_supervisor.delegation.logger"
+    with patch(logger_path) as mock_logger:
+        await _run_acp(_OMITTED, side_effect=RuntimeError("connection refused"))
+
+    mock_logger.warning.assert_called_once_with(
+        "ACP delegation to {} failed: {}",
+        "worker",
+        "RuntimeError",
+    )
+    mock_logger.opt.assert_called_once_with(exception=True)
+    mock_logger.opt.return_value.debug.assert_called_once_with("ACP delegation exception detail")
