@@ -36,12 +36,19 @@ def _make_manifest(name="remote-agent", description="Summarises documents", inpu
     )
 
 
-def _acp_agent_config(description=None, endpoint="https://acp.example.com", agent_name="remote-agent"):
+def _acp_agent_config(
+    description=None,
+    endpoint="https://acp.example.com",
+    agent_name="remote-agent",
+    *,
+    enabled=True,
+):
     """Build the dict shape that supervisor_config produces for an ACP agent."""
     cfg = {
         "type": "external",
         "config": {
             "acp_protocol": {
+                "enabled": enabled,
                 "endpoint": endpoint,
                 "agent_name": agent_name,
                 "timeout": 30,
@@ -191,6 +198,81 @@ async def test_acp_tool_schema_has_only_task():
     assert tool_start != -1, "ACP delegation tool not found in prompt"
     snippet = prompt[tool_start : tool_start + 300]
     assert "variables" not in snippet
+
+
+@pytest.mark.asyncio
+async def test_disabled_acp_uses_enabled_a2a_discovery_and_schema():
+    """A disabled ACP block must not override active A2A prompt preparation."""
+    config = _a2a_agent_config(description="A2A fallback")
+    config["config"]["acp_protocol"] = {
+        "enabled": False,
+        "endpoint": "https://disabled-acp.example.com",
+    }
+    adapter = _make_adapter({"worker": config})
+    fake_card = MagicMock(name="A2A card")
+    fake_card.name = "worker"
+    fake_card.description = "Discovered over A2A"
+    fake_card.capabilities = None
+    fake_card.skills = None
+
+    with (
+        patch(f"{_ACP_MODULE}.fetch_agent_manifest", AsyncMock()) as fetch_manifest,
+        patch(f"{_A2A_MODULE}.HAS_A2A_SDK", True),
+        patch(f"{_A2A_MODULE}.fetch_agent_card", AsyncMock(return_value=fake_card)) as fetch_card,
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.prepare_agents_and_prompt"
+            ".settings.supervisor.pass_variables_a2a",
+            True,
+        ),
+    ):
+        update = await _run_prepare(adapter)
+
+    fetch_manifest.assert_not_awaited()
+    fetch_card.assert_awaited_once()
+    assert "Discovered over A2A" in update["prepared_prompt"]
+    assert "variables" in update["prepared_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_internal_only_roster_does_not_require_acp_config():
+    """Internal agents prepare their normal tool schema without an ACP config."""
+
+    class _FakeCugaAgent:
+        description = "Internal worker"
+
+    adapter = _make_adapter({"internal": _FakeCugaAgent()})
+    with patch("cuga.sdk.CugaAgent", _FakeCugaAgent):
+        update = await _run_prepare(adapter)
+
+    assert "Internal worker" in update["prepared_prompt"]
+    assert "variables" in update["prepared_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_mixed_acp_and_internal_roster_does_not_reuse_acp_config():
+    """Each roster entry derives its tool schema from its own protocol config."""
+
+    class _FakeCugaAgent:
+        description = "Internal worker"
+
+    adapter = _make_adapter(
+        {
+            "remote": _acp_agent_config(agent_name="remote"),
+            "internal": _FakeCugaAgent(),
+        }
+    )
+    manifest = _make_manifest(name="remote", description="Remote ACP worker")
+    with (
+        patch("cuga.sdk.CugaAgent", _FakeCugaAgent),
+        patch(f"{_ACP_MODULE}.HAS_ACP_SDK", True),
+        patch(f"{_ACP_MODULE}.fetch_agent_manifest", AsyncMock(return_value=manifest)),
+    ):
+        update = await _run_prepare(adapter)
+
+    prompt = update["prepared_prompt"]
+    internal_tool_start = prompt.find("delegate_to_internal")
+    assert internal_tool_start != -1
+    assert "variables" in prompt[internal_tool_start : internal_tool_start + 500]
 
 
 @pytest.mark.asyncio
