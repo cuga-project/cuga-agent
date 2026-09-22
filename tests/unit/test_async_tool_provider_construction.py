@@ -36,6 +36,7 @@ async def test_registry_tool_async_invoke_returns_data_not_coroutine(monkeypatch
         args: dict[str, Any],
         operation_id: str | None = None,
         agent_id: str | None = None,
+        arg_defaults: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "app_name": app_name,
