@@ -170,11 +170,11 @@ def create_agent_delegation_func(
                     answer = result.get("result", "")
                 except Exception as exc:
                     logger.warning(
-                        "ACP delegation to %s failed: %s",
+                        "ACP delegation to {} failed: {}",
                         agent_name,
                         type(exc).__name__,
                     )
-                    logger.debug("ACP delegation exception detail", exc_info=True)
+                    logger.opt(exception=True).debug("ACP delegation exception detail")
                     answer = f"Error: ACP delegation failed for {agent_name}."
                 _record_delegation(adapter, agent_name, answer=answer)
                 return answer
