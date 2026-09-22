@@ -64,6 +64,8 @@ max_tool_calls_per_thread = 2000  # Max tool/API calls per conversation, never r
 # Rejected-call guard (#599): stops an identical API call (same endpoint + same arguments) being re-issued after the registry has definitively rejected it (4xx). Counters clear on any successful mutating call and at /api/reset (task boundary).
 rejected_call_escalate_after = 1  # After N identical rejections, further rejections of the same signature carry a prominent "[Repeated failure] ... do not re-issue unchanged" message. 0 disables escalation. Env: DYNACONF_ADVANCED_FEATURES__REJECTED_CALL_ESCALATE_AFTER
 rejected_call_block_after = 2  # After N identical rejections, further identical calls are refused WITHOUT reaching the API, returning the stored error plus an explicit directive. 0 disables short-circuiting. Env: DYNACONF_ADVANCED_FEATURES__REJECTED_CALL_BLOCK_AFTER
+# Pagination audit (#750): after each code block, a list call that returned exactly page_limit items (a full page) without the next page being requested is flagged in the execution output — models otherwise read a full page as the last page. Deterministic and advisory; the tool result itself is untouched.
+pagination_audit_enabled = true  # Env: DYNACONF_ADVANCED_FEATURES__PAGINATION_AUDIT_ENABLED
 # Strip harmony protocol control tokens (<|channel|>, <|return|>, …) from the final answer.
 # "auto" = only when the final-answer model is a gpt-oss/harmony model (other providers untouched);
 # true/false force it on/off. Env: DYNACONF_ADVANCED_FEATURES__STRIP_HARMONY_CONTROL_TOKENS
