@@ -14,6 +14,7 @@ import asyncio
 from cuga.backend.server.manage_routes.helpers import (
     agent_draft_lock,
     is_secret_field_name,
+    resolve_registered_agent_id,
     save_draft_section_unlocked,
 )
 from cuga.backend.server.manage_routes.knowledge_reindex import (
@@ -370,8 +371,7 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
     we return 400 and DO NOT save the draft — the saved-but-not-applied
     case was the previous bug.
     """
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     # NOTE: previously called ``await request.is_disconnected()`` here as
     # Slice A telemetry. That call invokes ``self._receive()`` to peek at
     # the ASGI channel, which can CONSUME the first body chunk and
@@ -771,8 +771,7 @@ async def reindex_for_config_change(request: Request, agent_id: Optional[str] = 
     PATCH used to return so the frontend's existing reindex-tile arming code
     works without changes.
     """
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     live_state = getattr(request.app.state, "app_state", None)
     live_engine = getattr(live_state, "knowledge_engine", None) if live_state else None
     if live_engine is None:
@@ -825,6 +824,8 @@ async def reindex_for_config_change(request: Request, agent_id: Optional[str] = 
                 )
             result = await migrate_and_reindex_for_agent(agent_id, live_engine, live_state)
         return JSONResponse(result)
+    except HTTPException:
+        raise
     except Exception as e:
         # Generic client message; full detail (may include embedding-API
         # errors / paths) stays in the log only (Sami review / CodeQL).

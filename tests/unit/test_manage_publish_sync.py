@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from cuga.backend.server.auth import require_auth
 from cuga.backend.server.config_store import load_config, load_draft, reset_config_db
 from cuga.backend.server.manage_routes import router
+
+pytestmark = pytest.mark.unit
 
 
 class _FakeKnowledgeEngine:
@@ -47,7 +51,7 @@ def test_publish_syncs_draft_with_published_knowledge_flags(monkeypatch):
     client = TestClient(app)
     response = client.post(
         "/api/manage/config",
-        params={"agent_id": "test-agent"},
+        params={"agent_id": "cuga-default"},
         json={
             "config": {
                 "agent": {"name": "Test Agent"},
@@ -61,9 +65,10 @@ def test_publish_syncs_draft_with_published_knowledge_flags(monkeypatch):
     )
 
     assert response.status_code == 200
+    assert response.json()["agent_id"] == "cuga-default"
 
-    draft = asyncio.run(load_draft("test-agent"))
-    published, _ = asyncio.run(load_config(None, "test-agent"))
+    draft = asyncio.run(load_draft("cuga-default"))
+    published, _ = asyncio.run(load_config(None, "cuga-default"))
 
     assert draft is not None
     assert published is not None
@@ -89,7 +94,7 @@ def test_publish_syncs_draft_with_published_agent_level_disabled(monkeypatch):
     client = TestClient(app)
     response = client.post(
         "/api/manage/config",
-        params={"agent_id": "test-agent"},
+        params={"agent_id": "cuga-default"},
         json={
             "config": {
                 "agent": {"name": "Test Agent"},
@@ -103,9 +108,10 @@ def test_publish_syncs_draft_with_published_agent_level_disabled(monkeypatch):
     )
 
     assert response.status_code == 200
+    assert response.json()["agent_id"] == "cuga-default"
 
-    draft = asyncio.run(load_draft("test-agent"))
-    published, _ = asyncio.run(load_config(None, "test-agent"))
+    draft = asyncio.run(load_draft("cuga-default"))
+    published, _ = asyncio.run(load_config(None, "cuga-default"))
 
     assert draft is not None
     assert published is not None
@@ -128,6 +134,12 @@ def test_publish_defers_flip_when_reindex_started(monkeypatch):
     reset_config_db()
     _tmp = Path(tempfile.mkdtemp(prefix="cuga-pub-defer-"))
     _doc = SimpleNamespace(filename="a.pdf", chunk_count=1, status="ok", ingested_at="t0")
+    # Register test-agent in config_store so resolve_registered_agent_id finds it
+    # when the registry is enabled (the collection name kb_agent_test_agent is
+    # what this test specifically asserts).
+    from cuga.backend.server.config_store import save_draft as _save_draft_sync
+
+    asyncio.run(_save_draft_sync({"agent": {"name": "Test Agent"}}, "test-agent"))
 
     class _DeferEngine:
         def __init__(self):
@@ -172,6 +184,13 @@ def test_publish_defers_flip_when_reindex_started(monkeypatch):
     monkeypatch.setattr(config_routes, "deferred_reindex_complete_and_flip", _capture_flip)
     monkeypatch.setattr(config_routes, "apply_published_config", _allow_publish)
     monkeypatch.setattr(config_routes, "rebuild_production_agent", _allow_publish)
+    # Enable registry and make test-agent discoverable so resolve_registered_agent_id
+    # returns "test-agent" (which drives the kb_agent_test_agent collection name).
+    monkeypatch.setattr("cuga.backend.server.agent_registry.is_agent_registry_enabled", lambda: True)
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.list_agents_with_configs",
+        AsyncMock(return_value=[{"agent_id": "test-agent"}]),
+    )
 
     app = FastAPI()
     app.include_router(router)
@@ -214,5 +233,6 @@ def test_publish_defers_flip_when_reindex_started(monkeypatch):
     # success — draft + published stay on the previous (empty) hash until then.
     draft = asyncio.run(load_draft("test-agent"))
     published, _ = asyncio.run(load_config(None, "test-agent"))
+    # The hash must NOT be persisted before the strict flip succeeds.
     assert (draft.get("knowledge") or {}).get("_vector_config_hash") in (None, "")
     assert (published.get("knowledge") or {}).get("_vector_config_hash") in (None, "")
