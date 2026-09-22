@@ -151,6 +151,8 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
         for agent_name, agent_or_config in adapter._agents.items():
             agent_card = None
             acp_manifest = None
+            acp_cfg: Dict[str, Any] = {}
+            acp_enabled = False
             if isinstance(agent_or_config, CugaAgent):
                 agent_type = "internal"
                 description = getattr(agent_or_config, "description", f"Internal agent: {agent_name}")
@@ -158,8 +160,9 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
                 agent_type = agent_or_config.get("type", "external")
                 agent_config = agent_or_config.get("config", {})
                 acp_cfg = agent_config.get("acp_protocol", {})
+                acp_enabled = bool(acp_cfg.get("enabled")) and bool(acp_cfg.get("endpoint"))
                 a2a_cfg = agent_config.get("a2a_protocol", {})
-                if agent_type == "external" and acp_cfg.get("endpoint"):
+                if agent_type == "external" and acp_enabled:
                     from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
                         HAS_ACP_SDK,
                         fetch_agent_manifest,
@@ -216,7 +219,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
             )
             adapter._agent_tools_context[tool_name] = tool_func
 
-            is_acp_agent = bool(acp_cfg.get("endpoint"))
+            is_acp_agent = agent_type == "external" and acp_enabled
             is_a2a_agent = agent_card is not None
             if is_acp_agent:
                 tool_info = {
