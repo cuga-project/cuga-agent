@@ -32,15 +32,16 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from acp_sdk.models import AgentManifest, Error, ErrorCode, Message, MessagePart, Run, RunStatus
 from acp_sdk.models.errors import ACPError
 
-# The function does not exist yet — importing it here is intentional.
-# Tests will report ImportError/ModuleNotFoundError until Task 3.3 lands.
-from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import delegate_task_via_acp
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
+    delegate_task_via_acp,
+    fetch_agent_manifest,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -480,6 +481,105 @@ async def test_auth_header_forwarded_to_client_factory(monkeypatch: pytest.Monke
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "endpoint",
+    ["http://localhost:8080/acp", "http://127.0.0.1:8080/acp", "http://[::1]:8080/acp"],
+)
+async def test_bearer_auth_allows_loopback_http(endpoint: str) -> None:
+    """Local development may send bearer credentials to loopback HTTP endpoints."""
+    captured_kwargs: dict[str, Any] = {}
+
+    def _capturing_factory(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _make_client()
+
+    await delegate_task_via_acp(
+        endpoint=endpoint,
+        agent_name=_AGENT,
+        task="local authenticated task",
+        auth={"type": "bearer", "token": "secret-token"},
+        poll_interval=0.0,
+        client_factory=_capturing_factory,
+    )
+
+    assert captured_kwargs["headers"] == {"Authorization": "Bearer secret-token"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("endpoint", ["http://agent.example.com/acp", "ftp://agent.example.com/acp"])
+async def test_bearer_auth_rejects_insecure_remote_endpoint(endpoint: str) -> None:
+    """Bearer credentials must never be sent to cleartext or unsupported remote endpoints."""
+    with pytest.raises(ValueError, match="requires HTTPS or an HTTP loopback endpoint"):
+        await delegate_task_via_acp(
+            endpoint=endpoint,
+            agent_name=_AGENT,
+            task="authenticated task",
+            auth={"type": "bearer", "token": "secret-token"},
+            client_factory=lambda **_: pytest.fail("client must not be created"),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "endpoint",
+    ["https:///acp", "https:agent.example.com/acp", "https://agent.example.com:invalid/acp"],
+)
+async def test_bearer_auth_rejects_malformed_endpoint(endpoint: str) -> None:
+    """Malformed authenticated endpoints fail before ACP client construction."""
+    with pytest.raises(ValueError, match="requires a valid endpoint URL"):
+        await delegate_task_via_acp(
+            endpoint=endpoint,
+            agent_name=_AGENT,
+            task="authenticated task",
+            auth={"type": "bearer", "token": "secret-token"},
+            client_factory=lambda **_: pytest.fail("client must not be created"),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_anonymous_remote_http_endpoint_remains_supported() -> None:
+    """The transport restriction applies only when an Authorization header is present."""
+    client = _make_client()
+    result = await delegate_task_via_acp(
+        endpoint="http://agent.example.com/acp",
+        agent_name=_AGENT,
+        task="anonymous task",
+        auth={"type": "none"},
+        poll_interval=0.0,
+        client_factory=_factory(client),
+    )
+
+    assert result["status"] == "success"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("endpoint", "message"),
+    [
+        ("http://agent.example.com/acp", "requires HTTPS or an HTTP loopback endpoint"),
+        ("https:///acp", "requires a valid endpoint URL"),
+    ],
+)
+async def test_manifest_fetch_rejects_insecure_or_malformed_bearer_endpoint(
+    endpoint: str,
+    message: str,
+) -> None:
+    """Manifest discovery enforces the same secure bearer transport contract."""
+    with pytest.raises(ValueError, match=message):
+        await fetch_agent_manifest(
+            endpoint=endpoint,
+            agent_name=_AGENT,
+            auth={"type": "bearer", "token": "secret-token"},
+            client_factory=lambda **_: pytest.fail("client must not be created"),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_auth_from_env_variable(monkeypatch: pytest.MonkeyPatch) -> None:
     """If auth is not provided, the function should read from environment."""
     monkeypatch.setenv("ACP_AUTH_TOKEN", "env-token")
@@ -600,6 +700,39 @@ async def test_configured_missing_token_env_var_fails_before_manifest_fetch(
             auth={"type": "bearer", "token_env_var": "EMPTY_ACP_TOKEN"},
             client_factory=lambda **_: pytest.fail("client must not be created"),
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_delegate_without_sdk_raises_actionable_import_error() -> None:
+    """Delegation explains how to install the optional ACP dependency."""
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol.HAS_ACP_SDK",
+        False,
+    ):
+        with pytest.raises(ImportError, match=r"cuga\[acp\]"):
+            await delegate_task_via_acp(
+                endpoint=_ENDPOINT,
+                agent_name=_AGENT,
+                task="task",
+                client_factory=lambda **_: pytest.fail("client must not be created"),
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_manifest_fetch_without_sdk_raises_actionable_import_error() -> None:
+    """Direct manifest callers receive the same optional-dependency guidance."""
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol.HAS_ACP_SDK",
+        False,
+    ):
+        with pytest.raises(ImportError, match=r"cuga\[acp\]"):
+            await fetch_agent_manifest(
+                endpoint=_ENDPOINT,
+                agent_name=_AGENT,
+                client_factory=lambda **_: pytest.fail("client must not be created"),
+            )
 
 
 # ---------------------------------------------------------------------------
