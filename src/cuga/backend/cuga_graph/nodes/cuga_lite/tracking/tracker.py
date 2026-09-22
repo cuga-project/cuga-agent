@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar
 from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.pagination_audit import describe_pagination
 
 _tool_calls_context: contextvars.ContextVar[List[Dict[str, Any]]] = contextvars.ContextVar(
     "tool_calls", default=None
@@ -201,6 +202,7 @@ class ToolCallTracker:
         operation_id: Optional[str] = None,
         duration_ms: Optional[float] = None,
         error: Optional[str] = None,
+        arg_defaults: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Record a tool call.
 
@@ -212,6 +214,8 @@ class ToolCallTracker:
             operation_id: Original OpenAPI operationId (if available)
             duration_ms: Duration of the call in milliseconds
             error: Error message if the call failed
+            arg_defaults: Schema defaults for arguments the caller omitted
+                (only used for the pagination facts, see #750)
         """
         if not ToolCallTracker.is_enabled():
             return
@@ -232,6 +236,12 @@ class ToolCallTracker:
             "timestamp": datetime.now().isoformat(),
             "duration_ms": duration_ms,
             "error": None if timings_only else error,
+            # Pagination facts for the post-block audit (#750): page index/limit,
+            # result length and a scope key — never the payload, so it is kept
+            # in timings-only mode too (with non-page argument values redacted).
+            "pagination": describe_pagination(
+                arguments, result, arg_defaults=arg_defaults, redact_values=timings_only
+            ),
         }
 
         calls.append(record)
