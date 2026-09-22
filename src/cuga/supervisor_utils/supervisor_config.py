@@ -2,8 +2,11 @@
 Supervisor Configuration Loader - Loads supervisor configuration from YAML files
 """
 
+import re
+
 import yaml
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from urllib.parse import urlparse
 from loguru import logger
 from pydantic import BaseModel
 
@@ -46,8 +49,29 @@ async def build_agents_from_list(
     for agent_config in agents_list:
         agent_name = agent_config["name"]
 
+        # Guard against simultaneously enabling more than one protocol block
+        _enabled_protocols = [
+            p for p in ("acp_protocol", "a2a_protocol") if agent_config.get(p, {}).get("enabled")
+        ]
+        if len(_enabled_protocols) > 1:
+            raise ValueError(
+                f"Agent '{agent_name}': exactly one enabled protocol block is allowed"
+                f" (found: {_enabled_protocols})"
+            )
+
+        # Check if this is an external agent (has acp_protocol)
+        if "acp_protocol" in agent_config and agent_config.get("acp_protocol", {}).get("enabled"):
+            acp_cfg = agent_config["acp_protocol"]
+            _validate_acp_protocol(agent_name, acp_cfg)
+            # External agent via ACP - store config for later connection
+            agents[agent_name] = {
+                "type": "external",
+                "config": agent_config,
+            }
+            logger.info(f"Registered external ACP agent: {agent_name}")
+
         # Check if this is an external agent (has a2a_protocol)
-        if "a2a_protocol" in agent_config and agent_config.get("a2a_protocol", {}).get("enabled"):
+        elif "a2a_protocol" in agent_config and agent_config.get("a2a_protocol", {}).get("enabled"):
             # External agent via A2A - store config for later connection
             agents[agent_name] = {
                 "type": "external",
@@ -392,3 +416,89 @@ def _get_model_from_config(model_config: Optional[Dict[str, Any]]):
     except Exception as e:
         logger.error(f"Failed to create model from config: {e}")
         return None
+
+
+_ACP_TIMEOUT_MAX = 600
+
+
+def _is_ip_address(hostname: str) -> bool:
+    """Return whether *hostname* is a valid IPv4 or IPv6 address."""
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return True
+
+
+def _validate_acp_protocol(agent_name: str, acp_cfg: Dict[str, Any]) -> None:
+    """Validate an ``acp_protocol`` block, raising ``ValueError`` on any violation.
+
+    Rules
+    -----
+    1. ``endpoint`` and ``agent_name`` are required.
+    2. Only ``http`` or ``https`` endpoint schemes are accepted.
+    3. ``timeout`` must be > 0; values above 600 are capped.
+    4. ``verify_tls`` defaults to ``True``; the caller may read the normalised
+       value back from *acp_cfg* after this function returns.
+    5. Bearer-token resolution is intentionally deferred to invocation time so
+       that token rotation does not require a supervisor restart.  This function
+       deliberately does *not* resolve or log token values.
+    """
+    endpoint = acp_cfg.get("endpoint")
+    if not endpoint:
+        raise ValueError(f"Agent '{agent_name}': acp_protocol.endpoint is required")
+    if not isinstance(endpoint, str) or any(
+        char.isspace() or ord(char) < 32 or 127 <= ord(char) <= 159 for char in endpoint
+    ):
+        raise ValueError(f"Agent '{agent_name}': acp_protocol.endpoint must be a valid HTTP(S) URL")
+
+    remote_agent_name = acp_cfg.get("agent_name")
+    if not remote_agent_name:
+        raise ValueError(f"Agent '{agent_name}': acp_protocol.agent_name is required")
+    if not isinstance(remote_agent_name, str) or not re.fullmatch(
+        r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", remote_agent_name
+    ):
+        raise ValueError(f"Agent '{agent_name}': acp_protocol.agent_name must be a valid RFC 1123 DNS label")
+
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"Agent '{agent_name}': acp_protocol.endpoint scheme must be 'http' or 'https'"
+            f" (got {parsed.scheme!r})"
+        )
+    try:
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"Agent '{agent_name}': acp_protocol.endpoint must include a valid port") from exc
+    dns_labels = hostname.split(".") if hostname else []
+    looks_like_nonstandard_ipv4 = bool(dns_labels) and all(
+        re.fullmatch(r"(?:0[xX][0-9a-fA-F]+|[0-9]+)", label) for label in dns_labels
+    )
+    valid_dns_hostname = (
+        bool(dns_labels)
+        and not looks_like_nonstandard_ipv4
+        and all(
+            len(label) <= 63 and re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?", label)
+            for label in dns_labels
+        )
+    )
+    if not hostname or (not _is_ip_address(hostname) and not valid_dns_hostname):
+        raise ValueError(f"Agent '{agent_name}': acp_protocol.endpoint must include a valid hostname")
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError(f"Agent '{agent_name}': acp_protocol.endpoint must include a valid port")
+
+    timeout = acp_cfg.get("timeout", 30)
+    if not isinstance(timeout, (int, float)) or timeout <= 0:
+        raise ValueError(f"Agent '{agent_name}': acp_protocol.timeout must be > 0 (got {timeout!r})")
+    if timeout > _ACP_TIMEOUT_MAX:
+        logger.warning(
+            f"Agent '{agent_name}': acp_protocol.timeout {timeout} exceeds maximum"
+            f" {_ACP_TIMEOUT_MAX}s — capping"
+        )
+        acp_cfg["timeout"] = _ACP_TIMEOUT_MAX
+
+    # Default verify_tls=True
+    acp_cfg.setdefault("verify_tls", True)

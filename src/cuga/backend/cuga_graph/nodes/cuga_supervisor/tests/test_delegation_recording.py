@@ -340,3 +340,99 @@ async def test_legacy_a2a_does_not_send_variables_when_setting_off():
     protocol = await _run_legacy_a2a(_EXPLICIT, pass_variables=False)
     protocol.delegate_task.assert_awaited_once()
     assert protocol.delegate_task.await_args.kwargs["variables"] == {}
+
+
+# ---------------------------------------------------------------------------
+# ACP delegation tests (Task 3.5)
+# ---------------------------------------------------------------------------
+
+_ACP_CONFIG = {
+    "type": "external",
+    "config": {
+        "acp_protocol": {
+            "enabled": True,
+            "endpoint": "https://acp.example.com",
+            "agent_name": "remote-agent",
+            "auth": {"type": "bearer", "token": "tok"},
+            "timeout": 45,
+            "verify_tls": False,
+        }
+    },
+}
+_ACP_MODULE = "cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol"
+_DELEGATE_ACP_SYMBOL = "cuga.backend.cuga_graph.nodes.cuga_supervisor.delegation.delegate_task_via_acp"
+
+
+async def _run_acp(source, *, acp_result=None, side_effect=None):
+    """Helper: run a delegation against the ACP config and return (acp_mock, state)."""
+    state = _empty_delegation_state()
+    acp_mock = AsyncMock(
+        return_value=acp_result if acp_result is not None else {"result": "acp answer"},
+        side_effect=side_effect,
+    )
+    ctx = SupervisorExecutionContext(state=state)
+
+    with patch(
+        f"{_ACP_MODULE}.delegate_task_via_acp",
+        acp_mock,
+    ):
+        delegate = create_agent_delegation_func(_make_adapter(), "worker", _ACP_CONFIG)
+        namespace = {
+            SUPERVISOR_EXEC_KEY: ctx,
+            "delegate": delegate,
+        }
+        exec(source, namespace, namespace)
+        await namespace["_run"]()
+
+    return acp_mock, state
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_acp_helper_receives_expected_values():
+    """delegate_task_via_acp is called with the values from acp_protocol config."""
+    acp_mock, _ = await _run_acp(_OMITTED)
+    acp_mock.assert_awaited_once()
+    kwargs = acp_mock.await_args.kwargs
+    assert kwargs["endpoint"] == "https://acp.example.com"
+    assert kwargs["agent_name"] == "remote-agent"
+    assert kwargs["task"] == "get account value"
+    assert kwargs["auth"] == {"type": "bearer", "token": "tok"}
+    assert kwargs["timeout"] == 45.0
+    assert kwargs["verify_tls"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_acp_result_is_recorded():
+    """A successful ACP result is recorded via _record_delegation."""
+    _, state = await _run_acp(_OMITTED, acp_result={"result": "summary text"})
+    assert state.agent_results["worker"] == "summary text"
+    assert state.selected_agents == ["worker"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_acp_failure_is_recorded():
+    """An exception from delegate_task_via_acp is recorded as an error answer."""
+    _, state = await _run_acp(_OMITTED, side_effect=RuntimeError("connection refused"))
+    assert "worker" in state.selected_agents
+    recorded = state.agent_results.get("worker", "")
+    assert "ACP delegation failed" in recorded
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_acp_failure_uses_loguru_formatting_and_exception_context():
+    """ACP failures retain agent context and attach the active traceback at debug level."""
+    logger_path = "cuga.backend.cuga_graph.nodes.cuga_supervisor.delegation.logger"
+    with patch(logger_path) as mock_logger:
+        await _run_acp(_OMITTED, side_effect=RuntimeError("connection refused"))
+
+    mock_logger.warning.assert_called_once_with(
+        "ACP delegation to {} failed: {}",
+        "worker",
+        "RuntimeError",
+    )
+    mock_logger.opt.assert_called_once_with(exception=True)
+    mock_logger.opt.return_value.debug.assert_called_once_with("ACP delegation exception detail")

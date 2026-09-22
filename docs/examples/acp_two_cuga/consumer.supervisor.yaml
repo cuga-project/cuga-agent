@@ -1,0 +1,25 @@
+# Consumer CUGA — has no local tools, delegates everything to the
+# provider over ACP (i-am-bee ACP 1.0.3).
+#
+# The supervisor here knows about exactly one agent: `provider`, declared
+# as type `external` with an ACP endpoint pointing at the second CUGA
+# process (default http://localhost:8002/acp). On startup, the supervisor
+# fetches the provider's AgentManifest from /acp/agents; at delegation
+# time it calls delegate_task_via_acp() using an async run/poll cycle.
+supervisor:
+  description: "Consumer CUGA — owns no tools; delegates to a remote provider over ACP."
+  special_instructions: |
+    You have NO local tools. For every user request, delegate to the
+    `provider` agent. The provider is a remote CUGA exposing its
+    capabilities over ACP. Use `delegate_to_provider("...")` and return
+    the provider's answer to the user without further reasoning.
+
+agents:
+  - name: provider
+    description: "Remote CUGA on http://localhost:8002 reachable over ACP."
+    acp_protocol:
+      enabled: true
+      endpoint: "http://localhost:8002/acp"
+      agent_name: "cuga"
+      timeout: 30
+      verify_tls: true

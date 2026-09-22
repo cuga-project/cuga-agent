@@ -146,6 +146,39 @@ def create_agent_delegation_func(
             return answer
 
         if isinstance(agent_or_config, dict) and agent_or_config.get("type") == "external":
+            acp_config = agent_or_config.get("config", {}).get("acp_protocol", {})
+            if acp_config.get("enabled", False) and acp_config.get("endpoint"):
+                from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
+                    delegate_task_via_acp,
+                )
+
+                acp_endpoint = acp_config["endpoint"]
+                acp_agent_name = acp_config.get("agent_name") or agent_name
+                if not acp_agent_name:
+                    error_answer = f"Error: acp_protocol.agent_name is required for {agent_name}"
+                    _record_delegation(adapter, agent_name, answer=error_answer)
+                    return error_answer
+                try:
+                    result = await delegate_task_via_acp(
+                        endpoint=acp_endpoint,
+                        agent_name=acp_agent_name,
+                        task=task,
+                        auth=acp_config.get("auth"),
+                        timeout=float(acp_config.get("timeout", 30)),
+                        verify_tls=bool(acp_config.get("verify_tls", True)),
+                    )
+                    answer = result.get("result", "")
+                except Exception as exc:
+                    logger.warning(
+                        "ACP delegation to {} failed: {}",
+                        agent_name,
+                        type(exc).__name__,
+                    )
+                    logger.opt(exception=True).debug("ACP delegation exception detail")
+                    answer = f"Error: ACP delegation failed for {agent_name}."
+                _record_delegation(adapter, agent_name, answer=answer)
+                return answer
+
             a2a_config = agent_or_config.get("config", {}).get("a2a_protocol", {})
             endpoint = a2a_config.get("endpoint")
             transport = a2a_config.get("transport", "http")

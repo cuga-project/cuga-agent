@@ -302,3 +302,16 @@ auth_required = false                                        # When true, the Ag
 skill_ids = ["delegate_task"]                                # Skill IDs surfaced in the AgentCard.
 supervisor_config_path = ""                                  # YAML config for the CugaSupervisor that handles A2A inbound. When empty, a placeholder runner is used.
 auto_approve = false                                         # Simple-runner only: when true, human-in-the-loop interrupts are auto-confirmed and the graph resumes; when false, the interrupt is surfaced to the caller as an input_required event.
+
+[acp]
+enabled = false
+path_prefix = "/acp"
+agent_name = "cuga"
+agent_description = "CUGA agent exposed over ACP."
+supervisor_config_path = ""
+auto_approve = false
+store = "memory"
+store_limit = 1000
+store_ttl_seconds = 3600
+auth_required = true
+enable_playground_cors = false
