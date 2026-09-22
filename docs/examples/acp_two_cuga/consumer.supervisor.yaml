@@ -6,10 +6,6 @@
 # process (default http://localhost:8002/acp). On startup, the supervisor
 # fetches the provider's AgentManifest from /acp/agents; at delegation
 # time it calls delegate_task_via_acp() using an async run/poll cycle.
-#
-# Token is read from PROVIDER_ACP_TOKEN at invocation time (never at
-# load time) so credential rotation does not require a restart.
-
 supervisor:
   description: "Consumer CUGA — owns no tools; delegates to a remote provider over ACP."
   special_instructions: |
@@ -27,6 +23,3 @@ agents:
       agent_name: "cuga"
       timeout: 30
       verify_tls: true
-      auth:
-        type: bearer
-        token_env_var: PROVIDER_ACP_TOKEN
