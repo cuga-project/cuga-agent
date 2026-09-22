@@ -329,6 +329,31 @@ def test_memory_store_limit_passed_correctly() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("enabled", [False, True])
+def test_playground_cors_setting_forwarded_to_sdk(enabled: bool) -> None:
+    """The ACP app factory receives the configured playground CORS value."""
+    import acp_sdk.server
+
+    from cuga.backend.server.acp.app import build_acp_app_for_settings
+
+    original_create_app = acp_sdk.server.create_app
+    captured: dict[str, Any] = {}
+
+    def _capturing_create_app(*args: Any, **kwargs: Any) -> FastAPI:
+        captured.update(kwargs)
+        return original_create_app(*args, **kwargs)
+
+    with patch.object(acp_sdk.server, "create_app", _capturing_create_app):
+        build_acp_app_for_settings(
+            _acp_settings(enable_playground_cors=enabled),
+            MagicMock(),
+            event_stream_func=_dummy_event_stream(),
+        )
+
+    assert captured["enable_playground_cors"] is enabled
+
+
+@pytest.mark.unit
 def test_memory_store_ttl_passed_as_timedelta() -> None:
     """The store is created with ttl=timedelta(seconds=store_ttl_seconds)."""
     from datetime import timedelta
