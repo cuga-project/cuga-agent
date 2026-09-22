@@ -859,7 +859,7 @@ agents:
     description: "Remote ACP agent"
     acp_protocol:
       enabled: true
-      endpoint: "https://agent.example.com/acp"   # http or https only
+      endpoint: "https://agent.example.com/acp"   # HTTPS required when using bearer auth
       agent_name: "remote-agent"                  # name to look up in /acp/agents
       timeout: 30                                  # seconds; max 600
       verify_tls: true                             # default true
@@ -871,7 +871,7 @@ agents:
 | Field | Required | Default | Notes |
 |---|---|---|---|
 | `enabled` | yes | — | `true` makes this entry an external ACP agent. |
-| `endpoint` | yes | — | Full base URL of the remote ACP server including `/acp` path. `http` and `https` only. |
+| `endpoint` | yes | — | Full base URL of the remote ACP server including `/acp` path. Bearer-authenticated endpoints must use HTTPS; HTTP is accepted only for loopback hosts such as `localhost` and `127.0.0.1`. |
 | `agent_name` | yes | — | Name advertised by the remote agent. |
 | `timeout` | no | `30` | Request timeout in seconds. Must be > 0 and ≤ 600. |
 | `verify_tls` | no | `true` | TLS certificate verification. Do not disable in production. |
