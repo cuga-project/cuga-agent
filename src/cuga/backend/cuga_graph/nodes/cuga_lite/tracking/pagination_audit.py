@@ -32,6 +32,9 @@ from typing import Any, Dict, List, Optional
 # and only fires when a response happened to have exactly that many items.
 PAGE_INDEX_KEYS = ("page_index", "page_number", "page", "offset")
 PAGE_LIMIT_KEYS = ("page_limit", "page_size", "per_page", "limit", "size")
+# Cursor tokens are opaque and unordered: a cursor listing is followed by call
+# order instead of by index, and there is no notion of a skipped page.
+CURSOR_KEYS = ("cursor", "page_token", "page_cursor", "next_token", "after", "starting_after")
 
 # Dict responses that wrap the list under a conventional key.
 _LIST_WRAPPER_KEYS = ("items", "results", "data", "records", "entries", "values")
@@ -114,7 +117,12 @@ def _args_preview(args: Dict[str, Any], redact_values: bool) -> str:
     for key, value in args.items():
         if key in _SCOPE_IGNORED_KEYS:
             continue
-        if redact_values and key not in PAGE_INDEX_KEYS and key not in PAGE_LIMIT_KEYS:
+        if (
+            redact_values
+            and key not in PAGE_INDEX_KEYS
+            and key not in PAGE_LIMIT_KEYS
+            and key not in CURSOR_KEYS
+        ):
             parts.append(f"{key}=…")
         else:
             parts.append(f"{key}={value!r}")
@@ -147,8 +155,14 @@ def describe_pagination(
     if limit is None or limit <= 0:
         return None
     index_key = _first_int_key(args, PAGE_INDEX_KEYS)
-    index = _as_int(args[index_key]) if index_key else 0
-    page_keys = {limit_key, index_key} if index_key else {limit_key}
+    cursor_key = next((k for k in CURSOR_KEYS if k in args), None)
+    page_keys = {limit_key, index_key, cursor_key} - {None}
+    if index_key:
+        index: Optional[int] = _as_int(args[index_key])
+    elif cursor_key:
+        index_key, index = cursor_key, None  # ordered by call sequence at audit time
+    else:
+        index = 0
     scope_args = {k: v for k, v in args.items() if k not in page_keys and k not in _SCOPE_IGNORED_KEYS}
     # The scope is only a grouping key, so it is stored as a fingerprint: the
     # record is persisted in timings-only mode too, which must not carry
@@ -185,13 +199,17 @@ def audit_pagination(tool_calls: List[Dict[str, Any]]) -> List[str]:
 
     notes: List[str] = []
     for (_app, tool_name, _scope), infos in groups.items():
+        # Cursor listings carry no index: their order is the call order.
+        by_cursor = any(i["index"] is None for i in infos)
+        if by_cursor:
+            infos = [dict(i, index=n) for n, i in enumerate(infos)]
         full = [i for i in infos if i["result_len"] is not None and i["result_len"] == i["limit"]]
         if not full:
             continue
         if any(i.get("terminal") for i in infos):
             continue  # the API said so explicitly (has_more: false / next_page: null)
         last_full = max(full, key=lambda i: i["index"])
-        skipped = _skipped_page(infos, last_full)
+        skipped = None if by_cursor else _skipped_page(infos, last_full)
         if skipped is None:
             if any(i["result_len"] is not None and i["result_len"] < i["limit"] for i in infos):
                 continue  # a short page was seen: the listing was (or is being) exhausted
@@ -199,9 +217,13 @@ def audit_pagination(tool_calls: List[Dict[str, Any]]) -> List[str]:
                 continue  # the model did advance past the full page
         repeats = sum(1 for i in full if i["index"] == last_full["index"])
         step = last_full["limit"] if last_full["index_key"] == "offset" else 1
-        next_page = (
-            f"{last_full['index_key']}={skipped if skipped is not None else last_full['index'] + step}"
-        )
+        if by_cursor:
+            next_page = f"the next {last_full['index_key']}"
+            repeats = sum(1 for i in full if i["args_preview"] == last_full["args_preview"])
+        else:
+            next_page = (
+                f"{last_full['index_key']}={skipped if skipped is not None else last_full['index'] + step}"
+            )
         note = (
             f"`{tool_name}({last_full['args_preview']})` returned exactly {last_full['limit']} items "
             f"(a full page) and {next_page} was never requested."
