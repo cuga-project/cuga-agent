@@ -23,6 +23,7 @@ observation instead.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +35,11 @@ PAGE_LIMIT_KEYS = ("page_limit", "page_size", "per_page", "limit", "size")
 
 # Dict responses that wrap the list under a conventional key.
 _LIST_WRAPPER_KEYS = ("items", "results", "data", "records", "entries", "values")
+
+# Keys whose falsy value marks the last page explicitly (``has_more: false``,
+# ``next_page: null``). Only an explicit terminal claim suppresses the audit; a
+# missing key says nothing.
+_TERMINAL_KEYS = ("has_more", "next_page", "next_cursor", "next_page_token", "next")
 
 # Argument keys excluded from the scope key: they can rotate between calls
 # (token refresh) without making the listing logically different.
@@ -91,6 +97,18 @@ def list_length(result: Any) -> Optional[int]:
     return None
 
 
+def _explicit_terminal(result: Any) -> bool:
+    """True when the response itself says this is the last page."""
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (ValueError, TypeError):
+            return False
+    if not isinstance(result, dict):
+        return False
+    return any(key in result and not result[key] for key in _TERMINAL_KEYS)
+
+
 def _args_preview(args: Dict[str, Any], redact_values: bool) -> str:
     parts = []
     for key, value in args.items():
@@ -132,13 +150,18 @@ def describe_pagination(
     index = _as_int(args[index_key]) if index_key else 0
     page_keys = {limit_key, index_key} if index_key else {limit_key}
     scope_args = {k: v for k, v in args.items() if k not in page_keys and k not in _SCOPE_IGNORED_KEYS}
+    # The scope is only a grouping key, so it is stored as a fingerprint: the
+    # record is persisted in timings-only mode too, which must not carry
+    # argument values.
+    scope = hashlib.sha256(json.dumps(scope_args, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     return {
         "limit_key": limit_key,
         "limit": limit,
         "index_key": index_key or "page_index",
         "index": index,
-        "scope": json.dumps(scope_args, sort_keys=True, default=str),
+        "scope": scope,
         "result_len": list_length(result),
+        "terminal": _explicit_terminal(result),
         "args_preview": _args_preview(args, redact_values),
     }
 
@@ -148,7 +171,9 @@ def audit_pagination(tool_calls: List[Dict[str, Any]]) -> List[str]:
 
     A *listing* is (app, tool, every argument except the page ones). It is
     flagged when some call returned exactly ``limit`` items and, within these
-    records, no call went to a higher page and no call ever saw a short page.
+    records, no call went to a higher page, no call saw a short page and no
+    response declared itself the last page (``has_more: false``). A page that
+    was skipped on the way to a higher one is flagged as well.
     """
     groups: Dict[tuple, List[Dict[str, Any]]] = {}
     for call in tool_calls or []:
@@ -163,15 +188,20 @@ def audit_pagination(tool_calls: List[Dict[str, Any]]) -> List[str]:
         full = [i for i in infos if i["result_len"] is not None and i["result_len"] == i["limit"]]
         if not full:
             continue
-        if any(i["result_len"] is not None and i["result_len"] < i["limit"] for i in infos):
-            continue  # a short page was seen: the listing was (or is being) exhausted
+        if any(i.get("terminal") for i in infos):
+            continue  # the API said so explicitly (has_more: false / next_page: null)
         last_full = max(full, key=lambda i: i["index"])
-        if any(i["index"] > last_full["index"] for i in infos):
-            continue  # the model did advance past the full page
+        skipped = _skipped_page(infos, last_full)
+        if skipped is None:
+            if any(i["result_len"] is not None and i["result_len"] < i["limit"] for i in infos):
+                continue  # a short page was seen: the listing was (or is being) exhausted
+            if any(i["index"] > last_full["index"] for i in infos):
+                continue  # the model did advance past the full page
         repeats = sum(1 for i in full if i["index"] == last_full["index"])
-        next_page = f"{last_full['index_key']}={last_full['index'] + 1}"
-        if last_full["index_key"] == "offset":
-            next_page = f"offset={last_full['index'] + last_full['limit']}"
+        step = last_full["limit"] if last_full["index_key"] == "offset" else 1
+        next_page = (
+            f"{last_full['index_key']}={skipped if skipped is not None else last_full['index'] + step}"
+        )
         note = (
             f"`{tool_name}({last_full['args_preview']})` returned exactly {last_full['limit']} items "
             f"(a full page) and {next_page} was never requested."
@@ -180,6 +210,27 @@ def audit_pagination(tool_calls: List[Dict[str, Any]]) -> List[str]:
             note += f" The same full page was fetched {repeats} times without advancing."
         notes.append(note)
     return notes
+
+
+def _skipped_page(infos: List[Dict[str, Any]], last_full: Dict[str, Any]) -> Optional[int]:
+    """First page index that was jumped over after a full page, if any.
+
+    Page-number keys advance by 1; ``offset`` advances by the page size, so a
+    gap is only judged there when every call used the same limit.
+    """
+    step = 1
+    if last_full["index_key"] == "offset":
+        limits = {i["limit"] for i in infos}
+        if len(limits) != 1:
+            return None
+        step = last_full["limit"]
+    indices = {i["index"] for i in infos}
+    expected = last_full["index"] + step
+    while expected < max(indices):
+        if expected not in indices:
+            return expected
+        expected += step
+    return None
 
 
 def render_pagination_notes(notes: List[str]) -> str:
