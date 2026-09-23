@@ -32,7 +32,12 @@ async def require_service_memory(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Memory is disabled for this service")
 
 
-router = APIRouter(prefix="/api", route_class=MemoryServiceRoute, tags=["memory"], dependencies=[Depends(require_service_memory)])
+router = APIRouter(
+    prefix="/api",
+    route_class=MemoryServiceRoute,
+    tags=["memory"],
+    dependencies=[Depends(require_service_memory)],
+)
 
 _DEFAULT_USER_ID = "default_user"
 _MEMORY_METADATA_FIELDS = {
