@@ -277,6 +277,39 @@ def test_skipped_offset_is_flagged_only_with_a_uniform_limit():
 
 
 @pytest.mark.unit
+def test_cursor_pagination_is_followed_by_call_order():
+    """Cursor tokens are opaque: advancing to the next token is progress, not a new listing."""
+    walk = [
+        _call("list_events", {"cursor": None, "limit": 50}, {"items": _rows(50), "next_cursor": "tok1"}),
+        _call("list_events", {"cursor": "tok1", "limit": 50}, {"items": _rows(50), "next_cursor": "tok2"}),
+        _call("list_events", {"cursor": "tok2", "limit": 50}, {"items": _rows(7), "next_cursor": None}),
+    ]
+    assert audit_pagination(walk) == []
+    # Scope excludes the cursor: all three calls are one listing.
+    assert len({c["pagination"]["scope"] for c in walk}) == 1
+
+
+@pytest.mark.unit
+def test_cursor_listing_left_on_a_full_page_is_flagged():
+    calls = [_call("list_events", {"cursor": None, "limit": 50}, {"items": _rows(50), "next_cursor": "tok1"})]
+    notes = audit_pagination(calls)
+    assert len(notes) == 1 and "the next cursor was never requested" in notes[0]
+    # Advanced once and stopped on another full page: still flagged, once.
+    calls.append(
+        _call("list_events", {"cursor": "tok1", "limit": 50}, {"items": _rows(50), "next_cursor": "tok2"})
+    )
+    assert len(audit_pagination(calls)) == 1
+
+
+@pytest.mark.unit
+def test_cursor_listing_with_explicit_end_is_quiet():
+    calls = [
+        _call("list_events", {"page_token": "", "page_size": 20}, {"items": _rows(20), "next_page_token": ""})
+    ]
+    assert audit_pagination(calls) == []
+
+
+@pytest.mark.unit
 def test_failed_calls_and_unpaged_calls_are_ignored():
     calls = [
         _call("show_inbox", {"page_index": 0, "page_limit": 5}, None, error="timed out"),
