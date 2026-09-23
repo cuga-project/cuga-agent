@@ -108,7 +108,7 @@ def test_routes_use_authenticated_identity_and_require_admin():
     with TestClient(app) as client:
         assert client.get("/api/memory/settings").status_code == 200
         assert client.delete("/api/memory/entities/fact-a").status_code == 403
-        assert client.get("/api/manage/memory/retention/schedules").status_code == 403
+        assert client.get("/api/manage/memory/entities").status_code == 403
         assert client.put("/api/manage/memory/settings", json={"enabled": True}).status_code == 403
         assert (
             client.put("/api/memory/settings", json={"enabled": False, "user_id": "bob"}).status_code == 422
@@ -130,7 +130,8 @@ async def test_storage_failure_disables_automatic_memory():
         assert not await preferences.memory_enabled("alice")
 
 
-def test_disabled_service_browsing_does_not_register_retention_policy():
+@pytest.mark.asyncio
+async def test_disabled_service_browsing_does_not_register_retention_policy():
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[require_manage_access] = lambda: UserInfo(sub="admin")
@@ -144,6 +145,8 @@ def test_disabled_service_browsing_does_not_register_retention_policy():
         patch.object(EvolveIntegration, "put_retention_policy", new=AsyncMock()) as create,
     ):
         assert client.get("/api/memory/entities").status_code == 200
-        assert client.get("/api/manage/memory/retention/policies").json() == {"items": []}
+        from cuga.backend.server.memory_routes import _retention_policies
+
+        assert await _retention_policies() == []
         create.assert_not_awaited()
-        assert client.post("/api/manage/memory/retention/runs", json={"policy_id": "p"}).status_code == 403
+        assert client.post("/api/manage/retention/runs", json={"policy_id": "p"}).status_code == 403
