@@ -8,6 +8,7 @@ execution output.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -100,6 +101,22 @@ def test_describe_scope_ignores_page_keys_and_access_token():
     assert a["scope"] == b["scope"]
     assert a["scope"] != c["scope"]
     assert "access_token" not in a["args_preview"]
+
+
+@pytest.mark.unit
+def test_describe_scope_is_a_fingerprint_not_the_arguments():
+    """The record is persisted in timings-only mode: no argument values in scope."""
+    info = describe_pagination({"query": "from:boss secret", "page_index": 0, "page_limit": 5}, [])
+    assert "secret" not in info["scope"] and len(info["scope"]) == 64
+
+
+@pytest.mark.unit
+def test_describe_records_explicit_terminal_indicator():
+    assert describe_pagination({"page_limit": 5}, {"items": _rows(5), "has_more": False})["terminal"] is True
+    assert describe_pagination({"page_limit": 5}, {"items": _rows(5), "next_page": None})["terminal"] is True
+    assert describe_pagination({"page_limit": 5}, {"items": _rows(5), "has_more": True})["terminal"] is False
+    assert describe_pagination({"page_limit": 5}, {"items": _rows(5)})["terminal"] is False
+    assert describe_pagination({"page_limit": 5}, _rows(5))["terminal"] is False
 
 
 @pytest.mark.unit
@@ -222,6 +239,44 @@ def test_offset_pagination_suggests_next_offset():
 
 
 @pytest.mark.unit
+def test_explicit_last_page_marker_suppresses_the_note():
+    """A full page that says has_more=false is complete — no note, no extra call."""
+    calls = [_call("list_users", {"page": 1, "per_page": 50}, {"items": _rows(50), "has_more": False})]
+    assert audit_pagination(calls) == []
+    calls = [_call("list_users", {"page": 1, "per_page": 50}, {"items": _rows(50), "next_page": None})]
+    assert audit_pagination(calls) == []
+    # has_more=true is not a terminal claim: the note stands.
+    calls = [_call("list_users", {"page": 1, "per_page": 50}, {"items": _rows(50), "has_more": True})]
+    assert len(audit_pagination(calls)) == 1
+
+
+@pytest.mark.unit
+def test_skipped_page_is_flagged_even_though_a_higher_page_was_requested():
+    calls = [
+        _call("show_inbox", {"page_index": 0, "page_limit": 5}, _rows(5)),
+        _call("show_inbox", {"page_index": 2, "page_limit": 5}, _rows(1)),  # page 1 jumped over
+    ]
+    notes = audit_pagination(calls)
+    assert len(notes) == 1 and "page_index=1 was never requested" in notes[0]
+
+
+@pytest.mark.unit
+def test_skipped_offset_is_flagged_only_with_a_uniform_limit():
+    calls = [
+        _call("list_rows", {"offset": 0, "limit": 100}, _rows(100)),
+        _call("list_rows", {"offset": 200, "limit": 100}, _rows(3)),
+    ]
+    notes = audit_pagination(calls)
+    assert len(notes) == 1 and "offset=100 was never requested" in notes[0]
+    # Mixed limits make offsets incomparable: fall back to the plain rules (short page seen → quiet).
+    calls = [
+        _call("list_rows", {"offset": 0, "limit": 100}, _rows(100)),
+        _call("list_rows", {"offset": 200, "limit": 50}, _rows(3)),
+    ]
+    assert audit_pagination(calls) == []
+
+
+@pytest.mark.unit
 def test_failed_calls_and_unpaged_calls_are_ignored():
     calls = [
         _call("show_inbox", {"page_index": 0, "page_limit": 5}, None, error="timed out"),
@@ -262,7 +317,7 @@ def test_tracker_records_pagination_facts_in_timings_only_mode():
     assert record["arguments"] is None and record["result"] is None
     info = record["pagination"]
     assert info["limit"] == 5 and info["result_len"] == 5
-    assert "secret" not in info["args_preview"]
+    assert "secret" not in json.dumps(info)  # neither in the preview nor in the scope
     assert audit_pagination([record])
 
 
