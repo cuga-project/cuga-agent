@@ -161,10 +161,10 @@ Your output MUST be one of these two types. **Do not mix them.**
 2.  **CHECK VARIABLES FIRST:** Before calling a tool, check if variables from a previous code execution already contain the data you need.
 3.  **HANDLE PAGINATION COMPLETELY - CRITICAL:** When working with APIs that return paginated data (e.g., lists of accounts, contacts, transactions, providers, claims), you MUST iterate through ALL pages to get complete data. **NEVER assume the first page contains all the data.** This is a common mistake that leads to incomplete results.
    - **ALWAYS check for pagination parameters** in tool documentation: `page`, `page_index`, `offset`, `limit`, `size`, `cursor`, `next_page`, `has_more`
-   - **ALWAYS check the response** for pagination indicators: empty arrays, `has_more: false`, `next_page: null`, fewer items than `limit/size`
-   - **ALWAYS loop through pages** until you get an empty result or no more pages indicator
-   - **Example pattern:** Start with page 0, increment until response is empty or has_more is false
-   - **Common mistake:** Only fetching page 0 and missing data on later pages
+   - **A full page is NEVER proof of completeness:** a response with exactly `page_limit` (or `limit`/`size`) items means more pages probably exist — you MUST request the next page. Only a page with **fewer** items than `page_limit`, an empty page, `has_more: false` or `next_page: null` marks the last page.
+   - **ALWAYS loop through pages** until you reach such a last page. Use the documented maximum `page_limit` and never exceed it (the API rejects larger values).
+   - **Example pattern:** Start with page 0, increment until a page has fewer than `page_limit` items or is empty
+   - **Common mistake:** Fetching only page 0 — or reading a full page 0 as "everything fits in one page"
    - **Logging:** Do **not** `print()` inside the pagination loop (per-page spam). Summarize after the loop (pages fetched, total items, whether a match was found). See **Intermediate Prints** under Code Execution Requirements.
 
 ### Code Execution Requirements
@@ -405,7 +405,7 @@ The following async functions are available in your Python execution environment
 {% endif %}
 * Use real data from tools or existing variables.
 * **Intermediate prints:** Use concise prints between major steps for traceability; **never** print inside loops; **truncate** large lists in any print.
-* **CRITICAL - PAGINATION:** When fetching lists/arrays from APIs, **ALWAYS check for pagination parameters** (page, page_index, size, limit) and **ALWAYS loop through ALL pages** until you get empty results. Never assume the first page has all data. This is one of the most common mistakes - missing data because you only fetched page 0.
+* **CRITICAL - PAGINATION:** When fetching lists/arrays from APIs, **ALWAYS check for pagination parameters** (page, page_index, size, limit) and **ALWAYS loop through ALL pages** until a page returns fewer items than the limit (or is empty). A page with exactly `limit` items is NEVER the last page — request the next one. Never assume the first page has all data; use the documented maximum limit and never exceed it.
 {% if skills_enabled %}* **SKILLS FIRST:** Before todos, `find_tools`, or app tools, check `<available_skills>`. If a skill clearly matches, load exactly one best skill in an isolated block, then follow its loaded instructions. If the loaded `SKILL.md` references relative companion markdown files, read the relevant companion file(s) for the situation before implementing. Skill QA/verification sections are mandatory before final response unless technically impossible.{% endif %}
 {% if enable_find_tools %}* **YOU MUST USE find_tools if you have no tools in the current available tools list** and execute it as an **Isolated Tool** in its own code block.{% endif %}
 {% if enable_todos %}* **TODOS:** On **complex** tasks, **always** open with a `create_update_todos` block before any other tools (including `find_tools`), except when the task clearly matches a skill; in that case, load the skill first, then create todos from the loaded skill instructions. See **Isolated Tools Execution** for how to call it. You may update several items in one call. After each run, align your next steps with **Current Plan** at the bottom of the system prompt.{% endif %}

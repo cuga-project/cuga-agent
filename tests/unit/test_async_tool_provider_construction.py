@@ -28,6 +28,7 @@ def _tool_def() -> dict[str, Any]:
     }
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_registry_tool_async_invoke_returns_data_not_coroutine(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_call_api(
@@ -36,6 +37,7 @@ async def test_registry_tool_async_invoke_returns_data_not_coroutine(monkeypatch
         args: dict[str, Any],
         operation_id: str | None = None,
         agent_id: str | None = None,
+        arg_defaults: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "app_name": app_name,
@@ -66,6 +68,7 @@ async def test_registry_tool_async_invoke_returns_data_not_coroutine(monkeypatch
     }
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_combined_tracker_tool_async_invoke_returns_data_not_coroutine(
     monkeypatch: pytest.MonkeyPatch,
@@ -95,6 +98,7 @@ async def test_combined_tracker_tool_async_invoke_returns_data_not_coroutine(
     }
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_toolguard_wrapper_unwraps_nested_awaitable_results() -> None:
     async def crm_get_account(account_id: str) -> Any:

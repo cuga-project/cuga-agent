@@ -34,6 +34,7 @@ async def call_api(
     args: Dict[str, Any] = None,
     operation_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    arg_defaults: Optional[Dict[str, Any]] = None,
 ):
     """Call an API tool via the registry server.
 
@@ -43,6 +44,7 @@ async def call_api(
         args: Arguments to pass to the API
         operation_id: Optional original OpenAPI operationId for tracking
         agent_id: Optional agent ID for multi-agent support
+        arg_defaults: Schema defaults for omitted args (tracking only, not sent)
 
     Returns:
         The API response
@@ -104,6 +106,7 @@ async def call_api(
             operation_id=operation_id,
             duration_ms=duration_ms,
             error=error_msg,
+            arg_defaults=arg_defaults,
         )
 
 
@@ -230,7 +233,8 @@ def create_tool_from_api_dict(
                 return {"error": error_msg}
 
             try:
-                all_kwargs = InputModel.model_validate(all_kwargs).model_dump(exclude_unset=True)
+                validated = InputModel.model_validate(all_kwargs)
+                all_kwargs = validated.model_dump(exclude_unset=True)
             except ValidationError as e:
                 error_msg = _validation_error_message(e)
                 ToolCallTracker.record_call(
@@ -245,9 +249,22 @@ def create_tool_from_api_dict(
                 logger.error(error_msg)
                 return {"error": error_msg}
 
+            # Schema defaults the model left implicit (e.g. page_limit=5) are not
+            # sent on the wire, but the pagination audit (#750) needs them to
+            # tell a full default-sized page from a short one.
+            arg_defaults = {
+                key: value
+                for key, value in validated.model_dump().items()
+                if key not in all_kwargs and value is not None
+            }
             # Call API with timeout (timeout is handled inside call_api)
             result = await call_api(
-                app_name, tool_name, all_kwargs, operation_id=_operation_id, agent_id=_agent_id
+                app_name,
+                tool_name,
+                all_kwargs,
+                operation_id=_operation_id,
+                agent_id=_agent_id,
+                arg_defaults=arg_defaults,
             )
             return result
         except TimeoutError:
