@@ -261,6 +261,33 @@ def test_skipped_page_is_flagged_even_though_a_higher_page_was_requested():
 
 
 @pytest.mark.unit
+def test_skipped_page_is_flagged_even_when_a_later_page_ends_the_listing():
+    """0 full, 1 skipped, 2 full, 3 short: the short page proves nothing about page 1."""
+    calls = [
+        _call("show_inbox", {"page_index": 0, "page_limit": 20}, _rows(20)),
+        _call("show_inbox", {"page_index": 2, "page_limit": 20}, _rows(20)),
+        _call("show_inbox", {"page_index": 3, "page_limit": 20}, _rows(5)),
+    ]
+    notes = audit_pagination(calls)
+    assert len(notes) == 1 and "page_index=1 was never requested" in notes[0]
+    # Same with an explicit terminal claim on the last page.
+    calls[-1] = _call(
+        "show_inbox", {"page_index": 3, "page_limit": 20}, {"items": _rows(5), "has_more": False}
+    )
+    notes = audit_pagination(calls)
+    assert len(notes) == 1 and "page_index=1 was never requested" in notes[0]
+
+
+@pytest.mark.unit
+def test_listing_resumed_at_a_later_page_is_not_missing_earlier_pages():
+    calls = [
+        _call("show_inbox", {"page_index": 2, "page_limit": 20}, _rows(20)),
+        _call("show_inbox", {"page_index": 3, "page_limit": 20}, _rows(5)),
+    ]
+    assert audit_pagination(calls) == []
+
+
+@pytest.mark.unit
 def test_skipped_offset_is_flagged_only_with_a_uniform_limit():
     calls = [
         _call("list_rows", {"offset": 0, "limit": 100}, _rows(100)),
@@ -299,6 +326,22 @@ def test_cursor_listing_left_on_a_full_page_is_flagged():
         _call("list_events", {"cursor": "tok1", "limit": 50}, {"items": _rows(50), "next_cursor": "tok2"})
     )
     assert len(audit_pagination(calls)) == 1
+
+
+@pytest.mark.unit
+def test_cursor_listing_is_recognised_from_the_response_when_the_first_call_has_no_cursor():
+    first = _call("list_events", {"limit": 50}, {"items": _rows(50), "next_cursor": "tok1"})
+    notes = audit_pagination([first])
+    assert len(notes) == 1
+    assert "the next cursor (from `next_cursor`) was never requested" in notes[0]
+    assert "page_index" not in notes[0]
+    # Following the token completes the same listing.
+    walk = [
+        first,
+        _call("list_events", {"cursor": "tok1", "limit": 50}, {"items": _rows(3), "next_cursor": None}),
+    ]
+    assert audit_pagination(walk) == []
+    assert len({c["pagination"]["scope"] for c in walk}) == 1
 
 
 @pytest.mark.unit
