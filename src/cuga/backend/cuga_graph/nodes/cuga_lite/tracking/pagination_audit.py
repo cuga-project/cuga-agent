@@ -112,6 +112,23 @@ def _explicit_terminal(result: Any) -> bool:
     return any(key in result and not result[key] for key in _TERMINAL_KEYS)
 
 
+# Response fields whose truthy value is the token for the next page. Used to
+# recognise a cursor listing when the first request carried no cursor argument.
+_RESPONSE_CURSOR_KEYS = ("next_cursor", "next_page_token", "next_token", "cursor")
+
+
+def _response_cursor_key(result: Any) -> Optional[str]:
+    """Name of the response field that carries a next-page token, if any."""
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(result, dict):
+        return None
+    return next((k for k in _RESPONSE_CURSOR_KEYS if isinstance(result.get(k), str) and result[k]), None)
+
+
 def _args_preview(args: Dict[str, Any], redact_values: bool) -> str:
     parts = []
     for key, value in args.items():
@@ -157,10 +174,16 @@ def describe_pagination(
     index_key = _first_int_key(args, PAGE_INDEX_KEYS)
     cursor_key = next((k for k in CURSOR_KEYS if k in args), None)
     page_keys = {limit_key, index_key, cursor_key} - {None}
+    cursor_from = None
     if index_key:
         index: Optional[int] = _as_int(args[index_key])
     elif cursor_key:
         index_key, index = cursor_key, None  # ordered by call sequence at audit time
+    elif _response_cursor_key(result):
+        # First request of a cursor listing carries no cursor argument; the
+        # response's token is the only sign this is a cursor API.
+        cursor_from = _response_cursor_key(result)
+        index_key, index = "cursor", None
     else:
         index = 0
     scope_args = {k: v for k, v in args.items() if k not in page_keys and k not in _SCOPE_IGNORED_KEYS}
@@ -173,6 +196,7 @@ def describe_pagination(
         "limit": limit,
         "index_key": index_key or "page_index",
         "index": index,
+        "cursor_from": cursor_from,
         "scope": scope,
         "result_len": list_length(result),
         "terminal": _explicit_terminal(result),
@@ -206,11 +230,13 @@ def audit_pagination(tool_calls: List[Dict[str, Any]]) -> List[str]:
         full = [i for i in infos if i["result_len"] is not None and i["result_len"] == i["limit"]]
         if not full:
             continue
-        if any(i.get("terminal") for i in infos):
-            continue  # the API said so explicitly (has_more: false / next_page: null)
         last_full = max(full, key=lambda i: i["index"])
-        skipped = None if by_cursor else _skipped_page(infos, last_full)
+        # A skipped page is judged first: a later short or terminal page proves
+        # nothing about rows that were never read.
+        skipped = None if by_cursor else _skipped_page(infos)
         if skipped is None:
+            if any(i.get("terminal") for i in infos):
+                continue  # the API said so explicitly (has_more: false / next_page: null)
             if any(i["result_len"] is not None and i["result_len"] < i["limit"] for i in infos):
                 continue  # a short page was seen: the listing was (or is being) exhausted
             if any(i["index"] > last_full["index"] for i in infos):
@@ -218,7 +244,8 @@ def audit_pagination(tool_calls: List[Dict[str, Any]]) -> List[str]:
         repeats = sum(1 for i in full if i["index"] == last_full["index"])
         step = last_full["limit"] if last_full["index_key"] == "offset" else 1
         if by_cursor:
-            next_page = f"the next {last_full['index_key']}"
+            source = next((i["cursor_from"] for i in infos if i.get("cursor_from")), None)
+            next_page = f"the next {last_full['index_key']}" + (f" (from `{source}`)" if source else "")
             repeats = sum(1 for i in full if i["args_preview"] == last_full["args_preview"])
         else:
             next_page = (
@@ -234,20 +261,22 @@ def audit_pagination(tool_calls: List[Dict[str, Any]]) -> List[str]:
     return notes
 
 
-def _skipped_page(infos: List[Dict[str, Any]], last_full: Dict[str, Any]) -> Optional[int]:
-    """First page index that was jumped over after a full page, if any.
+def _skipped_page(infos: List[Dict[str, Any]]) -> Optional[int]:
+    """First page index jumped over between the lowest and highest page read.
 
-    Page-number keys advance by 1; ``offset`` advances by the page size, so a
-    gap is only judged there when every call used the same limit.
+    Starts at the lowest index the block read (a listing resumed at page 2 is
+    not missing pages 0-1). Page-number keys advance by 1; ``offset`` advances
+    by the page size, so a gap is only judged there when every call used the
+    same limit.
     """
     step = 1
-    if last_full["index_key"] == "offset":
+    if infos[0]["index_key"] == "offset":
         limits = {i["limit"] for i in infos}
         if len(limits) != 1:
             return None
-        step = last_full["limit"]
+        step = infos[0]["limit"]
     indices = {i["index"] for i in infos}
-    expected = last_full["index"] + step
+    expected = min(indices) + step
     while expected < max(indices):
         if expected not in indices:
             return expected
