@@ -348,7 +348,7 @@ export async function loadRetentionCapabilities(): Promise<RetentionCapabilities
 
 export async function loadRetentionPolicies(): Promise<RetentionPolicy[]> {
   const response = await requestJson<{ items: RetentionPolicyResponse[] }>(
-    "/api/manage/memory/retention/policies",
+    "/api/manage/retention/policies",
   );
   return (response.items ?? []).map((policy) => ({
     policyId: policy.policy_id,
@@ -363,7 +363,7 @@ export async function loadRetentionPolicies(): Promise<RetentionPolicy[]> {
 
 export async function loadRetentionRuns(): Promise<RetentionRun[]> {
   const response = await requestJson<{ items: RetentionRunResponse[] }>(
-    "/api/manage/memory/retention/runs?limit=100",
+    "/api/manage/retention/runs?limit=100",
   );
   return (response.items ?? []).map((run) => ({
     ...mapReport(run.report),
@@ -377,10 +377,10 @@ export async function loadRetentionRuns(): Promise<RetentionRun[]> {
 
 export async function runRetention(policyId: string): Promise<RetentionReport> {
   const response = await requestJson<RetentionReportResponse>(
-    "/api/manage/memory/retention/runs",
+    "/api/manage/retention/runs",
     {
       method: "POST",
-      body: JSON.stringify({ policy_id: policyId }),
+      body: JSON.stringify({ policy_id: policyId, dry_run: false }),
     },
   );
   return mapReport(response);
@@ -415,8 +415,8 @@ export type RetentionAuditEvent = {
 
 export async function loadRetentionCollection() {
   const [candidates, audit] = await Promise.all([
-    requestJson<{items: RetentionCandidate[]}>("/api/manage/memory/retention/candidates"),
-    requestJson<{items: RetentionAuditEvent[]}>("/api/manage/memory/retention/audit"),
+    requestJson<{items: RetentionCandidate[]}>("/api/manage/retention/candidates"),
+    requestJson<{items: RetentionAuditEvent[]}>("/api/manage/retention/audit"),
   ]);
   return {candidates: candidates.items, audit: audit.items};
 }
@@ -434,13 +434,13 @@ export type RetentionSchedule = {
   definition: { policy_id: string; spec: ScheduleSpec; dry_run: boolean; agent_id: string | null };
   next_runs?: string[];
 };
-const schedulesPath = "/api/manage/memory/retention/schedules";
+const schedulesPath = "/api/manage/retention/schedules";
 export async function loadSchedules(): Promise<RetentionSchedule[]> {
   const result = await requestJson<{items: RetentionSchedule[]}>(schedulesPath);
   return Promise.all(result.items.map(item => requestJson<RetentionSchedule>(`${schedulesPath}/${encodeURIComponent(item.schedule_id)}`)));
 }
 export function saveSchedule(id: string, policyId: string, spec: ScheduleSpec, revision: number) {
-  return requestJson<RetentionSchedule>(`${schedulesPath}/${encodeURIComponent(id)}`, {method: "PUT", body: JSON.stringify({policy_id: policyId, spec, expected_revision: revision})});
+  return requestJson<RetentionSchedule>(`${schedulesPath}/${encodeURIComponent(id)}`, {method: "PUT", body: JSON.stringify({definition: {policy_id: policyId, spec, dry_run: false, agent_id: null}, expected_revision: revision})});
 }
 export function changeSchedule(item: RetentionSchedule, action: "start" | "stop" | "delete") {
   const path = `${schedulesPath}/${encodeURIComponent(item.schedule_id)}`;
