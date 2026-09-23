@@ -47,6 +47,9 @@ def boundary(monkeypatch, tmp_path):
     monkeypatch.setattr(scheduler, "retention_runtime", runtime)
     monkeypatch.setattr(gateway, "bundled_api_token", lambda: "private-token")
     monkeypatch.setattr(gateway, "get_service_instance_id", lambda: "instance-a")
+    from cuga.backend.evolve import preferences
+
+    monkeypatch.setattr(preferences, "get_preferences", AsyncMock(return_value={"instance_enabled": True}))
     monkeypatch.setattr(gateway.EvolveIntegration, "is_enabled", lambda: True)
     monkeypatch.setattr(gateway, "require_chat_access", AsyncMock(return_value=UserInfo(sub="alice")))
     monkeypatch.setattr(gateway, "require_manage_access", AsyncMock(return_value=UserInfo(sub="admin")))
@@ -132,8 +135,10 @@ def test_one_client_and_scheduler_serve_both_transports(boundary):
 
 @pytest.mark.parametrize("path", ["/api/memory/access", "/api/manage/retention/policies"])
 def test_feature_disabled_never_calls_worker(boundary, monkeypatch, path):
-    monkeypatch.setattr(gateway.EvolveIntegration, "is_enabled", lambda: False)
-    assert boundary.client.post(path, json={}).status_code == 404
+    from cuga.backend.evolve import preferences
+
+    monkeypatch.setattr(preferences, "get_preferences", AsyncMock(return_value={"instance_enabled": False}))
+    assert boundary.client.post(path, json={}).status_code == 403
     assert boundary.sent == []
 
 
@@ -436,4 +441,17 @@ def test_native_default_policy_provisioning_uses_shared_backend(boundary, monkey
 def test_management_without_identity_is_rejected(boundary, monkeypatch):
     monkeypatch.setattr(gateway, "require_manage_access", AsyncMock(return_value=None))
     assert boundary.client.get("/api/manage/retention/policies").status_code == 401
+    assert boundary.sent == []
+
+
+def test_disabled_service_can_read_native_retention(boundary, monkeypatch):
+    from cuga.backend.evolve import preferences
+
+    monkeypatch.setattr(preferences, "get_preferences", AsyncMock(return_value={"instance_enabled": False}))
+    assert boundary.client.get("/api/manage/retention/policies").status_code == 200
+    assert len(boundary.sent) == 1
+
+
+def test_bundled_service_settings_bypass_native_identity_boundary(boundary):
+    assert boundary.client.get("/api/manage/memory/settings").status_code == 200
     assert boundary.sent == []

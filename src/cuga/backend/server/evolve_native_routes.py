@@ -84,8 +84,9 @@ async def authorize_agent(agent_id: str | None) -> None:
 
 
 async def memory_scope(request: Request, path: str) -> dict[str, Any]:
-    if not EvolveIntegration.is_enabled():
-        raise HTTPException(404, "Evolve memory is disabled")
+    from cuga.backend.server.memory_routes import require_service_memory
+
+    await require_service_memory(request)
     manage = path.startswith("/manage/")
     user = await (require_manage_access(request) if manage else require_chat_access(request))
     user_id = normalize_evolve_identifier(user.sub if user else None)
@@ -218,7 +219,7 @@ class MemoryServiceRoute(APIRoute):
 
         async def handler(request: Request):
             path = native_path(request)
-            if bundled_api_token():
+            if bundled_api_token() and not path.endswith("/memory/settings"):
                 if exposed(path, request.method):
                     return await forward(request, path)
                 # Enrichment/capability/preview handlers still use the MCP

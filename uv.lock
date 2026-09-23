@@ -352,6 +352,9 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+hooks = [
+    { name = "cpex", marker = "python_full_version >= '3.12'" },
+]
 pii-regex = [
     { name = "cpex", marker = "python_full_version >= '3.12'" },
     { name = "cpex-pii-filter", marker = "python_full_version >= '3.12'" },
@@ -1399,7 +1402,8 @@ evaluation = [
     { name = "rapidfuzz" },
 ]
 evolve = [
-    { name = "altk-evolve", extra = ["pii-regex"], marker = "python_full_version >= '3.12'" },
+    { name = "altk-evolve", extra = ["hooks", "pii-regex"], marker = "python_full_version >= '3.12'" },
+    { name = "einops", marker = "python_full_version >= '3.12'" },
 ]
 health = [
     { name = "cuga-oak-health", marker = "python_full_version >= '3.12'" },
@@ -1448,7 +1452,7 @@ requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], specifier = ">=0.3.22" },
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "aiosmtpd" },
-    { name = "altk-evolve", extras = ["pii-regex"], marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = ">=1.2,<2" },
+    { name = "altk-evolve", extras = ["hooks", "pii-regex"], marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = ">=1.2,<2" },
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "boto3", specifier = ">=1.34.0" },
@@ -1460,6 +1464,7 @@ requires-dist = [
     { name = "dynaconf", specifier = ">=3.2.13" },
     { name = "e2b-code-interpreter", marker = "extra == 'e2b'", specifier = ">=2.4.1" },
     { name = "easyocr" },
+    { name = "einops", marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = "==0.8.1" },
     { name = "fastapi", extras = ["standard"] },
     { name = "fastembed", specifier = ">=0.4.0" },
     { name = "fastmcp", specifier = ">=3.3.0,<4" },
@@ -2012,6 +2017,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ae/5f/fe06c2a13a5282dcef4c7133bb348d4125a9aa69c5fb49037a004599d73a/editor-1.8.0.tar.gz", hash = "sha256:b07e1bbcb8b33f05c2e6ed3ce77ee9756354ada840a18aad7c0536d967fe4c0b", size = 27455, upload-time = "2026-05-09T13:42:59.796Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/55/b8/6648cadf38b61045262bf2a534e526f04eb833275ad1fc77a2026e9f7e3a/editor-1.8.0-py3-none-any.whl", hash = "sha256:7d47ff88ae6c5f6c43d28c30b6f7fd59a24741175a1771ab06c969d946d7dfd0", size = 4012, upload-time = "2026-05-09T13:43:00.847Z" },
+]
+
+[[package]]
+name = "einops"
+version = "0.8.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e5/81/df4fbe24dff8ba3934af99044188e20a98ed441ad17a274539b74e82e126/einops-0.8.1.tar.gz", hash = "sha256:de5d960a7a761225532e0f1959e5315ebeafc0cd43394732f103ca44b9837e84", size = 54805, upload-time = "2025-02-09T03:17:00.434Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/87/62/9773de14fe6c45c23649e98b83231fffd7b9892b6cf863251dc2afa73643/einops-0.8.1-py3-none-any.whl", hash = "sha256:919387eb55330f5757c6bea9165c5ff5cfe63a642682ea788a6d472576d81737", size = 64359, upload-time = "2025-02-09T03:17:01.998Z" },
 ]
 
 [[package]]
