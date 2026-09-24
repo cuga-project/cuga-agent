@@ -1,4 +1,4 @@
-"""Protocol-neutral stream event type shared by A2A and ACP adapters."""
+"""Stable protocol-neutral stream event contract for transport adapters."""
 
 from __future__ import annotations
 
@@ -8,13 +8,14 @@ from typing import Any, Mapping
 
 @dataclass(slots=True)
 class AgentStreamEvent:
-    """A single event emitted by an agent runner.
+    """A safe display event emitted by an agent runner.
 
-    ``name``  — event category (e.g. ``"final_answer"``, ``"error"``).
-    ``data``  — structured payload or plain text; ``None`` if the event
-                carries no payload.
-    ``final`` — ``True`` on the terminal event; the caller must not
-                await further events after receiving one.
+    ``name`` identifies a neutral category. ``final_answer`` and ``error`` are
+    terminal; ``input_required`` is also terminal for the current turn while
+    preserving the context for a later HITL approval response. Other names are
+    non-terminal progress. ``data`` contains only adapter-safe display text and
+    structured metadata, never transport-specific wire models. Once ``final``
+    is true, consumers must stop awaiting events from that turn.
     """
 
     name: str

@@ -7,7 +7,12 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json as _json
+import subprocess
+import sys
+from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
 import pytest
@@ -135,6 +140,17 @@ async def test_fake_runner_passes_approval() -> None:
     assert events[0].final is True
 
 
+@pytest.mark.unit
+def test_agent_runner_run_signature_is_stable() -> None:
+    """The shared runner interface must not grow transport-specific parameters."""
+    assert list(inspect.signature(AgentRunner.run).parameters) == [
+        "self",
+        "message",
+        "context_id",
+        "approval",
+    ]
+
+
 # ── __init__ re-exports ───────────────────────────────────────────────────────
 
 
@@ -188,6 +204,14 @@ class _AppState:
 def _answer_frame(text: str) -> bytes:
     payload = _json.dumps({"data": text, "variables": {}, "active_policies": []})
     return f"event: Answer\ndata: {payload}\n\n".encode()
+
+
+def _pending(action_id: str = "approval") -> dict[str, Any]:
+    return {
+        "action_id": action_id,
+        "type": "confirmation",
+        "description": "Approve operation?",
+    }
 
 
 @pytest.mark.anyio
@@ -255,6 +279,181 @@ async def test_a2a_wrapper_passes_a2a_user() -> None:
     assert captured_user_ids == ["a2a_user"]
 
 
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_simple_agent_runner_generates_context_and_preserves_event_order() -> None:
+    """An omitted context is generated once and progress precedes the terminal event."""
+    from cuga.backend.server.agent_protocol.simple_runner import SimpleAgentRunner
+
+    captured_thread_ids: list[str] = []
+
+    async def event_stream(**kwargs):
+        captured_thread_ids.append(kwargs["thread_id"])
+        yield b"event: AgentThinking\ndata: working\n\n"
+        yield _answer_frame("done")
+
+    runner = SimpleAgentRunner(_AppState(_Graph([_Snap((), {})])), event_stream)
+    events = [event async for event in runner.run("hello")]
+
+    assert captured_thread_ids == [captured_thread_ids[0]]
+    assert captured_thread_ids[0]
+    assert [(event.name, event.data, event.final) for event in events] == [
+        ("AgentThinking", {"text": "working"}, False),
+        ("final_answer", {"text": "done"}, True),
+    ]
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_simple_agent_runner_converts_normal_exception_to_sanitized_error() -> None:
+    from cuga.backend.server.agent_protocol.simple_runner import SimpleAgentRunner
+
+    async def event_stream(**kwargs):
+        raise RuntimeError("secret detail")
+        yield  # pragma: no cover
+
+    runner = SimpleAgentRunner(_AppState(_Graph([_Snap((), {})])), event_stream)
+    events = [event async for event in runner.run("hello", "ctx")]
+
+    assert [(event.name, event.data, event.final) for event in events] == [
+        ("error", {"text": "Agent error: RuntimeError"}, True)
+    ]
+    assert "secret detail" not in str(events[0].data)
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_simple_agent_runner_propagates_cancellation_and_closes_nested_stream() -> None:
+    from cuga.backend.server.agent_protocol.simple_runner import SimpleAgentRunner
+
+    closed = asyncio.Event()
+
+    async def event_stream(**kwargs):
+        try:
+            yield b"event: AgentThinking\ndata: working\n\n"
+            await asyncio.Future()
+        finally:
+            closed.set()
+
+    runner = SimpleAgentRunner(_AppState(_Graph([_Snap((), {})])), event_stream)
+
+    async def consume() -> None:
+        async for _ in runner.run("hello", "ctx"):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert closed.is_set()
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_simple_agent_runner_closes_nested_stream_when_consumer_stops() -> None:
+    from cuga.backend.server.agent_protocol.simple_runner import SimpleAgentRunner
+
+    closed = asyncio.Event()
+
+    async def event_stream(**kwargs):
+        try:
+            yield b"event: AgentThinking\ndata: first\n\n"
+            yield b"event: AgentThinking\ndata: second\n\n"
+        finally:
+            closed.set()
+
+    runner = SimpleAgentRunner(_AppState(_Graph([_Snap((), {})])), event_stream)
+    stream = runner.run("hello", "ctx")
+    assert (await anext(stream)).data == {"text": "first"}
+    await stream.aclose()
+    assert closed.is_set()
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+@pytest.mark.parametrize(("reply", "confirmed"), [("approve", True), ("deny", False)])
+async def test_simple_agent_runner_resumes_parked_hitl_decision(reply: str, confirmed: bool) -> None:
+    from cuga.backend.server.agent_protocol.simple_runner import SimpleAgentRunner
+
+    resumes = []
+
+    async def event_stream(**kwargs):
+        resumes.append(kwargs["resume"])
+        yield _answer_frame("resumed")
+
+    graph = _Graph([_Snap(("WaitForResponse",), {"hitl_action": _pending()})])
+    runner = SimpleAgentRunner(_AppState(graph), event_stream)
+    events = [event async for event in runner.run(reply, "ctx")]
+
+    assert events[-1].name == "final_answer"
+    assert len(resumes) == 1
+    assert resumes[0].confirmed is confirmed
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_simple_agent_runner_reasks_on_ambiguous_hitl_reply() -> None:
+    from cuga.backend.server.agent_protocol.simple_runner import SimpleAgentRunner
+
+    called = False
+
+    async def event_stream(**kwargs):
+        nonlocal called
+        called = True
+        yield _answer_frame("unexpected")
+
+    graph = _Graph([_Snap(("WaitForResponse",), {"hitl_action": _pending()})])
+    runner = SimpleAgentRunner(_AppState(graph), event_stream)
+    events = [event async for event in runner.run("maybe", "ctx")]
+
+    assert called is False
+    assert [(event.name, event.final) for event in events] == [("input_required", True)]
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_simple_agent_runner_bounds_automatic_hitl_resumes() -> None:
+    from cuga.backend.server.agent_protocol.simple_runner import SimpleAgentRunner
+
+    calls = 0
+    pending = _pending()
+
+    async def event_stream(**kwargs):
+        nonlocal calls
+        calls += 1
+        yield b"event: AgentThinking\ndata: retrying\n\n"
+
+    graph = _Graph(
+        [_Snap((), {})] + [_Snap(("WaitForResponse",), {"hitl_action": pending}) for _ in range(20)]
+    )
+    runner = SimpleAgentRunner(_AppState(graph), event_stream, auto_approve=True)
+    events = [event async for event in runner.run("hello", "ctx")]
+
+    assert calls == 13
+    assert events[-1] == AgentStreamEvent("final_answer", {"text": "Agent completed processing"}, final=True)
+
+
+@pytest.mark.unit
+def test_neutral_package_import_is_acp_free_and_lightweight() -> None:
+    """Importing neutral contracts must not load ACP, graph, or SDK modules."""
+    script = """
+import sys
+import cuga.backend.server.agent_protocol as package
+assert package.AgentRunner
+assert package.AgentStreamEvent
+for prefix in ('acp', 'cuga.sdk', 'cuga.backend.cuga_graph'):
+    assert not any(name == prefix or name.startswith(prefix + '.') for name in sys.modules), prefix
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 @pytest.mark.unit
 def test_package_exports_simple_agent_runner() -> None:
     """SimpleAgentRunner must be importable from the package root."""
@@ -278,3 +477,91 @@ def test_a2a_stream_event_is_agent_stream_event_alias() -> None:
     from cuga.backend.server.agent_protocol import AgentStreamEvent
 
     assert A2AStreamEvent is AgentStreamEvent
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_supervisor_runner_is_lazy_forwards_context_and_uses_configured_cache(monkeypatch) -> None:
+    from cuga.backend.server.agent_protocol.supervisor_runner import SupervisorAgentRunner
+
+    invoke_calls = []
+
+    class FakeSupervisor:
+        async def invoke(self, message, thread_id=None):
+            invoke_calls.append((message, thread_id))
+            return SimpleNamespace(answer="answer", error=None)
+
+    fake = FakeSupervisor()
+    from_yaml_calls = []
+
+    async def from_yaml(path):
+        from_yaml_calls.append(path)
+        return fake
+
+    import cuga.sdk
+
+    monkeypatch.setattr(cuga.sdk.CugaSupervisor, "from_yaml", from_yaml)
+    state = SimpleNamespace()
+    runner = SupervisorAgentRunner(state, "supervisor.yaml", cache_attr="isolated_cache")
+
+    assert not hasattr(state, "isolated_cache")
+    first = [event async for event in runner.run("one", "ctx-1")]
+    second = [event async for event in runner.run("two", "ctx-2")]
+
+    assert from_yaml_calls == ["supervisor.yaml"]
+    assert state.isolated_cache is fake
+    assert invoke_calls == [("one", "ctx-1"), ("two", "ctx-2")]
+    assert [first[-1].data, second[-1].data] == [{"text": "answer"}, {"text": "answer"}]
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_supervisor_runner_propagates_cancellation() -> None:
+    from cuga.backend.server.agent_protocol.supervisor_runner import SupervisorAgentRunner
+
+    class CancelledSupervisor:
+        async def invoke(self, message, thread_id=None):
+            raise asyncio.CancelledError
+
+    state = SimpleNamespace(supervisor=CancelledSupervisor())
+    runner = SupervisorAgentRunner(state, "unused.yaml", cache_attr="supervisor")
+
+    with pytest.raises(asyncio.CancelledError):
+        await anext(runner.run("hello", "ctx"))
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_supervisor_runner_converts_normal_exception_to_sanitized_error() -> None:
+    from cuga.backend.server.agent_protocol.supervisor_runner import SupervisorAgentRunner
+
+    class FailingSupervisor:
+        async def invoke(self, message, thread_id=None):
+            raise RuntimeError("secret detail")
+
+    state = SimpleNamespace(supervisor=FailingSupervisor())
+    runner = SupervisorAgentRunner(state, "unused.yaml", protocol_name="test", cache_attr="supervisor")
+    events = [event async for event in runner.run("hello", "ctx")]
+
+    assert [(event.name, event.data, event.final) for event in events] == [
+        ("error", {"text": "test handler error: RuntimeError"}, True)
+    ]
+    assert "secret detail" not in str(events[0].data)
+
+
+@pytest.mark.anyio
+@pytest.mark.unit
+async def test_a2a_supervisor_wrapper_preserves_cache_name_and_cancellation() -> None:
+    from cuga.backend.server.a2a.runner import SupervisorA2ARunner
+
+    class CancelledSupervisor:
+        async def invoke(self, message, thread_id=None):
+            raise asyncio.CancelledError
+
+    state = SimpleNamespace(a2a_supervisor=CancelledSupervisor())
+    runner = SupervisorA2ARunner(state, "unused.yaml")
+
+    assert runner._delegate._cache_attr == "a2a_supervisor"
+    assert runner._delegate._protocol_name == "A2A"
+    with pytest.raises(asyncio.CancelledError):
+        await anext(runner.run("hello", "ctx"))

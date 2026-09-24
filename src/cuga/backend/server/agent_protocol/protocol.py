@@ -1,4 +1,4 @@
-"""Protocol-neutral runner interface shared by A2A and ACP adapters."""
+"""Protocol-neutral runner interface shared by transport adapters."""
 
 from __future__ import annotations
 
@@ -9,11 +9,7 @@ if TYPE_CHECKING:
 
 
 class AgentRunner(Protocol):
-    """Minimal contract every agent runner must satisfy.
-
-    Both the A2A and ACP adapters accept anything that structurally
-    matches this protocol — no shared base class required.
-    """
+    """Minimal structural contract every protocol adapter can consume."""
 
     def run(
         self,

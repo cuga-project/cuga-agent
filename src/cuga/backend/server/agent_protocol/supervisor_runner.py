@@ -5,10 +5,9 @@ Wraps a lazily-created ``CugaSupervisor`` and translates its result into
 cached on a configurable ``app_state`` attribute, and serialized under a per-
 instance lock so concurrent first-requests don't build two supervisors.
 
-A2A and ACP adapters each instantiate (or subclass) this runner supplying
-their own ``protocol_name`` label (used in log/error strings) and
-``cache_attr`` (the attribute name on ``app_state`` where the supervisor is
-stored) so the two protocols do not accidentally share a supervisor instance.
+Adapters instantiate this runner with their own ``protocol_name`` label (used
+in log/error strings) and ``cache_attr`` so independent adapters do not
+accidentally share a supervisor instance.
 """
 
 from __future__ import annotations
@@ -47,8 +46,8 @@ class SupervisorAgentRunner:
                 the built supervisor is cached.
             supervisor_config_path: Path to the supervisor YAML configuration
                 file consumed by ``CugaSupervisor.from_yaml``.
-            protocol_name: Short protocol label used in log and error messages
-                (e.g. ``"A2A"``, ``"ACP"``). Defaults to ``"agent_protocol"``.
+            protocol_name: Short adapter label used in log and error messages.
+                Defaults to ``"agent_protocol"``.
             cache_attr: Attribute name on ``app_state_ref`` where the built
                 supervisor is stored after the first request. Defaults to
                 ``"agent_protocol_supervisor"``.

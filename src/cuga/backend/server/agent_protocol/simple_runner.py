@@ -1,13 +1,8 @@
-"""Protocol-neutral simple agent runner.
+"""Protocol-neutral adapter from CUGA's event stream to stable runner events.
 
-Wraps CUGA's ``event_stream`` async generator and translates its SSE frames
-into ``AgentStreamEvent`` instances. Supports human-in-the-loop interrupts
-(auto-approve or surface to caller) and maintains conversation context via
-``context_id``.
-
-A2A and ACP adapters each subclass or instantiate this runner, supplying their
-own ``caller_user_id`` and (for the A2A wrapper) keeping backward-compatible
-constructor signatures.
+The runner preserves conversation context and human-in-the-loop semantics while
+leaving protocol framing to its callers. Concrete adapters supply their caller
+identity and retain any protocol-specific public compatibility surface.
 """
 
 from __future__ import annotations
@@ -69,9 +64,8 @@ _DENY = {
 class SimpleAgentRunner:
     """Run inbound messages directly through CUGA's event stream.
 
-    Protocol-neutral: yields ``AgentStreamEvent`` instances understood by any
-    protocol adapter (A2A, ACP, …). Subclasses or direct instantiations supply
-    the ``caller_user_id`` appropriate for their protocol.
+    Yields ``AgentStreamEvent`` instances understood by protocol adapters.
+    Subclasses or direct instantiations supply their caller identity.
 
     Behaviour is otherwise identical to the original ``SimpleA2ARunner``:
     - Consumes the SSE frames ``event_stream`` produces for the web UI.
@@ -148,7 +142,7 @@ class SimpleAgentRunner:
                 resume = self._build_response(parked, decision, message)
 
             for _ in range(_MAX_AUTO_RESUMES + 1):
-                async for frame in self._event_stream(
+                stream = self._event_stream(
                     query=message if resume is None else None,
                     api_mode=True,  # Skip browser environment for API callers
                     thread_id=thread_id,
@@ -157,18 +151,24 @@ class SimpleAgentRunner:
                     user_id=self._caller_user_id,
                     user_attachments=None,
                     resume=resume,
-                ):
-                    name, text = self._decode(frame)
-                    if name is None:
-                        continue
-                    if name in _ANSWER_NAMES:
-                        yield AgentStreamEvent("final_answer", {"text": text}, final=True)
-                        return
-                    if name in _ERROR_NAMES:
-                        yield AgentStreamEvent("error", {"text": text or "Agent error"}, final=True)
-                        return
-                    # Anything else is in-flight progress.
-                    yield AgentStreamEvent(name, {"text": text}, final=False)
+                )
+                try:
+                    async for frame in stream:
+                        name, text = self._decode(frame)
+                        if name is None:
+                            continue
+                        if name in _ANSWER_NAMES:
+                            yield AgentStreamEvent("final_answer", {"text": text}, final=True)
+                            return
+                        if name in _ERROR_NAMES:
+                            yield AgentStreamEvent("error", {"text": text or "Agent error"}, final=True)
+                            return
+                        # Anything else is in-flight progress.
+                        yield AgentStreamEvent(name, {"text": text}, final=False)
+                finally:
+                    close = getattr(stream, "aclose", None)
+                    if close is not None:
+                        await close()
 
                 # Stream ended without a terminal answer. The graph may be
                 # paused on a human-in-the-loop interrupt awaiting approval.
