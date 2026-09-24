@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -340,3 +341,111 @@ async def test_legacy_a2a_does_not_send_variables_when_setting_off():
     protocol = await _run_legacy_a2a(_EXPLICIT, pass_variables=False)
     protocol.delegate_task.assert_awaited_once()
     assert protocol.delegate_task.await_args.kwargs["variables"] == {}
+
+
+_ACP_CONFIG = {
+    "type": "external",
+    "config": {
+        "name": "worker",
+        "description": "ACP worker",
+        "acp_protocol": {"enabled": True, "command": "external-agent", "args": ["--acp"]},
+    },
+}
+_ACP_MODULE = "cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_acp_delegation_records_success_and_ignores_variables():
+    adapter = _make_adapter()
+    state = _empty_delegation_state()
+    delegate_acp = AsyncMock(return_value={"result": "ACP answer", "status": "completed", "variables": {}})
+    handler = AsyncMock()
+
+    with patch(f"{_ACP_MODULE}.delegate_task_via_acp", delegate_acp):
+        delegate = create_agent_delegation_func(
+            adapter,
+            "worker",
+            _ACP_CONFIG,
+            permission_handler=handler,
+        )
+        namespace = {
+            SUPERVISOR_EXEC_KEY: SupervisorExecutionContext(state=state),
+            "delegate": delegate,
+        }
+        exec(
+            "async def _run():\n    return await delegate('do work', variables=['secret'])\n",
+            namespace,
+            namespace,
+        )
+        answer = await namespace["_run"]()
+
+    assert answer == "ACP answer"
+    assert state.agent_results["worker"] == "ACP answer"
+    assert state.selected_agents == ["worker"]
+    delegate_acp.assert_awaited_once()
+    assert delegate_acp.await_args.kwargs["task"] == "do work"
+    assert delegate_acp.await_args.kwargs["permission_handler"] is handler
+    assert not hasattr(delegate_acp.await_args.kwargs["config"], "variables")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_acp_delegation_records_normalized_failure():
+    adapter = _make_adapter()
+    state = _empty_delegation_state()
+    delegate_acp = AsyncMock(
+        return_value={
+            "result": "ACP agent protocol communication failed.",
+            "status": "failed",
+            "variables": {},
+        }
+    )
+
+    with patch(f"{_ACP_MODULE}.delegate_task_via_acp", delegate_acp):
+        delegate = create_agent_delegation_func(adapter, "worker", _ACP_CONFIG)
+        namespace = {
+            SUPERVISOR_EXEC_KEY: SupervisorExecutionContext(state=state),
+            "delegate": delegate,
+        }
+        exec("async def _run():\n    return await delegate('do work')\n", namespace, namespace)
+        answer = await namespace["_run"]()
+    assert answer == "ACP agent protocol communication failed."
+    assert state.agent_results["worker"] == answer
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_acp_delegations_build_independent_configs():
+    seen = []
+
+    async def delegate_acp(**kwargs):
+        seen.append(kwargs["config"])
+        return {"result": "ok", "status": "completed", "variables": {}}
+
+    second = {
+        "type": "external",
+        "config": {
+            "name": "second",
+            "description": "Second",
+            "acp_protocol": {"enabled": True, "command": "second-agent"},
+        },
+    }
+    with patch(f"{_ACP_MODULE}.delegate_task_via_acp", side_effect=delegate_acp):
+        await create_agent_delegation_func(_make_adapter(), "worker", _ACP_CONFIG)("one")
+        await create_agent_delegation_func(_make_adapter(), "second", second)("two")
+
+    assert [config.command for config in seen] == ["external-agent", "second-agent"]
+    assert seen[0] is not seen[1]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_acp_delegation_preserves_caller_cancellation():
+    with patch(
+        f"{_ACP_MODULE}.delegate_task_via_acp",
+        AsyncMock(side_effect=asyncio.CancelledError()),
+    ):
+        delegate = create_agent_delegation_func(_make_adapter(), "worker", _ACP_CONFIG)
+        with pytest.raises(asyncio.CancelledError):
+            await delegate("cancel me")

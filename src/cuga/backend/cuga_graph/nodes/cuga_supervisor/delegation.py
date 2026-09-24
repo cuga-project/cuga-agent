@@ -91,6 +91,7 @@ def create_agent_delegation_func(
     agent_name: str,
     agent_or_config: Any,
     agent_card: Any = None,
+    permission_handler: Any = None,
 ) -> Callable:
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol import (
         A2AProtocol,
@@ -146,7 +147,31 @@ def create_agent_delegation_func(
             return answer
 
         if isinstance(agent_or_config, dict) and agent_or_config.get("type") == "external":
-            a2a_config = agent_or_config.get("config", {}).get("a2a_protocol", {})
+            external_config = agent_or_config.get("config", {})
+            acp_mapping = external_config.get("acp_protocol", {})
+            if acp_mapping.get("enabled"):
+                from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
+                    acp_process_config_from_mapping,
+                )
+                from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
+                    delegate_task_via_acp,
+                )
+
+                acp_config = acp_process_config_from_mapping(
+                    acp_mapping,
+                    name=external_config.get("name", agent_name),
+                    description=external_config.get("description"),
+                )
+                result = await delegate_task_via_acp(
+                    config=acp_config,
+                    task=task,
+                    permission_handler=permission_handler,
+                )
+                answer = result.get("result", "")
+                _record_delegation(adapter, agent_name, answer=answer)
+                return answer
+
+            a2a_config = external_config.get("a2a_protocol", {})
             endpoint = a2a_config.get("endpoint")
             transport = a2a_config.get("transport", "http")
 

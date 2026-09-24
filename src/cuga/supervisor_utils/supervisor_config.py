@@ -57,10 +57,20 @@ async def build_agents_from_list(
             )
 
         if "acp_protocol" in agent_config and agent_config.get("acp_protocol", {}).get("enabled"):
-            raise ValueError(
-                f"Agent '{agent_name}': acp_protocol configuration uses the removed BeeAI REST format; "
-                "Agent Client Protocol subprocess configuration is not available until the migration is complete"
+            from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
+                acp_process_config_from_mapping,
             )
+
+            acp_process_config_from_mapping(
+                agent_config["acp_protocol"],
+                name=agent_name,
+                description=agent_config.get("description"),
+            )
+            agents[agent_name] = {
+                "type": "external",
+                "config": agent_config,
+            }
+            logger.info(f"Registered external ACP agent: {agent_name}")
 
         # Check if this is an external agent (has a2a_protocol)
         elif "a2a_protocol" in agent_config and agent_config.get("a2a_protocol", {}).get("enabled"):

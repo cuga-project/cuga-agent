@@ -469,8 +469,42 @@ class TestBuildAgentsFromStoredSubAgents:
 
 @pytest.mark.unit
 class TestACPProtocolMigration:
-    """Enabled legacy ACP blocks fail clearly until subprocess config lands."""
+    """Corrected subprocess ACP loads while legacy BeeAI fields fail clearly."""
 
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_valid_subprocess_acp_config_loads(self):
+        yaml_content = """
+supervisor:
+  strategy: adaptive
+
+agents:
+  - name: coding-agent
+    description: External ACP coding agent
+    acp_protocol:
+      enabled: true
+      command: external-agent
+      args: [--acp]
+      cwd: .
+      env: [PROVIDER_API_KEY]
+      startup_timeout: 15
+      prompt_timeout: 120
+      shutdown_grace_period: 5
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+
+        try:
+            config = await load_supervisor_config(temp_path)
+            entry = config.agents["coding-agent"]
+            assert entry["type"] == "external"
+            assert entry["config"]["description"] == "External ACP coding agent"
+            assert entry["config"]["acp_protocol"]["command"] == "external-agent"
+        finally:
+            os.unlink(temp_path)
+
+    @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_enabled_legacy_acp_config_requires_migration(self):
         yaml_content = """
@@ -489,11 +523,12 @@ agents:
             temp_path = f.name
 
         try:
-            with pytest.raises(ValueError, match="removed BeeAI REST format"):
+            with pytest.raises(ValueError, match="Obsolete BeeAI ACP configuration"):
                 await load_supervisor_config(temp_path)
         finally:
             os.unlink(temp_path)
 
+    @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_dual_protocol_guard_precedes_acp_migration_error(self):
         yaml_content = """
@@ -519,6 +554,7 @@ agents:
         finally:
             os.unlink(temp_path)
 
+    @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_disabled_acp_block_preserves_a2a_loading(self):
         yaml_content = """
