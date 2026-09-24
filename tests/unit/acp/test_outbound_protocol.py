@@ -72,7 +72,7 @@ def test_process_config_rejects_invalid_values(
 @pytest.mark.unit
 def test_process_config_rejects_non_directory_cwd(tmp_path: Path) -> None:
     missing = tmp_path / "missing"
-    with pytest.raises(ValueError, match="existing directory"):
+    with pytest.raises(ValueError, match=r"cwd must resolve to an existing directory$"):
         _config(tmp_path, cwd=missing)
 
 
@@ -130,13 +130,30 @@ def test_minimized_environment_forwards_only_baseline_and_allowlist(tmp_path: Pa
 
 
 @pytest.mark.unit
-def test_stderr_is_bounded_and_configured_secret_values_are_redacted() -> None:
+@pytest.mark.parametrize(
+    ("payload", "secrets", "byte_limit", "forbidden"),
+    [
+        (b"1234567secret-tail", ["secret-tail"], 10, ("secret-tail", "sec")),
+        (b"very-long-secret", ["very-long-secret"], 5, ("very-long-secret", "very-")),
+        (b"ababa", ["aba"], 32, ("aba",)),
+        (b"secret-xxsecret", ["secret"], 15, ("secret", "secre")),
+        (b"1234567secre\xe2", ["secret"], 13, ("secret", "secre")),
+        (b"REDACTED", ["REDACTED"], 32, ("REDACTED",)),
+        ("start 密碼秘密 end".encode(), ["密碼秘密"], 10, ("密碼秘密", "密")),
+    ],
+)
+def test_stderr_redaction_is_boundary_safe_and_byte_bounded(
+    payload: bytes,
+    secrets: list[str],
+    byte_limit: int,
+    forbidden: tuple[str, ...],
+) -> None:
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.process import sanitize_stderr
 
-    value = "top-secret-token"
-    diagnostic = sanitize_stderr((f"before {value} after" * 100).encode(), [value], byte_limit=40)
-    assert value not in diagnostic
-    assert len(diagnostic.encode()) <= 40
+    diagnostic = sanitize_stderr(payload, secrets, byte_limit=byte_limit)
+
+    assert len(diagnostic.encode()) <= byte_limit
+    assert all(value not in diagnostic for value in forbidden)
 
 
 class _FakeProcess:
@@ -248,6 +265,44 @@ async def test_callbacks_collect_only_owned_agent_text_and_fail_permissions_clos
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(("session_id", "closed"), [("other", False), ("owned", True)])
+async def test_callbacks_fail_closed_for_wrong_or_closed_session(session_id: str, closed: bool) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.callbacks import ACPClientCallbacks
+
+    callbacks = ACPClientCallbacks(permission_handler=pytest.fail)
+    callbacks.bind_session("owned")
+    callbacks.closed = closed
+
+    response = await callbacks.request_permission(
+        session_id,
+        ToolCallUpdate(toolCallId="call", title="write", kind="edit"),
+        [PermissionOption(optionId="allow", name="Allow", kind="allow_once")],
+    )
+
+    assert response.outcome.outcome == "cancelled"
+    assert callbacks.permission_required is False
+
+
+@pytest.mark.unit
+async def test_callbacks_invalid_permission_option_marks_permission_required() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.callbacks import ACPClientCallbacks
+
+    async def invalid_handler(_request: Any) -> str:
+        return "not-offered"
+
+    callbacks = ACPClientCallbacks(permission_handler=invalid_handler)
+    callbacks.bind_session("owned")
+    response = await callbacks.request_permission(
+        "owned",
+        ToolCallUpdate(toolCallId="call", title="write", kind="edit"),
+        [PermissionOption(optionId="allow", name="Allow", kind="allow_once")],
+    )
+
+    assert response.outcome.outcome == "cancelled"
+    assert callbacks.permission_required is True
+
+
+@pytest.mark.unit
 async def test_callbacks_permission_seam_uses_frozen_safe_dtos() -> None:
     from dataclasses import FrozenInstanceError
 
@@ -282,6 +337,7 @@ async def test_callbacks_permission_seam_uses_frozen_safe_dtos() -> None:
     with pytest.raises(FrozenInstanceError):
         request.title = "changed"
     assert response.outcome.option_id == "allow"
+    assert callbacks.permission_required is False
 
 
 @pytest.mark.unit
@@ -382,6 +438,41 @@ async def test_delegate_reports_no_output_and_permission_required(tmp_path: Path
 
 
 @pytest.mark.unit
+async def test_approved_permission_then_agent_cancel_is_not_permission_required(tmp_path: Path) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    process = _FakeProcess()
+    connection = _FakeConnection()
+
+    async def approved_handler(request: Any) -> str:
+        return request.options[0].option_id
+
+    async def cancelled_prompt(session_id: str, _prompt: list[Any]) -> Any:
+        response = await connection.client.request_permission(
+            session_id,
+            ToolCallUpdate(toolCallId="call", title="write", kind="edit"),
+            [PermissionOption(optionId="allow", name="Allow", kind="allow_once")],
+        )
+        assert response.outcome.outcome == "selected"
+        return SimpleNamespace(stop_reason="cancelled")
+
+    connection.prompt = cancelled_prompt
+    result = await _delegate_task_via_acp(
+        config=_config(tmp_path),
+        task="work",
+        permission_handler=approved_handler,
+        process_factory=lambda *_args, **_kwargs: _async_value(process),
+        connection_factory=lambda client, *_args: _bind(connection, client),
+    )
+
+    assert result == {
+        "result": "ACP agent completed without text output.",
+        "status": "success",
+        "variables": {},
+    }
+
+
+@pytest.mark.unit
 async def test_prompt_timeout_cancels_session_and_reaps(tmp_path: Path) -> None:
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
 
@@ -422,6 +513,104 @@ async def test_caller_cancellation_propagates_after_cleanup(tmp_path: Path) -> N
     assert connection.closed == 1
     assert connection.client.cancelled is True
     assert process.wait_count >= 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("cancel_during", ["session_cancel", "connection_close"])
+async def test_cleanup_defers_nested_cancellation_until_all_attempts_finish(
+    tmp_path: Path, cancel_during: str
+) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    process = _FakeProcess(waits=[TimeoutError(), TimeoutError(), 137])
+    connection = _FakeConnection(prompt_error=TimeoutError())
+
+    if cancel_during == "session_cancel":
+
+        async def cancel(_session_id: str) -> None:
+            connection.cancelled.append("session-1")
+            raise asyncio.CancelledError
+
+        connection.cancel = cancel
+    else:
+
+        async def close() -> None:
+            connection.closed += 1
+            raise asyncio.CancelledError
+
+        connection.close = close
+
+    with pytest.raises(asyncio.CancelledError):
+        await _delegate_task_via_acp(
+            config=_config(tmp_path, prompt_timeout=0.01, shutdown_grace_period=0.01),
+            task="work",
+            process_factory=lambda *_args, **_kwargs: _async_value(process),
+            connection_factory=lambda client, *_args: _bind(connection, client),
+        )
+
+    assert connection.cancelled == ["session-1"]
+    assert connection.closed == 1
+    assert process.terminated == 1
+    assert process.killed == 1
+    assert process.wait_count == 3
+
+
+@pytest.mark.unit
+async def test_cleanup_defers_caller_cancellation_during_process_wait(tmp_path: Path) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    wait_started = asyncio.Event()
+    permit_exit = asyncio.Event()
+    process = _FakeProcess()
+    connection = _FakeConnection()
+
+    async def blocking_wait() -> int:
+        process.wait_count += 1
+        wait_started.set()
+        await permit_exit.wait()
+        process.returncode = 0
+        return 0
+
+    process.wait = blocking_wait
+    delegation = asyncio.create_task(
+        _delegate_task_via_acp(
+            config=_config(tmp_path),
+            task="work",
+            process_factory=lambda *_args, **_kwargs: _async_value(process),
+            connection_factory=lambda client, *_args: _bind(connection, client),
+        )
+    )
+    await wait_started.wait()
+    delegation.cancel()
+    await asyncio.sleep(0)
+    assert not delegation.done()
+    permit_exit.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await delegation
+
+    assert process.returncode == 0
+    assert process.wait_count == 1
+
+
+@pytest.mark.unit
+async def test_cleanup_retries_process_reap_after_nested_cancellation() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.process import _cleanup_lifecycle
+
+    process = _FakeProcess(waits=[asyncio.CancelledError(), 0])
+
+    with pytest.raises(asyncio.CancelledError):
+        await _cleanup_lifecycle(
+            connection=None,
+            session_id=None,
+            process=process,
+            stderr_task=None,
+            grace=0.01,
+            cancel_session=False,
+        )
+
+    assert process.returncode == 0
+    assert process.wait_count == 2
 
 
 @pytest.mark.unit
@@ -498,20 +687,24 @@ async def test_cleanup_escalates_from_wait_to_terminate_to_kill() -> None:
 
 
 @pytest.mark.unit
-async def test_process_lookup_during_signal_still_reaps() -> None:
+@pytest.mark.parametrize("raced_signal", ["terminate", "kill"])
+async def test_process_lookup_during_signal_still_reaps(raced_signal: str) -> None:
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.process import _stop_and_reap
 
-    process = _FakeProcess(waits=[TimeoutError(), 0])
+    waits = [TimeoutError(), 0] if raced_signal == "terminate" else [TimeoutError(), TimeoutError(), 0]
+    process = _FakeProcess(waits=waits)
 
-    def raced_terminate() -> None:
-        process.terminated += 1
+    counter = "terminated" if raced_signal == "terminate" else "killed"
+
+    def raced() -> None:
+        setattr(process, counter, getattr(process, counter) + 1)
         raise ProcessLookupError
 
-    process.terminate = raced_terminate
+    setattr(process, raced_signal, raced)
     await _stop_and_reap(process, 0.01)
 
-    assert process.terminated == 1
-    assert process.wait_count == 2
+    assert getattr(process, counter) == 1
+    assert process.wait_count == len(waits)
 
 
 async def _async_value(value: Any) -> Any:

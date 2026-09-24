@@ -87,10 +87,10 @@ class ACPClientCallbacks:
             kind=getattr(tool_call, "kind", None),
             options=safe_options,
         )
-        self.permission_required = True
         selected = await self._permission_handler(request) if self._permission_handler is not None else None
         if selected is not None and any(option.option_id == selected for option in safe_options):
             return RequestPermissionResponse(outcome=AllowedOutcome(outcome="selected", optionId=selected))
+        self.permission_required = True
         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
     async def write_text_file(self, *_args: Any, **_kwargs: Any) -> None:

@@ -26,13 +26,38 @@ def build_process_environment(
 
 
 def sanitize_stderr(data: bytes, secret_values: list[str], *, byte_limit: int = _STDERR_BYTE_LIMIT) -> str:
-    bounded = data[:byte_limit].decode("utf-8", errors="replace")
-    for value in sorted((value for value in secret_values if value), key=len, reverse=True):
-        bounded = bounded.replace(value, "[REDACTED]")
-    encoded = bounded.encode("utf-8")
-    if len(encoded) > byte_limit:
-        bounded = encoded[:byte_limit].decode("utf-8", errors="ignore")
-    return bounded
+    """Remove secrets and any secret prefix exposed by the output boundary."""
+
+    secrets = sorted((value for value in secret_values if value), key=len, reverse=True)
+    encoded_secrets = [value.encode("utf-8") for value in secrets]
+    sanitized = data
+    while True:
+        redacted = sanitized
+        for secret in encoded_secrets:
+            redacted = redacted.replace(secret, b"")
+        if redacted == sanitized:
+            break
+        sanitized = redacted
+
+    bounded = sanitized[:byte_limit].decode("utf-8", errors="ignore")
+    while True:
+        redacted_text = bounded
+        for secret in secrets:
+            redacted_text = redacted_text.replace(secret, "")
+        if redacted_text == bounded:
+            break
+        bounded = redacted_text
+
+    exposed_prefix = max(
+        (
+            prefix_length
+            for secret in secrets
+            for prefix_length in range(1, len(secret))
+            if bounded.endswith(secret[:prefix_length])
+        ),
+        default=0,
+    )
+    return bounded[:-exposed_prefix] if exposed_prefix else bounded
 
 
 class ACPStartupTimeoutError(TimeoutError):
@@ -100,14 +125,60 @@ async def _stop_and_reap(process: Any | None, grace: float) -> None:
 
 async def _drain_stderr(stream: Any, secret_values: list[str]) -> str:
     chunks = bytearray()
+    longest_secret = max((len(value.encode("utf-8")) for value in secret_values if value), default=0)
+    retention_limit = _STDERR_BYTE_LIMIT + max(0, longest_secret - 1)
     while True:
         chunk = await stream.read(1024)
         if not chunk:
             break
-        if len(chunks) < _STDERR_BYTE_LIMIT:
-            remaining = _STDERR_BYTE_LIMIT - len(chunks)
+        if len(chunks) < retention_limit:
+            remaining = retention_limit - len(chunks)
             chunks.extend(chunk[:remaining])
     return sanitize_stderr(bytes(chunks), secret_values)
+
+
+async def _cleanup_lifecycle(
+    *,
+    connection: Any | None,
+    session_id: str | None,
+    process: Any | None,
+    stderr_task: asyncio.Task[str] | None,
+    grace: float,
+    cancel_session: bool,
+) -> None:
+    """Attempt every teardown stage and defer cancellation until cleanup completes."""
+
+    cancellation_seen = False
+
+    async def attempt(operation: Any) -> None:
+        nonlocal cancellation_seen
+        try:
+            await operation
+        except asyncio.CancelledError:
+            cancellation_seen = True
+        except Exception:
+            pass
+
+    if cancel_session:
+        await attempt(asyncio.wait_for(_cancel_session(connection, session_id), timeout=grace))
+
+    close_cancelled_before = cancellation_seen
+    await attempt(asyncio.wait_for(_close_connection(connection), timeout=grace))
+    if cancellation_seen and not cancel_session and not close_cancelled_before:
+        await attempt(asyncio.wait_for(_cancel_session(connection, session_id), timeout=grace))
+
+    while process is not None:
+        await attempt(_stop_and_reap(process, grace))
+        if process.returncode is not None:
+            break
+
+    if stderr_task is not None:
+        if not stderr_task.done():
+            stderr_task.cancel()
+        await attempt(stderr_task)
+
+    if cancellation_seen:
+        raise asyncio.CancelledError
 
 
 @asynccontextmanager
@@ -125,6 +196,7 @@ async def open_acp_process_session(
     connection = None
     session_id = None
     stderr_task = None
+    cancel_session = False
     spawn = process_factory or asyncio.create_subprocess_exec
     env = build_process_environment(config, environ)
     secret_values = [env[name] for name in config.env if name in env]
@@ -181,28 +253,29 @@ async def open_acp_process_session(
         yield ACPProcessSession(connection=connection, process=process, session_id=session_id)
     except BaseException:
         callbacks.cancelled = True
-        cancel_task = asyncio.create_task(_cancel_session(connection, session_id))
-        try:
-            await asyncio.wait_for(asyncio.shield(cancel_task), timeout=config.shutdown_grace_period)
-        except TimeoutError:
-            cancel_task.cancel()
+        cancel_session = True
         raise
     finally:
         callbacks.closed = True
-        try:
-            await asyncio.wait_for(_close_connection(connection), timeout=config.shutdown_grace_period)
-        except TimeoutError:
-            pass
-        cleanup_task = asyncio.create_task(_stop_and_reap(process, config.shutdown_grace_period))
-        try:
-            await asyncio.shield(cleanup_task)
-        except asyncio.CancelledError:
-            await cleanup_task
-            raise
-        if stderr_task is not None:
-            if not stderr_task.done():
-                stderr_task.cancel()
+        cleanup_task = asyncio.create_task(
+            _cleanup_lifecycle(
+                connection=connection,
+                session_id=session_id,
+                process=process,
+                stderr_task=stderr_task,
+                grace=config.shutdown_grace_period,
+                cancel_session=cancel_session,
+            )
+        )
+        cancellation_seen = False
+        while not cleanup_task.done():
             try:
-                await stderr_task
-            except (Exception, asyncio.CancelledError):
-                pass
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                cancellation_seen = True
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            cancellation_seen = True
+        if cancellation_seen:
+            raise asyncio.CancelledError

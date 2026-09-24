@@ -77,7 +77,7 @@ class ACPProcessConfig:
         if self.cwd is not None:
             cwd = Path(self.cwd).expanduser().resolve(strict=False)
             if not cwd.is_dir():
-                raise ValueError("cwd must resolve to an allowed existing directory")
+                raise ValueError("cwd must resolve to an existing directory")
             object.__setattr__(self, "cwd", cwd)
 
         object.__setattr__(

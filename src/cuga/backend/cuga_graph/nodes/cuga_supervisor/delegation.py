@@ -168,7 +168,14 @@ def create_agent_delegation_func(
                     permission_handler=permission_handler,
                 )
                 answer = result.get("result", "")
-                _record_delegation(adapter, agent_name, answer=answer)
+                result_vars = result.get("variables") or {}
+                _record_delegation(
+                    adapter,
+                    agent_name,
+                    result=result,
+                    answer=answer,
+                    variables=result_vars,
+                )
                 return answer
 
             a2a_config = external_config.get("a2a_protocol", {})

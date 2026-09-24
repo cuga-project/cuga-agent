@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -358,6 +358,8 @@ _ACP_MODULE = "cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol"
 @pytest.mark.asyncio
 async def test_acp_delegation_records_success_and_ignores_variables():
     adapter = _make_adapter()
+    original_record_delegation = adapter.record_delegation
+    adapter.record_delegation = MagicMock(side_effect=original_record_delegation)
     state = _empty_delegation_state()
     delegate_acp = AsyncMock(return_value={"result": "ACP answer", "status": "completed", "variables": {}})
     handler = AsyncMock()
@@ -383,6 +385,13 @@ async def test_acp_delegation_records_success_and_ignores_variables():
     assert answer == "ACP answer"
     assert state.agent_results["worker"] == "ACP answer"
     assert state.selected_agents == ["worker"]
+    adapter.record_delegation.assert_called_once_with(
+        state,
+        "worker",
+        result={"result": "ACP answer", "status": "completed", "variables": {}},
+        answer="ACP answer",
+        variables={},
+    )
     delegate_acp.assert_awaited_once()
     assert delegate_acp.await_args.kwargs["task"] == "do work"
     assert delegate_acp.await_args.kwargs["permission_handler"] is handler
