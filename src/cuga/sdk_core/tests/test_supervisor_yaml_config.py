@@ -468,248 +468,34 @@ class TestBuildAgentsFromStoredSubAgents:
 
 
 @pytest.mark.unit
-class TestACPProtocolYAMLConfig:
-    """YAML loader — acp_protocol block support (Task 3.1)."""
+class TestACPProtocolMigration:
+    """Enabled legacy ACP blocks fail clearly until subprocess config lands."""
 
     @pytest.mark.asyncio
-    async def test_valid_acp_agent_registers_as_external(self):
-        """A fully-specified acp_protocol block is accepted and stored as external."""
+    async def test_enabled_legacy_acp_config_requires_migration(self):
         yaml_content = """
 supervisor:
   strategy: adaptive
 
 agents:
-  - name: remote-acp
-    description: Remote ACP agent
+  - name: legacy-acp
     acp_protocol:
       enabled: true
       endpoint: https://agent.example.com/acp
       agent_name: remote-agent
-      timeout: 30
-      verify_tls: true
-      auth:
-        type: bearer
-        token_env_var: REMOTE_ACP_TOKEN
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
             temp_path = f.name
 
         try:
-            config = await load_supervisor_config(temp_path)
-
-            assert len(config.agents) == 1
-            entry = config.agents["remote-acp"]
-            assert entry["type"] == "external"
-            acp_cfg = entry["config"]["acp_protocol"]
-            assert acp_cfg["endpoint"] == "https://agent.example.com/acp"
-            assert acp_cfg["agent_name"] == "remote-agent"
-            assert acp_cfg["timeout"] == 30
-            assert acp_cfg["verify_tls"] is True
-        finally:
-            os.unlink(temp_path)
-
-    @pytest.mark.asyncio
-    async def test_disabled_acp_block_treats_agent_as_internal(self):
-        """An acp_protocol block with enabled=false must not make the entry external."""
-        yaml_content = """
-supervisor:
-  strategy: adaptive
-
-agents:
-  - name: local-agent
-    acp_protocol:
-      enabled: false
-      endpoint: https://agent.example.com/acp
-      agent_name: remote-agent
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write(yaml_content)
-            temp_path = f.name
-
-        try:
-            config = await load_supervisor_config(temp_path)
-            # disabled acp_protocol → falls through to internal agent creation
-            entry = config.agents.get("local-agent")
-            # It should not be an external dict
-            assert not (isinstance(entry, dict) and entry.get("type") == "external")
-        finally:
-            os.unlink(temp_path)
-
-    @pytest.mark.asyncio
-    async def test_acp_missing_endpoint_raises(self):
-        """acp_protocol without endpoint must raise ValueError."""
-        yaml_content = """
-supervisor:
-  strategy: adaptive
-
-agents:
-  - name: bad-acp
-    acp_protocol:
-      enabled: true
-      agent_name: remote-agent
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write(yaml_content)
-            temp_path = f.name
-
-        try:
-            with pytest.raises(ValueError, match="endpoint is required"):
+            with pytest.raises(ValueError, match="removed BeeAI REST format"):
                 await load_supervisor_config(temp_path)
         finally:
             os.unlink(temp_path)
 
     @pytest.mark.asyncio
-    async def test_acp_missing_agent_name_raises(self):
-        """acp_protocol without agent_name must raise ValueError."""
-        yaml_content = """
-supervisor:
-  strategy: adaptive
-
-agents:
-  - name: bad-acp
-    acp_protocol:
-      enabled: true
-      endpoint: https://agent.example.com/acp
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write(yaml_content)
-            temp_path = f.name
-
-        try:
-            with pytest.raises(ValueError, match="agent_name is required"):
-                await load_supervisor_config(temp_path)
-        finally:
-            os.unlink(temp_path)
-
-    @pytest.mark.asyncio
-    async def test_acp_invalid_url_scheme_raises(self):
-        """acp_protocol with a non-http/https endpoint scheme must raise ValueError."""
-        yaml_content = """
-supervisor:
-  strategy: adaptive
-
-agents:
-  - name: bad-acp
-    acp_protocol:
-      enabled: true
-      endpoint: ftp://agent.example.com/acp
-      agent_name: remote-agent
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write(yaml_content)
-            temp_path = f.name
-
-        try:
-            with pytest.raises(ValueError, match="scheme must be"):
-                await load_supervisor_config(temp_path)
-        finally:
-            os.unlink(temp_path)
-
-    @pytest.mark.asyncio
-    async def test_acp_timeout_zero_raises(self):
-        """acp_protocol.timeout=0 must raise ValueError."""
-        yaml_content = """
-supervisor:
-  strategy: adaptive
-
-agents:
-  - name: bad-acp
-    acp_protocol:
-      enabled: true
-      endpoint: https://agent.example.com/acp
-      agent_name: remote-agent
-      timeout: 0
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write(yaml_content)
-            temp_path = f.name
-
-        try:
-            with pytest.raises(ValueError, match="timeout must be > 0"):
-                await load_supervisor_config(temp_path)
-        finally:
-            os.unlink(temp_path)
-
-    @pytest.mark.asyncio
-    async def test_acp_timeout_negative_raises(self):
-        """acp_protocol.timeout < 0 must raise ValueError."""
-        yaml_content = """
-supervisor:
-  strategy: adaptive
-
-agents:
-  - name: bad-acp
-    acp_protocol:
-      enabled: true
-      endpoint: https://agent.example.com/acp
-      agent_name: remote-agent
-      timeout: -5
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write(yaml_content)
-            temp_path = f.name
-
-        try:
-            with pytest.raises(ValueError, match="timeout must be > 0"):
-                await load_supervisor_config(temp_path)
-        finally:
-            os.unlink(temp_path)
-
-    @pytest.mark.asyncio
-    async def test_acp_timeout_capped_at_600(self):
-        """acp_protocol.timeout > 600 is silently capped to 600."""
-        yaml_content = """
-supervisor:
-  strategy: adaptive
-
-agents:
-  - name: slow-acp
-    acp_protocol:
-      enabled: true
-      endpoint: https://agent.example.com/acp
-      agent_name: remote-agent
-      timeout: 9999
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write(yaml_content)
-            temp_path = f.name
-
-        try:
-            config = await load_supervisor_config(temp_path)
-            acp_cfg = config.agents["slow-acp"]["config"]["acp_protocol"]
-            assert acp_cfg["timeout"] == 600
-        finally:
-            os.unlink(temp_path)
-
-    @pytest.mark.asyncio
-    async def test_acp_verify_tls_defaults_true(self):
-        """verify_tls defaults to True when not specified."""
-        yaml_content = """
-supervisor:
-  strategy: adaptive
-
-agents:
-  - name: acp-agent
-    acp_protocol:
-      enabled: true
-      endpoint: https://agent.example.com/acp
-      agent_name: remote-agent
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write(yaml_content)
-            temp_path = f.name
-
-        try:
-            config = await load_supervisor_config(temp_path)
-            acp_cfg = config.agents["acp-agent"]["config"]["acp_protocol"]
-            assert acp_cfg["verify_tls"] is True
-        finally:
-            os.unlink(temp_path)
-
-    @pytest.mark.asyncio
-    async def test_dual_protocol_enabled_raises(self):
-        """An agent with both acp_protocol and a2a_protocol enabled must raise ValueError."""
+    async def test_dual_protocol_guard_precedes_acp_migration_error(self):
         yaml_content = """
 supervisor:
   strategy: adaptive
@@ -719,7 +505,6 @@ agents:
     acp_protocol:
       enabled: true
       endpoint: https://agent.example.com/acp
-      agent_name: remote-agent
     a2a_protocol:
       enabled: true
       endpoint: http://localhost:8000/a2a
@@ -735,8 +520,7 @@ agents:
             os.unlink(temp_path)
 
     @pytest.mark.asyncio
-    async def test_acp_and_a2a_coexist_when_acp_disabled(self):
-        """Both blocks can coexist as long as at most one is enabled."""
+    async def test_disabled_acp_block_preserves_a2a_loading(self):
         yaml_content = """
 supervisor:
   strategy: adaptive
@@ -746,7 +530,6 @@ agents:
     acp_protocol:
       enabled: false
       endpoint: https://agent.example.com/acp
-      agent_name: remote-agent
     a2a_protocol:
       enabled: true
       endpoint: http://localhost:8000/a2a
@@ -759,32 +542,6 @@ agents:
         try:
             config = await load_supervisor_config(temp_path)
             entry = config.agents["mixed-agent"]
-            assert entry["type"] == "external"
-            assert "a2a_protocol" in entry["config"]
-        finally:
-            os.unlink(temp_path)
-
-    @pytest.mark.asyncio
-    async def test_existing_a2a_loading_unchanged(self):
-        """Pre-existing A2A-only config continues to work after ACP support is added."""
-        yaml_content = """
-supervisor:
-  strategy: adaptive
-
-agents:
-  - name: a2a-only
-    a2a_protocol:
-      enabled: true
-      endpoint: http://localhost:9000/a2a
-      transport: http
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write(yaml_content)
-            temp_path = f.name
-
-        try:
-            config = await load_supervisor_config(temp_path)
-            entry = config.agents["a2a-only"]
             assert entry["type"] == "external"
             assert entry["config"]["a2a_protocol"]["enabled"] is True
         finally:
