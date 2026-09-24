@@ -12,6 +12,8 @@ _DEFAULT_STARTUP_TIMEOUT = 15.0
 _DEFAULT_PROMPT_TIMEOUT = 120.0
 _DEFAULT_SHUTDOWN_GRACE_PERIOD = 5.0
 _MAX_TIMEOUT = 3600.0
+_MAX_ENV_NAMES = 64
+_MAX_ENV_NAME_LENGTH = 256
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ACP_MAPPING_KEYS = frozenset(
     {
@@ -92,12 +94,22 @@ def validate_acp_protocol_mapping(mapping: Mapping[str, Any]) -> None:
         )
 
 
-def _string_tuple(value: Sequence[str], *, field_name: str) -> tuple[str, ...]:
+def _string_tuple(
+    value: Sequence[str],
+    *,
+    field_name: str,
+    max_items: int | None = None,
+) -> tuple[str, ...]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise ValueError(f"{field_name} must be a sequence of strings")
-    if not all(isinstance(item, str) for item in value):
-        raise ValueError(f"{field_name} must contain only strings")
-    return tuple(value)
+    if max_items is not None and len(value) > max_items:
+        raise ValueError(f"{field_name} contains too many entries")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(f"{field_name} must contain only strings")
+        result.append(item)
+    return tuple(result)
 
 
 def _timeout(value: Any, *, field_name: str) -> float:
@@ -131,8 +143,8 @@ class ACPProcessConfig:
         object.__setattr__(self, "command", self.command.strip())
         object.__setattr__(self, "args", _string_tuple(self.args, field_name="args"))
 
-        env = _string_tuple(self.env, field_name="env")
-        if any(not _ENV_NAME.fullmatch(name) for name in env):
+        env = _string_tuple(self.env, field_name="env", max_items=_MAX_ENV_NAMES)
+        if any(len(name) > _MAX_ENV_NAME_LENGTH or not _ENV_NAME.fullmatch(name) for name in env):
             raise ValueError("env entries must be environment variable names, not KEY=value values")
         object.__setattr__(self, "env", env)
 

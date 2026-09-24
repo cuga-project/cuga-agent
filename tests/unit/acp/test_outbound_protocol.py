@@ -151,6 +151,46 @@ def test_mapping_rejects_malformed_types_unknown_and_disabled_legacy_keys(mappin
 
 
 @pytest.mark.unit
+def test_process_config_rejects_excessive_env_names_before_iteration(tmp_path: Path) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import _MAX_ENV_NAMES
+
+    class GuardedNames(list[str]):
+        def __init__(self) -> None:
+            pass
+
+        def __len__(self) -> int:
+            return _MAX_ENV_NAMES + 1
+
+        def __iter__(self):
+            pytest.fail("excessive env names must be rejected before iteration")
+
+    with pytest.raises(ValueError, match="env contains too many entries"):
+        _config(tmp_path, env=GuardedNames())
+
+
+@pytest.mark.unit
+def test_mapping_rejects_many_and_long_environment_values(tmp_path: Path) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
+        _MAX_ENV_NAMES,
+        acp_process_config_from_mapping,
+    )
+
+    with pytest.raises(ValueError, match="env contains too many entries"):
+        acp_process_config_from_mapping(
+            {
+                "enabled": True,
+                "command": "agent",
+                "cwd": str(tmp_path),
+                "env": [f"ENV_{index}" for index in range(_MAX_ENV_NAMES + 1)],
+            }
+        )
+    with pytest.raises(ValueError, match="variable names"):
+        acp_process_config_from_mapping(
+            {"enabled": True, "command": "agent", "cwd": str(tmp_path), "env": ["E" * 10_000]}
+        )
+
+
+@pytest.mark.unit
 def test_mapping_uses_exact_yaml_defaults_and_metadata(tmp_path: Path) -> None:
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
         acp_process_config_from_mapping,
@@ -470,8 +510,8 @@ async def test_lifecycle_registration_uses_opaque_id_and_live_owner(tmp_path: Pa
         config=_config(tmp_path),
         task="work",
         lifecycle_registrar=registrar,
-        process_factory=lambda *_args, **_kwargs: _async_value(process),
-        connection_factory=lambda client, *_args: _bind(connection, client),
+        process_factory=_async_factory(process),
+        connection_factory=_bound_factory(connection),
     )
 
     assert len(registrations) == 1
@@ -494,7 +534,7 @@ async def test_delegate_direct_exec_initializes_prompts_closes_and_reaps(tmp_pat
         spawn_calls.append((args, kwargs))
         return process
 
-    def connection_factory(client: Any, stdin: Any, stdout: Any) -> _FakeConnection:
+    async def connection_factory(client: Any, stdin: Any, stdout: Any) -> _FakeConnection:
         assert stdin is process.stdin
         assert stdout is process.stdout
         connection.client = client
@@ -540,7 +580,7 @@ async def test_delegate_reports_no_output_and_permission_required(tmp_path: Path
     async def process_factory(*_args: Any, **_kwargs: Any) -> _FakeProcess:
         return process
 
-    def connection_factory(client: Any, *_args: Any) -> _FakeConnection:
+    async def connection_factory(client: Any, *_args: Any) -> _FakeConnection:
         connection.client = client
         return connection
 
@@ -603,8 +643,8 @@ async def test_approved_permission_then_agent_cancel_is_not_permission_required(
         config=_config(tmp_path),
         task="work",
         permission_handler=approved_handler,
-        process_factory=lambda *_args, **_kwargs: _async_value(process),
-        connection_factory=lambda client, *_args: _bind(connection, client),
+        process_factory=_async_factory(process),
+        connection_factory=_bound_factory(connection),
     )
 
     assert result == {
@@ -624,8 +664,8 @@ async def test_prompt_timeout_cancels_session_and_reaps(tmp_path: Path) -> None:
     result = await _delegate_task_via_acp(
         config=_config(tmp_path, prompt_timeout=0.01),
         task="work",
-        process_factory=lambda *_args, **_kwargs: _async_value(process),
-        connection_factory=lambda client, *_args: _bind(connection, client),
+        process_factory=_async_factory(process),
+        connection_factory=_bound_factory(connection),
     )
     assert result == {
         "result": "ACP agent did not respond before the timeout.",
@@ -648,8 +688,8 @@ async def test_caller_cancellation_propagates_after_cleanup(tmp_path: Path) -> N
         await _delegate_task_via_acp(
             config=_config(tmp_path),
             task="work",
-            process_factory=lambda *_args, **_kwargs: _async_value(process),
-            connection_factory=lambda client, *_args: _bind(connection, client),
+            process_factory=_async_factory(process),
+            connection_factory=_bound_factory(connection),
         )
     assert connection.cancelled == ["session-1"]
     assert connection.closed == 1
@@ -686,8 +726,8 @@ async def test_cleanup_defers_nested_cancellation_until_all_attempts_finish(
         await _delegate_task_via_acp(
             config=_config(tmp_path, prompt_timeout=0.01, shutdown_grace_period=0.01),
             task="work",
-            process_factory=lambda *_args, **_kwargs: _async_value(process),
-            connection_factory=lambda client, *_args: _bind(connection, client),
+            process_factory=_async_factory(process),
+            connection_factory=_bound_factory(connection),
         )
 
     assert connection.cancelled == ["session-1"]
@@ -718,8 +758,8 @@ async def test_cleanup_defers_caller_cancellation_during_process_wait(tmp_path: 
         _delegate_task_via_acp(
             config=_config(tmp_path),
             task="work",
-            process_factory=lambda *_args, **_kwargs: _async_value(process),
-            connection_factory=lambda client, *_args: _bind(connection, client),
+            process_factory=_async_factory(process),
+            connection_factory=_bound_factory(connection),
         )
     )
     await wait_started.wait()
@@ -756,6 +796,188 @@ async def test_cleanup_retries_process_reap_after_nested_cancellation() -> None:
 
 
 @pytest.mark.unit
+async def test_synchronous_blocking_process_factory_is_rejected_without_invocation(tmp_path: Path) -> None:
+    import time
+
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    invoked = False
+
+    def blocking_factory(*_args: Any, **_kwargs: Any) -> Any:
+        nonlocal invoked
+        invoked = True
+        time.sleep(1)
+        return _FakeProcess()
+
+    result = await asyncio.wait_for(
+        _delegate_task_via_acp(
+            config=_config(tmp_path, startup_timeout=0.01), task="work", process_factory=blocking_factory
+        ),
+        timeout=0.2,
+    )
+
+    assert invoked is False
+    assert result == {"result": "ACP agent could not be started.", "status": "failed", "variables": {}}
+
+
+@pytest.mark.unit
+async def test_non_awaitable_process_factory_result_is_rejected_without_invocation(tmp_path: Path) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    invoked = False
+
+    def non_awaitable_factory(*_args: Any, **_kwargs: Any) -> _FakeProcess:
+        nonlocal invoked
+        invoked = True
+        return _FakeProcess()
+
+    result = await _delegate_task_via_acp(
+        config=_config(tmp_path), task="work", process_factory=non_awaitable_factory
+    )
+
+    assert invoked is False
+    assert result == {"result": "ACP agent could not be started.", "status": "failed", "variables": {}}
+
+
+@pytest.mark.unit
+async def test_synchronous_connection_factory_is_rejected_without_invocation_and_reaps(
+    tmp_path: Path,
+) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    process = _FakeProcess()
+    invoked = False
+
+    def connection_factory(*_args: Any) -> _FakeConnection:
+        nonlocal invoked
+        invoked = True
+        return _FakeConnection()
+
+    result = await _delegate_task_via_acp(
+        config=_config(tmp_path),
+        task="work",
+        process_factory=_async_factory(process),
+        connection_factory=connection_factory,
+    )
+
+    assert invoked is False
+    assert result == {"result": "ACP agent could not be started.", "status": "failed", "variables": {}}
+    assert process.wait_count >= 1
+
+
+@pytest.mark.unit
+async def test_async_partial_factory_is_accepted(tmp_path: Path) -> None:
+    from functools import partial
+
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    process = _FakeProcess()
+    connection = _FakeConnection()
+
+    async def process_factory(value: _FakeProcess, *_args: Any, **_kwargs: Any) -> _FakeProcess:
+        return value
+
+    result = await _delegate_task_via_acp(
+        config=_config(tmp_path),
+        task="work",
+        process_factory=partial(process_factory, process),
+        connection_factory=_bound_factory(connection),
+    )
+
+    assert result["status"] == "success"
+    assert process.wait_count >= 1
+
+
+@pytest.mark.unit
+async def test_factory_ownership_capacity_is_reserved_before_concurrent_process_invocation(
+    tmp_path: Path,
+) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.process import (
+        _MAX_PENDING_FACTORY_TASKS,
+        _PENDING_FACTORY_CLEANUPS,
+        _PENDING_FACTORY_TASKS,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    baseline = len(_PENDING_FACTORY_TASKS) + len(_PENDING_FACTORY_CLEANUPS)
+    available = _MAX_PENDING_FACTORY_TASKS - baseline
+    release = asyncio.Event()
+    invoked = 0
+
+    async def resistant_factory(*_args: Any, **_kwargs: Any) -> Any:
+        nonlocal invoked
+        invoked += 1
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+            raise
+
+    tasks = [
+        asyncio.create_task(
+            _delegate_task_via_acp(
+                config=_config(tmp_path, startup_timeout=0.02),
+                task="work",
+                process_factory=resistant_factory,
+            )
+        )
+        for _ in range(available + 2)
+    ]
+    results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=0.2)
+
+    assert invoked == available
+    assert all(result["status"] == "failed" for result in results)
+    assert len(_PENDING_FACTORY_TASKS) + len(_PENDING_FACTORY_CLEANUPS) == _MAX_PENDING_FACTORY_TASKS
+    release.set()
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if len(_PENDING_FACTORY_TASKS) + len(_PENDING_FACTORY_CLEANUPS) == baseline:
+            break
+    assert len(_PENDING_FACTORY_TASKS) + len(_PENDING_FACTORY_CLEANUPS) == baseline
+
+
+@pytest.mark.unit
+async def test_cancellation_suppressing_connection_factory_is_bounded_and_eventually_closed(
+    tmp_path: Path,
+) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    process = _FakeProcess()
+    connection = _FakeConnection()
+    release = asyncio.Event()
+    closed = asyncio.Event()
+    original_close = connection.close
+
+    async def observed_close() -> None:
+        await original_close()
+        closed.set()
+
+    connection.close = observed_close
+
+    async def resistant_connection_factory(*_args: Any) -> _FakeConnection:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+            return connection
+
+    result = await asyncio.wait_for(
+        _delegate_task_via_acp(
+            config=_config(tmp_path, startup_timeout=0.01, shutdown_grace_period=0.01),
+            task="work",
+            process_factory=_async_factory(process),
+            connection_factory=resistant_connection_factory,
+        ),
+        timeout=0.2,
+    )
+
+    assert result == {"result": "ACP agent could not be started.", "status": "failed", "variables": {}}
+    assert process.wait_count >= 1
+    release.set()
+    await asyncio.wait_for(closed.wait(), timeout=0.2)
+
+
+@pytest.mark.unit
 async def test_blocked_process_factory_is_bounded_by_startup_timeout(tmp_path: Path) -> None:
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
 
@@ -768,6 +990,94 @@ async def test_blocked_process_factory_is_bounded_by_startup_timeout(tmp_path: P
         process_factory=blocked_factory,
     )
     assert result == {"result": "ACP agent could not be started.", "status": "failed", "variables": {}}
+
+
+@pytest.mark.unit
+async def test_cancellation_suppressing_blocked_factory_does_not_defeat_timeout(tmp_path: Path) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    release = asyncio.Event()
+
+    async def resistant_factory(*_args: Any, **_kwargs: Any) -> Any:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+            raise
+
+    result = await asyncio.wait_for(
+        _delegate_task_via_acp(
+            config=_config(tmp_path, startup_timeout=0.01), task="work", process_factory=resistant_factory
+        ),
+        timeout=0.2,
+    )
+    assert result == {"result": "ACP agent could not be started.", "status": "failed", "variables": {}}
+    release.set()
+    await asyncio.sleep(0)
+
+
+@pytest.mark.unit
+async def test_caller_cancellation_returns_while_spawn_factory_suppresses_cancellation(
+    tmp_path: Path,
+) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def resistant_factory(*_args: Any, **_kwargs: Any) -> Any:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+            raise
+
+    task = asyncio.create_task(
+        _delegate_task_via_acp(config=_config(tmp_path), task="work", process_factory=resistant_factory)
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=0.2)
+    release.set()
+    await asyncio.sleep(0)
+
+
+@pytest.mark.unit
+async def test_detached_late_spawn_is_owned_and_reaped(tmp_path: Path) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    process = _FakeProcess()
+    release = asyncio.Event()
+    reaped = asyncio.Event()
+    original_wait = process.wait
+
+    async def observed_wait() -> int:
+        result = await original_wait()
+        reaped.set()
+        return result
+
+    process.wait = observed_wait
+
+    async def late_factory(*_args: Any, **_kwargs: Any) -> _FakeProcess:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+            return process
+
+    result = await asyncio.wait_for(
+        _delegate_task_via_acp(
+            config=_config(tmp_path, startup_timeout=0.01, shutdown_grace_period=0.01),
+            task="work",
+            process_factory=late_factory,
+        ),
+        timeout=0.2,
+    )
+    assert result == {"result": "ACP agent could not be started.", "status": "failed", "variables": {}}
+    release.set()
+    await asyncio.wait_for(reaped.wait(), timeout=0.2)
 
 
 @pytest.mark.unit
@@ -792,6 +1102,47 @@ async def test_cancellation_racing_late_spawn_reaps_and_propagates(tmp_path: Pat
     with pytest.raises(asyncio.CancelledError):
         await task
     assert process.wait_count >= 1
+
+
+@pytest.mark.unit
+def test_secret_validation_stops_before_excessive_lazy_source_is_materialized() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.process import (
+        _MAX_SECRET_COUNT,
+        _validated_secret_values,
+    )
+
+    seen = 0
+
+    def candidates():
+        nonlocal seen
+        while True:
+            seen += 1
+            if seen > _MAX_SECRET_COUNT + 1:
+                pytest.fail("secret candidate source was traversed beyond the fixed bound")
+            yield f"secret-{seen}"
+
+    with pytest.raises(ValueError, match="too many"):
+        _validated_secret_values(candidates())
+    assert seen == _MAX_SECRET_COUNT + 1
+
+
+@pytest.mark.unit
+def test_secret_validation_rejects_oversized_value_before_encoding() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.process import (
+        _MAX_SECRET_CHAR_LENGTH,
+        _validated_secret_values,
+    )
+
+    class EncodingMustNotRun(str):
+        def __hash__(self) -> int:
+            pytest.fail("oversized secret must be rejected before hashing")
+
+        def encode(self, *_args: Any, **_kwargs: Any) -> bytes:
+            pytest.fail("oversized secret must be rejected before UTF-8 encoding")
+
+    oversized = EncodingMustNotRun("s" * (_MAX_SECRET_CHAR_LENGTH + 1))
+    with pytest.raises(ValueError, match="safe size limit"):
+        _validated_secret_values([oversized])
 
 
 @pytest.mark.unit
@@ -824,8 +1175,8 @@ async def test_startup_timeout_is_safe_and_reaps(tmp_path: Path) -> None:
     result = await _delegate_task_via_acp(
         config=_config(tmp_path, startup_timeout=0.01),
         task="work",
-        process_factory=lambda *_args, **_kwargs: _async_value(process),
-        connection_factory=lambda client, *_args: _bind(connection, client),
+        process_factory=_async_factory(process),
+        connection_factory=_bound_factory(connection),
     )
 
     assert result == {"result": "ACP agent could not be started.", "status": "failed", "variables": {}}
@@ -842,8 +1193,8 @@ async def test_protocol_failure_is_sanitized_and_reaps(tmp_path: Path) -> None:
     result = await _delegate_task_via_acp(
         config=_config(tmp_path),
         task="work",
-        process_factory=lambda *_args, **_kwargs: _async_value(process),
-        connection_factory=lambda client, *_args: _bind(connection, client),
+        process_factory=_async_factory(process),
+        connection_factory=_bound_factory(connection),
     )
 
     assert result == {
@@ -863,7 +1214,7 @@ async def test_early_process_exit_is_normalized(tmp_path: Path) -> None:
     result = await _delegate_task_via_acp(
         config=_config(tmp_path),
         task="work",
-        process_factory=lambda *_args, **_kwargs: _async_value(process),
+        process_factory=_async_factory(process),
         connection_factory=lambda *_args: pytest.fail("connection must not be created"),
     )
     assert result == {"result": "ACP agent process exited unexpectedly.", "status": "failed", "variables": {}}
@@ -902,6 +1253,20 @@ async def test_process_lookup_during_signal_still_reaps(raced_signal: str) -> No
 
     assert getattr(process, counter) == 1
     assert process.wait_count == len(waits)
+
+
+def _bound_factory(connection: _FakeConnection):
+    async def factory(client: Any, *_args: Any) -> _FakeConnection:
+        return _bind(connection, client)
+
+    return factory
+
+
+def _async_factory(value: Any):
+    async def factory(*_args: Any, **_kwargs: Any) -> Any:
+        return value
+
+    return factory
 
 
 async def _async_value(value: Any) -> Any:

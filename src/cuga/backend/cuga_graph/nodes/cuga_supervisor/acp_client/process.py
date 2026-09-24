@@ -7,7 +7,7 @@ import inspect
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable, Mapping
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping
 
 from .callbacks import ACPClientCallbacks
 from .config import ACPProcessConfig
@@ -15,8 +15,12 @@ from .config import ACPProcessConfig
 _BASELINE_ENV = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR")
 _STDERR_BYTE_LIMIT = 8192
 _MAX_SECRET_BYTE_LENGTH = 4096
+_MAX_SECRET_CHAR_LENGTH = _MAX_SECRET_BYTE_LENGTH
 _MAX_SECRET_COUNT = 64
+_MAX_PENDING_FACTORY_TASKS = 16
 _STDERR_RETENTION_LIMIT = _STDERR_BYTE_LIMIT + _MAX_SECRET_BYTE_LENGTH - 1
+_PENDING_FACTORY_TASKS: set[asyncio.Task[Any]] = set()
+_PENDING_FACTORY_CLEANUPS: set[asyncio.Task[None]] = set()
 
 
 def build_process_environment(
@@ -28,12 +32,24 @@ def build_process_environment(
     return {name: source[name] for name in names if source.get(name)}
 
 
-def _validated_secret_values(secret_values: list[str]) -> list[str]:
-    secrets = [value for value in dict.fromkeys(secret_values) if value]
-    if len(secrets) > _MAX_SECRET_COUNT:
-        raise ValueError("too many forwarded ACP environment secrets")
-    if any(len(value.encode("utf-8")) > _MAX_SECRET_BYTE_LENGTH for value in secrets):
-        raise ValueError("forwarded ACP environment secret exceeds the safe size limit")
+def _validated_secret_values(secret_values: Iterable[str]) -> list[str]:
+    secrets: list[str] = []
+    seen: set[str] = set()
+    candidate_count = 0
+    for value in secret_values:
+        candidate_count += 1
+        if candidate_count > _MAX_SECRET_COUNT:
+            raise ValueError("too many forwarded ACP environment secrets")
+        if not value:
+            continue
+        if len(value) > _MAX_SECRET_CHAR_LENGTH:
+            raise ValueError("forwarded ACP environment secret exceeds the safe size limit")
+        if value in seen:
+            continue
+        if len(value.encode("utf-8")) > _MAX_SECRET_BYTE_LENGTH:
+            raise ValueError("forwarded ACP environment secret exceeds the safe size limit")
+        seen.add(value)
+        secrets.append(value)
     return sorted(secrets, key=len, reverse=True)
 
 
@@ -192,23 +208,78 @@ async def _cleanup_lifecycle(
         raise asyncio.CancelledError
 
 
-async def _await_spawn_task(task: asyncio.Task[Any], grace: float) -> Any | None:
-    """Cancel a pending spawn and acquire/clean a process returned in the cancellation race."""
+class ACPFactoryContractError(RuntimeError):
+    """An injected startup factory violates the required asynchronous contract."""
 
-    task.cancel()
+
+def _is_async_factory(factory: Callable[..., Any]) -> bool:
+    """Return whether an injected factory has the required native async call contract."""
+
+    if inspect.iscoroutinefunction(factory):
+        return True
+    return inspect.iscoroutinefunction(getattr(factory, "__call__", None))
+
+
+def _track_cleanup(cleanup: Awaitable[None]) -> None:
+    task = asyncio.create_task(cleanup)
+    _PENDING_FACTORY_CLEANUPS.add(task)
+    task.add_done_callback(_PENDING_FACTORY_CLEANUPS.discard)
+
+
+def _own_detached_factory_task(
+    task: asyncio.Task[Any],
+    *,
+    cleanup_result: Callable[[Any], Awaitable[None]],
+) -> None:
+    """Retain a cancelled acquisition and clean any resource it returns later."""
+
+    _PENDING_FACTORY_TASKS.add(task)
+
+    def completed(done: asyncio.Task[Any]) -> None:
+        _PENDING_FACTORY_TASKS.discard(done)
+        if done.cancelled():
+            return
+        try:
+            result = done.result()
+        except BaseException:
+            return
+        _track_cleanup(cleanup_result(result))
+
+    task.add_done_callback(completed)
+
+
+async def _acquire_injected_factory(
+    factory: Callable[..., Any],
+    *args: Any,
+    timeout: float,
+    cleanup_result: Callable[[Any], Awaitable[None]],
+    **kwargs: Any,
+) -> Any:
+    """Invoke only native async injected factories under bounded detached ownership.
+
+    Injected factories must be native async callables, return their resource only
+    on successful completion, and cooperate with cancellation. Misbehaving tasks
+    are retained in a fixed-size ownership set; any eventual result is cleaned.
+    """
+
+    if not _is_async_factory(factory):
+        raise ACPFactoryContractError("ACP injected factories must be async callables")
+    if len(_PENDING_FACTORY_TASKS) + len(_PENDING_FACTORY_CLEANUPS) >= _MAX_PENDING_FACTORY_TASKS:
+        raise ACPFactoryContractError("too many pending ACP factory acquisitions")
+    task = asyncio.create_task(factory(*args, **kwargs))
+    _PENDING_FACTORY_TASKS.add(task)
     try:
-        process = await asyncio.shield(task)
+        done, _ = await asyncio.wait({task}, timeout=timeout)
     except asyncio.CancelledError:
-        if task.done() and not task.cancelled():
-            try:
-                return task.result()
-            except BaseException:
-                return None
-        return None
-    except BaseException:
-        return None
-    await _stop_and_reap(process, grace)
-    return process
+        task.cancel()
+        _own_detached_factory_task(task, cleanup_result=cleanup_result)
+        raise
+    if done:
+        _PENDING_FACTORY_TASKS.discard(task)
+        return task.result()
+    task.cancel()
+    _own_detached_factory_task(task, cleanup_result=cleanup_result)
+    raise ACPStartupTimeoutError
 
 
 @asynccontextmanager
@@ -216,8 +287,8 @@ async def open_acp_process_session(
     config: ACPProcessConfig,
     callbacks: ACPClientCallbacks,
     *,
-    process_factory: Callable[..., Any] | None = None,
-    connection_factory: Callable[..., Any] | None = None,
+    process_factory: Callable[..., Awaitable[Any]] | None = None,
+    connection_factory: Callable[..., Awaitable[Any]] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> AsyncIterator[ACPProcessSession]:
     """Spawn, initialize, create one session, then always close and reap it."""
@@ -227,8 +298,6 @@ async def open_acp_process_session(
     session_id = None
     stderr_task = None
     cancel_session = False
-    spawn_task = None
-    spawn = process_factory or asyncio.create_subprocess_exec
     env = build_process_environment(config, environ)
     secret_values = _validated_secret_values([env[name] for name in config.env if name in env])
     loop = asyncio.get_running_loop()
@@ -240,25 +309,26 @@ async def open_acp_process_session(
             raise ACPStartupTimeoutError
         return remaining
 
+    async def cleanup_process(acquired: Any) -> None:
+        await _stop_and_reap(acquired, config.shutdown_grace_period)
+
+    async def cleanup_connection(acquired: Any) -> None:
+        await asyncio.wait_for(_close_connection(acquired), timeout=config.shutdown_grace_period)
+
     try:
-        spawn_task = asyncio.create_task(
-            _await_if_needed(
-                spawn(
-                    config.command,
-                    *config.args,
-                    cwd=str(config.cwd) if config.cwd is not None else None,
-                    env=env,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-            )
+        spawn = asyncio.create_subprocess_exec if process_factory is None else process_factory
+        process = await _acquire_injected_factory(
+            spawn,
+            config.command,
+            *config.args,
+            timeout=remaining_startup_time(),
+            cleanup_result=cleanup_process,
+            cwd=str(config.cwd) if config.cwd is not None else None,
+            env=env,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        done, _ = await asyncio.wait({spawn_task}, timeout=remaining_startup_time())
-        if not done:
-            await _await_spawn_task(spawn_task, config.shutdown_grace_period)
-            raise ACPStartupTimeoutError
-        process = spawn_task.result()
         if process.returncode is not None:
             raise ChildProcessError("ACP subprocess exited during startup")
         stderr_task = asyncio.create_task(_drain_stderr(process.stderr, secret_values))
@@ -266,11 +336,16 @@ async def open_acp_process_session(
         if connection_factory is None:
             from acp import connect_to_agent
 
-            connection_factory = connect_to_agent
-        connection = await asyncio.wait_for(
-            _await_if_needed(connection_factory(callbacks, process.stdin, process.stdout)),
-            timeout=remaining_startup_time(),
-        )
+            connection = connect_to_agent(callbacks, process.stdin, process.stdout)
+        else:
+            connection = await _acquire_injected_factory(
+                connection_factory,
+                callbacks,
+                process.stdin,
+                process.stdout,
+                timeout=remaining_startup_time(),
+                cleanup_result=cleanup_connection,
+            )
 
         from acp import PROTOCOL_VERSION
         from acp.schema import ClientCapabilities, Implementation
@@ -304,8 +379,6 @@ async def open_acp_process_session(
     except BaseException:
         callbacks.cancelled = True
         cancel_session = True
-        if process is None and spawn_task is not None and not spawn_task.done():
-            process = await _await_spawn_task(spawn_task, config.shutdown_grace_period)
         raise
     finally:
         callbacks.closed = True

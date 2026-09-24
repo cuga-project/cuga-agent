@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from .acp_client.callbacks import ACPClientCallbacks, LifecycleRegistrar, PermissionHandler
 from .acp_client.config import ACPProcessConfig
-from .acp_client.process import ACPStartupTimeoutError, open_acp_process_session
+from .acp_client.process import ACPFactoryContractError, ACPStartupTimeoutError, open_acp_process_session
 from .acp_client import result as normalized
 
 
@@ -78,7 +78,7 @@ async def _delegate_task_via_acp(
             return normalized.success(callbacks.text)
     except asyncio.CancelledError:
         raise
-    except ACPStartupTimeoutError:
+    except (ACPFactoryContractError, ACPStartupTimeoutError):
         return normalized.startup_failure()
     except TimeoutError:
         return normalized.timeout()
