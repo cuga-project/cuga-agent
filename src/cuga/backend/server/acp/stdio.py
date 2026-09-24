@@ -3,19 +3,54 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import logging
 import sys
 from typing import Any, Awaitable, Callable
 
 
+class _DiscardTextStream:
+    """Absorb untrusted library stdout without forwarding payloads to stderr."""
+
+    def write(self, value: str) -> int:
+        return len(value)
+
+    def flush(self) -> None:
+        return None
+
+
+class _AcpDiagnosticFilter(logging.Filter):
+    """Allow only fixed diagnostics emitted by the ACP adapter itself."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.name.startswith("cuga.backend.server.acp")
+
+
+class _BoundedDiagnosticFormatter(logging.Formatter):
+    """Render fixed-shape diagnostics without exception or payload expansion."""
+
+    _LIMIT = 240
+
+    def format(self, record: logging.LogRecord) -> str:
+        rendered = super().format(record)
+        return rendered.replace("\r", " ").replace("\n", " ")[: self._LIMIT]
+
+
 def configure_logging() -> None:
-    """Send Python diagnostics to stderr before loading optional/heavy modules."""
+    """Install restrictive, bounded stderr diagnostics before heavy imports."""
     root = logging.getLogger()
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    handler.setLevel(logging.WARNING)
+    handler.addFilter(_AcpDiagnosticFilter())
+    handler.setFormatter(_BoundedDiagnosticFormatter("%(levelname)s %(name)s: %(message)s"))
     root.handlers[:] = [handler]
-    root.setLevel(logging.INFO)
+    # Silence all inherited third-party diagnostics by default: warning records
+    # may contain prompts, outputs, credentials, or exception text.
+    root.setLevel(logging.CRITICAL + 1)
+    # Existing graph loggers include prompt and answer payloads even at WARNING.
+    # The ACP process reports only its own fixed diagnostic messages.
+    logging.getLogger("cuga").setLevel(logging.CRITICAL + 1)
+    logging.getLogger(__name__).setLevel(logging.WARNING)
 
 
 def _load_runtime() -> Callable[..., Awaitable[None]]:
@@ -39,13 +74,13 @@ async def serve(runner: Any | None = None) -> int:
     try:
         from cuga.backend.server.acp import create_agent
 
-        # Bind the protocol streams to the original descriptors first. Redirect
-        # subsequent Python stdout writes from CUGA/tools to stderr so they can
-        # never be interpreted as JSON-RPC frames by the peer.
+        # Bind protocol streams to the original descriptors first, then discard
+        # untrusted Python stdout writes so they reach neither JSON-RPC nor logs.
         reader, writer = await _stdio_streams()
         agent = create_agent(runner)
         runtime = _load_runtime()
-        with redirect_stdout(sys.stderr):
+        discard = _DiscardTextStream()
+        with redirect_stdout(discard), redirect_stderr(discard):
             await runtime(
                 agent,
                 input_stream=writer,
@@ -60,7 +95,9 @@ async def serve(runner: Any | None = None) -> int:
     finally:
         if agent is not None:
             try:
-                await agent.shutdown()
+                discard = _DiscardTextStream()
+                with redirect_stdout(discard), redirect_stderr(discard):
+                    await agent.shutdown()
             except asyncio.CancelledError:
                 primary_cancelled = True
             except Exception as exc:

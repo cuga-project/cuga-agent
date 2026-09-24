@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -18,11 +19,23 @@ class _FakeAgent:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.closed = 0
+        self.initialize_calls = 0
+        self.invoke_started = asyncio.Event()
+        self.invoke_release = asyncio.Event()
+        self.block_invoke = False
         self.graph = SimpleNamespace(get_state=lambda _config: type(self).snapshot)
         type(self).instances.append(self)
 
+    async def initialize(self) -> None:
+        self.initialize_calls += 1
+
     async def invoke(self, message: str | None, **kwargs: Any) -> Any:
         self.calls.append({"message": message, **kwargs})
+        self.invoke_started.set()
+        if self.block_invoke:
+            await self.invoke_release.wait()
+        if kwargs.get("action_response") is not None:
+            type(self).snapshot = SimpleNamespace(next=(), values={})
         return type(self).result
 
     async def aclose(self) -> None:
@@ -56,6 +69,33 @@ async def test_runner_constructs_direct_agent_lazily_and_reuses_context(
 
 
 @pytest.mark.unit
+async def test_runner_initializes_once_before_concurrent_distinct_context_invocations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import cuga.sdk
+    from cuga.backend.server.acp.runner import StdioCugaRunner
+
+    monkeypatch.setattr(cuga.sdk, "CugaAgent", _FakeAgent)
+    runner = StdioCugaRunner()
+    agent = runner._get_agent()
+    agent.block_invoke = True
+
+    async def consume(context_id: str) -> list[Any]:
+        return [event async for event in runner.run("work", context_id=context_id)]
+
+    first = asyncio.create_task(consume("ctx-one"))
+    await agent.invoke_started.wait()
+    second = asyncio.create_task(consume("ctx-two"))
+    while len(agent.calls) < 2:
+        await asyncio.sleep(0)
+    agent.invoke_release.set()
+    await asyncio.gather(first, second)
+
+    assert agent.initialize_calls == 1
+    assert [call["thread_id"] for call in agent.calls] == ["ctx-one", "ctx-two"]
+
+
+@pytest.mark.unit
 async def test_runner_maps_pending_hitl_and_structured_resume(monkeypatch: pytest.MonkeyPatch) -> None:
     import cuga.sdk
     from cuga.backend.server.acp.runner import StdioCugaRunner
@@ -71,7 +111,6 @@ async def test_runner_maps_pending_hitl_and_structured_resume(monkeypatch: pytes
     assert events[0].name == "input_required"
     assert events[0].data == {"text": "Approve operation", "action_id": "action-1"}
 
-    _FakeAgent.snapshot = SimpleNamespace(next=(), values={})
     resumed = [
         event
         async for event in runner.run(
@@ -88,12 +127,62 @@ async def test_runner_maps_pending_hitl_and_structured_resume(monkeypatch: pytes
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("action_id", [None, "", 7, [], {}])
+async def test_runner_rejects_malformed_structured_resume_without_invoke(
+    monkeypatch: pytest.MonkeyPatch, action_id: Any
+) -> None:
+    import cuga.sdk
+    from cuga.backend.server.acp.runner import StdioCugaRunner
+
+    monkeypatch.setattr(cuga.sdk, "CugaAgent", _FakeAgent)
+    _FakeAgent.snapshot = SimpleNamespace(
+        next=("WaitForResponse",),
+        values={"hitl_action": {"action_id": "action-1", "description": "Approve"}},
+    )
+    runner = StdioCugaRunner()
+    events = [
+        event
+        async for event in runner.run(
+            "do it", context_id="ctx", approval={"action_id": action_id, "confirmed": True}
+        )
+    ]
+
+    assert events[0].name == "error"
+    assert _FakeAgent.instances[0].calls == []
+
+
+@pytest.mark.unit
+async def test_runner_rejects_stale_or_mismatched_structured_resume_without_invoke(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import cuga.sdk
+    from cuga.backend.server.acp.runner import StdioCugaRunner
+
+    monkeypatch.setattr(cuga.sdk, "CugaAgent", _FakeAgent)
+    _FakeAgent.snapshot = SimpleNamespace(
+        next=("WaitForResponse",),
+        values={"hitl_action": {"action_id": "current-action", "description": "Approve"}},
+    )
+    runner = StdioCugaRunner()
+    events = [
+        event
+        async for event in runner.run(
+            "do it", context_id="ctx", approval={"action_id": "stale-action", "confirmed": True}
+        )
+    ]
+
+    assert events[0].name == "error"
+    assert _FakeAgent.instances[0].calls == []
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "snapshot",
     [
         SimpleNamespace(next=("WaitForResponse",), values={}),
         SimpleNamespace(next=("WaitForResponse",), values={"hitl_action": object()}),
         SimpleNamespace(next=("WaitForResponse",), values={"hitl_action": {"description": "missing id"}}),
+        SimpleNamespace(next=("WaitForResponse",), values={"hitl_action": {"action_id": 7}}),
     ],
 )
 async def test_runner_fails_closed_for_malformed_or_missing_hitl(

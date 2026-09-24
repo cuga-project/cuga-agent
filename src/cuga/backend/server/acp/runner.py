@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
@@ -17,6 +18,9 @@ class StdioCugaRunner:
 
     def __init__(self) -> None:
         self._agent: Any | None = None
+        self._initialization_lock = asyncio.Lock()
+        self._initialized = False
+        self._closed = False
 
     def _get_agent(self) -> Any:
         if self._agent is None:
@@ -24,6 +28,22 @@ class StdioCugaRunner:
 
             self._agent = CugaAgent()
         return self._agent
+
+    async def _get_initialized_agent(self) -> Any:
+        """Initialize and compile the shared SDK agent exactly once."""
+        if self._closed:
+            raise RuntimeError("ACP runner is closed")
+        agent = self._get_agent()
+        if self._initialized:
+            return agent
+        async with self._initialization_lock:
+            if not self._initialized:
+                await agent.initialize()
+                # Graph compilation is lazy and mutates shared agent state. Complete
+                # it inside the same one-time barrier before concurrent invocations.
+                _ = agent.graph
+                self._initialized = True
+        return agent
 
     async def run(
         self,
@@ -33,14 +53,27 @@ class StdioCugaRunner:
     ) -> AsyncIterator[Any]:
         from cuga.backend.server.agent_protocol.events import AgentStreamEvent
 
-        agent = self._get_agent()
+        agent = await self._get_initialized_agent()
         action_response = None
         invoke_message: str | None = message
         if approval is not None:
+            action_id = approval.get("action_id")
+            if not isinstance(action_id, str) or not action_id:
+                yield AgentStreamEvent("error", final=True)
+                return
+            try:
+                pending = _pending_action(agent, context_id)
+            except Exception:
+                yield AgentStreamEvent("error", final=True)
+                return
+            if pending is None or pending.get("action_id") != action_id:
+                yield AgentStreamEvent("error", final=True)
+                return
+
             from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
 
             action_response = ActionResponse(
-                action_id=str(approval.get("action_id") or "unknown"),
+                action_id=action_id,
                 response_type="confirmation",
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 user_id="acp_user",
@@ -76,7 +109,9 @@ class StdioCugaRunner:
 
     async def shutdown(self) -> None:
         """Close and release the lazily constructed direct agent."""
+        self._closed = True
         agent, self._agent = self._agent, None
+        self._initialized = False
         if agent is not None:
             await agent.aclose()
 
@@ -97,8 +132,9 @@ def _pending_action(agent: Any, context_id: str | None) -> dict[str, Any] | None
         if not callable(dump):
             raise RuntimeError("Paused CUGA state has malformed permission action")
         result = dump()
-    if not result.get("action_id"):
-        raise RuntimeError("Paused CUGA state has no permission action id")
+    action_id = result.get("action_id")
+    if not isinstance(action_id, str) or not action_id:
+        raise RuntimeError("Paused CUGA state has no valid permission action id")
     return result
 
 

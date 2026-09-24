@@ -145,7 +145,7 @@ async def test_runtime_stdout_is_redirected_after_protocol_stream_binding(
     assert await stdio.serve(runner=_Runner()) == 0
     captured = capsys.readouterr()
     assert captured.out == "before binding\n"
-    assert "tool noise" in captured.err
+    assert "tool noise" not in captured.err
 
 
 @pytest.mark.unit
@@ -170,11 +170,13 @@ async def test_cleanup_failure_is_sanitized_and_returns_failure(
 
 
 @pytest.mark.unit
-async def test_logging_is_configured_to_stderr() -> None:
+async def test_logging_is_restrictive_bounded_and_configured_to_stderr() -> None:
     from cuga.backend.server.acp.stdio import configure_logging
 
     configure_logging()
     root = logging.getLogger()
+    assert root.level > logging.CRITICAL
+    assert logging.getLogger("cuga.backend.cuga_graph").getEffectiveLevel() > logging.CRITICAL
     assert root.handlers
     assert all(getattr(handler, "stream", sys.stderr) is sys.stderr for handler in root.handlers)
 
@@ -222,17 +224,30 @@ assert 'cuga.backend.server.main' not in sys.modules
 
 
 @pytest.mark.unit
-async def test_sdk_driven_subprocess_smoke_stdout_is_protocol_only() -> None:
+async def test_sdk_driven_subprocess_smoke_stdout_is_protocol_only_and_stderr_has_no_secrets() -> None:
     root = Path(__file__).parents[3]
     client = _Client()
+    prompt_secret = "JOB3_UNIQUE_PROMPT_SECRET_4f9d"
+    output_secret = "JOB3_UNIQUE_OUTPUT_SECRET_85ac"
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root / "src")
-    script = """
+    script = f"""
+import logging
 from cuga.backend.server.acp.stdio import main
 from cuga.backend.server.agent_protocol.events import AgentStreamEvent
 class Runner:
     async def run(self, message, context_id=None, approval=None):
-        yield AgentStreamEvent('final_answer', {'text': 'pipe answer'}, final=True)
+        logging.getLogger('cuga.backend.cuga_graph.payload').warning(message)
+        third_party = logging.getLogger('third_party.payload')
+        third_party.setLevel(logging.WARNING)
+        third_party.warning(message)
+        third_party.exception('{output_secret}')
+        print(message)
+        print('{output_secret}')
+        import sys
+        sys.stderr.write(message)
+        sys.stderr.write('{output_secret}')
+        yield AgentStreamEvent('final_answer', {{'text': '{output_secret}'}}, final=True)
 raise SystemExit(main(runner=Runner()))
 """
     async with spawn_agent_process(
@@ -251,10 +266,14 @@ raise SystemExit(main(runner=Runner()))
         session = await connection.new_session(cwd=str(root), mcp_servers=[])
         response = await connection.prompt(
             session.session_id,
-            [TextContentBlock(type="text", text="hello")],
+            [TextContentBlock(type="text", text=prompt_secret)],
         )
 
     assert initialized.protocol_version == PROTOCOL_VERSION
     assert response.stop_reason == "end_turn"
-    assert client.text == ["pipe answer"]
+    assert client.text == [output_secret]
     assert process.returncode == 0
+    assert process.stderr is not None
+    stderr = await process.stderr.read()
+    assert prompt_secret.encode() not in stderr
+    assert output_secret.encode() not in stderr

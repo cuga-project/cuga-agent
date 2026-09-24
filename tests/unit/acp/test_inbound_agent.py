@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import FrozenInstanceError, dataclass
 from typing import Any
 
 import pytest
@@ -94,10 +94,15 @@ class _BlockingUpdateClient(_FakeClient):
         super().__init__()
         self.update_started = asyncio.Event()
         self.update_release = asyncio.Event()
+        self.update_cancelled = 0
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
         self.update_started.set()
-        await self.update_release.wait()
+        try:
+            await self.update_release.wait()
+        except asyncio.CancelledError:
+            self.update_cancelled += 1
+            raise
         await super().session_update(session_id, update, **kwargs)
 
 
@@ -166,6 +171,14 @@ async def test_new_sessions_are_unique_stable_and_isolated_metadata() -> None:
     assert first_record.cwd == "/workspace/one"
     assert first_record.additional_directories == ("/extra",)
     assert first_record.context_id != agent.session_metadata(second.session_id).context_id
+    assert set(first_record.__dataclass_fields__) == {
+        "session_id",
+        "context_id",
+        "cwd",
+        "additional_directories",
+    }
+    with pytest.raises(FrozenInstanceError):
+        first_record.cwd = "/mutated"
 
     await agent.prompt(first.session_id, [_text("first")])
     await agent.prompt(second.session_id, [_text("second")])
@@ -256,10 +269,11 @@ async def test_prompt_filters_reasoning_and_only_streams_intended_output() -> No
 
 
 @pytest.mark.unit
-async def test_prompt_does_not_duplicate_final_text_already_streamed() -> None:
+async def test_repeated_progress_and_equal_final_are_distinct_events() -> None:
     runner = _ScriptedRunner(
         [
             [
+                AgentStreamEvent("agent_message", {"text": "same answer"}),
                 AgentStreamEvent("agent_message", {"text": "same answer"}),
                 AgentStreamEvent("final_answer", {"text": "same answer"}, final=True),
             ]
@@ -269,7 +283,11 @@ async def test_prompt_does_not_duplicate_final_text_already_streamed() -> None:
 
     await agent.prompt(session_id, [_text("hello")])
 
-    assert [update.content.text for _, update in client.updates] == ["same answer"]
+    assert [update.content.text for _, update in client.updates] == [
+        "same answer",
+        "same answer",
+        "same answer",
+    ]
 
 
 @pytest.mark.unit
@@ -374,6 +392,78 @@ async def test_different_sessions_run_independently() -> None:
 
 
 @pytest.mark.unit
+async def test_cancel_before_prompt_registration_is_not_lost() -> None:
+    runner = _ScriptedRunner([[AgentStreamEvent("final_answer", {"text": "must not run"}, final=True)]])
+    agent, client, session_id = await _new_agent(runner)
+    record = agent._sessions[session_id]
+    await record.lock.acquire()
+    prompt_task = asyncio.create_task(agent.prompt(session_id, [_text("hello")]))
+    while not record.registering_tasks:
+        await asyncio.sleep(0)
+    cancel_task = asyncio.create_task(agent.cancel(session_id))
+    await asyncio.sleep(0)
+    record.lock.release()
+
+    await cancel_task
+
+    assert (await prompt_task).stop_reason == "cancelled"
+    assert len(runner.calls) <= 1
+    assert client.updates == []
+
+
+@pytest.mark.unit
+async def test_cancel_during_later_turn_registration_is_not_lost() -> None:
+    runner = _ScriptedRunner(
+        [
+            [AgentStreamEvent("final_answer", {"text": "first"}, final=True)],
+            [AgentStreamEvent("final_answer", {"text": "must not run"}, final=True)],
+        ]
+    )
+    agent, client, session_id = await _new_agent(runner)
+    assert (await agent.prompt(session_id, [_text("one")])).stop_reason == "end_turn"
+    record = agent._sessions[session_id]
+    await record.lock.acquire()
+    second = asyncio.create_task(agent.prompt(session_id, [_text("two")]))
+    while not record.registering_tasks:
+        await asyncio.sleep(0)
+    cancel_task = asyncio.create_task(agent.cancel(session_id))
+    await asyncio.sleep(0)
+    record.lock.release()
+
+    await cancel_task
+    assert (await second).stop_reason == "cancelled"
+    assert len(runner.calls) <= 2
+    assert [update.content.text for _, update in client.updates] == ["first"]
+
+
+@pytest.mark.unit
+async def test_duplicate_or_late_cancel_does_not_poison_next_turn() -> None:
+    runner = _ScriptedRunner(
+        [
+            [AgentStreamEvent("final_answer", {"text": "first"}, final=True)],
+            [AgentStreamEvent("final_answer", {"text": "second"}, final=True)],
+        ]
+    )
+    agent, client, session_id = await _new_agent(runner)
+
+    assert (await agent.prompt(session_id, [_text("one")])).stop_reason == "end_turn"
+    await agent.cancel(session_id)
+    await agent.cancel(session_id)
+    assert (await agent.prompt(session_id, [_text("two")])).stop_reason == "end_turn"
+
+    assert [update.content.text for _, update in client.updates] == ["first", "second"]
+
+
+@pytest.mark.unit
+async def test_terminal_safe_event_is_delivered_once_without_fallback() -> None:
+    runner = _ScriptedRunner([[AgentStreamEvent("message", {"text": "terminal"}, final=True)]])
+    agent, client, session_id = await _new_agent(runner)
+
+    assert (await agent.prompt(session_id, [_text("hello")])).stop_reason == "end_turn"
+    assert [update.content.text for _, update in client.updates] == ["terminal"]
+
+
+@pytest.mark.unit
 async def test_cancel_is_idempotent_propagates_and_suppresses_late_updates() -> None:
     runner = _ScriptedRunner([[AgentStreamEvent("final_answer", {"text": "too late"}, final=True)]])
     runner.block = True
@@ -390,7 +480,7 @@ async def test_cancel_is_idempotent_propagates_and_suppresses_late_updates() -> 
 
 
 @pytest.mark.unit
-async def test_cancel_after_terminal_commit_does_not_change_completion() -> None:
+async def test_cancel_during_final_delivery_suppresses_output_and_cleans_task() -> None:
     runner = _ScriptedRunner([[AgentStreamEvent("final_answer", {"text": "done"}, final=True)]])
     client = _BlockingUpdateClient()
     agent, _client, session_id = await _new_agent(runner, client)
@@ -398,10 +488,27 @@ async def test_cancel_after_terminal_commit_does_not_change_completion() -> None
     await client.update_started.wait()
 
     await agent.cancel(session_id)
-    client.update_release.set()
 
-    assert (await prompt_task).stop_reason == "end_turn"
-    assert [update.content.text for _, update in client.updates] == ["done"]
+    assert (await prompt_task).stop_reason == "cancelled"
+    assert client.update_cancelled == 1
+    assert client.updates == []
+    assert agent._sessions[session_id].active_task is None
+
+
+@pytest.mark.unit
+async def test_shutdown_during_final_delivery_suppresses_output_and_cleans_task() -> None:
+    runner = _ScriptedRunner([[AgentStreamEvent("final_answer", {"text": "done"}, final=True)]])
+    client = _BlockingUpdateClient()
+    agent, _client, session_id = await _new_agent(runner, client)
+    prompt_task = asyncio.create_task(agent.prompt(session_id, [_text("hello")]))
+    await client.update_started.wait()
+
+    await agent.shutdown()
+
+    assert (await prompt_task).stop_reason == "cancelled"
+    assert client.update_cancelled == 1
+    assert client.updates == []
+    assert agent._sessions[session_id].active_task is None
 
 
 @pytest.mark.unit
@@ -456,6 +563,45 @@ async def test_hitl_permission_outcomes_resume_same_context(outcome: Any, confir
     assert runner.calls[1].context_id == runner.calls[0].context_id
     assert runner.calls[1].approval == {"action_id": "action-1", "confirmed": confirmed}
     assert [update.content.text for _, update in client.updates] == ["finished"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("action_id", [None, "", 7, [], {}])
+async def test_malformed_hitl_action_id_fails_before_permission_and_never_resumes(action_id: Any) -> None:
+    runner = _ScriptedRunner(
+        [[AgentStreamEvent("input_required", {"text": "Continue?", "action_id": action_id}, final=True)]]
+    )
+    agent, client, session_id = await _new_agent(runner)
+
+    with pytest.raises(RequestError) as exc_info:
+        await agent.prompt(session_id, [_text("hello")])
+
+    assert exc_info.value.code == -32603
+    assert client.permission_requests == []
+    assert len(runner.calls) == 1
+
+
+@pytest.mark.unit
+async def test_stale_pending_hitl_action_fails_closed_without_resume() -> None:
+    runner = _ScriptedRunner(
+        [[AgentStreamEvent("input_required", {"text": "Continue?", "action_id": "action-1"}, final=True)]]
+    )
+    client = _FakeClient(
+        [RequestPermissionResponse(outcome=AllowedOutcome(outcome="selected", optionId="allow-once"))]
+    )
+    client.block_permission = True
+    agent, _client, session_id = await _new_agent(runner, client)
+    prompt_task = asyncio.create_task(agent.prompt(session_id, [_text("hello")]))
+    await client.permission_started.wait()
+    record = agent._sessions[session_id]
+    async with record.lock:
+        record.pending_action_id = "different-action"
+    client.permission_release.set()
+
+    with pytest.raises(RequestError) as exc_info:
+        await prompt_task
+    assert exc_info.value.code == -32603
+    assert len(runner.calls) == 1
 
 
 @pytest.mark.unit
@@ -532,3 +678,17 @@ async def test_shutdown_cancels_all_active_prompt_tasks() -> None:
     responses = await asyncio.gather(*tasks)
     assert [response.stop_reason for response in responses] == ["cancelled", "cancelled"]
     assert runner.cancelled == 2
+
+
+@pytest.mark.unit
+async def test_shutdown_rejects_new_prompt_without_entering_runner() -> None:
+    runner = _ScriptedRunner([[AgentStreamEvent("final_answer", {"text": "late"}, final=True)]])
+    agent, client, session_id = await _new_agent(runner)
+
+    await agent.shutdown()
+    with pytest.raises(RequestError) as exc_info:
+        await agent.prompt(session_id, [_text("hello")])
+
+    assert exc_info.value.code == -32600
+    assert runner.calls == []
+    assert client.updates == []
