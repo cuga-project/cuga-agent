@@ -148,8 +148,10 @@ def create_agent_delegation_func(
 
         if isinstance(agent_or_config, dict) and agent_or_config.get("type") == "external":
             external_config = agent_or_config.get("config", {})
+            if not isinstance(external_config, dict):
+                external_config = {}
             acp_mapping = external_config.get("acp_protocol", {})
-            if acp_mapping.get("enabled"):
+            if isinstance(acp_mapping, dict) and acp_mapping.get("enabled") is True:
                 from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
                     acp_process_config_from_mapping,
                 )
@@ -157,16 +159,24 @@ def create_agent_delegation_func(
                     delegate_task_via_acp,
                 )
 
-                acp_config = acp_process_config_from_mapping(
-                    acp_mapping,
-                    name=external_config.get("name", agent_name),
-                    description=external_config.get("description"),
-                )
-                result = await delegate_task_via_acp(
-                    config=acp_config,
-                    task=task,
-                    permission_handler=permission_handler,
-                )
+                try:
+                    acp_config = acp_process_config_from_mapping(
+                        acp_mapping,
+                        name=external_config.get("name", agent_name),
+                        description=external_config.get("description"),
+                    )
+                except ValueError:
+                    result = {
+                        "result": "ACP agent configuration is invalid.",
+                        "status": "failed",
+                        "variables": {},
+                    }
+                else:
+                    result = await delegate_task_via_acp(
+                        config=acp_config,
+                        task=task,
+                        permission_handler=permission_handler,
+                    )
                 answer = result.get("result", "")
                 result_vars = result.get("variables") or {}
                 _record_delegation(
@@ -178,7 +188,11 @@ def create_agent_delegation_func(
                 )
                 return answer
 
-            a2a_config = external_config.get("a2a_protocol", {})
+            a2a_config = external_config.get("a2a_protocol")
+            if not isinstance(a2a_config, dict):
+                error_answer = f"Error: Unknown agent type for {agent_name}"
+                _record_delegation(adapter, agent_name, answer=error_answer)
+                return error_answer
             endpoint = a2a_config.get("endpoint")
             transport = a2a_config.get("transport", "http")
 

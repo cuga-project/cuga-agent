@@ -13,6 +13,18 @@ _DEFAULT_PROMPT_TIMEOUT = 120.0
 _DEFAULT_SHUTDOWN_GRACE_PERIOD = 5.0
 _MAX_TIMEOUT = 3600.0
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ACP_MAPPING_KEYS = frozenset(
+    {
+        "enabled",
+        "command",
+        "args",
+        "cwd",
+        "env",
+        "startup_timeout",
+        "prompt_timeout",
+        "shutdown_grace_period",
+    }
+)
 _OBSOLETE_BEEAI_KEYS = frozenset(
     {
         "endpoint",
@@ -28,6 +40,56 @@ _OBSOLETE_BEEAI_KEYS = frozenset(
         "transport",
     }
 )
+
+
+def _safe_key_name(key: object) -> str:
+    if not isinstance(key, str):
+        return f"<{type(key).__name__}>"
+    sanitized = "".join(
+        character if character.isprintable() and character not in "`" else "?" for character in key
+    )
+    return sanitized[:80] or "<empty>"
+
+
+def validate_acp_protocol_mapping(mapping: Mapping[str, Any]) -> None:
+    """Validate the protocol wrapper fields without requiring an enabled process command."""
+
+    if not isinstance(mapping, Mapping):
+        raise ValueError("acp_protocol must be a mapping")
+    obsolete = sorted(key for key in mapping if isinstance(key, str) and key in _OBSOLETE_BEEAI_KEYS)
+    if obsolete:
+        joined = ", ".join(obsolete)
+        raise ValueError(
+            f"Obsolete BeeAI ACP configuration key(s): {joined}. "
+            "Migrate to Agent Client Protocol subprocess fields command, args, cwd, and env."
+        )
+    unknown = [
+        _safe_key_name(key) for key in mapping if not isinstance(key, str) or key not in _ACP_MAPPING_KEYS
+    ]
+    if unknown:
+        accepted = ", ".join(sorted(_ACP_MAPPING_KEYS))
+        raise ValueError(
+            f"Unknown acp_protocol configuration key(s): {', '.join(sorted(unknown))}. "
+            f"Accepted keys: {accepted}."
+        )
+    enabled = mapping.get("enabled")
+    if not isinstance(enabled, bool):
+        raise ValueError("acp_protocol enabled must be a boolean")
+    if not enabled:
+        disabled_mapping = dict(mapping)
+        if "command" not in disabled_mapping:
+            disabled_mapping["command"] = "disabled-acp-agent"
+        ACPProcessConfig(
+            command=disabled_mapping["command"],
+            args=disabled_mapping.get("args", ()),
+            cwd=disabled_mapping.get("cwd"),
+            env=disabled_mapping.get("env", ()),
+            startup_timeout=disabled_mapping.get("startup_timeout", _DEFAULT_STARTUP_TIMEOUT),
+            prompt_timeout=disabled_mapping.get("prompt_timeout", _DEFAULT_PROMPT_TIMEOUT),
+            shutdown_grace_period=disabled_mapping.get(
+                "shutdown_grace_period", _DEFAULT_SHUTDOWN_GRACE_PERIOD
+            ),
+        )
 
 
 def _string_tuple(value: Sequence[str], *, field_name: str) -> tuple[str, ...]:
@@ -105,15 +167,7 @@ def acp_process_config_from_mapping(
 ) -> ACPProcessConfig:
     """Convert one supervisor ``acp_protocol`` mapping to validated configuration."""
 
-    if not isinstance(mapping, Mapping):
-        raise ValueError("acp_protocol must be a mapping")
-    obsolete = sorted(_OBSOLETE_BEEAI_KEYS.intersection(mapping))
-    if obsolete:
-        joined = ", ".join(obsolete)
-        raise ValueError(
-            f"Obsolete BeeAI ACP configuration key(s): {joined}. "
-            "Migrate to Agent Client Protocol subprocess fields command, args, cwd, and env."
-        )
+    validate_acp_protocol_mapping(mapping)
     return ACPProcessConfig(
         command=mapping.get("command", ""),
         args=mapping.get("args", ()),

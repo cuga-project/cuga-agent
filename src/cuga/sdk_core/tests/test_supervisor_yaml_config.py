@@ -556,6 +556,38 @@ agents:
 
     @pytest.mark.unit
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("acp_fragment", "message"),
+        [
+            ("enabled: 'true'\n      command: external-agent", "enabled must be a boolean"),
+            ("enabled: true\n      prompt_timout: 5", "Unknown acp_protocol"),
+            ("enabled: false\n      endpoint: https://legacy.example", "Obsolete BeeAI ACP"),
+        ],
+    )
+    async def test_yaml_rejects_malformed_unknown_and_disabled_legacy_acp(
+        self, acp_fragment: str, message: str
+    ):
+        yaml_content = f"""
+supervisor:
+  strategy: adaptive
+
+agents:
+  - name: invalid-acp
+    acp_protocol:
+      {acp_fragment}
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+
+        try:
+            with pytest.raises(ValueError, match=message):
+                await load_supervisor_config(temp_path)
+        finally:
+            os.unlink(temp_path)
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
     async def test_disabled_acp_block_preserves_a2a_loading(self):
         yaml_content = """
 supervisor:
@@ -565,7 +597,6 @@ agents:
   - name: mixed-agent
     acp_protocol:
       enabled: false
-      endpoint: https://agent.example.com/acp
     a2a_protocol:
       enabled: true
       endpoint: http://localhost:8000/a2a

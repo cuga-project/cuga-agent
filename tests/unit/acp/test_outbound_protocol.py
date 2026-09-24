@@ -91,6 +91,31 @@ def test_mapping_rejects_obsolete_beeai_keys(tmp_path: Path, legacy_key: str) ->
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("mapping", "message"),
+    [
+        (None, "acp_protocol must be a mapping"),
+        ({"enabled": "true", "command": "agent"}, "enabled must be a boolean"),
+        ({"enabled": True, "command": "agent", "prompt_timout": 1}, "Unknown acp_protocol"),
+        ({"enabled": False, "endpoint": "https://legacy.example"}, "Obsolete BeeAI ACP"),
+    ],
+)
+def test_mapping_rejects_malformed_types_unknown_and_disabled_legacy_keys(mapping: Any, message: str) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
+        acp_process_config_from_mapping,
+        validate_acp_protocol_mapping,
+    )
+
+    validator = (
+        validate_acp_protocol_mapping
+        if isinstance(mapping, dict) and mapping.get("enabled") is False
+        else acp_process_config_from_mapping
+    )
+    with pytest.raises(ValueError, match=message):
+        validator(mapping)
+
+
+@pytest.mark.unit
 def test_mapping_uses_exact_yaml_defaults_and_metadata(tmp_path: Path) -> None:
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
         acp_process_config_from_mapping,

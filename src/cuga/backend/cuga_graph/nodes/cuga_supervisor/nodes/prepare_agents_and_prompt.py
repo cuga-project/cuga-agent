@@ -95,8 +95,19 @@ async def describe_external_agent(agent_name: str, agent_or_config: Dict[str, An
 
     agent_type = agent_or_config.get("type", "external")
     agent_config = agent_or_config.get("config", {})
+    if not isinstance(agent_config, dict):
+        agent_config = {}
     acp_cfg = agent_config.get("acp_protocol", {})
-    if agent_type == "external" and acp_cfg.get("enabled"):
+    if agent_type == "external" and isinstance(acp_cfg, dict) and acp_cfg.get("enabled") is True:
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
+            acp_process_config_from_mapping,
+        )
+
+        acp_process_config_from_mapping(
+            acp_cfg,
+            name=agent_config.get("name", agent_name),
+            description=agent_config.get("description"),
+        )
         return ExternalAgentMetadata(
             agent_type="external",
             description=agent_config.get("description") or f"External agent: {agent_name}",
@@ -111,6 +122,8 @@ async def describe_external_agent(agent_name: str, agent_or_config: Dict[str, An
     )
 
     a2a_cfg = agent_config.get("a2a_protocol", {})
+    if not isinstance(a2a_cfg, dict):
+        a2a_cfg = {}
     agent_card = None
     if agent_type == "external" and HAS_A2A_SDK and a2a_cfg.get("transport") == "http":
         endpoint = a2a_cfg.get("endpoint")

@@ -67,3 +67,57 @@ async def test_acp_metadata_is_derived_per_agent_without_state_leakage(tmp_path:
     assert first_meta.description == "First description"
     assert second_meta.description == "Second description"
     assert first_meta is not second_meta
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        {"type": "external", "config": None},
+        {"type": "external", "config": {"acp_protocol": "enabled", "a2a_protocol": []}},
+    ],
+)
+async def test_malformed_external_protocol_wrappers_do_not_spawn_or_crash(
+    wrapped: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.prepare_agents_and_prompt import (
+        describe_external_agent,
+    )
+
+    spawn = AsyncMock(side_effect=AssertionError("prompt preparation must not spawn malformed ACP"))
+    monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+
+    metadata = await describe_external_agent("worker", wrapped)
+
+    assert metadata.agent_type == "external"
+    assert metadata.agent_card is None
+    assert metadata.accepts_variables is False
+    spawn.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "acp_protocol",
+    [
+        {"enabled": True},
+        {"enabled": True, "command": "agent", "prompt_timout": 5},
+        {"enabled": True, "endpoint": "https://legacy.example"},
+    ],
+)
+async def test_enabled_invalid_acp_config_is_rejected_without_spawning(
+    acp_protocol: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.prepare_agents_and_prompt import (
+        describe_external_agent,
+    )
+
+    spawn = AsyncMock(side_effect=AssertionError("prompt preparation must not spawn invalid ACP"))
+    monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+
+    with pytest.raises(ValueError):
+        await describe_external_agent(
+            "worker",
+            {"type": "external", "config": {"name": "worker", "acp_protocol": acp_protocol}},
+        )
+
+    spawn.assert_not_awaited()

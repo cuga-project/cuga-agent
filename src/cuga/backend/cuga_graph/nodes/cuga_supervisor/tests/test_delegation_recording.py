@@ -450,6 +450,70 @@ async def test_acp_delegations_build_independent_configs():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        {"type": "external", "config": None},
+        {"type": "external", "config": {"acp_protocol": "enabled", "a2a_protocol": []}},
+    ],
+)
+async def test_malformed_external_protocol_wrappers_fail_defensively_without_acp_dispatch(wrapped):
+    delegate_acp = AsyncMock(side_effect=AssertionError("malformed ACP must not dispatch"))
+
+    with patch(f"{_ACP_MODULE}.delegate_task_via_acp", delegate_acp):
+        answer = await create_agent_delegation_func(_make_adapter(), "worker", wrapped)("work")
+
+    assert answer == "Error: Unknown agent type for worker"
+    delegate_acp.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "acp_protocol",
+    [
+        {"enabled": True},
+        {"enabled": True, "command": "agent", "prompt_timout": 5},
+        {"enabled": True, "endpoint": "https://legacy.example"},
+    ],
+)
+async def test_enabled_invalid_acp_config_returns_and_records_sanitized_failure(acp_protocol):
+    adapter = _make_adapter()
+    original_record_delegation = adapter.record_delegation
+    adapter.record_delegation = MagicMock(side_effect=original_record_delegation)
+    state = _empty_delegation_state()
+    wrapped = {
+        "type": "external",
+        "config": {"name": "worker", "acp_protocol": acp_protocol},
+    }
+    delegate_acp = AsyncMock(side_effect=AssertionError("invalid ACP must not dispatch"))
+
+    with patch(f"{_ACP_MODULE}.delegate_task_via_acp", delegate_acp):
+        delegate = create_agent_delegation_func(adapter, "worker", wrapped)
+        namespace = {
+            SUPERVISOR_EXEC_KEY: SupervisorExecutionContext(state=state),
+            "delegate": delegate,
+        }
+        exec("async def _run():\n    return await delegate('work')\n", namespace, namespace)
+        answer = await namespace["_run"]()
+
+    assert answer == "ACP agent configuration is invalid."
+    adapter.record_delegation.assert_called_once_with(
+        state,
+        "worker",
+        result={
+            "result": "ACP agent configuration is invalid.",
+            "status": "failed",
+            "variables": {},
+        },
+        answer="ACP agent configuration is invalid.",
+        variables={},
+    )
+    delegate_acp.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_acp_delegation_preserves_caller_cancellation():
     with patch(
         f"{_ACP_MODULE}.delegate_task_via_acp",

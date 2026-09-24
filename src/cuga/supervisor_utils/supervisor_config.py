@@ -2,8 +2,10 @@
 Supervisor Configuration Loader - Loads supervisor configuration from YAML files
 """
 
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
 import yaml
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from loguru import logger
 from pydantic import BaseModel
 
@@ -20,6 +22,19 @@ class SupervisorConfig(BaseModel):
     supervisor: Dict[str, Any] = {}
     agents: Dict[str, Any] = {}  # Can contain CugaAgent instances or A2A configs
     a2a: Dict[str, Any] = {}
+
+
+def _protocol_block(
+    agent_config: Mapping[str, Any], protocol_name: str, agent_name: str
+) -> Mapping[str, Any] | None:
+    if protocol_name not in agent_config:
+        return None
+    block = agent_config[protocol_name]
+    if not isinstance(block, Mapping):
+        raise ValueError(f"Agent '{agent_name}': {protocol_name} must be a mapping")
+    if protocol_name == "acp_protocol" and not isinstance(block.get("enabled"), bool):
+        raise ValueError(f"Agent '{agent_name}': {protocol_name} enabled must be a boolean")
+    return block
 
 
 async def build_agents_from_list(
@@ -45,27 +60,38 @@ async def build_agents_from_list(
 
     for agent_config in agents_list:
         agent_name = agent_config["name"]
-
-        # Guard against simultaneously enabling more than one protocol block
-        _enabled_protocols = [
-            p for p in ("acp_protocol", "a2a_protocol") if agent_config.get(p, {}).get("enabled")
-        ]
-        if len(_enabled_protocols) > 1:
+        protocol_blocks = {
+            protocol_name: block
+            for protocol_name in ("acp_protocol", "a2a_protocol")
+            if (block := _protocol_block(agent_config, protocol_name, agent_name)) is not None
+        }
+        enabled_protocols = [name for name, block in protocol_blocks.items() if block.get("enabled")]
+        if len(enabled_protocols) > 1:
             raise ValueError(
                 f"Agent '{agent_name}': exactly one enabled protocol block is allowed"
-                f" (found: {_enabled_protocols})"
+                f" (found: {enabled_protocols})"
             )
 
-        if "acp_protocol" in agent_config and agent_config.get("acp_protocol", {}).get("enabled"):
+        acp_protocol = protocol_blocks.get("acp_protocol")
+        a2a_protocol = protocol_blocks.get("a2a_protocol")
+        if acp_protocol is not None:
             from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
                 acp_process_config_from_mapping,
+                validate_acp_protocol_mapping,
             )
 
-            acp_process_config_from_mapping(
-                agent_config["acp_protocol"],
-                name=agent_name,
-                description=agent_config.get("description"),
-            )
+            try:
+                validate_acp_protocol_mapping(acp_protocol)
+                if acp_protocol["enabled"]:
+                    acp_process_config_from_mapping(
+                        acp_protocol,
+                        name=agent_name,
+                        description=agent_config.get("description"),
+                    )
+            except ValueError as exc:
+                raise ValueError(f"Agent '{agent_name}': {exc}") from exc
+
+        if acp_protocol is not None and acp_protocol["enabled"]:
             agents[agent_name] = {
                 "type": "external",
                 "config": agent_config,
@@ -73,7 +99,7 @@ async def build_agents_from_list(
             logger.info(f"Registered external ACP agent: {agent_name}")
 
         # Check if this is an external agent (has a2a_protocol)
-        elif "a2a_protocol" in agent_config and agent_config.get("a2a_protocol", {}).get("enabled"):
+        elif a2a_protocol is not None and a2a_protocol.get("enabled"):
             # External agent via A2A - store config for later connection
             agents[agent_name] = {
                 "type": "external",
