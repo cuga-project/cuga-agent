@@ -32,3 +32,8 @@ def __getattr__(name: str) -> Any:
     value = getattr(import_module(module_name), attribute)
     globals()[name] = value
     return value
+
+
+def __dir__() -> list[str]:
+    """Expose lazy public exports to standard module introspection."""
+    return sorted(set(globals()) | set(_lazy_exports))

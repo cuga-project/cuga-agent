@@ -168,7 +168,14 @@ class SimpleAgentRunner:
                 finally:
                     close = getattr(stream, "aclose", None)
                     if close is not None:
-                        await close()
+                        try:
+                            await close()
+                        except Exception:
+                            # Closing is best-effort cleanup. An ordinary close
+                            # failure must not replace cancellation, GeneratorExit,
+                            # or an exception raised while consuming the stream;
+                            # nor may it append an error after a terminal event.
+                            logger.exception("Agent event stream cleanup failed")
 
                 # Stream ended without a terminal answer. The graph may be
                 # paused on a human-in-the-loop interrupt awaiting approval.
