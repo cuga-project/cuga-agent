@@ -782,6 +782,18 @@ class LLMManager:
                 default_model = "MiniMax-M3"
                 logger.info(f"No model_name specified for MiniMax, using default: {default_model}")
                 return default_model
+        elif platform == "requesty":
+            env_model_name = os.environ.get('MODEL_NAME')
+            if env_model_name:
+                logger.info(f"Using MODEL_NAME from environment for Requesty: {env_model_name}")
+                return env_model_name
+            elif toml_model_name:
+                logger.debug(f"Using model_name from TOML: {toml_model_name}")
+                return toml_model_name
+            else:
+                default_model = "openai/gpt-4o-mini"
+                logger.info(f"No model_name specified for Requesty, using default: {default_model}")
+                return default_model
         elif platform == "litellm":
             env_model_name = os.environ.get('MODEL_NAME')
             if env_model_name:
@@ -1002,6 +1014,21 @@ class LLMManager:
             default_minimax = "https://api.minimax.io/v1"
             logger.debug(f"No base URL specified for MiniMax, falling back to: {default_minimax}")
             return default_minimax
+        elif platform == "requesty":
+            env_base_url = os.environ.get('REQUESTY_BASE_URL')
+            if env_base_url:
+                logger.info(f"Using REQUESTY_BASE_URL from environment: {env_base_url}")
+                return env_base_url
+
+            # Check TOML settings
+            toml_url = model_settings.get('url')
+            if toml_url:
+                logger.debug(f"Using url from TOML: {toml_url}")
+                return toml_url
+
+            default_requesty = "https://router.requesty.ai/v1"
+            logger.debug(f"No base URL specified for Requesty, falling back to: {default_requesty}")
+            return default_requesty
         elif platform == "litellm":
             env_base_url = os.environ.get('OPENAI_BASE_URL') or os.environ.get('LITELLM_API_BASE')
             if env_base_url:
@@ -1486,6 +1513,41 @@ class LLMManager:
                 )
 
             llm = _get_reasoning_chat_openai()(**minimax_params)
+        elif platform == "requesty":
+            logger.debug(f"Creating Requesty model: {model_name}")
+            is_reasoning = self._is_reasoning_model(model_name)
+
+            api_key = _normalize_secret(resolve_secret("REQUESTY_API_KEY")) or os.environ.get(
+                "REQUESTY_API_KEY"
+            )
+            if not api_key:
+                raise ValueError("REQUESTY_API_KEY environment variable not set")
+
+            requesty_params: Dict[str, Any] = {
+                "model_name": model_name,
+                "max_tokens": max_tokens,
+                "timeout": http_timeout,
+                "openai_api_key": api_key,
+                "openai_api_base": base_url,
+            }
+
+            if not is_reasoning:
+                requesty_params["temperature"] = temperature
+                # Only send top_p when explicitly set (Bedrock/Claude via OpenAI-compatible).
+                _merge_optional_sampling(
+                    requesty_params,
+                    model_settings,
+                    keys=("top_p", "frequency_penalty", "presence_penalty", "stop"),
+                )
+            else:
+                logger.debug(f"Skipping temperature for reasoning model: {model_name}")
+                _merge_optional_sampling(
+                    requesty_params,
+                    model_settings,
+                    keys=("stop",),
+                )
+
+            llm = _get_reasoning_chat_openai()(**requesty_params)
         elif platform == "litellm" and _get_reasoning_chat_litellm() is not None:
             logger.debug(f"Creating LiteLLM model: {model_name}")
             ssl_verify = self._get_ssl_verify(model_settings)
@@ -1694,12 +1756,15 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
     # For non-local/non-force_env modes (e.g. vault), verify the API key is actually
     # resolvable before attempting to instantiate. Providers like openai require a key
     # and will raise at construction time if it is missing — which would crash startup.
-    if not use_env and platform in ("openai", "azure", "openrouter"):
+    if not use_env and platform in ("openai", "azure", "openrouter", "requesty"):
         apikey_ref = api_key or llm_cfg.get("apikey_name")
         resolved_key = _normalize_secret(resolve_secret(apikey_ref)) if apikey_ref else None
         if not resolved_key:
             # Use platform-specific fallback
-            fallback_key = "OPENROUTER_API_KEY" if platform == "openrouter" else "OPENAI_API_KEY"
+            fallback_key = {
+                "openrouter": "OPENROUTER_API_KEY",
+                "requesty": "REQUESTY_API_KEY",
+            }.get(platform, "OPENAI_API_KEY")
             resolved_key = _normalize_secret(resolve_secret(fallback_key)) or os.environ.get(fallback_key)
         if not resolved_key:
             raise ValueError(
