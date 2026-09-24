@@ -19,6 +19,13 @@ from acp.schema import (
 pytestmark = [pytest.mark.unit, pytest.mark.anyio]
 
 
+@pytest.fixture(autouse=True)
+def _workspace_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import paths
+
+    monkeypatch.setattr(paths, "local_base_dir", lambda: tmp_path)
+
+
 def _config(tmp_path: Path, **overrides: Any):
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import ACPProcessConfig
 
@@ -35,6 +42,11 @@ def _config(tmp_path: Path, **overrides: Any):
     }
     values.update(overrides)
     return ACPProcessConfig(**values)
+
+
+@pytest.mark.unit
+def test_process_config_defaults_cwd_to_shared_workspace(tmp_path: Path) -> None:
+    assert _config(tmp_path, cwd=None).cwd == tmp_path.resolve()
 
 
 @pytest.mark.unit
@@ -72,8 +84,31 @@ def test_process_config_rejects_invalid_values(
 @pytest.mark.unit
 def test_process_config_rejects_non_directory_cwd(tmp_path: Path) -> None:
     missing = tmp_path / "missing"
-    with pytest.raises(ValueError, match=r"cwd must resolve to an existing directory$"):
+    with pytest.raises(ValueError, match=r"cwd must resolve to an existing workspace directory$"):
         _config(tmp_path, cwd=missing)
+
+
+@pytest.mark.unit
+def test_process_config_allows_workspace_relative_directory(tmp_path: Path) -> None:
+    child = tmp_path / "project"
+    child.mkdir()
+    assert _config(tmp_path, cwd="project").cwd == child.resolve()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("cwd", ["../escape", "/etc"])
+def test_process_config_rejects_workspace_escape(tmp_path: Path, cwd: str) -> None:
+    with pytest.raises(ValueError, match="configured CUGA workspace"):
+        _config(tmp_path, cwd=cwd)
+
+
+@pytest.mark.unit
+def test_process_config_rejects_symlink_workspace_escape(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside"
+    outside.mkdir(exist_ok=True)
+    (tmp_path / "link").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="configured CUGA workspace"):
+        _config(tmp_path, cwd="link")
 
 
 @pytest.mark.unit
@@ -358,11 +393,93 @@ async def test_callbacks_permission_seam_uses_frozen_safe_dtos() -> None:
     assert request.title == "Run tests"
     assert request.kind == "execute"
     assert request.options[0].kind == "allow_once"
+    assert request.options[0].option_id == "option-1"
     assert "secret" not in repr(request)
     with pytest.raises(FrozenInstanceError):
         request.title = "changed"
     assert response.outcome.option_id == "allow"
     assert callbacks.permission_required is False
+
+
+@pytest.mark.unit
+async def test_permission_option_token_round_trips_exact_peer_id() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.callbacks import ACPClientCallbacks
+
+    original_id = "peer\n" + "x" * 1000
+
+    async def handler(request: Any) -> str:
+        assert request.options[0].option_id == "option-1"
+        assert original_id not in repr(request)
+        return request.options[0].option_id
+
+    callbacks = ACPClientCallbacks(permission_handler=handler)
+    callbacks.bind_session("owned")
+    response = await callbacks.request_permission(
+        "owned",
+        ToolCallUpdate(toolCallId="call", title="run", kind="execute"),
+        [PermissionOption(optionId=original_id, name="Allow", kind="allow_once")],
+    )
+    assert response.outcome.option_id == original_id
+
+
+@pytest.mark.unit
+async def test_permission_metadata_is_bounded_normalized_and_count_limited() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.callbacks import ACPClientCallbacks
+
+    seen = []
+
+    async def handler(request: Any) -> None:
+        seen.append(request)
+
+    callbacks = ACPClientCallbacks(permission_handler=handler, lifecycle_id="owned-lifecycle")
+    callbacks.bind_session("owned")
+    options = [
+        PermissionOption(
+            optionId=f"option-{index}\n" + "x" * 300, name="label\t" + "y" * 800, kind="allow_once"
+        )
+        for index in range(40)
+    ]
+    await callbacks.request_permission(
+        "owned",
+        ToolCallUpdate(toolCallId="call\n" + "z" * 300, title="title\x00" + "t" * 800, kind="execute\r"),
+        options,
+    )
+
+    request = seen[0]
+    assert request.lifecycle_id == "owned-lifecycle"
+    assert len(request.tool_call_id) <= 128
+    assert len(request.title) <= 512
+    assert len(request.kind or "") <= 64
+    assert len(request.options) == 32
+    assert all(character.isprintable() for character in request.title)
+    assert all(len(option.option_id) <= 128 and len(option.name) <= 512 for option in request.options)
+
+
+@pytest.mark.unit
+async def test_lifecycle_registration_uses_opaque_id_and_live_owner(tmp_path: Path) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    process = _FakeProcess()
+    connection = _FakeConnection()
+    registrations = []
+
+    async def registrar(lifecycle_id: str, owner: Any) -> None:
+        registrations.append((lifecycle_id, owner))
+
+    await _delegate_task_via_acp(
+        config=_config(tmp_path),
+        task="work",
+        lifecycle_registrar=registrar,
+        process_factory=lambda *_args, **_kwargs: _async_value(process),
+        connection_factory=lambda client, *_args: _bind(connection, client),
+    )
+
+    assert len(registrations) == 1
+    lifecycle_id, owner = registrations[0]
+    assert len(lifecycle_id) == 32
+    assert owner.process is process
+    assert owner.connection is connection
+    assert lifecycle_id not in repr(owner)
 
 
 @pytest.mark.unit
@@ -636,6 +753,61 @@ async def test_cleanup_retries_process_reap_after_nested_cancellation() -> None:
 
     assert process.returncode == 0
     assert process.wait_count == 2
+
+
+@pytest.mark.unit
+async def test_blocked_process_factory_is_bounded_by_startup_timeout(tmp_path: Path) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    async def blocked_factory(*_args: Any, **_kwargs: Any) -> Any:
+        await asyncio.Event().wait()
+
+    result = await _delegate_task_via_acp(
+        config=_config(tmp_path, startup_timeout=0.01),
+        task="work",
+        process_factory=blocked_factory,
+    )
+    assert result == {"result": "ACP agent could not be started.", "status": "failed", "variables": {}}
+
+
+@pytest.mark.unit
+async def test_cancellation_racing_late_spawn_reaps_and_propagates(tmp_path: Path) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import _delegate_task_via_acp
+
+    process = _FakeProcess()
+    spawn_started = asyncio.Event()
+
+    async def late_factory(*_args: Any, **_kwargs: Any) -> _FakeProcess:
+        spawn_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            return process
+
+    task = asyncio.create_task(
+        _delegate_task_via_acp(config=_config(tmp_path), task="work", process_factory=late_factory)
+    )
+    await spawn_started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert process.wait_count >= 1
+
+
+@pytest.mark.unit
+def test_secret_validation_is_fixed_bound_and_does_not_reflect_values(tmp_path: Path) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.process import (
+        _MAX_SECRET_BYTE_LENGTH,
+        _MAX_SECRET_COUNT,
+        _validated_secret_values,
+    )
+
+    oversized = "s" * (_MAX_SECRET_BYTE_LENGTH + 1)
+    with pytest.raises(ValueError, match="safe size limit") as error:
+        _validated_secret_values([oversized])
+    assert oversized not in str(error.value)
+    with pytest.raises(ValueError, match="too many"):
+        _validated_secret_values([f"overlap-{index}" for index in range(_MAX_SECRET_COUNT + 1)])
 
 
 @pytest.mark.unit

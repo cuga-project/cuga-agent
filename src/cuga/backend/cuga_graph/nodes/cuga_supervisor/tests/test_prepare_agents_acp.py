@@ -10,6 +10,13 @@ import pytest
 pytestmark = [pytest.mark.unit, pytest.mark.anyio]
 
 
+@pytest.fixture(autouse=True)
+def _workspace_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import paths
+
+    monkeypatch.setattr(paths, "local_base_dir", lambda: tmp_path)
+
+
 @pytest.mark.unit
 async def test_acp_prompt_metadata_uses_configured_description_without_spawning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -77,7 +84,7 @@ async def test_acp_metadata_is_derived_per_agent_without_state_leakage(tmp_path:
         {"type": "external", "config": {"acp_protocol": "enabled", "a2a_protocol": []}},
     ],
 )
-async def test_malformed_external_protocol_wrappers_do_not_spawn_or_crash(
+async def test_malformed_external_protocol_wrappers_fail_closed_without_spawning(
     wrapped: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.prepare_agents_and_prompt import (
@@ -87,12 +94,33 @@ async def test_malformed_external_protocol_wrappers_do_not_spawn_or_crash(
     spawn = AsyncMock(side_effect=AssertionError("prompt preparation must not spawn malformed ACP"))
     monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
 
-    metadata = await describe_external_agent("worker", wrapped)
-
-    assert metadata.agent_type == "external"
-    assert metadata.agent_card is None
-    assert metadata.accepts_variables is False
+    with pytest.raises(ValueError, match="config must be a mapping|protocol must be a mapping"):
+        await describe_external_agent("worker", wrapped)
     spawn.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        {"type": "external", "config": {"a2a_protocol": {"enabled": False}}},
+        {
+            "type": "external",
+            "config": {
+                "acp_protocol": {"enabled": False},
+                "a2a_protocol": {"enabled": False},
+            },
+        },
+        {"type": "external", "config": {"a2a_protocol": {}}},
+    ],
+)
+async def test_prompt_preparation_rejects_zero_enabled_protocols(wrapped: dict) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.prepare_agents_and_prompt import (
+        describe_external_agent,
+    )
+
+    with pytest.raises(ValueError, match="exactly one enabled protocol block is required"):
+        await describe_external_agent("worker", wrapped)
 
 
 @pytest.mark.unit

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, Callable, Mapping
+from uuid import uuid4
 
-from .acp_client.callbacks import ACPClientCallbacks, PermissionHandler
+from .acp_client.callbacks import ACPClientCallbacks, LifecycleRegistrar, PermissionHandler
 from .acp_client.config import ACPProcessConfig
 from .acp_client.process import ACPStartupTimeoutError, open_acp_process_session
 from .acp_client import result as normalized
@@ -16,6 +17,7 @@ async def delegate_task_via_acp(
     config: ACPProcessConfig,
     task: str,
     permission_handler: PermissionHandler | None = None,
+    lifecycle_registrar: LifecycleRegistrar | None = None,
 ) -> dict[str, Any]:
     """Run exactly one prompt against one spawned ACP agent subprocess."""
 
@@ -23,6 +25,7 @@ async def delegate_task_via_acp(
         config=config,
         task=task,
         permission_handler=permission_handler,
+        lifecycle_registrar=lifecycle_registrar,
     )
 
 
@@ -31,6 +34,7 @@ async def _delegate_task_via_acp(
     config: ACPProcessConfig,
     task: str,
     permission_handler: PermissionHandler | None = None,
+    lifecycle_registrar: LifecycleRegistrar | None = None,
     process_factory: Callable[..., Any] | None = None,
     connection_factory: Callable[..., Any] | None = None,
     environ: Mapping[str, str] | None = None,
@@ -40,7 +44,11 @@ async def _delegate_task_via_acp(
     if not isinstance(task, str) or not task.strip():
         raise ValueError("task must be a non-empty string")
 
-    callbacks = ACPClientCallbacks(permission_handler=permission_handler)
+    callbacks = ACPClientCallbacks(
+        permission_handler=permission_handler,
+        lifecycle_id=uuid4().hex,
+        lifecycle_registrar=lifecycle_registrar,
+    )
     try:
         async with open_acp_process_session(
             config,
@@ -49,6 +57,7 @@ async def _delegate_task_via_acp(
             connection_factory=connection_factory,
             environ=environ,
         ) as session:
+            await callbacks.register_lifecycle(session)
             from acp.schema import TextContentBlock
 
             try:

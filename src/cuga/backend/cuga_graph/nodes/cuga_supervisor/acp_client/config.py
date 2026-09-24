@@ -136,12 +136,6 @@ class ACPProcessConfig:
             raise ValueError("env entries must be environment variable names, not KEY=value values")
         object.__setattr__(self, "env", env)
 
-        if self.cwd is not None:
-            cwd = Path(self.cwd).expanduser().resolve(strict=False)
-            if not cwd.is_dir():
-                raise ValueError("cwd must resolve to an existing directory")
-            object.__setattr__(self, "cwd", cwd)
-
         object.__setattr__(
             self,
             "startup_timeout",
@@ -157,6 +151,82 @@ class ACPProcessConfig:
             "shutdown_grace_period",
             _timeout(self.shutdown_grace_period, field_name="shutdown grace period"),
         )
+
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+            VIRTUAL_WORKSPACE_ROOT,
+            resolve_workspace_path,
+            thread_workspace_root,
+        )
+
+        physical_root = thread_workspace_root(None).resolve()
+        if self.cwd is None:
+            cwd = physical_root
+        else:
+            raw_cwd = str(self.cwd).strip()
+            normalized = raw_cwd.replace("\\", "/")
+            candidate = Path(raw_cwd).expanduser()
+            resolved_candidate = candidate.resolve(strict=False)
+            if candidate.is_absolute() and not (
+                normalized == VIRTUAL_WORKSPACE_ROOT
+                or normalized.startswith(f"{VIRTUAL_WORKSPACE_ROOT}/")
+                or resolved_candidate == physical_root
+                or physical_root in resolved_candidate.parents
+            ):
+                raise ValueError("cwd must stay within the configured CUGA workspace")
+            try:
+                cwd = (
+                    resolved_candidate
+                    if candidate.is_absolute()
+                    and physical_root in (resolved_candidate, *resolved_candidate.parents)
+                    else resolve_workspace_path(raw_cwd, thread_id=None, operation="cwd")
+                )
+            except ValueError as exc:
+                raise ValueError("cwd must stay within the configured CUGA workspace") from exc
+        if not cwd.is_dir():
+            raise ValueError("cwd must resolve to an existing workspace directory")
+        object.__setattr__(self, "cwd", cwd)
+
+
+def validate_external_protocol_config(
+    agent_config: Mapping[str, Any],
+    *,
+    require_enabled: bool = False,
+) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
+    """Validate complete external protocol configuration before transport selection.
+
+    A2A mappings without ``enabled`` retain the historical direct-wrapper behavior:
+    a non-empty mapping is active. Explicit enablement, when supplied, must be Boolean.
+    """
+
+    if not isinstance(agent_config, Mapping):
+        raise ValueError("external agent config must be a mapping")
+
+    blocks: dict[str, Mapping[str, Any] | None] = {}
+    enabled: list[str] = []
+    for name in ("acp_protocol", "a2a_protocol"):
+        if name not in agent_config:
+            blocks[name] = None
+            continue
+        block = agent_config[name]
+        if not isinstance(block, Mapping):
+            raise ValueError(f"{name} must be a mapping")
+        blocks[name] = block
+        explicit = block.get("enabled")
+        if name == "acp_protocol" and not isinstance(explicit, bool):
+            raise ValueError("acp_protocol enabled must be a boolean")
+        if name == "a2a_protocol" and "enabled" in block and not isinstance(explicit, bool):
+            raise ValueError("a2a_protocol enabled must be a boolean")
+        is_enabled = explicit if "enabled" in block else bool(block)
+        if is_enabled:
+            enabled.append(name)
+
+    if len(enabled) > 1:
+        raise ValueError("exactly one enabled protocol block is allowed")
+    if require_enabled and not enabled:
+        raise ValueError("exactly one enabled protocol block is required")
+    if blocks["acp_protocol"] is not None:
+        validate_acp_protocol_mapping(blocks["acp_protocol"])
+    return blocks["acp_protocol"], blocks["a2a_protocol"]
 
 
 def acp_process_config_from_mapping(

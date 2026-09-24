@@ -27,13 +27,12 @@ class SupervisorConfig(BaseModel):
 def _protocol_block(
     agent_config: Mapping[str, Any], protocol_name: str, agent_name: str
 ) -> Mapping[str, Any] | None:
+    """Compatibility helper retained for callers that inspect one block."""
     if protocol_name not in agent_config:
         return None
     block = agent_config[protocol_name]
     if not isinstance(block, Mapping):
         raise ValueError(f"Agent '{agent_name}': {protocol_name} must be a mapping")
-    if protocol_name == "acp_protocol" and not isinstance(block.get("enabled"), bool):
-        raise ValueError(f"Agent '{agent_name}': {protocol_name} enabled must be a boolean")
     return block
 
 
@@ -60,36 +59,21 @@ async def build_agents_from_list(
 
     for agent_config in agents_list:
         agent_name = agent_config["name"]
-        protocol_blocks = {
-            protocol_name: block
-            for protocol_name in ("acp_protocol", "a2a_protocol")
-            if (block := _protocol_block(agent_config, protocol_name, agent_name)) is not None
-        }
-        enabled_protocols = [name for name, block in protocol_blocks.items() if block.get("enabled")]
-        if len(enabled_protocols) > 1:
-            raise ValueError(
-                f"Agent '{agent_name}': exactly one enabled protocol block is allowed"
-                f" (found: {enabled_protocols})"
-            )
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
+            acp_process_config_from_mapping,
+            validate_external_protocol_config,
+        )
 
-        acp_protocol = protocol_blocks.get("acp_protocol")
-        a2a_protocol = protocol_blocks.get("a2a_protocol")
-        if acp_protocol is not None:
-            from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
-                acp_process_config_from_mapping,
-                validate_acp_protocol_mapping,
-            )
-
-            try:
-                validate_acp_protocol_mapping(acp_protocol)
-                if acp_protocol["enabled"]:
-                    acp_process_config_from_mapping(
-                        acp_protocol,
-                        name=agent_name,
-                        description=agent_config.get("description"),
-                    )
-            except ValueError as exc:
-                raise ValueError(f"Agent '{agent_name}': {exc}") from exc
+        try:
+            acp_protocol, a2a_protocol = validate_external_protocol_config(agent_config)
+            if acp_protocol is not None and acp_protocol["enabled"]:
+                acp_process_config_from_mapping(
+                    acp_protocol,
+                    name=agent_name,
+                    description=agent_config.get("description"),
+                )
+        except ValueError as exc:
+            raise ValueError(f"Agent '{agent_name}': {exc}") from exc
 
         if acp_protocol is not None and acp_protocol["enabled"]:
             agents[agent_name] = {

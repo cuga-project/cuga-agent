@@ -14,6 +14,9 @@ from .config import ACPProcessConfig
 
 _BASELINE_ENV = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR")
 _STDERR_BYTE_LIMIT = 8192
+_MAX_SECRET_BYTE_LENGTH = 4096
+_MAX_SECRET_COUNT = 64
+_STDERR_RETENTION_LIMIT = _STDERR_BYTE_LIMIT + _MAX_SECRET_BYTE_LENGTH - 1
 
 
 def build_process_environment(
@@ -25,10 +28,19 @@ def build_process_environment(
     return {name: source[name] for name in names if source.get(name)}
 
 
-def sanitize_stderr(data: bytes, secret_values: list[str], *, byte_limit: int = _STDERR_BYTE_LIMIT) -> str:
-    """Remove secrets and any secret prefix exposed by the output boundary."""
+def _validated_secret_values(secret_values: list[str]) -> list[str]:
+    secrets = [value for value in dict.fromkeys(secret_values) if value]
+    if len(secrets) > _MAX_SECRET_COUNT:
+        raise ValueError("too many forwarded ACP environment secrets")
+    if any(len(value.encode("utf-8")) > _MAX_SECRET_BYTE_LENGTH for value in secrets):
+        raise ValueError("forwarded ACP environment secret exceeds the safe size limit")
+    return sorted(secrets, key=len, reverse=True)
 
-    secrets = sorted((value for value in secret_values if value), key=len, reverse=True)
+
+def sanitize_stderr(data: bytes, secret_values: list[str], *, byte_limit: int = _STDERR_BYTE_LIMIT) -> str:
+    """Remove bounded validated secrets and any prefix exposed by the output boundary."""
+
+    secrets = _validated_secret_values(secret_values)
     encoded_secrets = [value.encode("utf-8") for value in secrets]
     sanitized = data
     while True:
@@ -124,17 +136,16 @@ async def _stop_and_reap(process: Any | None, grace: float) -> None:
 
 
 async def _drain_stderr(stream: Any, secret_values: list[str]) -> str:
+    secrets = _validated_secret_values(secret_values)
     chunks = bytearray()
-    longest_secret = max((len(value.encode("utf-8")) for value in secret_values if value), default=0)
-    retention_limit = _STDERR_BYTE_LIMIT + max(0, longest_secret - 1)
     while True:
         chunk = await stream.read(1024)
         if not chunk:
             break
-        if len(chunks) < retention_limit:
-            remaining = retention_limit - len(chunks)
+        if len(chunks) < _STDERR_RETENTION_LIMIT:
+            remaining = _STDERR_RETENTION_LIMIT - len(chunks)
             chunks.extend(chunk[:remaining])
-    return sanitize_stderr(bytes(chunks), secret_values)
+    return sanitize_stderr(bytes(chunks), secrets)
 
 
 async def _cleanup_lifecycle(
@@ -181,6 +192,25 @@ async def _cleanup_lifecycle(
         raise asyncio.CancelledError
 
 
+async def _await_spawn_task(task: asyncio.Task[Any], grace: float) -> Any | None:
+    """Cancel a pending spawn and acquire/clean a process returned in the cancellation race."""
+
+    task.cancel()
+    try:
+        process = await asyncio.shield(task)
+    except asyncio.CancelledError:
+        if task.done() and not task.cancelled():
+            try:
+                return task.result()
+            except BaseException:
+                return None
+        return None
+    except BaseException:
+        return None
+    await _stop_and_reap(process, grace)
+    return process
+
+
 @asynccontextmanager
 async def open_acp_process_session(
     config: ACPProcessConfig,
@@ -197,21 +227,38 @@ async def open_acp_process_session(
     session_id = None
     stderr_task = None
     cancel_session = False
+    spawn_task = None
     spawn = process_factory or asyncio.create_subprocess_exec
     env = build_process_environment(config, environ)
-    secret_values = [env[name] for name in config.env if name in env]
+    secret_values = _validated_secret_values([env[name] for name in config.env if name in env])
+    loop = asyncio.get_running_loop()
+    startup_deadline = loop.time() + config.startup_timeout
+
+    def remaining_startup_time() -> float:
+        remaining = startup_deadline - loop.time()
+        if remaining <= 0:
+            raise ACPStartupTimeoutError
+        return remaining
+
     try:
-        process = await _await_if_needed(
-            spawn(
-                config.command,
-                *config.args,
-                cwd=str(config.cwd) if config.cwd is not None else None,
-                env=env,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+        spawn_task = asyncio.create_task(
+            _await_if_needed(
+                spawn(
+                    config.command,
+                    *config.args,
+                    cwd=str(config.cwd) if config.cwd is not None else None,
+                    env=env,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
             )
         )
+        done, _ = await asyncio.wait({spawn_task}, timeout=remaining_startup_time())
+        if not done:
+            await _await_spawn_task(spawn_task, config.shutdown_grace_period)
+            raise ACPStartupTimeoutError
+        process = spawn_task.result()
         if process.returncode is not None:
             raise ChildProcessError("ACP subprocess exited during startup")
         stderr_task = asyncio.create_task(_drain_stderr(process.stderr, secret_values))
@@ -220,7 +267,10 @@ async def open_acp_process_session(
             from acp import connect_to_agent
 
             connection_factory = connect_to_agent
-        connection = connection_factory(callbacks, process.stdin, process.stdout)
+        connection = await asyncio.wait_for(
+            _await_if_needed(connection_factory(callbacks, process.stdin, process.stdout)),
+            timeout=remaining_startup_time(),
+        )
 
         from acp import PROTOCOL_VERSION
         from acp.schema import ClientCapabilities, Implementation
@@ -241,7 +291,7 @@ async def open_acp_process_session(
 
         try:
             session_id = await asyncio.wait_for(
-                initialize_and_create_session(), timeout=config.startup_timeout
+                initialize_and_create_session(), timeout=remaining_startup_time()
             )
         except TimeoutError as exc:
             raise ACPStartupTimeoutError from exc
@@ -254,6 +304,8 @@ async def open_acp_process_session(
     except BaseException:
         callbacks.cancelled = True
         cancel_session = True
+        if process is None and spawn_task is not None and not spawn_task.done():
+            process = await _await_spawn_task(spawn_task, config.shutdown_grace_period)
         raise
     finally:
         callbacks.closed = True

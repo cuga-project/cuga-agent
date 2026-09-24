@@ -11,6 +11,13 @@ from cuga.supervisor_utils.supervisor_config import build_agents_from_list
 pytestmark = [pytest.mark.unit, pytest.mark.anyio]
 
 
+@pytest.fixture(autouse=True)
+def _workspace_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import paths
+
+    monkeypatch.setattr(paths, "local_base_dir", lambda: tmp_path)
+
+
 @pytest.mark.unit
 async def test_valid_acp_process_config_loads_as_existing_external_shape(tmp_path: Path) -> None:
     source = {
@@ -84,8 +91,8 @@ def test_a2a_protocol_without_enabled_preserves_existing_disabled_behavior() -> 
 
 
 @pytest.mark.unit
-async def test_truthy_non_boolean_a2a_still_conflicts_with_enabled_acp(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="exactly one enabled protocol block"):
+async def test_non_boolean_a2a_enablement_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="a2a_protocol enabled must be a boolean"):
         await build_agents_from_list(
             [
                 {

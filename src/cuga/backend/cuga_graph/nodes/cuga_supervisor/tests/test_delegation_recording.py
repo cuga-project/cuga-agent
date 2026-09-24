@@ -457,13 +457,13 @@ async def test_acp_delegations_build_independent_configs():
         {"type": "external", "config": {"acp_protocol": "enabled", "a2a_protocol": []}},
     ],
 )
-async def test_malformed_external_protocol_wrappers_fail_defensively_without_acp_dispatch(wrapped):
+async def test_malformed_external_protocol_wrappers_fail_closed_without_acp_dispatch(wrapped):
     delegate_acp = AsyncMock(side_effect=AssertionError("malformed ACP must not dispatch"))
 
     with patch(f"{_ACP_MODULE}.delegate_task_via_acp", delegate_acp):
         answer = await create_agent_delegation_func(_make_adapter(), "worker", wrapped)("work")
 
-    assert answer == "Error: Unknown agent type for worker"
+    assert answer == "ACP agent configuration is invalid."
     delegate_acp.assert_not_awaited()
 
 
@@ -510,6 +510,37 @@ async def test_enabled_invalid_acp_config_returns_and_records_sanitized_failure(
         variables={},
     )
     delegate_acp.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "config",
+    [
+        {
+            "acp_protocol": {"enabled": True, "command": "agent"},
+            "a2a_protocol": {"enabled": True, "endpoint": "http://a2a.test"},
+        },
+        {
+            "acp_protocol": {"enabled": "true", "command": "agent"},
+            "a2a_protocol": {"endpoint": "http://a2a.test"},
+        },
+        {
+            "acp_protocol": {"enabled": False, "prompt_timout": 1},
+            "a2a_protocol": {"endpoint": "http://a2a.test"},
+        },
+        {"a2a_protocol": {"enabled": False, "endpoint": "http://a2a.test"}},
+        {
+            "acp_protocol": {"enabled": False},
+            "a2a_protocol": {"enabled": False, "endpoint": "http://a2a.test"},
+        },
+        {"a2a_protocol": {}},
+    ],
+)
+async def test_direct_wrapper_protocol_validation_fails_closed(config):
+    wrapped = {"type": "external", "config": config}
+    answer = await create_agent_delegation_func(_make_adapter(), "worker", wrapped)("work")
+    assert answer == "ACP agent configuration is invalid."
 
 
 @pytest.mark.unit

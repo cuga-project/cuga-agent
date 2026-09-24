@@ -148,10 +148,24 @@ def create_agent_delegation_func(
 
         if isinstance(agent_or_config, dict) and agent_or_config.get("type") == "external":
             external_config = agent_or_config.get("config", {})
-            if not isinstance(external_config, dict):
-                external_config = {}
-            acp_mapping = external_config.get("acp_protocol", {})
-            if isinstance(acp_mapping, dict) and acp_mapping.get("enabled") is True:
+            from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
+                validate_external_protocol_config,
+            )
+
+            try:
+                acp_mapping, a2a_mapping = validate_external_protocol_config(
+                    external_config, require_enabled=True
+                )
+            except ValueError:
+                result = {
+                    "result": "ACP agent configuration is invalid.",
+                    "status": "failed",
+                    "variables": {},
+                }
+                answer = result["result"]
+                _record_delegation(adapter, agent_name, result=result, answer=answer, variables={})
+                return answer
+            if acp_mapping is not None and acp_mapping["enabled"]:
                 from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
                     acp_process_config_from_mapping,
                 )
@@ -188,8 +202,8 @@ def create_agent_delegation_func(
                 )
                 return answer
 
-            a2a_config = external_config.get("a2a_protocol")
-            if not isinstance(a2a_config, dict):
+            a2a_config = a2a_mapping
+            if a2a_config is None:
                 error_answer = f"Error: Unknown agent type for {agent_name}"
                 _record_delegation(adapter, agent_name, answer=error_answer)
                 return error_answer
