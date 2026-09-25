@@ -168,7 +168,14 @@ class ACPPermissionRuntimeBridge:
                     await asyncio.shield(cleanup_task)
                 raise ACPPermissionWinnerCancelled(failed_result) from None
             except Exception as exc:
-                await self.registry.complete(pending_id)
+                try:
+                    await self.registry.complete(pending_id)
+                except asyncio.CancelledError:
+                    raise ACPPermissionWinnerCancelled(failed_result) from None
+                except Exception:
+                    raise PendingACPDelegationWinnerError(
+                        "ACP resumed delegation failed during cleanup"
+                    ) from exc
                 raise PendingACPDelegationWinnerError("ACP resumed delegation failed") from exc
             try:
                 await self.registry.complete(pending_id)

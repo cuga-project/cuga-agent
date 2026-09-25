@@ -405,11 +405,19 @@ class PendingACPDelegationRegistry:
         return entry.cleanup_task
 
     async def _await_cleanup(self, cleanup_task: asyncio.Task[None]) -> None:
-        try:
-            await asyncio.shield(cleanup_task)
-        except asyncio.CancelledError:
-            await asyncio.shield(cleanup_task)
-            raise
+        cancelled = False
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            try:
+                cleanup_task.result()
+            except BaseException:
+                pass
+            raise asyncio.CancelledError
+        cleanup_task.result()
 
     async def _cleanup_entry(
         self,
