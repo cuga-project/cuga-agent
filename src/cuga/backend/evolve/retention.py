@@ -8,7 +8,12 @@ from copy import deepcopy
 
 DEFAULT_RETENTION_POLICY: dict[str, Any] = {
     "rules": [
-        {"name": "orphaned-conversations", "source_deleted": True, "max_age_days": 7, "action": "delete"},
+        {
+            "name": "orphaned-conversations",
+            "source_deleted": True,
+            "min_source_deleted_days": 7,
+            "action": "delete",
+        },
         {
             "name": "unused-guidelines",
             "entity_type": "guideline",
@@ -66,11 +71,11 @@ def retention_capabilities(status: dict[str, Any]) -> dict[str, Any]:
                 "source_deleted": rule.get("source_deleted", False),
                 "action": rule["action"],
                 **({"description": rule["description"]} if "description" in rule else {}),
-                **(
-                    {"max_unused_days": rule["max_unused_days"]}
-                    if "max_unused_days" in rule
-                    else {"max_age_days": rule["max_age_days"]}
-                ),
+                **{
+                    key: rule[key]
+                    for key in ("max_age_days", "max_unused_days", "min_source_deleted_days")
+                    if key in rule
+                },
             }
             for rule in default_retention_policy(status)["rules"]
         ],

@@ -2,6 +2,7 @@
 
 import importlib.util
 import os
+import json
 from pathlib import Path
 import signal
 import subprocess
@@ -19,6 +20,11 @@ spec.loader.exec_module(services)
 
 @pytest.mark.unit
 def test_missing_evolve_runs_cuga_without_changing_configuration(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        services,
+        "evolve_endpoint",
+        lambda: (os.environ.get("DYNACONF_EVOLVE__MODE", "auto"), os.environ.get("DYNACONF_EVOLVE__URL", "")),
+    )
     command = ["cuga", "start", "manager"]
     monkeypatch.setattr(sys, "argv", [str(SUPERVISOR), *command])
     monkeypatch.setattr(services.shutil, "which", lambda name: None)
@@ -45,6 +51,11 @@ def test_missing_evolve_runs_cuga_without_changing_configuration(monkeypatch, tm
 @pytest.mark.unit
 @pytest.mark.parametrize("enabled", [None, "true", "false"])
 def test_installed_evolve_is_configured_without_overriding_deployer_toggle(monkeypatch, tmp_path, enabled):
+    monkeypatch.setattr(
+        services,
+        "evolve_endpoint",
+        lambda: (os.environ.get("DYNACONF_EVOLVE__MODE", "auto"), os.environ.get("DYNACONF_EVOLVE__URL", "")),
+    )
     monkeypatch.setattr(sys, "argv", [str(SUPERVISOR), "cuga", "start", "manager"])
     monkeypatch.setattr(services.shutil, "which", lambda name: "/custom/bin/evolve-mcp")
     monkeypatch.setenv("EVOLVE_DATA_DIR", str(tmp_path / "evolve"))
@@ -141,6 +152,11 @@ def test_sigterm_stops_both_services(tmp_path):
     [("registry", ""), ("direct", "https://external.example/sse"), ("auto", "https://external.example/sse")],
 )
 def test_external_evolve_is_preserved(monkeypatch, mode, url):
+    monkeypatch.setattr(
+        services,
+        "evolve_endpoint",
+        lambda: (os.environ.get("DYNACONF_EVOLVE__MODE", "auto"), os.environ.get("DYNACONF_EVOLVE__URL", "")),
+    )
     monkeypatch.setattr(sys, "argv", [str(SUPERVISOR), "cuga", "start", "manager"])
     monkeypatch.setenv("DYNACONF_EVOLVE__MODE", mode)
     monkeypatch.setenv("DYNACONF_EVOLVE__URL", url)
@@ -158,3 +174,51 @@ def test_external_evolve_is_preserved(monkeypatch, mode, url):
     with pytest.raises(ExecCalled):
         services.main()
     assert dict(os.environ) == before
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source", ["dotenv", "env_file", "toml", "environment"])
+def test_effective_external_endpoint_prevents_bundled_startup(tmp_path, source):
+    """Use the real configuration loader in a fresh process, as at startup."""
+    endpoint = "https://external.example/sse"
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("DYNACONF_EVOLVE") and key not in {"ENV_FILE", "SETTINGS_TOML_PATH"}
+    }
+    env["PYTHONPATH"] = str(SUPERVISOR.parent.parent / "src")
+    env["EVOLVE_DATA_DIR"] = str(tmp_path / "must-not-exist")
+    if source == "environment":
+        env["DYNACONF_EVOLVE__URL"] = endpoint
+    elif source == "toml":
+        base = (SUPERVISOR.parent.parent / "src/cuga/settings.toml").read_text()
+        (tmp_path / "settings.toml").write_text(base.replace("http://127.0.0.1:8201/sse", endpoint))
+    else:
+        file = tmp_path / ("operator.env" if source == "env_file" else ".env")
+        file.write_text(f"DYNACONF_EVOLVE__MODE=direct\nDYNACONF_EVOLVE__URL={endpoint}\n")
+        if source == "env_file":
+            env["ENV_FILE"] = str(file)
+    code = f"""
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("services", {str(SUPERVISOR)!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+sys.argv = ["container_services", "cuga", "start", "manager"]
+m.shutil.which = lambda _: "/bin/evolve-mcp"
+def exec_cuga(executable, command):
+    from cuga.config import settings
+    print(json.dumps({{"url": settings.evolve.url, "command": command}}))
+    raise SystemExit(0)
+def unexpected_start(*args, **kwargs):
+    raise AssertionError("External configuration started bundled Evolve")
+m.os.execvp = exec_cuga
+m.supervise = unexpected_start
+m.main()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    observed = json.loads(result.stdout.strip().splitlines()[-1])
+    assert observed == {"url": endpoint, "command": ["cuga", "start", "manager"]}
+    assert not (tmp_path / "must-not-exist").exists()

@@ -44,6 +44,9 @@ def test_retention_capabilities_report_evolve_schedule_management(client):
 
     assert response.status_code == 200
     assert response.json()["retention_available"] is True
+    orphan = next(rule for rule in response.json()["rules"] if rule["name"] == "orphaned-conversations")
+    assert orphan["min_source_deleted_days"] == 7
+    assert "max_age_days" not in orphan
     assert response.json()["scheduling_supported"] is True
     assert response.json()["schedule"]["state"] == "managed_by_evolve"
     assert (

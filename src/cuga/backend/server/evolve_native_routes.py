@@ -187,6 +187,23 @@ async def forward(request: Request, path: str) -> JSONResponse:
                         409: "Memory configuration changed or is in use; refresh and retry",
                         422: "Invalid memory request",
                     }
+                    # Keep only a validated operation reference; never expose
+                    # provider exception text or arbitrary structured details.
+                    try:
+                        failure = await response.json()
+                    except (ValueError, aiohttp.ContentTypeError):
+                        failure = {}
+                    if isinstance(failure, dict) and isinstance(failure.get("detail"), dict):
+                        failure = failure["detail"]
+                    run_id = failure.get("run_id") if isinstance(failure, dict) else None
+                    if isinstance(run_id, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", run_id):
+                        return JSONResponse(
+                            {
+                                "detail": "Retention operation did not complete; inspect its run history",
+                                "run_id": run_id,
+                            },
+                            status_code=status if status < 500 else 502,
+                        )
                     raise HTTPException(
                         status if status < 500 else 502, messages.get(status, "Memory request rejected")
                     )

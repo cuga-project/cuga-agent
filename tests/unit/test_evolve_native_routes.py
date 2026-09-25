@@ -437,3 +437,72 @@ def test_management_without_identity_is_rejected(boundary, monkeypatch):
     monkeypatch.setattr(gateway, "require_manage_access", AsyncMock(return_value=None))
     assert boundary.client.get("/api/manage/retention/policies").status_code == 401
     assert boundary.sent == []
+
+
+def test_failed_run_can_be_reconciled_without_reexecution(boundary, monkeypatch):
+    service = boundary.evolve.retention("instance-a")
+    service.create_policy("p")
+    calls = []
+
+    def fail_scan(*args, **kwargs):
+        calls.append(True)
+        raise RuntimeError("PRIVATE backend detail")
+
+    monkeypatch.setattr(boundary.evolve, "scan_entities", fail_scan)
+    body = {"policy_id": "p", "run_id": "admin-retention-retry"}
+    first = boundary.client.post("/api/manage/retention/runs", json=body)
+    assert first.status_code == 502
+    assert first.json()["run_id"] == body["run_id"]
+    second = boundary.client.post("/api/manage/retention/runs", json=body)
+    assert second.status_code == 409
+    assert second.json()["run_id"] == body["run_id"]
+    assert len(calls) == 1
+    history = boundary.client.get(f"/api/manage/retention/runs/{body['run_id']}")
+    assert history.status_code == 200
+    assert history.json()["status"] == "failed"
+    assert "PRIVATE" not in first.text + second.text + history.text
+
+
+def test_bundled_redaction_preserves_email_ownership(boundary, monkeypatch):
+    from pathlib import Path
+    from altk_evolve.config.hooks import HooksConfig
+    from altk_evolve.hooks.manager import initialize_hooks, shutdown_hooks
+    from altk_evolve.schema.core import Entity
+
+    hooks = Path(__file__).resolve().parents[2] / "src/cuga/configurations/evolve/hooks.yaml"
+    initialize_hooks(HooksConfig(plugins_yaml=str(hooks)))
+    subject = "alice@example.com"
+    from fastapi.responses import JSONResponse
+
+    monkeypatch.setattr(
+        memory_routes, "get_user_memory_entity", AsyncMock(return_value=JSONResponse({"success": True}))
+    )
+    try:
+        boundary.evolve.update_entities(
+            "instance-a",
+            [
+                Entity(
+                    type="fact",
+                    content=f"Contact {subject}",
+                    metadata={
+                        "user_id": subject,
+                        "owner_id": subject,
+                        "agent_id": "cuga-default",
+                        "thread_id": "conversation-1",
+                    },
+                )
+            ],
+            enable_conflict_resolution=False,
+        )
+        entity = boundary.evolve.scan_entities("instance-a")[0]
+        assert subject not in entity.content
+        assert entity.metadata["user_id"] == entity.metadata["owner_id"] == subject
+        monkeypatch.setattr(gateway, "require_chat_access", AsyncMock(return_value=UserInfo(sub=subject)))
+        path = f"/api/memory/entities/{entity.id}/metadata"
+        assert boundary.client.patch(path, json={"metadata": {"title": "My preference"}}).status_code == 200
+        monkeypatch.setattr(
+            gateway, "require_chat_access", AsyncMock(return_value=UserInfo(sub="bob@example.com"))
+        )
+        assert boundary.client.patch(path, json={"metadata": {"title": "Other user"}}).status_code == 403
+    finally:
+        shutdown_hooks()

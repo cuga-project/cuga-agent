@@ -329,7 +329,7 @@ wheels = [
 [[package]]
 name = "altk-evolve"
 version = "1.2.0"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/AgentToolkit/altk-evolve.git?rev=d53371a62767946f95d277d66d101242b84406bf#d53371a62767946f95d277d66d101242b84406bf" }
 dependencies = [
     { name = "arize-phoenix", marker = "python_full_version >= '3.12'" },
     { name = "croniter", marker = "python_full_version >= '3.12'" },
@@ -345,10 +345,6 @@ dependencies = [
     { name = "typer", marker = "python_full_version >= '3.12'" },
     { name = "tzdata", marker = "python_full_version >= '3.12'" },
     { name = "uvicorn", marker = "python_full_version >= '3.12'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/e6/2b/6c7d8c0fe8d1403e384545b52affaf5bee68bff5946a846777dc6c79721b/altk_evolve-1.2.0.tar.gz", hash = "sha256:6f14907cc6fc5e081088f58cd8794fcb29c75d097e4fe8b3764f33b28506b9cc", size = 389836, upload-time = "2026-09-14T17:35:58.886Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/37/44/16ce543176012635bcb3ae08b23c4d105bd114f2d5608ac677fcbc2bae05/altk_evolve-1.2.0-py3-none-any.whl", hash = "sha256:b4beea58625669ab7d42e4a082c541a3b73c9d04d9e22e5578e79180f148902e", size = 425232, upload-time = "2026-09-14T17:35:57.289Z" },
 ]
 
 [package.optional-dependencies]
@@ -1448,7 +1444,7 @@ requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], specifier = ">=0.3.22" },
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "aiosmtpd" },
-    { name = "altk-evolve", extras = ["pii-regex"], marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = ">=1.2,<2" },
+    { name = "altk-evolve", extras = ["pii-regex"], marker = "python_full_version >= '3.12' and extra == 'evolve'", git = "https://github.com/AgentToolkit/altk-evolve.git?rev=d53371a62767946f95d277d66d101242b84406bf" },
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "boto3", specifier = ">=1.34.0" },
