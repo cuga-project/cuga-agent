@@ -602,7 +602,7 @@ async def test_delegate_reports_no_output_and_permission_required(tmp_path: Path
             ToolCallUpdate(toolCallId="call", title="write", kind="edit"),
             [PermissionOption(optionId="allow", name="Allow", kind="allow_once")],
         )
-        return SimpleNamespace(stop_reason="cancelled")
+        return SimpleNamespace(stop_reason="end_turn")
 
     connection.prompt = permission_prompt
     process = _FakeProcess()

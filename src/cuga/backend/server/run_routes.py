@@ -111,6 +111,23 @@ _supervisor_cache: Dict[str, Any] = {}
 _supervisor_roster: Dict[str, List[Dict[str, str]]] = {}
 
 
+async def close_graph_owners(*owners: Any) -> None:
+    """Close each distinct lifecycle owner once, ignoring values without ``aclose``."""
+    unique_owners = list({id(owner): owner for owner in owners if owner is not None}.values())
+    for owner in unique_owners:
+        close = getattr(owner, "aclose", None)
+        if close is not None:
+            await close()
+
+
+async def close_cached_supervisors() -> None:
+    """Close every cached supervisor once and clear all roster cache state."""
+    supervisors = list(_supervisor_cache.values())
+    _supervisor_cache.clear()
+    _supervisor_roster.clear()
+    await close_graph_owners(*supervisors)
+
+
 def _supervisor_roster_path() -> str:
     return (os.environ.get("CUGA_SUPERVISOR_ROSTER", "") or "").split(" #", 1)[0].strip()
 
@@ -188,7 +205,18 @@ async def _get_supervisor():
     sup = CugaSupervisor(
         agents=agents,
         special_instructions=(sup_cfg.get("supervisor") or {}).get("special_instructions"),
+        interactive=False,
     )
+    stale_supervisors = list(
+        {
+            id(supervisor): supervisor for key, supervisor in _supervisor_cache.items() if key != cache_key
+        }.values()
+    )
+    _supervisor_cache.clear()
+    for stale_supervisor in stale_supervisors:
+        close = getattr(stale_supervisor, "aclose", None)
+        if close is not None:
+            await close()
     _supervisor_cache[cache_key] = sup
     _details = await _roster_details([s.get("ref") for s in sub_specs if s.get("ref")])
     _supervisor_roster[cache_key] = [

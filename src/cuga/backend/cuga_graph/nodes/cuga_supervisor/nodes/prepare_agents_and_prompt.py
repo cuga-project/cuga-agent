@@ -33,10 +33,13 @@ from cuga.configurations.instructions_manager import get_all_instructions_format
 
 
 def next_node_after_prepare(adapter: Any, state: CugaSupervisorState) -> str:
-    """Skip call_model when the user already approved this turn's delegation script."""
+    """Skip planning when resuming an approved plan or a parked ACP prompt."""
+    metadata = adapter.get_metadata(state) or {}
+    if metadata.get("acp_permission_resume"):
+        return adapter.execute_node_name
     if (
         getattr(adapter, "_plan_approval", False)
-        and (adapter.get_metadata(state) or {}).get("plan_approved")
+        and metadata.get("plan_approved")
         and (getattr(state, "script", None) or "").strip()
     ):
         return adapter.execute_node_name

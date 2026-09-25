@@ -52,6 +52,36 @@ class CugaSupervisorNode(BaseNode):
         if (
             state.sender == "WaitForResponse"
             and state.hitl_response is not None
+            and state.hitl_response.action_id == ActionIds.TOOL_APPROVAL
+            and isinstance((state.supervisor_metadata or {}).get("acp_permission"), dict)
+        ):
+            permission = (state.supervisor_metadata or {})["acp_permission"]
+            pending_id = permission.get("pending_id")
+            agent_name = permission.get("agent_name")
+            confirmed = state.hitl_response.confirmed
+            state.hitl_response = None
+            state.hitl_action = None
+            if (
+                not isinstance(pending_id, str)
+                or not isinstance(agent_name, str)
+                or not isinstance(confirmed, bool)
+            ):
+                state.final_answer = "ACP permission response is invalid."
+                state.sender = self.name
+                return Command(update=state.model_dump(), goto="FinalAnswerAgent")
+            metadata = dict(state.supervisor_metadata or {})
+            metadata["acp_permission_resume"] = {
+                "pending_id": pending_id,
+                "agent_name": agent_name,
+                "approved": confirmed,
+            }
+            state.supervisor_metadata = metadata
+            state.final_answer = ""
+            state.sender = self.name
+
+        if (
+            state.sender == "WaitForResponse"
+            and state.hitl_response is not None
             and state.hitl_response.action_id == ActionIds.AGENT_APPROVAL
         ):
             confirmed = state.hitl_response.confirmed

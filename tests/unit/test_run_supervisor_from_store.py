@@ -88,6 +88,42 @@ async def test_details_skip_a_dangling_ref():
 
 
 @pytest.mark.asyncio
+async def test_close_graph_owners_closes_each_instance_once():
+    closed = []
+
+    class _Graph:
+        async def aclose(self):
+            closed.append(self)
+
+    first = _Graph()
+    second = _Graph()
+
+    await run_routes.close_graph_owners(first, None, first, second)
+
+    assert closed == [first, second]
+
+
+@pytest.mark.asyncio
+async def test_close_cached_supervisors_closes_each_instance_once():
+    closed = []
+
+    class _FakeSup:
+        async def aclose(self):
+            closed.append(self)
+
+    first = _FakeSup()
+    second = _FakeSup()
+    run_routes._supervisor_cache.update({"v1": first, "v2": second, "alias": first})
+    run_routes._supervisor_roster.update({"v1": [], "__current__": []})
+
+    await run_routes.close_cached_supervisors()
+
+    assert closed == [first, second]
+    assert run_routes._supervisor_cache == {}
+    assert run_routes._supervisor_roster == {}
+
+
+@pytest.mark.asyncio
 async def test_cache_key_follows_the_stored_version(monkeypatch):
     """THE STALENESS GUARD. Publishing a new supervisor config must invalidate the cache; a
     path-keyed cache would have served the old supervisor until the process restarted."""
@@ -95,10 +131,16 @@ async def test_cache_key_follows_the_stored_version(monkeypatch):
     _, v1 = await config_store.load_config(None, "cuga")
 
     built = []
+    closed = []
 
     class _FakeSup:
         def __init__(self, **kw):
-            built.append(sorted((kw.get("agents") or {}).keys()))
+            assert kw["interactive"] is False
+            self.agent_names = sorted((kw.get("agents") or {}).keys())
+            built.append(self.agent_names)
+
+        async def aclose(self):
+            closed.append(self.agent_names)
 
     monkeypatch.setattr(
         "cuga.supervisor_utils.supervisor_config.build_agents_from_stored_subagents",
@@ -120,6 +162,7 @@ async def test_cache_key_follows_the_stored_version(monkeypatch):
     await run_routes._get_supervisor()
     assert len(built) == 2, "a published edit must invalidate the cache"
     assert built[1] == ["pricebot", "weatherbot"]
+    assert closed == [["pricebot"]], "replaced supervisors must release pending ACP delegations"
 
 
 async def _fake_agents(subs):

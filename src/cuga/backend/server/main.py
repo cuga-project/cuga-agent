@@ -1144,6 +1144,16 @@ async def lifespan(app: FastAPI):
 
     logger.info("Application is shutting down...")
 
+    from cuga.backend.server.run_routes import close_cached_supervisors, close_graph_owners
+
+    await close_cached_supervisors()
+    await close_graph_owners(
+        app_state.agent,
+        draft_app_state.agent,
+        *app_state.agent_graphs_cache.values(),
+    )
+    app_state.agent_graphs_cache.clear()
+
     for task in app_state.background_tasks:
         task.cancel()
     if app_state.background_tasks:

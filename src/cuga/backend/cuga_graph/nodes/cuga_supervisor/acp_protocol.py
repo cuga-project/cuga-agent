@@ -3,13 +3,158 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 from uuid import uuid4
 
 from .acp_client.callbacks import ACPClientCallbacks, LifecycleRegistrar, PermissionHandler
+from .acp_client.pending import PendingACPDelegationError, PendingACPDelegationRegistry
+from .acp_client.permissions import SafePermissionRequest, select_permission_option
 from .acp_client.config import ACPProcessConfig
 from .acp_client.process import ACPFactoryContractError, ACPStartupTimeoutError, open_acp_process_session
 from .acp_client import result as normalized
+
+
+class ACPPermissionPause(BaseException):
+    """Typed control signal carrying only checkpoint-safe permission metadata."""
+
+    def __init__(self, pending_id: str, agent_name: str, request: SafePermissionRequest) -> None:
+        super().__init__("ACP delegation is waiting for permission")
+        self.pending_id = pending_id
+        self.agent_name = agent_name
+        self.request = request
+
+
+class ACPPermissionRuntimeBridge:
+    """Coordinate a live ACP prompt with one graph pause and one exact resume."""
+
+    def __init__(
+        self,
+        *,
+        registry: PendingACPDelegationRegistry,
+        thread_id: str,
+        agent_name: str,
+        interactive: bool,
+    ) -> None:
+        self.registry = registry
+        self.thread_id = thread_id
+        self.agent_name = agent_name
+        self.interactive = interactive
+        self._lifecycle_id: str | None = None
+        self._owner: Any = None
+        self._prompt_task: asyncio.Task[Any] | None = None
+        self._pause_ready = asyncio.Event()
+        self._pause: ACPPermissionPause | None = None
+        self._permission_active = False
+        self._was_parked = False
+
+    @property
+    def was_parked(self) -> bool:
+        return self._was_parked
+
+    async def register_lifecycle(self, lifecycle_id: str, owner: Any) -> None:
+        self._lifecycle_id = lifecycle_id
+        self._owner = owner
+
+    async def permission_handler(self, request: Any) -> str | None:
+        if not self.interactive or self._permission_active:
+            return None
+        if self._prompt_task is None or self._owner is None or request.lifecycle_id != self._lifecycle_id:
+            return None
+        self._permission_active = True
+        pending_id = uuid4().hex
+        safe_request = SafePermissionRequest.create(
+            lifecycle_id=request.lifecycle_id,
+            session_id=request.session_id,
+            tool_call_id=request.tool_call_id,
+            title=request.title,
+            description=getattr(request, "description", "") or request.title,
+            kind=request.kind,
+            locations=tuple(getattr(request, "locations", ())),
+            options=tuple(request.options),
+            ttl_seconds=self.registry.ttl_seconds,
+        )
+        permission_future: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
+        try:
+            await self.registry.insert(
+                pending_id=pending_id,
+                thread_id=self.thread_id,
+                agent_name=self.agent_name,
+                request=safe_request,
+                owner=self._owner,
+                prompt_task=self._prompt_task,
+                permission_future=permission_future,
+                cleanup=self._cancel_prompt,
+            )
+        except PendingACPDelegationError:
+            return None
+        self._pause = ACPPermissionPause(pending_id, self.agent_name, safe_request)
+        self._pause_ready.set()
+        try:
+            return await permission_future
+        finally:
+            self._permission_active = False
+
+    async def run(self, prompt: Awaitable[dict[str, Any]]) -> dict[str, Any]:
+        self._prompt_task = asyncio.create_task(prompt)
+        pause_waiter = asyncio.create_task(self._pause_ready.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {self._prompt_task, pause_waiter}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if self._prompt_task in done:
+                pause_waiter.cancel()
+                return await self._prompt_task
+            if self._pause is None:
+                raise RuntimeError("ACP permission pause was not initialized")
+            self._was_parked = True
+            raise self._pause
+        except asyncio.CancelledError:
+            await self._cancel_prompt()
+            raise
+        finally:
+            if not pause_waiter.done():
+                pause_waiter.cancel()
+
+    async def resume(self, *, pending_id: str, approved: bool | None) -> dict[str, Any]:
+        entry = await self.registry.claim(pending_id, thread_id=self.thread_id, agent_name=self.agent_name)
+        selected = select_permission_option(entry.request.options, approved=approved)
+        if selected is None:
+            await self.registry.cancel(pending_id, reason="permission response rejected")
+            raise PendingACPDelegationError("ACP permission response is ambiguous or unavailable")
+        if not entry.permission_future.done():
+            entry.permission_future.set_result(selected)
+        try:
+            result = await entry.prompt_task
+        except asyncio.CancelledError:
+            await self.registry.cancel(pending_id, reason="resuming caller cancelled")
+            raise
+        except Exception:
+            await self.registry.complete(pending_id)
+            raise
+        await self.registry.complete(pending_id)
+        return result
+
+    async def _cancel_prompt(self) -> None:
+        task = self._prompt_task
+        if task is not None and not task.done():
+            task.cancel()
+
+
+async def resume_acp_delegation(
+    *,
+    registry: PendingACPDelegationRegistry,
+    pending_id: str,
+    thread_id: str,
+    agent_name: str,
+    approved: bool | None,
+) -> dict[str, Any]:
+    bridge = ACPPermissionRuntimeBridge(
+        registry=registry,
+        thread_id=thread_id,
+        agent_name=agent_name,
+        interactive=True,
+    )
+    return await bridge.resume(pending_id=pending_id, approved=approved)
 
 
 async def delegate_task_via_acp(
@@ -18,15 +163,21 @@ async def delegate_task_via_acp(
     task: str,
     permission_handler: PermissionHandler | None = None,
     lifecycle_registrar: LifecycleRegistrar | None = None,
+    permission_bridge: ACPPermissionRuntimeBridge | None = None,
 ) -> dict[str, Any]:
     """Run exactly one prompt against one spawned ACP agent subprocess."""
 
-    return await _delegate_task_via_acp(
+    delegation = _delegate_task_via_acp(
         config=config,
         task=task,
-        permission_handler=permission_handler,
-        lifecycle_registrar=lifecycle_registrar,
+        permission_handler=(
+            permission_bridge.permission_handler if permission_bridge else permission_handler
+        ),
+        lifecycle_registrar=(
+            permission_bridge.register_lifecycle if permission_bridge else lifecycle_registrar
+        ),
     )
+    return await permission_bridge.run(delegation) if permission_bridge else await delegation
 
 
 async def _delegate_task_via_acp(
@@ -61,7 +212,7 @@ async def _delegate_task_via_acp(
             from acp.schema import TextContentBlock
 
             try:
-                response = await asyncio.wait_for(
+                await asyncio.wait_for(
                     session.connection.prompt(
                         session.session_id,
                         [TextContentBlock(type="text", text=task)],
@@ -73,7 +224,7 @@ async def _delegate_task_via_acp(
                     raise ChildProcessError("ACP subprocess exited during prompt") from exc
                 raise
 
-            if callbacks.permission_required and getattr(response, "stop_reason", None) == "cancelled":
+            if callbacks.permission_required:
                 return normalized.permission_required()
             return normalized.success(callbacks.text)
     except asyncio.CancelledError:

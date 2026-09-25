@@ -173,6 +173,7 @@ def create_agent_delegation_func(
                     delegate_task_via_acp,
                 )
 
+                permission_bridge = None
                 try:
                     acp_config = acp_process_config_from_mapping(
                         acp_mapping,
@@ -186,20 +187,34 @@ def create_agent_delegation_func(
                         "variables": {},
                     }
                 else:
+                    exec_ctx = resolve_supervisor_execution_context()
+                    if exec_ctx is not None and exec_ctx.pending_acp_registry is not None:
+                        from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
+                            ACPPermissionRuntimeBridge,
+                        )
+
+                        permission_bridge = ACPPermissionRuntimeBridge(
+                            registry=exec_ctx.pending_acp_registry,
+                            thread_id=exec_ctx.thread_id or "",
+                            agent_name=agent_name,
+                            interactive=exec_ctx.interactive,
+                        )
                     result = await delegate_task_via_acp(
                         config=acp_config,
                         task=task,
                         permission_handler=permission_handler,
+                        permission_bridge=permission_bridge,
                     )
                 answer = result.get("result", "")
                 result_vars = result.get("variables") or {}
-                _record_delegation(
-                    adapter,
-                    agent_name,
-                    result=result,
-                    answer=answer,
-                    variables=result_vars,
-                )
+                if permission_bridge is None or not permission_bridge.was_parked:
+                    _record_delegation(
+                        adapter,
+                        agent_name,
+                        result=result,
+                        answer=answer,
+                        variables=result_vars,
+                    )
                 return answer
 
             a2a_config = a2a_mapping
