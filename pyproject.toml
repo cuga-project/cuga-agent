@@ -102,7 +102,7 @@ knowledge = []  # knowledge is now built-in, no extra dependencies needed
 health = ["cuga-oak-health; python_version>='3.12'"]  # kept for backward compat, now also in core deps
 opensandbox = ["opensandbox", "opensandbox-code-interpreter"]
 # Temporary immutable revision for the #735 review fixes; replace with a released >=1.2.x,<2 range.
-evolve = ["altk-evolve[pii-regex] @ git+https://github.com/AgentToolkit/altk-evolve.git@d53371a62767946f95d277d66d101242b84406bf ; python_version>='3.12'"]
+evolve = ["altk-evolve[pii-regex] @ git+https://github.com/AgentToolkit/altk-evolve.git@3d7990618777d380aa351b4723169cdf24a84083 ; python_version>='3.12'"]
 # wxO SDK requires Python >=3.11; keep it an extra so 3.10 installs are unaffected.
 wxo = ["ibm-watsonx-orchestrate-sdk>=2.15.0; python_version>='3.11'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
