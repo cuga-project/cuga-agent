@@ -21,6 +21,9 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy impor
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+    PendingACPDelegationWinnerError,
+)
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
     ACPPermissionPause,
     resume_acp_delegation,
@@ -155,6 +158,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
             agent_name = resume.get("agent_name")
             approved = resume.get("approved")
             thread_id = _resolve_thread_id(state, config)
+            record_authorized = False
             try:
                 if not isinstance(thread_id, str) or not thread_id.strip():
                     raise ValueError("invalid ACP permission owner")
@@ -165,14 +169,23 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                     or not agent_name.strip()
                     or not isinstance(approved, bool)
                 ):
+                    trusted = metadata.get("acp_permission")
+                    trusted_agent = (
+                        trusted.get("agent_name")
+                        if isinstance(trusted, dict) and trusted.get("pending_id") == pending_id
+                        else None
+                    )
+                    if not isinstance(trusted_agent, str) or not trusted_agent.strip():
+                        raise ValueError("invalid ACP permission resume")
                     cancelled = await adapter._pending_acp_registry.cancel_owned(
                         pending_id,
                         thread_id=thread_id,
-                        agent_name=agent_name if isinstance(agent_name, str) and agent_name.strip() else None,
+                        agent_name=trusted_agent,
                         reason="invalid ACP permission response",
                     )
                     agent_name = cancelled.agent_name
-                    raise ValueError("invalid ACP permission resume")
+                    record_authorized = True
+                    raise PendingACPDelegationWinnerError("invalid ACP permission resume")
                 result = await resume_acp_delegation(
                     registry=adapter._pending_acp_registry,
                     pending_id=pending_id,
@@ -180,6 +193,15 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                     agent_name=agent_name,
                     approved=approved,
                 )
+                record_authorized = True
+            except PendingACPDelegationWinnerError:
+                record_authorized = True
+                logger.warning("ACP permission resume winner failed closed", exc_info=True)
+                result = {
+                    "result": "ACP pending delegation is stale or could not be resumed.",
+                    "status": "failed",
+                    "variables": {},
+                }
             except Exception:
                 logger.warning("ACP permission resume failed closed", exc_info=True)
                 result = {
@@ -187,13 +209,14 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                     "status": "failed",
                     "variables": {},
                 }
-            adapter.record_delegation(
-                state,
-                agent_name if isinstance(agent_name, str) else "unknown",
-                result=result,
-                answer=result.get("result", ""),
-                variables=result.get("variables") or {},
-            )
+            if record_authorized:
+                adapter.record_delegation(
+                    state,
+                    agent_name if isinstance(agent_name, str) else "unknown",
+                    result=result,
+                    answer=result.get("result", ""),
+                    variables=result.get("variables") or {},
+                )
             answer = result.get("result", "")
             metadata.pop("acp_permission_resume", None)
             metadata.pop("acp_permission", None)

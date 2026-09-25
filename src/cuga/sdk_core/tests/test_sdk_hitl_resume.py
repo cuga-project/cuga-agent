@@ -260,7 +260,7 @@ class TestToolApprovalDenial:
         )
         assert "acp_permission" not in result["supervisor_metadata"]
         assert "acp_permission_resume" not in result["supervisor_metadata"]
-        adapter.record_delegation.assert_called_once()
+        adapter.record_delegation.assert_not_called()
 
     def test_agent_state_has_no_execution_complete_field(self):
         state = AgentState(input="test", url="")

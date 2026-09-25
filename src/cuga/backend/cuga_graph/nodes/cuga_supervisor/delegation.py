@@ -198,11 +198,26 @@ def create_agent_delegation_func(
                             ACPPermissionRuntimeBridge,
                         )
 
+                        def finalize_pending(outcome: str) -> None:
+                            result = {
+                                "result": f"ACP pending delegation ended without a valid resume ({outcome}).",
+                                "status": "failed",
+                                "variables": {},
+                            }
+                            adapter.record_delegation(
+                                exec_ctx.state,
+                                agent_name,
+                                result=result,
+                                answer=result["result"],
+                                variables={},
+                            )
+
                         permission_bridge = ACPPermissionRuntimeBridge(
                             registry=exec_ctx.pending_acp_registry,
                             thread_id=exec_ctx.thread_id,
                             agent_name=agent_name,
                             interactive=exec_ctx.interactive,
+                            finalizer=finalize_pending,
                         )
                     result = await delegate_task_via_acp(
                         config=acp_config,

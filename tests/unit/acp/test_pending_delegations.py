@@ -410,6 +410,169 @@ async def test_registry_sanitizes_bounded_identities_and_rejects_missing_owner()
 
 
 @pytest.mark.asyncio
+async def test_short_sanitized_identities_remain_collision_resistant() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import safe_identity
+
+    values = ("agent one", "agent  one", "agent\tone", "agent\x00one", "agent\x01one")
+    identities = {safe_identity(value, field="agent_name") for value in values}
+
+    assert len(identities) == len(values)
+    assert all(0 < len(identity) <= 128 for identity in identities)
+    assert all(identity.isprintable() for identity in identities)
+
+
+@pytest.mark.asyncio
+async def test_cancel_owned_requires_exact_agent_and_missing_agent_cannot_cancel_peer() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationOwnershipError,
+        PendingACPDelegationRegistry,
+    )
+
+    registry = PendingACPDelegationRegistry(capacity=1, ttl_seconds=30)
+    future = asyncio.get_running_loop().create_future()
+    prompt = asyncio.create_task(_wait_forever())
+    await registry.insert(
+        pending_id="pending",
+        thread_id="shared-thread",
+        agent_name="agent-a",
+        request=_request(),
+        owner=_Owner(),
+        prompt_task=prompt,
+        permission_future=future,
+    )
+
+    for agent_name in (None, "agent-b"):
+        with pytest.raises((ValueError, PendingACPDelegationOwnershipError)):
+            await registry.cancel_owned(
+                "pending",
+                thread_id="shared-thread",
+                agent_name=agent_name,
+                reason="tampered resume",
+            )
+        assert not prompt.done()
+        assert await registry.safe_metadata("pending") is not None
+
+    await registry.cancel("pending", reason="test cleanup")
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_cleanup_still_finishes_exactly_once() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationRegistry,
+    )
+
+    cleanup_started = asyncio.Event()
+    finish_cleanup = asyncio.Event()
+    cleaned = 0
+
+    async def cleanup() -> None:
+        nonlocal cleaned
+        cleanup_started.set()
+        await finish_cleanup.wait()
+        cleaned += 1
+
+    registry = PendingACPDelegationRegistry(capacity=1, ttl_seconds=30)
+    future = asyncio.get_running_loop().create_future()
+    prompt = asyncio.create_task(_wait_forever())
+    await registry.insert(
+        pending_id="cleanup-cancel",
+        thread_id="thread",
+        agent_name="coder",
+        request=_request(),
+        owner=_Owner(),
+        prompt_task=prompt,
+        permission_future=future,
+        cleanup=cleanup,
+    )
+    cancellation = asyncio.create_task(registry.cancel("cleanup-cancel", reason="test"))
+    await cleanup_started.wait()
+    cancellation.cancel()
+    finish_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await cancellation
+    await registry.aclose()
+
+    assert cleaned == 1
+    assert await registry.size() == 0
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_does_not_suppress_finalization_or_other_shutdown_cleanup() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationRegistry,
+    )
+
+    finalized = []
+    cleaned = []
+    registry = PendingACPDelegationRegistry(capacity=2, ttl_seconds=30)
+    for pending_id in ("broken", "healthy"):
+        future = asyncio.get_running_loop().create_future()
+        prompt = asyncio.create_task(_wait_forever())
+
+        async def cleanup(current=pending_id) -> None:
+            cleaned.append(current)
+            if current == "broken":
+                raise RuntimeError("cleanup failed")
+
+        await registry.insert(
+            pending_id=pending_id,
+            thread_id="thread",
+            agent_name="coder",
+            request=_request(),
+            owner=_Owner(),
+            prompt_task=prompt,
+            permission_future=future,
+            cleanup=cleanup,
+            finalizer=lambda outcome, current=pending_id: finalized.append((current, outcome)),
+        )
+
+    await registry.aclose()
+
+    assert sorted(cleaned) == ["broken", "healthy"]
+    assert sorted(item[0] for item in finalized) == ["broken", "healthy"]
+    assert await registry.size() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", ["expiry", "process_exit", "shutdown"])
+async def test_terminal_registry_cleanup_finalizes_exactly_once(terminal: str) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationRegistry,
+    )
+
+    finalized = []
+    registry = PendingACPDelegationRegistry(capacity=1, ttl_seconds=0.01)
+    future = asyncio.get_running_loop().create_future()
+    prompt = asyncio.create_task(_wait_forever())
+    await registry.insert(
+        pending_id="terminal",
+        thread_id="thread",
+        agent_name="coder",
+        request=_request(),
+        owner=_Owner(),
+        prompt_task=prompt,
+        permission_future=future,
+        finalizer=finalized.append,
+    )
+
+    if terminal == "expiry":
+        await asyncio.sleep(0.03)
+    elif terminal == "process_exit":
+        prompt.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await prompt
+        for _ in range(5):
+            await asyncio.sleep(0)
+            if finalized:
+                break
+    else:
+        await registry.aclose()
+
+    await registry.aclose()
+    assert len(finalized) == 1
+
+
+@pytest.mark.asyncio
 async def test_manual_expiry_cancels_and_drains_redundant_expiry_task(monkeypatch) -> None:
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client import pending
 

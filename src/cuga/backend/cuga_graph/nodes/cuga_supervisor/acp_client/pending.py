@@ -13,23 +13,27 @@ from typing import Any, Awaitable, Callable
 from .permissions import SafePermissionRequest
 
 Cleanup = Callable[[], Awaitable[None] | None]
+Finalizer = Callable[[str], Awaitable[None] | None]
 
 _IDENTITY_LIMIT = 128
+_IDENTITY_DIGEST_LENGTH = 32
 _REPLACEMENT = "�"
 
 
 def safe_identity(value: object, *, field: str) -> str:
-    """Return a bounded checkpoint-safe identity without collapsing distinct long values."""
+    """Return a bounded safe identity, preserving uniqueness across every lossy normalization."""
     if not isinstance(value, str):
         raise ValueError(f"{field} must be a non-empty string")
     normalized = "".join(character if character.isprintable() else _REPLACEMENT for character in value)
     normalized = " ".join(normalized.split())
     if not normalized:
         raise ValueError(f"{field} must be a non-empty string")
-    if len(normalized) <= _IDENTITY_LIMIT:
+    changed = normalized != value
+    if not changed and len(normalized) <= _IDENTITY_LIMIT:
         return normalized
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
-    return f"{normalized[: _IDENTITY_LIMIT - len(digest) - 1]}-{digest}"
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:_IDENTITY_DIGEST_LENGTH]
+    prefix_limit = _IDENTITY_LIMIT - len(digest) - 1
+    return f"{normalized[:prefix_limit]}-{digest}"
 
 
 class PendingACPDelegationError(RuntimeError):
@@ -50,6 +54,10 @@ class PendingACPDelegationOwnershipError(PendingACPDelegationError):
 
 class PendingACPDelegationStateError(PendingACPDelegationError):
     """The delegation was already claimed or otherwise cannot transition."""
+
+
+class PendingACPDelegationWinnerError(PendingACPDelegationError):
+    """A registry claim winner failed after acquiring sole final-record authority."""
 
 
 class PendingState(str, Enum):
@@ -79,11 +87,14 @@ class PendingACPDelegation:
     prompt_task: asyncio.Future[Any]
     permission_future: asyncio.Future[str | None]
     cleanup: Cleanup | None
+    finalizer: Finalizer | None
     created_monotonic: float
     expires_monotonic: float
     state: PendingState = PendingState.PENDING
     cleaned: bool = False
     expiry_task: asyncio.Task[None] | None = None
+    cleanup_task: asyncio.Task[None] | None = None
+    finalized: bool = False
 
 
 class PendingACPDelegationRegistry:
@@ -120,6 +131,7 @@ class PendingACPDelegationRegistry:
         prompt_task: asyncio.Future[Any],
         permission_future: asyncio.Future[str | None],
         cleanup: Cleanup | None = None,
+        finalizer: Finalizer | None = None,
     ) -> None:
         await self.expire()
         try:
@@ -137,6 +149,7 @@ class PendingACPDelegationRegistry:
                 prompt_task=prompt_task,
                 permission_future=permission_future,
                 cleanup=cleanup,
+                finalizer=finalizer,
                 created_monotonic=now,
                 expires_monotonic=now,
             )
@@ -152,6 +165,7 @@ class PendingACPDelegationRegistry:
             prompt_task=prompt_task,
             permission_future=permission_future,
             cleanup=cleanup,
+            finalizer=finalizer,
             created_monotonic=now,
             expires_monotonic=now + self._ttl_seconds,
         )
@@ -200,45 +214,47 @@ class PendingACPDelegationRegistry:
             return entry
 
     async def complete(self, pending_id: str) -> None:
-        entry = await self._remove(pending_id, PendingState.COMPLETED)
-        if entry is not None:
-            await self._cleanup_entry(entry, PendingState.COMPLETED, cancel_prompt=False)
+        await self._remove_and_cleanup(
+            pending_id,
+            PendingState.COMPLETED,
+            cancel_prompt=False,
+        )
 
-    async def cancel(self, pending_id: str, *, reason: str) -> None:
-        del reason
-        entry = await self._remove(pending_id, PendingState.CANCELLED)
-        if entry is not None:
-            await self._cleanup_entry(entry, PendingState.CANCELLED)
+    async def cancel(self, pending_id: str, *, reason: str, finalize: bool = False) -> None:
+        await self._remove_and_cleanup(
+            pending_id,
+            PendingState.CANCELLED,
+            finalize=finalize,
+            outcome=reason,
+        )
 
     async def cancel_owned(
         self,
         pending_id: str,
         *,
         thread_id: str,
-        agent_name: str | None,
+        agent_name: str,
         reason: str,
     ) -> SafePendingDelegation:
-        """Atomically validate invocation ownership, remove, and clean a pending delegation."""
+        """Atomically grant one exact full-owner cancellation and return its record authority."""
         del reason
         pending_id = safe_identity(pending_id, field="pending_id")
         thread_id = safe_identity(thread_id, field="thread_id")
-        expected_agent = safe_identity(agent_name, field="agent_name") if agent_name else None
+        expected_agent = safe_identity(agent_name, field="agent_name")
         async with self._lock:
             entry = self._entries.get(pending_id)
             if entry is None:
                 raise PendingACPDelegationNotFoundError("ACP pending delegation is stale")
-            if entry.thread_id != thread_id or (
-                expected_agent is not None and entry.agent_name != expected_agent
-            ):
+            if entry.thread_id != thread_id or entry.agent_name != expected_agent:
                 raise PendingACPDelegationOwnershipError("ACP pending delegation ownership mismatch")
             if entry.state is not PendingState.PENDING:
                 raise PendingACPDelegationStateError("ACP pending delegation was already resumed")
             self._entries.pop(pending_id)
             entry.state = PendingState.CANCELLED
-            expiry_task = entry.expiry_task
-            if expiry_task is not None and expiry_task is not asyncio.current_task():
-                expiry_task.cancel()
+            if entry.expiry_task is not None and entry.expiry_task is not asyncio.current_task():
+                entry.expiry_task.cancel()
             entry.expiry_task = None
+            cleanup_task = self._start_cleanup_locked(entry, PendingState.CANCELLED)
             metadata = SafePendingDelegation(
                 pending_id=entry.pending_id,
                 thread_id=entry.thread_id,
@@ -246,33 +262,30 @@ class PendingACPDelegationRegistry:
                 permission=entry.request,
                 state=entry.state.value,
             )
-        if expiry_task is not None and expiry_task is not asyncio.current_task():
-            await asyncio.gather(expiry_task, return_exceptions=True)
-        await self._cleanup_entry(entry, PendingState.CANCELLED)
+        await self._await_cleanup(cleanup_task)
         return metadata
 
     async def expire(self) -> int:
         now = monotonic()
-        expired: list[PendingACPDelegation] = []
+        cleanup_tasks = []
         async with self._lock:
             for pending_id, entry in list(self._entries.items()):
                 if entry.expires_monotonic <= now:
                     self._entries.pop(pending_id, None)
-                    entry.state = PendingState.EXPIRED
-                    expired.append(entry)
-        expiry_tasks = []
-        current_task = asyncio.current_task()
-        for entry in expired:
-            task = entry.expiry_task
-            if task is not None and task is not current_task:
-                task.cancel()
-                expiry_tasks.append(task)
-            entry.expiry_task = None
-        if expiry_tasks:
-            await asyncio.gather(*expiry_tasks, return_exceptions=True)
-        for entry in expired:
-            await self._cleanup_entry(entry, PendingState.EXPIRED)
-        return len(expired)
+                    if entry.expiry_task is not None and entry.expiry_task is not asyncio.current_task():
+                        entry.expiry_task.cancel()
+                    entry.expiry_task = None
+                    cleanup_tasks.append(
+                        self._start_cleanup_locked(
+                            entry,
+                            PendingState.EXPIRED,
+                            finalize=True,
+                            outcome="expired",
+                        )
+                    )
+        if cleanup_tasks:
+            await asyncio.gather(*(asyncio.shield(task) for task in cleanup_tasks), return_exceptions=True)
+        return len(cleanup_tasks)
 
     async def aclose(self) -> None:
         async with self._lock:
@@ -281,31 +294,46 @@ class PendingACPDelegationRegistry:
             self._closed = True
             entries = list(self._entries.values())
             self._entries.clear()
-            expiry_tasks = []
+            cleanup_tasks = []
             for entry in entries:
-                entry.state = PendingState.CANCELLED
                 if entry.expiry_task is not None:
                     entry.expiry_task.cancel()
-                    expiry_tasks.append(entry.expiry_task)
                     entry.expiry_task = None
-        if expiry_tasks:
-            await asyncio.gather(*expiry_tasks, return_exceptions=True)
-        for entry in entries:
-            await self._cleanup_entry(entry, PendingState.CANCELLED)
+                cleanup_tasks.append(
+                    self._start_cleanup_locked(
+                        entry,
+                        PendingState.CANCELLED,
+                        finalize=True,
+                        outcome="shutdown",
+                    )
+                )
+        if cleanup_tasks:
+            await asyncio.gather(*(asyncio.shield(task) for task in cleanup_tasks), return_exceptions=True)
 
-    async def _remove(self, pending_id: str, state: PendingState) -> PendingACPDelegation | None:
+    async def _remove_and_cleanup(
+        self,
+        pending_id: str,
+        state: PendingState,
+        *,
+        cancel_prompt: bool = True,
+        finalize: bool = False,
+        outcome: str = "failed",
+    ) -> None:
         async with self._lock:
             entry = self._entries.pop(pending_id, None)
-            expiry_task = None
-            if entry is not None:
-                entry.state = state
-                if entry.expiry_task is not None and entry.expiry_task is not asyncio.current_task():
-                    expiry_task = entry.expiry_task
-                    expiry_task.cancel()
-                entry.expiry_task = None
-        if expiry_task is not None:
-            await asyncio.gather(expiry_task, return_exceptions=True)
-        return entry
+            if entry is None:
+                return
+            if entry.expiry_task is not None and entry.expiry_task is not asyncio.current_task():
+                entry.expiry_task.cancel()
+            entry.expiry_task = None
+            cleanup_task = self._start_cleanup_locked(
+                entry,
+                state,
+                cancel_prompt=cancel_prompt,
+                finalize=finalize,
+                outcome=outcome,
+            )
+        await self._await_cleanup(cleanup_task)
 
     async def _expire_entry(self, expected: PendingACPDelegation) -> None:
         try:
@@ -315,16 +343,62 @@ class PendingACPDelegationRegistry:
                 if entry is not expected:
                     return
                 self._entries.pop(expected.pending_id, None)
-                entry.state = PendingState.EXPIRED
                 entry.expiry_task = None
-            await self._cleanup_entry(entry, PendingState.EXPIRED)
+                cleanup_task = self._start_cleanup_locked(
+                    entry,
+                    PendingState.EXPIRED,
+                    finalize=True,
+                    outcome="expired",
+                )
+            await asyncio.shield(cleanup_task)
         except asyncio.CancelledError:
             return
 
     async def _prompt_finished(self, pending_id: str) -> None:
-        entry = await self._remove(pending_id, PendingState.COMPLETED)
-        if entry is not None:
-            await self._cleanup_entry(entry, PendingState.COMPLETED, cancel_prompt=False)
+        async with self._lock:
+            entry = self._entries.get(pending_id)
+            if entry is None or entry.state is PendingState.RESUMING:
+                return
+            self._entries.pop(pending_id)
+            if entry.expiry_task is not None and entry.expiry_task is not asyncio.current_task():
+                entry.expiry_task.cancel()
+            entry.expiry_task = None
+            cleanup_task = self._start_cleanup_locked(
+                entry,
+                PendingState.COMPLETED,
+                cancel_prompt=False,
+                finalize=True,
+                outcome="process exited",
+            )
+        await asyncio.shield(cleanup_task)
+
+    def _start_cleanup_locked(
+        self,
+        entry: PendingACPDelegation,
+        state: PendingState,
+        *,
+        cancel_prompt: bool = True,
+        finalize: bool = False,
+        outcome: str = "failed",
+    ) -> asyncio.Task[None]:
+        if entry.cleanup_task is None:
+            entry.state = state
+            entry.cleanup_task = asyncio.create_task(
+                self._run_cleanup(
+                    entry,
+                    cancel_prompt=cancel_prompt,
+                    finalize=finalize,
+                    outcome=outcome,
+                )
+            )
+        return entry.cleanup_task
+
+    async def _await_cleanup(self, cleanup_task: asyncio.Task[None]) -> None:
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            await asyncio.shield(cleanup_task)
+            raise
 
     async def _cleanup_entry(
         self,
@@ -332,24 +406,56 @@ class PendingACPDelegationRegistry:
         state: PendingState,
         *,
         cancel_prompt: bool = True,
+        finalize: bool = False,
+        outcome: str = "failed",
     ) -> None:
         async with self._lock:
             if entry.cleaned:
                 return
-            entry.cleaned = True
-            entry.state = state
-        if not entry.permission_future.done():
-            entry.permission_future.set_result(None)
-        if cancel_prompt and not entry.prompt_task.done():
-            entry.prompt_task.cancel()
-            if entry.prompt_task is not asyncio.current_task():
+            cleanup_task = self._start_cleanup_locked(
+                entry,
+                state,
+                cancel_prompt=cancel_prompt,
+                finalize=finalize,
+                outcome=outcome,
+            )
+        await self._await_cleanup(cleanup_task)
+
+    async def _run_cleanup(
+        self,
+        entry: PendingACPDelegation,
+        *,
+        cancel_prompt: bool,
+        finalize: bool,
+        outcome: str,
+    ) -> None:
+        cleanup_error: BaseException | None = None
+        try:
+            if not entry.permission_future.done():
+                entry.permission_future.set_result(None)
+            if cancel_prompt and not entry.prompt_task.done():
+                entry.prompt_task.cancel()
+                if entry.prompt_task is not asyncio.current_task():
+                    try:
+                        await entry.prompt_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        pass
+            if entry.cleanup is not None:
                 try:
-                    await entry.prompt_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    pass
-        if entry.cleanup is not None:
-            result = entry.cleanup()
-            if inspect.isawaitable(result):
-                await result
+                    result = entry.cleanup()
+                    if inspect.isawaitable(result):
+                        await result
+                except BaseException as exc:
+                    cleanup_error = exc
+            if finalize and entry.finalizer is not None and not entry.finalized:
+                entry.finalized = True
+                result = entry.finalizer(outcome)
+                if inspect.isawaitable(result):
+                    await result
+            if cleanup_error is not None:
+                raise cleanup_error
+        finally:
+            async with self._lock:
+                entry.cleaned = True

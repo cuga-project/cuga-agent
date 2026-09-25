@@ -239,7 +239,45 @@ async def test_resume_path_uses_pending_prompt_not_code_executor_and_records_onc
 
 
 @pytest.mark.asyncio
-async def test_stale_resume_records_one_final_failed_delegation() -> None:
+async def test_duplicate_and_concurrent_resume_losers_do_not_record() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationRegistry,
+        PendingACPDelegationStateError,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool import (
+        create_execute_agent_tool_node,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import SupervisorGraphAdapter
+
+    adapter = SupervisorGraphAdapter(
+        agents={"coder": _external_agent()},
+        pending_acp_registry=PendingACPDelegationRegistry(),
+        interactive=True,
+    )
+    adapter.record_delegation = MagicMock()
+    state = CugaSupervisorState(
+        input="work",
+        thread_id="thread",
+        supervisor_metadata={
+            "acp_permission_resume": {"pending_id": "pending", "agent_name": "coder", "approved": True}
+        },
+    )
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool.resume_acp_delegation",
+        new=AsyncMock(side_effect=PendingACPDelegationStateError("already resumed")),
+    ):
+        result = await create_execute_agent_tool_node(adapter)(
+            state, {"configurable": {"thread_id": "thread"}}
+        )
+
+    adapter.record_delegation.assert_not_called()
+    assert result["final_answer"] == "ACP pending delegation is stale or could not be resumed."
+
+
+@pytest.mark.asyncio
+async def test_stale_resume_without_registry_winner_does_not_record() -> None:
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
         PendingACPDelegationNotFoundError,
         PendingACPDelegationRegistry,
@@ -272,9 +310,7 @@ async def test_stale_resume_records_one_final_failed_delegation() -> None:
             state, {"configurable": {"thread_id": "thread"}}
         )
 
-    adapter.record_delegation.assert_called_once()
-    recorded = adapter.record_delegation.call_args.kwargs["result"]
-    assert recorded["status"] == "failed"
+    adapter.record_delegation.assert_not_called()
     assert result["final_answer"] == "ACP pending delegation is stale or could not be resumed."
 
 
@@ -352,6 +388,55 @@ async def test_supervisor_sdk_callback_maps_exact_acp_response_for_resume() -> N
         **permission,
         "approved": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_malformed_missing_agent_does_not_cancel_same_thread_other_agent_or_record() -> None:
+    import asyncio
+
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationRegistry,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool import (
+        create_execute_agent_tool_node,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import SupervisorGraphAdapter
+
+    registry = PendingACPDelegationRegistry(capacity=1, ttl_seconds=30)
+    permission_future = asyncio.get_running_loop().create_future()
+    prompt_task = asyncio.create_task(asyncio.Event().wait())
+    await registry.insert(
+        pending_id="pending-safe",
+        thread_id="thread",
+        agent_name="other-agent",
+        request=_safe_request(),
+        owner=object(),
+        prompt_task=prompt_task,
+        permission_future=permission_future,
+    )
+    adapter = SupervisorGraphAdapter(
+        agents={"coder": _external_agent()}, pending_acp_registry=registry, interactive=True
+    )
+    adapter.record_delegation = MagicMock()
+    state = CugaSupervisorState(
+        input="work",
+        thread_id="thread",
+        supervisor_metadata={
+            "acp_permission_resume": {
+                "pending_id": "pending-safe",
+                "approved": None,
+            },
+        },
+    )
+
+    result = await create_execute_agent_tool_node(adapter)(state, {"configurable": {"thread_id": "thread"}})
+
+    assert await registry.size() == 1
+    assert not prompt_task.done()
+    adapter.record_delegation.assert_not_called()
+    assert result["final_answer"] == "ACP pending delegation is stale or could not be resumed."
+    await registry.cancel("pending-safe", reason="test cleanup")
 
 
 @pytest.mark.asyncio

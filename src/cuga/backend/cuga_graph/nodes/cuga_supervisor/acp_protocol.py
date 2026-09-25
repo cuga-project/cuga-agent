@@ -10,6 +10,7 @@ from .acp_client.callbacks import ACPClientCallbacks, LifecycleRegistrar, Permis
 from .acp_client.pending import (
     PendingACPDelegationError,
     PendingACPDelegationRegistry,
+    PendingACPDelegationWinnerError,
     safe_identity,
 )
 from .acp_client.permissions import SafePermissionRequest, select_permission_option
@@ -38,6 +39,7 @@ class ACPPermissionRuntimeBridge:
         thread_id: str,
         agent_name: str,
         interactive: bool,
+        finalizer: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> None:
         self.registry = registry
         try:
@@ -48,6 +50,7 @@ class ACPPermissionRuntimeBridge:
             self.agent_name = ""
             interactive = False
         self.interactive = interactive
+        self._finalizer = finalizer
         self._lifecycle_id: str | None = None
         self._owner: Any = None
         self._prompt_task: asyncio.Task[Any] | None = None
@@ -93,6 +96,7 @@ class ACPPermissionRuntimeBridge:
                 prompt_task=self._prompt_task,
                 permission_future=permission_future,
                 cleanup=self._cancel_prompt,
+                finalizer=self._finalizer,
             )
         except PendingACPDelegationError:
             return None
@@ -126,22 +130,32 @@ class ACPPermissionRuntimeBridge:
 
     async def resume(self, *, pending_id: str, approved: bool | None) -> dict[str, Any]:
         entry = await self.registry.claim(pending_id, thread_id=self.thread_id, agent_name=self.agent_name)
-        selected = select_permission_option(entry.request.options, approved=approved)
-        if selected is None:
-            await self.registry.cancel(pending_id, reason="permission response rejected")
-            raise PendingACPDelegationError("ACP permission response is ambiguous or unavailable")
-        if not entry.permission_future.done():
-            entry.permission_future.set_result(selected)
         try:
-            result = await entry.prompt_task
-        except asyncio.CancelledError:
-            await self.registry.cancel(pending_id, reason="resuming caller cancelled")
-            raise
-        except Exception:
+            selected = select_permission_option(entry.request.options, approved=approved)
+            if selected is None:
+                await self.registry.cancel(pending_id, reason="permission response rejected")
+                raise PendingACPDelegationWinnerError("ACP permission response is ambiguous or unavailable")
+            if not entry.permission_future.done():
+                entry.permission_future.set_result(selected)
+            try:
+                result = await entry.prompt_task
+            except asyncio.CancelledError:
+                cleanup_task = asyncio.create_task(
+                    self.registry.cancel(
+                        pending_id,
+                        reason="resuming caller cancelled",
+                        finalize=True,
+                    )
+                )
+                await asyncio.shield(cleanup_task)
+                raise
+            except Exception as exc:
+                await self.registry.complete(pending_id)
+                raise PendingACPDelegationWinnerError("ACP resumed delegation failed") from exc
             await self.registry.complete(pending_id)
+            return result
+        except PendingACPDelegationWinnerError:
             raise
-        await self.registry.complete(pending_id)
-        return result
 
     async def _cancel_prompt(self) -> None:
         task = self._prompt_task
