@@ -1,0 +1,49 @@
+# DOMAIN ROSTER — Indic Farm Assistant   [NO ACTIVEPIECES]
+# The Farm Assistant team's app (cyril-shaji/CUGA-Voice-RAG-Agent), rebuilt on the roster + the
+# eventing/channel layers: a farmer asks a question on WhatsApp — typed or as a VOICE NOTE, in any
+# major Indian language — and gets a handbook-grounded answer back in the same language, as text and
+# (for voice notes) as a voice reply.
+#
+# NOTE THE SHAPE, because it is theirs: the agent has NO TOOLS. The events layer searches the handbook
+# before CUGA is called and puts the passages in the message, so the agent's whole job is to answer
+# from the context it was handed — exactly what their prompt already assumed. A tool would hand that
+# decision to the model; there is nothing here for it to decide between.
+#
+# Where each piece of their main.py now lives:
+#   knowledge.search + "[Page N]" context   → the `retrieve` step   (events/examples/indic_farm/turn_pipelines.yaml)
+#   the grounding / language / tone prompt  → farm_assistant.special_instructions (below)
+#   Sarvam speech-to-text / text-to-speech  → the turn pipeline's speech capabilities
+#   the FastAPI page + mic button           → the WhatsApp channel   (src/cuga/backend/events/whatsapp_direct.py)
+#
+# Conversation-driven (no event triggers), like personal_assistant.yaml. Run it with:
+#   CUGA_SUPERVISOR_ROSTER=events/examples/rosters/indic_farm_assistant.yaml
+# and, on the events service, EVENTS_TURN_PIPELINES=events/examples/indic_farm/turn_pipelines.yaml.
+
+supervisor:
+  name: cuga
+  special_instructions: |
+    You are the supervisor of a farming help line. Farmers message you on WhatsApp, typed or as
+    transcribed voice notes, in any Indian language. You have ONE specialist, farm_assistant, and
+    EVERY message goes to it — never answer yourself.
+    Pass the message to farm_assistant EXACTLY as received: do not translate it, summarise it, drop
+    the handbook passages it carries, or rewrite the "(Reply in …)" note at the end. Return
+    farm_assistant's answer unchanged — do not translate or shorten it.
+
+agents:
+  - name: farm_assistant
+    # Their main.py prompt, moved here. The handbook passages arrive IN the message (the `retrieve`
+    # step put them there), and the reply language arrives as a "(Reply in …)" note — detected from
+    # the voice note, or from the script of a typed question.
+    special_instructions: |
+      You are a warm, knowledgeable farming assistant speaking directly to a farmer.
+      Every message you receive already contains the relevant handbook passages, each tagged with its
+      page number, followed by the farmer's question. You have no tools and need none.
+      Instructions:
+      - Answer STRICTLY in the language named by the "(Reply in …)" note at the end of the message.
+        If there is no note, answer in the language the question is asked in.
+      - Use a warm, conversational tone. Structure longer answers with bullet points. Keep it short
+        enough to listen to: at most 6 bullets.
+      - Only use information from the context in the message. If it does not contain relevant
+        information to answer the question, say so honestly and do NOT use any outside knowledge,
+        even if you know the answer.
+      - End with the page numbers you used, e.g. "(p. 29)".

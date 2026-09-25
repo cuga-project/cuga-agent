@@ -17,7 +17,10 @@ REGISTRY_PORT="${EVENTS_REGISTRY_PORT:-8001}"
 CUGA_PORT="${CUGA_PORT:-7860}"
 EVENTS_PORT="${EVENTS_SERVICE_PORT:-8100}"
 AP_PORT="$(grep -E '^AP_BASE_URL=' .env 2>/dev/null | sed -E 's|.*:([0-9]+).*|\1|' || echo 8081)"
-CFG="src/cuga/backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml"
+# The MCP registry CUGA serves. Override for a roster that brings its own tools, e.g.
+#   EVENTS_MCP_SERVERS_FILE=events/examples/indic_farm/mcp_servers.yaml \
+#   CUGA_SUPERVISOR_ROSTER=events/examples/rosters/indic_farm_assistant.yaml make up-noap
+CFG="${EVENTS_MCP_SERVERS_FILE:-src/cuga/backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml}"
 RUN=/tmp/events_up
 
 # --- the eventing service (service #2) -------------------------------------

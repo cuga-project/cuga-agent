@@ -227,3 +227,49 @@
   margin: 0;
   font-size: 0.75rem;
 }
+
+/* ── Processing: configurable stages, each one a service call ───────────────────────────────── */
+.proc-wrap { display: flex; flex-direction: column; gap: 1rem; }
+.proc-split { display: grid; grid-template-columns: 210px minmax(0, 1fr) 340px; gap: 1rem; align-items: start; }
+.proc-panel { padding: 1rem; }
+.proc-panel-sub { margin: 0.25rem 0 0.75rem; }
+.proc-phase-title { font-size: 0.875rem; font-weight: 600; }
+.proc-phase-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
+.proc-main { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
+.proc-side { position: sticky; top: 1rem; }
+
+.proc-rail { background: #fff; border: 1px solid #e0e0e0; }
+.proc-rail-head { font-size: 0.75rem; letter-spacing: 0.32px; text-transform: uppercase; color: #525252; padding: 0.75rem 1rem 0.5rem; }
+.proc-rail-item { display: flex; flex-direction: column; gap: 0.125rem; width: 100%; padding: 0.625rem 1rem; background: none; border: 0; border-left: 3px solid transparent; text-align: left; cursor: pointer; }
+.proc-rail-item:hover { background: #f4f4f4; }
+.proc-rail-item--on { background: #edf5ff; border-left-color: #0f62fe; }
+.proc-rail-name { display: flex; align-items: center; gap: 0.375rem; font-size: 0.875rem; color: #161616; }
+.proc-rail-sub { font-size: 0.75rem; color: #6f6f6f; padding-left: 1.375rem; }
+.proc-rail-foot { font-size: 0.75rem; color: #6f6f6f; padding: 0.75rem 1rem; border-top: 1px solid #e0e0e0; line-height: 1.4; }
+
+.stage { border: 1px solid #e0e0e0; padding: 0.75rem; margin-bottom: 0.5rem; background: #fff; }
+.stage--off { opacity: 0.5; }
+.stage-head { display: flex; align-items: center; gap: 0.5rem; }
+.stage-num { display: inline-flex; align-items: center; justify-content: center; width: 1.25rem; height: 1.25rem; border-radius: 50%; background: #0f62fe; color: #fff; font-size: 0.6875rem; flex-shrink: 0; }
+.stage-title { font-size: 0.875rem; font-weight: 600; }
+.stage-actions { margin-left: auto; display: flex; align-items: center; gap: 0.25rem; }
+.stage-url { font-size: 0.6875rem; color: #525252; background: #f4f4f4; padding: 0.125rem 0.375rem; display: inline-block; margin: 0.375rem 0 0.5rem 1.75rem; }
+.stage-example { margin-left: 1.75rem; border-left: 2px solid #e0e0e0; padding-left: 0.75rem; display: flex; flex-direction: column; gap: 0.25rem; }
+.stage-io { display: flex; gap: 0.5rem; align-items: baseline; }
+.stage-io code { font-size: 0.6875rem; color: #161616; word-break: break-word; }
+.stage-io-label { font-size: 0.625rem; text-transform: uppercase; letter-spacing: 0.4px; color: #0f62fe; width: 1.75rem; flex-shrink: 0; }
+.stage-io-label--out { color: #8a3ffc; }
+.stage-note { font-size: 0.6875rem; color: #6f6f6f; font-style: italic; }
+
+.stage-add-row { display: flex; align-items: flex-end; gap: 0.5rem; }
+.stage-new { border: 1px dashed #0f62fe; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.stage-new-actions { display: flex; gap: 0.5rem; }
+
+.proc-agent { padding: 0.75rem 1rem; background: #edf5ff; border: 1px dashed #0f62fe; }
+.proc-agent-title { display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; font-weight: 600; }
+
+.shape { border-top: 1px solid #e0e0e0; padding: 0.625rem 0; }
+.shape-head { display: flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; font-weight: 600; font-family: 'IBM Plex Mono', monospace; }
+.shape-blurb { font-size: 0.75rem; color: #6f6f6f; margin: 0.25rem 0 0.375rem; line-height: 1.4; }
+.shape-io { margin: 0; padding: 0.375rem 0.5rem; background: #f4f4f4; font-size: 0.625rem; font-family: 'IBM Plex Mono', monospace; white-space: pre-wrap; word-break: break-word; }
+.shape-io--out { background: #f6f2ff; margin-top: 0.125rem; }

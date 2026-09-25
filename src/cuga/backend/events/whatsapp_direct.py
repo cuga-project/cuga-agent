@@ -9,6 +9,12 @@ per-user custody) does not apply either: a channel token is a single long-lived 
 
 Flow:  Meta ▸ POST /api/events/whatsapp/events (this module) ▸ /run (cuga_door) ▸ Cloud API send.
 
+VOICE NOTES go through the same door, wrapped in a turn pipeline (``turns/``): :func:`inbound` parses
+text AND audio into channel-neutral ``InboundMessage``s, :class:`WhatsAppIO` is this channel's side of
+the pipeline (fetch a media id's bytes; upload + send a voice reply), and ``EVENTS_TURN_PIPELINES``
+decides what runs before and after CUGA (speech-to-text, text-to-speech, …). This module knows how
+WhatsApp moves audio; it does not know how speech is recognised or produced.
+
 THE 24-HOUR WINDOW is what makes WhatsApp unlike every other channel. Free-form text is only
 permitted within 24h of the user's last inbound message; outside it Meta REJECTS the send and a
 pre-approved template is required. So this module tracks ``last_inbound_at`` per wa_id and
@@ -36,6 +42,11 @@ import os
 import time
 
 import httpx
+
+try:
+    from .turns.message import AUDIO, TEXT, InboundMessage, Part
+except ImportError:  # flat load (tests put the events dir on sys.path)
+    from turns.message import AUDIO, TEXT, InboundMessage, Part
 
 log = logging.getLogger("events.whatsapp")
 
@@ -70,8 +81,16 @@ def api_version() -> str:
     return (os.environ.get("WHATSAPP_API_VERSION", "v23.0").split(" #", 1)[0].strip()) or "v23.0"
 
 
+def graph_base() -> str:
+    """``WHATSAPP_GRAPH_BASE`` overrides Meta's host — for a local fake Graph API in end-to-end tests,
+    or an egress proxy. Unset in production."""
+    return (
+        os.environ.get("WHATSAPP_GRAPH_BASE", "").split(" #", 1)[0].strip().rstrip("/")
+    ) or "https://graph.facebook.com"
+
+
 def _graph(path: str) -> str:
-    return f"https://graph.facebook.com/{api_version()}/{path}"
+    return f"{graph_base()}/{api_version()}/{path}"
 
 
 # ── inbound ─────────────────────────────────────────────────────────────────────────────────────
@@ -148,14 +167,19 @@ def handshake(params) -> tuple[bool, str]:
     return True, challenge
 
 
-def messages(body: dict) -> list[dict]:
-    """The inbound messages in a webhook payload → ``[{wa_id, text, id, ts, name}, …]``.
+def inbound(body: dict) -> list[InboundMessage]:
+    """The inbound messages in a webhook payload, as channel-neutral ``InboundMessage``s.
 
     Meta nests these three deep (``entry[].changes[].value.messages[]``) and interleaves them with
     ``statuses[]`` (delivery receipts for messages WE sent). Only ``messages`` are human traffic;
     treating a status as a message makes the bot answer its own delivery receipt.
+
+    Text and AUDIO are understood. A voice note arrives as a media id, not bytes — the bytes are
+    fetched only if a pipeline step asks (:meth:`WhatsAppIO.fetch`), so a deployment with no voice
+    pipeline never downloads audio it will not use. Images, documents, reactions and interactive
+    replies are still skipped here; they are one ``elif`` away (the Part model already has kinds).
     """
-    out: list[dict] = []
+    out: list[InboundMessage] = []
     for entry in body.get("entry") or []:
         for change in entry.get("changes") or []:
             value = change.get("value") or {}
@@ -167,22 +191,53 @@ def messages(body: dict) -> list[dict]:
             for m in value.get("messages") or []:
                 if not isinstance(m, dict):
                     continue
-                if m.get("type") != "text":
-                    continue  # media/interactive/reactions — not handled yet
                 wa_id = str(m.get("from") or "")
-                text = str(((m.get("text") or {}).get("body")) or "")
-                if not (wa_id and text):
+                if not wa_id:
                     continue
+                kind = m.get("type")
+                if kind == "text":
+                    text = str(((m.get("text") or {}).get("body")) or "")
+                    if not text:
+                        continue
+                    parts = [Part.of_text(text)]
+                elif kind == "audio":
+                    a = m.get("audio") or {}
+                    if not a.get("id"):
+                        continue
+                    parts = [
+                        Part.of_audio(
+                            ref=str(a["id"]), mime=str(a.get("mime_type") or ""), voice=bool(a.get("voice"))
+                        )
+                    ]
+                else:
+                    continue  # image/document/interactive/reactions — not handled yet
                 out.append(
-                    {
-                        "wa_id": wa_id,
-                        "text": text,
-                        "id": str(m.get("id") or ""),
-                        "ts": str(m.get("timestamp") or ""),
-                        "name": names.get(wa_id, ""),
-                    }
+                    InboundMessage(
+                        channel="whatsapp",
+                        sender=wa_id,
+                        parts=parts,
+                        message_id=str(m.get("id") or ""),
+                        sender_name=names.get(wa_id, ""),
+                        meta={"ts": str(m.get("timestamp") or "")},
+                    )
                 )
     return out
+
+
+def messages(body: dict) -> list[dict]:
+    """The TEXT messages in a webhook payload → ``[{wa_id, text, id, ts, name}, …]`` — the original,
+    text-only view, kept for callers that predate :func:`inbound`."""
+    return [
+        {
+            "wa_id": m.sender,
+            "text": m.text(),
+            "id": m.message_id,
+            "ts": m.meta.get("ts", ""),
+            "name": m.sender_name,
+        }
+        for m in inbound(body)
+        if m.modality == TEXT
+    ]
 
 
 # ── the 24-hour window ──────────────────────────────────────────────────────────────────────────
@@ -304,3 +359,135 @@ async def send_message(to: str, text: str) -> dict:
     if res.get("ok"):
         res["mode"] = "template"
     return res
+
+
+# ── media (voice notes) ─────────────────────────────────────────────────────────────────────────
+# What a phone will play as a WhatsApp voice message, best first. WAV is NOT on Meta's list — which
+# is why a TTS that emits WAV gets transcoded to Opus before upload. OGG must be Opus, mono.
+ACCEPTED_AUDIO = ("audio/ogg; codecs=opus", "audio/mpeg", "audio/aac", "audio/mp4", "audio/amr")
+MAX_MEDIA_BYTES = 16 * 1024 * 1024  # Meta's audio limit; also bounds what we hold in memory
+_MEDIA_HOSTS = (".fbsbx.com", ".facebook.com", ".whatsapp.net")
+
+
+def _media_host_ok(url: str) -> bool:
+    """Only hand the bearer token to Meta's own media hosts (or the configured fake/proxy base). The
+    URL comes from Graph's response, but a token is worth a second check before it leaves."""
+    from urllib.parse import urlparse
+
+    u = urlparse(url or "")
+    if u.scheme not in ("https", "http") or not u.hostname:
+        return False
+    if u.hostname == urlparse(graph_base()).hostname:
+        return True
+    return u.scheme == "https" and any(u.hostname.endswith(h) or u.hostname == h[1:] for h in _MEDIA_HOSTS)
+
+
+async def fetch_media(media_id: str) -> tuple[bytes, str]:
+    """A media id → (bytes, mime). Two hops: Graph returns a short-lived URL (it expires in ~5 min),
+    and that URL needs the same bearer token."""
+    tok = token()
+    if not tok:
+        raise RuntimeError("no WHATSAPP_TOKEN")
+    auth = {"Authorization": f"Bearer {tok}"}
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.get(_graph(media_id), headers=auth)
+        meta = r.json() if r.content else {}
+        if r.status_code != 200 or not meta.get("url"):
+            raise RuntimeError(f"whatsapp media {media_id}: HTTP {r.status_code}")
+        if int(meta.get("file_size") or 0) > MAX_MEDIA_BYTES:
+            raise RuntimeError(
+                f"whatsapp media {media_id}: {meta.get('file_size')} bytes exceeds the 16 MB limit"
+            )
+        if not _media_host_ok(meta["url"]):
+            raise RuntimeError("whatsapp media: refusing an unexpected media host")
+        d = await c.get(meta["url"], headers=auth)
+    if d.status_code != 200 or not d.content:
+        raise RuntimeError(f"whatsapp media {media_id}: download HTTP {d.status_code}")
+    if len(d.content) > MAX_MEDIA_BYTES:
+        raise RuntimeError("whatsapp media: download exceeds the 16 MB limit")
+    # A JSON body here means the URL was not the media itself (a misrouted proxy, a wrong
+    # WHATSAPP_GRAPH_BASE). Without this the bytes reach the speech provider and fail there as
+    # "invalid data", which names the wrong component.
+    if d.headers.get("content-type", "").startswith("application/json") or d.content[:1] == b"{":
+        raise RuntimeError("whatsapp media: download returned JSON, not audio (check WHATSAPP_GRAPH_BASE)")
+    return d.content, str(meta.get("mime_type") or d.headers.get("content-type") or "")
+
+
+async def upload_media(data: bytes, mime: str, filename: str = "reply.ogg") -> dict:
+    """Upload bytes to Meta → ``{"ok": True, "id": media_id}``. The id is what an audio message sends."""
+    tok, pnid = token(), phone_number_id()
+    if not (tok and pnid):
+        return {"ok": False, "error": "no WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID"}
+    try:
+        async with httpx.AsyncClient(timeout=60) as c:
+            r = await c.post(
+                _graph(f"{pnid}/media"),
+                headers={"Authorization": f"Bearer {tok}"},
+                data={"messaging_product": "whatsapp", "type": mime.split(";", 1)[0]},
+                files={"file": (filename, data, mime)},
+            )
+        body = r.json() if r.content else {}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"upload failed: {type(e).__name__}"}
+    if r.status_code == 200 and body.get("id"):
+        return {"ok": True, "id": str(body["id"])}
+    return {
+        "ok": False,
+        "error": str(
+            ((body.get("error") or {}) if isinstance(body, dict) else {}).get("message")
+            or f"HTTP {r.status_code}"
+        ),
+    }
+
+
+async def send_audio(to: str, media_id: str) -> dict:
+    """An uploaded media id → a voice message. Free-form, so only valid INSIDE the 24-hour window."""
+    return await _post(
+        {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to,
+            "type": "audio",
+            "audio": {"id": media_id},
+        }
+    )
+
+
+class WhatsAppIO:
+    """This channel's side of a turn pipeline (the ``turns.channel.ChannelIO`` interface)."""
+
+    name = "whatsapp"
+    accepted_audio = ACCEPTED_AUDIO
+
+    async def fetch(self, part: Part) -> bytes:
+        data, mime = await fetch_media(part.ref)
+        part.data, part.mime = data, part.mime or mime
+        return data
+
+    async def send(self, recipient: str, parts) -> list[dict]:
+        results = []
+        for p in parts:
+            if p.kind == TEXT:
+                results.append(await send_message(recipient, p.text))
+            elif p.kind == AUDIO:
+                results.append(await self._send_audio(recipient, p))
+            else:
+                results.append({"ok": False, "error": f"whatsapp: sending {p.kind} is not supported"})
+        return results
+
+    async def _send_audio(self, to: str, p: Part) -> dict:
+        if not window_open(to):
+            # A template cannot carry audio; the text part (sent as a template) is the reply.
+            return {"ok": False, "error": "voice reply needs an open 24h window", "mode": "skipped"}
+        base = (p.mime or "").split(";", 1)[0].strip().lower()
+        if base not in {a.split(";", 1)[0].strip().lower() for a in self.accepted_audio}:
+            # The service was told what this channel plays (``accept``) and sent something else.
+            # The text reply has already gone out, so this costs the voice note and nothing more.
+            return {"ok": False, "error": f"whatsapp cannot play {p.mime or 'unknown audio'}", "mode": "skipped"}
+        up = await upload_media(p.data, p.mime, filename="reply.ogg" if "ogg" in base else "reply.mp3")
+        if not up.get("ok"):
+            return up
+        res = await send_audio(to, up["id"])
+        if res.get("ok"):
+            res["mode"] = "audio"
+        return res

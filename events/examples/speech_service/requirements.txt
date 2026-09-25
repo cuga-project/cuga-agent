@@ -1,0 +1,10 @@
+# Common
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart
+huggingface_hub
+numpy
+# SPEECH_STT=whisper
+faster-whisper>=1.1
+# SPEECH_TTS=piper   (Linux; the macOS wheel cannot find its espeak-ng data)
+piper-tts>=1.3

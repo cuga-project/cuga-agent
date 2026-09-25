@@ -1,0 +1,15 @@
+# CUGA tool registry for the Indic Farm Assistant roster.
+#     MCP_SERVERS_FILE=events/examples/indic_farm/mcp_servers.yaml
+# farm_handbook is the Farm Assistant team's retrieval (handbook/handbook_mcp.py). Underscores, not
+# hyphens: CUGA composes tool ids as <app>_<tool> (farm_handbook_search_handbook).
+mcpServers:
+  farm_handbook:
+    url: http://localhost:8765/mcp
+    transport: http
+    description: Farmer's handbook search — search_handbook(question) → "[Page N]" passages + sources (read-only)
+  # Natural next tools for a farm line — things a handbook cannot answer (uncomment to add, then
+  # name them under farm_assistant.mcp_servers in the roster):
+  # cuga_web:
+  #   url: https://cuga-apps-mcp-web.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
+  #   transport: http
+  #   description: web search / weather

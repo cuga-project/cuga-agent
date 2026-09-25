@@ -2343,31 +2343,40 @@ def register_events_routes(
             body = _json.loads(raw.decode("utf-8", "replace") or "{}")
         except Exception:  # noqa: BLE001
             return JSONResponse({"ok": False, "error": "bad json"}, 400)
-        msgs = whatsapp_direct.messages(body)
+        msgs = whatsapp_direct.inbound(body)
         for m in msgs:
             # Record BEFORE answering: this is what opens the 24-hour free-form window, and the
-            # reply we are about to send depends on it.
-            whatsapp_direct.note_inbound(m["wa_id"])
-            asyncio.create_task(_whatsapp_answer(m["text"], m["wa_id"]))
+            # reply we are about to send depends on it. A voice note opens it exactly like text.
+            whatsapp_direct.note_inbound(m.sender)
+            asyncio.create_task(_whatsapp_turn(m))
         if msgs:
-            Trace(new_trace_id())("whatsapp.direct", messages=len(msgs))
+            Trace(new_trace_id())("whatsapp.direct", messages=len(msgs), kinds=[m.modality for m in msgs])
         return {"ok": True, "messages": len(msgs)}
 
-    async def _whatsapp_answer(text: str, wa_id: str) -> None:
-        """Route a WhatsApp message through CUGA's /run and reply to the same number.
+    async def _whatsapp_turn(msg) -> None:
+        """Run one WhatsApp turn: the configured pre-steps, CUGA's /run, the post-steps, the reply.
 
         CUGA IS THE DOOR: this adapter owns the Cloud API token and nothing else. There is no
-        ``locus`` — WhatsApp has no threads, so the conversation is the person.
+        ``locus`` — WhatsApp has no threads, so the conversation is the person. With no
+        EVENTS_TURN_PIPELINES configured this is the original path: text in, CUGA, text out.
         """
         from . import cuga_door, whatsapp_direct
+        from .turns import handle
+
+        async def ask(turn) -> str:
+            return await cuga_door.ask(
+                turn.query,
+                channel="whatsapp",
+                native_id=msg.sender,
+                user=msg.sender,
+                locus="",
+                disable_history=turn.stateless,
+            )
 
         tr = Trace(new_trace_id())
         try:
-            answer = await cuga_door.ask(text, channel="whatsapp", native_id=wa_id, user=wa_id, locus="")
-            if answer:
-                res = await whatsapp_direct.send_message(wa_id, answer)
-                tr("whatsapp.reply", ok=res.get("ok"), mode=res.get("mode") or "text")
-            else:
+            turn = await handle(msg, channel=whatsapp_direct.WhatsAppIO(), ask=ask)
+            if not turn.answer and msg.modality == "text":
                 tr.error("whatsapp", reason="no answer from CUGA /run")
         except Exception as e:  # noqa: BLE001
             tr.error("whatsapp", err=str(e))

@@ -45,9 +45,21 @@ def _token() -> str:
 
 
 async def ask(
-    text: str, *, channel: str, native_id: str, user: str = "", locus: str = "", timeout: float = 180.0
+    text: str,
+    *,
+    channel: str,
+    native_id: str,
+    user: str = "",
+    locus: str = "",
+    timeout: float = 180.0,
+    disable_history: bool = False,
 ) -> str:
     """Send one channel utterance to CUGA and return the answer text ("" if none).
+
+    ``disable_history=True`` runs this turn without the thread's history. A RAG turn carries its
+    passages in the query, so replaying past turns re-sends stale passages and grows the context every
+    message — the reason the Voice RAG app used a fresh thread per question. Delivery and identity are
+    unaffected; only what CUGA replays changes.
 
     ``locus`` is the in-channel conversation anchor (a Slack thread_ts, a Discord thread id) — it
     keys MEMORY per topic. ``native_id`` is the channel/chat id, which is the DELIVERY address; the
@@ -60,6 +72,7 @@ async def ask(
     body = {
         "query": text,
         "thread_id": tid,
+        "disable_history": disable_history,
         # Identity travels so an armed flow lands in the scope the Studio browses, and so per-user
         # credentials resolve. CUGA passes these straight through when it forwards to the concierge.
         "channel": {"name": channel, "native_id": native_id, "user": user, "thread_id": tid},

@@ -25,8 +25,9 @@ import {
   TableBody,
   TableCell,
 } from "@carbon/react";
-import { Chat, Plug, Application, Flow, Idea, Launch, User, Settings, Bot, Add, Edit, View, Pause, Play, TrashCan, Activity, Dashboard } from "@carbon/icons-react";
+import { Chat, Plug, Application, Flow, Idea, Launch, User, Settings, Bot, Add, Edit, View, Pause, Play, TrashCan, Activity, Dashboard, Microphone } from "@carbon/icons-react";
 import * as api from "../api";
+import { ProcessingTab } from "./ProcessingTab";
 import { CugaHeader } from "../CugaHeader";
 import { ConciergeChat } from "./ConciergeChat";
 import "./StudioPage.css";
@@ -114,7 +115,7 @@ function Loader({ loading, error }: { loading: boolean; error: string | null }) 
 }
 
 // ---- tabs --------------------------------------------------------------------
-const KNOWN_CHANNELS = ["web", "telegram", "slack", "discord"];
+const KNOWN_CHANNELS = ["web", "telegram", "slack", "discord", "whatsapp"];
 // Fallback only — the editor derives the live list (and each app's triggers) from
 // /api/events/triggers, the backend registry, so the UI can never drift from the code.
 const KNOWN_INTEGRATIONS = ["box", "discord", "github", "gmail", "slack", "telegram", "webhook"];
@@ -1289,6 +1290,7 @@ export function StudioPage() {
             <Tab renderIcon={Chat}>Concierge</Tab>
             <Tab renderIcon={Bot}>Agents</Tab>
             <Tab renderIcon={Chat}>Channels</Tab>
+            <Tab renderIcon={Microphone}>Processing</Tab>
             <Tab renderIcon={Plug}>Integrations</Tab>
             <Tab renderIcon={Settings}>Setup</Tab>
             <Tab renderIcon={Flow}>Flows</Tab>
@@ -1303,6 +1305,7 @@ export function StudioPage() {
             <TabPanel><ConciergeChat draft={draft} setDraft={setDraft} /></TabPanel>
             <TabPanel><AgentsTab refresh={refresh} onTry={onTry} /></TabPanel>
             <TabPanel><ChannelsTab refresh={refresh} /></TabPanel>
+            <TabPanel><ProcessingTab /></TabPanel>
             <TabPanel><IntegrationsTab refresh={refresh} /></TabPanel>
             <TabPanel><SetupTab refresh={refresh} /></TabPanel>
             <TabPanel><FlowsTab refresh={refresh} /></TabPanel>

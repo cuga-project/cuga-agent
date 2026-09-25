@@ -1,0 +1,9 @@
+# SPEECH_TTS=parler (and mms). Parler is gated on Hugging Face: accept the terms at
+# https://huggingface.co/ai4bharat/indic-parler-tts with the account whose token the service uses.
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart
+huggingface_hub
+numpy
+parler-tts>=0.2.3
+soundfile

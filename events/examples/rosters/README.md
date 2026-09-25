@@ -27,6 +27,7 @@ Market & Research Intelligence, and the document-/recording-/code-centric flows.
 | `team_comms_intelligence.yaml` | **Team chat** | Slack, Discord, Telegram | channel_monitor · incident_triage · workspace_lifecycle · link_summarizer · support_digest |
 | `market_research_intelligence.yaml` | **Outside world** | RSS, YouTube, Pinterest, markets, papers | ai_trend_radar · competitive_analyst · feed_watcher · video_researcher · market_briefer · paper_scout |
 | `personal_assistant.yaml` | **Everyday chat** | (conversation only, no triggers) | pricebot · weatherbot · places_guide · recipe_composer · entertainment · find_a_doctor · meetup_finder |
+| `indic_farm_assistant.yaml` | **Voice-first farming help line** | (conversation only — WhatsApp voice notes) | farm_assistant (handbook RAG in 11 Indian languages; see `events/examples/indic_farm/`) |
 
 Together they cover every trigger the flat roster did, but each sub-agent now sits in a family
 where its siblings share tools, payload conventions, and a supervisor whose routing instruction is
