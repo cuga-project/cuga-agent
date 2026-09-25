@@ -725,6 +725,345 @@ async def test_cancelled_winner_terminalization_cleans_and_records_exactly_once(
     adapter.record_delegation.assert_called_once()
 
 
+async def _assert_registry_terminalizer_racing_claim_records_once(terminalizer: str) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationRegistry,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool import (
+        create_execute_agent_tool_node,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import SupervisorGraphAdapter
+
+    registry = PendingACPDelegationRegistry(capacity=1, ttl_seconds=0.02)
+    permission_future = asyncio.get_running_loop().create_future()
+    prompt_resumed = asyncio.Event()
+    cleanup_count = 0
+
+    async def stalled_prompt() -> dict[str, object]:
+        await permission_future
+        prompt_resumed.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            if terminalizer == "expired":
+                return {"result": "late success", "status": "completed", "variables": {}}
+            raise RuntimeError("private late prompt failure") from None
+
+    async def cleanup() -> None:
+        nonlocal cleanup_count
+        cleanup_count += 1
+        raise RuntimeError("private registry cleanup failure")
+
+    adapter = SupervisorGraphAdapter(
+        agents={"coder": _external_agent()}, pending_acp_registry=registry, interactive=True
+    )
+    adapter.record_delegation = MagicMock()
+    state = CugaSupervisorState(
+        input="work",
+        thread_id="thread",
+        supervisor_metadata={
+            "acp_permission": {"pending_id": "pending-safe", "agent_name": "coder"},
+            "acp_permission_resume": {
+                "pending_id": "pending-safe",
+                "agent_name": "coder",
+                "approved": True,
+            },
+        },
+    )
+    failed_result = {
+        "result": f"ACP pending delegation ended without a valid resume ({terminalizer}).",
+        "status": "failed",
+        "variables": {},
+    }
+
+    def finalize(_outcome: str) -> None:
+        adapter.record_delegation(
+            state,
+            "coder",
+            result=failed_result,
+            answer=failed_result["result"],
+            variables={},
+        )
+
+    prompt_task = asyncio.create_task(stalled_prompt())
+    await registry.insert(
+        pending_id="pending-safe",
+        thread_id="thread",
+        agent_name="coder",
+        request=_safe_request(),
+        owner=object(),
+        prompt_task=prompt_task,
+        permission_future=permission_future,
+        cleanup=cleanup,
+        finalizer=finalize,
+    )
+
+    execution = asyncio.create_task(
+        create_execute_agent_tool_node(adapter)(state, {"configurable": {"thread_id": "thread"}})
+    )
+    await prompt_resumed.wait()
+    if terminalizer == "shutdown":
+        await registry.aclose()
+
+    result = await execution
+
+    assert cleanup_count == 1
+    assert await registry.size() == 0
+    assert "acp_permission" not in result["supervisor_metadata"]
+    assert "acp_permission_resume" not in result["supervisor_metadata"]
+    assert result["final_answer"] == "ACP pending delegation is stale or could not be resumed."
+    assert "private" not in repr(result)
+    adapter.record_delegation.assert_called_once()
+    assert adapter.record_delegation.call_args.kwargs["result"] == failed_result
+
+
+@pytest.mark.asyncio
+async def test_ttl_expiry_racing_claimed_resume_transfers_record_authority_once() -> None:
+    await _assert_registry_terminalizer_racing_claim_records_once("expired")
+
+
+@pytest.mark.asyncio
+async def test_shutdown_racing_claimed_resume_transfers_record_authority_once() -> None:
+    await _assert_registry_terminalizer_racing_claim_records_once("shutdown")
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_registry_owned_finalization_records_once_then_reraises() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationRegistry,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool import (
+        create_execute_agent_tool_node,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import SupervisorGraphAdapter
+
+    registry = PendingACPDelegationRegistry(capacity=1, ttl_seconds=30)
+    permission_future = asyncio.get_running_loop().create_future()
+    prompt_resumed = asyncio.Event()
+    finalizer_started = asyncio.Event()
+    finish_finalizer = asyncio.Event()
+    cleanup_count = 0
+
+    async def stalled_prompt() -> None:
+        await permission_future
+        prompt_resumed.set()
+        await asyncio.Event().wait()
+
+    async def cleanup() -> None:
+        nonlocal cleanup_count
+        cleanup_count += 1
+
+    adapter = SupervisorGraphAdapter(
+        agents={"coder": _external_agent()}, pending_acp_registry=registry, interactive=True
+    )
+    adapter.record_delegation = MagicMock()
+    state = CugaSupervisorState(
+        input="work",
+        thread_id="thread",
+        supervisor_metadata={
+            "acp_permission": {"pending_id": "pending-safe", "agent_name": "coder"},
+            "acp_permission_resume": {
+                "pending_id": "pending-safe",
+                "agent_name": "coder",
+                "approved": True,
+            },
+        },
+    )
+    failed_result = {
+        "result": "ACP pending delegation ended without a valid resume (shutdown).",
+        "status": "failed",
+        "variables": {},
+    }
+
+    async def finalize(_outcome: str) -> None:
+        finalizer_started.set()
+        await finish_finalizer.wait()
+        adapter.record_delegation(
+            state,
+            "coder",
+            result=failed_result,
+            answer=failed_result["result"],
+            variables={},
+        )
+
+    prompt_task = asyncio.create_task(stalled_prompt())
+    await registry.insert(
+        pending_id="pending-safe",
+        thread_id="thread",
+        agent_name="coder",
+        request=_safe_request(),
+        owner=object(),
+        prompt_task=prompt_task,
+        permission_future=permission_future,
+        cleanup=cleanup,
+        finalizer=finalize,
+    )
+    execution = asyncio.create_task(
+        create_execute_agent_tool_node(adapter)(state, {"configurable": {"thread_id": "thread"}})
+    )
+    await prompt_resumed.wait()
+    shutdown = asyncio.create_task(registry.aclose())
+    await finalizer_started.wait()
+    execution.cancel()
+    await asyncio.sleep(0)
+    finish_finalizer.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+    await shutdown
+
+    assert cleanup_count == 1
+    assert "acp_permission" not in state.supervisor_metadata
+    assert "acp_permission_resume" not in state.supervisor_metadata
+    adapter.record_delegation.assert_called_once()
+    assert adapter.record_delegation.call_args.kwargs["result"] == failed_result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "finalizer_error", [RuntimeError("private record failure"), asyncio.CancelledError()]
+)
+async def test_registry_finalizer_failure_returns_record_authority_to_claimant(finalizer_error) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationRegistry,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool import (
+        create_execute_agent_tool_node,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import SupervisorGraphAdapter
+
+    registry = PendingACPDelegationRegistry(capacity=1, ttl_seconds=30)
+    permission_future = asyncio.get_running_loop().create_future()
+    prompt_resumed = asyncio.Event()
+
+    async def stalled_prompt() -> None:
+        await permission_future
+        prompt_resumed.set()
+        await asyncio.Event().wait()
+
+    async def finalize(_outcome: str) -> None:
+        raise finalizer_error
+
+    adapter = SupervisorGraphAdapter(
+        agents={"coder": _external_agent()}, pending_acp_registry=registry, interactive=True
+    )
+    adapter.record_delegation = MagicMock()
+    state = CugaSupervisorState(
+        input="work",
+        thread_id="thread",
+        supervisor_metadata={
+            "acp_permission": {"pending_id": "pending-safe", "agent_name": "coder"},
+            "acp_permission_resume": {
+                "pending_id": "pending-safe",
+                "agent_name": "coder",
+                "approved": True,
+            },
+        },
+    )
+    prompt_task = asyncio.create_task(stalled_prompt())
+    await registry.insert(
+        pending_id="pending-safe",
+        thread_id="thread",
+        agent_name="coder",
+        request=_safe_request(),
+        owner=object(),
+        prompt_task=prompt_task,
+        permission_future=permission_future,
+        finalizer=finalize,
+    )
+    execution = asyncio.create_task(
+        create_execute_agent_tool_node(adapter)(state, {"configurable": {"thread_id": "thread"}})
+    )
+    await prompt_resumed.wait()
+    await registry.aclose()
+
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+
+    assert "acp_permission" not in state.supervisor_metadata
+    assert "acp_permission_resume" not in state.supervisor_metadata
+    adapter.record_delegation.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminalization", ["ambiguous", "successful", "cancelled_prompt"])
+async def test_claimant_cleanup_failure_preserves_record_authority(terminalization: str) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationRegistry,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool import (
+        create_execute_agent_tool_node,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import SupervisorGraphAdapter
+
+    permission_future = asyncio.get_running_loop().create_future()
+
+    async def prompt() -> dict[str, object]:
+        await permission_future
+        if terminalization == "cancelled_prompt":
+            raise asyncio.CancelledError
+        return {"result": "done", "status": "completed", "variables": {}}
+
+    async def cleanup() -> None:
+        raise RuntimeError("private cleanup failure")
+
+    request = _safe_request()
+    approved = True
+    if terminalization == "ambiguous":
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.permissions import (
+            PermissionOptionDTO,
+        )
+
+        request = replace(request, options=(PermissionOptionDTO("reject", "Reject once", "reject_once"),))
+
+    registry = PendingACPDelegationRegistry(capacity=1, ttl_seconds=30)
+    prompt_task = asyncio.create_task(prompt())
+    await registry.insert(
+        pending_id="pending-safe",
+        thread_id="thread",
+        agent_name="coder",
+        request=request,
+        owner=object(),
+        prompt_task=prompt_task,
+        permission_future=permission_future,
+        cleanup=cleanup,
+    )
+    adapter = SupervisorGraphAdapter(
+        agents={"coder": _external_agent()}, pending_acp_registry=registry, interactive=True
+    )
+    adapter.record_delegation = MagicMock()
+    state = CugaSupervisorState(
+        input="work",
+        thread_id="thread",
+        supervisor_metadata={
+            "acp_permission": {"pending_id": "pending-safe", "agent_name": "coder"},
+            "acp_permission_resume": {
+                "pending_id": "pending-safe",
+                "agent_name": "coder",
+                "approved": approved,
+            },
+        },
+    )
+
+    execution = create_execute_agent_tool_node(adapter)(state, {"configurable": {"thread_id": "thread"}})
+    if terminalization == "cancelled_prompt":
+        with pytest.raises(asyncio.CancelledError):
+            await execution
+    else:
+        result = await execution
+        assert result["final_answer"] == "ACP pending delegation is stale or could not be resumed."
+        assert "private" not in repr(result)
+
+    assert await registry.size() == 0
+    assert "acp_permission" not in state.supervisor_metadata
+    assert "acp_permission_resume" not in state.supervisor_metadata
+    adapter.record_delegation.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_failed_prompt_cancelled_during_completion_cleanup_records_once_then_reraises() -> None:
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (

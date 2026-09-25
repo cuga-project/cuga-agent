@@ -23,11 +23,13 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler 
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+    PendingACPDelegationRegistryFinalizedCancelled,
     PendingACPDelegationWinnerCancelled,
     PendingACPDelegationWinnerError,
 )
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
     ACPPermissionPause,
+    ACPPermissionRegistryFinalized,
     ACPPermissionWinnerCancelled,
     resume_acp_delegation,
 )
@@ -228,6 +230,17 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                 metadata.pop("acp_permission", None)
                 state.supervisor_metadata = metadata
                 raise asyncio.CancelledError from None
+            except PendingACPDelegationRegistryFinalizedCancelled:
+                metadata.pop("acp_permission_resume", None)
+                metadata.pop("acp_permission", None)
+                state.supervisor_metadata = metadata
+                raise asyncio.CancelledError from None
+            except ACPPermissionRegistryFinalized:
+                result = {
+                    "result": "ACP pending delegation is stale or could not be resumed.",
+                    "status": "failed",
+                    "variables": {},
+                }
             except PendingACPDelegationWinnerError:
                 record_authorized = True
                 logger.warning("ACP permission resume winner failed closed", exc_info=True)

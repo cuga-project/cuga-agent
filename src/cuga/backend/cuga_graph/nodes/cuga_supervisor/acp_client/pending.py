@@ -68,12 +68,21 @@ class PendingACPDelegationWinnerCancelled(BaseException):
         self.metadata = metadata
 
 
+class PendingACPDelegationRegistryFinalizedCancelled(BaseException):
+    """Caller cancellation after the registry acquired final-record authority."""
+
+
 class PendingState(str, Enum):
     PENDING = "pending"
     RESUMING = "resuming"
     COMPLETED = "completed"
     EXPIRED = "expired"
     CANCELLED = "cancelled"
+
+
+class FinalRecordOwner(str, Enum):
+    REGISTRY = "registry"
+    CLAIMANT = "claimant"
 
 
 @dataclass(frozen=True)
@@ -99,6 +108,7 @@ class PendingACPDelegation:
     created_monotonic: float
     expires_monotonic: float
     state: PendingState = PendingState.PENDING
+    final_record_owner: FinalRecordOwner = FinalRecordOwner.REGISTRY
     cleaned: bool = False
     expiry_task: asyncio.Task[None] | None = None
     cleanup_task: asyncio.Task[None] | None = None
@@ -219,6 +229,7 @@ class PendingACPDelegationRegistry:
             if entry.state is not PendingState.PENDING:
                 raise PendingACPDelegationStateError("ACP pending delegation was already resumed")
             entry.state = PendingState.RESUMING
+            entry.final_record_owner = FinalRecordOwner.CLAIMANT
             return entry
 
     async def complete(self, pending_id: str) -> None:
@@ -275,6 +286,49 @@ class PendingACPDelegationRegistry:
         except asyncio.CancelledError:
             raise PendingACPDelegationWinnerCancelled(metadata) from None
         return metadata
+
+    async def settle_claim(
+        self,
+        entry: PendingACPDelegation,
+        state: PendingState,
+        *,
+        cancel_prompt: bool,
+    ) -> bool:
+        """Settle the exact claim and report whether a registry finalizer won authority."""
+        cleanup_task: asyncio.Task[None] | None = None
+        async with self._lock:
+            current = self._entries.get(entry.pending_id)
+            if current is entry:
+                self._entries.pop(entry.pending_id)
+                if entry.expiry_task is not None and entry.expiry_task is not asyncio.current_task():
+                    entry.expiry_task.cancel()
+                entry.expiry_task = None
+                cleanup_task = self._start_cleanup_locked(
+                    entry,
+                    state,
+                    cancel_prompt=cancel_prompt,
+                )
+            elif entry.final_record_owner is FinalRecordOwner.REGISTRY:
+                cleanup_task = entry.cleanup_task
+            else:
+                return False
+        if cleanup_task is not None:
+            try:
+                await self._await_cleanup(cleanup_task)
+            except asyncio.CancelledError:
+                async with self._lock:
+                    if entry.final_record_owner is FinalRecordOwner.REGISTRY and entry.finalized:
+                        raise PendingACPDelegationRegistryFinalizedCancelled from None
+                    entry.final_record_owner = FinalRecordOwner.CLAIMANT
+                raise
+            except BaseException:
+                async with self._lock:
+                    if entry.final_record_owner is FinalRecordOwner.REGISTRY and not entry.finalized:
+                        entry.final_record_owner = FinalRecordOwner.CLAIMANT
+                    claimant_owns = entry.final_record_owner is FinalRecordOwner.CLAIMANT
+                if claimant_owns:
+                    raise
+        return entry.final_record_owner is FinalRecordOwner.REGISTRY
 
     async def expire(self) -> int:
         now = monotonic()
@@ -394,6 +448,8 @@ class PendingACPDelegationRegistry:
     ) -> asyncio.Task[None]:
         if entry.cleanup_task is None:
             entry.state = state
+            if finalize:
+                entry.final_record_owner = FinalRecordOwner.REGISTRY
             entry.cleanup_task = asyncio.create_task(
                 self._run_cleanup(
                     entry,
@@ -469,10 +525,10 @@ class PendingACPDelegationRegistry:
                 except BaseException as exc:
                     cleanup_error = exc
             if finalize and entry.finalizer is not None and not entry.finalized:
-                entry.finalized = True
                 result = entry.finalizer(outcome)
                 if inspect.isawaitable(result):
                     await result
+                entry.finalized = True
             if cleanup_error is not None:
                 raise cleanup_error
         finally:

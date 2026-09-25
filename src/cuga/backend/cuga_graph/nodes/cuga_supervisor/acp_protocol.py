@@ -10,7 +10,9 @@ from .acp_client.callbacks import ACPClientCallbacks, LifecycleRegistrar, Permis
 from .acp_client.pending import (
     PendingACPDelegationError,
     PendingACPDelegationRegistry,
+    PendingACPDelegationRegistryFinalizedCancelled,
     PendingACPDelegationWinnerError,
+    PendingState,
     safe_identity,
 )
 from .acp_client.permissions import SafePermissionRequest, select_permission_option
@@ -35,6 +37,10 @@ class ACPPermissionWinnerCancelled(BaseException):
     def __init__(self, result: dict[str, Any]) -> None:
         super().__init__("ACP permission winner was cancelled during terminalization")
         self.result = result
+
+
+class ACPPermissionRegistryFinalized(BaseException):
+    """The registry owns and completed terminal recording for this claim."""
 
 
 class ACPPermissionRuntimeBridge:
@@ -147,40 +153,68 @@ class ACPPermissionRuntimeBridge:
             selected = select_permission_option(entry.request.options, approved=approved)
             if selected is None:
                 try:
-                    await self.registry.cancel(pending_id, reason="permission response rejected")
+                    registry_finalized = await self.registry.settle_claim(
+                        entry,
+                        PendingState.CANCELLED,
+                        cancel_prompt=True,
+                    )
                 except asyncio.CancelledError:
                     raise ACPPermissionWinnerCancelled(failed_result) from None
+                except Exception as exc:
+                    raise PendingACPDelegationWinnerError(
+                        "ACP permission rejection failed during cleanup"
+                    ) from exc
+                if registry_finalized:
+                    raise ACPPermissionRegistryFinalized from None
                 raise PendingACPDelegationWinnerError("ACP permission response is ambiguous or unavailable")
             if not entry.permission_future.done():
                 entry.permission_future.set_result(selected)
             try:
                 result = await entry.prompt_task
             except asyncio.CancelledError:
-                cleanup_task = asyncio.create_task(
-                    self.registry.cancel(
-                        pending_id,
-                        reason="resuming caller cancelled",
-                    )
-                )
                 try:
-                    await asyncio.shield(cleanup_task)
-                except asyncio.CancelledError:
-                    await asyncio.shield(cleanup_task)
+                    registry_finalized = await self.registry.settle_claim(
+                        entry,
+                        PendingState.CANCELLED,
+                        cancel_prompt=True,
+                    )
+                except PendingACPDelegationRegistryFinalizedCancelled:
+                    raise
+                except BaseException:
+                    registry_finalized = False
+                if registry_finalized:
+                    raise ACPPermissionRegistryFinalized from None
                 raise ACPPermissionWinnerCancelled(failed_result) from None
             except Exception as exc:
                 try:
-                    await self.registry.complete(pending_id)
+                    registry_finalized = await self.registry.settle_claim(
+                        entry,
+                        PendingState.COMPLETED,
+                        cancel_prompt=False,
+                    )
                 except asyncio.CancelledError:
                     raise ACPPermissionWinnerCancelled(failed_result) from None
                 except Exception:
                     raise PendingACPDelegationWinnerError(
                         "ACP resumed delegation failed during cleanup"
                     ) from exc
+                if registry_finalized:
+                    raise ACPPermissionRegistryFinalized from None
                 raise PendingACPDelegationWinnerError("ACP resumed delegation failed") from exc
             try:
-                await self.registry.complete(pending_id)
+                registry_finalized = await self.registry.settle_claim(
+                    entry,
+                    PendingState.COMPLETED,
+                    cancel_prompt=False,
+                )
+            except PendingACPDelegationRegistryFinalizedCancelled:
+                raise
             except asyncio.CancelledError:
                 raise ACPPermissionWinnerCancelled(result) from None
+            except Exception as exc:
+                raise PendingACPDelegationWinnerError("ACP resumed delegation failed during cleanup") from exc
+            if registry_finalized:
+                raise ACPPermissionRegistryFinalized from None
             return result
         except PendingACPDelegationWinnerError:
             raise
