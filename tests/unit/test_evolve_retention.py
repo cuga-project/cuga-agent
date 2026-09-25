@@ -137,3 +137,25 @@ def test_schedule_preview_rejects_invalid_timing(client, spec):
     with patch.object(EvolveIntegration, "is_enabled", return_value=True):
         response = client.post("/api/manage/retention/schedules/preview", json={"spec": spec})
     assert response.status_code == 422
+
+
+def test_compliance_projection_preserves_display_metadata_without_plugin_config():
+    from cuga.backend.evolve.retention import project_compliance_status
+
+    plugin = {
+        "name": "metadata_normalizer",
+        "display_name": "Memory metadata",
+        "description": "Internal bookkeeping.",
+        "show_in_ui": False,
+        "enabled": True,
+        "healthy": False,
+        "config": {"secret": "private"},
+    }
+    result = project_compliance_status({"healthy": False, "plugins": [plugin]})
+    assert result["healthy"] is False
+    projected = result["plugins"][0]
+    assert projected["display_name"] == "Memory metadata"
+    assert projected["description"] == "Internal bookkeeping."
+    assert projected["show_in_ui"] is False
+    assert projected["enabled"] is True
+    assert "config" not in projected

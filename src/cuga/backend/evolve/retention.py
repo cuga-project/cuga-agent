@@ -92,7 +92,19 @@ def project_compliance_status(result: dict[str, Any]) -> dict[str, Any]:
         "mark_sweep_supported": supports_durable_retention(result),
         "source_deletion_supported": supports_durable_retention(result),
         "plugins": [
-            {key: plugin.get(key) for key in ("name", "protection_class", "hooks", "enabled", "healthy")}
+            {
+                key: plugin.get(key)
+                for key in (
+                    "name",
+                    "display_name",
+                    "description",
+                    "show_in_ui",
+                    "protection_class",
+                    "hooks",
+                    "enabled",
+                    "healthy",
+                )
+            }
             for plugin in result.get("plugins", [])
             if isinstance(plugin, dict)
         ],
