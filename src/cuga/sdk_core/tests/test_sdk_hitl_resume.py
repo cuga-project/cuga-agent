@@ -11,6 +11,7 @@ from cuga import CugaAgent, CugaSupervisor
 from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
     ActionResponse,
     ActionType,
+    AdditionalData,
 )
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.sdk import _record_denied_policy_decision
@@ -261,6 +262,43 @@ class TestToolApprovalDenial:
         assert "acp_permission" not in result["supervisor_metadata"]
         assert "acp_permission_resume" not in result["supervisor_metadata"]
         adapter.record_delegation.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response_pending_id", [None, "different-pending", " pending-safe "])
+    async def test_supervisor_acp_response_pending_id_must_match_checkpoint(self, response_pending_id):
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import (
+            CugaSupervisorState,
+        )
+        from cuga.backend.cuga_graph.utils.nodes_names import ActionIds, NodeNames
+
+        supervisor = CugaSupervisor(agents={}, model=MagicMock(), auto_load_policies=False)
+        wrapper = supervisor._create_supervisor_hitl_wrapper_graph()
+        response_tool = (
+            {"acp_permission": {"pending_id": response_pending_id, "agent_name": "coder"}}
+            if response_pending_id is not None
+            else {}
+        )
+        state = CugaSupervisorState(
+            input="work",
+            sender=NodeNames.WAIT_FOR_RESPONSE,
+            hitl_response=ActionResponse(
+                action_id=ActionIds.TOOL_APPROVAL,
+                response_type=ActionType.CONFIRMATION,
+                timestamp="now",
+                confirmed=True,
+                additional_data=AdditionalData(tool=response_tool),
+            ),
+            supervisor_metadata={"acp_permission": {"pending_id": "pending-safe", "agent_name": "coder"}},
+        )
+
+        command = await wrapper.nodes["SupervisorSDKCallback"].runnable.ainvoke(state, config={})
+
+        assert command.goto == "SupervisorSubgraph"
+        assert command.update["supervisor_metadata"]["acp_permission_resume"] == {
+            "pending_id": "pending-safe",
+            "agent_name": "coder",
+            "approved": None,
+        }
 
     def test_agent_state_has_no_execution_complete_field(self):
         state = AgentState(input="test", url="")

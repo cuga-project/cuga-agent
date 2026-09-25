@@ -60,6 +60,14 @@ class PendingACPDelegationWinnerError(PendingACPDelegationError):
     """A registry claim winner failed after acquiring sole final-record authority."""
 
 
+class PendingACPDelegationWinnerCancelled(BaseException):
+    """Cancellation after canonical owned cleanup granted sole final-record authority."""
+
+    def __init__(self, metadata: SafePendingDelegation) -> None:
+        super().__init__("ACP pending delegation winner was cancelled during cleanup")
+        self.metadata = metadata
+
+
 class PendingState(str, Enum):
     PENDING = "pending"
     RESUMING = "resuming"
@@ -262,7 +270,10 @@ class PendingACPDelegationRegistry:
                 permission=entry.request,
                 state=entry.state.value,
             )
-        await self._await_cleanup(cleanup_task)
+        try:
+            await self._await_cleanup(cleanup_task)
+        except asyncio.CancelledError:
+            raise PendingACPDelegationWinnerCancelled(metadata) from None
         return metadata
 
     async def expire(self) -> int:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any, Callable, Dict, Iterable, Optional
 
@@ -22,10 +23,12 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler 
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+    PendingACPDelegationWinnerCancelled,
     PendingACPDelegationWinnerError,
 )
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
     ACPPermissionPause,
+    ACPPermissionWinnerCancelled,
     resume_acp_delegation,
 )
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
@@ -194,6 +197,37 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                     approved=approved,
                 )
                 record_authorized = True
+            except PendingACPDelegationWinnerCancelled as exc:
+                agent_name = exc.metadata.agent_name
+                result = {
+                    "result": "ACP pending delegation is stale or could not be resumed.",
+                    "status": "failed",
+                    "variables": {},
+                }
+                adapter.record_delegation(
+                    state,
+                    agent_name,
+                    result=result,
+                    answer=result["result"],
+                    variables={},
+                )
+                metadata.pop("acp_permission_resume", None)
+                metadata.pop("acp_permission", None)
+                state.supervisor_metadata = metadata
+                raise asyncio.CancelledError from None
+            except ACPPermissionWinnerCancelled as exc:
+                result = exc.result
+                adapter.record_delegation(
+                    state,
+                    agent_name if isinstance(agent_name, str) else "unknown",
+                    result=result,
+                    answer=result.get("result", ""),
+                    variables=result.get("variables") or {},
+                )
+                metadata.pop("acp_permission_resume", None)
+                metadata.pop("acp_permission", None)
+                state.supervisor_metadata = metadata
+                raise asyncio.CancelledError from None
             except PendingACPDelegationWinnerError:
                 record_authorized = True
                 logger.warning("ACP permission resume winner failed closed", exc_info=True)

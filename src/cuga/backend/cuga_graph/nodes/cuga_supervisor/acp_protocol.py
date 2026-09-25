@@ -29,6 +29,14 @@ class ACPPermissionPause(BaseException):
         self.request = request
 
 
+class ACPPermissionWinnerCancelled(BaseException):
+    """Cancellation after a claim winner retained sole graph-record authority."""
+
+    def __init__(self, result: dict[str, Any]) -> None:
+        super().__init__("ACP permission winner was cancelled during terminalization")
+        self.result = result
+
+
 class ACPPermissionRuntimeBridge:
     """Coordinate a live ACP prompt with one graph pause and one exact resume."""
 
@@ -130,10 +138,18 @@ class ACPPermissionRuntimeBridge:
 
     async def resume(self, *, pending_id: str, approved: bool | None) -> dict[str, Any]:
         entry = await self.registry.claim(pending_id, thread_id=self.thread_id, agent_name=self.agent_name)
+        failed_result = {
+            "result": "ACP pending delegation is stale or could not be resumed.",
+            "status": "failed",
+            "variables": {},
+        }
         try:
             selected = select_permission_option(entry.request.options, approved=approved)
             if selected is None:
-                await self.registry.cancel(pending_id, reason="permission response rejected")
+                try:
+                    await self.registry.cancel(pending_id, reason="permission response rejected")
+                except asyncio.CancelledError:
+                    raise ACPPermissionWinnerCancelled(failed_result) from None
                 raise PendingACPDelegationWinnerError("ACP permission response is ambiguous or unavailable")
             if not entry.permission_future.done():
                 entry.permission_future.set_result(selected)
@@ -144,15 +160,20 @@ class ACPPermissionRuntimeBridge:
                     self.registry.cancel(
                         pending_id,
                         reason="resuming caller cancelled",
-                        finalize=True,
                     )
                 )
-                await asyncio.shield(cleanup_task)
-                raise
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    await asyncio.shield(cleanup_task)
+                raise ACPPermissionWinnerCancelled(failed_result) from None
             except Exception as exc:
                 await self.registry.complete(pending_id)
                 raise PendingACPDelegationWinnerError("ACP resumed delegation failed") from exc
-            await self.registry.complete(pending_id)
+            try:
+                await self.registry.complete(pending_id)
+            except asyncio.CancelledError:
+                raise ACPPermissionWinnerCancelled(result) from None
             return result
         except PendingACPDelegationWinnerError:
             raise
