@@ -1517,9 +1517,16 @@ class LLMManager:
             logger.debug(f"Creating Requesty model: {model_name}")
             is_reasoning = self._is_reasoning_model(model_name)
 
-            api_key = _normalize_secret(resolve_secret("REQUESTY_API_KEY")) or os.environ.get(
-                "REQUESTY_API_KEY"
-            )
+            # Honour an explicit api_key / apikey_name reference (as the openai
+            # branch does) before falling back to REQUESTY_API_KEY.
+            api_key = None
+            apikey_ref = model_settings.get("api_key") or model_settings.get("apikey_name")
+            if apikey_ref:
+                api_key = _normalize_secret(resolve_secret(apikey_ref)) or os.environ.get(apikey_ref)
+            if not api_key:
+                api_key = _normalize_secret(resolve_secret("REQUESTY_API_KEY")) or os.environ.get(
+                    "REQUESTY_API_KEY"
+                )
             if not api_key:
                 raise ValueError("REQUESTY_API_KEY environment variable not set")
 

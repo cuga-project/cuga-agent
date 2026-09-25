@@ -88,6 +88,30 @@ class TestRequestyCreateInstance:
         assert kwargs["model_name"] == "openai/gpt-4o-mini"
         assert kwargs["timeout"] == 200.0
 
+    @pytest.mark.parametrize("ref_field", ["api_key", "apikey_name"])
+    def test_configured_key_reference_wins_over_env(self, monkeypatch, ref_field):
+        monkeypatch.setenv("REQUESTY_API_KEY", "env-key")
+        resolved = {"vault://requesty/team-key": "team-key"}
+        with patch("cuga.backend.llm.models.resolve_secret", side_effect=resolved.get):
+            with patch("cuga.backend.llm.models._get_reasoning_chat_openai") as mock_factory:
+                mock_openai = mock_factory.return_value
+                mock_openai.return_value = object()
+                mgr = LLMManager()
+                mgr._create_llm_instance({**BASE_MODEL_SETTINGS, ref_field: "vault://requesty/team-key"})
+
+        assert mock_openai.call_args.kwargs["openai_api_key"] == "team-key"
+
+    def test_unresolvable_reference_falls_back_to_env(self, monkeypatch):
+        monkeypatch.setenv("REQUESTY_API_KEY", "env-key")
+        with patch("cuga.backend.llm.models.resolve_secret", return_value=None):
+            with patch("cuga.backend.llm.models._get_reasoning_chat_openai") as mock_factory:
+                mock_openai = mock_factory.return_value
+                mock_openai.return_value = object()
+                mgr = LLMManager()
+                mgr._create_llm_instance({**BASE_MODEL_SETTINGS, "apikey_name": "MISSING_KEY"})
+
+        assert mock_openai.call_args.kwargs["openai_api_key"] == "env-key"
+
     def test_missing_api_key_raises(self, monkeypatch):
         monkeypatch.delenv("REQUESTY_API_KEY", raising=False)
         with patch("cuga.backend.llm.models.resolve_secret", return_value=None):
