@@ -148,6 +148,42 @@ async def test_claim_checks_owner_and_is_atomic_single_consumer() -> None:
     await registry.cancel("pending", reason="test cleanup")
 
 
+@pytest.mark.asyncio
+async def test_malformed_duplicate_cannot_cancel_claimed_resume_winner() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationRegistry,
+        PendingACPDelegationStateError,
+    )
+
+    registry = PendingACPDelegationRegistry(capacity=1, ttl_seconds=30)
+    future = asyncio.get_running_loop().create_future()
+    task = asyncio.create_task(_wait_forever())
+    await registry.insert(
+        pending_id="pending",
+        thread_id="thread",
+        agent_name="coder",
+        request=_request(),
+        owner=_Owner(),
+        prompt_task=task,
+        permission_future=future,
+    )
+    await registry.claim("pending", thread_id="thread", agent_name="coder")
+
+    with pytest.raises(PendingACPDelegationStateError):
+        await registry.cancel_owned(
+            "pending",
+            thread_id="thread",
+            agent_name="coder",
+            reason="malformed duplicate",
+        )
+
+    assert not task.done()
+    metadata = await registry.safe_metadata("pending")
+    assert metadata is not None
+    assert metadata.state == "resuming"
+    await registry.cancel("pending", reason="test cleanup")
+
+
 @pytest.mark.parametrize(
     ("approved", "options", "expected"),
     [
@@ -307,9 +343,97 @@ async def test_process_exit_removes_entry_and_runs_cleanup_once() -> None:
         cleanup=lambda: cleaned.append("exited"),
     )
     await task
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    for _ in range(5):
+        await asyncio.sleep(0)
+        if cleaned:
+            break
     assert await registry.safe_metadata("exited") is None
     assert cleaned == ["exited"]
     await registry.aclose()
     assert cleaned == ["exited"]
+
+
+@pytest.mark.asyncio
+async def test_registry_sanitizes_bounded_identities_and_rejects_missing_owner() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationRegistry,
+    )
+
+    registry = PendingACPDelegationRegistry(capacity=2, ttl_seconds=30)
+
+    async def insert(*, pending_id: str, thread_id: str, agent_name: str):
+        future = asyncio.get_running_loop().create_future()
+        task = asyncio.create_task(_wait_forever())
+        await registry.insert(
+            pending_id=pending_id,
+            thread_id=thread_id,
+            agent_name=agent_name,
+            request=_request(),
+            owner=_Owner(),
+            prompt_task=task,
+            permission_future=future,
+        )
+        return task
+
+    missing_task = asyncio.create_task(_wait_forever())
+    missing_future = asyncio.get_running_loop().create_future()
+    with pytest.raises(ValueError, match="thread_id"):
+        await registry.insert(
+            pending_id="pending-missing",
+            thread_id="",
+            agent_name="coder",
+            request=_request(),
+            owner=_Owner(),
+            prompt_task=missing_task,
+            permission_future=missing_future,
+        )
+    assert missing_task.cancelled()
+
+    task = await insert(
+        pending_id="pending-safe",
+        thread_id="  thread\x00" + "x" * 300,
+        agent_name="  coder\x00" + "y" * 300,
+    )
+    metadata = await registry.safe_metadata("pending-safe")
+    assert metadata is not None
+    assert 0 < len(metadata.thread_id) <= 128
+    assert 0 < len(metadata.agent_name) <= 128
+    assert "\x00" not in metadata.thread_id
+    assert "\x00" not in metadata.agent_name
+    await registry.cancel_owned(
+        "pending-safe",
+        thread_id=metadata.thread_id,
+        agent_name=metadata.agent_name,
+        reason="test cleanup",
+    )
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_manual_expiry_cancels_and_drains_redundant_expiry_task(monkeypatch) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client import pending
+
+    now = 100.0
+    monkeypatch.setattr(pending, "monotonic", lambda: now)
+    registry = pending.PendingACPDelegationRegistry(capacity=1, ttl_seconds=30)
+    future = asyncio.get_running_loop().create_future()
+    prompt = asyncio.create_task(_wait_forever())
+    await registry.insert(
+        pending_id="manual-expiry",
+        thread_id="thread",
+        agent_name="coder",
+        request=_request(),
+        owner=_Owner(),
+        prompt_task=prompt,
+        permission_future=future,
+    )
+    scheduled = registry._entries["manual-expiry"].expiry_task
+    assert scheduled is not None
+
+    now = 131.0
+    assert await registry.expire() == 1
+    assert scheduled.done()
+    assert scheduled.cancelled()
+    assert prompt.cancelled()
+    assert await registry.expire() == 0
+    await registry.aclose()

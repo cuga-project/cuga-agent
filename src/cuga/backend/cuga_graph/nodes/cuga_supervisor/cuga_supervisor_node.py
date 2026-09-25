@@ -61,19 +61,11 @@ class CugaSupervisorNode(BaseNode):
             confirmed = state.hitl_response.confirmed
             state.hitl_response = None
             state.hitl_action = None
-            if (
-                not isinstance(pending_id, str)
-                or not isinstance(agent_name, str)
-                or not isinstance(confirmed, bool)
-            ):
-                state.final_answer = "ACP permission response is invalid."
-                state.sender = self.name
-                return Command(update=state.model_dump(), goto="FinalAnswerAgent")
             metadata = dict(state.supervisor_metadata or {})
             metadata["acp_permission_resume"] = {
                 "pending_id": pending_id,
                 "agent_name": agent_name,
-                "approved": confirmed,
+                "approved": confirmed if isinstance(confirmed, bool) else None,
             }
             state.supervisor_metadata = metadata
             state.final_answer = ""

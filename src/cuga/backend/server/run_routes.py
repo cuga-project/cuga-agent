@@ -27,6 +27,7 @@ imported from ``main``, which would be a cycle (``main`` imports this module to 
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import os
@@ -106,6 +107,9 @@ _RUN_ERROR_NAMES = {"Error", "error", "Stopped"}
 # default agent. Callers do not (and should not) pass an agent: they address the supervisor, and it
 # routes internally. One agent in the file or twenty-seven, the caller is unchanged.
 _supervisor_cache: Dict[str, Any] = {}
+_supervisor_cache_lock = asyncio.Lock()
+_supervisor_active_users: Dict[int, int] = {}
+_supervisor_retired: Dict[int, Any] = {}
 # name → description for the loaded roster, kept beside the supervisor so /run/agents can answer
 # "what is loaded here?" without reaching into CugaSupervisor's privates.
 _supervisor_roster: Dict[str, List[Dict[str, str]]] = {}
@@ -122,10 +126,13 @@ async def close_graph_owners(*owners: Any) -> None:
 
 async def close_cached_supervisors() -> None:
     """Close every cached supervisor once and clear all roster cache state."""
-    supervisors = list(_supervisor_cache.values())
-    _supervisor_cache.clear()
-    _supervisor_roster.clear()
-    await close_graph_owners(*supervisors)
+    async with _supervisor_cache_lock:
+        supervisors = [*_supervisor_cache.values(), *_supervisor_retired.values()]
+        _supervisor_cache.clear()
+        _supervisor_retired.clear()
+        _supervisor_active_users.clear()
+        _supervisor_roster.clear()
+        await close_graph_owners(*supervisors)
 
 
 def _supervisor_roster_path() -> str:
@@ -165,7 +172,7 @@ async def _roster_details(sub_refs: List[str]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-async def _get_supervisor():
+async def _get_supervisor(*, retain: bool = False):
     """The supervisor this server runs as, built from the STORE, or None when there isn't one.
 
     ONE SOURCE AT RUNTIME. This used to parse the roster YAML directly, which meant `/run` and the
@@ -188,45 +195,74 @@ async def _get_supervisor():
     # new version, which invalidates this by construction. A path key never changed, so a UI edit
     # would have been served a stale supervisor forever.
     cache_key = f"{SUPERVISOR_AGENT_ID}@{version}"
-    if cache_key in _supervisor_cache:
-        return _supervisor_cache[cache_key]
+    async with _supervisor_cache_lock:
+        if cache_key in _supervisor_cache:
+            supervisor = _supervisor_cache[cache_key]
+            if retain:
+                owner_id = id(supervisor)
+                _supervisor_active_users[owner_id] = _supervisor_active_users.get(owner_id, 0) + 1
+            return supervisor
 
-    from cuga.sdk import CugaSupervisor
-    from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
+        from cuga.sdk import CugaSupervisor
+        from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
 
-    sub_specs = (sup_cfg.get("supervisor") or {}).get("subAgents") or []
-    # auto_load_policies=False: everything this supervisor runs is HEADLESS — a scheduled tick, a
-    # webhook, a channel message. Nobody is present to answer an approval interrupt, and one would
-    # hang the run until the caller times out. Asked for HERE rather than defaulted inside the
-    # builder, so /stream and every other caller keep the upstream behaviour of honouring
-    # settings.policy.auto_load_policies. A stored agent can opt back in.
-    agents = await build_agents_from_stored_subagents(sub_specs, auto_load_policies=False)
+        sub_specs = (sup_cfg.get("supervisor") or {}).get("subAgents") or []
+        # auto_load_policies=False: everything this supervisor runs is HEADLESS — a scheduled tick, a
+        # webhook, a channel message. Nobody is present to answer an approval interrupt, and one would
+        # hang the run until the caller times out. Asked for HERE rather than defaulted inside the
+        # builder, so /stream and every other caller keep the upstream behaviour of honouring
+        # settings.policy.auto_load_policies. A stored agent can opt back in.
+        agents = await build_agents_from_stored_subagents(sub_specs, auto_load_policies=False)
 
-    sup = CugaSupervisor(
-        agents=agents,
-        special_instructions=(sup_cfg.get("supervisor") or {}).get("special_instructions"),
-        interactive=False,
-    )
-    stale_supervisors = list(
-        {
-            id(supervisor): supervisor for key, supervisor in _supervisor_cache.items() if key != cache_key
-        }.values()
-    )
-    _supervisor_cache.clear()
-    for stale_supervisor in stale_supervisors:
-        close = getattr(stale_supervisor, "aclose", None)
-        if close is not None:
-            await close()
-    _supervisor_cache[cache_key] = sup
-    _details = await _roster_details([s.get("ref") for s in sub_specs if s.get("ref")])
-    _supervisor_roster[cache_key] = [
-        {"name": n, **_details.get(n, {"description": "", "mcp_servers": []})} for n in (agents or {})
-    ]
-    _supervisor_roster["__current__"] = _supervisor_roster[cache_key]
-    logger.info(
-        f"CUGA is running AS a supervisor: {len(agents)} sub-agent(s) from the config store (v{version})"
-    )
-    return sup
+        sup = CugaSupervisor(
+            agents=agents,
+            special_instructions=(sup_cfg.get("supervisor") or {}).get("special_instructions"),
+            interactive=False,
+        )
+        stale_supervisors = list(
+            {
+                id(supervisor): supervisor
+                for key, supervisor in _supervisor_cache.items()
+                if key != cache_key
+            }.values()
+        )
+        _supervisor_cache.clear()
+        immediately_close = []
+        for stale_supervisor in stale_supervisors:
+            owner_id = id(stale_supervisor)
+            if _supervisor_active_users.get(owner_id, 0):
+                _supervisor_retired[owner_id] = stale_supervisor
+            else:
+                immediately_close.append(stale_supervisor)
+        await close_graph_owners(*immediately_close)
+        _supervisor_cache[cache_key] = sup
+        if retain:
+            _supervisor_active_users[id(sup)] = _supervisor_active_users.get(id(sup), 0) + 1
+        _details = await _roster_details([s.get("ref") for s in sub_specs if s.get("ref")])
+        _supervisor_roster.clear()
+        _supervisor_roster[cache_key] = [
+            {"name": n, **_details.get(n, {"description": "", "mcp_servers": []})} for n in (agents or {})
+        ]
+        _supervisor_roster["__current__"] = _supervisor_roster[cache_key]
+        logger.info(
+            f"CUGA is running AS a supervisor: {len(agents)} sub-agent(s) from the config store (v{version})"
+        )
+        return sup
+
+
+async def _release_supervisor(supervisor: Any) -> None:
+    """Release one active `/run` lease and close a retired owner after its final user."""
+    close_owner = None
+    async with _supervisor_cache_lock:
+        owner_id = id(supervisor)
+        users = _supervisor_active_users.get(owner_id, 0)
+        if users <= 1:
+            _supervisor_active_users.pop(owner_id, None)
+            close_owner = _supervisor_retired.pop(owner_id, None)
+        else:
+            _supervisor_active_users[owner_id] = users - 1
+    if close_owner is not None:
+        await close_graph_owners(close_owner)
 
 
 def _run_token() -> str:
@@ -506,7 +542,7 @@ async def run_sync(request: Request):
     # existing agent, so turning the roster on cannot disturb the interactive surface.
     supervisor = None
     try:
-        supervisor = await _get_supervisor()
+        supervisor = await _get_supervisor(retain=bool(query))
     except Exception:  # noqa: BLE001 — a bad roster must not take the endpoint down
         # The roster PATH and the exception text are both server-side detail: the path exposes the
         # deployment's filesystem layout and str(e) can carry a stack trace. Log both, return
@@ -537,29 +573,32 @@ async def run_sync(request: Request):
                 f"Return its answer.\n\n{query}"
             )
         try:
-            res = await supervisor.invoke(query, thread_id=thread_id)
-            answer = (getattr(res, "answer", None) or getattr(res, "result", None) or "") if res else ""
-            return {
-                "ok": bool(answer),
-                "status": "ok" if answer else "error",
-                "answer": answer,
-                "thread_id": thread_id,
-                "sources": list(getattr(res, "sources", None) or []),
-                "variables": dict(getattr(res, "variables", None) or {}),
-                "error": None if answer else "supervisor returned an empty answer",
-            }
-        except Exception:  # noqa: BLE001
-            logger.exception("/run supervisor invoke failed")  # detail stays here, not in the reply
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "status": "error",
-                    "answer": "",
+            try:
+                res = await supervisor.invoke(query, thread_id=thread_id)
+                answer = (getattr(res, "answer", None) or getattr(res, "result", None) or "") if res else ""
+                return {
+                    "ok": bool(answer),
+                    "status": "ok" if answer else "error",
+                    "answer": answer,
                     "thread_id": thread_id,
-                    "error": "the run failed — see the server log",
-                },
-                500,
-            )
+                    "sources": list(getattr(res, "sources", None) or []),
+                    "variables": dict(getattr(res, "variables", None) or {}),
+                    "error": None if answer else "supervisor returned an empty answer",
+                }
+            except Exception:  # noqa: BLE001
+                logger.exception("/run supervisor invoke failed")  # detail stays here, not in the reply
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "status": "error",
+                        "answer": "",
+                        "thread_id": thread_id,
+                        "error": "the run failed — see the server log",
+                    },
+                    500,
+                )
+        finally:
+            await _release_supervisor(supervisor)
     try:
         async for frame in _EVENT_STREAM(
             query,

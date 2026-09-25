@@ -3532,20 +3532,11 @@ class CugaSupervisor:
                         pending_id = permission.get("pending_id")
                         agent_name = permission.get("agent_name")
                         confirmed = state.hitl_response.confirmed
-                        if (
-                            not isinstance(pending_id, str)
-                            or not isinstance(agent_name, str)
-                            or not isinstance(confirmed, bool)
-                        ):
-                            state.final_answer = "ACP permission response is invalid."
-                            state.hitl_action = None
-                            state.hitl_response = None
-                            return Command(update=state.model_dump(), goto=END)
                         md = dict(state.supervisor_metadata or {})
                         md["acp_permission_resume"] = {
                             "pending_id": pending_id,
                             "agent_name": agent_name,
-                            "approved": confirmed,
+                            "approved": confirmed if isinstance(confirmed, bool) else None,
                         }
                         state.supervisor_metadata = md
                         state.hitl_action = None
@@ -3783,12 +3774,8 @@ class CugaSupervisor:
         )
 
     async def aclose(self) -> None:
-        """Reject pending ACP permissions and release their live subprocess ownership."""
+        """Reject pending ACP permissions and release resources owned by this supervisor."""
         await self._pending_acp_registry.aclose()
-        for agent in self._agents.values():
-            close = getattr(agent, "aclose", None)
-            if callable(close):
-                await close()
 
     @property
     def variables_manager(self):

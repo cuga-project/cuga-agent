@@ -13,6 +13,8 @@ on the stored config version.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from cuga.backend.server import config_store, run_routes
@@ -24,12 +26,16 @@ pytestmark = pytest.mark.unit
 def clean(monkeypatch):
     config_store.reset_config_db()
     run_routes._supervisor_cache.clear()
+    run_routes._supervisor_active_users.clear()
+    run_routes._supervisor_retired.clear()
     run_routes._supervisor_roster.clear()
     # The store is the source of truth now; no env var is needed to be a supervisor.
     monkeypatch.delenv("CUGA_SUPERVISOR_ROSTER", raising=False)
     yield
     config_store.reset_config_db()
     run_routes._supervisor_cache.clear()
+    run_routes._supervisor_active_users.clear()
+    run_routes._supervisor_retired.clear()
     run_routes._supervisor_roster.clear()
 
 
@@ -163,6 +169,80 @@ async def test_cache_key_follows_the_stored_version(monkeypatch):
     assert len(built) == 2, "a published edit must invalidate the cache"
     assert built[1] == ["pricebot", "weatherbot"]
     assert closed == [["pricebot"]], "replaced supervisors must release pending ACP delegations"
+
+
+@pytest.mark.asyncio
+async def test_replacement_defers_close_until_active_run_releases(monkeypatch):
+    await _store_supervisor(["pricebot"])
+    closed = []
+
+    class _FakeSup:
+        def __init__(self, **kwargs):
+            self.version = len(closed)
+
+        async def aclose(self):
+            closed.append(self)
+
+    monkeypatch.setattr(
+        "cuga.supervisor_utils.supervisor_config.build_agents_from_stored_subagents",
+        lambda subs, **kwargs: _fake_agents(subs),
+    )
+    import cuga.sdk as _sdk
+
+    monkeypatch.setattr(_sdk, "CugaSupervisor", _FakeSup)
+    active = await run_routes._get_supervisor(retain=True)
+    await _store_supervisor(["pricebot", "weatherbot"])
+    replacement = await run_routes._get_supervisor()
+
+    assert replacement is not active
+    assert closed == []
+    await run_routes._release_supervisor(active)
+    assert closed == [active]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cache_misses_publish_one_live_supervisor(monkeypatch):
+    await _store_supervisor(["pricebot"])
+    release_build = asyncio.Event()
+    both_building = asyncio.Event()
+    build_calls = 0
+    instances = []
+
+    async def blocked_agents(subs, **kwargs):
+        nonlocal build_calls
+        build_calls += 1
+        if build_calls == 2:
+            both_building.set()
+        await release_build.wait()
+        return await _fake_agents(subs)
+
+    class _FakeSup:
+        def __init__(self, **kwargs):
+            self.closed = False
+            instances.append(self)
+
+        async def aclose(self):
+            self.closed = True
+
+    monkeypatch.setattr(
+        "cuga.supervisor_utils.supervisor_config.build_agents_from_stored_subagents",
+        blocked_agents,
+    )
+    import cuga.sdk as _sdk
+
+    monkeypatch.setattr(_sdk, "CugaSupervisor", _FakeSup)
+    first = asyncio.create_task(run_routes._get_supervisor())
+    second = asyncio.create_task(run_routes._get_supervisor())
+    try:
+        await asyncio.wait_for(both_building.wait(), timeout=0.2)
+    except TimeoutError:
+        pass
+    release_build.set()
+    first_result, second_result = await asyncio.gather(first, second)
+
+    assert first_result is second_result
+    assert not first_result.closed
+    assert len(instances) == 1
 
 
 async def _fake_agents(subs):

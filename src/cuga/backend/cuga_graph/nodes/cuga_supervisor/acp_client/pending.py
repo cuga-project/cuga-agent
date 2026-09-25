@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 from dataclasses import dataclass
 from enum import Enum
@@ -12,6 +13,23 @@ from typing import Any, Awaitable, Callable
 from .permissions import SafePermissionRequest
 
 Cleanup = Callable[[], Awaitable[None] | None]
+
+_IDENTITY_LIMIT = 128
+_REPLACEMENT = "�"
+
+
+def safe_identity(value: object, *, field: str) -> str:
+    """Return a bounded checkpoint-safe identity without collapsing distinct long values."""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a non-empty string")
+    normalized = "".join(character if character.isprintable() else _REPLACEMENT for character in value)
+    normalized = " ".join(normalized.split())
+    if not normalized:
+        raise ValueError(f"{field} must be a non-empty string")
+    if len(normalized) <= _IDENTITY_LIMIT:
+        return normalized
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"{normalized[: _IDENTITY_LIMIT - len(digest) - 1]}-{digest}"
 
 
 class PendingACPDelegationError(RuntimeError):
@@ -104,6 +122,26 @@ class PendingACPDelegationRegistry:
         cleanup: Cleanup | None = None,
     ) -> None:
         await self.expire()
+        try:
+            pending_id = safe_identity(pending_id, field="pending_id")
+            thread_id = safe_identity(thread_id, field="thread_id")
+            agent_name = safe_identity(agent_name, field="agent_name")
+        except ValueError:
+            now = monotonic()
+            rejected_entry = PendingACPDelegation(
+                pending_id="invalid",
+                thread_id="invalid",
+                agent_name="invalid",
+                request=request,
+                owner=owner,
+                prompt_task=prompt_task,
+                permission_future=permission_future,
+                cleanup=cleanup,
+                created_monotonic=now,
+                expires_monotonic=now,
+            )
+            await self._cleanup_entry(rejected_entry, PendingState.CANCELLED)
+            raise
         now = monotonic()
         entry = PendingACPDelegation(
             pending_id=pending_id,
@@ -147,6 +185,9 @@ class PendingACPDelegationRegistry:
 
     async def claim(self, pending_id: str, *, thread_id: str, agent_name: str) -> PendingACPDelegation:
         await self.expire()
+        pending_id = safe_identity(pending_id, field="pending_id")
+        thread_id = safe_identity(thread_id, field="thread_id")
+        agent_name = safe_identity(agent_name, field="agent_name")
         async with self._lock:
             entry = self._entries.get(pending_id)
             if entry is None:
@@ -169,6 +210,47 @@ class PendingACPDelegationRegistry:
         if entry is not None:
             await self._cleanup_entry(entry, PendingState.CANCELLED)
 
+    async def cancel_owned(
+        self,
+        pending_id: str,
+        *,
+        thread_id: str,
+        agent_name: str | None,
+        reason: str,
+    ) -> SafePendingDelegation:
+        """Atomically validate invocation ownership, remove, and clean a pending delegation."""
+        del reason
+        pending_id = safe_identity(pending_id, field="pending_id")
+        thread_id = safe_identity(thread_id, field="thread_id")
+        expected_agent = safe_identity(agent_name, field="agent_name") if agent_name else None
+        async with self._lock:
+            entry = self._entries.get(pending_id)
+            if entry is None:
+                raise PendingACPDelegationNotFoundError("ACP pending delegation is stale")
+            if entry.thread_id != thread_id or (
+                expected_agent is not None and entry.agent_name != expected_agent
+            ):
+                raise PendingACPDelegationOwnershipError("ACP pending delegation ownership mismatch")
+            if entry.state is not PendingState.PENDING:
+                raise PendingACPDelegationStateError("ACP pending delegation was already resumed")
+            self._entries.pop(pending_id)
+            entry.state = PendingState.CANCELLED
+            expiry_task = entry.expiry_task
+            if expiry_task is not None and expiry_task is not asyncio.current_task():
+                expiry_task.cancel()
+            entry.expiry_task = None
+            metadata = SafePendingDelegation(
+                pending_id=entry.pending_id,
+                thread_id=entry.thread_id,
+                agent_name=entry.agent_name,
+                permission=entry.request,
+                state=entry.state.value,
+            )
+        if expiry_task is not None and expiry_task is not asyncio.current_task():
+            await asyncio.gather(expiry_task, return_exceptions=True)
+        await self._cleanup_entry(entry, PendingState.CANCELLED)
+        return metadata
+
     async def expire(self) -> int:
         now = monotonic()
         expired: list[PendingACPDelegation] = []
@@ -178,6 +260,16 @@ class PendingACPDelegationRegistry:
                     self._entries.pop(pending_id, None)
                     entry.state = PendingState.EXPIRED
                     expired.append(entry)
+        expiry_tasks = []
+        current_task = asyncio.current_task()
+        for entry in expired:
+            task = entry.expiry_task
+            if task is not None and task is not current_task:
+                task.cancel()
+                expiry_tasks.append(task)
+            entry.expiry_task = None
+        if expiry_tasks:
+            await asyncio.gather(*expiry_tasks, return_exceptions=True)
         for entry in expired:
             await self._cleanup_entry(entry, PendingState.EXPIRED)
         return len(expired)
@@ -204,12 +296,16 @@ class PendingACPDelegationRegistry:
     async def _remove(self, pending_id: str, state: PendingState) -> PendingACPDelegation | None:
         async with self._lock:
             entry = self._entries.pop(pending_id, None)
+            expiry_task = None
             if entry is not None:
                 entry.state = state
                 if entry.expiry_task is not None and entry.expiry_task is not asyncio.current_task():
-                    entry.expiry_task.cancel()
+                    expiry_task = entry.expiry_task
+                    expiry_task.cancel()
                 entry.expiry_task = None
-            return entry
+        if expiry_task is not None:
+            await asyncio.gather(expiry_task, return_exceptions=True)
+        return entry
 
     async def _expire_entry(self, expected: PendingACPDelegation) -> None:
         try:

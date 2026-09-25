@@ -279,6 +279,47 @@ async def test_stale_resume_records_one_final_failed_delegation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_graph_adapter_routes_malformed_acp_response_to_fail_closed_resume() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_node import CugaSupervisorNode
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
+        ActionResponse,
+        ActionType,
+    )
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+    from cuga.backend.cuga_graph.utils.nodes_names import ActionIds
+
+    captured = {}
+
+    class _FakeSubgraph:
+        async def ainvoke(self, state, config=None):
+            captured["metadata"] = state.supervisor_metadata
+            return state
+
+    node = CugaSupervisorNode()
+    node.set_subgraph(_FakeSubgraph())
+    state = AgentState(
+        input="work",
+        thread_id="thread",
+        sender="WaitForResponse",
+        hitl_response=ActionResponse(
+            action_id=ActionIds.TOOL_APPROVAL,
+            response_type=ActionType.CONFIRMATION,
+            timestamp="now",
+            confirmed=None,
+        ),
+        supervisor_metadata={"acp_permission": {"pending_id": "pending-safe", "agent_name": "coder"}},
+    )
+
+    await node.node(state, config={"configurable": {"thread_id": "thread"}})
+
+    assert captured["metadata"]["acp_permission_resume"] == {
+        "pending_id": "pending-safe",
+        "agent_name": "coder",
+        "approved": None,
+    }
+
+
+@pytest.mark.asyncio
 async def test_supervisor_sdk_callback_maps_exact_acp_response_for_resume() -> None:
     from cuga import CugaSupervisor
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
@@ -314,13 +355,71 @@ async def test_supervisor_sdk_callback_maps_exact_acp_response_for_resume() -> N
 
 
 @pytest.mark.asyncio
-async def test_supervisor_aclose_reaps_registry() -> None:
+async def test_ambiguous_resume_cancels_owned_entry_clears_metadata_and_records_once() -> None:
+    import asyncio
+
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationRegistry,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool import (
+        create_execute_agent_tool_node,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import SupervisorGraphAdapter
+
+    registry = PendingACPDelegationRegistry(capacity=1, ttl_seconds=30)
+    permission_future = asyncio.get_running_loop().create_future()
+    prompt_task = asyncio.create_task(asyncio.Event().wait())
+    await registry.insert(
+        pending_id="pending-safe",
+        thread_id="thread",
+        agent_name="coder",
+        request=_safe_request(),
+        owner=object(),
+        prompt_task=prompt_task,
+        permission_future=permission_future,
+    )
+    adapter = SupervisorGraphAdapter(
+        agents={"coder": _external_agent()},
+        pending_acp_registry=registry,
+        interactive=True,
+    )
+    adapter.record_delegation = MagicMock()
+    state = CugaSupervisorState(
+        input="work",
+        thread_id="thread",
+        supervisor_metadata={
+            "acp_permission": {"pending_id": "pending-safe", "agent_name": "coder"},
+            "acp_permission_resume": {
+                "pending_id": "pending-safe",
+                "agent_name": "coder",
+                "approved": None,
+            },
+        },
+    )
+
+    result = await create_execute_agent_tool_node(adapter)(state, {"configurable": {"thread_id": "thread"}})
+
+    assert await registry.size() == 0
+    assert prompt_task.cancelled()
+    assert "acp_permission" not in result["supervisor_metadata"]
+    assert "acp_permission_resume" not in result["supervisor_metadata"]
+    adapter.record_delegation.assert_called_once()
+    assert adapter.record_delegation.call_args.kwargs["result"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_aclose_reaps_registry_without_closing_supplied_agents() -> None:
     from cuga import CugaSupervisor
 
-    supervisor = CugaSupervisor(agents={}, model=MagicMock(), auto_load_policies=False)
+    supplied_agent = SimpleNamespace(aclose=AsyncMock())
+    supervisor = CugaSupervisor(
+        agents={"shared": supplied_agent}, model=MagicMock(), auto_load_policies=False
+    )
     supervisor._pending_acp_registry.aclose = AsyncMock()
     await supervisor.aclose()
     supervisor._pending_acp_registry.aclose.assert_awaited_once()
+    supplied_agent.aclose.assert_not_awaited()
 
 
 def test_plan_approval_metadata_does_not_authorize_acp_permission() -> None:

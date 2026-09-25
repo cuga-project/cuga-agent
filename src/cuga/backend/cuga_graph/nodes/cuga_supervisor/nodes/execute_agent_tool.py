@@ -154,17 +154,29 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
             pending_id = resume.get("pending_id")
             agent_name = resume.get("agent_name")
             approved = resume.get("approved")
+            thread_id = _resolve_thread_id(state, config)
             try:
+                if not isinstance(thread_id, str) or not thread_id.strip():
+                    raise ValueError("invalid ACP permission owner")
+                if not isinstance(pending_id, str) or not pending_id.strip():
+                    raise ValueError("invalid ACP pending delegation id")
                 if (
-                    not isinstance(pending_id, str)
-                    or not isinstance(agent_name, str)
+                    not isinstance(agent_name, str)
+                    or not agent_name.strip()
                     or not isinstance(approved, bool)
                 ):
+                    cancelled = await adapter._pending_acp_registry.cancel_owned(
+                        pending_id,
+                        thread_id=thread_id,
+                        agent_name=agent_name if isinstance(agent_name, str) and agent_name.strip() else None,
+                        reason="invalid ACP permission response",
+                    )
+                    agent_name = cancelled.agent_name
                     raise ValueError("invalid ACP permission resume")
                 result = await resume_acp_delegation(
                     registry=adapter._pending_acp_registry,
                     pending_id=pending_id,
-                    thread_id=_resolve_thread_id(state, config) or "",
+                    thread_id=thread_id,
                     agent_name=agent_name,
                     approved=approved,
                 )

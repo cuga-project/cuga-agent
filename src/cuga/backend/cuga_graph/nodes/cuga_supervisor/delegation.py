@@ -188,14 +188,19 @@ def create_agent_delegation_func(
                     }
                 else:
                     exec_ctx = resolve_supervisor_execution_context()
-                    if exec_ctx is not None and exec_ctx.pending_acp_registry is not None:
+                    if (
+                        exec_ctx is not None
+                        and exec_ctx.pending_acp_registry is not None
+                        and isinstance(exec_ctx.thread_id, str)
+                        and exec_ctx.thread_id.strip()
+                    ):
                         from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
                             ACPPermissionRuntimeBridge,
                         )
 
                         permission_bridge = ACPPermissionRuntimeBridge(
                             registry=exec_ctx.pending_acp_registry,
-                            thread_id=exec_ctx.thread_id or "",
+                            thread_id=exec_ctx.thread_id,
                             agent_name=agent_name,
                             interactive=exec_ctx.interactive,
                         )

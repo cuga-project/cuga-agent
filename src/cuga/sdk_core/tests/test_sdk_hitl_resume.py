@@ -215,6 +215,53 @@ class TestToolApprovalDenial:
             "denied",
         ]
 
+    @pytest.mark.asyncio
+    async def test_malformed_acp_response_routes_to_atomic_fail_closed_cleanup(self):
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import (
+            CugaSupervisorState,
+        )
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool import (
+            create_execute_agent_tool_node,
+        )
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import (
+            SupervisorGraphAdapter,
+        )
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+            PendingACPDelegationRegistry,
+        )
+        from cuga.backend.cuga_graph.utils.nodes_names import ActionIds, NodeNames
+
+        supervisor = CugaSupervisor(agents={}, model=MagicMock(), auto_load_policies=False)
+        wrapper = supervisor._create_supervisor_hitl_wrapper_graph()
+        permission = {"pending_id": "pending-safe", "agent_name": "coder"}
+        state = CugaSupervisorState(
+            input="work",
+            thread_id="thread",
+            sender=NodeNames.WAIT_FOR_RESPONSE,
+            hitl_response=ActionResponse(
+                action_id=ActionIds.TOOL_APPROVAL,
+                response_type=ActionType.CONFIRMATION,
+                timestamp="now",
+                confirmed=None,
+            ),
+            supervisor_metadata={"acp_permission": permission},
+        )
+
+        command = await wrapper.nodes["SupervisorSDKCallback"].runnable.ainvoke(state, config={})
+        assert command.goto == "SupervisorSubgraph"
+        assert command.update["supervisor_metadata"]["acp_permission_resume"]["approved"] is None
+
+        registry = PendingACPDelegationRegistry()
+        adapter = SupervisorGraphAdapter(agents={}, pending_acp_registry=registry)
+        adapter.record_delegation = MagicMock()
+        resumed = CugaSupervisorState(**command.update)
+        result = await create_execute_agent_tool_node(adapter)(
+            resumed, {"configurable": {"thread_id": "thread"}}
+        )
+        assert "acp_permission" not in result["supervisor_metadata"]
+        assert "acp_permission_resume" not in result["supervisor_metadata"]
+        adapter.record_delegation.assert_called_once()
+
     def test_agent_state_has_no_execution_complete_field(self):
         state = AgentState(input="test", url="")
         with pytest.raises(ValueError, match="execution_complete"):

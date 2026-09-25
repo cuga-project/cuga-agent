@@ -7,7 +7,11 @@ from typing import Any, Awaitable, Callable, Mapping
 from uuid import uuid4
 
 from .acp_client.callbacks import ACPClientCallbacks, LifecycleRegistrar, PermissionHandler
-from .acp_client.pending import PendingACPDelegationError, PendingACPDelegationRegistry
+from .acp_client.pending import (
+    PendingACPDelegationError,
+    PendingACPDelegationRegistry,
+    safe_identity,
+)
 from .acp_client.permissions import SafePermissionRequest, select_permission_option
 from .acp_client.config import ACPProcessConfig
 from .acp_client.process import ACPFactoryContractError, ACPStartupTimeoutError, open_acp_process_session
@@ -36,8 +40,13 @@ class ACPPermissionRuntimeBridge:
         interactive: bool,
     ) -> None:
         self.registry = registry
-        self.thread_id = thread_id
-        self.agent_name = agent_name
+        try:
+            self.thread_id = safe_identity(thread_id, field="thread_id")
+            self.agent_name = safe_identity(agent_name, field="agent_name")
+        except ValueError:
+            self.thread_id = ""
+            self.agent_name = ""
+            interactive = False
         self.interactive = interactive
         self._lifecycle_id: str | None = None
         self._owner: Any = None
