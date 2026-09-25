@@ -199,6 +199,7 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
 - **Groq** - High-performance inference platform with fast LLM models
 - **RITS** - Internal IBM research platform
 - **OpenRouter** - LLM API gateway provider
+- **Requesty** - LLM API gateway provider (OpenAI compatible router)
 - **watsonx Orchestrate (wxO)** - Routes LLM calls through an Orchestrate tenant for tracing, guardrails, and entitlement-based billing
 
 ## Configuration Priority
@@ -374,6 +375,26 @@ and omit `WXO_API_KEY` — local instances are auto-detected and don't require a
 - Model: `watsonx/openai/gpt-oss-120b`
 - Instance URL: `http://localhost:4321` (local ADK dev server)
 
+### Option 9: Requesty Support
+**Setup Instructions:**
+1. Create an account at [requesty.ai](https://requesty.ai)
+2. Generate an API key from your [API keys page](https://app.requesty.ai/api-keys)
+3. Add to your `.env` file:
+   ```env
+   # Requesty Configuration
+   REQUESTY_API_KEY=your-requesty-api-key  # pragma: allowlist secret
+   AGENT_SETTING_CONFIG="settings.requesty.toml"
+
+   # Optional overrides
+   REQUESTY_BASE_URL="https://router.eu.requesty.ai/v1"  # EU region, default is https://router.requesty.ai/v1
+   MODEL_NAME=openai/gpt-4o-mini                         # Override model name
+   ```
+
+**Default Values:**
+
+- Model: Configured in `settings.requesty.toml`
+- Base URL: `https://router.requesty.ai/v1`
+
 
 ## Configuration Files
 
@@ -384,6 +405,7 @@ CUGA uses TOML configuration files located in `src/cuga/configurations/models/`:
 - `settings.azure.toml` - Azure OpenAI configuration
 - `settings.groq.toml` - Groq configuration
 - `settings.openrouter.toml` - OpenRouter configuration
+- `settings.requesty.toml` - Requesty configuration
 - `settings.rits.toml` - RITS configuration (direct endpoint)
 - `settings.rits.proxy.toml` - RITS configuration (local LiteLLM proxy fronting RITS)
 - `settings.wxo.toml` - watsonx Orchestrate configuration
