@@ -628,12 +628,25 @@ Provide:
             # response_format paths. ChatOpenAI models with "GCP"/"Claude" in the
             # name return an unparsed chain and land in the exception fallback
             # below (nothing we ship uses that path for policy matching today).
-            prompt_template = ChatPromptTemplate.from_messages(
-                [
-                    ("system", system_prompt),
-                    ("human", "{user_prompt}"),
-                ]
-            )
+            #
+            # For LiteLLM the chain uses PydanticOutputParser which relies on the
+            # prompt containing explicit JSON format instructions — without them the
+            # model returns markdown prose and the parser fails.  Supply those
+            # instructions as a separate partial system message (same pattern as
+            # base_agent.py json_mode fallback) so that JSON braces in the schema
+            # are never misread as LangChain template variables.
+            from langchain_core.output_parsers import PydanticOutputParser as _POP
+
+            _parser = _POP(pydantic_object=PolicyConflictResolution)
+            prompt_template = (
+                ChatPromptTemplate.from_messages(
+                    [
+                        ("system", system_prompt),
+                        ("human", "{user_prompt}"),
+                    ]
+                )
+                + ChatPromptTemplate.from_messages([("system", "{cuga_format_instructions}")])
+            ).partial(cuga_format_instructions=BaseAgent.get_format_instructions(_parser))
             chain = BaseAgent.get_chain(prompt_template, self.llm, PolicyConflictResolution)
             result = await chain.ainvoke({"user_prompt": user_prompt})
             if isinstance(result, dict):
