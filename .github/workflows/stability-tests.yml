@@ -36,7 +36,9 @@ jobs:
     name: Stability Tests (Python ${{ matrix.python-version }})
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Nine live-model tests plus four service-stack startups exceed ten minutes
+    # when interim model replies need continuation; keep a bounded job deadline.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:

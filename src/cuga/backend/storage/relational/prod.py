@@ -49,6 +49,14 @@ class ProdRelationalStore:
             else:
                 self._last_rowcount = -1
 
+    async def execute_batch(self, statements: list[tuple[str, tuple]]) -> None:
+        """Run all statements on one connection and one PostgreSQL transaction."""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                for sql, params in statements:
+                    await conn.execute(_placeholders(sql), *params)
+
     async def fetchall(self, sql: str, params: tuple = ()) -> List[Any]:
         sql = _placeholders(sql)
         pool = await self._get_pool()

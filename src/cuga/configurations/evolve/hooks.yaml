@@ -1,0 +1,52 @@
+# CUGA defaults for the bundled Evolve service.
+# Override EVOLVE_HOOKS_CONFIG with a mounted configuration to customize hooks.
+# Regex PII detection is local and requires no model downloads or remote service.
+plugins:
+  - name: pii_filter_memory
+    display_name: Personal identifiers
+    description: Masks detected email addresses, phone numbers and other structured personal identifiers.
+    show_in_ui: true
+    kind: altk_evolve.hooks.plugins.pii.PIIFilterMemoryPlugin
+    hooks: [memory_pre_write, llm_pre_call]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      detect_email: true
+      detect_ssn: true
+      detect_phone: true
+      default_mask_strategy: redact
+      redaction_text: "[REDACTED]"
+
+  - name: metadata_normalizer
+    display_name: Memory metadata
+    description: Keeps source references and timestamps consistent.
+    show_in_ui: false
+    kind: altk_evolve.hooks.plugins.normalizer.MetadataNormalizerPlugin
+    hooks: [memory_pre_write]
+    mode: transform
+    priority: 40
+    on_error: fail
+    config:
+      stamp_trace_id: true
+      stamp_created_at: true
+
+  - name: access_stamp
+    display_name: Memory usage tracking
+    description: Records when memories are used.
+    show_in_ui: false
+    kind: altk_evolve.hooks.plugins.access_stamp.AccessStampPlugin
+    hooks: [memory_post_read]
+    mode: fire_and_forget
+    priority: 50
+    on_error: fail
+
+  - name: legal_hold
+    display_name: Legal holds
+    description: Prevents deletion of memories placed on legal hold.
+    show_in_ui: true
+    kind: altk_evolve.hooks.plugins.legal_hold.LegalHoldMemoryPlugin
+    hooks: [memory_pre_delete]
+    mode: sequential
+    priority: 5
+    on_error: fail
