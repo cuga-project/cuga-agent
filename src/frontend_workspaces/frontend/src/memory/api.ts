@@ -40,6 +40,9 @@ type EntityInventory = {
 type ComplianceStatusResponse = {
   plugins?: Array<{
     name: string;
+    display_name?: string;
+    description?: string | null;
+    show_in_ui?: boolean;
     hooks?: string[];
     enabled?: boolean;
     healthy?: boolean;
@@ -323,7 +326,7 @@ export async function loadProtectionStatus(): Promise<ProtectionStatus[]> {
     },
   ];
   return definitions.map((definition) => {
-    const plugins = (response.plugins ?? []).filter((plugin) => plugin.hooks?.includes(definition.hook));
+    const plugins = (response.plugins ?? []).filter((plugin) => plugin.show_in_ui !== false && plugin.hooks?.includes(definition.hook));
     return {
       id: definition.id,
       title: definition.title,
@@ -331,7 +334,7 @@ export async function loadProtectionStatus(): Promise<ProtectionStatus[]> {
       enabled: plugins.some((plugin) => plugin.enabled === true),
       healthy: plugins.length > 0 && plugins.every((plugin) => plugin.healthy === true),
       pluginCount: plugins.length,
-      plugins: plugins.map(plugin => ({name: plugin.name, enabled: plugin.enabled === true, healthy: plugin.healthy === true})),
+      plugins: plugins.map(plugin => ({name: plugin.name, displayName: plugin.display_name || plugin.name, description: plugin.description, enabled: plugin.enabled === true, healthy: plugin.healthy === true})),
     };
   });
 }

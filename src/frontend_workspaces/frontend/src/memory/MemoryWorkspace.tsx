@@ -444,7 +444,10 @@ function SettingsDetail({
         {settings.plugins?.length ? (
           settings.plugins.map((plugin) => (
             <div className="memory-settings__filter" key={plugin.name}>
-              <strong>{plugin.name}</strong>
+              <div>
+                <strong>{plugin.displayName || plugin.name}</strong>
+                {plugin.description && <p>{plugin.description}</p>}
+              </div>
               <span>
                 {plugin.enabled ? "Enabled" : "Disabled"} ·{" "}
                 {plugin.healthy ? "Healthy" : "Status unavailable"}

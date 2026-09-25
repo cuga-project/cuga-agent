@@ -37,7 +37,7 @@ export type ProtectionStatus = {
   enabled: boolean;
   healthy: boolean;
   pluginCount: number;
-  plugins: Array<{name: string; enabled: boolean; healthy: boolean}>;
+  plugins: Array<{name: string; displayName?: string; description?: string | null; enabled: boolean; healthy: boolean}>;
 };
 
 export type MemoryPage = {
