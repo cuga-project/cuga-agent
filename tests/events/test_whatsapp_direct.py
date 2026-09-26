@@ -97,10 +97,20 @@ def test_missing_or_wrong_signature_is_rejected(monkeypatch):
     assert not wa.verify_signature({"x-hub-signature-256": "sha256=deadbeef"}, raw)[0]
 
 
-def test_no_app_secret_allows_but_flags(monkeypatch):
+def test_no_app_secret_fails_closed(monkeypatch):
+    # FAIL CLOSED (like github_direct / slack_direct): a missing secret must REFUSE, not wave the
+    # request through — the endpoint runs an agent under an attacker-chosen sender id on a public URL.
     monkeypatch.delenv("WHATSAPP_APP_SECRET", raising=False)
+    monkeypatch.delenv("EVENTS_ALLOW_UNAUTHENTICATED", raising=False)
     ok, why = wa.verify_signature({}, b"{}")
-    assert ok and "not set" in why
+    assert not ok and "not set" in why
+
+
+def test_no_app_secret_opens_only_with_the_dev_escape_hatch(monkeypatch):
+    monkeypatch.delenv("WHATSAPP_APP_SECRET", raising=False)
+    monkeypatch.setenv("EVENTS_ALLOW_UNAUTHENTICATED", "1")
+    ok, why = wa.verify_signature({}, b"{}")
+    assert ok and "EVENTS_ALLOW_UNAUTHENTICATED" in why
 
 
 # ── the GET handshake (Meta verifies over GET; Slack uses POST) ─────────────────────────────────

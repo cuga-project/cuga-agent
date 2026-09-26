@@ -104,8 +104,11 @@ def _safe_challenge(value: str) -> str:
 def verify_signature(headers, raw_body: bytes | str) -> tuple[bool, str]:
     """Verify Meta's ``X-Hub-Signature-256`` (HMAC-SHA256 of the RAW body with the app secret).
 
-    Returns (ok, reason). With no app secret configured we allow but flag it, matching
-    slack_direct.verify_signature — set WHATSAPP_APP_SECRET to lock it down.
+    Returns (ok, reason). FAILS CLOSED, like github_direct and slack_direct: with no app secret
+    configured this endpoint refuses traffic rather than waving it through — the URL is public and
+    reaching it runs an agent with the service's credentials under an attacker-chosen sender id, so
+    "enforce only if configured" means a forgotten secret is an open door. The documented local
+    escape hatch is the same one the rest of the events layer uses (EVENTS_ALLOW_UNAUTHENTICATED).
 
     The HMAC is over the bytes Meta sent, so callers must pass the raw body, not a re-serialised
     dict: ``json.dumps`` of a parsed payload reorders keys and changes whitespace, and the digest
@@ -113,7 +116,16 @@ def verify_signature(headers, raw_body: bytes | str) -> tuple[bool, str]:
     """
     secret = app_secret()
     if not secret:
-        return True, "unverified (WHATSAPP_APP_SECRET not set)"
+        import os
+
+        if (os.environ.get("EVENTS_ALLOW_UNAUTHENTICATED", "") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return True, "unverified (EVENTS_ALLOW_UNAUTHENTICATED=1)"
+        return False, "WHATSAPP_APP_SECRET not set — refusing unverified WhatsApp events"
     sig = headers.get("x-hub-signature-256") or headers.get("X-Hub-Signature-256") or ""
     if not sig:
         return False, "missing signature header"
