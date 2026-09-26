@@ -102,7 +102,11 @@ def main():
     )
     scopes = set(info.get("scopes") or [])
     need = {"whatsapp_business_messaging"}
-    ok("token has whatsapp_business_messaging", need <= scopes, "ok" if need <= scopes else "missing required scope")
+    ok(
+        "token has whatsapp_business_messaging",
+        need <= scopes,
+        "ok" if need <= scopes else "missing required scope",
+    )
 
     # ── the number ───────────────────────────────────────────────────────────
     st, d = _graph(f"{pnid}?fields=display_phone_number,verified_name,quality_rating", tok)

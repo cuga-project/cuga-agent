@@ -84,8 +84,10 @@ def _write_token() -> "tuple[str, str, bool]":
         try:
             jwt = _app_jwt(app_id, pem)
             req = urllib.request.Request(
-                f"{API}/app/installations/{inst}/access_tokens", method="POST",
-                headers={"Authorization": f"Bearer {jwt}", "Accept": "application/vnd.github+json"})
+                f"{API}/app/installations/{inst}/access_tokens",
+                method="POST",
+                headers={"Authorization": f"Bearer {jwt}", "Accept": "application/vnd.github+json"},
+            )
             with urllib.request.urlopen(req, timeout=25) as r:
                 d = json.loads(r.read())
             perms = d.get("permissions", {})
@@ -161,7 +163,9 @@ def _new_delivery_matched(baseline_ids: set) -> bool:
 
 def main() -> int:
     if not TOKEN:
-        print("SKIP — no GITHUB_TOKEN (needs a PAT with Contents+Pull-requests WRITE on the repo to open a PR)")
+        print(
+            "SKIP — no GITHUB_TOKEN (needs a PAT with Contents+Pull-requests WRITE on the repo to open a PR)"
+        )
         return 0
     print(f"REAL GitHub DIRECT fire — {REPO} · {SERVER}  (write cred: {TOKEN_KIND})")
     stamp = int(time.time())
@@ -176,20 +180,29 @@ def main() -> int:
         #   2. 'yes' on the SAME thread → APPROVES it → ARMED
         thread = f"direct-fire-{stamp}"
         code, rep = http(
-            "POST", f"{SERVER}/api/concierge",
-            {"text": f"/automate when a new pull request opens on {REPO}, summarize it and flag risks",
-             "thread_id": thread},
-            headers={"X-Gateway-Token": GW}, timeout=240,
+            "POST",
+            f"{SERVER}/api/concierge",
+            {
+                "text": f"/automate when a new pull request opens on {REPO}, summarize it and flag risks",
+                "thread_id": thread,
+            },
+            headers={"X-Gateway-Token": GW},
+            timeout=240,
         )
-        print(f"  propose: {str(rep.get('reply',''))[:100]}")
-        assert code == 200, f"propose failed HTTP {code}: {str(rep.get('reply',''))[:160]}"
+        print(f"  propose: {str(rep.get('reply', ''))[:100]}")
+        assert code == 200, f"propose failed HTTP {code}: {str(rep.get('reply', ''))[:160]}"
         code, rep = http(
-            "POST", f"{SERVER}/api/concierge",
-            {"text": "yes", "thread_id": thread}, headers={"X-Gateway-Token": GW}, timeout=240,
+            "POST",
+            f"{SERVER}/api/concierge",
+            {"text": "yes", "thread_id": thread},
+            headers={"X-Gateway-Token": GW},
+            timeout=240,
         )
         reply = str(rep.get("reply", ""))
         print(f"  arm: {reply[:120]}")
-        assert code == 200 and ("ARMED" in reply or "REUSING" in reply), f"arm failed (HTTP {code}): {reply[:200]}"
+        assert code == 200 and ("ARMED" in reply or "REUSING" in reply), (
+            f"arm failed (HTTP {code}): {reply[:200]}"
+        )
         import re
 
         m = re.search(r"[Ss]ubscription ([\w-]+)", reply)  # reply says "Subscription cuga-…" (capital S)
@@ -207,16 +220,29 @@ def main() -> int:
             assert secret, "repo not writable AND no GITHUB_WEBHOOK_SECRET to sign a synthetic event"
             print(f"  ({reason} — firing a SIGNED synthetic pull_request:opened instead)")
             payload = json.dumps(
-                {"action": "opened", "repository": {"full_name": REPO},
-                 "pull_request": {"number": 0, "title": f"synthetic probe {stamp}",
-                                  "html_url": f"https://github.com/{REPO}/pull/0", "user": {"login": "cuga-e2e"}}}
+                {
+                    "action": "opened",
+                    "repository": {"full_name": REPO},
+                    "pull_request": {
+                        "number": 0,
+                        "title": f"synthetic probe {stamp}",
+                        "html_url": f"https://github.com/{REPO}/pull/0",
+                        "user": {"login": "cuga-e2e"},
+                    },
+                }
             ).encode()
             sig = "sha256=" + hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
             # send the EXACT signed bytes (http() would re-serialize and break the signature)
             req = urllib.request.Request(
-                f"{SERVER}/api/events/github/events", data=payload, method="POST",
-                headers={"X-GitHub-Event": "pull_request", "X-Hub-Signature-256": sig,
-                         "Content-Type": "application/json"})
+                f"{SERVER}/api/events/github/events",
+                data=payload,
+                method="POST",
+                headers={
+                    "X-GitHub-Event": "pull_request",
+                    "X-Hub-Signature-256": sig,
+                    "Content-Type": "application/json",
+                },
+            )
             try:
                 with urllib.request.urlopen(req, timeout=30) as _r:
                     c, d = _r.status, json.loads(_r.read().decode() or "{}")
@@ -224,12 +250,13 @@ def main() -> int:
                 c, d = e.code, {}
             # the route returns matched directly — a deterministic proof the armed watch was hit
             assert c == 200 and d.get("matched", 0) >= 1, f"synthetic fire not matched: HTTP {c} {d}"
-            print(f"  ✓ FIRED — signed synthetic pull_request → github-direct matched={d.get('matched')} → dispatched")
+            print(
+                f"  ✓ FIRED — signed synthetic pull_request → github-direct matched={d.get('matched')} → dispatched"
+            )
             return True
 
         # CAN_WRITE comes from the App installation token's GRANTED permissions (contents+pull_requests
         # write), computed at mint time — NOT from GET /repos' permissions.push, which App tokens never set.
-        real = False
         if not CAN_WRITE:
             ok = fire_synthetic(f"no repo-write credential [{TOKEN_KIND}]")
         else:
@@ -247,8 +274,12 @@ def main() -> int:
                 _, ref = http("GET", f"{API}/repos/{REPO}/git/ref/heads/{default}", headers=GH)
                 base_sha = (ref.get("object") or {}).get("sha")
                 assert base_sha, f"could not read {default} head: {ref}"
-                c, rr = http("POST", f"{API}/repos/{REPO}/git/refs", headers=GH,
-                             body={"ref": f"refs/heads/{branch}", "sha": base_sha})
+                c, rr = http(
+                    "POST",
+                    f"{API}/repos/{REPO}/git/refs",
+                    headers=GH,
+                    body={"ref": f"refs/heads/{branch}", "sha": base_sha},
+                )
                 if c not in (200, 201):
                     # write blocked despite a valid cred (ruleset / protected repo) — degrade, don't crash
                     ok = fire_synthetic(f"branch create blocked HTTP {c}: {(rr or {}).get('message')}")
@@ -256,13 +287,26 @@ def main() -> int:
                     branch_created = True
                     content = base64.b64encode(
                         f"# e2e direct-fire probe {stamp}\n\nOpens a real PR to fire the armed watcher. "
-                        f"Auto-deleted.\n".encode()).decode()
-                    c, _ = http("PUT", f"{API}/repos/{REPO}/contents/e2e/direct-fire-{stamp}.md", headers=GH,
-                                body={"message": f"e2e probe {stamp}", "content": content, "branch": branch})
+                        f"Auto-deleted.\n".encode()
+                    ).decode()
+                    c, _ = http(
+                        "PUT",
+                        f"{API}/repos/{REPO}/contents/e2e/direct-fire-{stamp}.md",
+                        headers=GH,
+                        body={"message": f"e2e probe {stamp}", "content": content, "branch": branch},
+                    )
                     assert c in (200, 201), f"commit failed HTTP {c}"
-                    c, pr = http("POST", f"{API}/repos/{REPO}/pulls", headers=GH,
-                                 body={"title": f"e2e: direct-fire probe {stamp}", "head": branch, "base": default,
-                                       "body": "Probe PR for the github-direct fire test. Auto-closed."})
+                    c, pr = http(
+                        "POST",
+                        f"{API}/repos/{REPO}/pulls",
+                        headers=GH,
+                        body={
+                            "title": f"e2e: direct-fire probe {stamp}",
+                            "head": branch,
+                            "base": default,
+                            "body": "Probe PR for the github-direct fire test. Auto-closed.",
+                        },
+                    )
                     pr_num = pr.get("number")
                     assert c == 201 and pr_num, f"PR create failed HTTP {c}: {pr}"
                     print(f"  REAL PR opened: #{pr_num}  {pr.get('html_url')}")
@@ -275,7 +319,6 @@ def main() -> int:
                         ok = _new_delivery_matched(dlv_base)
                     assert ok, "GitHub delivered no NEW pull_request:opened with matched>=1 within 5 min"
                     print("  ✓ FIRED — github-direct matched the REAL PR (matched>=1) and dispatched")
-                    real = True
     finally:
         # 3) CLEANUP — PR + branch (only if we opened one) + subscription. NEVER the App webhook.
         if pr_num:
@@ -283,7 +326,12 @@ def main() -> int:
         if branch_created:
             http("DELETE", f"{API}/repos/{REPO}/git/refs/heads/{branch}", headers=GH)
         if sub_id:
-            http("DELETE", f"{SERVER}/api/events/subscriptions/{sub_id}", headers={"X-Gateway-Token": GW}, timeout=60)
+            http(
+                "DELETE",
+                f"{SERVER}/api/events/subscriptions/{sub_id}",
+                headers={"X-Gateway-Token": GW},
+                timeout=60,
+            )
         print(f"  cleanup: PR {'closed' if pr_num else '—'} · subscription {'deleted' if sub_id else '—'}")
     mode = "a REAL GitHub PR" if pr_num else "a signed synthetic pull_request"
     print(f"\nRESULT: {'PASS — ' + mode + ' fired the direct watcher e2e' if ok else 'FAIL'}")

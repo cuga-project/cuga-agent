@@ -95,7 +95,11 @@ def main() -> int:
             {"Content-Type": "application/json"},
         )
         # ack-fast async default → 202 accepted (the agent runs in the background)
-        ok("correct key → 202 accepted (ack-fast async)", st == 202 and d.get("accepted") is True, f"got {st} {d}")
+        ok(
+            "correct key → 202 accepted (ack-fast async)",
+            st == 202 and d.get("accepted") is True,
+            f"got {st} {d}",
+        )
     else:
         skip("correct-key fire", "EVENTS_WEBHOOK_KEY not set")
 
@@ -103,13 +107,24 @@ def main() -> int:
     print("\ngithub direct    /api/events/github/events")
     ghsec = _env("GITHUB_WEBHOOK_SECRET")
     body = json.dumps({"zen": "Keep it simple.", "hook_id": 1}).encode()
-    st, _ = _http("POST", f"{SERVER}/api/events/github/events", body,
-                  {"X-GitHub-Event": "ping", "Content-Type": "application/json"})
+    st, _ = _http(
+        "POST",
+        f"{SERVER}/api/events/github/events",
+        body,
+        {"X-GitHub-Event": "ping", "Content-Type": "application/json"},
+    )
     ok("unsigned ping → 401 (fails closed)", st == 401, f"got {st}")
     if ghsec:
-        st, d = _http("POST", f"{SERVER}/api/events/github/events", body,
-                      {"X-GitHub-Event": "ping", "X-Hub-Signature-256": _sig256(ghsec, body),
-                       "Content-Type": "application/json"})
+        st, d = _http(
+            "POST",
+            f"{SERVER}/api/events/github/events",
+            body,
+            {
+                "X-GitHub-Event": "ping",
+                "X-Hub-Signature-256": _sig256(ghsec, body),
+                "Content-Type": "application/json",
+            },
+        )
         ok("signed ping → 200 pong", st == 200 and d.get("pong") is True, f"got {st} {d}")
     else:
         skip("signed ping", "GITHUB_WEBHOOK_SECRET not set (empty in .env.ce; read the live secret to run)")
@@ -120,29 +135,61 @@ def main() -> int:
     appsec = _env("WHATSAPP_APP_SECRET")
     if verify:
         ch = "livecheck123"
-        st, d = _http("GET", f"{SERVER}/api/events/whatsapp/events?hub.mode=subscribe"
-                             f"&hub.verify_token={urllib.parse.quote(verify)}&hub.challenge={ch}")
+        st, d = _http(
+            "GET",
+            f"{SERVER}/api/events/whatsapp/events?hub.mode=subscribe"
+            f"&hub.verify_token={urllib.parse.quote(verify)}&hub.challenge={ch}",
+        )
         got = d.get("_text") if isinstance(d, dict) else str(d)
         ok("correct verify token → echoes challenge", st == 200 and got == ch, f"got {st} {got!r}")
-        st, _ = _http("GET", f"{SERVER}/api/events/whatsapp/events?hub.mode=subscribe"
-                             f"&hub.verify_token=WRONG&hub.challenge=x")
+        st, _ = _http(
+            "GET",
+            f"{SERVER}/api/events/whatsapp/events?hub.mode=subscribe&hub.verify_token=WRONG&hub.challenge=x",
+        )
         ok("wrong verify token → 403", st == 403, f"got {st}")
     else:
         skip("verify handshake", "WHATSAPP_VERIFY_TOKEN not set")
     if appsec:
         # FAKE sender number → no real account is messaged; the inbound path is what we verify.
-        wb = json.dumps({"object": "whatsapp_business_account", "entry": [{"changes": [{"value": {
-            "messaging_product": "whatsapp", "metadata": {"phone_number_id": "TEST"},
-            "messages": [{"from": "15550000000", "id": "wamid.PROBE", "type": "text",
-                          "text": {"body": "signed-webhook-check probe"}}]}}]}]}).encode()
-        st, d = _http("POST", f"{SERVER}/api/events/whatsapp/events", wb,
-                      {"X-Hub-Signature-256": _sig256(appsec, wb), "Content-Type": "application/json"})
+        wb = json.dumps(
+            {
+                "object": "whatsapp_business_account",
+                "entry": [
+                    {
+                        "changes": [
+                            {
+                                "value": {
+                                    "messaging_product": "whatsapp",
+                                    "metadata": {"phone_number_id": "TEST"},
+                                    "messages": [
+                                        {
+                                            "from": "15550000000",
+                                            "id": "wamid.PROBE",
+                                            "type": "text",
+                                            "text": {"body": "signed-webhook-check probe"},
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                ],
+            }
+        ).encode()
+        st, d = _http(
+            "POST",
+            f"{SERVER}/api/events/whatsapp/events",
+            wb,
+            {"X-Hub-Signature-256": _sig256(appsec, wb), "Content-Type": "application/json"},
+        )
         ok("signed inbound (fake #) → 200 accepted", st == 200 and d.get("ok") is True, f"got {st} {d}")
     else:
         skip("signed inbound", "WHATSAPP_APP_SECRET not set")
 
     fails = results.count(False)
-    print(f"\n{'ALL PASSED' if fails == 0 else str(fails) + ' FAILED'} — {results.count(True)}/{len(results)} checks")
+    print(
+        f"\n{'ALL PASSED' if fails == 0 else str(fails) + ' FAILED'} — {results.count(True)}/{len(results)} checks"
+    )
     return 1 if fails else 0
 
 

@@ -86,8 +86,7 @@ def report(remote_agents: list[str] | None = None) -> list[str]:
     if ap and _reachable(f"{ap}/api/v1/flags"):
         ok(
             f"Activepieces reachable ({ap}) — Gmail/Outlook integration triggers available "
-            "(GitHub + Box run direct, AP-free)"
-            + ("" if _native_sched else " + cron/poll via AP schedule")
+            "(GitHub + Box run direct, AP-free)" + ("" if _native_sched else " + cron/poll via AP schedule")
         )
     else:
         no(

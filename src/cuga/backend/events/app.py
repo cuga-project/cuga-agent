@@ -1988,7 +1988,9 @@ def register_events_routes(
             from . import box_direct
 
             st["box"] = "connected" if box_direct.configured() else "not_connected"
-        from . import github_direct as _ghd  # github is ALWAYS direct — its status is the signed-webhook secret
+        from . import (
+            github_direct as _ghd,
+        )  # github is ALWAYS direct — its status is the signed-webhook secret
 
         st["github"] = "connected" if _ghd.webhook_secret() else "not_connected"
         out = []
@@ -2800,8 +2802,14 @@ def register_events_routes(
 
             asyncio.create_task(_bg())
             return JSONResponse(
-                {"ok": True, "accepted": True, "webhook": name, "routed": routed,
-                 "delivered": deliver, "trace_id": tr.id},
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "webhook": name,
+                    "routed": routed,
+                    "delivered": deliver,
+                    "trace_id": tr.id,
+                },
                 202,
             )
 

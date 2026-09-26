@@ -52,12 +52,21 @@ def _box_token() -> "tuple[str, str]":
     ent, usr = _env("BOX_ENTERPRISE_ID"), _env("BOX_USER_ID")
     if cid and csec and (ent or usr):
         sub_type, sub_id = ("user", usr) if usr else ("enterprise", ent)
-        body = urllib.parse.urlencode({
-            "grant_type": "client_credentials", "client_id": cid, "client_secret": csec,
-            "box_subject_type": sub_type, "box_subject_id": sub_id,
-        }).encode()
-        req = urllib.request.Request("https://api.box.com/oauth2/token", data=body, method="POST",
-                                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        body = urllib.parse.urlencode(
+            {
+                "grant_type": "client_credentials",
+                "client_id": cid,
+                "client_secret": csec,
+                "box_subject_type": sub_type,
+                "box_subject_id": sub_id,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            "https://api.box.com/oauth2/token",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
         try:
             with urllib.request.urlopen(req, timeout=25) as r:
                 return json.loads(r.read() or "{}").get("access_token", ""), f"ccg-{sub_type}"
@@ -124,10 +133,16 @@ def main() -> int:
             if fr.status_code == 200:
                 print(f"   watching configured folder {watch} ('{fr.json().get('name')}')")
             else:
-                cr = c.post(f"{API}/folders", headers={**_hb(), "Content-Type": "application/json"},
-                            json={"name": f"cuga-e2e-{int(time.time())}", "parent": {"id": "0"}})
-                check("created a self-owned probe folder (configured folder not accessible)",
-                      cr.status_code in (200, 201), f"folder {watch} → HTTP {fr.status_code}; create → HTTP {cr.status_code}")
+                cr = c.post(
+                    f"{API}/folders",
+                    headers={**_hb(), "Content-Type": "application/json"},
+                    json={"name": f"cuga-e2e-{int(time.time())}", "parent": {"id": "0"}},
+                )
+                check(
+                    "created a self-owned probe folder (configured folder not accessible)",
+                    cr.status_code in (200, 201),
+                    f"folder {watch} → HTTP {fr.status_code}; create → HTTP {cr.status_code}",
+                )
                 if cr.status_code not in (200, 201):
                     return 1
                 watch = cr.json()["id"]

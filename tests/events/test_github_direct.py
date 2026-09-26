@@ -254,9 +254,15 @@ def test_route_matches_an_armed_watch_by_repo_and_dispatches(monkeypatch, tmp_pa
     store = SubscriptionStore(str(tmp_path / "subs.db"))
     store.upsert(
         Subscription(
-            id="pr_reviewer-abc", mode="PUSH", target_agent="pr_reviewer",
-            source_type="integration", source_connector="github", event="new_pr",
-            config={"repo": "octo/demo"}, status="active", ap_flow_id="",
+            id="pr_reviewer-abc",
+            mode="PUSH",
+            target_agent="pr_reviewer",
+            source_type="integration",
+            source_connector="github",
+            event="new_pr",
+            config={"repo": "octo/demo"},
+            status="active",
+            ap_flow_id="",
         )
     )
 
@@ -269,20 +275,31 @@ def test_route_matches_an_armed_watch_by_repo_and_dispatches(monkeypatch, tmp_pa
     monkeypatch.setattr(direct_events, "dispatch_all", _fake_dispatch)
 
     app = FastAPI()
-    register_events_routes(app, runtime=object(), store=store, concierge=None, engine=None, gateway_token="gw")
+    register_events_routes(
+        app, runtime=object(), store=store, concierge=None, engine=None, gateway_token="gw"
+    )
     c = TestClient(app)
 
     def _pr(repo: str, num: int) -> "tuple[int,dict]":
         body = json.dumps(
-            {"action": "opened", "repository": {"full_name": repo},
-             "pull_request": {"number": num, "title": "t"}}
+            {
+                "action": "opened",
+                "repository": {"full_name": repo},
+                "pull_request": {"number": num, "title": "t"},
+            }
         ).encode()
-        r = c.post("/api/events/github/events", data=body,
-                   headers={"X-GitHub-Event": "pull_request", "X-Hub-Signature-256": _sig("s3cr3t", body),
-                            "Content-Type": "application/json"})
+        r = c.post(
+            "/api/events/github/events",
+            data=body,
+            headers={
+                "X-GitHub-Event": "pull_request",
+                "X-Hub-Signature-256": _sig("s3cr3t", body),
+                "Content-Type": "application/json",
+            },
+        )
         return r.status_code, r.json()
 
-    st, d = _pr("octo/demo", 1)         # the watched repo → matches the armed sub
+    st, d = _pr("octo/demo", 1)  # the watched repo → matches the armed sub
     assert st == 200 and d.get("event") == "new_pr" and d.get("matched") == 1, d
-    st, d = _pr("octo/other", 2)        # a different repo → the filter ignores it
+    st, d = _pr("octo/other", 2)  # a different repo → the filter ignores it
     assert st == 200 and d.get("matched") == 0, d
