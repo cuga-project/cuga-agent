@@ -344,14 +344,19 @@ def register_events_routes(
         # 0007); else fall back to headers.
         scope = env.scope
         if not scope and env.source.type == "channel" and identity is not None:
-            from .principal import channel_user_id, resolve_channel
+            from .principal import channel_user_id, resolve_channel, unlinked_principal
 
             nid = channel_user_id(env.source)  # the AUTHOR (per-user), not the channel
             cp = resolve_channel(env.source.name, nid, identity) if nid else None
             if cp is not None:
                 scope = cp.scope
             else:
-                tr("channel.unlinked", channel=env.source.name, native=nid)
+                # ADR 0009 — isolate the unlinked sender by their native id rather than collapsing
+                # onto the shared default identity (which would share memory/creds across senders).
+                up = unlinked_principal(env.source.name, nid) if nid else None
+                if up is not None:
+                    scope = up.scope
+                tr("channel.unlinked", channel=env.source.name, native=nid, isolated=up is not None)
         if not scope:
             scope = resolve_principal(headers=request.headers).scope
         tr(
@@ -870,13 +875,19 @@ def register_events_routes(
         principal = resolve_principal(headers=request.headers)
         _ch = (body or {}).get("channel")
         if isinstance(_ch, dict) and _ch.get("name") and identity is not None:
-            from .principal import resolve_channel
+            from .principal import resolve_channel, unlinked_principal
 
-            _cp = resolve_channel(str(_ch["name"]), str(_ch.get("user") or ""), identity)
+            _nid = str(_ch.get("user") or _ch.get("native_id") or "")  # AUTHOR id, else the chat id
+            _cp = resolve_channel(str(_ch["name"]), _nid, identity)
             if _cp is not None:
                 principal = _cp
             else:
-                tr("channel.unlinked", channel=_ch.get("name"), native=_ch.get("user"))
+                # ADR 0009 — isolate the unlinked sender by their native id (see unlinked_principal);
+                # otherwise a channel arming/chat runs as the shared default user.
+                _up = unlinked_principal(str(_ch["name"]), _nid)
+                if _up is not None:
+                    principal = _up
+                tr("channel.unlinked", channel=_ch.get("name"), native=_nid, isolated=_up is not None)
         # `?flow=1` → also return the flow(s) this utterance armed, so a caller can check the pieces
         # are right without a second round trip to /subscriptions/<id>/flow. `?flow=full` adds the
         # raw Activepieces flow JSON. Off by default: it costs one AP call per new subscription.
@@ -1657,7 +1668,7 @@ def register_events_routes(
         if os.environ.get("EVENTS_BOX_BACKEND") == "direct":
             from . import box_direct
 
-            has_tok = bool(box_direct.token())
+            has_tok = box_direct.configured()  # static token OR CCG creds — not just a pasted dev token
             for r in rows:
                 if r["name"] == "box":
                     r["status"] = "connected" if has_tok else "not_connected"
@@ -1667,9 +1678,25 @@ def register_events_routes(
                         "DIRECT backend — CUGA polls Box with BOX_DEV_TOKEN (no AP, no OAuth). "
                         "Fires via POST /api/events/box/poll; test with live_box_direct_check.py."
                     )
-        # No INTEGRATION auto-connects from an env token any more: github is OAuth (piece-github takes
-        # OAUTH2 only — GITHUB_TOKEN does NOT connect it), gmail/box are OAuth, box-direct uses its own
-        # token path. So an unconnected integration means "connect it" (OAuth consent), never "wait for
+        # DIRECT-backend override: github is ALWAYS direct now (its AP piece is retired for triggers).
+        # The SIGNED webhook is what makes it work, so reflect GITHUB_WEBHOOK_SECRET — an AP-derived
+        # status would wrongly read 'ap_not_configured' for a working direct setup.
+        from . import github_direct as _ghd
+
+        _gh_ok = bool(_ghd.webhook_secret())
+        for r in rows:
+            if r["name"] == "github":
+                r["status"] = "connected" if _gh_ok else "not_connected"
+                r["connected"] = _gh_ok
+                r["backend"] = "direct"
+                r["note"] = (
+                    "DIRECT backend — signed webhook at /api/events/github/events "
+                    "(GITHUB_WEBHOOK_SECRET; 14 triggers, no AP). API read-back: "
+                    + ("configured" if _ghd.configured() else "none (a PAT or App creds are optional)")
+                )
+        # No INTEGRATION auto-connects from an env token any more: gmail is OAuth-on-AP; box and
+        # github run DIRECT (their own secret/token paths above). So an unconnected AP integration
+        # means "connect it" (OAuth consent), never "wait for
         # auto-connect". The env-token auto-connect path now applies only to CHANNELS (telegram/discord
         # bot tokens), which are reported by channels_status, not here.
         return {"integrations": rows}
@@ -1798,7 +1825,7 @@ def register_events_routes(
         mcp = [m if isinstance(m, dict) else str(m) for m in (body.get("mcp_servers") or [])]
         mcp = mcp_catalog.migrate_legacy_names(mcp)  # cuga-web → cuga_web, if a client still sends it
         channels = [str(c) for c in (body.get("channels") or [])]
-        bad_ch = [c for c in channels if c not in ("web", "telegram", "slack", "discord")]
+        bad_ch = [c for c in channels if c not in ("web", "telegram", "slack", "discord", "whatsapp")]
         if bad_ch:
             return None, f"unknown channels: {bad_ch}"
         from . import triggers as _tr
@@ -1960,7 +1987,12 @@ def register_events_routes(
         if os.environ.get("EVENTS_BOX_BACKEND", "").lower() == "direct":  # box direct = a USER token
             from . import box_direct
 
-            st["box"] = "connected" if box_direct.token() else "not_connected"
+            st["box"] = "connected" if box_direct.configured() else "not_connected"
+        from . import (
+            github_direct as _ghd,
+        )  # github is ALWAYS direct — its status is the signed-webhook secret
+
+        st["github"] = "connected" if _ghd.webhook_secret() else "not_connected"
         out = []
 
         def _cred_scope(key: str) -> str:
@@ -2041,6 +2073,66 @@ def register_events_routes(
                 "'your request URL returned an HTTP error'."
             ),
         }
+
+    @app.post("/api/events/github/events")
+    async def github_events(request: Request):
+        """GitHub webhook receiver — ALL 14 github triggers arrive here, AP-free.
+
+        GitHub POSTs every subscribed event to one URL and names the kind in ``X-GitHub-Event``,
+        so this is a signature check plus a dispatch table rather than fourteen endpoints.
+
+        Acks immediately and does the agent work in the background: GitHub marks a delivery failed
+        if we take longer than ~10s, and an agent run is far slower than that.
+        """
+        import asyncio
+
+        from . import direct_events, github_direct
+
+        raw = await request.body()
+        ok, why = github_direct.verify_signature(request.headers, raw)
+        if not ok:
+            Trace(new_trace_id()).error("github.direct", reason=why)
+            return JSONResponse({"ok": False, "error": why}, 401)
+
+        payload = await _safe_json(request) or {}
+        gh_event = (
+            (request.headers.get("x-github-event") or request.headers.get("X-GitHub-Event") or "")
+            .strip()
+            .lower()
+        )
+        # GitHub pings a new webhook once to prove the URL works. Answer it, arm nothing.
+        if gh_event == "ping":
+            return {"ok": True, "pong": True}
+
+        event = github_direct.event_of(request.headers, payload)
+        repo = github_direct.repo_of(payload)
+        tr = Trace(new_trace_id())
+        if not event:
+            # Most deliveries match no watcher — that is normal, not an error.
+            tr("github.direct", gh_event=gh_event, repo=repo, matched=0, mapped=False)
+            return {"ok": True, "ignored": gh_event}
+
+        subs = direct_events.match(
+            store, "github", event, repo=repo, text=github_direct.summarize(gh_event, payload)
+        )
+        # new_gh_mention is a CONTENT match, not an event-type one: any commentable event whose
+        # body @-mentions the watched login counts.
+        if gh_event in github_direct._MENTIONABLE:
+            for sub in direct_events.match(store, "github", "new_gh_mention", repo=repo):
+                login = str((sub.config or {}).get("login") or (sub.config or {}).get("user") or "")
+                if github_direct.mentions(payload, login) and sub not in subs:
+                    subs.append(sub)
+
+        if subs:
+            tr("github.direct", gh_event=gh_event, event=event, repo=repo, matched=len(subs))
+            enriched = dict(payload)
+            enriched["_summary"] = github_direct.summarize(gh_event, payload)
+            asyncio.create_task(
+                direct_events.dispatch_all(subs, app="github", event=event, payload=enriched, engine=engine)
+            )
+        else:
+            tr("github.direct", gh_event=gh_event, event=event, repo=repo, matched=0)
+        return {"ok": True, "event": event, "matched": len(subs)}
 
     @app.post("/api/events/slack/events")
     async def slack_events(request: Request):
@@ -2211,6 +2303,77 @@ def register_events_routes(
         except Exception as e:  # noqa: BLE001
             tr.error("slack", err=str(e))
 
+    # --- DIRECT WhatsApp (Meta Cloud API; AP's piece has no inbound trigger) -----------------------
+    @app.get("/api/events/whatsapp/events")
+    async def whatsapp_verify(request: Request):
+        """Meta's webhook verification handshake.
+
+        Unlike Slack (which handshakes over POST with a JSON body), Meta sends a GET carrying
+        ``hub.mode``/``hub.verify_token``/``hub.challenge`` and expects the challenge echoed as
+        PLAIN TEXT. So this is a real handler, not the friendly "you opened this in a browser" probe
+        the Slack route serves — returning JSON here fails verification.
+        """
+        from . import whatsapp_direct
+
+        ok, val = whatsapp_direct.handshake(request.query_params)
+        if not ok:
+            Trace(new_trace_id()).error("whatsapp", reason=val)
+            return JSONResponse({"ok": False, "error": val}, 403)
+        return PlainTextResponse(val)
+
+    @app.post("/api/events/whatsapp/events")
+    async def whatsapp_events(request: Request):
+        """Inbound WhatsApp messages. Verifies the signature, then answers each message through
+        CUGA's door in the background (Meta retries anything not acked promptly).
+
+        WhatsApp is 1:1 by construction — a conversation IS one human — so the wa_id is both the
+        delivery address and the per-user native id. That makes identity unambiguous here in a way
+        it never is on Slack, where many humans share one channel.
+        """
+        import asyncio
+
+        import json as _json
+
+        from . import whatsapp_direct
+
+        raw = await request.body()
+        ok_sig, why = whatsapp_direct.verify_signature(request.headers, raw)
+        if not ok_sig:
+            Trace(new_trace_id()).error("whatsapp", reason=why)
+            return JSONResponse({"ok": False, "error": why}, 401)
+        try:
+            body = _json.loads(raw.decode("utf-8", "replace") or "{}")
+        except Exception:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": "bad json"}, 400)
+        msgs = whatsapp_direct.messages(body)
+        for m in msgs:
+            # Record BEFORE answering: this is what opens the 24-hour free-form window, and the
+            # reply we are about to send depends on it.
+            whatsapp_direct.note_inbound(m["wa_id"])
+            asyncio.create_task(_whatsapp_answer(m["text"], m["wa_id"]))
+        if msgs:
+            Trace(new_trace_id())("whatsapp.direct", messages=len(msgs))
+        return {"ok": True, "messages": len(msgs)}
+
+    async def _whatsapp_answer(text: str, wa_id: str) -> None:
+        """Route a WhatsApp message through CUGA's /run and reply to the same number.
+
+        CUGA IS THE DOOR: this adapter owns the Cloud API token and nothing else. There is no
+        ``locus`` — WhatsApp has no threads, so the conversation is the person.
+        """
+        from . import cuga_door, whatsapp_direct
+
+        tr = Trace(new_trace_id())
+        try:
+            answer = await cuga_door.ask(text, channel="whatsapp", native_id=wa_id, user=wa_id, locus="")
+            if answer:
+                res = await whatsapp_direct.send_message(wa_id, answer)
+                tr("whatsapp.reply", ok=res.get("ok"), mode=res.get("mode") or "text")
+            else:
+                tr.error("whatsapp", reason="no answer from CUGA /run")
+        except Exception as e:  # noqa: BLE001
+            tr.error("whatsapp", err=str(e))
+
     # --- DIRECT Box (OAuth-free watcher; polls Box's API with a token) -----------------------------
     @app.post("/api/events/box/poll")
     async def box_poll(request: Request):
@@ -2352,12 +2515,19 @@ def register_events_routes(
             return JSONResponse(
                 {"ok": False, "error": f"no trigger for source={source!r} event={body.get('event')!r}"}, 404
             )
-        if row.backend != "ap":
+        # Synth-fire needs a payload we can fabricate faithfully. That is a property of the
+        # TRIGGER SHAPE, not of the backend: a webhook-shaped trigger carries the real provider
+        # body in `row.synth`, so injecting it exercises the true path minus the HTTP hop.
+        #
+        # This used to refuse everything non-AP, which was right when "direct" meant only sockets
+        # and pollers. GitHub is direct now and still webhook-shaped (fire="synth"), and refusing
+        # it would have silently dropped 14 triggers out of the e2e harness.
+        if row.fire != "synth":
             return JSONResponse(
                 {
                     "ok": False,
-                    "error": f"{row.app}/{row.event} is a DIRECT trigger — "
-                    "fire it through its real transport (or /api/events/box/poll for box)",
+                    "error": f"{row.app}/{row.event} cannot be synth-fired — it arrives on a live "
+                    "transport (socket/poll). Drive it for real, or use /api/events/box/poll for box.",
                 },
                 400,
             )
@@ -2606,9 +2776,46 @@ def register_events_routes(
             "source": src,
             "event": {"kind": "message", "payload": payload if isinstance(payload, dict) else {}},
         }
+        import asyncio
+
+        async def _run(timeout: float) -> "httpx.Response":
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                return await c.post(
+                    f"http://127.0.0.1:{port}/invoke", headers={"X-Gateway-Token": gw}, json=inv
+                )
+
+        # ACK-FAST BY DEFAULT. A webhook caller (CI, monitoring, a form, a payment provider) expects a
+        # quick 2xx; a real agent run is far too slow to hold the connection for, so a synchronous
+        # reply makes the caller time out and RETRY — duplicate fires, or a fire the caller believes
+        # failed. So we ack 202 immediately and run the agent in the background (the GitHub/Slack
+        # receivers above do exactly this). The result reaches the operator via ?deliver_to=<channel>,
+        # or the run log/inbox otherwise. `?wait=1` opts into the old synchronous behaviour for a
+        # scripted caller that wants the agent's answer inline in the HTTP response.
+        wait = (request.query_params.get("wait") or "").strip().lower() in ("1", "true", "yes", "sync")
+        if not wait:
+
+            async def _bg() -> None:
+                try:
+                    await _run(600.0)
+                except Exception as e:  # noqa: BLE001 — no caller to return to; log and move on
+                    tr.error("hook", err=str(e))
+
+            asyncio.create_task(_bg())
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "webhook": name,
+                    "routed": routed,
+                    "delivered": deliver,
+                    "trace_id": tr.id,
+                },
+                202,
+            )
+
+        # ?wait=1 — synchronous: block for the agent run and return its answer.
         try:
-            async with httpx.AsyncClient(timeout=180) as c:
-                r = await c.post(f"http://127.0.0.1:{port}/invoke", headers={"X-Gateway-Token": gw}, json=inv)
+            r = await _run(600.0)
             j = r.json() if r.status_code == 200 else {}
         except Exception as e:  # noqa: BLE001
             tr.error("hook", err=str(e))

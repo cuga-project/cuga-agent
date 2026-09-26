@@ -51,6 +51,10 @@ export EVENTS_SCHEDULER="${EVENTS_SCHEDULER:-native}"
 export EVENTS_TELEGRAM_BACKEND="${EVENTS_TELEGRAM_BACKEND:-direct}"
 export EVENTS_DISCORD_BACKEND="${EVENTS_DISCORD_BACKEND:-direct}"
 export EVENTS_SLACK_BACKEND="${EVENTS_SLACK_BACKEND:-direct}"
+# Box, direct via client-credentials (PR #604) — AP is Box's code default, so on this AP-free
+# deploy it must be opted in explicitly or Box triggers fall back to AP and go dark. (github is
+# already hardcoded backend="direct" in triggers.py and needs no switch.)
+export EVENTS_BOX_BACKEND="${EVENTS_BOX_BACKEND:-direct}"
 # The registry inside the container points at the already-deployed remote MCP servers.
 export MCP_SERVERS_FILE_IN_IMAGE="${MCP_SERVERS_FILE_IN_IMAGE:-/app/src/cuga/backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml}"
 
