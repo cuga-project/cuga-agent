@@ -1203,7 +1203,8 @@ result = await agent.invoke("...", execution_mode="codeact")   # per-call overri
 - **Tool-approval policies**: function-calling mode has no approval interrupt yet. If an enabled tool-approval policy exists — or policy storage cannot be checked — the run stops with a clear error before any tool runs (fail closed); use `codeact` for that agent or disable the policy.
 - Bind mode `none` (the default) is upgraded in function-calling mode to advertise exactly the tools the sandbox could call. Past `cuga_lite_bind_tools_max_count` (128) the bind-cap shortlister runs every turn; `[shortlister.bind_cap] strategy = "embedding"` avoids the extra LLM call.
 - The bundled CodeAct few-shot demos are not sent in function-calling mode; pass your own through `configurable["mcp_few_shot_examples"]`.
-- Tools run in-process and sequentially. The pre-execute VERIFY gate, reflection and the E2B / OpenSandbox executors are CodeAct-only; step discipline caps local-executor blocks only.
+- Tools run in-process and sequentially. Each call is bounded by `sandbox_execution_timeout` (the timeout is per call, so a turn with N calls can take up to N × that). The pre-execute VERIFY gate, reflection and the E2B / OpenSandbox executors are CodeAct-only; step discipline caps local-executor blocks only.
+- Function-calling needs tools bound natively: if `bind_tools` fails or the model does not support it, or the agent has no executable tools, the run stops with a clear error (fail closed) instead of silently answering without tools. A static prompt is ignored in this mode.
 - A thread can switch modes between turns: results from function-calling turns are shown to a later CodeAct turn as text.
 
 </details>

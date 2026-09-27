@@ -17,13 +17,23 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import FC_TOO
 pytestmark = pytest.mark.unit
 
 
+class _Bound:
+    """What ``bind_tools`` returns: a runnable wrapping the model."""
+
+    def __init__(self, model):
+        self._model = model
+
+    async def ainvoke(self, messages, config=None, **kwargs):
+        return await self._model.ainvoke(messages, config=config, **kwargs)
+
+
 class _ScriptedModel:
     def __init__(self, responses):
         self._responses = list(responses)
         self.invocations = 0
 
     def bind_tools(self, tools, **kwargs):
-        return self
+        return _Bound(self)  # a real bind returns a new runnable, never the model itself
 
     async def ainvoke(self, messages, config=None, **kwargs):
         self.invocations += 1

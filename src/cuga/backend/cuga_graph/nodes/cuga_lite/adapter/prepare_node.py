@@ -764,10 +764,16 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # Create prompt dynamically
         dynamic_prompt = adapter._static_prompt
 
-        if not dynamic_prompt and _execution_mode == EXECUTION_MODE_FUNCTION_CALLING:
+        if _execution_mode == EXECUTION_MODE_FUNCTION_CALLING:
             # Function-calling mode: the CodeAct prompt is never rendered. Tools
             # travel natively via bind_tools, so this prompt is only the behavioural
-            # contract plus the same instructions / special_instructions.
+            # contract plus the same instructions / special_instructions. A static
+            # prompt is ignored here: it is CodeAct-shaped and would tell the model
+            # to write the very fences this mode treats as violations.
+            if dynamic_prompt:
+                logger.warning(
+                    "Function-calling mode ignores the static prompt and renders the FC prompt instead"
+                )
             _fragments = resolve_fc_prompt_fragments(configurable, _runtime_model_name)
             _one_per_step = (
                 resolve_step_discipline(configurable, _runtime_model_name)
@@ -823,11 +829,6 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 len(dynamic_prompt),
             )
         else:
-            if _execution_mode == EXECUTION_MODE_FUNCTION_CALLING:
-                logger.warning(
-                    "Function-calling mode with a static prompt: the prompt is used verbatim; "
-                    "make sure it does not instruct the model to write code"
-                )
             logger.info(
                 "Using static CugaLite prompt; dynamic few-shot injection skipped "
                 "(enable_find_tools={} few_shot_turns={})",

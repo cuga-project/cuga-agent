@@ -254,9 +254,25 @@ def create_tool_exec_node(adapter: Any) -> Callable:
             # handling must still report the budget the batch spent, or the
             # checkpoint keeps the pre-batch counts (see _budget_updates).
             logger.error(f"tool_exec failed: {exc}")
+            # Tools may already have run: keep their replies, and answer every id
+            # the batch never reached, so the persisted turn has no dangling call.
+            answered = {m.tool_call_id for m in results}
+            replies = list(results)
+            for index, call in enumerate(list(calls) + list(invalid)):
+                call_id, name, _ = _tool_call_parts(call)
+                call_id = call_id or f"call_{index}"
+                if call_id not in answered:
+                    answered.add(call_id)
+                    replies.append(
+                        _error_message(
+                            f"Not executed: tool execution failed before this call ran ({exc}).",
+                            call_id=call_id,
+                            name=name,
+                        )
+                    )
             return core_create_error_command(
                 adapter,
-                adapter.get_messages(state),
+                adapter.get_messages(state) + replies,
                 AIMessage(content=f"Error during tool execution: {exc}"),
                 state.step_count,
                 additional_updates={

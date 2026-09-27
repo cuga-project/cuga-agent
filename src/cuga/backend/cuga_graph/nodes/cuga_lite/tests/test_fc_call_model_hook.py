@@ -26,6 +26,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import TOOL_BUDGET_EXHAUSTED_INSTRUCTION
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter import graph_adapter as ga
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import (
+    FC_BIND_FAILED,
     FC_BUDGET_CALL_REPLY,
     FC_MODE_VIOLATION_CORRECTION,
     FC_STEP_LIMIT_CALL_REPLY,
@@ -39,6 +40,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import (
 pytestmark = pytest.mark.unit
 
 FC = {"cuga_lite_execution_mode": "function_calling"}
+_UNBOUND = object()
 _CALL = {"name": "add", "args": {"a": 1, "b": 2}, "id": "c1", "type": "tool_call"}
 
 
@@ -81,7 +83,7 @@ async def _turn(
         state=state,
         config=None,
         configurable=configurable,
-        active_model=model,
+        active_model=_UNBOUND,  # what call_model passes when bind_tools succeeded: bound is not the model
         bound=model,
         invoke_config={},
         system_content=system,
@@ -327,14 +329,15 @@ async def test_bind_mode_is_upgraded_from_none_only_in_function_calling_mode():
 
     with patch.object(ga, "resolve_model_with_bind_tools", new=AsyncMock(side_effect=fake_resolve)):
         adapter = _adapter()
-        assert await adapter.resolve_bind_tools(_state(), object(), dict(FC), None) == "BOUND"
+        # No executable set recorded: bind nothing (the turn then fails closed) rather
+        # than open the registry-wide catalogue to tools tool_exec cannot run.
+        assert await adapter.resolve_bind_tools(_state(), object(), dict(FC), None) is None
         await adapter.resolve_bind_tools(
             _state(), object(), {**FC, "cuga_lite_bind_tools_mode": "find_tools"}, None
         )
         await adapter.resolve_bind_tools(_state(), object(), {}, None)
 
-    fc_default, fc_explicit, codeact = captured
-    assert fc_default["cuga_lite_bind_tools_mode"] == "all", "FC is inert without advertised tools"
+    fc_explicit, codeact = captured
     assert fc_explicit["cuga_lite_bind_tools_mode"] == "find_tools", "an explicit choice is respected"
     assert "cuga_lite_bind_tools_mode" not in codeact, "codeact is byte-identical"
 
@@ -394,3 +397,61 @@ async def test_guard_asks_storage_strictly_so_a_backend_failure_is_not_an_empty_
     ):
         assert await _adapter()._tool_approval_policies_exist({}) is False
     assert calls and calls[0]["strict"] is True
+
+
+@pytest.mark.asyncio
+async def test_refuses_when_no_tools_are_bound():
+    """bind_tools failed / unsupported / nothing to bind: call_model hands the unbound model
+    through. Native tool calling is impossible, so stop — do not degrade to text."""
+    model = _Model(AIMessage(content="", tool_calls=[_CALL]))
+    cmd = await _adapter().execute_call_model_fc(
+        state=_state(),
+        config=None,
+        configurable=FC,
+        active_model=model,
+        bound=model,  # `resolve_bind_tools(...) or active_model` fell back
+        invoke_config={},
+        system_content="SYS",
+        modified_messages=[HumanMessage(content="q")],
+        budget_exhausted=False,
+        playbook_fired=False,
+    )
+    assert cmd.goto == END and cmd.update["error"] == FC_BIND_FAILED and model.seen == []
+
+
+@pytest.mark.asyncio
+async def test_budget_exhausted_grace_turn_runs_unbound_on_purpose():
+    """The grace turn deliberately withholds tools, so an unbound model is not a failure there."""
+    model = _Model(AIMessage(content="From what I have: 3."))
+    cmd = await _adapter().execute_call_model_fc(
+        state=_state(),
+        config=None,
+        configurable=FC,
+        active_model=model,
+        bound=model,
+        invoke_config={},
+        system_content="SYS",
+        modified_messages=[HumanMessage(content="q")],
+        budget_exhausted=True,
+        playbook_fired=False,
+    )
+    assert cmd.goto == END and cmd.update["final_answer"] == "From what I have: 3."
+
+
+@pytest.mark.asyncio
+async def test_mode_violation_is_corrected_once_then_the_fence_is_delivered():
+    fence = "```python\nawait add(a=1, b=2)\n```"
+    first = await _turn(_adapter(), _Model(AIMessage(content=fence)), _state(), FC)
+    assert first.goto == "call_model" and first.update["cuga_lite_metadata"]["fc_mode_violations"] == 1
+
+    again = _state(metadata={"fc_mode_violations": 1})
+    second = await _turn(_adapter(), _Model(AIMessage(content=fence)), again, FC)
+    assert second.goto == END, "one correction only — never a loop to cuga_lite_max_steps"
+    assert second.update["final_answer"] == fence
+
+
+@pytest.mark.asyncio
+async def test_non_python_fences_in_an_answer_are_not_violations():
+    answer = "Here is the record:\n```json\n{\"id\": 42}\n```"
+    cmd = await _turn(_adapter(), _Model(AIMessage(content=answer)), _state(), FC)
+    assert cmd.goto == END and cmd.update["final_answer"] == answer

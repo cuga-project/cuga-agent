@@ -414,6 +414,35 @@ async def test_unexpected_failure_after_the_batch_still_reports_the_budget(monke
     assert "history store unavailable" in result.update["error"]
     assert result.update["tool_calls_used_run"] == 1, "the call that ran must still be counted"
     assert ToolCallTracker.is_enabled() is False
+    replies = [m for m in result.update["chat_messages"] if isinstance(m, ToolMessage)]
+    assert [(m.tool_call_id, m.content) for m in replies] == [("c1", "2")], (
+        "the executed call's reply is kept"
+    )
+
+
+@pytest.mark.asyncio
+async def test_outer_guard_answers_the_calls_the_batch_never_reached(monkeypatch):
+    _caps(monkeypatch)
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter import tool_exec_node as mod
+
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    async def broken_batch(adapter, calls, invalid, results, **kwargs):
+        results.append(ToolMessage(content="2", tool_call_id="c1", name="add"))
+        raise RuntimeError("executor died")
+
+    monkeypatch.setattr(mod, "_run_batch", broken_batch)
+    node = create_tool_exec_node(_Adapter({"add": add}))
+    last = AIMessage(
+        content="", tool_calls=[_call("add", {"a": 1, "b": 1}, "c1"), _call("add", {"a": 2, "b": 2}, "c2")]
+    )
+
+    result = await node(_state(last), config=None)
+
+    replies = {m.tool_call_id: m for m in result.update["chat_messages"] if isinstance(m, ToolMessage)}
+    assert replies["c1"].content == "2"
+    assert replies["c2"].status == "error" and "executor died" in replies["c2"].content, "no dangling id"
 
 
 @pytest.mark.asyncio

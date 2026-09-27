@@ -7,6 +7,7 @@ logic live in ``prepare_node.py`` and ``sandbox_node.py``.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -73,6 +74,12 @@ FC_TOOL_APPROVAL_UNSUPPORTED = (
 FC_TOOL_APPROVAL_UNVERIFIED = (
     "Function-calling mode could not verify whether a tool-approval policy exists ({error}). "
     "It fails closed: no tool ran. Fix policy storage, or use cuga_lite_execution_mode = \"codeact\"."
+)
+
+FC_BIND_FAILED = (
+    "Function-calling mode could not advertise any tool natively (bind_tools failed or is unsupported "
+    "by this model, or there is no executable tool to bind), so no native tool call is possible. "
+    'It fails closed: no model call was made. Use cuga_lite_execution_mode = "codeact" for this model.'
 )
 
 FC_STEP_LIMIT_CALL_REPLY = "Not executed: the step limit was reached before this call could run."
@@ -197,6 +204,22 @@ def _normalize_history_for_replay(messages: List[Any]) -> List[BaseMessage]:
             out.append(HumanMessage(content=text))
     close_pending()
     return out
+
+
+_PYTHON_FENCE = re.compile(r"```(?:python|py)\b", re.IGNORECASE)
+_UNTAGGED_FENCE = re.compile(r"```[ \t]*\n(.*?)```", re.DOTALL)
+
+
+def _looks_like_python_block(content: str) -> bool:
+    """A fenced block the CodeAct sandbox would have executed.
+
+    A ``python``/``py`` fence, or an untagged fence whose body awaits or calls
+    something. Fences carrying JSON, text or shell output in a final answer are
+    not violations.
+    """
+    if _PYTHON_FENCE.search(content):
+        return True
+    return any(re.search(r"\bawait\b|\w+\(", body) for body in _UNTAGGED_FENCE.findall(content))
 
 
 def _few_shot_to_messages(few_shot: List[Any]) -> List[BaseMessage]:
@@ -350,10 +373,11 @@ class AgentGraphAdapter(CoreGraphAdapter):
                         "[fc] bind_tools mode was 'none'; advertising the {} executable tool(s)", len(names)
                     )
                 else:
-                    configurable = {**(configurable or {}), "cuga_lite_bind_tools_mode": "all"}
-                    logger.info(
-                        "[fc] bind_tools mode was 'none'; upgraded to 'all' for function-calling mode"
-                    )
+                    # Nothing executable was recorded: advertising the full catalogue
+                    # would offer tools tool_exec cannot run. Bind nothing; the turn
+                    # then fails closed in execute_call_model_fc.
+                    logger.error("[fc] no executable tools recorded by prepare; binding nothing")
+                    return None
         try:
             return await resolve_model_with_bind_tools(
                 active_model,
@@ -537,6 +561,13 @@ class AgentGraphAdapter(CoreGraphAdapter):
                     self, history, AIMessage(content=blocked_reason), state.step_count
                 )
 
+        if not budget_exhausted and bound is active_model:
+            # bind_tools failed, is unsupported by the model, or had nothing to bind —
+            # call_model fell back to the unbound model. That run cannot make a native
+            # tool call, so stop with a clear error instead of degrading to text.
+            logger.error("[fc] refusing to start: no tools are bound to the model")
+            return create_error_command(self, history, AIMessage(content=FC_BIND_FAILED), state.step_count)
+
         msgs: List[BaseMessage] = [SystemMessage(content=system_content)]
         msgs.extend(_few_shot_to_messages(self.get_few_shot_messages(state)))
         msgs.extend(_normalize_history_for_replay(history))
@@ -643,11 +674,16 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 },
             )
 
-        if "```" in content and not budget_exhausted:
-            # Mode violation: never execute code here. One corrective turn, charged
-            # as a step so it cannot loop past cuga_lite_max_steps.
-            violations = int(base_meta.get("fc_mode_violations", 0) or 0) + 1
-            logger.warning("[fc] mode violation #{}: code block emitted in function-calling mode", violations)
+        prior_violations = int(base_meta.get("fc_mode_violations", 0) or 0)
+        if _looks_like_python_block(content) and not budget_exhausted and prior_violations == 0:
+            # Mode violation: never execute code here. Exactly one corrective turn
+            # (charged as a step); a second fence is delivered as the answer, so a
+            # fence-happy model cannot loop to cuga_lite_max_steps. Only Python
+            # blocks count — a ```json or ```text snippet in an answer is fine.
+            violations = prior_violations + 1
+            logger.warning(
+                "[fc] mode violation: python block emitted in function-calling mode — one corrective turn"
+            )
             return Command(
                 goto="call_model",
                 update={

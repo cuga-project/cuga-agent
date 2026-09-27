@@ -21,13 +21,23 @@ pytestmark = pytest.mark.unit
 CALLS: list = []
 
 
+class _Bound:
+    """What ``bind_tools`` returns: a runnable wrapping the model."""
+
+    def __init__(self, model):
+        self._model = model
+
+    async def ainvoke(self, messages, config=None, **kwargs):
+        return await self._model.ainvoke(messages, config=config, **kwargs)
+
+
 class _ScriptedModel:
     def __init__(self, responses):
         self._responses = list(responses)
         self.seen: list = []
 
     def bind_tools(self, tools, **kwargs):
-        return self
+        return _Bound(self)  # a real bind returns a new runnable, never the model itself
 
     async def ainvoke(self, messages, config=None, **kwargs):
         self.seen.append(list(messages))
@@ -98,6 +108,11 @@ async def test_second_turn_replays_a_valid_function_calling_transcript():
     assert all(type(m) is not BaseMessage for m in outbound), (
         f"bare BaseMessage replayed to the provider: {shapes}"
     )
+    # Native transcript, not a flattened one: turn 1's call and its reply survive the SDK boundary as-is.
+    ai_turn1 = [m for m in outbound if isinstance(m, AIMessage) and m.tool_calls]
+    assert ai_turn1 and ai_turn1[0].tool_calls[0]["id"] == "call_1", shapes
+    tool_turn1 = [m for m in outbound if isinstance(m, ToolMessage)]
+    assert tool_turn1 and tool_turn1[0].tool_call_id == "call_1" and tool_turn1[0].content == "7", shapes
     ai_with_calls = [m for m in outbound if isinstance(m, AIMessage) and m.tool_calls]
     tool_replies = [m for m in outbound if isinstance(m, ToolMessage)]
     dangling = {c["id"] for m in ai_with_calls for c in m.tool_calls} - {t.tool_call_id for t in tool_replies}

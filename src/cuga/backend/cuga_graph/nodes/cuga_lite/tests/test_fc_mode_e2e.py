@@ -33,6 +33,14 @@ pytestmark = pytest.mark.unit
 CALLS: list = []
 
 
+class _Bound:
+    def __init__(self, model):
+        self._model = model
+
+    async def ainvoke(self, messages, config=None, **kwargs):
+        return await self._model.ainvoke(messages, config=config, **kwargs)
+
+
 class _ScriptedModel:
     """Queued responses; an entry may be a callable that receives the outbound messages."""
 
@@ -44,7 +52,7 @@ class _ScriptedModel:
 
     def bind_tools(self, tools, **kwargs):
         self.bound_tool_names = [getattr(t, "name", str(t)) for t in tools]
-        return self
+        return _Bound(self)  # a real bind returns a new runnable, never the model itself
 
     async def ainvoke(self, messages, config=None, **kwargs):
         self.invocations += 1
@@ -293,3 +301,22 @@ async def test_bundled_codeact_few_shots_are_withheld_in_fc_mode():
         _echo_tool(),
     )
     assert [m.content for m in explicit.seen[0][1:3]] == ["demo q", "demo a"], "explicit demos still replayed"
+
+
+@pytest.mark.asyncio
+async def test_static_prompt_is_ignored_in_fc_mode():
+    """A static prompt is CodeAct-shaped; used verbatim it would ask for the fences FC treats as violations."""
+    model = _ScriptedModel([AIMessage(content="done")])
+    graph = create_cuga_lite_graph(
+        model=model,
+        prompt="You are a coder. Always answer with a ```python block.",
+        tool_provider=_provider(_echo_tool()),
+        apps_list=[],
+        thread_id="t",
+    ).compile(checkpointer=MemorySaver())
+    result = await graph.ainvoke(
+        CugaLiteState(chat_messages=[HumanMessage(content="hi")]),
+        config=_config("fc-static", cuga_lite_execution_mode="function_calling"),
+    )
+    assert "native function-calling" in result["prepared_prompt"]
+    assert "Always answer with a ```python block" not in result["prepared_prompt"]
