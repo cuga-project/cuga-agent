@@ -84,7 +84,7 @@ from cuga.backend.server.workspace_sandbox import (
     workspace_tree_is_sandbox_backed,
 )
 from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
-from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled
+from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled, has_manage_access
 from cuga.backend.server.auth.models import TokenResponse, UserInfo
 from cuga.backend.server.tool_guard_generation import (
     build_tool_guard_generation_agent,
@@ -1140,6 +1140,11 @@ async def lifespan(app: FastAPI):
     # never blocks startup on failure.
     await warm_shortlister_catalogue()
 
+    if settings.evolve.enabled:
+        from cuga.backend.evolve.deleted_sources import source_deletion_delivery_loop
+
+        app_state.background_tasks.append(asyncio.create_task(source_deletion_delivery_loop()))
+
     yield
     logger.info("Application is shutting down...")
 
@@ -1550,6 +1555,7 @@ async def event_stream(
     from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
     from langchain_core.messages import AIMessage
 
+    memory_turn_id = str(uuid.uuid4()) if not resume else ""
     run_agent = agent if agent is not None else app_state.agent
     runtime_agent_id = agent_id or app_state.agent_id
     if current_llm is _RUNTIME_LLM_UNSET:
@@ -1624,7 +1630,10 @@ async def event_stream(
                 local_state.thread_id = thread_id
 
     if local_state:
+        if resume:
+            memory_turn_id = str((local_state.service_scope or {}).get("memory_turn_id") or "")
         apply_request_user_context(local_state, user_id)
+        local_state.service_scope.update({"agent_id": runtime_agent_id, "memory_turn_id": memory_turn_id})
         # Route this run to the CugaSupervisor node when the resolved agent is a supervisor
         # graph (issue #101). Only override when True so non-supervisor agents keep falling
         # back to the global settings.supervisor.enabled default.
@@ -1871,6 +1880,19 @@ async def event_stream(
                             }
                             if event.sources:
                                 answer_payload["sources"] = event.sources
+                            if settings.evolve.enabled and memory_turn_id:
+                                from cuga.backend.evolve.memory_store import get_turn_memory_usage
+
+                                try:
+                                    memory_usage = await get_turn_memory_usage(
+                                        turn_id=memory_turn_id,
+                                        agent_id=runtime_agent_id,
+                                        user_id=user_id,
+                                    )
+                                    if memory_usage["count"]:
+                                        answer_payload["memory_usage"] = memory_usage
+                                except Exception as exc:
+                                    logger.warning(f"Memory usage disclosure unavailable (non-fatal): {exc}")
                             final_answer_text = json.dumps(answer_payload)
                         else:
                             final_answer_text = "Done."
@@ -2068,8 +2090,10 @@ app.state.draft_app_state = draft_app_state
 # Register knowledge routes at module level (engine initialized in lifespan).
 # _get_engine() in routes.py returns 503 if engine isn't initialized yet.
 from cuga.backend.knowledge.routes import knowledge_router  # noqa: E402
+from cuga.backend.server.memory_routes import router as memory_router  # noqa: E402
 
 app.include_router(knowledge_router)
+app.include_router(memory_router)
 _cors_origins = (
     ["https://localhost:7860", "https://localhost:3002"]
     if (getattr(settings, "auth", None) and getattr(settings.auth, "enabled", False))
@@ -2205,6 +2229,7 @@ async def ui_config():
                 else ""
             ),
             "agent_registry": agent_registry.is_agent_registry_enabled(),
+            "evolve_memory_enabled": bool(settings.evolve.enabled),
         }
     )
 
@@ -2419,8 +2444,8 @@ async def auth_userinfo(request: Request):
     if _auth_enabled() and user is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     if user is None:
-        return JSONResponse({"sub": DEFAULT_USER_ID})
-    return JSONResponse(user.model_dump())
+        return JSONResponse({"sub": DEFAULT_USER_ID, "can_manage": True})
+    return JSONResponse(user.model_dump() | {"can_manage": has_manage_access(user)})
 
 
 if getattr(settings.advanced_features, "use_extension", False):

@@ -791,7 +791,15 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                         thread_id=p.thread(origin),
                         prompt=prompt,
                         dedup_key=dedup_key,
-                        flow_name=f"direct-{base_app}-{(event or 'default').replace('_', '-')}-{agent}",
+                        # Reuse off (dedup_key == "") ⇒ these two arms are INTENTIONALLY distinct
+                        # subscriptions; give each a unique flow_name so arming the same direct
+                        # watcher twice keeps BOTH (mirrors the push path below). Reuse ON keeps the
+                        # deterministic name for dedup display. Matters now that github is a direct
+                        # backend — a github push arm reaches this path, not the AP push path.
+                        flow_name=(
+                            f"direct-{base_app}-{(event or 'default').replace('_', '-')}-{agent}"
+                            + (f"-{uuid.uuid4().hex[:6]}" if not dedup_key else "")
+                        ),
                         event=event or "",
                         config=config,
                     )

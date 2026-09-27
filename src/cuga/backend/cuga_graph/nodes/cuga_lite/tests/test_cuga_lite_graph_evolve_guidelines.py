@@ -85,7 +85,7 @@ async def test_cuga_lite_evolve_guidelines_are_injected_independently_of_legacy_
 
 
 @pytest.mark.asyncio
-async def test_multi_user_params_flow_end_to_end():
+async def test_multi_user_params_flow_end_to_end(monkeypatch):
     """Verify user_id, namespace_id, and session_id are passed to get_guidelines during graph execution.
 
     This test verifies that multi-user parameters from state are correctly extracted
@@ -98,6 +98,7 @@ async def test_multi_user_params_flow_end_to_end():
         apps_list=[],
     ).compile()
 
+    monkeypatch.setenv("DYNACONF_SERVICE__INSTANCE_ID", "inst-1")
     state = CugaLiteState(
         chat_messages=[HumanMessage(content="fetch all users")],
         sub_task="fetch all users",
@@ -133,7 +134,7 @@ async def test_multi_user_params_flow_end_to_end():
     mock_get_guidelines.assert_awaited_once_with(
         "fetch all users",
         user_id="user-123",
-        namespace_id="tenant-789",
+        namespace_id="inst-1",
         session_id="thread-456",
     )
 
