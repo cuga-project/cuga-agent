@@ -336,7 +336,26 @@ test-e2e-ce: ## [CE] Parallel of test-e2e — the REAL channel + fire e2e agains
 	@test -n "$(CE_URL)" || { echo "no CE URL — deploy first: make ce-deploy"; exit 1; }
 	@echo "── e2e against CE: $(CE_URL)   (creds + GATEWAY_TOKEN from .env; must match the deployed secret) ──"
 	EVENTS_SERVER_URL=$(CE_URL) EVENTS_SCHEDULER=native $(PY) tests/events/live_e2e.py $(ARGS)
-	EVENTS_SERVER_URL=$(CE_URL) EVENTS_SCHEDULER=native $(PY) tests/events/live_fire.py --only cron poll $(ARGS)
+
+test-webhooks-ce: ## [CE] Signed-webhook integration check (generic hook + GitHub + WhatsApp) against DEPLOYED app
+	@test -n "$(CE_URL)" || { echo "no CE URL — deploy first: make ce-deploy"; exit 1; }
+	@echo "── signed-webhook check against CE: $(CE_URL)   (secrets from .env; must match the deployed secret) ──"
+	EVENTS_SERVER_URL=$(CE_URL) $(PY) tests/events/live_signed_webhooks_check.py
+
+test-github-e2e-ce: ## [CE] REAL github PR → armed watcher fire (direct path) against DEPLOYED app
+	@test -n "$(CE_URL)" || { echo "no CE URL — deploy first: make ce-deploy"; exit 1; }
+	@echo "── REAL github PR e2e against CE: $(CE_URL)  (opens+closes a probe PR on GITHUB_E2E_REPO) ──"
+	EVENTS_SERVER_URL=$(CE_URL) $(PY) tests/events/live_github_direct_e2e.py
+
+test-box-e2e-ce: ## [CE] REAL Box file upload → box-direct poll → doc_screener fires (against DEPLOYED app)
+	@test -n "$(CE_URL)" || { echo "no CE URL — deploy first: make ce-deploy"; exit 1; }
+	@echo "── REAL Box e2e against CE: $(CE_URL)  (uploads+deletes a résumé in BOX_FOLDER_ID via CCG) ──"
+	EVENTS_SERVER_URL=$(CE_URL) $(PY) tests/events/live_box_e2e.py
+
+test-box-check-ce: ## [CE] Box CCG check — mint token, read /users/me + the watched folder, poll (DEPLOYED app)
+	@test -n "$(CE_URL)" || { echo "no CE URL — deploy first: make ce-deploy"; exit 1; }
+	@echo "── Box direct check against CE: $(CE_URL)  (creds from .env; must match the deployed secret) ──"
+	EVENTS_SERVER_URL=$(CE_URL) $(PY) tests/events/live_box_direct_check.py
 
 ce-build: ## [CE] Build + push the image (cloud buildrun → ICR)
 	cd events/deploy && CUGA_CE_ADMIN=1 YES=1 ./1_build_push_image.sh
