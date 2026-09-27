@@ -6,10 +6,10 @@ agents:
     description: "External coding agent connected over Agent Client Protocol stdio."
     acp_protocol:
       enabled: true
-      command: gemini
+      command: your-acp-agent
       args: ["--acp"]
       cwd: .
-      env: [GEMINI_API_KEY]
+      env: [YOUR_API_KEY]
       startup_timeout: 15
       prompt_timeout: 120
       shutdown_grace_period: 5

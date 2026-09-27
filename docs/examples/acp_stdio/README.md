@@ -17,20 +17,20 @@ pip install "cuga[acp]"
 
 From a source checkout, use `uv sync --extra acp`. Configure CUGA's model and provider as usual before launching the inbound agent.
 
-## Use CUGA from Zed
+## Use CUGA from an ACP editor
 
-Copy [`zed-settings.json`](zed-settings.json) into your Zed settings and replace `/absolute/path/to/cuga-acp` with the absolute path reported by `command -v cuga-acp`. In Zed, open Agent Settings, add or select the custom CUGA external agent, and start a thread.
+ACP editors (such as Zed) can launch `cuga-acp` as a custom external agent. Copy [`editor-settings.json`](editor-settings.json) into your editor's agent configuration and replace `/absolute/path/to/cuga-acp` with the absolute path reported by `command -v cuga-acp`.
 
-Send a normal text prompt, then start a second long-running prompt and cancel it from the thread UI. For protocol diagnostics, run `dev: open acp logs` from Zed's command palette.
+Send a normal text prompt, then start a second long-running prompt and cancel it from the thread UI. For protocol diagnostics, consult your editor's ACP log viewer.
 
 `cuga-acp` reserves stdout for ACP frames. Library output and unsafe diagnostics are discarded; bounded adapter diagnostics go to stderr. Do not wrap the command with a program that prints banners to stdout.
 
 ## Delegate from a CUGA supervisor
 
-[`consumer.supervisor.yaml`](consumer.supervisor.yaml) shows a Gemini ACP process. Replace `command` and `args` with the coding agent you installed. `env` is an allowlist of variable names inherited from the CUGA process; never put secret values in YAML. `cwd` must resolve inside the configured CUGA workspace.
+[`consumer.supervisor.yaml`](consumer.supervisor.yaml) shows a generic ACP subprocess configuration. Replace `your-acp-agent` and `--acp` with the command and flags for the coding agent you installed (for example, `gemini --acp`). Replace `YOUR_API_KEY` with the environment variable name your agent expects. `env` is an allowlist of variable names inherited from the CUGA process; never put secret values in YAML. `cwd` must resolve inside the configured CUGA workspace.
 
 ```bash
-export GEMINI_API_KEY=your-provider-value
+export YOUR_API_KEY=your-provider-value
 export DYNACONF_SUPERVISOR__ENABLED=true
 export DYNACONF_SUPERVISOR__CONFIG_PATH="docs/examples/acp_stdio/consumer.supervisor.yaml"
 cuga start demo_supervisor
@@ -53,4 +53,4 @@ The stable integration currently supports text prompts and text response chunks.
 - **Stale permission resume:** the original process exited, its permission expired, or another resume already consumed it. Start a new delegation; CUGA intentionally fails closed.
 - **Missing credential:** add only its variable name to `env`, export the value in the parent process, and restart CUGA.
 
-For current editor configuration details, see [Zed External Agents](https://zed.dev/docs/ai/external-agents). For SDK examples, see the [official ACP Python SDK](https://github.com/agentclientprotocol/python-sdk).
+For current editor configuration details, consult your editor's ACP documentation. For SDK examples, see the [official ACP Python SDK](https://github.com/agentclientprotocol/python-sdk).
