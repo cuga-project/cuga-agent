@@ -1457,3 +1457,47 @@ def test_acyclic_helper_fan_out_is_still_analyzed_not_bailed():
     # Memoized, so it stays cheap and the mutation is still reported.
     assert "unreliable" not in out.lower()
     assert "0.0" not in out
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verify_timeout_comes_from_settings(monkeypatch):
+    """advanced_features.pre_execute_verify_timeout replaces the 60 s default."""
+    import asyncio as _asyncio
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection import pre_execute as pe
+    from cuga.config import settings
+
+    async def never_returns(*_a, **_kw):
+        await _asyncio.sleep(60)
+
+    monkeypatch.setattr(settings.advanced_features, "pre_execute_verify_timeout", 0.05, raising=False)
+    model = MagicMock(spec=[])
+    with patch.object(pe, "verify_task") as verify:
+        verify.return_value.ainvoke = never_returns
+        decision = await _asyncio.wait_for(
+            pe.decide_pre_execute_verify(
+                enabled=True,
+                streak=0,
+                total_revises=0,
+                script="await venmo_create_transaction_transactions_post(amount=1.0)",
+                chat_messages=[],
+                variables_snapshot="",
+                current_task="t",
+                model=model,
+                model_factory=None,
+                config={},
+                max_chars=1000,
+            ),
+            timeout=5,
+        )
+    assert decision.gate == "unknown"
+
+
+@pytest.mark.unit
+def test_verify_timeout_defaults_to_60_seconds(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection import pre_execute as pe
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.advanced_features, "pre_execute_verify_timeout", None, raising=False)
+    assert pe.verify_timeout_seconds() == 60.0
