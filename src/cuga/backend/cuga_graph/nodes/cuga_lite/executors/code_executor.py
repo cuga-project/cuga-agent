@@ -240,6 +240,11 @@ class CodeExecutor:
 
         SecurityValidator.validate_wrapped_code(wrapped_code)
 
+        # Each block's namespace is rebuilt from the variables manager, so a
+        # variable this block reassigns must be written back like a new one;
+        # otherwise the next block sees its old value.
+        prior_values = VariableUtils.snapshot_values(_locals, original_keys)
+
         try:
             if mode == 'e2b':
                 executor = cls._get_e2b_executor()
@@ -269,7 +274,9 @@ class CodeExecutor:
         # Variables that should always be included even if they existed before.
         # Task todos are not stored here — they are shown in the todos system prompt section.
         # find_tools `tools_output` is stripped below — discovery text is not kept as a variable.
-        always_include_keys = {'result', 'results', 'output', 'outputs'}
+        always_include_keys = {'result', 'results', 'output', 'outputs'} | VariableUtils.changed_keys(
+            _locals, prior_values
+        )
 
         new_vars = VariableUtils.filter_new_variables(
             _locals, original_keys, always_include_keys=always_include_keys

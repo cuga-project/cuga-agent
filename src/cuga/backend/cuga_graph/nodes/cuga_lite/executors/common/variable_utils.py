@@ -291,6 +291,45 @@ class VariableUtils:
         return False
 
     @staticmethod
+    def _is_data_variable(name: str, value: Any) -> bool:
+        """True for agent data; False for tools, modules, classes and internal names."""
+        return not (name.startswith('_') or callable(value) or isinstance(value, types.ModuleType))
+
+    @staticmethod
+    def _fingerprint(value: Any) -> tuple[str, Any]:
+        """A comparable snapshot of ``value``: its JSON form, or the object itself if that fails."""
+        import json
+
+        try:
+            return ("json", json.dumps(VariableUtils.sanitize_value(value), sort_keys=True, default=repr))
+        except (TypeError, ValueError):
+            return ("ref", value)
+
+    @staticmethod
+    def snapshot_values(all_locals: dict[str, Any], keys: Set[str]) -> dict[str, tuple[str, Any]]:
+        """Snapshot the data variables among ``keys`` before a code block runs."""
+        return {
+            key: VariableUtils._fingerprint(all_locals[key])
+            for key in keys
+            if key in all_locals and VariableUtils._is_data_variable(key, all_locals[key])
+        }
+
+    @staticmethod
+    def changed_keys(all_locals: dict[str, Any], snapshot: dict[str, tuple[str, Any]]) -> Set[str]:
+        """Names from ``snapshot`` whose value the block reassigned or changed in place."""
+        changed = set()
+        for key, (kind, before) in snapshot.items():
+            if key not in all_locals:
+                continue
+            value = all_locals[key]
+            if kind == "ref":
+                if value is not before:
+                    changed.add(key)
+            elif VariableUtils._fingerprint(value) != (kind, before):
+                changed.add(key)
+        return changed
+
+    @staticmethod
     def filter_new_variables(
         all_locals: dict[str, Any], original_keys: Set[str], always_include_keys: Set[str] | None = None
     ) -> dict[str, Any]:
