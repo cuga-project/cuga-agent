@@ -139,7 +139,7 @@ async def test_disabled_acp_still_rejects_invalid_keys(invalid_key: str) -> None
         "a2a_protocol": {"enabled": True, "endpoint": "http://localhost:9000", "transport": "http"},
     }
 
-    with pytest.raises(ValueError, match="Unknown acp_protocol|Obsolete BeeAI ACP"):
+    with pytest.raises(ValueError, match="Unknown acp_protocol|Obsolete remote ACP"):
         await build_agents_from_list([source])
 
 

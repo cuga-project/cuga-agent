@@ -115,13 +115,13 @@ def test_process_config_rejects_symlink_workspace_escape(tmp_path: Path) -> None
 @pytest.mark.parametrize(
     "legacy_key", ["endpoint", "agent_name", "verify_tls", "auth", "bearer_token", "poll_interval"]
 )
-def test_mapping_rejects_obsolete_beeai_keys(tmp_path: Path, legacy_key: str) -> None:
+def test_mapping_rejects_obsolete_remote_keys(tmp_path: Path, legacy_key: str) -> None:
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
         acp_process_config_from_mapping,
     )
 
     mapping = {"enabled": True, "command": "agent", "cwd": str(tmp_path), legacy_key: "legacy"}
-    with pytest.raises(ValueError, match="BeeAI.*command"):
+    with pytest.raises(ValueError, match="Obsolete remote ACP.*command"):
         acp_process_config_from_mapping(mapping, name="worker", description="Worker")
 
 
@@ -132,7 +132,7 @@ def test_mapping_rejects_obsolete_beeai_keys(tmp_path: Path, legacy_key: str) ->
         (None, "acp_protocol must be a mapping"),
         ({"enabled": "true", "command": "agent"}, "enabled must be a boolean"),
         ({"enabled": True, "command": "agent", "prompt_timout": 1}, "Unknown acp_protocol"),
-        ({"enabled": False, "endpoint": "https://legacy.example"}, "Obsolete BeeAI ACP"),
+        ({"enabled": False, "endpoint": "https://legacy.example"}, "Obsolete remote ACP"),
     ],
 )
 def test_mapping_rejects_malformed_types_unknown_and_disabled_legacy_keys(mapping: Any, message: str) -> None:

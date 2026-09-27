@@ -20,6 +20,23 @@ from cuga.backend.server.agent_protocol.events import AgentStreamEvent
 pytestmark = [pytest.mark.unit, pytest.mark.anyio]
 
 
+@pytest.fixture(autouse=True)
+def _restore_process_logging_state():
+    """Keep in-process stdio tests from leaking child-process logging policy."""
+    root = logging.getLogger()
+    cuga_logger = logging.getLogger("cuga")
+    stdio_logger = logging.getLogger("cuga.backend.server.acp.stdio")
+    handlers = root.handlers[:]
+    levels = (root.level, cuga_logger.level, stdio_logger.level)
+    try:
+        yield
+    finally:
+        root.handlers[:] = handlers
+        root.setLevel(levels[0])
+        cuga_logger.setLevel(levels[1])
+        stdio_logger.setLevel(levels[2])
+
+
 class _Runner:
     def __init__(self, text: str = "smoke answer") -> None:
         self.text = text

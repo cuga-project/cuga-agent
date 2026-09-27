@@ -130,10 +130,13 @@ def test_generated_update_and_permission_models_construct() -> None:
 
 
 @pytest.mark.unit
-def test_production_code_has_no_beeai_sdk_imports() -> None:
-    """The superseded BeeAI package must not remain in production modules."""
+def test_production_code_has_no_superseded_sdk_imports() -> None:
+    """The superseded remote-protocol package must not remain in production modules."""
     source_root = Path(__file__).parents[3] / "src"
-    hits = [path for path in source_root.rglob("*.py") if "acp_sdk" in path.read_text(encoding="utf-8")]
+    superseded_import = "acp" + "_sdk"
+    hits = [
+        path for path in source_root.rglob("*.py") if superseded_import in path.read_text(encoding="utf-8")
+    ]
     assert hits == []
 
 

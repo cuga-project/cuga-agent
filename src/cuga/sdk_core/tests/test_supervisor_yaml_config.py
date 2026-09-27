@@ -469,7 +469,7 @@ class TestBuildAgentsFromStoredSubAgents:
 
 @pytest.mark.unit
 class TestACPProtocolMigration:
-    """Corrected subprocess ACP loads while legacy BeeAI fields fail clearly."""
+    """Corrected subprocess ACP loads while legacy remote fields fail clearly."""
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -523,7 +523,7 @@ agents:
             temp_path = f.name
 
         try:
-            with pytest.raises(ValueError, match="Obsolete BeeAI ACP configuration"):
+            with pytest.raises(ValueError, match="Obsolete remote ACP configuration"):
                 await load_supervisor_config(temp_path)
         finally:
             os.unlink(temp_path)
@@ -561,7 +561,7 @@ agents:
         [
             ("enabled: 'true'\n      command: external-agent", "enabled must be a boolean"),
             ("enabled: true\n      prompt_timout: 5", "Unknown acp_protocol"),
-            ("enabled: false\n      endpoint: https://legacy.example", "Obsolete BeeAI ACP"),
+            ("enabled: false\n      endpoint: https://legacy.example", "Obsolete remote ACP"),
         ],
     )
     async def test_yaml_rejects_malformed_unknown_and_disabled_legacy_acp(

@@ -27,7 +27,7 @@ _ACP_MAPPING_KEYS = frozenset(
         "shutdown_grace_period",
     }
 )
-_OBSOLETE_BEEAI_KEYS = frozenset(
+_OBSOLETE_REMOTE_ACP_KEYS = frozenset(
     {
         "endpoint",
         "agent_name",
@@ -58,11 +58,11 @@ def validate_acp_protocol_mapping(mapping: Mapping[str, Any]) -> None:
 
     if not isinstance(mapping, Mapping):
         raise ValueError("acp_protocol must be a mapping")
-    obsolete = sorted(key for key in mapping if isinstance(key, str) and key in _OBSOLETE_BEEAI_KEYS)
+    obsolete = sorted(key for key in mapping if isinstance(key, str) and key in _OBSOLETE_REMOTE_ACP_KEYS)
     if obsolete:
         joined = ", ".join(obsolete)
         raise ValueError(
-            f"Obsolete BeeAI ACP configuration key(s): {joined}. "
+            f"Obsolete remote ACP configuration key(s): {joined}. "
             "Migrate to Agent Client Protocol subprocess fields command, args, cwd, and env."
         )
     unknown = [
