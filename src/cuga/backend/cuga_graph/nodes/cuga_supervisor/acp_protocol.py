@@ -82,7 +82,7 @@ class ACPPermissionRuntimeBridge:
         self._owner = owner
 
     async def permission_handler(self, request: Any) -> str | None:
-        if not self.interactive or self._permission_active:
+        if not self.interactive or self._permission_active or self._pause is not None:
             return None
         if self._prompt_task is None or self._owner is None or request.lifecycle_id != self._lifecycle_id:
             return None
@@ -316,7 +316,7 @@ async def _delegate_task_via_acp(
         raise
     except (ACPFactoryContractError, ACPStartupTimeoutError):
         return normalized.startup_failure()
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         return normalized.timeout()
     except ChildProcessError:
         return normalized.subprocess_exit()

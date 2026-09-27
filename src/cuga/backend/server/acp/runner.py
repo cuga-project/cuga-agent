@@ -74,7 +74,7 @@ class StdioCugaRunner:
 
             action_response = ActionResponse(
                 action_id=action_id,
-                response_type="confirmation",
+                response_type=pending.get("type") or "confirmation",
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 user_id="acp_user",
                 confirmed=bool(approval.get("confirmed", False)),

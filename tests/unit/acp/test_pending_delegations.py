@@ -188,10 +188,10 @@ async def test_malformed_duplicate_cannot_cancel_claimed_resume_winner() -> None
     ("approved", "options", "expected"),
     [
         (True, (("persistent", "Always", "allow_always"), ("once", "Once", "allow_once")), "once"),
-        (True, (("persistent", "Always", "allow_always"),), "persistent"),
+        (True, (("persistent", "Always", "allow_always"),), None),
         (True, (("deny", "No", "reject_once"),), None),
         (False, (("always", "Never", "reject_always"), ("once", "No", "reject_once")), "once"),
-        (False, (("always", "Never", "reject_always"),), "always"),
+        (False, (("always", "Never", "reject_always"),), None),
         (
             False,
             (("always-1", "Never A", "reject_always"), ("always-2", "Never B", "reject_always")),

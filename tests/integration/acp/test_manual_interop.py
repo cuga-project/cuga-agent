@@ -90,7 +90,7 @@ async def test_established_client_can_launch_cuga_acp() -> None:
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=180)
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         process.kill()
         await process.wait()
         pytest.fail("configured ACP client did not finish within 180 seconds")

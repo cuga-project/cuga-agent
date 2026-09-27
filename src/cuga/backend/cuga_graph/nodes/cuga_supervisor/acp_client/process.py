@@ -110,7 +110,7 @@ async def _wait_bounded(process: Any, timeout: float) -> bool:
     try:
         await asyncio.wait_for(process.wait(), timeout=timeout)
         return True
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         return False
 
 
@@ -368,7 +368,7 @@ async def open_acp_process_session(
             session_id = await asyncio.wait_for(
                 initialize_and_create_session(), timeout=remaining_startup_time()
             )
-        except TimeoutError as exc:
+        except (TimeoutError, asyncio.TimeoutError) as exc:
             raise ACPStartupTimeoutError from exc
         except Exception as exc:
             if process.returncode is not None:

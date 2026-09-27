@@ -206,15 +206,14 @@ async def test_replacement_defers_close_until_active_run_releases(monkeypatch):
 async def test_concurrent_cache_misses_publish_one_live_supervisor(monkeypatch):
     await _store_supervisor(["pricebot"])
     release_build = asyncio.Event()
-    both_building = asyncio.Event()
+    first_started = asyncio.Event()
     build_calls = 0
     instances = []
 
     async def blocked_agents(subs, **kwargs):
         nonlocal build_calls
         build_calls += 1
-        if build_calls == 2:
-            both_building.set()
+        first_started.set()
         await release_build.wait()
         return await _fake_agents(subs)
 
@@ -235,10 +234,7 @@ async def test_concurrent_cache_misses_publish_one_live_supervisor(monkeypatch):
     monkeypatch.setattr(_sdk, "CugaSupervisor", _FakeSup)
     first = asyncio.create_task(run_routes._get_supervisor())
     second = asyncio.create_task(run_routes._get_supervisor())
-    try:
-        await asyncio.wait_for(both_building.wait(), timeout=0.2)
-    except TimeoutError:
-        pass
+    await first_started.wait()  # first build is running; second is waiting on the lock
     release_build.set()
     first_result, second_result = await asyncio.gather(first, second)
 

@@ -137,7 +137,14 @@ def _schedule_supervisor_close(*owners: Any) -> asyncio.Task[None] | None:
     unique = list({id(owner): owner for owner in owners if owner is not None}.values())
     if not unique:
         return None
-    task = asyncio.create_task(close_graph_owners(*unique))
+
+    async def _close_and_log() -> None:
+        try:
+            await close_graph_owners(*unique)
+        except Exception:
+            logger.exception("supervisor close failed (non-fatal)")
+
+    task = asyncio.create_task(_close_and_log())
     _supervisor_close_tasks.add(task)
     task.add_done_callback(_supervisor_close_tasks.discard)
     return task

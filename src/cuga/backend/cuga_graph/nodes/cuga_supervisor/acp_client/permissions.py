@@ -95,24 +95,12 @@ class SafePermissionRequest:
 def select_permission_option(
     options: tuple[PermissionOptionDTO, ...], *, approved: bool | None
 ) -> str | None:
-    """Select one exact offered token, preferring one-time and failing closed."""
+    """Select one exact offered token, requiring a one-time option and failing closed."""
 
     if approved is True:
         allow_once = [option.option_id for option in options if option.kind == "allow_once"]
-        if len(allow_once) == 1:
-            return allow_once[0]
-        if len(allow_once) > 1:
-            return None
-        allow_always = [option.option_id for option in options if option.kind == "allow_always"]
-        return allow_always[0] if len(allow_always) == 1 else None
+        return allow_once[0] if len(allow_once) == 1 else None
     if approved is False:
         reject_once = [option.option_id for option in options if option.kind == "reject_once"]
-        if len(reject_once) == 1:
-            return reject_once[0]
-        if len(reject_once) > 1:
-            return None
-        rejects = [option for option in options if option.kind == "reject_always"]
-        explicit_rejects = [option for option in options if option.kind.startswith("reject_")]
-        if len(rejects) == 1 and len(explicit_rejects) == 1:
-            return rejects[0].option_id
+        return reject_once[0] if len(reject_once) == 1 else None
     return None

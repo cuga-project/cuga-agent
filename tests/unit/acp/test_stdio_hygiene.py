@@ -52,7 +52,7 @@ async def _raw_cuga_agent(
         process.stdin.close()
         try:
             await asyncio.wait_for(process.wait(), timeout=2)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             process.kill()
             await process.wait()
         await asyncio.wait_for(tee_task, timeout=2)

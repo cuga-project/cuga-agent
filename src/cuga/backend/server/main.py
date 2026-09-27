@@ -1146,12 +1146,18 @@ async def lifespan(app: FastAPI):
 
     from cuga.backend.server.run_routes import close_cached_supervisors, close_graph_owners
 
-    await close_cached_supervisors()
-    await close_graph_owners(
-        app_state.agent,
-        draft_app_state.agent,
-        *app_state.agent_graphs_cache.values(),
-    )
+    try:
+        await close_cached_supervisors()
+    except Exception:
+        logger.exception("close_cached_supervisors failed during shutdown (non-fatal)")
+    try:
+        await close_graph_owners(
+            app_state.agent,
+            draft_app_state.agent,
+            *app_state.agent_graphs_cache.values(),
+        )
+    except Exception:
+        logger.exception("close_graph_owners failed during shutdown (non-fatal)")
     app_state.agent_graphs_cache.clear()
 
     for task in app_state.background_tasks:

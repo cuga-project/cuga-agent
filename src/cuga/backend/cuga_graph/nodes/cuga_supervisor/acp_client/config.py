@@ -194,7 +194,7 @@ class ACPProcessConfig:
                 )
             except ValueError as exc:
                 raise ValueError("cwd must stay within the configured CUGA workspace") from exc
-        if not cwd.is_dir():
+        if self.cwd is not None and not cwd.is_dir():
             raise ValueError("cwd must resolve to an existing workspace directory")
         object.__setattr__(self, "cwd", cwd)
 
