@@ -346,21 +346,17 @@ def test_defaults_used_when_settings_missing(monkeypatch):
 
 
 # ── Same error, different arguments ────────────────────────────────────────
-#
-# The tiers above key on the exact argument set, so an agent that varies one
-# argument each attempt never repeats a signature. Observed on AppWorld hard:
-# 311 rejections of "The payment card has expired" in one run, each naming a
-# different card, none of them stopped.
 
 
 def _set_all_thresholds(monkeypatch, escalate_after=1, block_after=2, distinct_after=3):
+    """Configure the independent exact-call and endpoint-advisory thresholds."""
     monkeypatch.setattr(
         "cuga.config.settings",
         SimpleNamespace(
             advanced_features=SimpleNamespace(
                 rejected_call_escalate_after=escalate_after,
                 rejected_call_block_after=block_after,
-                rejected_call_distinct_args_block_after=distinct_after,
+                rejected_call_distinct_args_advise_after=distinct_after,
             )
         ),
     )
@@ -371,71 +367,121 @@ def _reject_card(guard, card, message="The payment card has expired."):
 
 
 @pytest.mark.unit
-def test_blocks_after_n_distinct_argument_sets_with_the_same_error(monkeypatch):
+def test_advises_after_n_distinct_failures_without_blocking_new_arguments(monkeypatch):
+    """Repeated error shapes justify advice, not refusing an untried card."""
     _set_all_thresholds(monkeypatch)
     guard = RejectedCallGuard()
-    for card in (1, 2, 3):
+    for card in (1, 2):
+        assert _reject_card(guard, card) is None
+    advisory = _reject_card(guard, 3)
+    assert "3 different argument sets" in advisory
+    assert "The payment card has expired." in advisory
+    assert "may still succeed" in advisory
+    for card in (4, 5, 6):
         assert guard.check("shop", "place_order", {"card": card}) is None
-        _reject_card(guard, card)
-    blocked = guard.check("shop", "place_order", {"card": 4})
-    assert blocked is not None
-    assert blocked["error_type"] == "RepeatedEndpointError"
-    assert "3 different argument sets" in blocked["message"]
+        assert "[Repeated endpoint failure]" in _reject_card(guard, card)
 
 
 @pytest.mark.unit
-def test_ids_and_quoted_values_do_not_split_the_error_shape(monkeypatch):
+@pytest.mark.parametrize("quote", ['"', "'", "`"])
+def test_ids_and_quoted_values_do_not_split_the_error_shape(monkeypatch, quote):
+    """Quoted nonnumeric identifiers and numbers belong to the same shape."""
     _set_all_thresholds(monkeypatch)
     guard = RejectedCallGuard()
-    for i, card in enumerate((11, 22, 33)):
-        _reject_card(guard, card, message=f'Card "{card}" has expired in 20{i}0.')
-    assert guard.check("shop", "place_order", {"card": 44}) is not None
+    messages = [
+        f"Card {quote}{name}{quote} has expired in {year}."
+        for name, year in (("alpha", 2020), ("beta", 2021), ("gamma", 2022))
+    ]
+    assert _reject_card(guard, 1, messages[0]) is None
+    assert _reject_card(guard, 2, messages[1]) is None
+    assert "3 different argument sets" in _reject_card(guard, 3, messages[2])
+
+
+@pytest.mark.unit
+def test_contractions_preserve_meaningful_error_text():
+    """Apostrophes inside words must not swallow different failure reasons."""
+    active = RejectedCallGuard.error_shape("Card isn't active and doesn't exist")
+    funded = RejectedCallGuard.error_shape("Card isn't funded and doesn't exist")
+    assert active == "card isn't active and doesn't exist"
+    assert funded == "card isn't funded and doesn't exist"
+    assert active != funded
 
 
 @pytest.mark.unit
 def test_different_errors_do_not_accumulate(monkeypatch):
+    """Only matching errors contribute to an advisory."""
     _set_all_thresholds(monkeypatch)
     guard = RejectedCallGuard()
-    _reject_card(guard, 1, message="The payment card has expired.")
-    _reject_card(guard, 2, message="The cart is empty.")
-    _reject_card(guard, 3, message="The promo code is not valid.")
+    for card, message in enumerate(
+        ("The payment card has expired.", "The cart is empty.", "The promo code is not valid.")
+    ):
+        assert _reject_card(guard, card, message) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "other", [("other", "place_order", "a"), ("shop", "other", "a"), ("shop", "place_order", "b")]
+)
+def test_advisory_history_and_clearing_are_isolated(monkeypatch, other):
+    """Other apps, functions and agents cannot contribute or clear history."""
+    _set_all_thresholds(monkeypatch)
+    guard = RejectedCallGuard()
+    for card in (1, 2):
+        guard.record_rejection("shop", "place_order", {"card": card}, 422, "Expired", agent_id="a")
+    app, fn, agent = other
+    assert guard.record_rejection(app, fn, {"card": 3}, 422, "Expired", agent_id=agent) is None
+    guard.record_success(app, "POST", function_name=fn, agent_id=agent)
+    assert "3 different argument sets" in guard.record_rejection(
+        "shop", "place_order", {"card": 3}, 422, "Expired", agent_id="a"
+    )
+    guard.record_success("shop", "POST", function_name="place_order", agent_id="a")
+    assert guard.record_rejection("shop", "place_order", {"card": 4}, 422, "Expired", agent_id="a") is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["POST", "GET", "get", "HEAD", None])
+def test_success_on_the_same_endpoint_clears_its_advisory(monkeypatch, method):
+    """A successful read also invalidates previous endpoint failure evidence."""
+    _set_all_thresholds(monkeypatch)
+    guard = RejectedCallGuard()
+    for card in (1, 2, 3):
+        _reject_card(guard, card)
     assert guard.check("shop", "place_order", {"card": 4}) is None
+    guard.record_success("shop", method, function_name="place_order")
+    assert _reject_card(guard, 5) is None
 
 
 @pytest.mark.unit
-def test_other_endpoints_are_unaffected(monkeypatch):
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_successful_read_clears_advice_but_preserves_exact_call_block(monkeypatch, method):
+    """Read success resets endpoint advice without implying a state mutation."""
     _set_all_thresholds(monkeypatch)
     guard = RejectedCallGuard()
-    for card in (1, 2, 3):
+    for card in (1, 1, 2, 3):
         _reject_card(guard, card)
-    assert guard.check("shop", "add_to_cart", {"card": 4}) is None
+    assert guard.check("shop", "place_order", {"card": 1}) is not None
+    guard.record_success("shop", method, function_name="place_order")
+    assert guard.check("shop", "place_order", {"card": 1}) is not None
+    assert _reject_card(guard, 4) is None
 
 
 @pytest.mark.unit
-def test_success_on_the_same_endpoint_clears_its_tally(monkeypatch):
+def test_success_elsewhere_does_not_reset_advisory_history(monkeypatch):
+    """Interleaved add-to-cart successes must not suppress order-failure advice."""
     _set_all_thresholds(monkeypatch)
     guard = RejectedCallGuard()
+    messages = []
     for card in (1, 2, 3):
-        _reject_card(guard, card)
-    guard.record_success("shop", "POST", function_name="place_order")
-    assert guard.check("shop", "place_order", {"card": 4}) is None
-
-
-@pytest.mark.unit
-def test_success_elsewhere_does_not_reset_the_endpoint_tally(monkeypatch):
-    """The observed failure mode: a successful add_to_cart between failing
-    order attempts reset the count before it could ever be reached."""
-    _set_all_thresholds(monkeypatch)
-    guard = RejectedCallGuard()
-    for card in (1, 2, 3):
-        _reject_card(guard, card)
+        messages.append(_reject_card(guard, card))
         guard.record_success("shop", "POST", function_name="add_to_cart")
-    assert guard.check("shop", "place_order", {"card": 4}) is not None
+    assert messages[:2] == [None, None]
+    assert "3 different argument sets" in messages[2]
+    assert guard.check("shop", "place_order", {"card": 4}) is None
 
 
 @pytest.mark.unit
 def test_success_still_clears_the_exact_signature_tiers(monkeypatch):
-    """State changed, so a specific call that failed may now be valid."""
+    """State changes allow a previously blocked exact call to run again."""
     _set_all_thresholds(monkeypatch, block_after=1)
     guard = RejectedCallGuard()
     _reject_card(guard, 1)
@@ -445,29 +491,190 @@ def test_success_still_clears_the_exact_signature_tiers(monkeypatch):
 
 
 @pytest.mark.unit
-def test_success_without_a_function_name_leaves_the_endpoint_tier_intact(monkeypatch):
+def test_success_without_a_function_name_leaves_advisory_history_intact(monkeypatch):
+    """Unidentified success cannot reset a specific endpoint's advice history."""
     _set_all_thresholds(monkeypatch)
     guard = RejectedCallGuard()
-    for card in (1, 2, 3):
+    for card in (1, 2):
         _reject_card(guard, card)
     guard.record_success("shop", "POST")
-    assert guard.check("shop", "place_order", {"card": 4}) is not None
+    assert "3 different argument sets" in _reject_card(guard, 3)
 
 
 @pytest.mark.unit
-def test_reset_clears_the_endpoint_tier(monkeypatch):
+def test_reset_clears_the_endpoint_advisory(monkeypatch):
+    """A new task must not inherit advice history."""
     _set_all_thresholds(monkeypatch)
     guard = RejectedCallGuard()
     for card in (1, 2, 3):
         _reject_card(guard, card)
     guard.reset()
+    assert _reject_card(guard, 4) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("threshold", [0, -1])
+def test_disabled_advisory_does_not_accumulate_history(monkeypatch, threshold):
+    """Disabled advice neither warns nor contributes stale evidence if enabled."""
+    _set_all_thresholds(monkeypatch, distinct_after=threshold)
+    guard = RejectedCallGuard()
+    for card in (1, 2, 3, 4, 5):
+        assert _reject_card(guard, card) is None
+        assert guard.check("shop", "place_order", {"card": card}) is None
+    _set_all_thresholds(monkeypatch)
+    assert _reject_card(guard, 6) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("threshold", [None, "invalid"])
+def test_invalid_advisory_threshold_uses_default(monkeypatch, threshold):
+    """Invalid configuration falls back to advice after three distinct failures."""
+    _set_all_thresholds(monkeypatch, distinct_after=threshold)
+    guard = RejectedCallGuard()
+    assert _reject_card(guard, 1) is None
+    assert _reject_card(guard, 2) is None
+    assert "3 different argument sets" in _reject_card(guard, 3)
     assert guard.check("shop", "place_order", {"card": 4}) is None
 
 
 @pytest.mark.unit
-def test_zero_disables_the_tier(monkeypatch):
-    _set_all_thresholds(monkeypatch, distinct_after=0)
+def test_advice_works_independently_of_exact_call_tiers(monkeypatch):
+    """Disabling exact-call escalation and blocking does not disable advice."""
+    _set_all_thresholds(monkeypatch, escalate_after=0, block_after=0)
     guard = RejectedCallGuard()
-    for card in (1, 2, 3, 4, 5):
-        _reject_card(guard, card)
-    assert guard.check("shop", "place_order", {"card": 6}) is None
+    assert _reject_card(guard, 1) is None
+    assert _reject_card(guard, 2) is None
+    assert "3 different argument sets" in _reject_card(guard, 3)
+    assert guard.check("shop", "place_order", {"card": 3}) is None
+    assert "3 different argument sets" in _reject_card(guard, 3)
+
+
+@pytest.fixture
+def advisory_route(monkeypatch):
+    """Exercise the real HTTP route with only MCP execution and tracking stubbed."""
+    from unittest.mock import AsyncMock
+
+    from fastapi.testclient import TestClient
+    from cuga.backend.tools_env.registry.registry import api_registry_server as srv
+
+    _set_all_thresholds(monkeypatch)
+    guard = RejectedCallGuard()
+    registry = SimpleNamespace(show_apis_for_app=AsyncMock(), call_function=AsyncMock())
+    monkeypatch.setattr(srv, "rejected_call_guard", guard)
+    monkeypatch.setattr(srv, "registry", registry, raising=False)
+    monkeypatch.setattr(srv, "mcp_manager", SimpleNamespace(auth_config={}), raising=False)
+    monkeypatch.setattr(srv, "database_mode", False)
+    monkeypatch.setattr(srv, "tracker", SimpleNamespace(collect_step_external=lambda *a, **kw: None))
+    # No context manager: do not start the lifespan's external MCP services.
+    client = TestClient(srv.app)
+    try:
+        yield client, registry
+    finally:
+        client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("http_error", [False, True], ids=["textcontent", "http-error"])
+@pytest.mark.parametrize(
+    "app,fn,method,bad_args,good_args,message,repair",
+    [
+        (
+            "amazon",
+            "place_order",
+            "POST",
+            [{"card": n} for n in (1, 2, 3)],
+            {"card": 4},
+            "The payment card has expired",
+            None,
+        ),
+        (
+            "venmo",
+            "reset_password",
+            "POST",
+            [{"code": n} for n in (111, 222, 333)],
+            {"code": 444},
+            "Invalid password reset code",
+            "request_password_reset",
+        ),
+        (
+            "phone",
+            "alarms",
+            "POST",
+            [{"repeat_days": v} for v in ("Mon", "Monday", "1")],
+            {"repeat_days": [1]},
+            "Validation error: repeat_days",
+            None,
+        ),
+        (
+            "file_system",
+            "directory",
+            "GET",
+            [{"directory_path": "./", "substring": v} for v in ("a", "b", "c")],
+            {"directory_path": "/"},
+            "Directory not available",
+            None,
+        ),
+        (
+            "gmail",
+            "mark_read",
+            "POST",
+            [{"thread_id": n} for n in (1, 2, 3, 4, 5)],
+            {"thread_id": 6},
+            "already marked as read",
+            None,
+        ),
+    ],
+    ids=[
+        "valid-fourth-card",
+        "fresh-reset-code",
+        "corrected-validation",
+        "corrected-directory",
+        "idempotency-sweep",
+    ],
+)
+def test_route_allows_recovery_and_preserves_error_delivery(
+    advisory_route, http_error, app, fn, method, bad_args, good_args, message, repair
+):
+    """The actual route must execute the winning call after three or more failures."""
+    import json
+    from mcp.types import TextContent
+
+    client, registry = advisory_route
+    registry.show_apis_for_app.return_value = {
+        fn: {"secure": False, "method": method},
+        repair: {"secure": False, "method": "POST"},
+    }
+    error = {"status": "exception", "status_code": 422, "message": message, "error_type": "HTTPError"}
+
+    def rejection():
+        return dict(error) if http_error else [TextContent(type="text", text=json.dumps(error))]
+
+    success = [TextContent(type="text", text='{"ok": true}')]
+    registry.call_function.side_effect = (
+        [rejection() for _ in bad_args] + ([success] if repair else []) + [success, rejection()]
+    )
+
+    def call(function, args):
+        return client.post("/functions/call", json={"app_name": app, "function_name": function, "args": args})
+
+    for index, args in enumerate(bad_args, start=1):
+        response = call(fn, args)
+        assert response.status_code == (422 if http_error else 200)
+        body = response.json()
+        assert body["status_code"] == 422
+        assert body["error_type"] == "HTTPError"
+        assert message in body["message"]
+        assert "served_as_http_error" not in body
+        assert ("[Repeated endpoint failure]" in body["message"]) == (index >= 3)
+        assert registry.call_function.await_count == index
+    if repair:
+        assert call(repair, {}).json() == {"ok": True}
+    recovered = call(fn, good_args)
+    assert recovered.status_code == 200
+    assert recovered.json() == {"ok": True}
+    assert registry.call_function.call_args.kwargs["arguments"] == good_args
+    # Success clears history, including for GET. A new failure is served plainly.
+    after_success = call(fn, {**good_args, "probe": "new"})
+    assert after_success.status_code == (422 if http_error else 200)
+    assert after_success.json()["message"] == message
+    assert registry.call_function.await_count == len(bad_args) + bool(repair) + 2
