@@ -164,3 +164,53 @@ async def test_reset_clears_agent_tokens(monkeypatch):
     await srv.reset()
     assert registry.auth_manager is None
     assert manager.get_stored_token("spotify") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_stores_login_token_only_in_the_calling_agents_registry(monkeypatch):
+    """In database mode a non-default agent's /auth/token response must not reach the
+    default registry, or later default-agent calls would carry that agent's token."""
+    import json as _json
+
+    from cuga.backend.tools_env.registry.registry import api_registry_server as srv
+    from cuga.backend.tools_env.registry.registry.rejected_call_guard import RejectedCallGuard
+    from cuga.config import settings
+
+    class FakeText:
+        def __init__(self, text):
+            self.text = text
+
+    class FakeReg:
+        def __init__(self):
+            self.stored = {}
+
+        async def show_apis_for_app(self, app_name):
+            return {"login": {"secure": False, "method": "POST", "path": "/spotify/auth/token"}}
+
+        async def call_function(self, **kwargs):
+            return [FakeText(_json.dumps({"access_token": "tok-other", "token_type": "Bearer"}))]
+
+        def store_captured_token(self, app_name, token):
+            self.stored[app_name] = token
+            return True
+
+    default_reg, other_reg = FakeReg(), FakeReg()
+    manager = SimpleNamespace(auth_config={})
+
+    async def registry_for(agent_id, retry_on_empty=False):
+        assert agent_id == "other-agent"
+        return manager, other_reg
+
+    monkeypatch.setattr(srv, "database_mode", True)
+    monkeypatch.setattr(srv, "registry", default_reg, raising=False)
+    monkeypatch.setattr(srv, "mcp_manager", manager, raising=False)
+    monkeypatch.setattr(srv, "_get_or_create_registry", registry_for)
+    monkeypatch.setattr(srv, "rejected_call_guard", RejectedCallGuard())
+    monkeypatch.setattr(settings.advanced_features, "benchmark", "appworld")
+
+    request = srv.FunctionCallRequest(app_name="spotify", function_name="login", args={})
+    await srv.call_mcp_function(request, agent_id="other-agent")
+
+    assert other_reg.stored == {"spotify": "tok-other"}
+    assert default_reg.stored == {}
