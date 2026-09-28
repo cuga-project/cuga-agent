@@ -73,3 +73,24 @@ def test_changed_keys_ignores_equal_copies():
     after = {"rows": [{"id": 1}], "n": 3}  # new objects, same values (e.g. parsed back from a sandbox)
 
     assert VariableUtils.changed_keys(after, snapshot) == set()
+
+
+@pytest.mark.asyncio
+async def test_self_referencing_value_does_not_stop_the_block(state):
+    """A value that cannot be serialized (here a list that contains itself) must not
+    stop the block from running; it is compared by identity instead."""
+    loop = []
+    loop.append(loop)
+    output, new_vars = await CodeExecutor.eval_with_tools_async(
+        code="total = len(loop) + 1\nprint(total)", _locals={"loop": loop}, state=state, mode="local"
+    )
+    assert "2" in output
+    assert new_vars["total"] == 2
+
+
+def test_changed_keys_handles_self_referencing_values():
+    loop = []
+    loop.append(loop)
+    snapshot = VariableUtils.snapshot_values({"loop": loop}, {"loop"})
+    assert VariableUtils.changed_keys({"loop": loop}, snapshot) == set()
+    assert VariableUtils.changed_keys({"loop": [1]}, snapshot) == {"loop"}

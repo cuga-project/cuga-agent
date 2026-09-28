@@ -297,12 +297,17 @@ class VariableUtils:
 
     @staticmethod
     def _fingerprint(value: Any) -> tuple[str, Any]:
-        """A comparable snapshot of ``value``: its JSON form, or the object itself if that fails."""
+        """A comparable snapshot of ``value``: its JSON form, or the object itself if that fails.
+
+        Any failure falls back to identity comparison, so a value that cannot be
+        serialized (e.g. one that contains itself and hits RecursionError) never
+        stops the block from running.
+        """
         import json
 
         try:
             return ("json", json.dumps(VariableUtils.sanitize_value(value), sort_keys=True, default=repr))
-        except (TypeError, ValueError):
+        except Exception:
             return ("ref", value)
 
     @staticmethod
