@@ -37,9 +37,19 @@ def report(remote_agents: list[str] | None = None) -> list[str]:
     no = lambda s: lines.append(f"  ✗ {s}")  # noqa: E731
 
     _tg_direct = os.environ.get("EVENTS_TELEGRAM_BACKEND", "direct").split(" #", 1)[0].strip() != "ap"
+    # WhatsApp is only usable as a channel when it can BOTH receive securely and send: the verify
+    # token gates the webhook handshake, the app secret validates inbound signatures, and the token
+    # sends replies. Reporting "available" on WHATSAPP_TOKEN alone would greenlight a channel that
+    # cannot securely receive.
+    _wa = all(
+        (os.environ.get(k) or "").strip()
+        for k in ("WHATSAPP_TOKEN", "WHATSAPP_VERIFY_TOKEN", "WHATSAPP_APP_SECRET")
+    )
     ok(
-        "web chat · webhooks (/api/events/hook/…) · direct watchers (Slack/Discord/Box-direct"
+        "web chat · webhooks (/api/events/hook/…) · GitHub-direct (14 triggers, signed) · "
+        "direct channels (Slack/Discord/Box-direct"
         + (" · Telegram-direct" if _tg_direct else "")
+        + (" · WhatsApp-direct" if _wa else "")
         + ") — no extra infra"
         + (" (Telegram chat runs AP-free via long-poll)" if _tg_direct else "")
     )
@@ -75,15 +85,14 @@ def report(remote_agents: list[str] | None = None) -> list[str]:
     ap = os.environ.get("AP_BASE_URL", "").rstrip("/")
     if ap and _reachable(f"{ap}/api/v1/flags"):
         ok(
-            f"Activepieces reachable ({ap}) — Gmail/GitHub/Box-AP integration triggers available"
-            + ("" if _native_sched else " + cron/poll via AP schedule")
+            f"Activepieces reachable ({ap}) — Gmail/Outlook integration triggers available "
+            "(GitHub + Box run direct, AP-free)" + ("" if _native_sched else " + cron/poll via AP schedule")
         )
     else:
         no(
-            "Activepieces not reachable → AP-backed integration triggers (Gmail/GitHub/Box push) "
-            "unavailable"
+            "Activepieces not reachable → AP-backed integration triggers (Gmail/Outlook) unavailable"
             + (
-                "  [cron/poll still work — native scheduler]"
+                "  [GitHub-direct, Box-direct, cron/poll still work — no AP needed]"
                 if _native_sched
                 else " and cron/poll unavailable (EVENTS_SCHEDULER=ap)"
             )
