@@ -92,11 +92,12 @@ def test_call_nonce_creates_distinct_checkpoints():
     assert first != child_checkpoint_id(**_BASE)
 
 
-def test_normalize_memory_scope_defaults_unknown_to_conversation():
+def test_normalize_memory_scope_unknown_is_call_scoped():
     assert normalize_memory_scope("call") == MEMORY_SCOPE_CALL
     assert normalize_memory_scope("CONVERSATION") == MEMORY_SCOPE_CONVERSATION
-    assert normalize_memory_scope("nope") == MEMORY_SCOPE_CONVERSATION
+    assert normalize_memory_scope("nope") == MEMORY_SCOPE_CALL
     assert normalize_memory_scope(None) == MEMORY_SCOPE_CONVERSATION
+    assert normalize_memory_scope("") == MEMORY_SCOPE_CONVERSATION
 
 
 def test_resolve_memory_scope_prefers_agent_attribute():
@@ -136,6 +137,17 @@ def test_agent_map_scopes_follow_map_lifecycle():
     assert agent_map_memory_scopes(fresh) == {}
 
 
+def test_pydantic_dict_copy_retains_import_from_call_scope():
+    from cuga.supervisor_utils.supervisor_config import SupervisorConfig, retain_agent_memory_scopes
+
+    agents = AgentMap({"worker": object()})
+    attach_agent_memory_scopes(agents, {"worker": "call"})
+    loaded = SupervisorConfig(agents=agents)
+    retained = retain_agent_memory_scopes(agents, loaded.agents)
+    adapter = SupervisorGraphAdapter(agents=retained)
+    assert resolve_memory_scope(object(), adapter=adapter, agent_name="worker") == MEMORY_SCOPE_CALL
+
+
 def test_resolve_reuses_id_within_one_parent_conversation():
     adapter = _adapter()
     agent = _FakeCugaAgent()
@@ -169,6 +181,19 @@ def test_missing_parent_thread_is_call_scoped():
     adapter = _adapter()
     agent = _FakeCugaAgent()
     state = _state(thread_id=None)
+    first = resolve_child_checkpoint_id(
+        state=state, adapter=adapter, agent_name="crm-agent", agent_or_config=agent
+    )
+    second = resolve_child_checkpoint_id(
+        state=state, adapter=adapter, agent_name="crm-agent", agent_or_config=agent
+    )
+    assert first != second
+
+
+def test_whitespace_parent_thread_is_call_scoped():
+    adapter = _adapter()
+    agent = _FakeCugaAgent()
+    state = _state(thread_id="   ")
     first = resolve_child_checkpoint_id(
         state=state, adapter=adapter, agent_name="crm-agent", agent_or_config=agent
     )
@@ -326,3 +351,26 @@ async def test_call_scoped_locks_do_not_accumulate():
         async with child_checkpoint_lock(agent, f"call-{i}"):
             pass
     assert len(_checkpoint_locks) == before
+
+
+@pytest.mark.asyncio
+async def test_supervisor_invoke_puts_user_id_on_state():
+    from unittest.mock import MagicMock
+
+    from cuga.sdk import CugaSupervisor
+
+    captured = {}
+
+    async def fake_ainvoke(state, config=None):
+        captured["user_id"] = getattr(state, "user_id", None)
+        captured["thread_id"] = getattr(state, "thread_id", None)
+        captured["tenant"] = (getattr(state, "service_scope", None) or {}).get("tenant_id")
+        return {"final_answer": "ok"}
+
+    supervisor = CugaSupervisor(agents={}, model=MagicMock(), auto_load_policies=False)
+    supervisor._compiled_graph = SimpleNamespace(
+        ainvoke=fake_ainvoke, get_state=lambda _c: SimpleNamespace(next=None)
+    )
+    await supervisor.invoke("hello", thread_id="t-shared", user_id="alice")
+    assert captured["user_id"] == "alice"
+    assert captured["thread_id"] == "t-shared"

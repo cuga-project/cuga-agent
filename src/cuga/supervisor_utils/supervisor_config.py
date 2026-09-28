@@ -155,6 +155,19 @@ async def build_agents_from_list(
     return agents
 
 
+def retain_agent_memory_scopes(built: dict, stored: dict) -> dict:
+    """Re-attach YAML memory scopes after Pydantic copies AgentMap into a plain dict."""
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
+        AgentMap,
+        agent_map_memory_scopes,
+        attach_agent_memory_scopes,
+    )
+
+    mapped = stored if isinstance(stored, AgentMap) else AgentMap(stored)
+    attach_agent_memory_scopes(mapped, agent_map_memory_scopes(built))
+    return mapped
+
+
 async def load_supervisor_config(
     yaml_path: str, *, auto_load_policies: Optional[bool] = None
 ) -> SupervisorConfig:
@@ -173,19 +186,13 @@ async def load_supervisor_config(
     with open(yaml_path, "r") as f:
         config = yaml.safe_load(f)
 
-    from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
-        agent_map_memory_scopes,
-        attach_agent_memory_scopes,
-    )
-
     agents = await build_agents_from_list(config.get("agents", []), auto_load_policies=auto_load_policies)
     loaded = SupervisorConfig(
         supervisor=config.get("supervisor", {}),
         agents=agents,
         a2a=config.get("a2a", {}),
     )
-    if loaded.agents is not agents:
-        attach_agent_memory_scopes(loaded.agents, agent_map_memory_scopes(agents))
+    loaded.agents = retain_agent_memory_scopes(agents, loaded.agents)
     return loaded
 
 

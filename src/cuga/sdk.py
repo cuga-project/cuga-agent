@@ -3506,6 +3506,8 @@ class CugaSupervisor:
         message: Optional[str],
         thread_id: Optional[str] = None,
         action_response: Optional[Any] = None,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> InvokeResult:
         """
         Invoke the supervisor with a message.
@@ -3514,6 +3516,8 @@ class CugaSupervisor:
             message: User message (string) or None to resume execution
             thread_id: Thread ID (required for resume, auto-generated for new conversations)
             action_response: Optional ActionResponse for resuming after approval/interruption
+            user_id: Caller identity mixed into child sub-agent checkpoint keys
+            tenant_id: Optional tenant override; defaults to the process service tenant
 
         Returns:
             InvokeResult containing answer and metadata
@@ -3578,9 +3582,16 @@ class CugaSupervisor:
                 supervisor_chat_messages=[HumanMessage(content=message)],
                 input=message,
                 thread_id=thread_id,
+                user_id=user_id if user_id else "default",
                 url="",  # Required by AgentState
                 cuga_lite_max_steps=self._cuga_lite_max_steps,
             )
+            from cuga.config import get_service_instance_id, get_tenant_id
+
+            initial_state.service_scope = {
+                "tenant_id": tenant_id if tenant_id is not None else get_tenant_id(),
+                "instance_id": get_service_instance_id(),
+            }
 
             result = await self.graph.ainvoke(initial_state, config=config)
 

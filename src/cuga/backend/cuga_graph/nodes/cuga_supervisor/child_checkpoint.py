@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, AsyncIterator, Optional
 
 from cuga.config import settings
+from loguru import logger
 
 MEMORY_SCOPE_CONVERSATION = "conversation"
 MEMORY_SCOPE_CALL = "call"
@@ -72,9 +73,15 @@ def _as_str(value: Any) -> str:
 
 def normalize_memory_scope(value: Any) -> str:
     scope = _as_str(value).strip().lower()
+    if not scope:
+        return MEMORY_SCOPE_CONVERSATION
     if scope in _VALID_SCOPES:
         return scope
-    return MEMORY_SCOPE_CONVERSATION
+    logger.warning(
+        "Unknown sub_agent_memory_scope %r; using call-scoped isolation so history is not retained",
+        value,
+    )
+    return MEMORY_SCOPE_CALL
 
 
 def child_checkpoint_id(
@@ -128,10 +135,10 @@ def resolve_memory_scope(
 def _identity_from_state(state: Any) -> tuple[str, str, str]:
     if state is None:
         return "", "", ""
-    user_id = _as_str(getattr(state, "user_id", None))
-    parent_thread_id = _as_str(getattr(state, "thread_id", None))
+    user_id = _as_str(getattr(state, "user_id", None)).strip()
+    parent_thread_id = _as_str(getattr(state, "thread_id", None)).strip()
     scope = getattr(state, "service_scope", None) or {}
-    tenant_id = _as_str(scope.get("tenant_id")) if isinstance(scope, dict) else ""
+    tenant_id = _as_str(scope.get("tenant_id") if isinstance(scope, dict) else "").strip()
     return tenant_id, user_id, parent_thread_id
 
 

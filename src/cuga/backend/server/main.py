@@ -1099,7 +1099,7 @@ async def lifespan(app: FastAPI):
         enable_filesystem_tools=draft_overrides.get("enable_filesystem_tools"),
         llm_config=_draft_llm_cfg or None,
         special_instructions=(draft_config or {}).get("special_instructions") or None,
-        supervisor_id=app_state.agent_id,
+        supervisor_id=draft_agent_id,
     )
     await draft_app_state.agent.build_graph()
 
