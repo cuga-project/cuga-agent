@@ -8,9 +8,11 @@ an AP send-step, which fails for a direct channel (there is no AP connection). T
 that gap: a scheduled/push flow whose sink is a *direct* channel keeps ``deliver=True`` (no AP send
 step) and, when the fired run reaches ``/invoke``, CUGA sends the answer itself via ``send_direct``.
 
-One knob per channel: ``EVENTS_<CHANNEL>_BACKEND`` (``direct`` | ``ap``). Slack defaults to
-``direct``; telegram/discord default to ``ap`` (their AP round-trip is verified live). Flip a
-channel to direct here the day its direct adapter lands — no other code changes.
+One knob per channel: ``EVENTS_<CHANNEL>_BACKEND`` (``direct`` | ``ap``). **All four channels now
+default to ``direct``** — see ``_DEFAULT_BACKEND`` below, which is the authority. This paragraph
+used to say telegram/discord defaulted to ``ap``; that stopped being true when ``telegram_direct``
+and ``discord_direct`` landed, and a stale default here is the kind of thing that sends someone to
+install Activepieces to fix a channel that already works.
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ _DEFAULT_BACKEND = {
     "discord": "direct",  # direct Gateway (instant, no public URL); AP polling behind EVENTS_DISCORD_BACKEND=ap
     "web": "direct",  # the browser: no socket to push into, so its transport is a durable
     # per-thread mailbox the UI drains by cursor — see web_inbox.
+    "whatsapp": "direct",  # Meta Cloud API. NOT optional: AP's whatsapp piece has 0 triggers, so it
+    # cannot receive — an AP backend could only ever do the outbound half.
 }
 
 
@@ -95,5 +99,15 @@ async def send_direct(
         res = await telegram_direct.send_message(target, text, reply_to=(locus or None))
         ok = bool(res.get("ok"))
         return ok, ("ok" if ok else f"telegram: {res.get('error') or res}")
+    if ch == "whatsapp":
+        from . import whatsapp_direct
+
+        # ``target`` is the wa_id (the user's phone number) — WhatsApp is 1:1, so there is no
+        # channel/thread to address and ``locus`` is unused. send_message picks free-form vs
+        # template from the 24-hour window; a scheduled fire is usually OUTSIDE it, which is why
+        # that decision lives in the adapter and not here.
+        res = await whatsapp_direct.send_message(target, text)
+        ok = bool(res.get("ok"))
+        return ok, ("ok" if ok else f"whatsapp: {res.get('error') or res}")
     log.warning("no direct sender for channel %s (target=%s) — dropping", channel, target)
     return False, f"no direct sender for '{channel}'"

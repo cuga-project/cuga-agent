@@ -1,11 +1,12 @@
 import json
-from typing import Literal, Dict, Callable
+from typing import Literal, Dict, Callable, Optional
 
 from langchain_core.messages import AIMessage
 from langgraph.types import Command
 from loguru import logger
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
+from cuga.backend.cuga_graph.nodes.answer.answer_function import apply_answer_function
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.final_answer_agent import FinalAnswerAgent
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import FinalAnswerOutput
 from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
@@ -30,10 +31,14 @@ class HumanInTheLoopHandler:
         if action_id in self._action_handlers:
             return self._action_handlers[action_id](state, node_name)
 
-        # Default fallback — this is a terminal path to END, so resolve
-        # citations here too (every other terminal path does): resolve any [sN]
-        # markers and drop stale prior-turn sources before the state is dumped.
+        # Default fallback — terminal path to END. Citation resolution only:
+        # this continuation resumes an answer that _generate_final_answer
+        # already finalized before routing to SUGGEST_HUMAN_ACTIONS, so
+        # re-running the answer function here would apply it twice
+        # (single-application contract; same reasoning as the supervisor
+        # forward branch). Citation resolution is idempotent by design.
         FinalAnswerNode.apply_citation_resolution(state)
+        state.final_answer_finalized = True
         return Command(update=state.model_dump(), goto=NodeNames.END)
 
     def add_action_handler(self, action_id: str, handler: Callable):
@@ -42,20 +47,51 @@ class HumanInTheLoopHandler:
 
 
 class FinalAnswerNode(BaseNode):
-    def __init__(self, final_answer_agent: FinalAnswerAgent):
+    def __init__(
+        self,
+        final_answer_agent: FinalAnswerAgent,
+        answer_function: Optional[Callable[[str], str]] = None,
+    ):
         super().__init__()
         self.final_answer_agent = final_answer_agent
         self.hitl_handler = HumanInTheLoopHandler()
         agent = self.final_answer_agent
         name = self.final_answer_agent.name
         hitl_handler = self.hitl_handler
+        if answer_function is not None:
+            logger.info(
+                f"final answer: function '{getattr(answer_function, '__name__', answer_function)}' active"
+            )
 
         async def node(state: AgentState):
             return await FinalAnswerNode.node_handler(
-                state, agent=agent, name=name, hitl_handler=hitl_handler
+                state, agent=agent, name=name, hitl_handler=hitl_handler, answer_function=answer_function
             )
 
         self.node = node
+
+    @staticmethod
+    def finalize_answer(state, answer_function: Optional[Callable[[str], str]] = None) -> None:
+        """Ordered post-processing of the delivered answer — the single seam
+        every terminal branch runs before END:
+
+        1. harmony-token strip — so the function receives clean text
+           (the same strip inside citation resolution then no-ops)
+        2. answer function — opt-in deterministic ``(str) -> str``
+           (``[final_answer].function`` or an SDK-injected callable)
+        3. citation resolution
+
+        The function runs before citation resolution so it never sees
+        resolved [n] chips, and its output still gets sanitized/resolved.
+        It is applied once per delivered answer: the supervisor forward
+        branch deliberately skips it (the sub-agent already applied it).
+        """
+        text = state.final_answer or ""
+        if "<|" in text:
+            state.final_answer = strip_harmony_tokens(text)
+        apply_answer_function(state, answer_function)
+        FinalAnswerNode.apply_citation_resolution(state)
+        state.final_answer_finalized = True
 
     @staticmethod
     def apply_citation_resolution(state) -> None:
@@ -116,14 +152,18 @@ class FinalAnswerNode(BaseNode):
 
     @staticmethod
     async def node_handler(
-        state: AgentState, agent: FinalAnswerAgent, name: str, hitl_handler: HumanInTheLoopHandler
+        state: AgentState,
+        agent: FinalAnswerAgent,
+        name: str,
+        hitl_handler: HumanInTheLoopHandler,
+        answer_function: Optional[Callable[[str], str]] = None,
     ) -> Command[Literal["__end__", "SuggestHumanActions"]]:
         # Handle direct chat calls (no processing needed)
         if state.sender == NodeNames.CHAT_AGENT:
             state.sender = name
             final_answer_content = state.chat_agent_messages[-1].content
             state.final_answer = final_answer_content
-            FinalAnswerNode.apply_citation_resolution(state)
+            FinalAnswerNode.finalize_answer(state, answer_function)
             final_answer_output = FinalAnswerOutput(
                 thoughts=["Chat response provided directly."], final_answer=state.final_answer
             )
@@ -134,7 +174,7 @@ class FinalAnswerNode(BaseNode):
         # Handle EntryRouter when final_answer is already set (no apps matched)
         if state.sender == NodeNames.ENTRY_ROUTER and state.final_answer:
             state.sender = name
-            FinalAnswerNode.apply_citation_resolution(state)
+            FinalAnswerNode.finalize_answer(state, answer_function)
             final_answer_output = FinalAnswerOutput(
                 thoughts=[
                     "No applications matched the request. Providing available applications information."
@@ -146,7 +186,7 @@ class FinalAnswerNode(BaseNode):
             return Command(update=state.model_dump(), goto=NodeNames.END)
         if state.sender == NodeNames.CUGA_LITE:
             state.sender = name
-            FinalAnswerNode.apply_citation_resolution(state)
+            FinalAnswerNode.finalize_answer(state, answer_function)
             final_answer_output = FinalAnswerOutput(
                 thoughts=[],
                 final_answer=state.final_answer,
@@ -163,7 +203,12 @@ class FinalAnswerNode(BaseNode):
             answer_to_forward = state.final_answer or state.last_planner_answer or ""
             if answer_to_forward:
                 state.final_answer = answer_to_forward
+                # Forward-only: the sub-agent's FinalAnswerNode already ran
+                # finalize_answer (function applied, citations resolved), so
+                # re-applying the function here would feed it resolved [n]
+                # chips. Citation resolution alone is idempotent by design.
                 FinalAnswerNode.apply_citation_resolution(state)
+                state.final_answer_finalized = True
                 final_answer_output = FinalAnswerOutput(
                     thoughts=[],
                     final_answer=state.final_answer,
@@ -178,6 +223,7 @@ class FinalAnswerNode(BaseNode):
                 )
                 state.final_answer = ""
                 FinalAnswerNode.apply_citation_resolution(state)
+                state.final_answer_finalized = True
                 final_answer_output = FinalAnswerOutput(
                     thoughts=[],
                     final_answer="",
@@ -187,11 +233,16 @@ class FinalAnswerNode(BaseNode):
                 return Command(update=state.model_dump(), goto=NodeNames.END)
 
         # Main processing: generate final answer
-        await FinalAnswerNode._generate_final_answer(state, agent, name)
+        await FinalAnswerNode._generate_final_answer(state, agent, name, answer_function)
         return Command(update=state.model_dump(), goto=NodeNames.END)
 
     @staticmethod
-    async def _generate_final_answer(state: AgentState, agent: FinalAnswerAgent, name: str):
+    async def _generate_final_answer(
+        state: AgentState,
+        agent: FinalAnswerAgent,
+        name: str,
+        answer_function: Optional[Callable[[str], str]] = None,
+    ):
         """Generate and process the final answer"""
         # Run the agent
         response = await agent.run(state)
@@ -216,7 +267,8 @@ class FinalAnswerNode(BaseNode):
         )
         state.final_answer = final_answer_output.final_answer
 
-        # Resolve [sN] citation markers into display numbers (must be the
-        # last mutation of final_answer; chat history above keeps raw ids).
-        FinalAnswerNode.apply_citation_resolution(state)
+        # Apply the answer function and resolve [sN] citation markers into
+        # display numbers (must be the last mutation of final_answer; chat
+        # history above keeps raw ids).
+        FinalAnswerNode.finalize_answer(state, answer_function)
         final_answer_output.final_answer = state.final_answer

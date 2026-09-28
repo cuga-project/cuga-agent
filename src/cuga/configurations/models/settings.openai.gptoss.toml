@@ -1,0 +1,60 @@
+# gpt-oss-120b via the ETE LiteLLM gateway (aws/ route, not azure/).
+#
+# Sampling follows OpenAI's published guidance for gpt-oss: temperature 1.0 and
+# top_p 1.0, to allow diverse reasoning paths. That differs from every other
+# profile here at 0.1 and is deliberate — lowering it works against how the
+# model was trained.
+#
+# reasoning_effort=high. Verified honoured on the aws/ route: the trace grows
+# 153 -> 322 -> 986 chars across low/medium/high, and an invalid value returns
+# a Bedrock validation error. The azure/ route silently IGNORES the parameter
+# (every level ~300 chars, garbage returns HTTP 200) — do not use it.
+# Bedrock accepts low/medium/high only; none and xhigh are rejected.
+#
+# Budgets match settings.openai.toml (16000 / 400), the Gemini reference.
+#
+# Use with:  AGENT_SETTING_CONFIG="settings.openai.gptoss.toml"
+#            OPENAI_BASE_URL=https://ete-litellm.bx.cloud9.ibm.com
+#            MODEL_NAME=aws/gpt-oss-120b
+
+[agent.planner.model]
+platform = "openai"
+temperature = 1.0
+top_p = 1.0
+extra_params = { reasoning_effort = "high" }
+max_tokens = 16000
+
+[agent.chat.model]
+platform = "openai"
+temperature = 1.0
+top_p = 1.0
+extra_params = { reasoning_effort = "high" }
+max_tokens = 16000
+
+[agent.final_answer.model]
+platform = "openai"
+temperature = 1.0
+top_p = 1.0
+extra_params = { reasoning_effort = "high" }
+max_tokens = 16000
+
+[agent.code.model]
+platform = "openai"
+temperature = 1.0
+top_p = 1.0
+extra_params = { reasoning_effort = "high" }
+max_tokens = 16000
+
+[agent.qa.model]
+platform = "openai"
+temperature = 1.0
+top_p = 1.0
+extra_params = { reasoning_effort = "high" }
+max_tokens = 16000
+
+[agent.action.model]
+platform = "openai"
+temperature = 1.0
+top_p = 1.0
+extra_params = { reasoning_effort = "high" }
+max_tokens = 400

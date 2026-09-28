@@ -15,8 +15,8 @@ It exercises, over real HTTP against the running server:
 
 Prereqs:
   registry (cuga-apps) + server with a live AP engine:
-    EVENTS_ENABLED=1 EVENTS_WORKER_BACKEND=cuga EVENTS_SEED_AGENTS=1 AP_BASE_URL=… (AP up)
-  For a FULL PUSH e2e, connect the integration first (per the events docs (setup){BOX,GITHUB,GMAIL}.md):
+    EVENTS_WORKER_BACKEND=cuga EVENTS_SEED_AGENTS=1 AP_BASE_URL=… (AP up)
+  For a FULL PUSH e2e, connect the integration first (per the events docs (setup/{BOX,GITHUB,GMAIL}.md)):
     • Box/Gmail: GET /api/events/connect/{app}  (OAuth consent)
     • GitHub:    POST /api/events/connect/github/token  {token: <PAT>}
 Env: EVENTS_SERVER_URL (default http://localhost:7860), GATEWAY_TOKEN (from .env).
@@ -211,8 +211,11 @@ def main() -> int:
 
     # ── WEBHOOK (generic inbound; direct, no AP) ─────────────────────────
     print("\n[WEBHOOK] POST an alert → incident_triage → response")
+    # ?key= when one is configured — the hook authenticates on a query param, and the gate fails
+    # closed, so a keyless POST is a 401 against any properly-secured deployment.
+    _wk = _env("EVENTS_WEBHOOK_KEY")
     code, r = _post(
-        "/api/events/hook/monitoring",
+        "/api/events/hook/monitoring" + (f"?key={_wk}" if _wk else ""),
         {"alert": "HighCPU", "service": "checkout-api", "value": "97%", "threshold": "85%"},
     )
     ans = r.get("answer") or ""

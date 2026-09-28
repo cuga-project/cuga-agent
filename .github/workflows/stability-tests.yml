@@ -3,6 +3,7 @@ name: Stability Tests
 # "Stability Tests (Python 3.12)" and "(Python 3.13)" are required contexts in
 # main's branch protection. Do not add paths filters: a PR that skips this
 # workflow never reports those contexts and can never be merged.
+# yields an empty check list, which reads as green rather than as "never ran". Same hazard the
 on:
   push:
     branches: [ main, develop ]
@@ -35,7 +36,9 @@ jobs:
     name: Stability Tests (Python ${{ matrix.python-version }})
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Nine live-model tests plus four service-stack startups exceed ten minutes
+    # when interim model replies need continuation; keep a bounded job deadline.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:

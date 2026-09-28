@@ -418,24 +418,14 @@ class AgentLoop:
                 elif node_name in ("sandbox", "execute_agent_tool"):
                     logger.info(f"Detected execute node '{node_name}' - formatting execution output")
 
-                    # Extract execution output from the subgraph's messages
-                    execution_output = ""
-                    messages = subgraph_messages
-                    if messages:
-                        logger.debug(f"Found {len(messages)} messages in execute state")
-                        for msg in reversed(messages):
-                            # Handle both BaseMessage objects and dicts
-                            if hasattr(msg, 'content'):
-                                content = msg.content
-                            elif isinstance(msg, dict):
-                                content = msg.get("content", "")
-                            else:
-                                continue
+                    # Extract execution output from THIS sandbox step only.
+                    # Scanning older messages re-emits a stale Execution output:
+                    # event when VERIFY blocked the current block.
+                    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
+                        sandbox_step_execution_output,
+                    )
 
-                            if "Execution output:" in content:
-                                execution_output = content.split("Execution output:\n")[-1]
-                                logger.debug(f"Extracted execution output: {execution_output[:100]}...")
-                                break
+                    execution_output = sandbox_step_execution_output(subgraph_messages or [])
 
                     # Only return event if we have meaningful execution output
                     if execution_output and execution_output.strip():

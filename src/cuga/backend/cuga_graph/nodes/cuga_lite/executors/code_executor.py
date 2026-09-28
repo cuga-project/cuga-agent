@@ -311,17 +311,7 @@ class CodeExecutor:
     def _wrap_code_for_code_agent(cls, code: str, fake_datetime: Optional[str] = None) -> str:
         """Wrap code for CodeAgent execution."""
         SecurityValidator.validate_syntax(code)
-        indented_code = '\n'.join('    ' + line for line in code.split('\n'))
-
-        # Freeze time (datetime/date/time) like AppWorld's sandbox when in benchmark
-        # mode — scoped inside _async_main so it restores after the user code runs.
-        async_main = CodeWrapper.build_async_main(indented_code, fake_datetime)
-
-        wrapped_code = f"""
-import asyncio
-import json
-{async_main}
-"""
+        wrapped_code = CodeWrapper.wrap_code_for_code_agent(code, fake_datetime=fake_datetime)
         SecurityValidator.validate_dangerous_modules(wrapped_code)
         return wrapped_code
 

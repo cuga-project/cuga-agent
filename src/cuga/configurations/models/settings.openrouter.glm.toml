@@ -1,0 +1,51 @@
+# OpenRouter profile for GLM-5.3-flash.
+#
+# Budgets match settings.openai.toml (16000 / 400), which is what the Gemini
+# reference run used — the stock openrouter profile caps code at 3000, and a
+# smaller budget is a confound when comparing against that run.
+#
+# Default routing, not :nitro. Measured across four calls it resolved to Z.AI
+# every time, so the provider is stable without pinning; :nitro chose Fireworks
+# and can switch mid-run, which would vary the backend between tasks.
+#
+# GLM-5.3-flash reasons by default (700-2000 reasoning tokens observed), so no
+# reasoning_effort is set. OpenRouter reports per-request cost in usage.cost.
+#
+# Use with:  AGENT_SETTING_CONFIG="settings.openrouter.glm.toml"
+#            OPENAI_BASE_URL=https://openrouter.ai/api/v1 and an sk-or-v1 key.
+
+[agent.planner.model]
+platform = "openrouter"
+model_name = "z-ai/glm-5.3-flash"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.chat.model]
+platform = "openrouter"
+model_name = "z-ai/glm-5.3-flash"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.final_answer.model]
+platform = "openrouter"
+model_name = "z-ai/glm-5.3-flash"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.code.model]
+platform = "openrouter"
+model_name = "z-ai/glm-5.3-flash"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.qa.model]
+platform = "openrouter"
+model_name = "z-ai/glm-5.3-flash"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.action.model]
+platform = "openrouter"
+model_name = "z-ai/glm-5.3-flash"
+temperature = 0.1
+max_tokens = 400

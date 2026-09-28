@@ -132,6 +132,21 @@ def test_default_build_metadata_update_adds_playbook_flag_when_fired():
     assert result["some_key"] is True
 
 
+@pytest.mark.unit
+def test_default_build_metadata_update_clears_empty_response_marker():
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
+        EMPTY_RESPONSE_CORRECTION_KEY,
+    )
+
+    adapter = _MinimalAdapter()
+    state = SimpleNamespace(
+        cuga_lite_metadata={EMPTY_RESPONSE_CORRECTION_KEY: True, "keep": 1},
+    )
+    result = adapter.build_metadata_update(state, playbook_fired=False)
+    assert EMPTY_RESPONSE_CORRECTION_KEY not in result
+    assert result["keep"] == 1
+
+
 def test_default_get_variables_storage_returns_state_attr():
     adapter = _MinimalAdapter()
     storage = {"x": {"value": 1}}

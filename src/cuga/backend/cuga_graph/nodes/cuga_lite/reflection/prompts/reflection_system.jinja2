@@ -126,24 +126,21 @@ Before recommending any next step, apply the following checks:
     * **Preserve attributes when moving or copying**: quantity, dates, notes and other per-item fields must carry over. Do not substitute a placeholder such as `quantity=1` for the value the source record actually held.
     * **Recipients and membership sets**: include exactly who the task named. Do not add the user themselves, a payer, or an owner to a recipient or debtor list unless the task says to — and do not omit them when an equal split or "everyone" includes them. State which reading you applied and why.
 * **Account Creation and Verification**: When creating new accounts on social media platforms (Facebook, Twitter, Instagram, LinkedIn, etc.) or any platform requiring email verification, always ensure the account verification process is completed. After account creation, check for verification emails containing codes or confirmation links. Use the appropriate tools to retrieve the verification code from the email, then complete the verification step using the platform's verification API or tool. Do not consider account creation complete until verification is successfully finished, as unverified accounts may have limited functionality or may be automatically deleted.
----
 
+### Final output (guidance for the executor)
 
-* Start by clearly stating your overall assessment (e.g., "The code execution successfully...", "The code execution encountered an error...").
-* Provide concrete details from the **Conversation history** and **code in previous turn** to support your analysis.
-* Conclude with a clear strategic directive for the next action, or a statement that the task is complete. Follow **Strategic recommendation style**: concrete approach (which tools, queries, alternatives, overlooked angles)—not executable code.
+Output at most 120 words as exactly two labelled lines. No markdown headers,
+no bullet lists, no restatement of the conversation history — the executor
+already has it.
 
----
+STATUS: One sentence. Did the previous execution succeed or fail, and on what
+evidence — cite the specific variable, field, or error code. If any API
+response shows "status": "exception", a 4xx/5xx code, or an empty result
+where data was expected, begin with FAILED.
 
-### {% if force_autonomous_mode %}Final output (guidance for the executor){% else %}Final Output to the User{% endif %}:
-
-You must then **provide a clear, concise, and structured summary{% if force_autonomous_mode %} as operational guidance for the executor agent{% else %} directly to the user as your final output for this turn{% endif %}.** This final output should encompass:
-
-1.  **Overall Status/Analysis** of the recent code execution in relation to the **Current Task**, including any skeptical considerations.
-2.  **Summary of Progress** made so far on the **Current Task**.
-3.  **Strategic Recommendation** for the next steps or confirmation of task completion for the **Current Task**. Follow **Strategic recommendation style**: name approaches, tools, `find_tools` ideas, and non-obvious gaps—do not write code.
-
-Your turn: Analyze the provided current task, history, and outputs, and finally, present your consolidated guidance and summary as the final output.
+NEXT: One to three sentences of approach-level guidance — which tool or app
+to use, which gap to close. No code. If every stated requirement is
+satisfied, write exactly: NEXT: task complete.
 
 ---
 
@@ -160,9 +157,8 @@ The following condensed examples illustrate the **correct** Reflection behavior 
 *Situation:* The CoderAgent fetched the cart and identified two food processors (`product_id` 596 and 599). No remove-from-cart or add-to-wishlist API calls have been made yet.
 
 *Correct Reflection:*
-- **Prerequisite check:** `cart_items` is present and valid ✓. However, neither a "remove from cart" nor an "add to wish list" API call has been confirmed in the conversation history.
-- **Overall status:** Cart contents retrieved and food processors identified. The actual move operation has **not yet started**.
-- **Strategic recommendation:** Use `find_tools` to locate the cart removal API and the wish list addition API for the amazon app. For each food processor (product_id 596, 599): add to the wish list first, confirm the response shows success, then remove from the cart. Do not declare the task complete until both operations are confirmed for all items.
+STATUS: Retrieved `cart_items` with product_id 596 and 599; no remove-from-cart or add-to-wishlist response yet.
+NEXT: Find the amazon cart-remove and wishlist-add tools, then for 596 and 599 add to wishlist first and remove from cart only after each add succeeds.
 
 ---
 
@@ -173,9 +169,8 @@ The following condensed examples illustrate the **correct** Reflection behavior 
 *Situation:* The CoderAgent sent an SMS to "+17826309761" and the API returned HTTP 409: "The user with phone_number +17826309761 does not exist."
 
 *Correct Reflection:*
-- **API-level error check:** The SMS API returned HTTP 409. This is a **failure** — the message was not delivered.
-- **Overall status:** SMS delivery failed due to an unrecognized phone number format.
-- **Strategic recommendation:** Retry the SMS send using the raw number "7826309761" without the "+1" prefix, as the API may require the unformatted number. If that also fails with 409, use `find_tools` to look for an alternative phone SMS API that accepts the full E.164 format.
+STATUS: FAILED SMS send returned HTTP 409 for phone_number +17826309761.
+NEXT: Retry the SMS tool with the unprefixed number 7826309761; if that also 409s, find_tools for an SMS API that accepts E.164.
 
 ---
 
@@ -186,9 +181,8 @@ The following condensed examples illustrate the **correct** Reflection behavior 
 *Situation:* The CoderAgent returned `cart_items` (8 products) with `product_id` and `product_name` fields only. No `rating` field is present. No product-details API has been called.
 
 *Correct Reflection:*
-- **Prerequisite check:** The task requires each item's rating. `cart_items` exists ✓ but contains **no rating data**. A variable holding ratings or filtered low-rating products does **not** appear in the conversation history.
-- **Overall status:** Cart contents retrieved. Rating data has **not** been fetched — the prerequisite for filtering is missing.
-- **Strategic recommendation:** For each `product_id` in `cart_items`, call the product details API (e.g., `amazon_show_product_products_product_id_get`) to retrieve the `rating` field. Only after all ratings are fetched should the code filter for `rating < 4.2`. Do not skip this fetch or assume ratings are embedded in cart data.
+STATUS: `cart_items` has 8 products but no `rating` field; ratings have not been fetched.
+NEXT: Call the product-details API for each product_id, then filter rating < 4.2 before any cart or wishlist writes.
 
 ---
 

@@ -58,6 +58,7 @@ from live_e2e import (  # noqa: E402  — shared HTTP/env/report plumbing, one s
     flow_alive,
     gw_headers,
     has_digit,
+    hook_path,
     http,
     srv,
 )
@@ -271,6 +272,20 @@ def classify(reply: str, sub, is_new, app: str | None, ap_live: bool) -> tuple[s
     if any(p in low for p in _REUSE_PHRASES):
         return STALE, "model says a flow exists; no subscription with this sink does"
 
+    # THE ARMING-VERB GATE — a correct refusal, not a failure. concierge.py refuses to arm a
+    # standing flow from bare chat ("standing flows are created with a verb so nothing schedules
+    # itself by accident") and tells the user to type `/automate …`. This harness drives bare
+    # utterances, so the gate is the EXPECTED answer for every CRON/POLL cell.
+    #
+    # It was landing in the catch-all ERROR below, but only sometimes: the LLM relays the refusal in
+    # its own words, and the keyword list underneath happens to catch some phrasings and not others.
+    # So the same correct behaviour scored ? on one sink and ✗ on another, and the counts moved
+    # between identical runs (5 errors, then 3, same deployment, same commit). A matrix that goes
+    # red for a documented safety feature is the "red cell nobody believes" this file's own comments
+    # warn about — it hides the next real regression.
+    if "/automate" in low or "arm that from plain chat" in low:
+        return NEEDS, "arming-verb gate (correct: bare chat must not arm)"
+
     if any(
         w in low
         for w in (
@@ -435,7 +450,7 @@ def run_webhook(g: Grid):
     print("\n\033[1m[WEBHOOK]\033[0m  generic inbound trigger (direct, no AP)")
     code, rep = srv(
         "POST",
-        "/api/events/hook/monitoring",
+        hook_path("monitoring"),
         {"alert": "HighCPU", "service": "checkout-api", "value": "97%", "threshold": "85%"},
         timeout=240,
     )

@@ -222,6 +222,11 @@ class SimpleOpenAPIParser:
                     sub = self._parse_schema(non_null_variants[0])
                     if sub:
                         sub.nullable = bool(sub.nullable or nullable or comp_nullable)
+                        # carry through local description/title, as the $ref branch does
+                        if "description" in schema_data:
+                            sub.description = schema_data["description"]
+                        if "title" in schema_data:
+                            sub.title = schema_data["title"]
                     return sub
 
                 # Fallback: shallow merge for allOf (and complex anyOf/oneOf)
@@ -252,6 +257,11 @@ class SimpleOpenAPIParser:
                         merged.description = sv.description
                     if sv.title and not merged.title:
                         merged.title = sv.title
+                # the wrapper's own description/title outrank any variant's
+                if "description" in schema_data:
+                    merged.description = schema_data["description"]
+                if "title" in schema_data:
+                    merged.title = schema_data["title"]
                 # if still no type but we have properties, default to object
                 if not merged.type and merged.properties:
                     merged.type = "object"

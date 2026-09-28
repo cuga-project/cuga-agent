@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
 
+from cuga.backend.cuga_graph.nodes.answer.answer_function import resolve_final_answer_instructions
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 from loguru import logger
 
@@ -84,7 +85,10 @@ class FinalAnswerAgent(BaseAgent):
         if settings.features.final_answer:
             data = input_variables.model_dump()
             data["variable_summary"] = input_variables.variables_manager.get_variables_summary(last_n=2)
-            data["instructions"] = instructions_manager.get_instructions(self.name)
+            # [final_answer].instructions (settings/env) wins over the instruction-set file.
+            data["instructions"] = (
+                resolve_final_answer_instructions() or instructions_manager.get_instructions(self.name)
+            )
             if self._mode == "appworld_plain":
                 # Pre-decision: action/update tasks expect no return value -> answer "N/A"
                 # (eval's _complete_task maps "N/A" to a null answer). Skip extraction for those.

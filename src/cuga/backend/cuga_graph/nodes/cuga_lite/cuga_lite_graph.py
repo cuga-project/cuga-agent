@@ -102,6 +102,12 @@ class CugaLiteState(BaseModel):
     error: Optional[str] = None
     metrics: Dict[str, Any] = Field(default_factory=dict)
     step_count: int = 0  # Counter for number of steps (call_model + sandbox cycles)
+    verify_revise_streak: int = 0  # Consecutive pre-execute VERIFY revises; >=2 fail-open
+    verify_revise_total: int = (
+        0  # Pre-execute VERIFY revises for the whole run; the consecutive streak
+        # above resets on any ok, so alternating revise/ok is unbounded without this.
+        # Reset only in prepare_node, alongside tool_calls_used_run.
+    )
     tool_calls_used_run: int = (
         0  # Counter of tool calls across the task (advanced_features.max_tool_calls_per_run cap)
     )

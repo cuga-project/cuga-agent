@@ -279,6 +279,9 @@ class PolicyConfigurable:
         # Skip messages that contain execution output (for OUTPUT_FORMATTER policies)
         if not user_input and chat_messages:
             from langchain_core.messages import HumanMessage
+            from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
+                EMPTY_RESPONSE_CORRECTION,
+            )
 
             # Find the last human message that does NOT contain execution output
             for msg in reversed(chat_messages):
@@ -291,6 +294,8 @@ class PolicyConfigurable:
                             "Execution output",
                             "Execution output preview",
                             "Error during execution",
+                            "VERIFY blocked this code block before execution.",
+                            EMPTY_RESPONSE_CORRECTION,
                         ]
                     ):
                         user_input = content

@@ -89,7 +89,7 @@
     "vite-plugin-checker": "^0.12.0",
     "vite-plugin-static-copy": "^4.0.1",
     "vite-plugin-web-extension": "^4.5.1",
-    "vitest": "^4.1.0",
+    "vitest": "^4.1.11",
     "wxt": "^0.20.6"
   },
   "dependencies": {

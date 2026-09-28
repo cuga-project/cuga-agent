@@ -178,8 +178,14 @@ def arm(utterance: str, thread: str) -> tuple[dict | None, str]:
     """Send the utterance through the concierge; return the subscription it created (if any).
 
     Arming is CONFIRM-gated (see the HITL spec): the concierge proposes and a human approves, so
-    the harness plays the human — answer a clarifying question, then say "yes"."""
+    the harness plays the human — answer a clarifying question, then say "yes".
+
+    `/automate` is added here for the same reason the channel path already spells it out below:
+    plain English does not reach the events service at all, so without the verb this harness only
+    ever measured the refusal."""
     before = {s["id"] for s in subs()}
+    if not utterance.lstrip().startswith("/"):
+        utterance = f"/automate {utterance}"
     code, body = srv("POST", "/api/concierge", {"text": utterance, "thread_id": thread}, timeout=240)
     for _ in range(4):
         state = (body or {}).get("state")

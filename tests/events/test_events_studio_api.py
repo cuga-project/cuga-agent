@@ -68,7 +68,12 @@ def test_integrations_endpoint_no_ap():
     r = _client().get("/api/events/integrations")
     assert r.status_code == 200  # never 500 even with engine=None
     for i in r.json()["integrations"]:
-        assert i["status"] == "ap_not_configured"
+        if i["name"] == "github":
+            # github is a DIRECT backend (no AP): with no GITHUB_WEBHOOK_SECRET it reports
+            # 'not_connected' (direct), NOT 'ap_not_configured' — which would wrongly imply it needs AP.
+            assert i["status"] == "not_connected" and i["backend"] == "direct", i
+        else:
+            assert i["status"] == "ap_not_configured"
 
 
 def test_examples_endpoint():
@@ -303,7 +308,7 @@ def test_box_direct_new_files_filter():
         os.environ.pop("BOX_DEV_TOKEN", None)
 
 
-def test_box_poll_endpoint_dispatches_new_files():
+def test_box_poll_endpoint_dispatches_new_files(closed_gates):
     """POST /api/events/box/poll (gateway-token) lists new files and fires the watcher per file
     through /invoke, returning the newest created_at as the next baseline. AP-free path."""
     import httpx as _httpx
@@ -467,7 +472,8 @@ def test_inbound_webhook_triages_and_delivers():
         )
         c = TestClient(app)
         r = c.post(
-            "/api/events/hook/monitoring?agent=incident_triage&deliver_to=slack&target=C1",
+            # ?wait=1 → synchronous: return the agent's answer inline (the default is ack-fast+async).
+            "/api/events/hook/monitoring?agent=incident_triage&deliver_to=slack&target=C1&wait=1",
             json={"alert": "HighCPU", "service": "checkout-api", "value": "97%"},
         )
         assert r.status_code == 200, r.text
@@ -524,7 +530,8 @@ def test_inbound_webhook_routed_uses_the_concierge():
         )
         c = TestClient(app)
         r = c.post(
-            "/api/events/hook/stripe?route=1&deliver_to=slack&target=C1",
+            # ?wait=1 → synchronous: surface the concierge's chosen agent + answer inline.
+            "/api/events/hook/stripe?route=1&deliver_to=slack&target=C1&wait=1",
             json={"type": "charge.dispute.created", "amount": 48000, "reason": "fraudulent"},
         )
         assert r.status_code == 200, r.text
@@ -545,7 +552,49 @@ def test_inbound_webhook_routed_uses_the_concierge():
         os.environ.pop("GATEWAY_TOKEN", None)
 
 
-def test_webhook_key_gate():
+def test_inbound_webhook_acks_fast_by_default():
+    """The DEFAULT (no ?wait) is ack-fast + async: the POST returns 202 'accepted' immediately and runs
+    the agent in the BACKGROUND — the shape a real webhook source (CI, monitoring, a form) needs, since
+    a synchronous agent run is too slow to hold the connection for and makes the caller time out/retry.
+    ?wait=1 (exercised above) is the opt-in synchronous mode that returns the answer inline."""
+    import httpx as _httpx
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True, "answer": "done"}
+
+    class _C:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            return _Resp()
+
+    _orig = _httpx.AsyncClient
+    _httpx.AsyncClient = lambda *a, **k: _C()
+    os.environ["GATEWAY_TOKEN"] = "gw"
+    try:
+        app = FastAPI()
+        register_events_routes(
+            app, runtime=object(), store=None, concierge=None, engine=None, gateway_token="gw"
+        )
+        c = TestClient(app)
+        r = c.post("/api/events/hook/monitoring?agent=incident_triage", json={"alert": "HighCPU"})
+        assert r.status_code == 202, r.text
+        b = r.json()
+        assert b["ok"] is True and b["accepted"] is True and b["webhook"] == "monitoring"
+        assert "answer" not in b  # async default: the answer is delivered/logged, never returned inline
+    finally:
+        _httpx.AsyncClient = _orig
+        os.environ.pop("GATEWAY_TOKEN", None)
+
+
+def test_webhook_key_gate(closed_gates):
     """When EVENTS_WEBHOOK_KEY is set, the webhook requires a matching ?key= (else 401)."""
     os.environ["EVENTS_WEBHOOK_KEY"] = "s3cr3t"
     try:
@@ -578,16 +627,25 @@ def test_setup_guides_connection_status_and_scope():
     assert guides["Gmail"]["connection_scope"] == "user"
 
 
-def test_channels_report_direct_vs_ap_backend():
-    """The channels endpoint tells the UI HOW each channel talks to the world (ADR-0008):
-    Slack/Discord are direct backends, Telegram is AP."""
-    r = _client().get("/api/events/channels")
-    chans = {c["name"]: c for c in r.json()["channels"]}
+def test_channels_report_direct_vs_ap_backend(monkeypatch):
+    """The channels endpoint tells the UI HOW each channel talks to the world.
+
+    Slack and Discord have one transport each. Telegram has two, so it is reported from
+    EVENTS_TELEGRAM_BACKEND rather than assumed: this used to assert a hardcoded "ap", which had
+    stopped being true when telegram_direct landed and made long-poll the default. A deployment
+    running the default with AP unreachable was told its working Telegram channel was down.
+    """
+    monkeypatch.delenv("EVENTS_TELEGRAM_BACKEND", raising=False)
+    chans = {c["name"]: c for c in _client().get("/api/events/channels").json()["channels"]}
     assert chans["slack"]["backend"] == "direct"
     assert chans["discord"]["backend"] == "direct"
-    assert chans["telegram"]["backend"] == "ap"
+    assert chans["telegram"]["backend"] == "direct"  # the default, per telegram_direct.py
     # all channels are live now — no stale "Phase 3" markers
     assert all(c["live"] for c in chans.values())
+
+    monkeypatch.setenv("EVENTS_TELEGRAM_BACKEND", "ap")
+    chans = {c["name"]: c for c in _client().get("/api/events/channels").json()["channels"]}
+    assert chans["telegram"]["backend"] == "ap"  # and the opt-in webhook still reports honestly
 
 
 class _FakeRuntime:
@@ -613,11 +671,55 @@ def _agent_client(runtime):
     return TestClient(app)
 
 
-def test_mcp_servers_endpoint():
+def test_mcp_servers_endpoint_falls_back_to_the_catalog_when_the_registry_is_down():
+    """No registry is running in this test, so this is the fallback path — and it must still
+    return a usable list. An editor whose tool picker is empty is useless, and "the registry is
+    unreachable" must not present as "you have no tools"."""
     r = _agent_client(_FakeRuntime()).get("/api/events/mcp-servers")
     assert r.status_code == 200
     names = {s["name"] for s in r.json()["servers"]}
     assert "cuga_web" in names and "cuga_finance" in names
+
+
+def test_mcp_servers_endpoint_serves_what_the_live_registry_reports(monkeypatch):
+    """THE BRING-YOUR-OWN PATH. The picker is sourced from CUGA's registry, so a server somebody
+    registered in their own MCP_SERVERS_FILE shows up with no code change. It used to return the
+    built-in seven and nothing else, which is what made them a closed list."""
+    import httpx
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return [
+                {"name": "acme_crm", "description": "the customer system"},
+                {"name": "cuga_web", "description": "terse registry text"},
+            ]
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    r = _agent_client(_FakeRuntime()).get("/api/events/mcp-servers")
+    servers = {s["name"]: s["hint"] for s in r.json()["servers"]}
+
+    assert "acme_crm" in servers and servers["acme_crm"] == "the customer system"
+    # the built-in hint wins over the registry's terser description for a server we describe
+    assert servers["cuga_web"] == "web search / browse / weather / wiki"
+    # and the rest of the catalog is still offered alongside whatever the registry knows
+    assert "cuga_finance" in servers
 
 
 def test_agent_create_list_and_update():
@@ -660,19 +762,38 @@ def test_agents_carry_example_utterances():
 
 def test_agent_create_validation_rejects_bad_input():
     c = _agent_client(_FakeRuntime())
-    # unknown mcp server
-    r = c.post(
-        "/api/events/agents",
-        json={"name": "x", "mcp_servers": ["not-a-server"]},
-        headers={"x-user-id": "admin"},
-    )
-    assert r.status_code == 400
     # whitespace in name
     r = c.post("/api/events/agents", json={"name": "bad name"}, headers={"x-user-id": "admin"})
     assert r.status_code == 400
     # PUT to a non-existent agent → 404
     r = c.put("/api/events/agents/ghost", json={"name": "ghost"}, headers={"x-user-id": "admin"})
     assert r.status_code == 404
+
+
+def test_an_agent_may_name_an_mcp_server_this_process_has_never_heard_of():
+    """BRING YOUR OWN MCP SERVER. This used to be a 400.
+
+    `mcp_catalog` lists seven servers so the demos work out of the box, and the editor rejected
+    anything outside them — which made a convenience default into a permission list, and meant
+    somebody running the events layer against their own registry could not build an agent that
+    used it. There is no way for this process to know what CUGA's registry serves, so it is not
+    the right place to rule on the name: a backend="cuga" agent's servers are resolved by CUGA,
+    against whatever MCP_SERVERS_FILE it was given.
+
+    The legacy cuga-web → cuga_web mapping still applies to names a stale client may still send;
+    `acme_crm` is left exactly as written.
+    """
+    c = _agent_client(_FakeRuntime())
+    r = c.post(
+        "/api/events/agents",
+        json={"name": "crmbot", "mcp_servers": ["acme_crm", "cuga-web"]},
+        headers={"x-user-id": "admin"},
+    )
+    assert r.status_code in (200, 201), r.text
+
+    got = c.get("/api/events/agents", headers={"x-user-id": "admin"}).json()
+    spec = next(a for a in got["agents"] if a["name"] == "crmbot")
+    assert spec["mcp_servers"] == ["acme_crm", "cuga_web"]
 
 
 def test_agent_triggers_survive_the_save_round_trip():
@@ -777,7 +898,9 @@ def test_triggers_endpoint_serves_the_registry():
     assert len(gh["triggers"]) == len(tr.events_for("github"))
     assert gh["triggers"][0]["default"] is True  # the app default leads its group
     row = next(t for t in gh["triggers"] if t["event"] == "new_pr")
-    assert row["backend"] == "ap" and row["fire"] == "synth"
+    # github went DIRECT — one signed webhook serves all 14 triggers — but stays
+    # webhook-shaped, so it is still synthetically fireable for the e2e harness.
+    assert row["backend"] == "direct" and row["fire"] == "synth"
     assert row["slots"][0]["name"] == "repo" and row["slots"][0]["required"] is True
 
 

@@ -1,0 +1,49 @@
+# Gemini 3.8 Flash with reasoning_effort=high, via the ETE LiteLLM gateway.
+#
+# Differs from settings.openai.toml (what the original Gemini run used) by exactly
+# ONE thing: extra_params.reasoning_effort. Budgets stay at 16000/400 and
+# temperature stays 0.1, so an A/B against that run has a single variable.
+#
+# Verified honoured on gcp/gemini-3.8-flash: reasoning tokens 401 -> 735 and the
+# reasoning trace goes 0 -> 2928 chars between "none" and "high", reproducible
+# across repeated calls. Note the gateway does NOT validate the value (garbage
+# returns HTTP 200), so the proof is the token delta, not an error response.
+#
+# Use with:  AGENT_SETTING_CONFIG="settings.openai.gemini-reasoning-high.toml"
+#            MODEL_NAME=gcp/gemini-3.8-flash
+
+[agent.planner.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.chat.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.final_answer.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.code.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.qa.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.action.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 400
+extra_params = { reasoning_effort = "high" }

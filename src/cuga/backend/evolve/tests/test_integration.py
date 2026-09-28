@@ -125,7 +125,9 @@ class TestUserFacts:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_retrieve_user_facts_returns_none_when_disabled(self, mock_settings):
         mock_settings.evolve.enabled = False
-        result = await EvolveIntegration.retrieve_user_facts("user-123", "How should I answer?")
+        result = await EvolveIntegration.retrieve_user_facts(
+            "user-123", "How should I answer?", namespace_id="instance-a", agent_id="agent-a"
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -139,13 +141,21 @@ class TestUserFacts:
             "categories": {"style": [{"content": "Prefers concise answers"}]},
         }
 
-        result = await EvolveIntegration.retrieve_user_facts("user-123", "How should I answer?")
+        result = await EvolveIntegration.retrieve_user_facts(
+            "user-123", "How should I answer?", namespace_id="instance-a", agent_id="agent-a"
+        )
 
         assert result is not None
         assert result["matched_count"] == 1
         mock_call_tool.assert_called_once_with(
             "retrieve_user_facts",
-            {"user_id": "user-123", "query": "How should I answer?", "limit": 5},
+            {
+                "user_id": "user-123",
+                "query": "How should I answer?",
+                "limit": 5,
+                "namespace_id": "instance-a",
+                "agent_id": "agent-a",
+            },
         )
 
     @pytest.mark.asyncio
@@ -155,7 +165,9 @@ class TestUserFacts:
         mock_settings.evolve.enabled = True
         mock_call_tool.side_effect = ConnectionError("Unable to connect")
 
-        result = await EvolveIntegration.retrieve_user_facts("user-123", "How should I answer?")
+        result = await EvolveIntegration.retrieve_user_facts(
+            "user-123", "How should I answer?", namespace_id="instance-a", agent_id="agent-a"
+        )
 
         assert result is None
 

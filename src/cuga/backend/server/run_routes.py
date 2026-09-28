@@ -327,6 +327,31 @@ async def _run_auth_failure(request: Request) -> Optional[JSONResponse]:
     )
 
 
+async def _authenticated_user_id(request: Request) -> Optional[str]:
+    """The signed-in caller's id, or ``None`` when the caller authenticated as a MACHINE.
+
+    ``/run`` takes two kinds of caller and they need opposite treatment:
+
+      * a HUMAN with a session/JWT — the identity is the token's. A signed-in user putting a
+        different ``user_id`` in the body was acting as somebody else, which is what this closes.
+      * the EVENTING SERVICE with the shared secret — there is no session, and ``user_id`` in the
+        body is the ONLY way a channel's user reaches CUGA. It stays authoritative there, or every
+        Slack/Telegram message would collapse to the default user.
+
+    So: token identity wins when there is one, body identity only when there is not. Returns None
+    on any failure — the caller already passed ``_run_auth_failure``, so this is about WHO, not
+    WHETHER, and a broken lookup must fall back to the existing behaviour rather than 500.
+    """
+    try:
+        from cuga.backend.server.auth.dependencies import require_chat_access
+
+        user = await require_chat_access(request)
+    except Exception:  # noqa: BLE001 — auth already succeeded; this only resolves the name
+        return None
+    sub = getattr(user, "sub", None) if user is not None else None
+    return str(sub) if sub else None
+
+
 def _run_unpack_answer(payload: Any) -> Dict[str, Any]:
     """The DEFAULT-mode Answer payload is a JSON string carrying the answer plus its sidecars
     (see the Answer emission in event_stream); WXO mode sends bare text. Accept both."""
@@ -400,7 +425,18 @@ async def run_sync(request: Request):
             )
 
     thread_id = str(body.get("thread_id") or "") or str(uuid.uuid4())
-    user_id = str(body.get("user_id") or "") or _DEFAULT_USER_ID
+    # A SIGNED-IN CALLER IS WHO THE TOKEN SAYS. This read body["user_id"] unconditionally, so a
+    # logged-in user could act as anyone by naming them — their runs, their history, their scope.
+    # The token wins when there is one; the body still decides for the machine caller (the eventing
+    # service has no session, and this is how a channel's user reaches CUGA at all).
+    _auth_uid = await _authenticated_user_id(request)
+    user_id = _auth_uid or str(body.get("user_id") or "") or _DEFAULT_USER_ID
+    if _auth_uid and str(body.get("user_id") or "") not in ("", _auth_uid):
+        logger.warning(
+            "/run: ignoring body user_id={} — the authenticated caller is {}",
+            body.get("user_id"),
+            _auth_uid,
+        )
     disable_history = bool(body.get("disable_history", False))
     attachments = body.get("attachments") or None
 

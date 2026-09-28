@@ -24,6 +24,9 @@ from langgraph.graph import END
 from langgraph.types import Command
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import CoreGraphAdapter
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
+    EMPTY_RESPONSE_CORRECTION_KEY as _EMPTY_KEY,
+)
 
 
 # ── Shared test adapter ────────────────────────────────────────────────────
@@ -393,6 +396,41 @@ async def test_empty_content_falls_back_to_reasoning_for_final_answer(mock_summa
     new_callable=AsyncMock,
 )
 async def test_empty_content_falls_back_to_execution_output(mock_summarize):
+    """A blank reply falls back to the execution output once the retry is spent.
+
+    The first blank reply is retried (see the empty-reply tests below), so this
+    pins the terminal behaviour by starting with the one-shot marker already set.
+    """
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state(
+        messages=[
+            HumanMessage(content="analyze spendings"),
+            HumanMessage(content="Execution output:\navg=200\ntotal=600"),
+        ],
+        metadata={_EMPTY_KEY: True},
+    )
+    model = _mock_model("")
+    settings = _mock_settings()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert result.update["final_answer"] == "avg=200\ntotal=600"
+
+
+# ── 9b. An empty reply is retried once before finalizing ───────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_empty_reply_is_retried_once(mock_summarize):
     mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
 
     adapter = _TestAdapter()
@@ -408,8 +446,78 @@ async def test_empty_content_falls_back_to_execution_output(mock_summarize):
     node = _get_factory()(adapter, model, settings)
     result = await node(state, config=None)
 
+    assert result.goto == "call_model"
+    assert result.update["final_answer"] == ""
+    assert result.update["execution_complete"] is False
+    assert result.update["cuga_lite_metadata"][_EMPTY_KEY] is True
+    assert isinstance(result.update["chat_messages"][-1], HumanMessage)
+    assert "empty" in result.update["chat_messages"][-1].content.lower()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_second_consecutive_empty_reply_terminates(mock_summarize):
+    """The one-shot marker is already set, so the turn ends instead of looping."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state(metadata={_EMPTY_KEY: True})
+    model = _mock_model("")
+    settings = _mock_settings()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
     assert result.goto == END
-    assert result.update["final_answer"] == "avg=200\ntotal=600"
+    assert result.update["execution_complete"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_reasoning_only_reply_is_not_retried(mock_summarize):
+    """Reasoning counts as content — retrying would discard a usable answer."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state()
+    model = _mock_model("")
+    model.ainvoke = AsyncMock(return_value=_mock_response("", reasoning="The total is 600."))
+    settings = _mock_settings()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert result.update["final_answer"] == "The total is 600."
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_whitespace_only_reply_is_treated_as_empty(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state()
+    model = _mock_model("   \n  ")
+    settings = _mock_settings()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == "call_model"
+    assert result.update["cuga_lite_metadata"][_EMPTY_KEY] is True
 
 
 @pytest.mark.unit

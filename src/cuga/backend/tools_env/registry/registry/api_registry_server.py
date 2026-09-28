@@ -16,6 +16,9 @@ from cuga.backend.tools_env.registry.config.config_loader import (
 )
 from cuga.backend.tools_env.registry.mcp_manager.mcp_manager import MCPManager
 from cuga.backend.tools_env.registry.registry.api_registry import ApiRegistry
+from cuga.backend.tools_env.registry.registry.appworld_path_normalizer import (
+    normalize_file_system_path_args,
+)
 from cuga.backend.tools_env.registry.registry.rejected_call_guard import rejected_call_guard
 from loguru import logger
 from cuga.config import settings
@@ -333,6 +336,21 @@ async def call_mcp_function(
             tracker.collect_step_external(
                 Step(name="api_call", data=request.model_dump_json()), full_path=trajectory_path
             )
+        # AppWorld path normalization (#730): generated code sometimes addresses
+        # file_system with cwd-relative paths ("./downloads/x.csv"); AppWorld
+        # silently roots them ("/./downloads/x.csv"), which breaks tilde_path
+        # evaluation and feeds the #599 retry loop. Rewrite to canonical "~/"
+        # form here — after the api_call trace step (the trace keeps the raw
+        # args the model produced) and before the guard check (so rejection
+        # signatures dedupe on canonical args and a corrected call is never
+        # short-circuited by rejections recorded under a malformed form).
+        normalized_args, path_changes = normalize_file_system_path_args(request.app_name, request.args)
+        if path_changes:
+            logger.warning(
+                f"AppWorld path normalization rewrote '{request.function_name}' arguments: "
+                + ", ".join(f"{key}: {old!r} -> {new!r}" for key, (old, new) in path_changes.items())
+            )
+            request.args = normalized_args
         # Rejected-call guard (#599): an identical call already rejected
         # rejected_call_block_after times is refused without reaching the API.
         # Placed after the api_call trace step so the attempt stays visible.

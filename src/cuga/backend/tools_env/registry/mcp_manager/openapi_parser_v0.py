@@ -421,10 +421,18 @@ class OpenAPITransformer:
                                 if not isinstance(resolved_prop_schema, dict):
                                     continue
 
-                                # Unwrap field-level unions
+                                # Unwrap field-level unions. FastAPI/Pydantic put an
+                                # optional parameter's description and title on the union
+                                # wrapper, not on the variant, so carry them through the
+                                # unwrap; the wrapper's own values win.
                                 field_variant = self._select_variant(resolved_prop_schema)
                                 if isinstance(field_variant, dict):
-                                    resolved_prop_schema = field_variant
+                                    wrapper_docs = {
+                                        key: resolved_prop_schema[key]
+                                        for key in ('description', 'title')
+                                        if key in resolved_prop_schema
+                                    }
+                                    resolved_prop_schema = {**field_variant, **wrapper_docs}
 
                                 prop_type, _ = self._get_schema_type_and_enum(resolved_prop_schema)
                                 prop_repr = self._summarize_param_schema(resolved_prop_schema)
@@ -435,6 +443,10 @@ class OpenAPITransformer:
                                         "type": prop_type,
                                         "required": prop_name in required_body_fields,
                                         "description": resolved_prop_schema.get('description', ''),
+                                        # The anyOf unwrap above preserves the wrapper's title
+                                        # alongside its description; dropping it here undid half
+                                        # of that for every optional body field.
+                                        "title": resolved_prop_schema.get('title'),
                                         "default": resolved_prop_schema.get('default'),
                                         "constraints": self._format_constraints(resolved_prop_schema),
                                         # Include nested shape for object/array fields

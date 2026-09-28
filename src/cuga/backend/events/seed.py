@@ -39,6 +39,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
     web = ["web", "telegram"]
     return [
         AgentSpec(
+            source="seed",
             name="pricebot",
             backend=b,
             mcp_servers=["cuga_finance"],
@@ -48,6 +49,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "one-line read on the move.",
         ),
         AgentSpec(
+            source="seed",
             name="geobot",
             backend=b,
             mcp_servers=["cuga_knowledge", "cuga_geo"],
@@ -57,6 +59,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "You can also geocode a place and find nearby hikes/attractions (cuga_geo).",
         ),
         AgentSpec(
+            source="seed",
             name="weatherbot",
             backend=b,
             mcp_servers=["cuga_web"],
@@ -64,6 +67,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             prompt="You answer current-weather questions for a city.",
         ),
         AgentSpec(
+            source="seed",
             name="papers",
             backend=b,
             mcp_servers=["cuga_knowledge"],
@@ -71,6 +75,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             prompt="You find and summarize recent arXiv papers on a topic.",
         ),
         AgentSpec(
+            source="seed",
             name="market_briefer",
             backend=b,
             mcp_servers=["cuga_finance", "cuga_web"],
@@ -80,6 +85,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         ),
         # ── cuga-apps-inspired agents (see cuga-apps/apps/*): richer, tool-combining skills ──
         AgentSpec(
+            source="seed",
             name="research_compass",
             backend=b,
             mcp_servers=["cuga_knowledge", "cuga_web"],
@@ -92,6 +98,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "important papers/sources, and suggest what to read next. Be concrete.",
         ),
         AgentSpec(
+            source="seed",
             name="city_briefing",
             backend=b,
             mcp_servers=["cuga_geo", "cuga_web", "cuga_knowledge"],
@@ -101,6 +108,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "(attractions/hikes). Tight, scannable, bulleted.",
         ),
         AgentSpec(
+            source="seed",
             name="code_auditor",
             backend=b,
             mcp_servers=["cuga_code", "cuga_web"],
@@ -112,6 +120,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         # ── agents that reach the cuga_web tools BEYOND web_search. Before these, the whole fleet
         #    used exactly one of that server's seven tools (see tests/events/AGENT_NOW_CATALOG.md).
         AgentSpec(
+            source="seed",
             name="webpage_summarizer",
             backend=b,
             mcp_servers=["cuga_web"],
@@ -123,6 +132,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "first, then fetch the best result. Never summarize a page you did not fetch.",
         ),
         AgentSpec(
+            source="seed",
             name="video_qa",
             backend=b,
             mcp_servers=["cuga_web"],
@@ -132,6 +142,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "the transcript when you answer, and say so if the video has no transcript.",
         ),
         AgentSpec(
+            source="seed",
             name="feed_watcher",
             backend=b,
             mcp_servers=["cuga_web"],
@@ -142,6 +153,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "asked what changed, report ONLY items you have not reported before.",
         ),
         AgentSpec(
+            source="seed",
             name="trip_planner",
             backend=b,
             mcp_servers=["cuga_geo", "cuga_web"],
@@ -154,6 +166,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         #    servers (the apps' bespoke tools aren't in this registry, so we do it the github_trending
         #    way: reach the same goal with web_search / fetch_webpage / the knowledge+geo tools) ──
         AgentSpec(
+            source="seed",
             name="ai_labs_news",
             backend=b,
             mcp_servers=["cuga_web"],
@@ -166,6 +179,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "ONLY posts you have not reported before.",
         ),
         AgentSpec(
+            source="seed",
             name="wiki_dive",
             backend=b,
             mcp_servers=["cuga_knowledge"],
@@ -177,6 +191,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "related articles worth reading next.",
         ),
         AgentSpec(
+            source="seed",
             name="movie_recommender",
             backend=b,
             mcp_servers=["cuga_web"],
@@ -188,6 +203,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "why-you'll-like-it tied to what they said. Never assume a preference unstated.",
         ),
         AgentSpec(
+            source="seed",
             name="recipe_composer",
             backend=b,
             mcp_servers=["cuga_web", "cuga_text"],
@@ -199,6 +215,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "one substitution tip. Never assume a pantry item or restriction not stated.",
         ),
         AgentSpec(
+            source="seed",
             name="meetup_finder",
             backend=b,
             mcp_servers=["cuga_web"],
@@ -209,6 +226,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "what-and-who, each linked. Say a source had nothing rather than inventing events.",
         ),
         AgentSpec(
+            source="seed",
             name="youtube_research",
             backend=b,
             mcp_servers=["cuga_web"],
@@ -220,6 +238,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "transcripts; note when a video has none. (Broader than video_qa's single video.)",
         ),
         AgentSpec(
+            source="seed",
             name="find_a_doctor",
             backend=b,
             mcp_servers=["cuga_web", "cuga_geo"],
@@ -231,6 +250,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "· location · why they fit (with a source). Never fabricate a provider or review.",
         ),
         AgentSpec(
+            source="seed",
             name="ibm_docs_qa",
             backend=b,
             mcp_servers=["cuga_web"],
@@ -243,6 +263,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         ),
         # agents that ACT ON integrations — these drive the per-user login (OAuth) story
         AgentSpec(
+            source="seed",
             name="mailbot",
             backend=b,
             mcp_servers=["cuga_text"],
@@ -251,6 +272,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             prompt="You summarize and triage the user's Gmail. Uses their own Gmail login.",
         ),
         AgentSpec(
+            source="seed",
             name="resume_judge",
             backend=b,
             mcp_servers=["cuga_text"],
@@ -271,6 +293,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             ),
         ),
         AgentSpec(
+            source="seed",
             name="support_digest",
             backend=b,
             mcp_servers=["cuga_web"],
@@ -290,6 +313,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
             "charter, note a new custom emoji, or index a new Box folder.",
         ),
         AgentSpec(
+            source="seed",
             name="pr_reviewer",
             backend=b,
             mcp_servers=["cuga_code", "cuga_text"],
@@ -306,6 +330,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         # push, branch, milestone, …). One thin agent instead of overloading pr_reviewer, and it
         # keeps per-user github OFF agents that have live cron examples (their connect gate).
         AgentSpec(
+            source="seed",
             name="repo_watcher",
             backend=b,
             mcp_servers=["cuga_text", "cuga_web"],
@@ -337,6 +362,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         ),
         # a scheduled digest agent → posts to a chat channel (demoes CRON → Slack delivery)
         AgentSpec(
+            source="seed",
             name="github_trending",
             backend=b,
             mcp_servers=["cuga_web"],
@@ -348,6 +374,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         ),
         # the generic inbound-webhook worker: any external system POSTs a payload → this triages it
         AgentSpec(
+            source="seed",
             name="incident_triage",
             backend=b,
             mcp_servers=["cuga_text"],
