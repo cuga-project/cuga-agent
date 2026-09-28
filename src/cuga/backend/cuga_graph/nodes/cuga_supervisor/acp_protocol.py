@@ -8,6 +8,8 @@ from uuid import uuid4
 
 from .acp_client.callbacks import ACPClientCallbacks, LifecycleRegistrar, PermissionHandler
 from .acp_client.pending import (
+    FinalRecordOwner,
+    PendingACPDelegation,
     PendingACPDelegationError,
     PendingACPDelegationRegistry,
     PendingACPDelegationRegistryFinalizedCancelled,
@@ -19,6 +21,8 @@ from .acp_client.permissions import SafePermissionRequest, select_permission_opt
 from .acp_client.config import ACPProcessConfig
 from .acp_client.process import ACPFactoryContractError, ACPStartupTimeoutError, open_acp_process_session
 from .acp_client import result as normalized
+
+_REPAUSED = object()
 
 
 class ACPPermissionPause(BaseException):
@@ -111,6 +115,7 @@ class ACPPermissionRuntimeBridge:
                 permission_future=permission_future,
                 cleanup=self._cancel_prompt,
                 finalizer=self._finalizer,
+                bridge=self,
             )
         except PendingACPDelegationError:
             return None
@@ -143,7 +148,13 @@ class ACPPermissionRuntimeBridge:
                 pause_waiter.cancel()
 
     async def resume(self, *, pending_id: str, approved: bool | None) -> dict[str, Any]:
+        """Answer one pending permission; raises a fresh ``ACPPermissionPause`` if the prompt asks again."""
         entry = await self.registry.claim(pending_id, thread_id=self.thread_id, agent_name=self.agent_name)
+        # Ownership was checked by the claim above; the prompt's own bridge holds the pause state.
+        owner = entry.bridge if isinstance(entry.bridge, ACPPermissionRuntimeBridge) else self
+        return await owner._resume_claimed(entry, approved=approved)
+
+    async def _resume_claimed(self, entry: PendingACPDelegation, *, approved: bool | None) -> dict[str, Any]:
         failed_result = {
             "result": "ACP pending delegation is stale or could not be resumed.",
             "status": "failed",
@@ -167,10 +178,13 @@ class ACPPermissionRuntimeBridge:
                 if registry_finalized:
                     raise ACPPermissionRegistryFinalized from None
                 raise PendingACPDelegationWinnerError("ACP permission response is ambiguous or unavailable")
+            # Re-arm before answering so the prompt's next operation can pause again.
+            self._pause = None
+            self._pause_ready = asyncio.Event()
             if not entry.permission_future.done():
                 entry.permission_future.set_result(selected)
             try:
-                result = await entry.prompt_task
+                result = await self._await_prompt_or_pause(entry.prompt_task)
             except asyncio.CancelledError:
                 try:
                     registry_finalized = await self.registry.settle_claim(
@@ -201,6 +215,18 @@ class ACPPermissionRuntimeBridge:
                 if registry_finalized:
                     raise ACPPermissionRegistryFinalized from None
                 raise PendingACPDelegationWinnerError("ACP resumed delegation failed") from exc
+            if result is _REPAUSED:
+                pause = self._pause
+                if pause is not None and await self.registry.hand_off_claim(entry):
+                    self._was_parked = True
+                    raise pause
+                # The registry reclaimed this entry (expiry/shutdown) and is tearing the prompt
+                # down; drop the newer pause so it cannot be approved or finalized twice.
+                if pause is not None:
+                    await self.registry.cancel(pause.pending_id, reason="superseded claim was reclaimed")
+                if entry.final_record_owner is FinalRecordOwner.REGISTRY:
+                    raise ACPPermissionRegistryFinalized from None
+                raise PendingACPDelegationWinnerError("ACP permission pause could not be handed off")
             try:
                 registry_finalized = await self.registry.settle_claim(
                     entry,
@@ -218,6 +244,21 @@ class ACPPermissionRuntimeBridge:
             return result
         except PendingACPDelegationWinnerError:
             raise
+
+    async def _await_prompt_or_pause(self, prompt_task: asyncio.Future[Any]) -> Any:
+        """Return the prompt result, or ``_REPAUSED`` once the prompt requests another permission."""
+        pause_waiter = asyncio.create_task(self._pause_ready.wait())
+        try:
+            done, _ = await asyncio.wait({prompt_task, pause_waiter}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            prompt_task.cancel()
+            raise
+        finally:
+            if not pause_waiter.done():
+                pause_waiter.cancel()
+        if prompt_task in done:
+            return await prompt_task
+        return _REPAUSED
 
     async def _cancel_prompt(self) -> None:
         task = self._prompt_task
