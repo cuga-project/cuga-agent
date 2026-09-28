@@ -210,16 +210,22 @@ _PYTHON_FENCE = re.compile(r"```(?:python|py)\b", re.IGNORECASE)
 _UNTAGGED_FENCE = re.compile(r"```[ \t]*\n(.*?)```", re.DOTALL)
 
 
-def _looks_like_python_block(content: str) -> bool:
+def _looks_like_python_block(content: str, tool_names: Any = ()) -> bool:
     """A fenced block the CodeAct sandbox would have executed.
 
-    A ``python``/``py`` fence, or an untagged fence whose body awaits or calls
-    something. Fences carrying JSON, text or shell output in a final answer are
-    not violations.
+    A ``python``/``py`` fence, or an untagged fence whose body ``await``s or
+    calls one of the bound tools by name. Fences carrying JSON, text, shell
+    output or plain notation (``f(x) = 2``) in a final answer are not violations.
     """
     if _PYTHON_FENCE.search(content):
         return True
-    return any(re.search(r"\bawait\b|\w+\(", body) for body in _UNTAGGED_FENCE.findall(content))
+    names = {n for n in (tool_names or ()) if n and not str(n).startswith("_")}
+    for body in _UNTAGGED_FENCE.findall(content):
+        if re.search(r"\bawait\b", body):
+            return True
+        if names and any(re.search(rf"\b{re.escape(n)}\s*\(", body) for n in names):
+            return True
+    return False
 
 
 def _few_shot_to_messages(few_shot: List[Any]) -> List[BaseMessage]:
@@ -675,7 +681,11 @@ class AgentGraphAdapter(CoreGraphAdapter):
             )
 
         prior_violations = int(base_meta.get("fc_mode_violations", 0) or 0)
-        if _looks_like_python_block(content) and not budget_exhausted and prior_violations == 0:
+        if (
+            _looks_like_python_block(content, self._tools_context)
+            and not budget_exhausted
+            and prior_violations == 0
+        ):
             # Mode violation: never execute code here. Exactly one corrective turn
             # (charged as a step); a second fence is delivered as the answer, so a
             # fence-happy model cannot loop to cuga_lite_max_steps. Only Python

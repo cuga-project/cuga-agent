@@ -838,11 +838,16 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
         reflection_apps_snapshot = format_apps_for_prompt(apps_for_prompt or [])
 
+        # The function-calling one-correction cap is per turn. Metadata is carried
+        # across turns by the SDK / server (only policy_decisions is reset there), so
+        # drop the counter here — prepare runs exactly once per turn on both paths.
+        _turn_metadata = dict(state.cuga_lite_metadata or {})
+        _turn_metadata.pop("fc_mode_violations", None)
         update_payload: dict[str, Any] = {
             "tools_prepared": True,
             "prepared_prompt": dynamic_prompt,
             "step_count": 0,
-            "cuga_lite_metadata": state.cuga_lite_metadata,
+            "cuga_lite_metadata": _turn_metadata,
             "reflection_apps": reflection_apps_snapshot,
             "reflection_enable_find_tools": enable_find_tools,
             "reflection_skills_enabled": skills_enabled,

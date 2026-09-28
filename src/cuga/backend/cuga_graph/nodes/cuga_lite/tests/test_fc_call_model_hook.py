@@ -34,6 +34,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import (
     FC_TOOL_APPROVAL_UNVERIFIED,
     FC_UNANSWERED_CALL_REPLY,
     AgentGraphAdapter,
+    _looks_like_python_block,
     _normalize_history_for_replay,
 )
 
@@ -455,3 +456,13 @@ async def test_non_python_fences_in_an_answer_are_not_violations():
     answer = "Here is the record:\n```json\n{\"id\": 42}\n```"
     cmd = await _turn(_adapter(), _Model(AIMessage(content=answer)), _state(), FC)
     assert cmd.goto == END and cmd.update["final_answer"] == answer
+
+
+def test_untagged_fences_are_violations_only_when_they_run_something():
+    assert _looks_like_python_block("```python\nx = 1\n```")
+    assert _looks_like_python_block("```\nawait add(a=1, b=2)\n```")
+    assert _looks_like_python_block("```\nadd(a=1, b=2)\n```", {"add"}), "a bound tool called by name"
+    assert not _looks_like_python_block("The function is\n```\nf(x) = 2x + 1\n```", {"add"}), (
+        "notation, not code"
+    )
+    assert not _looks_like_python_block("```json\n{\"a\": 1}\n```", {"add"})
