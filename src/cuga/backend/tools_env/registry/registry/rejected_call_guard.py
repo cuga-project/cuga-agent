@@ -6,7 +6,7 @@ rejected — so an agent can re-send the same call with the same arguments acros
 dozens of turns (observed: 2,136 identical rejections in one task). This guard
 lives at the ``/functions/call`` choke point, which every execution path shares
 (the local ``call_api`` helper and the remote-sandbox injected helper both POST
-there), and escalates in two tiers:
+there), and escalates in three tiers:
 
 1. **Escalate** — once a signature has been rejected ``rejected_call_escalate_after``
    times, further rejections of the same signature get a prominent prefix telling
@@ -17,24 +17,24 @@ there), and escalates in two tiers:
    ``{"status": "exception", ...}`` shape, so clients handle it like any other
    rejection.
 
-3. **Same error, different arguments** — the two tiers above key on the exact
-   argument set, so an agent that varies one argument each attempt never repeats
-   a signature and is never stopped. When one endpoint keeps returning the *same
-   error* for ``rejected_call_distinct_args_block_after`` different argument
-   sets, the problem is not the arguments: further calls to that endpoint are
-   refused with a directive to fix the precondition or use a different tool.
+3. **Same error, different arguments** — after
+   ``rejected_call_distinct_args_advise_after`` different argument sets produce
+   the same error shape, subsequent matching failures include advice to inspect
+   the arguments, resource eligibility and preconditions. This tier never blocks
+   execution: a different card, code or argument format may still succeed.
 
 Only *definitive* rejections count (400/402/404/405/409/410/422). Auth and
 transient statuses (401/403/408/429) are excluded: those can start succeeding
 after out-of-band state changes (token refresh, rate-limit reset) without the
 arguments changing.
 
-A successful **mutating** call (any method but GET/HEAD, to any app) clears all
+A successful **mutating** call (any method but GET/HEAD, to any app) clears exact-call
 counters: state has changed, so previously-failing calls may now legitimately
 succeed with identical arguments — e.g. a Venmo transaction rejected for
 insufficient balance becomes valid after a top-up. Clearing is deliberately
 global, not per-app, because the precondition fix often lives in a different
-app than the failing call.
+app than the failing call. Endpoint advisory tallies clear on success at that
+endpoint, including GET/HEAD, and all counters clear at the task boundary.
 """
 
 from __future__ import annotations
@@ -54,15 +54,6 @@ GUARDED_STATUS_CODES = frozenset({400, 402, 404, 405, 409, 410, 422})
 # Argument keys excluded from the signature: they can rotate between attempts
 # (token refresh) without making the call logically different.
 _SIGNATURE_IGNORED_KEYS = frozenset({"access_token"})
-
-
-@dataclass
-class _EndpointError:
-    """One endpoint repeatedly failing the same way, whatever the arguments."""
-
-    arg_signatures: set
-    status_code: int
-    message: str
 
 
 @dataclass
@@ -87,7 +78,7 @@ class RejectedCallGuard:
 
     def __init__(self) -> None:
         self._rejections: Dict[str, _Rejection] = {}
-        self._endpoint_errors: Dict[str, _EndpointError] = {}
+        self._endpoint_errors: Dict[str, set[str]] = {}
         self._lock = threading.Lock()
 
     # ── Configuration ──────────────────────────────────────────────────────
@@ -117,8 +108,8 @@ class RejectedCallGuard:
         return cls._threshold("rejected_call_escalate_after", 1)
 
     @classmethod
-    def _distinct_args_block_after(cls) -> int:
-        return cls._threshold("rejected_call_distinct_args_block_after", 3)
+    def _distinct_args_advise_after(cls) -> int:
+        return cls._threshold("rejected_call_distinct_args_advise_after", 3)
 
     @classmethod
     def _block_after(cls) -> int:
@@ -153,15 +144,13 @@ class RejectedCallGuard:
 
     @staticmethod
     def error_shape(message: str) -> str:
-        """Collapse an error message to what is stable across attempts.
+        """Group similar messages for advice, without inferring recoverability.
 
-        Two rejections describe the same problem when their text matches once
-        the varying parts are removed: identifiers, quoted values and numbers
-        differ between attempts ("card 176 has expired" / "card 178 has
-        expired") while the failure is identical.
+        Quoted values and numbers may vary between related failures. Preserve
+        apostrophes within words so contractions do not hide meaningful text.
         """
         text = (message or "").lower()
-        text = re.sub(r"[\"'`][^\"'`]*[\"'`]", "", text)
+        text = re.sub(r"""(?<!\w)(["'`]).*?\1(?!\w)""", "", text)
         text = re.sub(r"\d+", "", text)
         return re.sub(r"\s+", " ", text).strip()
 
@@ -174,24 +163,6 @@ class RejectedCallGuard:
             sort_keys=True,
             default=str,
         )
-
-    @staticmethod
-    def _same_error_response(function_name: str, endpoint: "_EndpointError") -> Dict[str, Any]:
-        return {
-            "status": "exception",
-            "served_as_http_error": True,
-            "status_code": endpoint.status_code,
-            "message": (
-                f"Not executed: this endpoint has now rejected "
-                f"{len(endpoint.arg_signatures)} different argument sets with the same error: "
-                f"{endpoint.message} — the arguments are not the problem, so trying another value "
-                f"will not help. Either fix the precondition the error describes with a different "
-                f"call, or find a tool that addresses it (discover what else this app offers). If "
-                f"neither is possible, state that this step cannot be completed."
-            ),
-            "error_type": "RepeatedEndpointError",
-            "function_name": function_name,
-        }
 
     def check(
         self,
@@ -207,23 +178,12 @@ class RejectedCallGuard:
         rejection), so callers can serve it exactly like a real API rejection.
         """
         block_after = self._block_after()
-        distinct_block = self._distinct_args_block_after()
+        if not block_after:
+            return None
         key = self.signature(app_name, function_name, args, agent_id)
         with self._lock:
             entry = self._rejections.get(key)
-            exact_hit = bool(block_after and entry is not None and entry.count >= block_after)
-            if not exact_hit and distinct_block:
-                for shape_key, endpoint in self._endpoint_errors.items():
-                    if not shape_key.startswith(self._endpoint_prefix(app_name, function_name, agent_id)):
-                        continue
-                    if len(endpoint.arg_signatures) >= distinct_block:
-                        logger.warning(
-                            f"Short-circuiting '{function_name}' ({app_name}): "
-                            f"{len(endpoint.arg_signatures)} different argument sets produced the "
-                            f"same error"
-                        )
-                        return self._same_error_response(function_name, endpoint)
-            if not exact_hit:
+            if entry is None or entry.count < block_after:
                 return None
         logger.warning(
             f"Short-circuiting '{function_name}' ({app_name}): identical call already "
@@ -257,38 +217,50 @@ class RejectedCallGuard:
     ) -> Optional[str]:
         """Record a rejected call; return an escalated message when due.
 
-        Only guarded 4xx statuses count. Returns ``None`` when the original
-        message should be served unchanged (first rejection, non-guarded status,
-        or escalation disabled). ``served_as_http_error=False`` marks rejections
+        Only guarded 4xx statuses count. Returns ``None`` when neither the exact
+        signature escalation nor the distinct-argument advisory is due. Advice
+        changes only the message of an actual rejection, never its delivery.
+        ``served_as_http_error=False`` marks rejections
         that reach the client as HTTP 200 with an exception-shaped body (the
         AppWorld adapter path); a later short-circuit mirrors that flavor.
         """
         if status_code not in GUARDED_STATUS_CODES:
             return None
         key = self.signature(app_name, function_name, args, agent_id)
-        shape_key = self._endpoint_prefix(app_name, function_name, agent_id) + "|" + self.error_shape(message)
+        distinct_after = self._distinct_args_advise_after()
+        distinct_count = 0
         with self._lock:
             entry = self._rejections.get(key)
             if entry is None:
                 entry = self._rejections[key] = _Rejection(0, status_code, message)
             entry.count += 1
-            endpoint = self._endpoint_errors.get(shape_key)
-            if endpoint is None:
-                endpoint = self._endpoint_errors[shape_key] = _EndpointError(set(), status_code, message)
-            endpoint.arg_signatures.add(key)
-            endpoint.message = message
+            if distinct_after:
+                shape_key = (
+                    self._endpoint_prefix(app_name, function_name, agent_id) + "|" + self.error_shape(message)
+                )
+                signatures = self._endpoint_errors.setdefault(shape_key, set())
+                signatures.add(key)
+                distinct_count = len(signatures)
             entry.status_code = status_code
             entry.message = message
             entry.served_as_http_error = served_as_http_error
             count = entry.count
         escalate_after = self._escalate_after()
-        if not escalate_after or count <= escalate_after:
-            return None
-        return (
-            f"[Repeated failure] This exact call (same endpoint, same arguments) has now been "
-            f"rejected {count} times with the same class of error. Do not re-issue it unchanged — "
-            f"change the arguments or the approach. Error: {message}"
-        )
+        if escalate_after and count > escalate_after:
+            return (
+                f"[Repeated failure] This exact call (same endpoint, same arguments) has now been "
+                f"rejected {count} times with the same class of error. Do not re-issue it unchanged — "
+                f"change the arguments or the approach. Error: {message}"
+            )
+        if distinct_after and distinct_count >= distinct_after:
+            return (
+                f"[Repeated endpoint failure] This endpoint has rejected {distinct_count} different "
+                f"argument sets with a similar error. Check argument validity, resource eligibility "
+                f"and any preconditions before retrying. A corrected argument or a different resource "
+                f"may still succeed; use another tool to inspect or fix the precondition if needed. "
+                f"Error: {message}"
+            )
+        return None
 
     def record_success(
         self,
@@ -297,29 +269,18 @@ class RejectedCallGuard:
         function_name: Optional[str] = None,
         agent_id: Optional[str] = None,
     ) -> None:
-        """Clear rejection counters after a successful mutating call.
+        """Clear exact-call counters on mutations and endpoint advice on success.
 
-        A missing/unknown method is treated as mutating: wrongly clearing only
-        weakens the guard for a while, whereas wrongly keeping a block could
-        forbid a call that has become valid.
-
-        The two tiers clear differently, because they claim different things:
-
-        * The per-signature tiers claim "this exact call failed". Any state
-          change anywhere can make it valid — the precondition fix often lives
-          in another app — so a success clears them globally.
-        * The endpoint tier claims "this endpoint rejects every argument set
-          with this error". A success elsewhere is no evidence against that, and
-          clearing on one resets the count before it can ever be reached: an
-          agent that succeeds at adding to a cart between failing order attempts
-          never accumulates three. Only a success *on the same endpoint* refutes
-          the claim, so only that clears it. Without a function name the caller
-          cannot say which endpoint succeeded, and the tier is left intact.
+        Any successful mutation can repair a previously rejected exact call,
+        including across apps. An unknown method is treated as mutating.
+        Endpoint advisory tallies clear only when that endpoint succeeds,
+        including reads. Unrelated successes retain the advice history so an
+        add-to-cart/order retry loop still receives guidance. Retaining this
+        history never blocks a corrected call.
         """
-        if (method or "").upper() in ("GET", "HEAD"):
-            return
+        mutating = (method or "").upper() not in ("GET", "HEAD")
         with self._lock:
-            if self._rejections:
+            if mutating and self._rejections:
                 logger.debug(
                     f"Clearing {len(self._rejections)} rejected-call signatures after "
                     f"successful mutating call to '{app_name}'"
