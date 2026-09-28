@@ -43,12 +43,59 @@ async def test_reassigned_variable_reaches_the_next_block(state):
 
 @pytest.mark.asyncio
 async def test_variable_changed_in_place_reaches_the_next_block(state):
-    await run_block(state, "items = [1]\nprofile = {'name': 'Paul'}")
-    await run_block(state, "items.append(2)\nprofile['city'] = 'Seattle'")
-    output, _ = await run_block(state, "print(items, profile)")
+    # A set is stored as a tagged copy, so an in-place change is lost unless it is
+    # written back (a plain list or dict would be shared with the manager).
+    await run_block(state, "seen = {'a'}")
+    await run_block(state, "seen.add('b')")
+    output, _ = await run_block(state, "print(sorted(seen))")
 
-    assert "[1, 2]" in output
-    assert "'city': 'Seattle'" in output
+    assert "['a', 'b']" in output
+
+
+def test_changed_keys_detects_in_place_change_of_a_mixed_key_dict():
+    totals = {(2023, 5): 1.0, "note": "x"}
+    snapshot = VariableUtils.snapshot_values({"totals": totals}, {"totals"})
+    totals[(2023, 5)] += 2.5
+
+    assert VariableUtils.changed_keys({"totals": totals}, snapshot) == {"totals"}
+
+
+@pytest.mark.asyncio
+async def test_existing_variable_mutated_into_a_cycle_does_not_crash_the_block(state):
+    await run_block(state, 'node = {"name": "root", "children": []}')
+    output, new_vars = await run_block(
+        state, 'node["children"].append(node)\ncount = len(node["children"])\nprint("ok")'
+    )
+
+    assert "ok" in output
+    assert new_vars["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_new_self_referencing_variable_does_not_crash_the_block(state):
+    output, new_vars = await run_block(state, "loop = []\nloop.append(loop)\ntotal = 2\nprint('ok')")
+
+    assert "ok" in output
+    assert new_vars["total"] == 2
+    assert "loop" not in new_vars
+
+
+@pytest.mark.asyncio
+async def test_reassigned_variable_survives_keep_last_n(state, monkeypatch):
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.advanced_features, "code_executor_keep_last_n", 1)
+    await run_block(state, 'roommates = {"status": "exception"}')
+    await run_block(state, 'roommates = ["Chris", "Jose"]\ncount = len(roommates)')
+
+    assert state.variables_manager.get_variable("roommates") == ["Chris", "Jose"]
+
+
+def test_snapshot_skips_variables_the_block_does_not_name():
+    values = {"big": list(range(5)), "used": 1}
+    snapshot = VariableUtils.snapshot_values(values, set(values), code="print(used + 1)")
+
+    assert set(snapshot) == {"used"}
 
 
 @pytest.mark.asyncio
