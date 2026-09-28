@@ -21,11 +21,22 @@ def _isolate_local_storage_db(tmp_path, monkeypatch):
     store cached against the real path, so the next access reopens against the
     isolated temp DB. Restores + re-invalidates on teardown so no temp-path
     store leaks into the next test.
+
+    ALSO redirects ``cuga.config.DBS_DIR`` to the temp dir. ``config_store.reset_config_db()``
+    resolves the file it DELETES as ``os.path.join(DBS_DIR, "cuga.db")`` (a function-local
+    ``from cuga.config import DBS_DIR``, read at call time), NOT through ``_local_db_path``.
+    Without this patch, a test that calls ``reset_config_db()`` (e.g. a ``clean_store``
+    fixture) would delete the developer's real ``src/cuga/dbs/cuga.db`` out from under a
+    running ``cuga start`` app — which then re-seeds from scratch on its next restart. With
+    it, the delete lands on the same temp file the reads/writes use.
     """
     import cuga.backend.storage.facade as facade
+    import cuga.config as _cfg
 
+    db_dir = str(tmp_path)
     db_path = str(tmp_path / "cuga.db")
     monkeypatch.setattr(facade, "_local_db_path", lambda: db_path)
+    monkeypatch.setattr(_cfg, "DBS_DIR", db_dir)
     try:
         facade.get_storage().invalidate_relational_stores()
     except Exception:
