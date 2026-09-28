@@ -65,20 +65,6 @@ async def run_supervisor(worker, responses, *, playbook=True, max_steps=10):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reply", [UNEXECUTED_ANSWER, "User ID: {user_id}", "The user ID is `{user_id}`."])
-async def test_unexecuted_playbook_answer_does_not_end_before_delegation(worker, reply):
-    """Correct explicit result placeholders by executing the requested delegation."""
-    result = await run_supervisor(
-        worker,
-        [reply, DELEGATION_CODE, "Alice: user_alice_99."],
-    )
-    assert result["selected_agents"] == ["user_finder"]
-    assert result["metrics"]["delegation_count"] == 1
-    assert result["final_answer"] == "Alice: user_alice_99."
-    worker.invoke.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_direct_code_records_delegation(worker):
     """Record delegation when the first model response already contains code."""
     result = await run_supervisor(worker, [DELEGATION_CODE, "Alice: user_alice_99."])
@@ -101,6 +87,7 @@ async def test_completed_or_blocked_reply_does_not_force_delegation(worker, repl
 @pytest.mark.parametrize(
     "reply",
     [
+        UNEXECUTED_ANSWER,
         "I need the customer's {account_number} before I can continue.",
         "Please provide {account_number} so I can find the account.",
         "What is the customer's {account_number}?",
@@ -111,8 +98,8 @@ async def test_completed_or_blocked_reply_does_not_force_delegation(worker, repl
         "Use {user_id} in the template.",
     ],
 )
-async def test_placeholder_input_or_template_does_not_retry(worker, reply):
-    """Input requests must finish before a subsequent model reply can delegate."""
+async def test_placeholder_reply_does_not_retry(worker, reply):
+    """Placeholder text alone must not introduce a supervisor continuation policy."""
     result = await run_supervisor(worker, [reply, DELEGATION_CODE, "Done."])
     assert result["final_answer"] == reply
     assert result["step_count"] == 1
@@ -121,26 +108,10 @@ async def test_placeholder_input_or_template_does_not_retry(worker, reply):
 
 
 @pytest.mark.asyncio
-async def test_repeated_placeholder_answer_is_not_retried_forever(worker):
-    """Spend at most one corrective retry on an unresolved result."""
-    result = await run_supervisor(worker, [UNEXECUTED_ANSWER])
-    assert result["step_count"] == 2
-    worker.invoke.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_template_outside_playbook_is_not_retried(worker):
     """Leave non-playbook placeholder templates unchanged."""
     result = await run_supervisor(worker, ["Use {user_id} in the template."], playbook=False)
     assert result["step_count"] == 1
-    worker.invoke.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_placeholder_correction_respects_step_limit(worker):
-    """Honor the model step budget before attempting a corrective delegation."""
-    result = await run_supervisor(worker, [UNEXECUTED_ANSWER, DELEGATION_CODE], max_steps=1)
-    assert "Maximum step limit" in result["final_answer"]
     worker.invoke.assert_not_awaited()
 
 
