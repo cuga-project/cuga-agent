@@ -3530,36 +3530,15 @@ class CugaSupervisor:
                     permission = (state.supervisor_metadata or {}).get("acp_permission")
                     if isinstance(permission, dict):
                         from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
-                            safe_identity,
+                            permission_response_decision,
                         )
 
                         pending_id = permission.get("pending_id")
-                        agent_name = permission.get("agent_name")
-                        response_tool = getattr(state.hitl_response.additional_data, "tool", None)
-                        response_permission = (
-                            response_tool.get("acp_permission") if isinstance(response_tool, dict) else None
-                        )
-                        response_pending_id = (
-                            response_permission.get("pending_id")
-                            if isinstance(response_permission, dict)
-                            else None
-                        )
-                        confirmed = state.hitl_response.confirmed
-                        try:
-                            response_id_is_canonical = (
-                                isinstance(response_pending_id, str)
-                                and safe_identity(response_pending_id, field="pending_id")
-                                == response_pending_id
-                            )
-                        except ValueError:
-                            response_id_is_canonical = False
-                        if not response_id_is_canonical or response_pending_id != pending_id:
-                            confirmed = None
                         md = dict(state.supervisor_metadata or {})
                         md["acp_permission_resume"] = {
                             "pending_id": pending_id,
-                            "agent_name": agent_name,
-                            "approved": confirmed if isinstance(confirmed, bool) else None,
+                            "agent_name": permission.get("agent_name"),
+                            "approved": permission_response_decision(pending_id, state.hitl_response),
                         }
                         state.supervisor_metadata = md
                         state.hitl_action = None
