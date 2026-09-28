@@ -153,6 +153,49 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
             },
         )
 
+    def _create_acp_permission_command(
+        state: CugaSupervisorState, exc: ACPPermissionPause, metadata: dict
+    ) -> Command:
+        """Turn one ACP operation's permission pause into a standard tool-approval interrupt."""
+        permission = exc.request
+        safe_metadata = {
+            "pending_id": exc.pending_id,
+            "agent_name": exc.agent_name,
+            "title": permission.title,
+            "description": permission.description,
+            "kind": permission.kind,
+            "locations": list(permission.locations),
+        }
+        hitl_action = create_tool_approval_action(
+            policy_name=f"ACP permission: {permission.title}",
+            required_tools=[permission.kind or permission.title],
+            code_preview=list(permission.locations),
+            full_code="",
+            approval_message=permission.description or permission.title,
+            return_to=adapter.sender_name,
+        )
+        hitl_action.additional_data.tool["acp_permission"] = {
+            "pending_id": exc.pending_id,
+            "agent_name": exc.agent_name,
+        }
+        return Command(
+            goto=END,
+            update={
+                adapter.messages_key: state.supervisor_chat_messages,
+                "final_answer": hitl_action.description,
+                "hitl_action": hitl_action,
+                "sender": adapter.sender_name,
+                "step_count": state.step_count + 1,
+                **_budget_updates(),
+                **_delegation_state_update(state),
+                adapter.metadata_key: {
+                    **metadata,
+                    "approval_required": True,
+                    "acp_permission": safe_metadata,
+                },
+            },
+        )
+
     async def execute_agent_tool(state: CugaSupervisorState, config: Optional[RunnableConfig] = None):
         logger.info("Supervisor conversational: executing agent delegation code")
 
@@ -199,6 +242,11 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                     approved=approved,
                 )
                 record_authorized = True
+            except ACPPermissionPause as exc:
+                # The same prompt asked for its next operation: gate it with a fresh pending ID.
+                metadata.pop("acp_permission_resume", None)
+                metadata.pop("acp_permission", None)
+                return _create_acp_permission_command(state, exc, metadata)
             except PendingACPDelegationWinnerCancelled as exc:
                 agent_name = exc.metadata.agent_name
                 result = {
@@ -387,44 +435,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                     base_update["task_todos"] = todo_state_update
             return base_update
         except ACPPermissionPause as exc:
-            permission = exc.request
-            safe_metadata = {
-                "pending_id": exc.pending_id,
-                "agent_name": exc.agent_name,
-                "title": permission.title,
-                "description": permission.description,
-                "kind": permission.kind,
-                "locations": list(permission.locations),
-            }
-            hitl_action = create_tool_approval_action(
-                policy_name=f"ACP permission: {permission.title}",
-                required_tools=[permission.kind or permission.title],
-                code_preview=list(permission.locations),
-                full_code="",
-                approval_message=permission.description or permission.title,
-                return_to=adapter.sender_name,
-            )
-            hitl_action.additional_data.tool["acp_permission"] = {
-                "pending_id": exc.pending_id,
-                "agent_name": exc.agent_name,
-            }
-            return Command(
-                goto=END,
-                update={
-                    adapter.messages_key: state.supervisor_chat_messages,
-                    "final_answer": hitl_action.description,
-                    "hitl_action": hitl_action,
-                    "sender": adapter.sender_name,
-                    "step_count": state.step_count + 1,
-                    **_budget_updates(),
-                    **_delegation_state_update(state),
-                    adapter.metadata_key: {
-                        **(adapter.get_metadata(state) or {}),
-                        "approval_required": True,
-                        "acp_permission": safe_metadata,
-                    },
-                },
-            )
+            return _create_acp_permission_command(state, exc, adapter.get_metadata(state) or {})
         except Exception as exc:
             error_msg = f"Error during execution: {str(exc)}"
             logger.error(error_msg, exc_info=True)
