@@ -83,25 +83,13 @@ class FakeAgent:
             cwd = os.environ.get("ACP_FIXTURE_CWD", "<missing>")
             await self._emit(session_id, f"cwd={cwd};allowed={forwarded};omitted={omitted}")
         elif self.scenario == "permission":
-            if self.client is None:
-                raise RequestError.internal_error()
-            response = await self.client.request_permission(
-                session_id,
-                ToolCallUpdate(
-                    toolCallId="fixture-operation",
-                    kind="execute",
-                    status="pending",
-                    title="Run deterministic fixture operation",
-                ),
-                [
-                    PermissionOption(optionId="allow-once", name="Allow once", kind="allow_once"),
-                    PermissionOption(optionId="reject-once", name="Reject once", kind="reject_once"),
-                ],
-            )
-            selected = (
-                isinstance(response.outcome, AllowedOutcome) and response.outcome.option_id == "allow-once"
-            )
+            selected = await self._request_permission(session_id, "fixture-operation")
             await self._emit(session_id, "permission-allowed" if selected else "permission-denied")
+        elif self.scenario == "permission-twice":
+            first = await self._request_permission(session_id, "fixture-operation-1")
+            second = await self._request_permission(session_id, "fixture-operation-2")
+            await self._emit(session_id, f"first={'allowed' if first else 'denied'};")
+            await self._emit(session_id, f"second={'allowed' if second else 'denied'}")
         else:
             await self._emit(session_id, "first:")
             await self._emit(session_id, text)
@@ -109,6 +97,24 @@ class FakeAgent:
 
     async def cancel(self, session_id: str, **_kwargs: Any) -> None:
         self.cancelled.add(session_id)
+
+    async def _request_permission(self, session_id: str, tool_call_id: str) -> bool:
+        if self.client is None:
+            raise RequestError.internal_error()
+        response = await self.client.request_permission(
+            session_id,
+            ToolCallUpdate(
+                toolCallId=tool_call_id,
+                kind="execute",
+                status="pending",
+                title="Run deterministic fixture operation",
+            ),
+            [
+                PermissionOption(optionId="allow-once", name="Allow once", kind="allow_once"),
+                PermissionOption(optionId="reject-once", name="Reject once", kind="reject_once"),
+            ],
+        )
+        return isinstance(response.outcome, AllowedOutcome) and response.outcome.option_id == "allow-once"
 
     async def _emit(self, session_id: str, text: str) -> None:
         if self.client is None:
@@ -156,7 +162,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--scenario",
-        choices=("normal", "no-output", "permission", "delay", "stderr", "cwd-env"),
+        choices=("normal", "no-output", "permission", "permission-twice", "delay", "stderr", "cwd-env"),
         default="normal",
     )
     parser.add_argument("--ready-file")
