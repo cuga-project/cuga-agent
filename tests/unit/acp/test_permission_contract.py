@@ -20,12 +20,12 @@ def _workspace_root(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(paths, "local_base_dir", lambda: ROOT)
 
 
-def _config():
+def _config(scenario: str = "permission"):
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import ACPProcessConfig
 
     return ACPProcessConfig(
         command=sys.executable,
-        args=(str(FAKE_AGENT), "--scenario", "permission"),
+        args=(str(FAKE_AGENT), "--scenario", scenario),
         cwd=ROOT,
         startup_timeout=2,
         prompt_timeout=5,
@@ -88,6 +88,59 @@ async def test_real_permission_pause_resumes_same_process_once(approved: bool, e
                 agent_name="fixture-agent",
                 approved=approved,
             )
+    finally:
+        await registry.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_sequential_permissions_each_pause_and_resume_same_process() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationRegistry,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
+        ACPPermissionPause,
+        ACPPermissionRuntimeBridge,
+        delegate_task_via_acp,
+        resume_acp_delegation,
+    )
+
+    registry = PendingACPDelegationRegistry(capacity=2, ttl_seconds=10)
+    try:
+        bridge = ACPPermissionRuntimeBridge(
+            registry=registry,
+            thread_id="contract-thread",
+            agent_name="fixture-agent",
+            interactive=True,
+        )
+        with pytest.raises(ACPPermissionPause) as first:
+            await delegate_task_via_acp(
+                config=_config("permission-twice"),
+                task="perform fixture operations",
+                permission_bridge=bridge,
+            )
+        assert first.value.request.tool_call_id == "fixture-operation-1"
+
+        with pytest.raises(ACPPermissionPause) as second:
+            await resume_acp_delegation(
+                registry=registry,
+                pending_id=first.value.pending_id,
+                thread_id="contract-thread",
+                agent_name="fixture-agent",
+                approved=True,
+            )
+        assert second.value.request.tool_call_id == "fixture-operation-2"
+        assert second.value.pending_id != first.value.pending_id
+        assert await registry.size() == 1
+
+        result = await resume_acp_delegation(
+            registry=registry,
+            pending_id=second.value.pending_id,
+            thread_id="contract-thread",
+            agent_name="fixture-agent",
+            approved=False,
+        )
+        assert result == {"result": "first=allowed;second=denied", "status": "success", "variables": {}}
+        assert await registry.size() == 0
     finally:
         await registry.aclose()
 
