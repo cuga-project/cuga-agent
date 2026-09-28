@@ -31,10 +31,8 @@ def _registry_on(monkeypatch):
 
 
 def test_agent_policy_collection_name_scoping(monkeypatch):
-    """Verify every generated name is safe and defaults ignore the storage setting."""
-    monkeypatch.setattr(
-        "cuga.backend.cuga_graph.policy.configurable.settings.policy.collection_name", "Custom-Policies"
-    )
+    """Verify every generated name is safe and named agents ignore the storage setting."""
+    monkeypatch.setattr("cuga.backend.cuga_graph.policy.configurable.settings.policy.collection_name", None)
 
     default_names = [
         get_agent_policy_collection_name(None, draft=False),
@@ -44,6 +42,14 @@ def test_agent_policy_collection_name_scoping(monkeypatch):
     ]
     assert default_names == ["cuga_policies", "cuga_policies", "cuga_policies_draft", "cuga_policies_draft"]
 
+    named_collection = get_agent_policy_collection_name("crm-agent", draft=False)
+    named_draft_collection = get_agent_policy_collection_name("crm-agent", draft=True)
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.policy.configurable.settings.policy.collection_name", "custom_policies"
+    )
+    assert get_agent_policy_collection_name("crm-agent", draft=False) == named_collection
+    assert get_agent_policy_collection_name("crm-agent", draft=True) == named_draft_collection
+
     named_draft = get_agent_policy_collection_name("draft", draft=False)
     assert named_draft != get_agent_policy_collection_name(None, draft=True)
 
@@ -52,9 +58,6 @@ def test_agent_policy_collection_name_scoping(monkeypatch):
     }
     assert len(punctuation_variants) == 3
 
-    named_collection = get_agent_policy_collection_name("crm-agent", draft=False)
-    named_draft_collection = get_agent_policy_collection_name("crm-agent", draft=True)
-    assert named_collection == get_agent_policy_collection_name("crm-agent", draft=False)
     assert named_draft_collection != named_collection
     assert named_draft_collection.endswith("__draft")
 
@@ -88,6 +91,27 @@ def _make_mock_storage(mock_cls):
     storage._embedding_function = None
     storage._embedding_initialized = False
     return storage
+
+
+@pytest.mark.parametrize(
+    "configured_value, expected_collection",
+    [
+        ("custom_policies", "custom_policies"),  # truthy configured value is honoured
+        ("", "cuga_policies"),  # empty string falls back to the compatibility default
+        (None, "cuga_policies"),  # None falls back to the compatibility default
+    ],
+)
+def test_default_agent_collection_name_uses_configured_collection(configured_value, expected_collection):
+    """The default agent's published and draft names derive from settings.policy.collection_name."""
+    with patch(
+        "cuga.backend.cuga_graph.policy.configurable.settings.policy.collection_name", configured_value
+    ):
+        assert get_agent_policy_collection_name(None) == expected_collection
+        assert get_agent_policy_collection_name("cuga-default") == expected_collection
+        assert get_agent_policy_collection_name(None, draft=True) == f"{expected_collection}_draft"
+        assert get_agent_policy_collection_name("cuga-default--draft-3", draft=True) == (
+            f"{expected_collection}_draft"
+        )
 
 
 @pytest.mark.asyncio
@@ -150,39 +174,69 @@ async def test_default_policy_runtime_explicit_arg_overrides_configured_collecti
     assert mock_storage_cls.call_args.kwargs["collection_name"] == "explicit_policies"
 
 
+_EXISTING_GUARD = {
+    "id": "existing-guard",
+    "name": "Existing Guard",
+    "description": "Guard persisted in a custom collection before upgrade",
+    "type": "intent_guard",
+    "enabled": True,
+    "triggers": [{"type": "keyword", "value": ["legacy"], "target": "intent", "operator": "and"}],
+    "response": {"type": "natural_language", "content": "Existing guard fired"},
+}
+
+
+async def _seed_collection(collection_name: str) -> None:
+    """Persist _EXISTING_GUARD into collection_name using real (test-isolated) storage."""
+    from cuga.backend.cuga_graph.policy.storage import PolicyStorage
+    from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+    storage = PolicyStorage(collection_name=collection_name)
+    await storage.initialize_async()
+    await apply_policies_data_to_storage(
+        storage, [_EXISTING_GUARD], clear_existing=True, filesystem_sync=None
+    )
+    await storage.disconnect()
+
+
 @pytest.mark.asyncio
-async def test_default_policy_runtime_draft_unaffected_by_configured_collection(monkeypatch):
-    """Default draft initialization always uses cuga_policies_draft regardless of the setting."""
+async def test_default_draft_initialization_loads_configured_collection(monkeypatch):
+    """Default draft init reads <settings.policy.collection_name>_draft, not cuga_policies_draft."""
     monkeypatch.setattr(
         "cuga.backend.cuga_graph.policy.configurable.settings.policy.collection_name",
         "custom_policies",
     )
-    main_storage_cls = patch("cuga.backend.cuga_graph.policy.storage.PolicyStorage")
-    with (
-        main_storage_cls as mock_main_storage_cls,
-        patch(
-            "cuga.backend.storage.embedding.get_embedding_config",
-            return_value=_EMBEDDING_CONFIG_PATCH,
-        ),
+    await _seed_collection("custom_policies_draft")
+
+    draft_system, draft_collection = await main_mod._initialize_default_draft_policy_system()
+
+    assert draft_collection == "custom_policies_draft"
+    assert draft_system.storage.collection_name == "custom_policies_draft"
+    policies = await draft_system.storage.list_policies(enabled_only=False)
+    assert [p.id for p in policies] == ["existing-guard"]
+
+
+@pytest.mark.asyncio
+async def test_supervisor_delegation_to_default_agent_loads_configured_collection(monkeypatch):
+    """Supervisor delegation to cuga-default reads settings.policy.collection_name, not cuga_policies."""
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.policy.configurable.settings.policy.collection_name",
+        "custom_policies",
+    )
+    await _seed_collection("custom_policies")
+
+    with patch(
+        "cuga.backend.server.config_store.load_config",
+        new_callable=AsyncMock,
+        return_value=({"agent": {"name": "Default"}, "tools": []}, None),
     ):
-        draft_storage = mock_main_storage_cls.return_value
-        draft_storage.initialize_async = AsyncMock()
-        draft_policy_system = SimpleNamespace(initialize=AsyncMock())
+        agents_dict = await build_agents_from_stored_subagents(
+            [{"kind": "internal", "ref": "cuga-default"}], use_draft=False
+        )
 
-        with patch(
-            "cuga.backend.cuga_graph.policy.configurable.PolicyConfigurable",
-            return_value=draft_policy_system,
-        ):
-            (
-                initialized_draft_system,
-                draft_collection,
-            ) = await main_mod._initialize_default_draft_policy_system()
-
-    assert mock_main_storage_cls.call_args.kwargs["collection_name"] == "cuga_policies_draft"
-    assert initialized_draft_system is draft_policy_system
-    assert draft_collection == "cuga_policies_draft"
-    draft_storage.initialize_async.assert_awaited_once_with()
-    draft_policy_system.initialize.assert_awaited_once_with()
+    policy_system = agents_dict["cuga-default"]._policy_system
+    assert policy_system.storage.collection_name == "custom_policies"
+    policies = await policy_system.storage.list_policies(enabled_only=False)
+    assert [p.id for p in policies] == ["existing-guard"]
 
 
 @pytest.mark.asyncio
