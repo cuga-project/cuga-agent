@@ -143,3 +143,23 @@ def test_changed_keys_handles_self_referencing_values():
     snapshot = VariableUtils.snapshot_values({"loop": loop}, {"loop"})
     assert VariableUtils.changed_keys({"loop": loop}, snapshot) == set()
     assert VariableUtils.changed_keys({"loop": [1]}, snapshot) == {"loop"}
+
+
+@pytest.mark.asyncio
+async def test_keep_last_n_limits_only_new_variables(state, monkeypatch):
+    """Printing the reassigned variable must not let it take the new variable's slot."""
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.advanced_features, "code_executor_keep_last_n", 1)
+    await run_block(state, 'roommates = {"status": "exception"}')
+    await run_block(state, 'roommates = ["Chris", "Jose"]\ncount = len(roommates)\nprint(roommates)')
+
+    assert state.variables_manager.get_variable("roommates") == ["Chris", "Jose"]
+    assert state.variables_manager.get_variable("count") == 2
+
+
+def test_snapshot_finds_names_that_start_with_a_non_ascii_letter():
+    values = {"数量": 1}
+    snapshot = VariableUtils.snapshot_values(values, set(values), code="数量 = 2")
+
+    assert set(snapshot) == {"数量"}

@@ -304,6 +304,9 @@ class VariableUtils:
         process, so dict order is stable. Dicts whose keys JSON cannot hold (e.g.
         ``{(2023, 5): 1.0, "note": "x"}``) are compared by their ``repr``. Any other
         failure, such as RecursionError for a value that contains itself, returns None.
+        Known limit: values with the same JSON form share a fingerprint, so a
+        reassignment between e.g. ``(1, 2)`` and ``[1, 2]``, or ``{1: 'a'}`` and
+        ``{'1': 'a'}``, is not detected.
         """
         import json
 
@@ -332,7 +335,7 @@ class VariableUtils:
         not grow with everything stored so far.
         """
         if code is not None:
-            keys = set(keys) & set(re.findall(r"[A-Za-z_]\w*", code))
+            keys = set(keys) & set(re.findall(r"[^\W\d]\w*", code))
         return {
             key: VariableUtils._fingerprint(all_locals[key])
             for key in keys

@@ -297,13 +297,13 @@ class CodeExecutor:
 
         # Limit variables to keep based on configuration
         keep_last_n = settings.advanced_features.code_executor_keep_last_n
-        before_limit = new_vars
-        new_vars = VariableUtils.limit_variables_to_keep(new_vars, keep_last_n)
-        # A reassigned variable must still be written back, or the next block
-        # sees its old value; the limit applies to the block's new variables.
-        for key in changed_keys:
-            if key in before_limit and key not in new_vars:
-                new_vars[key] = before_limit[key]
+        # The limit applies only to the block's new variables: a reassigned one
+        # must always be written back, or the next block sees its old value.
+        changed_vars = {k: v for k, v in new_vars.items() if k in changed_keys}
+        new_vars = VariableUtils.limit_variables_to_keep(
+            {k: v for k, v in new_vars.items() if k not in changed_keys}, keep_last_n
+        )
+        new_vars.update(changed_vars)
         new_vars = _omit_find_tools_listing_vars(new_vars)
 
         # Format/trim the output before adding variables
