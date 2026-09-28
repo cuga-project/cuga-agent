@@ -47,10 +47,25 @@ def verify_timeout_seconds() -> float:
     ``DYNACONF_ADVANCED_FEATURES__PRE_EXECUTE_VERIFY_TIMEOUT``) overrides the
     default, e.g. for evaluations whose reasoning model is slow on long write blocks.
     """
+    import math
+
     from cuga.config import settings
 
     value = getattr(settings.advanced_features, "pre_execute_verify_timeout", None)
-    return float(value) if value else VERIFY_LLM_TIMEOUT_SECONDS
+    if value is None or value == "":
+        return VERIFY_LLM_TIMEOUT_SECONDS
+    try:
+        seconds = float(value) if not isinstance(value, bool) else math.nan
+    except (TypeError, ValueError):
+        seconds = math.nan
+    if not math.isfinite(seconds) or seconds <= 0:
+        # A bad value must not time VERIFY out at once or raise before the gate;
+        # either would let write blocks run unverified.
+        logger.warning(
+            "Invalid pre_execute_verify_timeout {!r}; using {}s", value, VERIFY_LLM_TIMEOUT_SECONDS
+        )
+        return VERIFY_LLM_TIMEOUT_SECONDS
+    return seconds
 
 
 def log_pre_execute_verify(tracker: Any, decision: VerifyDecision) -> bool:

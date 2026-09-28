@@ -1501,3 +1501,24 @@ def test_verify_timeout_defaults_to_60_seconds(monkeypatch):
 
     monkeypatch.setattr(settings.advanced_features, "pre_execute_verify_timeout", None, raising=False)
     assert pe.verify_timeout_seconds() == 60.0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", [-1, 0, "abc", "inf", float("nan"), float("inf"), True])
+def test_invalid_verify_timeout_falls_back_to_the_default(monkeypatch, value):
+    """A bad setting must not make VERIFY time out at once or raise before the check."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection import pre_execute as pe
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.advanced_features, "pre_execute_verify_timeout", value, raising=False)
+    assert pe.verify_timeout_seconds() == 60.0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", [120, "300", 45.5])
+def test_valid_verify_timeout_is_used(monkeypatch, value):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection import pre_execute as pe
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.advanced_features, "pre_execute_verify_timeout", value, raising=False)
+    assert pe.verify_timeout_seconds() == float(value)
