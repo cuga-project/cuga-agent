@@ -12,6 +12,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
 from cuga.backend.cuga_graph.state.agent_state import AgentState, VariablesManager
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def state():

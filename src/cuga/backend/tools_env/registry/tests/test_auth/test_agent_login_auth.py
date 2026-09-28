@@ -166,7 +166,6 @@ async def test_reset_clears_agent_tokens(monkeypatch):
     assert manager.get_stored_token("spotify") is None
 
 
-@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_route_stores_login_token_only_in_the_calling_agents_registry(monkeypatch):
     """In database mode a non-default agent's /auth/token response must not reach the
