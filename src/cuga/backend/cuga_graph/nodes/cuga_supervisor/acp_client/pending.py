@@ -36,6 +36,27 @@ def safe_identity(value: object, *, field: str) -> str:
     return f"{normalized[:prefix_limit]}-{digest}"
 
 
+def permission_response_decision(expected_pending_id: object, response: Any) -> bool | None:
+    """Return the user's decision only when the client submitted it for this exact permission.
+
+    Reads ``submitted_additional_data`` (the client's own payload) rather than
+    ``additional_data``, which WaitForResponse restores from the current action.
+    """
+    submitted_tool = getattr(getattr(response, "submitted_additional_data", None), "tool", None)
+    submitted_permission = submitted_tool.get("acp_permission") if isinstance(submitted_tool, dict) else None
+    submitted_id = submitted_permission.get("pending_id") if isinstance(submitted_permission, dict) else None
+    try:
+        canonical = (
+            isinstance(submitted_id, str) and safe_identity(submitted_id, field="pending_id") == submitted_id
+        )
+    except ValueError:
+        return None
+    if not canonical or submitted_id != expected_pending_id:
+        return None
+    confirmed = getattr(response, "confirmed", None)
+    return confirmed if isinstance(confirmed, bool) else None
+
+
 class PendingACPDelegationError(RuntimeError):
     """Base safe registry failure."""
 
@@ -113,6 +134,8 @@ class PendingACPDelegation:
     expiry_task: asyncio.Task[None] | None = None
     cleanup_task: asyncio.Task[None] | None = None
     finalized: bool = False
+    # The runtime bridge that owns the live prompt, so a resume can await further pauses.
+    bridge: Any = None
 
 
 class PendingACPDelegationRegistry:
@@ -150,6 +173,7 @@ class PendingACPDelegationRegistry:
         permission_future: asyncio.Future[str | None],
         cleanup: Cleanup | None = None,
         finalizer: Finalizer | None = None,
+        bridge: Any = None,
     ) -> None:
         await self.expire()
         try:
@@ -186,6 +210,7 @@ class PendingACPDelegationRegistry:
             finalizer=finalizer,
             created_monotonic=now,
             expires_monotonic=now + self._ttl_seconds,
+            bridge=bridge,
         )
         rejected = False
         async with self._lock:
@@ -329,6 +354,24 @@ class PendingACPDelegationRegistry:
                 if claimant_owns:
                     raise
         return entry.final_record_owner is FinalRecordOwner.REGISTRY
+
+    async def hand_off_claim(self, entry: PendingACPDelegation) -> bool:
+        """Retire a claimed entry whose live prompt now waits on a newer pending entry.
+
+        The prompt, process, and finalizer belong to the newer entry, so this skips
+        cleanup entirely. Returns False when the registry already took the entry
+        (expiry or shutdown), in which case its cleanup owns the prompt.
+        """
+        async with self._lock:
+            if self._entries.get(entry.pending_id) is not entry or entry.cleanup_task is not None:
+                return False
+            self._entries.pop(entry.pending_id)
+            if entry.expiry_task is not None and entry.expiry_task is not asyncio.current_task():
+                entry.expiry_task.cancel()
+            entry.expiry_task = None
+            entry.state = PendingState.COMPLETED
+            entry.cleaned = True
+            return True
 
     async def expire(self) -> int:
         now = monotonic()
