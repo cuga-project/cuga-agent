@@ -79,6 +79,9 @@ class StdioCugaRunner:
                 user_id="acp_user",
                 confirmed=bool(approval.get("confirmed", False)),
                 button_clicked=bool(approval.get("confirmed", False)),
+                # Bound to the server-side pending action looked up above, so its identity
+                # (e.g. an ACP permission pending_id) is echoed rather than client-supplied.
+                additional_data=pending.get("additional_data"),
             )
             invoke_message = None
 
