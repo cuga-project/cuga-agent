@@ -86,6 +86,115 @@ async def test_interactive_bridge_pauses_then_resumes_original_task_once() -> No
 
 
 @pytest.mark.asyncio
+async def test_each_sequential_operation_permission_pauses_with_fresh_pending_id() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationError,
+        PendingACPDelegationRegistry,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
+        ACPPermissionPause,
+        ACPPermissionRuntimeBridge,
+        resume_acp_delegation,
+    )
+
+    registry = PendingACPDelegationRegistry(capacity=2, ttl_seconds=30)
+    bridge = ACPPermissionRuntimeBridge(
+        registry=registry,
+        thread_id="thread",
+        agent_name="coder",
+        interactive=True,
+    )
+    await bridge.register_lifecycle("a" * 32, SimpleNamespace(connection=object(), process=object()))
+
+    async def two_operations():
+        first = await bridge.permission_handler(_safe_request())
+        second = await bridge.permission_handler(_safe_request())
+        return {"result": {"first": first, "second": second}, "status": "completed", "variables": {}}
+
+    with pytest.raises(ACPPermissionPause) as first_pause:
+        await bridge.run(two_operations())
+
+    # Resume from a fresh bridge, as the graph does after a checkpointed pause.
+    with pytest.raises(ACPPermissionPause) as second_pause:
+        await resume_acp_delegation(
+            registry=registry,
+            pending_id=first_pause.value.pending_id,
+            thread_id="thread",
+            agent_name="coder",
+            approved=True,
+        )
+    assert second_pause.value.pending_id != first_pause.value.pending_id
+    assert await registry.size() == 1
+
+    # The first approval cannot be replayed against the second operation.
+    with pytest.raises(PendingACPDelegationError):
+        await resume_acp_delegation(
+            registry=registry,
+            pending_id=first_pause.value.pending_id,
+            thread_id="thread",
+            agent_name="coder",
+            approved=True,
+        )
+
+    result = await resume_acp_delegation(
+        registry=registry,
+        pending_id=second_pause.value.pending_id,
+        thread_id="thread",
+        agent_name="coder",
+        approved=False,
+    )
+    assert result["result"] == {"first": "allow", "second": "reject"}
+    assert await registry.size() == 0
+
+
+@pytest.mark.asyncio
+async def test_resume_path_turns_next_operation_pause_into_new_tool_action() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+        PendingACPDelegationRegistry,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import ACPPermissionPause
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool import (
+        create_execute_agent_tool_node,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import SupervisorGraphAdapter
+    from cuga.backend.cuga_graph.utils.nodes_names import ActionIds
+
+    adapter = SupervisorGraphAdapter(
+        agents={"coder": _external_agent()},
+        pending_acp_registry=PendingACPDelegationRegistry(),
+        interactive=True,
+    )
+    adapter.record_delegation = MagicMock()
+    state = CugaSupervisorState(
+        input="work",
+        thread_id="thread",
+        supervisor_metadata={
+            "acp_permission": {"pending_id": "first", "agent_name": "coder"},
+            "acp_permission_resume": {"pending_id": "first", "agent_name": "coder", "approved": True},
+        },
+    )
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool.resume_acp_delegation",
+        new=AsyncMock(side_effect=ACPPermissionPause("second", "coder", _safe_request())),
+    ):
+        command = await create_execute_agent_tool_node(adapter)(
+            state, {"configurable": {"thread_id": "thread"}}
+        )
+
+    adapter.record_delegation.assert_not_called()
+    metadata = command.update["supervisor_metadata"]
+    assert "acp_permission_resume" not in metadata
+    assert metadata["acp_permission"]["pending_id"] == "second"
+    assert command.update["hitl_action"].action_id == ActionIds.TOOL_APPROVAL
+    assert command.update["hitl_action"].additional_data.tool["acp_permission"] == {
+        "pending_id": "second",
+        "agent_name": "coder",
+    }
+
+
+@pytest.mark.asyncio
 async def test_headless_bridge_rejects_immediately_without_registry_entry() -> None:
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
         PendingACPDelegationRegistry,
@@ -392,7 +501,7 @@ async def test_entry_graph_acp_response_pending_id_must_match_checkpoint(respons
             response_type=ActionType.CONFIRMATION,
             timestamp="now",
             confirmed=True,
-            additional_data=AdditionalData(tool=response_tool),
+            submitted_additional_data=AdditionalData(tool=response_tool),
         ),
         supervisor_metadata={"acp_permission": {"pending_id": "pending-safe", "agent_name": "coder"}},
     )
@@ -439,7 +548,7 @@ async def test_entry_graph_exact_response_pending_id_resumes_once() -> None:
             response_type=ActionType.CONFIRMATION,
             timestamp="now",
             confirmed=True,
-            additional_data=AdditionalData(tool={"acp_permission": permission}),
+            submitted_additional_data=AdditionalData(tool={"acp_permission": permission}),
         ),
         supervisor_metadata={"acp_permission": permission},
     )
@@ -472,7 +581,7 @@ async def test_supervisor_sdk_callback_maps_exact_acp_response_for_resume() -> N
             response_type=ActionType.CONFIRMATION,
             timestamp="now",
             confirmed=False,
-            additional_data=AdditionalData(tool={"acp_permission": permission}),
+            submitted_additional_data=AdditionalData(tool={"acp_permission": permission}),
         ),
         supervisor_metadata={"acp_permission": permission},
     )
@@ -514,7 +623,7 @@ async def test_supervisor_sdk_callback_rejects_missing_or_mismatched_pending_id(
             response_type=ActionType.CONFIRMATION,
             timestamp="now",
             confirmed=True,
-            additional_data=AdditionalData(tool=response_tool),
+            submitted_additional_data=AdditionalData(tool=response_tool),
         ),
         supervisor_metadata={"acp_permission": {"pending_id": "pending-safe", "agent_name": "coder"}},
     )
@@ -527,6 +636,101 @@ async def test_supervisor_sdk_callback_rejects_missing_or_mismatched_pending_id(
         "agent_name": "coder",
         "approved": None,
     }
+
+
+def _resume_through_wait_for_response(submitted_pending_id, *, client_submitted_override=None):
+    """Run the real WaitForResponse overwrite with a client approval for ``submitted_pending_id``."""
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
+        ActionType,
+        create_tool_approval_action,
+    )
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.wait_for_response import WaitForResponse
+    from cuga.backend.cuga_graph.utils.nodes_names import ActionIds
+
+    current = {"pending_id": "current-permission", "agent_name": "coder"}
+    action = create_tool_approval_action(
+        policy_name="ACP permission: Delete",
+        required_tools=["delete"],
+        code_preview=[],
+        full_code="",
+        return_to="SupervisorSDKCallback",
+    )
+    action.additional_data.tool["acp_permission"] = dict(current)
+    state = CugaSupervisorState(
+        input="work",
+        sender="SupervisorSDKCallback",
+        hitl_action=action,
+        supervisor_metadata={"acp_permission": dict(current)},
+    )
+    client_response = {
+        "action_id": ActionIds.TOOL_APPROVAL,
+        "response_type": ActionType.CONFIRMATION,
+        "timestamp": "now",
+        "confirmed": True,
+        "additional_data": {
+            "tool": {"acp_permission": {"pending_id": submitted_pending_id, "agent_name": "coder"}}
+        },
+    }
+    if client_submitted_override is not None:
+        client_response["submitted_additional_data"] = client_submitted_override
+    with patch(
+        "cuga.backend.cuga_graph.nodes.human_in_the_loop.wait_for_response.interrupt",
+        return_value=client_response,
+    ):
+        command = asyncio.run(WaitForResponse.node_handler(state))
+    return CugaSupervisorState(**command.update)
+
+
+@pytest.mark.parametrize(
+    ("submitted_pending_id", "client_submitted_override", "expected"),
+    [
+        ("old-permission", None, None),
+        # A client cannot bypass the check by supplying submitted_additional_data itself.
+        ("old-permission", {"tool": {"acp_permission": {"pending_id": "current-permission"}}}, None),
+        ("current-permission", None, True),
+    ],
+)
+def test_stale_approval_through_wait_for_response_cannot_authorize_current_permission(
+    submitted_pending_id, client_submitted_override, expected
+) -> None:
+    from cuga import CugaSupervisor
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_node import CugaSupervisorNode
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+
+    resumed = _resume_through_wait_for_response(
+        submitted_pending_id, client_submitted_override=client_submitted_override
+    )
+    # WaitForResponse still restores the trusted action metadata for downstream consumers.
+    assert resumed.hitl_response.additional_data.tool["acp_permission"]["pending_id"] == "current-permission"
+
+    supervisor = CugaSupervisor(agents={}, model=MagicMock(), auto_load_policies=False)
+    wrapper = supervisor._create_supervisor_hitl_wrapper_graph()
+    command = asyncio.run(wrapper.nodes["SupervisorSDKCallback"].runnable.ainvoke(resumed, config={}))
+    assert command.update["supervisor_metadata"]["acp_permission_resume"] == {
+        "pending_id": "current-permission",
+        "agent_name": "coder",
+        "approved": expected,
+    }
+
+    captured = {}
+
+    class _FakeSubgraph:
+        async def ainvoke(self, state, config=None):
+            captured["metadata"] = state.supervisor_metadata
+            return state
+
+    node = CugaSupervisorNode()
+    node.set_subgraph(_FakeSubgraph())
+    server_state = AgentState(
+        input="work",
+        thread_id="thread",
+        sender=resumed.sender,
+        hitl_response=resumed.hitl_response,
+        supervisor_metadata=resumed.supervisor_metadata,
+    )
+    asyncio.run(node.node(server_state, config={"configurable": {"thread_id": "thread"}}))
+    assert captured["metadata"]["acp_permission_resume"]["approved"] is expected
 
 
 @pytest.mark.asyncio
