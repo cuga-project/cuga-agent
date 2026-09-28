@@ -1,13 +1,13 @@
 """LIVE Box integration e2e — upload a REAL file, then the watcher detects + judges it.
 
 A true integration test (no mocks): uploads an actual résumé-like file to a Box folder via the Box
-API (your BOX_DEV_TOKEN), calls the direct-poll endpoint, and asserts the new file is detected and
-the `resume_judge` agent produces a verdict — then deletes the file to clean up.
+API (a minted CCG token, or BOX_DEV_TOKEN if set), calls the direct-poll endpoint, and asserts the
+new file is detected and the box agent (doc_screener) produces a verdict — then deletes the file.
 
 Box dev tokens expire ~60 min; if it's stale you'll see a clear "regenerate" message.
 
-Run:  BOX_FOLDER_ID=0 EVENTS_SERVER_URL=http://localhost:7860 GATEWAY_TOKEN=<..> \
-        .venv/bin/python tests/events/live_box_e2e.py
+Run:  EVENTS_SERVER_URL=<events url> GATEWAY_TOKEN=<..> .venv/bin/python tests/events/live_box_e2e.py
+      (folder + Box creds come from .env; or:  make test-box-e2e-ce)
 """
 
 from __future__ import annotations
@@ -15,7 +15,9 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import httpx
@@ -38,9 +40,51 @@ def _env(key, default=""):
     return default
 
 
-TOKEN = _env("BOX_DEV_TOKEN") or _env("EVENTS_BOX_TOKEN")
+def _box_token() -> "tuple[str, str]":
+    """The bearer token to call Box with: a STATIC token if set (BOX_DEV_TOKEN / EVENTS_BOX_TOKEN),
+    else a freshly minted CCG token — exactly what box_direct.access_token() does in production.
+    Returns (token, kind). CCG needs BOX_CLIENT_ID + BOX_CLIENT_SECRET + a subject
+    (BOX_USER_ID acts as that user, else BOX_ENTERPRISE_ID acts as the enterprise service account)."""
+    static = _env("BOX_DEV_TOKEN") or _env("EVENTS_BOX_TOKEN")
+    if static:
+        return static, "static-token"
+    cid, csec = _env("BOX_CLIENT_ID"), _env("BOX_CLIENT_SECRET")
+    ent, usr = _env("BOX_ENTERPRISE_ID"), _env("BOX_USER_ID")
+    if cid and csec and (ent or usr):
+        sub_type, sub_id = ("user", usr) if usr else ("enterprise", ent)
+        body = urllib.parse.urlencode(
+            {
+                "grant_type": "client_credentials",
+                "client_id": cid,
+                "client_secret": csec,
+                "box_subject_type": sub_type,
+                "box_subject_id": sub_id,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            "https://api.box.com/oauth2/token",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=25) as r:
+                return json.loads(r.read() or "{}").get("access_token", ""), f"ccg-{sub_type}"
+        except urllib.error.HTTPError as e:  # surface the reason (auth/subject issues)
+            try:
+                d = json.loads(e.read() or "{}")
+            except Exception:  # noqa: BLE001
+                d = {}
+            print(f"  (CCG mint failed HTTP {e.code}: {d.get('error')} — {d.get('error_description')})")
+        except Exception as e:  # noqa: BLE001
+            print(f"  (CCG mint failed: {e})")
+    return "", "none"
+
+
+TOKEN, TOKEN_KIND = _box_token()
 GWTOK = _env("GATEWAY_TOKEN")
-FOLDER = os.environ.get("BOX_FOLDER_ID", "0")
+FOLDER = os.environ.get("BOX_FOLDER_ID") or _env("BOX_FOLDER_ID", "0")
+AGENT = os.environ.get("BOX_E2E_AGENT", "doc_screener")  # the roster agent box files route to
 
 RESUME = (
     "Jane Doe — Senior ML Engineer\n"
@@ -57,10 +101,12 @@ def _hb():
 
 def main() -> int:
     if not TOKEN:
-        print("no BOX_DEV_TOKEN in .env")
+        print("no Box token — set BOX_DEV_TOKEN, or CCG creds (BOX_CLIENT_ID/SECRET + BOX_ENTERPRISE_ID)")
         return 2
+    print(f"Box e2e — folder {FOLDER} · agent {AGENT} · token {TOKEN_KIND} · {SERVER}")
     ok = True
     file_id = None
+    made_folder = None  # a folder WE created (delete it on cleanup); None = using a pre-existing one
 
     def check(name, cond, detail=""):
         nonlocal ok
@@ -78,9 +124,34 @@ def main() -> int:
         if r.status_code != 200:
             return 1
         try:
-            # 2) upload a REAL résumé file to the folder
+            # 2) pick the folder to watch. Use the configured BOX_FOLDER_ID if the token can SEE it;
+            #    otherwise create a throwaway folder in the service account's OWN space — a CCG service
+            #    account can always write there, so the e2e is self-contained and needs no manual
+            #    folder collaboration (the poll→detect→dispatch path is identical either way).
+            watch = FOLDER
+            fr = c.get(f"{API}/folders/{watch}", headers=_hb())
+            if fr.status_code == 200:
+                print(f"   watching configured folder {watch} ('{fr.json().get('name')}')")
+            else:
+                cr = c.post(
+                    f"{API}/folders",
+                    headers={**_hb(), "Content-Type": "application/json"},
+                    json={"name": f"cuga-e2e-{int(time.time())}", "parent": {"id": "0"}},
+                )
+                check(
+                    "created a self-owned probe folder (configured folder not accessible)",
+                    cr.status_code in (200, 201),
+                    f"folder {watch} → HTTP {fr.status_code}; create → HTTP {cr.status_code}",
+                )
+                if cr.status_code not in (200, 201):
+                    return 1
+                watch = cr.json()["id"]
+                made_folder = watch
+                print(f"   watching self-owned probe folder {watch}")
+
+            # 3) upload a REAL résumé file to the watched folder
             files = {"file": ("jane_doe_resume.txt", RESUME.encode(), "text/plain")}
-            data = {"attributes": json.dumps({"name": "jane_doe_resume.txt", "parent": {"id": FOLDER}})}
+            data = {"attributes": json.dumps({"name": "jane_doe_resume.txt", "parent": {"id": watch}})}
             r = c.post(UPLOAD, headers=_hb(), data=data, files=files)
             up_ok = r.status_code in (201, 409)  # 409 = already exists (a prior run)
             check("uploaded a real résumé to Box", up_ok, f"HTTP {r.status_code}")
@@ -90,12 +161,11 @@ def main() -> int:
                 ctx = r.json().get("context_info", {}).get("conflicts", {})
                 file_id = ctx.get("id") if isinstance(ctx, dict) else None
 
-            # 3) poll → the watcher detects it and resume_judge runs
-            since = None
+            # 4) poll → the watcher detects it and the roster's box agent (AGENT) runs
             req = urllib.request.Request(
                 f"{SERVER}/api/events/box/poll",
                 method="POST",
-                data=json.dumps({"folder_id": FOLDER, "since": since, "agent": "resume_judge"}).encode(),
+                data=json.dumps({"folder_id": watch, "since": None, "agent": AGENT}).encode(),
                 headers={"Content-Type": "application/json", "X-Gateway-Token": GWTOK},
             )
             with urllib.request.urlopen(req, timeout=200) as resp:
@@ -103,13 +173,16 @@ def main() -> int:
             names = [f["name"] for f in pr.get("processed", [])]
             print("   poll processed:", names[:6])
             check(
-                "poll detected the résumé + fired resume_judge",
+                f"poll detected the résumé + fired {AGENT}",
                 pr.get("ok") and any("jane_doe" in n for n in names),
             )
         finally:
             if file_id:
                 d = c.delete(f"{API}/files/{file_id}", headers=_hb())
                 print(f"  cleanup: delete file {file_id} → HTTP {d.status_code}")
+            if made_folder:
+                d = c.delete(f"{API}/folders/{made_folder}?recursive=true", headers=_hb())
+                print(f"  cleanup: delete probe folder {made_folder} → HTTP {d.status_code}")
 
     print(
         f"\nRESULT: {'PASS — Box integration e2e green (real file uploaded → detected → judged)' if ok else 'FAIL'}"
