@@ -32,14 +32,17 @@ def _named_agent_collection_name(agent_id: str, draft: bool) -> str:
 def get_agent_policy_collection_name(agent_id: Optional[str] = None, draft: bool = False) -> str:
     """Return a deterministic, PostgreSQL-safe policy collection scoped to an agent ID.
 
-    The default agent always uses the compatibility names ``cuga_policies`` and
-    ``cuga_policies_draft``. Named agents use the same fixed namespace plus a normalized readable
-    prefix and digest; the general policy collection setting does not alter this mapping.
+    The default agent uses ``settings.policy.collection_name`` (falling back to ``cuga_policies``)
+    and its ``_draft`` counterpart, preserving existing installations' storage. Named agents use a
+    fixed ``cuga_policies`` namespace plus a normalized readable prefix and digest; the policy
+    collection setting does not alter named-agent names.
     """
     # Strip any '--version' suffix that config_store appends to draft agent IDs (e.g. 'crm--draft-3').
     clean_id = agent_id.split("--")[0] if agent_id else None
     if not clean_id or clean_id == "cuga-default":
-        return f"{_POLICY_COLLECTION_BASE}_draft" if draft else _POLICY_COLLECTION_BASE
+        policy_config = getattr(settings, "policy", None)
+        base = getattr(policy_config, "collection_name", None) or _POLICY_COLLECTION_BASE
+        return f"{base}_draft" if draft else base
     return _named_agent_collection_name(clean_id, draft)
 
 
@@ -187,10 +190,7 @@ class PolicyConfigurable:
 
         try:
             policy_config = getattr(settings, "policy", None)
-            configured_collection_name = getattr(policy_config, "collection_name", None)
-            final_collection_name = (
-                collection_name or configured_collection_name or get_agent_policy_collection_name()
-            )
+            final_collection_name = collection_name or get_agent_policy_collection_name()
 
             configured_path = (policy_db_path or getattr(policy_config, "policy_db_path", None) or "").strip()
             if configured_path:
