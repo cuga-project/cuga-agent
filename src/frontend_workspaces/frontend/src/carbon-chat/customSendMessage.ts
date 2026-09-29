@@ -545,6 +545,7 @@ export async function customSendMessage(
                   thread_id: threadId,
                   callback_url: actionData.callback_url,
                   return_to: actionData.return_to,
+                  additional_data: actionData.additional_data,
                 },
               });
             }
@@ -561,6 +562,7 @@ export async function customSendMessage(
                   thread_id: threadId,
                   callback_url: actionData.callback_url,
                   return_to: actionData.return_to,
+                  additional_data: actionData.additional_data,
                 },
               });
             }

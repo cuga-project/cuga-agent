@@ -96,6 +96,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# 0.12.1 provides stable protocol v1 plus the Agent/Client, stdio runtime, generated
+# content/capability models, and permission interfaces used by the ACP adapters.
+acp = ["agent-client-protocol>=0.12.1,<0.13"]
 evaluation = ["rapidfuzz"]
 e2b = ["e2b-code-interpreter>=2.4.1"]
 knowledge = []  # knowledge is now built-in, no extra dependencies needed
@@ -258,6 +261,7 @@ appworld_eval = "evaluation.appworld_eval:run_main"
 appworld_setup = "scripts.commands:setup_appworld_environment"
 appworld_setup_docker = "scripts.commands:setup_appworld_environment_docker"
 cuga = "cuga.cli:app"
+cuga-acp = "cuga.backend.server.acp.stdio:main"
 code = "evaluation.code_generator:main"
 exp = "scripts.eval_gui:main"
 digital_sales_mcp = "scripts.commands:run_digital_sales_mcp"

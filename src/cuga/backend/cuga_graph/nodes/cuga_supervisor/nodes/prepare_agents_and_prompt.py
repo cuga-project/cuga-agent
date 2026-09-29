@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
@@ -33,10 +33,13 @@ from cuga.configurations.instructions_manager import get_all_instructions_format
 
 
 def next_node_after_prepare(adapter: Any, state: CugaSupervisorState) -> str:
-    """Skip call_model when the user already approved this turn's delegation script."""
+    """Skip planning when resuming an approved plan or a parked ACP prompt."""
+    metadata = adapter.get_metadata(state) or {}
+    if metadata.get("acp_permission_resume"):
+        return adapter.execute_node_name
     if (
         getattr(adapter, "_plan_approval", False)
-        and (adapter.get_metadata(state) or {}).get("plan_approved")
+        and metadata.get("plan_approved")
         and (getattr(state, "script", None) or "").strip()
     ):
         return adapter.execute_node_name
@@ -81,6 +84,65 @@ def delegate_tool_names(agent_names) -> Dict[str, str]:
         used.add(tool)
         assigned[name] = tool
     return assigned
+
+
+class ExternalAgentMetadata(NamedTuple):
+    agent_type: str
+    description: str
+    agent_card: Any
+    accepts_variables: bool
+
+
+async def describe_external_agent(agent_name: str, agent_or_config: Dict[str, Any]) -> ExternalAgentMetadata:
+    """Resolve safe prompt metadata without contacting configured ACP subprocesses."""
+
+    agent_type = agent_or_config.get("type", "external")
+    agent_config = agent_or_config.get("config", {})
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
+        acp_process_config_from_mapping,
+        validate_external_protocol_config,
+    )
+
+    acp_cfg, a2a_cfg = validate_external_protocol_config(agent_config, require_enabled=True)
+    if agent_type == "external" and acp_cfg is not None and acp_cfg["enabled"]:
+        acp_process_config_from_mapping(
+            acp_cfg,
+            name=agent_config.get("name", agent_name),
+            description=agent_config.get("description"),
+        )
+        return ExternalAgentMetadata(
+            agent_type="external",
+            description=agent_config.get("description") or f"External agent: {agent_name}",
+            agent_card=None,
+            accepts_variables=False,
+        )
+
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol import (
+        HAS_A2A_SDK,
+        _agent_card_description,
+        fetch_agent_card,
+    )
+
+    a2a_cfg = a2a_cfg or {}
+    agent_card = None
+    if agent_type == "external" and HAS_A2A_SDK and a2a_cfg.get("transport") == "http":
+        endpoint = a2a_cfg.get("endpoint")
+        if endpoint:
+            try:
+                agent_card = await fetch_agent_card(
+                    endpoint,
+                    auth=a2a_cfg.get("auth"),
+                    timeout=float(a2a_cfg.get("timeout", 30)),
+                )
+                description = _agent_card_description(agent_card)
+            except Exception as exc:
+                logger.warning(f"Failed to fetch A2A agent card for {agent_name}: {exc}")
+                description = agent_or_config.get("description", f"External agent: {agent_name}")
+        else:
+            description = agent_or_config.get("description", f"External agent: {agent_name}")
+    else:
+        description = agent_or_config.get("description", f"{agent_type} agent: {agent_name}")
+    return ExternalAgentMetadata(agent_type, description, agent_card, agent_card is not None)
 
 
 def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
@@ -135,12 +197,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
             if policy_metadata:
                 adapter.set_metadata(state, policy_metadata)
 
-        from cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol import (
-            HAS_A2A_SDK,
-            _agent_card_description,
-            fetch_agent_card,
-            format_agent_card_for_prompt,
-        )
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol import format_agent_card_for_prompt
         from cuga.sdk import CugaAgent
 
         agent_list = []
@@ -150,29 +207,16 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
 
         for agent_name, agent_or_config in adapter._agents.items():
             agent_card = None
+            accepts_variables = True
             if isinstance(agent_or_config, CugaAgent):
                 agent_type = "internal"
                 description = getattr(agent_or_config, "description", f"Internal agent: {agent_name}")
             elif isinstance(agent_or_config, dict):
-                agent_type = agent_or_config.get("type", "external")
-                a2a_cfg = agent_or_config.get("config", {}).get("a2a_protocol", {})
-                if agent_type == "external" and HAS_A2A_SDK and a2a_cfg.get("transport") == "http":
-                    endpoint = a2a_cfg.get("endpoint")
-                    if endpoint:
-                        try:
-                            agent_card = await fetch_agent_card(
-                                endpoint,
-                                auth=a2a_cfg.get("auth"),
-                                timeout=float(a2a_cfg.get("timeout", 30)),
-                            )
-                            description = _agent_card_description(agent_card)
-                        except Exception as e:
-                            logger.warning(f"Failed to fetch A2A agent card for {agent_name}: {e}")
-                            description = agent_or_config.get("description", f"External agent: {agent_name}")
-                    else:
-                        description = agent_or_config.get("description", f"External agent: {agent_name}")
-                else:
-                    description = agent_or_config.get("description", f"{agent_type} agent: {agent_name}")
+                metadata = await describe_external_agent(agent_name, agent_or_config)
+                agent_type = metadata.agent_type
+                description = metadata.description
+                agent_card = metadata.agent_card
+                accepts_variables = metadata.accepts_variables
             else:
                 agent_type = "unknown"
                 description = f"Agent: {agent_name}"
@@ -203,7 +247,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
                     ),
                     "response_doc": f"Returns the result from {agent_name}.",
                 }
-            elif is_a2a_agent:
+            elif is_a2a_agent or not accepts_variables:
                 tool_info = {
                     "name": tool_name,
                     "description": f"Delegate a task to {agent_name}. {description}",
