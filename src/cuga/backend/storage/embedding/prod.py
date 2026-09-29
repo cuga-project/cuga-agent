@@ -1,3 +1,5 @@
+import hashlib
+import re
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -5,6 +7,23 @@ from loguru import logger
 from cuga.backend.storage.embedding.base import EmbeddingSchemaConfig
 
 SCOPE_COLS = ["tenant_id", "instance_id"]
+
+# Table identifiers are interpolated directly into DDL statements where PostgreSQL
+# does not support parameterised identifiers. Restricting names to lowercase ASCII
+# also makes the 63-character bound equivalent to PostgreSQL's 63-byte limit.
+_SAFE_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+_INDEX_DIGEST_LENGTH = 16
+_INDEX_PREFIX = "idx_"
+_INDEX_SUFFIX = "_embedding"
+_INDEX_NAME_LIMIT = 63
+
+
+def _embedding_index_name(collection_name: str) -> str:
+    """Return a bounded deterministic index identifier for a collection table."""
+    digest = hashlib.sha256(collection_name.encode("ascii")).hexdigest()[:_INDEX_DIGEST_LENGTH]
+    fixed_length = len(_INDEX_PREFIX) + 1 + len(digest) + len(_INDEX_SUFFIX)
+    collection_prefix = collection_name[: _INDEX_NAME_LIMIT - fixed_length]
+    return f"{_INDEX_PREFIX}{collection_prefix}_{digest}{_INDEX_SUFFIX}"
 
 
 def _placeholders(n: int) -> str:
@@ -18,6 +37,11 @@ def _pg_type(s: str) -> str:
 
 class ProdEmbeddingStore:
     def __init__(self, postgres_url: str, collection_name: str, schema: EmbeddingSchemaConfig):
+        if _SAFE_IDENTIFIER_RE.fullmatch(collection_name) is None:
+            raise ValueError(
+                f"collection_name {collection_name!r} is not a valid PostgreSQL identifier. "
+                "Must match ^[a-z][a-z0-9_]{0,62}$ (lowercase-leading, max 63 characters)."
+            )
         self._postgres_url = postgres_url
         self._collection_name = collection_name
         self._schema = schema
@@ -79,8 +103,9 @@ class ProdEmbeddingStore:
         create_sql = f"CREATE TABLE IF NOT EXISTS {self._collection_name} ({', '.join(parts)})"
         async with pool.acquire() as conn:
             await conn.execute(create_sql)
+            index_name = _embedding_index_name(self._collection_name)
             await conn.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{self._collection_name}_embedding "
+                f"CREATE INDEX IF NOT EXISTS {index_name} "
                 f"ON {self._collection_name} USING hnsw (embedding vector_cosine_ops)"
             )
 
