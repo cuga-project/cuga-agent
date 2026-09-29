@@ -5,6 +5,7 @@ export type RecentMemoryUsage = {
   conversationLabel: string;
   usedAt: string;
   usedLabel: string;
+  revision?: number;
 };
 
 export type MemoryRecord = {
@@ -17,6 +18,8 @@ export type MemoryRecord = {
   ownerLabel?: string;
   sourceConversationId?: string;
   sourceLabel: string;
+  sources?: Array<{threadId?: string; status: "supporting" | "superseded"}>;
+  revision?: number;
   createdAt?: string;
   createdLabel: string;
   lastUsedAt?: string;

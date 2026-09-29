@@ -100,6 +100,8 @@ def test_user_inventory_is_scoped_and_projected(client):
                 "usage": {"count": 0, "last_used_at": None, "recent": []},
                 "source_thread_id": "thread-a",
                 "source_available": True,
+                "sources": [],
+                "revision": None,
             }
         ],
         "total": 1,
@@ -249,3 +251,27 @@ def test_metadata_filters_cannot_override_server_scope(client):
         response = client.get('/api/memory/entities?metadata_filters={"user_id":"user-2"}')
 
     assert response.status_code == 422
+
+
+@pytest.mark.unit
+def test_multiple_memory_sources_only_link_available_conversations():
+    from cuga.backend.server.memory_routes import _project_item
+
+    item = {
+        'id': 'fact-1',
+        'type': 'fact',
+        'metadata': {
+            'memory_revision': 2,
+            'sources': [
+                {'conversation_id': 'visible', 'status': 'supporting'},
+                {'conversation_id': 'private', 'status': 'superseded'},
+            ],
+        },
+    }
+    result = _project_item(item, audience='user', include_content=False, available_thread_ids={'visible'})
+    assert result['revision'] == 2
+    assert result['sources'] == [
+        {'thread_id': 'visible', 'available': True, 'status': 'supporting'},
+        {'thread_id': None, 'available': False, 'status': 'superseded'},
+    ]
+    assert 'private' not in str(result)

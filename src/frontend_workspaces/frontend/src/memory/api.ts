@@ -19,6 +19,8 @@ type EvolveEntity = {
   metadata?: Record<string, unknown>;
   related_ids?: string[];
   source_thread_id?: string | null;
+  sources?: Array<{thread_id: string | null; available: boolean; status: "supporting" | "superseded"}>;
+  revision?: number;
   source_available?: boolean;
   usage?: {
     count: number;
@@ -27,6 +29,7 @@ type EvolveEntity = {
       thread_id?: string | null;
       conversation_label?: string | null;
       used_at?: string | null;
+      revision?: number;
     }>;
   };
 };
@@ -213,7 +216,9 @@ function mapEntity(entity: EvolveEntity, includeContent = true, includeOwner = f
       (includeOwner ? entity.source_available === true : entity.source_available !== false)
         ? threadId || undefined
         : undefined,
-    sourceLabel: threadId ? `Conversation ${shortReference(threadId)}` : "No available source conversation",
+    sources: entity.sources?.map((source) => ({threadId: source.available ? source.thread_id ?? undefined : undefined, status: source.status})),
+    revision: entity.revision,
+    sourceLabel: entity.sources?.length ? `${entity.sources.length} source ${entity.sources.length === 1 ? "conversation" : "conversations"}` : threadId ? `Conversation ${shortReference(threadId)}` : "No available source conversation",
     createdAt,
     createdLabel: relativeDate(createdAt, "Saved date unavailable"),
     lastUsedAt,
@@ -223,6 +228,7 @@ function mapEntity(entity: EvolveEntity, includeContent = true, includeOwner = f
       threadId: String(entry.thread_id ?? ""),
       conversationLabel: String(entry.conversation_label ?? "Conversation"),
       usedAt: String(entry.used_at ?? ""),
+      revision: entry.revision,
       usedLabel: relativeDate(entry.used_at, "Date unavailable"),
     })),
     state,

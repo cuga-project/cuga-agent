@@ -108,6 +108,7 @@ class EvolveIntegration:
                     str(entity_id) for entity_id in result.get("entity_ids", []) if str(entity_id).strip()
                 ],
                 "namespace_id": result.get("namespace_id"),
+                "entity_revisions": result.get("entity_revisions", {}),
             }
         except Exception as e:
             logger.warning(f"Evolve attributed guideline retrieval failed (non-fatal): {e}")
@@ -132,6 +133,14 @@ class EvolveIntegration:
                 "metadata": json.dumps(metadata or {}),
                 "namespace_id": namespace_id,
             }
+            # Old external Evolve deployments retain append-only behavior until
+            # they explicitly advertise safe scoped reconciliation and provenance.
+            try:
+                status = await cls.get_compliance_status(namespace_id=namespace_id)
+                capabilities = status.get("memory_capabilities", {}) if isinstance(status, dict) else {}
+                payload["enable_conflict_resolution"] = capabilities.get("scoped_conflict_resolution") is True
+            except Exception:
+                payload["enable_conflict_resolution"] = False
             result = await cls._call_tool("store_user_facts", payload)
             if isinstance(result, dict):
                 logger.info(

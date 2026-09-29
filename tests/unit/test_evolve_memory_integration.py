@@ -77,6 +77,7 @@ async def test_attributed_guidelines_normalize_identifiers():
         "text": "Use the account name",
         "entity_ids": ["g-1"],
         "namespace_id": None,
+        "entity_revisions": {},
     }
     call_tool.assert_awaited_once_with(
         "get_guidelines_with_attribution",
@@ -86,3 +87,18 @@ async def test_attributed_guidelines_normalize_identifiers():
             "session_id": "thread-a",
         },
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize('supported', [True, False])
+async def test_fact_conflict_resolution_requires_upstream_capability(monkeypatch, supported):
+    from unittest.mock import AsyncMock
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    status = {'memory_capabilities': {'scoped_conflict_resolution': True}} if supported else {}
+    monkeypatch.setattr(EvolveIntegration, 'get_compliance_status', AsyncMock(return_value=status))
+    call = AsyncMock(return_value={'stored_count': 1})
+    monkeypatch.setattr(EvolveIntegration, '_call_tool', call)
+    await EvolveIntegration.store_user_facts('alice', 'preference', namespace_id='instance-a')
+    assert call.call_args.args[1]['enable_conflict_resolution'] is supported

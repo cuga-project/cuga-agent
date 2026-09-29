@@ -147,12 +147,31 @@ def _project_item(
                     "thread_id": entry.get("thread_id"),
                     "conversation_label": entry.get("conversation_label"),
                     "used_at": entry.get("used_at"),
+                    "revision": entry.get("revision"),
                 }
                 for entry in (usage or {}).get("recent", [])
                 if isinstance(entry, dict)
             ],
         },
     }
+    # Resolve each link against the caller's conversation inventory; never expose
+    # another user's conversation identifiers through shared memory metadata.
+    raw_sources = metadata.get("sources") if isinstance(metadata, dict) else None
+    projected_sources = []
+    for source in raw_sources if isinstance(raw_sources, list) else []:
+        if not isinstance(source, dict):
+            continue
+        reference = source.get("conversation_id")
+        available = isinstance(reference, str) and reference in (available_thread_ids or set())
+        projected_sources.append(
+            {
+                "thread_id": reference if available else None,
+                "available": available,
+                "status": "superseded" if source.get("status") == "superseded" else "supporting",
+            }
+        )
+    projected["sources"] = projected_sources
+    projected["revision"] = metadata.get("memory_revision") if isinstance(metadata, dict) else None
     if include_content:
         projected["content"] = item.get("content")
     if audience == "user":
