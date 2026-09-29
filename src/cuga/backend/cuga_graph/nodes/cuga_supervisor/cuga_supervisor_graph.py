@@ -65,6 +65,8 @@ def create_cuga_supervisor_graph(
     prompt: Optional[str] = None,
     callbacks: Optional[List[BaseCallbackHandler]] = None,
     plan_approval: bool = False,
+    pending_acp_registry: Any = None,
+    interactive: bool = True,
 ) -> StateGraph:
     """
     Create supervisor subgraph that orchestrates multiple CugaAgent instances.
@@ -89,6 +91,8 @@ def create_cuga_supervisor_graph(
         base_callbacks=callbacks or [],
         static_prompt=prompt,
         plan_approval=plan_approval,
+        pending_acp_registry=pending_acp_registry,
+        interactive=interactive,
     )
     prepare_node = sup_adapter.build_prepare_node()
     execute_node = sup_adapter.build_execute_node()

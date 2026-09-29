@@ -784,6 +784,50 @@ To add a remote agent via A2A, pass an external config in `agents`: `"analytics"
 
 You can also load agents from YAML with `CugaSupervisor.from_yaml("path/to/config.yaml")`. Enable the supervisor in `settings.toml` under `[supervisor]` when using the server.
 
+### Agent Client Protocol (ACP) over stdio
+
+CUGA implements stable v1 of the [Agent Client Protocol](https://agentclientprotocol.com/) in both local stdio directions. Install the optional SDK with `pip install "cuga[acp]"` (or `uv sync --extra acp` from this repository).
+
+To use CUGA from an ACP-compatible editor, configure a custom external agent whose command is the installed `cuga-acp` executable:
+
+```json
+{
+  "agent_servers": {
+    "CUGA": {
+      "type": "custom",
+      "command": "/absolute/path/to/cuga-acp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+
+To let a CUGA supervisor delegate to a local ACP coding agent, add an external agent to its YAML roster:
+
+```yaml
+agents:
+  - name: coding-agent
+    description: "External coding agent over ACP stdio"
+    acp_protocol:
+      enabled: true
+      command: your-acp-agent
+      args: ["--acp"]
+      cwd: .
+      env: [YOUR_API_KEY]
+      startup_timeout: 15
+      prompt_timeout: 120
+      shutdown_grace_period: 5
+```
+
+Replace `your-acp-agent` with the command for the coding agent you installed (for example, `gemini --acp`). `env` lists variable names to inherit; secret values do not belong in YAML. Commands are executed directly without a shell, `cwd` must remain inside CUGA's workspace, and every delegation has bounded startup, prompt, and shutdown phases.
+
+ACP operation permissions remain independent of supervisor plan approval. An interactive run pauses for the existing CUGA tool-approval action; a headless run denies the request and cleans up the process. Approval is single-use, and stale, duplicate, or expired resumes fail closed.
+
+The current integration is text-only. It does not advertise image, audio, embedded-context, filesystem, terminal, or ACP-over-MCP support. Session persistence and remote HTTP/WebSocket transports are deferred; both supported directions use newline-delimited JSON-RPC over stdio. stdout is reserved for protocol frames and bounded diagnostics use stderr.
+
+See the [ACP stdio example](docs/examples/acp_stdio/README.md) for editor setup, supervisor configuration, cancellation checks, limitations, and troubleshooting. If startup fails, confirm the executable path and optional extra; for protocol errors, remove stdout banners; for timeouts, check login prompts before increasing bounds; for stale permission resumes, start a new delegation.
+
 ---
 
 ## Configurations

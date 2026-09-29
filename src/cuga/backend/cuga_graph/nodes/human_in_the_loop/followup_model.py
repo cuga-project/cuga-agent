@@ -213,6 +213,13 @@ class ActionResponse(BaseModel):
     additional_data: Optional[AdditionalData] = Field(
         AdditionalData(tool=None), description="additional_data"
     )
+    submitted_additional_data: Optional[AdditionalData] = Field(
+        None,
+        description=(
+            "additional_data exactly as the client submitted it; set by WaitForResponse before it "
+            "restores additional_data from the original action. Client-provided values are discarded."
+        ),
+    )
     # Response data based on action type
     text_response: Optional[str] = Field(
         None, description="Text response for natural language or text input actions"

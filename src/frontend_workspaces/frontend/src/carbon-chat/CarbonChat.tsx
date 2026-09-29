@@ -782,6 +782,8 @@ const CarbonChat = ({
             response_type: 'confirmation',
             timestamp: new Date().toISOString(),
             confirmed: approved,
+            // Echo the action's identity (e.g. ACP permission pending_id) so stale approvals are rejected.
+            additional_data: user_defined?.additional_data,
           };
 
           const request: MessageRequest = { input: { text: '' } };

@@ -2,8 +2,10 @@
 Supervisor Configuration Loader - Loads supervisor configuration from YAML files
 """
 
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
 import yaml
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from loguru import logger
 from pydantic import BaseModel
 
@@ -20,6 +22,18 @@ class SupervisorConfig(BaseModel):
     supervisor: Dict[str, Any] = {}
     agents: Dict[str, Any] = {}  # Can contain CugaAgent instances or A2A configs
     a2a: Dict[str, Any] = {}
+
+
+def _protocol_block(
+    agent_config: Mapping[str, Any], protocol_name: str, agent_name: str
+) -> Mapping[str, Any] | None:
+    """Compatibility helper retained for callers that inspect one block."""
+    if protocol_name not in agent_config:
+        return None
+    block = agent_config[protocol_name]
+    if not isinstance(block, Mapping):
+        raise ValueError(f"Agent '{agent_name}': {protocol_name} must be a mapping")
+    return block
 
 
 async def build_agents_from_list(
@@ -45,9 +59,31 @@ async def build_agents_from_list(
 
     for agent_config in agents_list:
         agent_name = agent_config["name"]
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
+            acp_process_config_from_mapping,
+            validate_external_protocol_config,
+        )
+
+        try:
+            acp_protocol, a2a_protocol = validate_external_protocol_config(agent_config)
+            if acp_protocol is not None and acp_protocol["enabled"]:
+                acp_process_config_from_mapping(
+                    acp_protocol,
+                    name=agent_name,
+                    description=agent_config.get("description"),
+                )
+        except ValueError as exc:
+            raise ValueError(f"Agent '{agent_name}': {exc}") from exc
+
+        if acp_protocol is not None and acp_protocol["enabled"]:
+            agents[agent_name] = {
+                "type": "external",
+                "config": agent_config,
+            }
+            logger.info(f"Registered external ACP agent: {agent_name}")
 
         # Check if this is an external agent (has a2a_protocol)
-        if "a2a_protocol" in agent_config and agent_config.get("a2a_protocol", {}).get("enabled"):
+        elif a2a_protocol is not None and a2a_protocol.get("enabled"):
             # External agent via A2A - store config for later connection
             agents[agent_name] = {
                 "type": "external",
