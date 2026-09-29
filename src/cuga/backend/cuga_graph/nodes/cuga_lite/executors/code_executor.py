@@ -138,6 +138,9 @@ class CodeExecutor:
             Tuple of (execution result, new variables dictionary)
         """
         original_keys = set(_locals.keys())
+        # Values of pre-existing variables, so a block that rebinds or mutates one
+        # writes the new value back instead of leaving the first one in the manager.
+        original_values = VariableUtils.snapshot_values(_locals)
 
         # Single enforcement point for advanced_features.max_tool_calls_per_run.
         # Every tool the agent can call — registry, MCP/SDK providers, plain
@@ -171,6 +174,7 @@ class CodeExecutor:
                 _locals,
                 state,
                 original_keys,
+                original_values,
                 thread_id=thread_id,
                 apps_list=apps_list,
                 mode=mode,
@@ -188,6 +192,7 @@ class CodeExecutor:
         _locals: dict[str, Any],
         state: AgentState,
         original_keys: set[str],
+        original_values: dict[str, Any],
         *,
         thread_id: Optional[str] = None,
         apps_list: Optional[List[str]] = None,
@@ -272,7 +277,10 @@ class CodeExecutor:
         always_include_keys = {'result', 'results', 'output', 'outputs'}
 
         new_vars = VariableUtils.filter_new_variables(
-            _locals, original_keys, always_include_keys=always_include_keys
+            _locals,
+            original_keys,
+            always_include_keys=always_include_keys,
+            original_values=original_values,
         )
 
         # Strip the skills-only injection so it never surfaces in the agent's
