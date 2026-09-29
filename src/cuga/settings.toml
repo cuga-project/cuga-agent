@@ -55,6 +55,7 @@ cuga_lite_bind_tools_max_count = 128
 cuga_lite_bind_tools_pad_to_cap = false
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 cuga_lite_blocked_claim_retry = true  # When an NL turn claims tools/data are unavailable but no code has executed and tools ARE bound, retry once with a corrective message instead of finalizing the false refusal (issue #610). Only active when cuga_lite_nl_auto_continue is on.
+cuga_lite_nl_auto_continue_max_consecutive = 3  # Max consecutive NL turns auto-continued with no code turn in between; the next one finalizes. Stops autonomous mode looping against a hard blocker (missing card/address) by re-asking an absent user (#445, PR #732). 0 disables the cap.
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
