@@ -139,7 +139,7 @@ class CoreGraphAdapter(ABC):
         """Extract ``(content, reasoning)`` from the model response.
 
         Default passes through ``response.content`` and the
-        ``reasoning_content`` additional kwarg.
+        ``reasoning_content`` or ``reasoning`` additional kwarg.
         Lite overrides to run ``normalize_assistant_text`` and recover
         tool-call code from proxy responses.
 
@@ -151,7 +151,8 @@ class CoreGraphAdapter(ABC):
         framing from a real answer when visible content is empty.
         """
         content = strip_harmony_tokens(response.content or "")
-        reasoning = (getattr(response, "additional_kwargs", None) or {}).get("reasoning_content")
+        additional_kwargs = getattr(response, "additional_kwargs", None) or {}
+        reasoning = additional_kwargs.get("reasoning_content") or additional_kwargs.get("reasoning")
         return content, reasoning
 
     def get_tools_needing_probing(self) -> frozenset[str]:
