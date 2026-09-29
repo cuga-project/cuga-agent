@@ -107,6 +107,8 @@ function runStatus(run: RetentionRun): string {
 }
 
 function formatRule(rule: RetentionCapabilities["rules"][number]): string {
+  if (rule.sourceDeleted && rule.minSourceDeletedDays != null)
+    return `Delete memories ${rule.minSourceDeletedDays} days after their last supporting conversation is deleted.`;
   if (rule.sourceDeleted && rule.maxAgeDays != null)
     return `Delete memories that are at least ${rule.maxAgeDays} days old if their original conversation has been deleted.`;
   if (rule.description) return rule.description;
@@ -117,7 +119,7 @@ function formatRule(rule: RetentionCapabilities["rules"][number]): string {
         ? "Flag"
         : displayType(rule.action);
   if (rule.sourceDeleted)
-    return `After the source conversation is explicitly deleted, delete memories older than ${rule.maxAgeDays} days.`;
+    return "Delete memories after all their supporting conversations have been deleted.";
   const days = rule.maxUnusedDays ?? rule.maxAgeDays;
   const qualifier = rule.maxUnusedDays != null ? " without use" : "";
   const entityType = rule.entityType

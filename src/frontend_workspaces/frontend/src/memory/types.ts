@@ -56,6 +56,7 @@ export type RetentionRule = {
   description?: string;
   sourceDeleted?: boolean;
   maxAgeDays?: number;
+  minSourceDeletedDays?: number;
   maxUnusedDays?: number;
 };
 

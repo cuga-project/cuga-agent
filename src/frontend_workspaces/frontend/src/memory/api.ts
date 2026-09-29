@@ -63,6 +63,7 @@ type RetentionCapabilitiesResponse = {
     description?: string;
     source_deleted?: boolean;
     max_age_days?: number;
+  min_source_deleted_days?: number;
     max_unused_days?: number;
   }>;
 };
@@ -278,6 +279,7 @@ function mapRule(rule: NonNullable<RetentionCapabilitiesResponse["rules"]>[numbe
     description: rule.description,
     sourceDeleted: rule.source_deleted,
     maxAgeDays: rule.max_age_days,
+    minSourceDeletedDays: rule.min_source_deleted_days,
     maxUnusedDays: rule.max_unused_days,
   };
 }
