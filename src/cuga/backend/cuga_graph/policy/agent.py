@@ -191,6 +191,9 @@ class PolicyAgent:
             else:
                 keywords = trigger.value
 
+            if not keywords:
+                return False, 0.0, f"No keywords configured in trigger: {trigger.target}"
+
             matched_keywords = [kw for kw in keywords if kw in target_text]
             operator = getattr(trigger, 'operator', 'and')  # Default to 'and' for backward compatibility
 
