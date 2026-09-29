@@ -7,13 +7,14 @@ value is visible even when the code passes a variable.
 
 Look ONLY at:
 1. Ungrounded write values: a resolved argument that *identifies a record or
-   states a quantity* — an id, a name, an email, an amount, a date — that is
-   already a fixed number or string, and that does not appear in Conversation
-   history, the Most recent execution output, Variables, or the Current Task,
-   and is not read inside THIS same block (e.g. `hits = await search(...);
-   await add(id=hits[0]["id"])` is grounded). A match must be the same kind of
-   value: a digit that appears only as a page number or as another field's
-   value does not ground a count the Current Task implies.
+   states a quantity* — an id, a name, a path, an email, an address, an
+   amount, a date — that is already a fixed number or string, and that does not
+   appear in Conversation history, the Most recent execution output, Variables,
+   or the Current Task, and is not read inside THIS same block (e.g.
+   `hits = await search(...); await add(id=hits[0]["id"])` is grounded). A
+   match must be the same kind of value: a digit that appears only as a page
+   number or as another field's value does not ground a count the Current Task
+   implies.
 2. Contradictions: a resolved argument conflicts with a retrieved value in
    history, the Most recent execution output, or Variables that shares an
    identifying string (same description, title, or name). Compare the value,
@@ -36,8 +37,12 @@ Do NOT flag:
 - Prose, comments, or print() arguments
 - An argument you cannot resolve and have no retrieved value to compare against
 - Values that are choices rather than facts about the world: booleans and flags,
-  an enum option the API documents, a name or path the agent is creating, or an
-  argument left at the API's own documented default
+  an enum option the API documents, or an argument left at the API's own
+  documented default
+- The name or path of something the Current Task asks the agent to create, when
+  the task does not specify one. A name or path the task *does* specify must
+  match it, and an object the task never asked for (a test or placeholder
+  record, an unrequested report or note file) stays in scope
 - Constants that belong to the code rather than the data: regular expressions,
   date/number format strings, page sizes, limits, and encodings
 - A number the Current Task neither states nor implies, where the API needs one

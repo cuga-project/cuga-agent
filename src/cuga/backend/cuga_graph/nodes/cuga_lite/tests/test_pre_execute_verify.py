@@ -1566,6 +1566,26 @@ def test_verify_context_has_no_latest_output_before_any_block_ran():
     assert latest == "(no block has run yet)"
 
 
+# Judged against ground truth, 883 recorded revises in the categories this
+# change touches held four correct catches in tasks that then passed. Three
+# came from excusing "a name or path the agent is creating": an unrequested
+# "Test Playlist", an unrequested report file (each breaks a model-change
+# assertion) and ./backups where the task named ~/backups. The fourth was an
+# invented zip code, which the narrowed rule 1 no longer named.
+
+
+@pytest.mark.unit
+def test_a_name_or_path_the_task_specifies_or_never_asked_for_stays_in_scope():
+    text = _verify_prompt_text()
+    assert "a name or path the agent is creating" not in text
+    carve_outs = text.split("Do NOT flag:", 1)[1]
+    assert "task *does* specify must" in carve_outs
+    assert "an object the task never asked for" in carve_outs
+    rule_one = text.split("2. Contradictions", 1)[0]
+    for kind in ("a path", "an address"):
+        assert kind in rule_one, f"rule 1 must name {kind}"
+
+
 @pytest.mark.unit
 def test_extra_field_rule_requires_an_explicit_restriction():
     text = _verify_prompt_text()
