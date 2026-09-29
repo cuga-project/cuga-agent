@@ -36,6 +36,10 @@ async def test_usage_is_idempotent_and_service_scoped(tmp_path, monkeypatch):
         same_scope = await memory_store.get_turn_memory_usage(
             turn_id="turn-a", agent_id="agent-a", user_id="user-a"
         )
+        summaries = await memory_store.get_memory_usage_summaries(
+            agent_id="agent-a", user_id="user-a", entity_ids=["entity-a"], available_thread_ids={"thread-a"}
+        )
+        assert summaries["entity-a"]["recent"][0]["revision"] == 2
         monkeypatch.setattr(memory_store, "_scope", lambda: ("tenant-a", "instance-b"))
         other_instance = await memory_store.get_turn_memory_usage(
             turn_id="turn-a", agent_id="agent-a", user_id="user-a"
