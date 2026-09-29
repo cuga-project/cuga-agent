@@ -57,6 +57,14 @@ KEYS=(
   DISCORD_BOT_TOKEN
   SLACK_BOT_TOKEN SLACK_SIGNING_SECRET
   WHATSAPP_TOKEN WHATSAPP_PHONE_NUMBER_ID WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN
+  WHATSAPP_TEMPLATE_NAME WHATSAPP_TEMPLATE_LANG WHATSAPP_API_VERSION
+  # GitHub, direct: the webhook secret gates the route (fails closed). The App keys are
+  # for reading the API back and are optional. GITHUB_APP_PRIVATE_KEY must be stored
+  # single-line with literal \n escapes — github_direct repairs them on read.
+  GITHUB_WEBHOOK_SECRET GITHUB_TOKEN
+  GITHUB_APP_ID GITHUB_APP_PRIVATE_KEY GITHUB_APP_INSTALLATION_ID
+  # Box, direct via client-credentials — no more 60-minute dev tokens.
+  BOX_CLIENT_ID BOX_CLIENT_SECRET BOX_ENTERPRISE_ID BOX_USER_ID BOX_DEV_TOKEN
 )
 
 # ---- PROVISIONED in the cloud, carried forward -----------------------------
@@ -87,7 +95,10 @@ read_key() {
   line=$(grep -E "^$key=" "$file" | tail -1 || true)
   [[ -n "$line" ]] || return 0
   val=${line#*=}
-  printf '%s' "$val" | sed -e 's/[[:space:]]*#.*//' -e 's/^[[:space:]]*//' \
+  # Strip an inline comment only when the '#' is preceded by whitespace (the '  # ...' convention),
+  # so a '#' INSIDE a credential value (e.g. a webhook secret or Box client secret) is preserved.
+  # The old 's/[[:space:]]*#.*//' matched zero spaces and silently truncated such values.
+  printf '%s' "$val" | sed -e 's/[[:space:]][[:space:]]*#.*//' -e 's/^[[:space:]]*//' \
                            -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//'
 }
 
@@ -138,7 +149,11 @@ EVENTS_ONLY=(
   DISCORD_BOT_TOKEN
   TELEGRAM_BOT_TOKEN EVENTS_TELEGRAM_BOT_USERNAME
   WHATSAPP_TOKEN WHATSAPP_PHONE_NUMBER_ID WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN
+  WHATSAPP_TEMPLATE_NAME WHATSAPP_TEMPLATE_LANG WHATSAPP_API_VERSION
   EVENTS_WEBHOOK_KEY
+  GITHUB_WEBHOOK_SECRET GITHUB_TOKEN
+  GITHUB_APP_ID GITHUB_APP_PRIVATE_KEY GITHUB_APP_INSTALLATION_ID
+  BOX_CLIENT_ID BOX_CLIENT_SECRET BOX_ENTERPRISE_ID BOX_USER_ID BOX_DEV_TOKEN
 )
 CORE_OUT="$SCRIPT_DIR/.env.ce.core"
 : > "$CORE_OUT"

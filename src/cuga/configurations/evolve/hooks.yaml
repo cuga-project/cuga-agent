@@ -3,6 +3,9 @@
 # Regex PII detection is local and requires no model downloads or remote service.
 plugins:
   - name: pii_filter_memory
+    display_name: Personal identifiers
+    description: Masks detected email addresses, phone numbers and other structured personal identifiers.
+    show_in_ui: true
     kind: altk_evolve.hooks.plugins.pii.PIIFilterMemoryPlugin
     hooks: [memory_pre_write, llm_pre_call]
     mode: sequential
@@ -16,6 +19,9 @@ plugins:
       redaction_text: "[REDACTED]"
 
   - name: metadata_normalizer
+    display_name: Memory metadata
+    description: Keeps source references and timestamps consistent.
+    show_in_ui: false
     kind: altk_evolve.hooks.plugins.normalizer.MetadataNormalizerPlugin
     hooks: [memory_pre_write]
     mode: transform
@@ -26,6 +32,9 @@ plugins:
       stamp_created_at: true
 
   - name: access_stamp
+    display_name: Memory usage tracking
+    description: Records when memories are used.
+    show_in_ui: false
     kind: altk_evolve.hooks.plugins.access_stamp.AccessStampPlugin
     hooks: [memory_post_read]
     mode: fire_and_forget
@@ -33,6 +42,9 @@ plugins:
     on_error: fail
 
   - name: legal_hold
+    display_name: Legal holds
+    description: Prevents deletion of memories placed on legal hold.
+    show_in_ui: true
     kind: altk_evolve.hooks.plugins.legal_hold.LegalHoldMemoryPlugin
     hooks: [memory_pre_delete]
     mode: sequential

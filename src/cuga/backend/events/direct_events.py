@@ -44,9 +44,16 @@ def kind_for(app: str, direct_kind: str) -> str:
     return ""
 
 
-def _cfg_match(cfg: dict, *, channel: str = "", text: str = "", emoji: str = "") -> bool:
+def _cfg_match(cfg: dict, *, channel: str = "", text: str = "", emoji: str = "", repo: str = "") -> bool:
     want_ch = str(cfg.get("channel") or "").lstrip("#")
     if want_ch and want_ch != str(channel or "").lstrip("#"):
+        return False
+    # REPO — the slot every github trigger is keyed on. Without this a watcher armed for
+    # owner/one fires on events from owner/two, because the delivery arrives on the same
+    # webhook URL for every repository the App is installed in. Case-insensitive: GitHub
+    # treats owner/Repo and owner/repo as the same thing.
+    want_repo = str(cfg.get("repo") or "").strip().lower()
+    if want_repo and want_repo != str(repo or "").strip().lower():
         return False
     want_emoji = str(cfg.get("emoji") or "").strip(":")
     if want_emoji and want_emoji != str(emoji or "").strip(":"):
@@ -62,7 +69,9 @@ def _cfg_match(cfg: dict, *, channel: str = "", text: str = "", emoji: str = "")
     return True
 
 
-def match(store, app: str, event: str, *, channel: str = "", text: str = "", emoji: str = "") -> list:
+def match(
+    store, app: str, event: str, *, channel: str = "", text: str = "", emoji: str = "", repo: str = ""
+) -> list:
     """Active DIRECT watcher subscriptions for (app, event) whose config filters accept this
     occurrence. Store may be None (events layer without a subscription store) → []."""
     if store is None or not event:
@@ -73,7 +82,7 @@ def match(store, app: str, event: str, *, channel: str = "", text: str = "", emo
             continue
         if sub.source_connector != app or (sub.event or "") != event:
             continue
-        if not _cfg_match(sub.config or {}, channel=channel, text=text, emoji=emoji):
+        if not _cfg_match(sub.config or {}, channel=channel, text=text, emoji=emoji, repo=repo):
             continue
         out.append(sub)
     return out

@@ -97,14 +97,20 @@ def supervise(
             signal.signal(sig, handler)
 
 
+def evolve_endpoint() -> tuple[str, str]:
+    """Resolve the same file and environment settings as the CUGA process."""
+    from cuga.config import settings
+
+    return str(settings.evolve.mode).lower(), str(settings.evolve.url).rstrip("/")
+
+
 def main() -> int:
     command = sys.argv[1:]
     if not command:
         raise SystemExit("Missing CUGA command")
     # Explicit operator endpoints remain external, even when the image includes
     # Evolve. Never replace their storage/namespace with the bundled service.
-    mode = os.environ.get("DYNACONF_EVOLVE__MODE", "auto").lower()
-    url = os.environ.get("DYNACONF_EVOLVE__URL", "").rstrip("/")
+    mode, url = evolve_endpoint()
     if mode == "registry" or (url and url != "http://127.0.0.1:8201/sse"):
         os.execvp(command[0], command)
     evolve_command = shutil.which("evolve-mcp")

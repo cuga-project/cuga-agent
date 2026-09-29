@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.unit]
 
 
 # -- fakes -----------------------------------------------------------------

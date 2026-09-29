@@ -117,6 +117,18 @@ sync_secret() {  # name, env-file
 }
 echo "== syncing secret '$SECRET_NAME' (events — all credentials) =="
 sync_secret "$SECRET_NAME" "$ENV_CE_FILE"
+
+# Guard against a stale STATIC Box token shadowing CCG. box_direct uses a static token
+# (BOX_DEV_TOKEN / EVENTS_BOX_TOKEN) OVER a minted CCG token, and `secret update` MERGES — so a dev
+# token left in the secret from earlier testing (make_env_ce.sh omits keys absent from .env, and the
+# merge keeps them) makes the DEPLOYED watcher use an EXPIRED token → every Box poll 401s while the
+# CCG creds sit right there unused. When the env-file configures CCG and carries no static token,
+# actively remove any lingering one from the secret.
+if grep -q '^BOX_CLIENT_ID=' "$ENV_CE_FILE" && ! grep -q '^BOX_DEV_TOKEN=.\+' "$ENV_CE_FILE"; then
+  for k in BOX_DEV_TOKEN EVENTS_BOX_TOKEN; do
+    ibmcloud ce secret update --name "$SECRET_NAME" --rm "$k" >/dev/null 2>&1 || true
+  done
+fi
 echo "== syncing secret '$CORE_SECRET_NAME' (core — no channel tokens) =="
 sync_secret "$CORE_SECRET_NAME" "$CORE_ENV_FILE"
 
@@ -251,6 +263,7 @@ ev_args=(
   --env "EVENTS_TELEGRAM_BACKEND=$EVENTS_TELEGRAM_BACKEND"
   --env "EVENTS_DISCORD_BACKEND=$EVENTS_DISCORD_BACKEND"
   --env "EVENTS_SLACK_BACKEND=$EVENTS_SLACK_BACKEND"
+  --env "EVENTS_BOX_BACKEND=$EVENTS_BOX_BACKEND"
   --env "EVENTS_DISCORD_MEMBERS_INTENT=1"
   --env "DEPLOY_REV=$DEPLOY_REV"
   # The Studio UI is served by cuga-core and calls this service cross-origin — allow it.
