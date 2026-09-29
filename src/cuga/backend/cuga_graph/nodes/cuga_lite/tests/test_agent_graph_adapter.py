@@ -169,14 +169,52 @@ def test_normalize_response_strips_empty_content():
     assert content.strip() == "hello"
 
 
-def test_normalize_response_extracts_reasoning():
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("additional_kwargs", "expected"),
+    [
+        ({"reasoning_content": "legacy reasoning"}, "legacy reasoning"),
+        ({"reasoning": "WatsonX reasoning"}, "WatsonX reasoning"),
+        ({"reasoning_content": "legacy reasoning", "reasoning": "other reasoning"}, "legacy reasoning"),
+        ({"reasoning_content": "", "reasoning": "WatsonX reasoning"}, "WatsonX reasoning"),
+        ({"reasoning_content": None, "reasoning": "WatsonX reasoning"}, "WatsonX reasoning"),
+    ],
+)
+def test_normalize_response_extracts_reasoning(additional_kwargs, expected):
     adapter = _make_adapter()
-    response = SimpleNamespace(
-        content="hi",
-        additional_kwargs={"reasoning_content": "I thought about it"},
+    response = SimpleNamespace(content="hi", additional_kwargs=additional_kwargs)
+    content, reasoning = adapter.normalize_response(response)
+    assert content == "hi"
+    assert reasoning == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reasoning_key", ["reasoning_content", "reasoning"])
+def test_watsonx_response_reasoning_reaches_tracker(reasoning_key):
+    from langchain_ibm import ChatWatsonx
+
+    # Exercise the installed provider's response conversion without credentials or HTTP.
+    model = ChatWatsonx.model_construct(model_id="openai/gpt-oss-120b")
+    result = model._create_chat_result(
+        {
+            "id": "watsonx-reasoning-regression",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "391", reasoning_key: "17 times 23 is 391."},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
     )
-    _, reasoning = adapter.normalize_response(response)
-    assert reasoning == "I thought about it"
+    adapter = _make_adapter()
+    content, reasoning = adapter.normalize_response(result.generations[0].message)
+    assert content == "391"
+    assert reasoning == "17 times 23 is 391."
+
+    adapter.on_response_processed(SimpleNamespace(), code=None, content=content, reasoning=reasoning)
+    steps = [call.kwargs["step"] for call in adapter.get_tracker().collect_step.call_args_list]
+    assert [step.name for step in steps] == ["Raw_Assistant_Response", "Assistant_reasoning", "Assistant_nl"]
+    assert steps[1].data == "17 times 23 is 391."
 
 
 # ── 6. on_response_processed hook ────────────────────────────────────────
