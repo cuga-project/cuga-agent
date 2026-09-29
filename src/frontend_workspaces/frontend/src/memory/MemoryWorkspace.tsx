@@ -319,7 +319,20 @@ function MemoryDetail({
   admin?: boolean;
   readOnly?: boolean;
 }) {
-  const source = memory.sourceConversationId && onOpenConversation ? (
+  const source = memory.sources?.length ? (
+    <ul className="memory-workspace__source-list">
+      {memory.sources.map((item, index) => (
+        <li key={`${item.threadId ?? "unavailable"}-${index}`}>
+          {item.threadId && onOpenConversation ? (
+            <ReferenceLink href={`/chat?thread_id=${encodeURIComponent(item.threadId)}`} onClick={() => onOpenConversation(item.threadId!)}>
+              Conversation {index + 1}
+            </ReferenceLink>
+          ) : "Source conversation unavailable"}
+          {item.status === "superseded" ? " · Earlier information" : " · Supports this memory"}
+        </li>
+      ))}
+    </ul>
+  ) : memory.sourceConversationId && onOpenConversation ? (
     <ReferenceLink
       href={`/chat?thread_id=${encodeURIComponent(memory.sourceConversationId)}`}
       onClick={() => onOpenConversation(memory.sourceConversationId!)}
@@ -377,7 +390,7 @@ function MemoryDetail({
                       {usage.conversationLabel}
                     </ReferenceLink>
                   ) : usage.conversationLabel}
-                  <span>{usage.usedLabel}</span>
+                  <span>{usage.usedLabel}{usage.revision ? ` · Version ${usage.revision}` : ""}</span>
                 </li>
               ))}
             </ul>

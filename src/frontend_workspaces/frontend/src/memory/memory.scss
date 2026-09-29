@@ -965,3 +965,13 @@
   padding-block: var(--cds-spacing-05, 1rem);
   border-bottom: 1px solid var(--cds-border-subtle-01);
 }
+
+.memory-workspace__source-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  li + li {
+    margin-top: 0.5rem;
+  }
+}
