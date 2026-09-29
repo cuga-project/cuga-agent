@@ -162,13 +162,10 @@ constraint-dependencies = [
     # conflicting Content-Length+Transfer-Encoding, both <2.11.0) and GHSA-8xx6-hgc6-gc2m
     # (unbounded streaming-decompression memory amplification, <2.12.0).
     "httpx2>=2.12.0",
-    # NOTE: accelerate has an open path-traversal/DoS advisory (GHSA-4j2p-28q2-5m79,
-    # load_checkpoint_in_model / load_checkpoint_and_dispatch trusting sharded-checkpoint
-    # weight_map entries) with no patched release yet — 1.14.0 (latest on PyPI) is still in the
-    # vulnerable range. CUGA never calls these APIs directly (grepped clean); reachability
-    # through transformers' internal sharded-checkpoint loading for local/HF-cached models is
-    # unconfirmed but considered low-risk since model paths aren't attacker-controlled here.
-    # Dependabot alert #636 can't close via a version bump; revisit once accelerate ships a fix.
+    "accelerate>=1.15.0",  # GHSA-4j2p-28q2-5m79: sharded-checkpoint weight_map path traversal / DoS (<=1.14.0)
+    # GHSA-82r6-8w77-94w6 (TLSStream IDNA 2003 host encoding enables cert spoofing), GHSA-5p39-cfhj-2xmp
+    # (process-pool workers block on undrained stderr), both <4.14.2.
+    "anyio>=4.14.2",
 ]
 # litellm 1.83.4 pins python-dotenv==1.0.1; fastmcp needs >=1.1.0 — allow newer for sync/lock only.
 override-dependencies = ["python-dotenv>=1.1.0"]
