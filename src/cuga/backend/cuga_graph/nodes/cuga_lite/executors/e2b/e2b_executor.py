@@ -43,6 +43,7 @@ class E2BExecutor(RemoteExecutor):
         state: AgentState,
         thread_id: Optional[str] = None,
         apps_list: Optional[List[str]] = None,
+        execution_timeout: Optional[float] = None,
     ) -> tuple[str, dict[str, Any]]:
         """Execute code for cuga_lite mode in E2B sandbox.
 
@@ -52,6 +53,7 @@ class E2BExecutor(RemoteExecutor):
             state: AgentState instance
             thread_id: Thread ID for sandbox caching
             apps_list: List of app names for parsing tool names
+            execution_timeout: Optional per-call deadline override.
 
         Returns:
             Tuple of (execution result, new variables dictionary)
@@ -75,12 +77,16 @@ class E2BExecutor(RemoteExecutor):
             trajectory_path = CallApiHelper.get_trajectory_path()
             call_api_helper = CallApiHelper.create_remote_call_api_code(function_call_url, trajectory_path)
 
-            # int() cast: the value is substituted into a code template sent to
-            # the e2b sandbox. A non-int (e.g. a misconfigured env var coerced
+            # Numeric cast: the value is substituted into a code template sent to
+            # the e2b sandbox. A non-number (e.g. a misconfigured env var coerced
             # to string) would inject syntactically broken Python and surface
             # as a NameError at sandbox runtime — fail early with a clear
             # TypeError here instead.
-            sandbox_timeout = int(settings.advanced_features.sandbox_execution_timeout)
+            sandbox_timeout = (
+                float(execution_timeout)
+                if execution_timeout is not None
+                else int(settings.advanced_features.sandbox_execution_timeout)
+            )
 
             complete_code = f"""
 {call_api_helper}
