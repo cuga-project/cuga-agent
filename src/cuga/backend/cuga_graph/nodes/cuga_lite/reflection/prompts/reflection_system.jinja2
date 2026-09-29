@@ -138,9 +138,12 @@ evidence — cite the specific variable, field, or error code. If any API
 response shows "status": "exception", a 4xx/5xx code, or an empty result
 where data was expected, begin with FAILED.
 
-NEXT: One to three sentences of approach-level guidance — which tool or app
-to use, which gap to close. No code. If every stated requirement is
-satisfied, write exactly: NEXT: task complete.
+NEXT: Exactly ONE sentence naming the single next action — one tool or one
+gap to close, nothing after it. Never chain steps with "then", "next" or
+"finally"; the executor runs one step per block and will ask again. If that
+action was already tried earlier in the history and failed, name a different
+tool or approach instead — never re-issue a rejected action. No code.
+If every stated requirement is satisfied, write exactly: NEXT: task complete.
 
 ---
 
