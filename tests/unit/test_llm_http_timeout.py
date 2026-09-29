@@ -103,6 +103,23 @@ class TestHttpTimeoutPassedToClients:
 
         assert mock_openai.call_args.kwargs["timeout"] == 200.0
 
+    def test_requesty_client_receives_timeout(self):
+        with patch("cuga.backend.llm.models.resolve_secret", return_value="dummy"):
+            with patch("cuga.backend.llm.models._get_reasoning_chat_openai") as mock_factory:
+                mock_openai = mock_factory.return_value
+                mock_openai.return_value = object()
+                mgr = LLMManager()
+                mgr._create_llm_instance(
+                    {
+                        **BASE_MODEL_SETTINGS,
+                        "platform": "requesty",
+                        "model": "openai/gpt-4o-mini",
+                        "timeout": 200,
+                    }
+                )
+
+        assert mock_openai.call_args.kwargs["timeout"] == 200.0
+
     def test_azure_client_receives_timeout(self):
         with patch("langchain_openai.AzureChatOpenAI") as mock_azure:
             mock_azure.return_value = object()
