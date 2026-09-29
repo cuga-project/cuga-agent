@@ -9,15 +9,16 @@ Look ONLY at:
 1. Ungrounded write values: a resolved argument that *identifies a record or
    states a quantity* — an id, a name, an email, an amount, a date — that is
    already a fixed number or string, and that does not appear in Conversation
-   history, Variables, or the Current Task, and is not read inside THIS same
-   block (e.g. `hits = await search(...); await add(id=hits[0]["id"])` is
-   grounded). A value that appears verbatim in the most recent execution output
-   is grounded even when this block does not read it again.
+   history, the Most recent execution output, Variables, or the Current Task,
+   and is not read inside THIS same block (e.g. `hits = await search(...);
+   await add(id=hits[0]["id"])` is grounded). A match must be the same kind of
+   value: a digit that appears only as a page number or as another field's
+   value does not ground a count the Current Task implies.
 2. Contradictions: a resolved argument conflicts with a retrieved value in
-   history or Variables that shares an identifying string (same description,
-   title, or name). Compare the value, not the literal — `amount=35.0` still
-   contradicts a retrieved `46.67` row with the same description when 35.0 is
-   reached through `round(total / n, 2)`.
+   history, the Most recent execution output, or Variables that shares an
+   identifying string (same description, title, or name). Compare the value,
+   not the literal — `amount=35.0` still contradicts a retrieved `46.67` row
+   with the same description when 35.0 is reached through `round(total / n, 2)`.
 3. Aggregations over the wrong rows: a resolved argument sums, counts, or
    averages a collection whose rows in Variables do not all belong to the
    Current Task (e.g. summing every transaction from a person when the task

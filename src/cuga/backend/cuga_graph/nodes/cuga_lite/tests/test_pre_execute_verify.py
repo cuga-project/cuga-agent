@@ -1491,8 +1491,79 @@ def test_choices_and_code_constants_are_listed_as_do_not_flag():
 
 
 @pytest.mark.unit
-def test_values_seen_in_the_latest_output_count_as_grounded():
-    assert "appears verbatim in the most recent execution output" in _verify_prompt_text()
+def test_latest_output_grounds_values_of_the_same_kind_only():
+    from pathlib import Path
+
+    rule_one = _verify_prompt_text().split("2. Contradictions", 1)[0]
+    assert "the Most recent execution output" in rule_one
+    # A bare digit such as "page": 1 must not ground quantity=1 for a task that
+    # implies a different count.
+    assert "does not ground a count the Current Task" in rule_one
+    user = (Path(__file__).resolve().parents[1] / "reflection" / "prompts" / "verify_user.jinja2").read_text(
+        encoding="utf-8"
+    )
+    assert "**Most recent execution output**" in user
+    assert "{{latest_output}}" in user
+
+
+# History is trimmed from the end, and the verify budget is 30k chars: on
+# AppWorld about 60% of verify calls have a longer history, so the output the
+# proposed block was written against was the first thing cut.
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verify_keeps_the_latest_output_when_history_is_trimmed():
+    from langchain_core.messages import AIMessage
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        decide_pre_execute_verify,
+    )
+
+    captured = {}
+    chain = MagicMock()
+
+    async def _ainvoke(payload, config=None):
+        captured.update(payload)
+        return SimpleNamespace(content="GATE: ok")
+
+    chain.ainvoke = _ainvoke
+    messages = [HumanMessage(content="order the cheapest pad")]
+    for i in range(20):
+        messages += [
+            AIMessage(content=f"block {i} " + "x" * 50),
+            HumanMessage(content=f"out {i} " + "y" * 50),
+        ]
+    messages += [AIMessage(content="search"), HumanMessage(content="found product_id 98765")]
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
+        return_value=chain,
+    ):
+        await decide_pre_execute_verify(
+            enabled=True,
+            streak=0,
+            script="await add_to_cart(product_id=98765)",
+            chat_messages=messages,
+            variables_snapshot="",
+            current_task="order the cheapest pad",
+            model=MagicMock(spec=[]),
+            config={},
+            max_chars=300,
+        )
+    assert "trimmed to 300 chars" in captured["agent_history"]
+    assert "98765" in captured["latest_output"]
+    assert "98765" not in captured["agent_history"]
+
+
+@pytest.mark.unit
+def test_verify_context_has_no_latest_output_before_any_block_ran():
+    from cuga.backend.cuga_graph.utils.context_management_utils import prepare_verify_context
+
+    history, latest, _, _ = prepare_verify_context(
+        [HumanMessage(content="order the cheapest pad")], "", "", max_chars=1000
+    )
+    assert "order the cheapest pad" in history
+    assert latest == "(no block has run yet)"
 
 
 @pytest.mark.unit

@@ -36,18 +36,46 @@ def messages_to_history_text(messages: List[BaseMessage]) -> str:
     return "\n".join(parts) if parts else "No previous conversation history"
 
 
+def split_latest_execution_output(
+    messages: List[BaseMessage],
+) -> tuple[List[BaseMessage], str]:
+    """Separate the newest user turn that follows an assistant turn from the rest.
+
+    In CUGA Lite that turn is the output of the last executed block. History is
+    trimmed from the end, so on a long run it is the first thing cut — the one
+    observation the proposed block was written against.
+    """
+    first_ai = next((i for i, m in enumerate(messages) if isinstance(m, AIMessage)), None)
+    if first_ai is None:
+        return list(messages), ""
+    for i in range(len(messages) - 1, first_ai, -1):
+        if isinstance(messages[i], HumanMessage):
+            return list(messages[:i]) + list(messages[i + 1 :]), str(messages[i].content)
+    return list(messages), ""
+
+
 def prepare_verify_context(
     chat_messages: List[BaseMessage],
     variables_snapshot: str,
     proposed_code: str,
     *,
     max_chars: int,
-) -> tuple[str, str, str]:
-    """Trim chat, variables, and proposed code for pre-execute VERIFY. Never summarize."""
+) -> tuple[str, str, str, str]:
+    """Trim history, latest output, variables, and proposed code for pre-execute VERIFY.
+
+    The latest execution output gets its own section and budget, so trimming a
+    long history cannot drop it. Never summarize.
+    """
+    earlier, latest_output = split_latest_execution_output(list(chat_messages))
     history = truncate_text_for_context(
-        messages_to_history_text(list(chat_messages)),
+        messages_to_history_text(earlier),
         max_chars,
         label="Agent history",
+    )
+    latest = truncate_text_for_context(
+        latest_output or "(no block has run yet)",
+        max_chars,
+        label="Most recent execution output",
     )
     variables = truncate_text_for_context(
         variables_snapshot or "(no variables)",
@@ -59,7 +87,7 @@ def prepare_verify_context(
         max_chars,
         label="Proposed code",
     )
-    return history, variables, code
+    return history, latest, variables, code
 
 
 async def prepare_reflection_context(

@@ -99,7 +99,7 @@ async def decide_pre_execute_verify(
             if model_factory is None:
                 raise ValueError("No model or model factory configured for pre-execute VERIFY")
             active_model = model_factory()
-        history, variables, proposed = prepare_verify_context(
+        history, latest_output, variables, proposed = prepare_verify_context(
             [
                 m
                 for m in (chat_messages or [])
@@ -118,7 +118,9 @@ async def decide_pre_execute_verify(
             [
                 {
                     "role": "user",
-                    "content": "\n".join([current_task, history, variables, proposed, write_arguments]),
+                    "content": "\n".join(
+                        [current_task, history, latest_output, variables, proposed, write_arguments]
+                    ),
                 }
             ],
         )
@@ -127,6 +129,7 @@ async def decide_pre_execute_verify(
                 {
                     "current_task": current_task or "(no task text)",
                     "agent_history": history,
+                    "latest_output": latest_output,
                     "variables_snapshot": variables,
                     "proposed_code": proposed,
                     "write_arguments": write_arguments,
