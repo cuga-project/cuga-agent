@@ -27,6 +27,8 @@ from loguru import logger
 # Import config to get DBS_DIR
 from cuga.config import DBS_DIR
 
+pytestmark = pytest.mark.slow
+
 # Test configuration
 MANAGER_BASE_URL = "http://localhost:7860"
 REGISTRY_BASE_URL = "http://localhost:8001"
@@ -575,10 +577,11 @@ class TestManagerAPIWorkflow:
         """Test selecting partial tools from connected apps and verify tool isolation."""
         logger.info("Test 8: Testing partial tool selection...")
 
-        # Save config with partial tool selection in draft mode
+        # Save config with partial tool selection in draft mode using cuga-default
+        # (registry is disabled in single-agent mode; unregistered aliases resolve to cuga-default)
         response = http_client.post(
             f"{MANAGE_API_URL}/config/draft",
-            params={"agent_id": f"{TEST_AGENT_ID}-partial"},
+            params={"agent_id": TEST_AGENT_ID},
             json={"config": test_agent_config_with_partial_tools},
         )
         assert response.status_code == 200
@@ -587,7 +590,7 @@ class TestManagerAPIWorkflow:
         # Retrieve and verify the config
         get_response = http_client.get(
             f"{MANAGE_API_URL}/config",
-            params={"agent_id": f"{TEST_AGENT_ID}-partial", "draft": "1"},
+            params={"agent_id": TEST_AGENT_ID, "draft": "1"},
         )
         assert get_response.status_code == 200
         data = get_response.json()
@@ -633,7 +636,7 @@ class TestManagerAPIWorkflow:
         logger.info("Publishing partial tool config...")
         publish_response = http_client.post(
             f"{MANAGE_API_URL}/config",
-            params={"agent_id": f"{TEST_AGENT_ID}-partial"},
+            params={"agent_id": TEST_AGENT_ID},
             json={"config": test_agent_config_with_partial_tools},
         )
         assert publish_response.status_code == 200
@@ -669,7 +672,7 @@ class TestManagerAPIWorkflow:
         config_with_empty_name = {**test_agent_config, "agent": {"name": "", "description": "Optional"}}
         response = http_client.post(
             f"{MANAGE_API_URL}/config",
-            params={"agent_id": f"{TEST_AGENT_ID}-empty-name"},
+            params={"agent_id": TEST_AGENT_ID},
             json={"config": config_with_empty_name},
         )
         data = response.json()
@@ -677,16 +680,14 @@ class TestManagerAPIWorkflow:
         assert "name" in str(detail).lower() or "required" in str(detail).lower(), (
             f"Expected validation error about agent name, got: {detail}"
         )
-        assert response.status_code in (400, 422, 500), (
-            f"Expected 400/422 when agent name is empty, got {response.status_code}: {response.text}"
+        assert response.status_code == 400, (
+            f"Expected 400 when agent name is empty, got {response.status_code}: {response.text}"
         )
-        if response.status_code != 400:
-            logger.warning("Backend returned %s instead of 400 for empty agent name", response.status_code)
 
         config_with_no_name_key = {**test_agent_config, "agent": {"description": "No name key"}}
         response2 = http_client.post(
             f"{MANAGE_API_URL}/config",
-            params={"agent_id": f"{TEST_AGENT_ID}-no-name"},
+            params={"agent_id": TEST_AGENT_ID},
             json={"config": config_with_no_name_key},
         )
         assert response2.status_code == 400, (
@@ -713,13 +714,28 @@ class TestManagerAPIWorkflow:
         logger.info(f"✅ Configuration history retrieved: {len(data['versions'])} versions")
 
     def test_10_multiple_versions(self, http_client: httpx.Client, test_agent_config: Dict[str, Any]):
-        """Test creating multiple versions."""
+        """Test creating and retrieving consecutive published versions."""
         logger.info("Test 10: Testing multiple versions...")
 
-        # Publish version 2
-        modified_config = test_agent_config.copy()
-        modified_config["llm"]["temperature"] = 0.5
+        history_response = http_client.get(
+            f"{MANAGE_API_URL}/config/history",
+            params={"agent_id": TEST_AGENT_ID},
+        )
+        assert history_response.status_code == 200, history_response.text
+        versions = history_response.json()["versions"]
+        previous_version = max(int(item["version"]) for item in versions)
 
+        previous_response = http_client.get(
+            f"{MANAGE_API_URL}/config",
+            params={"agent_id": TEST_AGENT_ID, "version": str(previous_version)},
+        )
+        assert previous_response.status_code == 200, previous_response.text
+        previous_temperature = previous_response.json()["config"]["llm"]["temperature"]
+
+        modified_config = {
+            **test_agent_config,
+            "llm": {**test_agent_config["llm"], "temperature": 0.5},
+        }
         response = http_client.post(
             f"{MANAGE_API_URL}/config",
             params={"agent_id": TEST_AGENT_ID},
@@ -727,25 +743,22 @@ class TestManagerAPIWorkflow:
         )
 
         assert response.status_code == 200
-        data = response.json()
-        assert data["version"] == "3"  # v1 from manager startup, v2 from test_04, v3 from this publish
+        new_version = int(response.json()["version"])
+        assert new_version == previous_version + 1
 
-        # Verify we can get both versions (v2 from test_04 has temp 0.1, v3 has temp 0.5)
-        v2_response = http_client.get(
+        previous_response = http_client.get(
             f"{MANAGE_API_URL}/config",
-            params={"agent_id": TEST_AGENT_ID, "version": "2"},
+            params={"agent_id": TEST_AGENT_ID, "version": str(previous_version)},
         )
-        assert v2_response.status_code == 200
-        v2_data = v2_response.json()
-        assert v2_data["config"]["llm"]["temperature"] == 0.1
+        assert previous_response.status_code == 200
+        assert previous_response.json()["config"]["llm"]["temperature"] == previous_temperature
 
-        v3_response = http_client.get(
+        new_response = http_client.get(
             f"{MANAGE_API_URL}/config",
-            params={"agent_id": TEST_AGENT_ID, "version": "3"},
+            params={"agent_id": TEST_AGENT_ID, "version": str(new_version)},
         )
-        assert v3_response.status_code == 200
-        v3_data = v3_response.json()
-        assert v3_data["config"]["llm"]["temperature"] == 0.5
+        assert new_response.status_code == 200
+        assert new_response.json()["config"]["llm"]["temperature"] == 0.5
 
         logger.info("✅ Multiple versions working correctly")
 
@@ -1027,7 +1040,7 @@ class TestPatchDraftEndpoints:
 
     def test_patch_llm_draft(self, http_client: httpx.Client, test_agent_config: Dict[str, Any]):
         """PATCH llm section only; GET draft and assert only llm changed."""
-        agent_id = f"{TEST_AGENT_ID}-patch-llm"
+        agent_id = TEST_AGENT_ID
         full = dict(test_agent_config)
         full["llm"] = {"model": "openai/gpt-4o", "temperature": 0.1}
         full["tools"] = [
@@ -1068,7 +1081,7 @@ class TestPatchDraftEndpoints:
 
     def test_patch_tools_draft(self, http_client: httpx.Client, test_agent_config: Dict[str, Any]):
         """PATCH tools section only; GET draft and assert only tools changed."""
-        agent_id = f"{TEST_AGENT_ID}-patch-tools"
+        agent_id = TEST_AGENT_ID
         full = dict(test_agent_config)
         full["llm"] = {"model": "gpt-4o", "temperature": 0.2}
         full["tools"] = [
@@ -1123,7 +1136,7 @@ class TestPatchDraftEndpoints:
 
     def test_patch_policies_draft(self, http_client: httpx.Client, test_agent_config: Dict[str, Any]):
         """PATCH policies section only; GET draft and assert only policies changed."""
-        agent_id = f"{TEST_AGENT_ID}-patch-policies"
+        agent_id = TEST_AGENT_ID
         full = dict(test_agent_config)
         full["tools"] = [
             {
