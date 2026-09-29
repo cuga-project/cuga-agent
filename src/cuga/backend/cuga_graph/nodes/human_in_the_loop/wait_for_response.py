@@ -31,6 +31,9 @@ class WaitForResponse(BaseNode):
         tracker.collect_step(Step(name="WaitForResponse", data=state.hitl_response.model_dump_json()))
         prev_sender = state.sender
         state.sender = "WaitForResponse"
+        # Keep what the client submitted so identity checks (e.g. ACP permission pending_id)
+        # can detect stale responses, but trust only the original action's data downstream.
+        state.hitl_response.submitted_additional_data = state.hitl_response.additional_data
         state.hitl_response.additional_data = state.hitl_action.additional_data
         state.hitl_action = None
         return Command(update=state.model_dump(), goto=prev_sender)

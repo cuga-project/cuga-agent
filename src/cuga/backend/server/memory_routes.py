@@ -7,7 +7,7 @@ from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from cuga.backend.evolve.integration import EvolveIntegration
 from cuga.backend.evolve.memory_store import (
@@ -17,6 +17,7 @@ from cuga.backend.evolve.memory_store import (
 from cuga.backend.server.auth import require_chat_access, require_manage_access
 from cuga.backend.server.auth.models import UserInfo
 from cuga.config import get_service_instance_id
+from cuga.backend.server.evolve_native_routes import MemoryServiceRoute, router as native_router
 
 
 def require_evolve_memory() -> None:
@@ -26,6 +27,7 @@ def require_evolve_memory() -> None:
 
 router = APIRouter(
     prefix="/api",
+    route_class=MemoryServiceRoute,
     tags=["memory"],
     dependencies=[Depends(require_evolve_memory)],
 )
@@ -74,6 +76,10 @@ def _memory_result(result: Optional[dict[str, Any]]) -> dict[str, Any]:
     lowered = error.lower()
     if "permission denied" in lowered or "forbidden" in lowered:
         raise HTTPException(status_code=403, detail="Memory access denied")
+    if any(word in lowered for word in ("conflict", "already exists", "referenced", "active jobs")):
+        raise HTTPException(
+            status_code=409, detail="Memory configuration changed or is in use; refresh and retry"
+        )
     if "not found" in lowered:
         raise HTTPException(status_code=404, detail="Memory not found")
     raise HTTPException(status_code=400, detail="Memory request rejected")
@@ -183,6 +189,37 @@ def _validate_metadata_patch(metadata: dict[str, Any], allowed: set[str], audien
             status_code=422,
             detail=f"{audience}-editable memory fields are limited to: {', '.join(sorted(allowed))}",
         )
+
+
+async def _retention_policies() -> list[dict[str, Any]]:
+    """Return the Evolve catalog, registering CUGA's built-in policy once."""
+    from cuga.backend.evolve.retention import (
+        default_retention_policy,
+        DEFAULT_RETENTION_POLICY_DESCRIPTION,
+        DEFAULT_RETENTION_POLICY_ID,
+        DEFAULT_RETENTION_POLICY_NAME,
+    )
+
+    result = _memory_result(
+        await EvolveIntegration.list_retention_policies(
+            namespace_id=_namespace_id(),
+            include_disabled=True,
+        )
+    )
+    policies = [item for item in result.get("items", []) if isinstance(item, dict)]
+    if any(policy.get("policy_id") == DEFAULT_RETENTION_POLICY_ID for policy in policies):
+        return policies
+    status = _memory_result(await EvolveIntegration.get_compliance_status(namespace_id=_namespace_id()))
+    created = _memory_result(
+        await EvolveIntegration.put_retention_policy(
+            DEFAULT_RETENTION_POLICY_ID,
+            DEFAULT_RETENTION_POLICY_NAME,
+            default_retention_policy(status),
+            description=DEFAULT_RETENTION_POLICY_DESCRIPTION,
+            namespace_id=_namespace_id(),
+        )
+    )
+    return [*policies, created]
 
 
 @router.get("/memory/entities")
@@ -418,3 +455,98 @@ async def patch_admin_memory_entity(
         )
     )
     return JSONResponse(_project_item(result, audience="admin", include_content=False))
+
+
+@router.get("/memory/retention")
+async def get_user_memory_retention(
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
+):
+    from cuga.backend.evolve.retention import retention_capabilities
+
+    status = await EvolveIntegration.get_compliance_status(namespace_id=_namespace_id())
+    return JSONResponse(retention_capabilities(status or {}))
+
+
+@router.get("/manage/retention")
+async def get_admin_memory_retention(
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.retention import retention_capabilities
+
+    status = await EvolveIntegration.get_compliance_status(namespace_id=_namespace_id())
+    return JSONResponse(retention_capabilities(status or {}))
+
+
+@router.post("/manage/retention/validate")
+async def validate_admin_retention_policy(
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.retention import default_retention_policy
+
+    status = _memory_result(await EvolveIntegration.get_compliance_status(namespace_id=_namespace_id()))
+    result = _memory_result(
+        await EvolveIntegration.validate_retention_policy(default_retention_policy(status))
+    )
+    return JSONResponse(
+        {key: result[key] for key in ("valid", "errors", "warnings", "normalized_policy") if key in result}
+    )
+
+
+@router.get("/manage/memory/compliance/status")
+async def get_admin_memory_compliance_status(
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.retention import project_compliance_status
+
+    result = _memory_result(await EvolveIntegration.get_compliance_status(namespace_id=_namespace_id()))
+    return JSONResponse(project_compliance_status(result))
+
+
+async def _require_durable_retention() -> None:
+    from cuga.backend.evolve.retention import supports_durable_retention
+
+    status = _memory_result(await EvolveIntegration.get_compliance_status(namespace_id=_namespace_id()))
+    if not supports_durable_retention(status):
+        raise HTTPException(
+            status_code=409, detail="This retention operation requires Evolve's PostgreSQL backend"
+        )
+
+
+class RetentionSchedulePreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    spec: dict[str, Any]
+
+
+@router.post("/manage/retention/schedules/preview")
+async def preview_retention_schedule(
+    body: RetentionSchedulePreview,
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    # Evolve 1.2 exposes upcoming times for saved schedules over MCP. For an
+    # unsaved form, use its same timing implementation without writing a record.
+    from datetime import datetime, timezone
+
+    from pydantic import ValidationError
+
+    if not EvolveIntegration.is_enabled():
+        raise HTTPException(status_code=503, detail="Evolve memory is unavailable")
+    try:
+        from altk_evolve.retention.schedule import CronJobSpec
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Install the Evolve extra to preview schedules") from None
+    try:
+        spec = CronJobSpec.model_validate(body.spec)
+        instant = datetime.now(timezone.utc)
+        occurrences = []
+        for _ in range(5):
+            instant = spec.next_time(instant)
+            occurrences.append(instant.isoformat())
+    except (ValidationError, ValueError):
+        raise HTTPException(status_code=422, detail="Invalid schedule or IANA timezone") from None
+    return JSONResponse({"next_runs": occurrences, "timeZone": spec.timeZone, "suspended": spec.suspend})
+
+
+# Generic retention operations are owned by Evolve's native router.
+# This router already includes /api, so mount without the outer prefix.
+router.routes.extend(native_router.routes)

@@ -9,6 +9,10 @@ from cuga.backend.tools_env.registry.mcp_manager.mcp_manager import MCPManager
 from cuga.backend.tools_env.registry.registry.authentication.appworld_auth_manager import (
     AppWorldAuthManager,
 )
+from cuga.backend.tools_env.registry.registry.authentication.agent_login_auth_manager import (
+    AGENT_LOGIN_AUTH_TYPE,
+    AgentLoginAuthManager,
+)
 from loguru import logger
 from cuga.config import settings
 
@@ -35,6 +39,38 @@ class ApiRegistry:
         self.auth_manager = None
         self.tavily_client = None
         self._init_tavily_if_enabled()
+
+    def _auth_type_for(self, app_name: str) -> Optional[str]:
+        """The auth type configured for app_name in the services YAML, if any."""
+        auth = getattr(self.mcp_client, "auth_config", {}).get(app_name)
+        return getattr(auth, "type", None)
+
+    def _ensure_auth_manager(self, auth_type: Optional[str]):
+        """Create the token manager on first use. ``oauth2_agent`` apps get one that
+        only keeps tokens from the agent's own login calls; ``oauth2`` apps get the
+        AppWorld manager that logs in on the agent's behalf. One registry serves one
+        mode: the first app that needs a manager decides which."""
+        if self.auth_manager is None:
+            if auth_type == AGENT_LOGIN_AUTH_TYPE:
+                self.auth_manager = AgentLoginAuthManager()
+            else:
+                self.auth_manager = AppWorldAuthManager()
+        return self.auth_manager
+
+    def store_captured_token(self, app_name: str, token: str) -> bool:
+        """Keep a token returned by the agent's own ``/auth/token`` call.
+
+        For ``oauth2_agent`` apps this is the only way a token is ever stored, so
+        the manager is created here if needed. For other apps the token is stored
+        only when a manager already exists (unchanged behaviour). Returns whether
+        the token was stored.
+        """
+        if self.auth_manager is None and self._auth_type_for(app_name) == AGENT_LOGIN_AUTH_TYPE:
+            self._ensure_auth_manager(AGENT_LOGIN_AUTH_TYPE)
+        if self.auth_manager is None:
+            return False
+        self.auth_manager._store(app_name, token)
+        return True
 
     def _init_tavily_if_enabled(self):
         """Initialize Tavily client if web search is enabled."""
@@ -109,14 +145,16 @@ class ApiRegistry:
         stored here.
         """
         logger.debug(f"auth_apps: auth_apps called with apps={apps}.")
-        if not self.auth_manager:
-            self.auth_manager = AppWorldAuthManager()
         if not apps:
             apps = self.mcp_client.get_app_names()
         results: Dict[str, str] = {}
         for app in apps:
+            if self._auth_type_for(app) == AGENT_LOGIN_AUTH_TYPE:
+                # The agent logs in to these apps itself; never pre-login.
+                results[app] = "agent_login"
+                continue
             try:
-                token = self.auth_manager.get_access_token(app)
+                token = self._ensure_auth_manager("oauth2").get_access_token(app)
                 results[app] = "ok" if token else "no_credentials"
             except Exception as e:
                 logger.warning(f"auth_apps: failed to authenticate '{app}': {e}")
@@ -226,14 +264,18 @@ class ApiRegistry:
         headers = {}
         logger.debug(auth_config)
         if auth_config:
-            if auth_config.type == 'oauth2':
-                if not self.auth_manager:
-                    self.auth_manager = AppWorldAuthManager()
+            if auth_config.type in ('oauth2', AGENT_LOGIN_AUTH_TYPE):
+                self._ensure_auth_manager(auth_config.type)
 
                 try:
                     access_token = self.auth_manager.get_access_token(app_name)
                     if access_token:
                         headers = {"Authorization": "Bearer " + access_token}
+                    elif auth_config.type == AGENT_LOGIN_AUTH_TYPE:
+                        # Sent without a token: the app's own auth error tells the agent to log in.
+                        logger.debug(
+                            f"No token stored for {app_name}; the agent has not logged in to it yet."
+                        )
                     else:
                         logger.warning(
                             f"Could not get access token for {app_name}. "
@@ -337,8 +379,7 @@ class ApiRegistry:
                                         token = result_json["access_token"]
                                         # Update the auth manager's stored token (via _store
                                         # so its fetch time is recorded for the age-based refresh)
-                                        if self.auth_manager:
-                                            self.auth_manager._store(app_name, token)
+                                        if self.store_captured_token(app_name, token):
                                             logger.info(
                                                 f"✅ Updated stored token for {app_name} from /auth/token endpoint"
                                             )

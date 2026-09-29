@@ -3373,6 +3373,7 @@ class CugaSupervisor:
         auto_load_policies: Optional[bool] = None,
         reset_policy_storage: bool = False,
         filesystem_sync: Optional[bool] = None,
+        interactive: bool = True,
     ):
         """
         Initialize supervisor.
@@ -3407,6 +3408,12 @@ class CugaSupervisor:
         self._graph = None
         self._compiled_graph = None
         self._supervisor_state = None
+        self._interactive = interactive
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+            PendingACPDelegationRegistry,
+        )
+
+        self._pending_acp_registry = PendingACPDelegationRegistry()
         self._policy_system = policy_system
         self._policies_manager = None
 
@@ -3509,6 +3516,8 @@ class CugaSupervisor:
             special_instructions=self._special_instructions,
             tool_provider=self.tool_provider,
             callbacks=self._callbacks,
+            pending_acp_registry=self._pending_acp_registry,
+            interactive=self._interactive,
         )
         compiled_subgraph = supervisor_subgraph.compile()
 
@@ -3518,6 +3527,26 @@ class CugaSupervisor:
         ) -> Command[Literal["SupervisorSubgraph", "SuggestHumanActions", "__end__"]]:
             if state.sender == NodeNames.WAIT_FOR_RESPONSE and state.hitl_response:
                 if state.hitl_response.action_id == ActionIds.TOOL_APPROVAL:
+                    permission = (state.supervisor_metadata or {}).get("acp_permission")
+                    if isinstance(permission, dict):
+                        from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+                            permission_response_decision,
+                        )
+
+                        pending_id = permission.get("pending_id")
+                        md = dict(state.supervisor_metadata or {})
+                        md["acp_permission_resume"] = {
+                            "pending_id": pending_id,
+                            "agent_name": permission.get("agent_name"),
+                            "approved": permission_response_decision(pending_id, state.hitl_response),
+                        }
+                        state.supervisor_metadata = md
+                        state.hitl_action = None
+                        state.hitl_response = None
+                        state.final_answer = ""
+                        state.execution_complete = False
+                        state.sender = callback_name
+                        return Command(update=state.model_dump(), goto="SupervisorSubgraph")
                     if state.hitl_response.confirmed:
                         md = dict(state.supervisor_metadata or {})
                         md.update({"approval_required": False, "user_approved": True})
@@ -3745,6 +3774,10 @@ class CugaSupervisor:
             error=error_msg,
             policy_decisions=_policy_decisions_from_result(result, "supervisor_metadata"),
         )
+
+    async def aclose(self) -> None:
+        """Reject pending ACP permissions and release resources owned by this supervisor."""
+        await self._pending_acp_registry.aclose()
 
     @property
     def variables_manager(self):

@@ -183,3 +183,35 @@ def resolve_channel(
         instance_id=instance_id or os.environ.get("DYNACONF_SERVICE__INSTANCE_ID", "default"),
         user_id=uid,
     )
+
+
+def unlinked_principal(
+    channel: str,
+    native_id: str,
+    *,
+    tenant_id: str | None = None,
+    instance_id: str | None = None,
+) -> "Principal | None":
+    """Isolate an UNLINKED channel sender by their OWN native id.
+
+    ADR 0009: a channel IS an auth authority, so isolation is ALWAYS ON from the native id — linking
+    is an UPGRADE, not the gate. Without this, ``resolve_channel`` returning ``None`` (the sender
+    isn't linked to a CUGA user yet) makes callers fall back to the shared default principal, so
+    EVERY unlinked sender executes as one identity — sharing its conversation memory, resolved
+    credentials, and subscriptions. That is the cross-user leak. Give each unlinked sender a stable,
+    per-sender scope instead; a later ``/link`` upgrades it to the real user id.
+
+    Returns ``None`` only when there is no native id to key on (the caller then keeps its default).
+    """
+    if not native_id:
+        return None
+    t = (
+        tenant_id
+        or os.environ.get("DYNACONF_SERVICE__TENANT_ID")
+        or os.environ.get("EVENTS_TENANT_ID", "default")
+    )
+    i = instance_id or os.environ.get("DYNACONF_SERVICE__INSTANCE_ID", "default")
+    # A scope-safe per-sender id, namespaced ("ch_") so it can never collide with a real user id
+    # (uuid/email) or the shared defaults ("admin"/"local").
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", f"{channel}-{native_id}")[:96]
+    return Principal(tenant_id=t, instance_id=i, user_id=f"ch_{safe}")
