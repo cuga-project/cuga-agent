@@ -240,6 +240,11 @@ class CodeExecutor:
 
         SecurityValidator.validate_wrapped_code(wrapped_code)
 
+        # Each block's namespace is rebuilt from the variables manager, so a
+        # variable this block reassigns must be written back like a new one;
+        # otherwise the next block sees its old value.
+        prior_values = VariableUtils.snapshot_values(_locals, original_keys, code=code)
+
         try:
             if mode == 'e2b':
                 executor = cls._get_e2b_executor()
@@ -269,7 +274,8 @@ class CodeExecutor:
         # Variables that should always be included even if they existed before.
         # Task todos are not stored here — they are shown in the todos system prompt section.
         # find_tools `tools_output` is stripped below — discovery text is not kept as a variable.
-        always_include_keys = {'result', 'results', 'output', 'outputs'}
+        changed_keys = VariableUtils.changed_keys(_locals, prior_values)
+        always_include_keys = {'result', 'results', 'output', 'outputs'} | changed_keys
 
         new_vars = VariableUtils.filter_new_variables(
             _locals, original_keys, always_include_keys=always_include_keys
@@ -291,7 +297,13 @@ class CodeExecutor:
 
         # Limit variables to keep based on configuration
         keep_last_n = settings.advanced_features.code_executor_keep_last_n
-        new_vars = VariableUtils.limit_variables_to_keep(new_vars, keep_last_n)
+        # The limit applies only to the block's new variables: a reassigned one
+        # must always be written back, or the next block sees its old value.
+        changed_vars = {k: v for k, v in new_vars.items() if k in changed_keys}
+        new_vars = VariableUtils.limit_variables_to_keep(
+            {k: v for k, v in new_vars.items() if k not in changed_keys}, keep_last_n
+        )
+        new_vars.update(changed_vars)
         new_vars = _omit_find_tools_listing_vars(new_vars)
 
         # Format/trim the output before adding variables
