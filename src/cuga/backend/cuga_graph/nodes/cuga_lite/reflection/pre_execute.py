@@ -154,9 +154,12 @@ async def decide_pre_execute_verify(
 
 
 def verify_blocked_message(alert: str) -> str:
+    # Scoped to the flagged value: a blanket "ground every argument" made the
+    # model strip needed flags (clear_cart_first, repeat_days) on rewrite.
     body = (alert or "").strip() or "ungrounded or contradictory write"
     return (
         f"{VERIFY_BLOCKED_PREFIX}\n"
         f"{body}\n"
-        "Rewrite the block so each write argument is grounded in retrieved data."
+        "Rewrite the block so the flagged value comes from retrieved data or the task. "
+        "Keep every other argument the task needs, including flags and defaults."
     )

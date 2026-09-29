@@ -1587,6 +1587,20 @@ def test_a_name_or_path_the_task_specifies_or_never_asked_for_stays_in_scope():
 
 
 @pytest.mark.unit
+def test_verify_blocked_message_limits_the_rewrite_to_the_flagged_value():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        verify_blocked_message,
+    )
+
+    # The blanket "ground each write argument" made the model drop needed flags
+    # (clear_cart_first, repeat_days) while fixing an unrelated value.
+    msg = verify_blocked_message("quantity=1 is ungrounded")
+    assert "each write argument is grounded" not in msg
+    assert "flagged value" in msg
+    assert "flags and defaults" in msg
+
+
+@pytest.mark.unit
 def test_extra_field_rule_requires_an_explicit_restriction():
     text = _verify_prompt_text()
     assert "explicitly restricts which" in text
