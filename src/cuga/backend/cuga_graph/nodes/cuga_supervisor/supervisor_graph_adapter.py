@@ -48,6 +48,8 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
         base_callbacks: Optional[List[Any]] = None,
         static_prompt: Optional[str] = None,
         plan_approval: bool = False,
+        pending_acp_registry: Any = None,
+        interactive: bool = True,
     ) -> None:
         self._agents = agents
         self._special_instructions = special_instructions
@@ -55,6 +57,8 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
         self._base_callbacks = base_callbacks or []
         self._static_prompt = static_prompt
         self._plan_approval = plan_approval
+        self._pending_acp_registry = pending_acp_registry
+        self._interactive = interactive
         self._agent_tools_context: Dict[str, Any] = {}
 
     def get_messages(self, state: Any) -> List[BaseMessage]:

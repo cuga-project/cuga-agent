@@ -27,6 +27,7 @@ imported from ``main``, which would be a cycle (``main`` imports this module to 
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import os
@@ -106,9 +107,96 @@ _RUN_ERROR_NAMES = {"Error", "error", "Stopped"}
 # default agent. Callers do not (and should not) pass an agent: they address the supervisor, and it
 # routes internally. One agent in the file or twenty-seven, the caller is unchanged.
 _supervisor_cache: Dict[str, Any] = {}
+_supervisor_cache_lock = asyncio.Lock()
+_supervisor_build_lock = asyncio.Lock()
+_supervisor_active_users: Dict[int, int] = {}
+_supervisor_retired: Dict[int, Any] = {}
+_supervisor_close_tasks: set[asyncio.Task[None]] = set()
+_supervisor_shutting_down = False
+_supervisor_drained = asyncio.Event()
+_supervisor_drained.set()
 # name → description for the loaded roster, kept beside the supervisor so /run/agents can answer
 # "what is loaded here?" without reaching into CugaSupervisor's privates.
 _supervisor_roster: Dict[str, List[Dict[str, str]]] = {}
+
+
+async def close_graph_owners(*owners: Any) -> None:
+    """Attempt every distinct lifecycle-owner close, then propagate the first failure."""
+    unique_owners = list({id(owner): owner for owner in owners if owner is not None}.values())
+    results = await asyncio.gather(
+        *(owner.aclose() for owner in unique_owners if getattr(owner, "aclose", None) is not None),
+        return_exceptions=True,
+    )
+    failure = next((result for result in results if isinstance(result, BaseException)), None)
+    if failure is not None:
+        raise failure
+
+
+def _schedule_supervisor_close(*owners: Any) -> asyncio.Task[None] | None:
+    """Detach external closure from cache-state commits while retaining shutdown ownership."""
+    unique = list({id(owner): owner for owner in owners if owner is not None}.values())
+    if not unique:
+        return None
+
+    async def _close_and_log() -> None:
+        try:
+            await close_graph_owners(*unique)
+        except Exception:
+            logger.exception("supervisor close failed (non-fatal)")
+
+    task = asyncio.create_task(_close_and_log())
+    _supervisor_close_tasks.add(task)
+    task.add_done_callback(_supervisor_close_tasks.discard)
+    return task
+
+
+async def _close_cancellation_safe(*owners: Any) -> None:
+    """Finish closing unpublished resources even when their constructing caller is cancelled."""
+    task = _schedule_supervisor_close(*owners)
+    if task is None:
+        return
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.shield(task)
+        raise
+
+
+async def close_cached_supervisors() -> None:
+    """Stop new leases, then close owners only after every active request releases."""
+    global _supervisor_shutting_down
+    async with _supervisor_cache_lock:
+        _supervisor_shutting_down = True
+        immediate = []
+        for supervisor in {id(owner): owner for owner in _supervisor_cache.values()}.values():
+            owner_id = id(supervisor)
+            if _supervisor_active_users.get(owner_id, 0):
+                _supervisor_retired[owner_id] = supervisor
+            else:
+                immediate.append(supervisor)
+        _supervisor_cache.clear()
+        _supervisor_roster.clear()
+        if _supervisor_active_users:
+            _supervisor_drained.clear()
+        else:
+            _supervisor_drained.set()
+        close_tasks = list(_supervisor_close_tasks)
+    close_task = _schedule_supervisor_close(*immediate)
+    if close_task is not None:
+        close_tasks.append(close_task)
+    try:
+        await asyncio.shield(_supervisor_drained.wait())
+    except asyncio.CancelledError:
+        await asyncio.shield(_supervisor_drained.wait())
+        raise
+    close_tasks.extend(_supervisor_close_tasks)
+    if close_tasks:
+        waiter = asyncio.gather(*set(close_tasks), return_exceptions=True)
+        try:
+            await asyncio.shield(waiter)
+        except asyncio.CancelledError:
+            await asyncio.shield(waiter)
+            raise
 
 
 def _supervisor_roster_path() -> str:
@@ -148,57 +236,146 @@ async def _roster_details(sub_refs: List[str]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-async def _get_supervisor():
-    """The supervisor this server runs as, built from the STORE, or None when there isn't one.
+def _cache_version(cache_key: str) -> int:
+    try:
+        return int(cache_key.rsplit("@", 1)[1])
+    except (IndexError, ValueError):
+        return -1
 
-    ONE SOURCE AT RUNTIME. This used to parse the roster YAML directly, which meant `/run` and the
-    Manage UI could disagree about what the roster is, and the roster's agents were invisible in a
-    UI that lists every other agent. Now `roster_seed` imports the YAML into the config store at
-    startup and this reads the store — the same records, through the same builder, that #433's
-    `/stream` path uses. A YAML is an import format; it is not consulted to answer a request.
 
-    So the deployment contract is unchanged (`CUGA_SUPERVISOR_ROSTER` still selects the roster),
-    while a sub-agent added through the UI is picked up here with no file involved.
-    """
+async def _get_supervisor(*, retain: bool = False):
+    """Return the latest stored supervisor with monotonic, cancellation-safe publication."""
     from cuga.backend.server.config_store import load_config
     from cuga.supervisor_utils.roster_seed import SUPERVISOR_AGENT_ID
 
     sup_cfg, version = await load_config(None, SUPERVISOR_AGENT_ID)
     if not sup_cfg or (sup_cfg.get("agent") or {}).get("kind") != "supervisor":
         return None
-
-    # Keyed on the stored version, not on a file path: editing the supervisor in the UI publishes a
-    # new version, which invalidates this by construction. A path key never changed, so a UI edit
-    # would have been served a stale supervisor forever.
     cache_key = f"{SUPERVISOR_AGENT_ID}@{version}"
-    if cache_key in _supervisor_cache:
-        return _supervisor_cache[cache_key]
+    requested_version = _cache_version(cache_key)
 
-    from cuga.sdk import CugaSupervisor
-    from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
+    async with _supervisor_cache_lock:
+        if _supervisor_shutting_down:
+            return None
+        current_key = next(iter(_supervisor_cache), None)
+        if current_key == cache_key or (
+            current_key is not None and _cache_version(current_key) > requested_version
+        ):
+            supervisor = _supervisor_cache[current_key]
+            if retain:
+                owner_id = id(supervisor)
+                _supervisor_active_users[owner_id] = _supervisor_active_users.get(owner_id, 0) + 1
+            return supervisor
 
-    sub_specs = (sup_cfg.get("supervisor") or {}).get("subAgents") or []
-    # auto_load_policies=False: everything this supervisor runs is HEADLESS — a scheduled tick, a
-    # webhook, a channel message. Nobody is present to answer an approval interrupt, and one would
-    # hang the run until the caller times out. Asked for HERE rather than defaulted inside the
-    # builder, so /stream and every other caller keep the upstream behaviour of honouring
-    # settings.policy.auto_load_policies. A stored agent can opt back in.
-    agents = await build_agents_from_stored_subagents(sub_specs, auto_load_policies=False)
+    async with _supervisor_build_lock:
+        async with _supervisor_cache_lock:
+            if _supervisor_shutting_down:
+                return None
+            current_key = next(iter(_supervisor_cache), None)
+            if current_key == cache_key or (
+                current_key is not None and _cache_version(current_key) > requested_version
+            ):
+                published = _supervisor_cache[current_key]
+                if retain:
+                    owner_id = id(published)
+                    _supervisor_active_users[owner_id] = _supervisor_active_users.get(owner_id, 0) + 1
+                return published
 
-    sup = CugaSupervisor(
-        agents=agents,
-        special_instructions=(sup_cfg.get("supervisor") or {}).get("special_instructions"),
-    )
-    _supervisor_cache[cache_key] = sup
-    _details = await _roster_details([s.get("ref") for s in sub_specs if s.get("ref")])
-    _supervisor_roster[cache_key] = [
-        {"name": n, **_details.get(n, {"description": "", "mcp_servers": []})} for n in (agents or {})
-    ]
-    _supervisor_roster["__current__"] = _supervisor_roster[cache_key]
-    logger.info(
-        f"CUGA is running AS a supervisor: {len(agents)} sub-agent(s) from the config store (v{version})"
-    )
-    return sup
+        from cuga.sdk import CugaSupervisor
+        from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
+
+        sub_specs = (sup_cfg.get("supervisor") or {}).get("subAgents") or []
+        supervisor = None
+        try:
+            agents = await build_agents_from_stored_subagents(sub_specs, auto_load_policies=False)
+            supervisor = CugaSupervisor(
+                agents=agents,
+                special_instructions=(sup_cfg.get("supervisor") or {}).get("special_instructions"),
+                interactive=False,
+            )
+            details = await _roster_details([s.get("ref") for s in sub_specs if s.get("ref")])
+        except BaseException:
+            if supervisor is not None:
+                await _close_cancellation_safe(supervisor)
+            raise
+
+        roster = [
+            {"name": name, **details.get(name, {"description": "", "mcp_servers": []})}
+            for name in (agents or {})
+        ]
+        unpublished = None
+        immediately_close = []
+        leased = False
+        async with _supervisor_cache_lock:
+            current_key = next(iter(_supervisor_cache), None)
+            if _supervisor_shutting_down:
+                published = None
+                unpublished = supervisor
+            elif current_key == cache_key or (
+                current_key is not None and _cache_version(current_key) >= requested_version
+            ):
+                published = _supervisor_cache[current_key]
+                unpublished = supervisor
+            else:
+                stale_supervisors = list({id(owner): owner for owner in _supervisor_cache.values()}.values())
+                _supervisor_cache.clear()
+                _supervisor_cache[cache_key] = supervisor
+                _supervisor_roster.clear()
+                _supervisor_roster[cache_key] = roster
+                _supervisor_roster["__current__"] = roster
+                published = supervisor
+                for stale_supervisor in stale_supervisors:
+                    owner_id = id(stale_supervisor)
+                    if _supervisor_active_users.get(owner_id, 0):
+                        _supervisor_retired[owner_id] = stale_supervisor
+                    else:
+                        immediately_close.append(stale_supervisor)
+            if retain and published is not None:
+                owner_id = id(published)
+                _supervisor_active_users[owner_id] = _supervisor_active_users.get(owner_id, 0) + 1
+                leased = True
+
+        try:
+            retirement_task = _schedule_supervisor_close(*immediately_close)
+            if retirement_task is not None:
+                await asyncio.shield(retirement_task)
+            if unpublished is not None:
+                await _close_cancellation_safe(unpublished)
+        except BaseException:
+            if leased:
+                release_task = asyncio.create_task(_release_supervisor(published))
+                try:
+                    await asyncio.shield(release_task)
+                except asyncio.CancelledError:
+                    await asyncio.shield(release_task)
+            raise
+        if published is supervisor:
+            logger.info(
+                f"CUGA is running AS a supervisor: {len(agents)} sub-agent(s) from the config store (v{version})"
+            )
+        return published
+
+
+async def _release_supervisor(supervisor: Any) -> None:
+    """Release one lease and register retired closure before signalling shutdown drain."""
+    close_task = None
+    async with _supervisor_cache_lock:
+        owner_id = id(supervisor)
+        users = _supervisor_active_users.get(owner_id, 0)
+        if users <= 1:
+            _supervisor_active_users.pop(owner_id, None)
+            close_owner = _supervisor_retired.pop(owner_id, None)
+            close_task = _schedule_supervisor_close(close_owner)
+        else:
+            _supervisor_active_users[owner_id] = users - 1
+        if not _supervisor_active_users:
+            _supervisor_drained.set()
+    if close_task is not None:
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError:
+            await asyncio.shield(close_task)
+            raise
 
 
 def _run_token() -> str:
@@ -478,7 +655,7 @@ async def run_sync(request: Request):
     # existing agent, so turning the roster on cannot disturb the interactive surface.
     supervisor = None
     try:
-        supervisor = await _get_supervisor()
+        supervisor = await _get_supervisor(retain=bool(query))
     except Exception:  # noqa: BLE001 — a bad roster must not take the endpoint down
         # The roster PATH and the exception text are both server-side detail: the path exposes the
         # deployment's filesystem layout and str(e) can carry a stack trace. Log both, return
@@ -509,29 +686,32 @@ async def run_sync(request: Request):
                 f"Return its answer.\n\n{query}"
             )
         try:
-            res = await supervisor.invoke(query, thread_id=thread_id)
-            answer = (getattr(res, "answer", None) or getattr(res, "result", None) or "") if res else ""
-            return {
-                "ok": bool(answer),
-                "status": "ok" if answer else "error",
-                "answer": answer,
-                "thread_id": thread_id,
-                "sources": list(getattr(res, "sources", None) or []),
-                "variables": dict(getattr(res, "variables", None) or {}),
-                "error": None if answer else "supervisor returned an empty answer",
-            }
-        except Exception:  # noqa: BLE001
-            logger.exception("/run supervisor invoke failed")  # detail stays here, not in the reply
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "status": "error",
-                    "answer": "",
+            try:
+                res = await supervisor.invoke(query, thread_id=thread_id)
+                answer = (getattr(res, "answer", None) or getattr(res, "result", None) or "") if res else ""
+                return {
+                    "ok": bool(answer),
+                    "status": "ok" if answer else "error",
+                    "answer": answer,
                     "thread_id": thread_id,
-                    "error": "the run failed — see the server log",
-                },
-                500,
-            )
+                    "sources": list(getattr(res, "sources", None) or []),
+                    "variables": dict(getattr(res, "variables", None) or {}),
+                    "error": None if answer else "supervisor returned an empty answer",
+                }
+            except Exception:  # noqa: BLE001
+                logger.exception("/run supervisor invoke failed")  # detail stays here, not in the reply
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "status": "error",
+                        "answer": "",
+                        "thread_id": thread_id,
+                        "error": "the run failed — see the server log",
+                    },
+                    500,
+                )
+        finally:
+            await _release_supervisor(supervisor)
     try:
         async for frame in _EVENT_STREAM(
             query,
