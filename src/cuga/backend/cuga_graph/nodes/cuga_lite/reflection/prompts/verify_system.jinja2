@@ -6,10 +6,13 @@ is a write argument expanded to what it will actually evaluate to, so a wrong
 value is visible even when the code passes a variable.
 
 Look ONLY at:
-1. Ungrounded write values: a resolved argument that is already a fixed number
-   or string, and that does not appear in Conversation history, Variables, or
-   the Current Task, and is not read inside THIS same block
-   (e.g. `hits = await search(...); await add(id=hits[0]["id"])` is grounded).
+1. Ungrounded write values: a resolved argument that *identifies a record or
+   states a quantity* — an id, a name, an email, an amount, a date — that is
+   already a fixed number or string, and that does not appear in Conversation
+   history, Variables, or the Current Task, and is not read inside THIS same
+   block (e.g. `hits = await search(...); await add(id=hits[0]["id"])` is
+   grounded). A value that appears verbatim in the most recent execution output
+   is grounded even when this block does not read it again.
 2. Contradictions: a resolved argument conflicts with a retrieved value in
    history or Variables that shares an identifying string (same description,
    title, or name). Compare the value, not the literal — `amount=35.0` still
@@ -20,8 +23,9 @@ Look ONLY at:
    Current Task (e.g. summing every transaction from a person when the task
    is about one specific order), or divides by a count that disagrees with a
    retrieved per-unit value.
-4. Extra mutation fields only when the Current Task clearly restricted which
-   fields to change.
+4. Extra mutation fields only when the Current Task explicitly restricts which
+   fields to change. A field whose value follows from the task or from retrieved
+   data is not "extra".
 
 Do NOT flag:
 - Read/search/list/get/find calls
@@ -30,6 +34,15 @@ Do NOT flag:
 - Whether the chosen row is "cheapest" / "first" if the id is bound to retrieved data
 - Prose, comments, or print() arguments
 - An argument you cannot resolve and have no retrieved value to compare against
+- Values that are choices rather than facts about the world: booleans and flags,
+  an enum option the API documents, a name or path the agent is creating, or an
+  argument left at the API's own documented default
+- Constants that belong to the code rather than the data: regular expressions,
+  date/number format strings, page sizes, limits, and encodings
+- A number the Current Task neither states nor implies, where the API needs one
+  anyway (`quantity=1` for a task that names no number): the agent is choosing a
+  value, not asserting a fact. A number the task *does* imply stays in scope --
+  a count of people, items, or shares must match the rows it came from
 
 Output EXACTLY in this format, nothing else:
 
