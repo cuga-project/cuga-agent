@@ -291,34 +291,76 @@ class VariableUtils:
         return False
 
     @staticmethod
+    def snapshot_values(all_locals: dict[str, Any]) -> dict[str, Any]:
+        """Capture sanitized copies of user variables before a code block runs.
+
+        Passed to ``filter_new_variables`` as ``original_values`` so a variable the
+        block rebinds or mutates in place is reported as changed. Sanitizing copies
+        containers, so later in-place mutation does not alter the snapshot. Tools,
+        modules and ``_``-prefixed internals are skipped.
+        """
+        snapshot = {}
+        for key, value in all_locals.items():
+            if key.startswith('_') or callable(value) or isinstance(value, types.ModuleType):
+                continue
+            try:
+                snapshot[key] = VariableUtils.sanitize_value(value)
+            except Exception as e:
+                logger.debug(f"Could not snapshot variable '{key}': {e}")
+        return snapshot
+
+    @staticmethod
+    def _same_value(a: Any, b: Any) -> bool:
+        """Compare two sanitized values; anything uncomparable counts as changed."""
+        try:
+            return type(a) is type(b) and bool(a == b)
+        except Exception:
+            return False
+
+    @staticmethod
     def filter_new_variables(
-        all_locals: dict[str, Any], original_keys: Set[str], always_include_keys: Set[str] | None = None
+        all_locals: dict[str, Any],
+        original_keys: Set[str],
+        always_include_keys: Set[str] | None = None,
+        original_values: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Filter and return only new, serializable variables.
+        """Filter and return new or changed serializable variables.
 
         Args:
             all_locals: Dictionary of all local variables
             original_keys: Set of keys that existed before execution
             always_include_keys: Set of variable names to always include even if they existed before
                                 (useful for variables that should be updated when reassigned)
+            original_values: Snapshot from ``snapshot_values`` taken before execution. A pre-existing
+                             key in it is included when its sanitized value differs after execution
+                             (rebound or mutated), so the variables manager never keeps a stale value.
 
         Returns:
-            Dictionary of new serializable variables (preserves insertion order)
+            Dictionary of new or changed serializable variables (preserves insertion order)
         """
         if always_include_keys is None:
             always_include_keys = set()
+        if original_values is None:
+            original_values = {}
 
         new_keys = set(all_locals.keys()) - original_keys
         new_vars = {}
 
         for key in all_locals.keys():
-            # Include if it's a new key OR if it's in always_include_keys
-            if key not in new_keys and key not in always_include_keys:
-                continue
             if key.startswith('_'):
+                continue
+            # Include if it's a new key, in always_include_keys, or a snapshotted key that may have changed
+            maybe_changed = key in original_values
+            if key not in new_keys and key not in always_include_keys and not maybe_changed:
                 continue
 
             value = VariableUtils.sanitize_value(all_locals[key])
+            if (
+                key not in new_keys
+                and key not in always_include_keys
+                and VariableUtils._same_value(value, original_values[key])
+            ):
+                continue
             if VariableUtils.is_serializable(value):
                 new_vars[key] = value
             else:
