@@ -133,7 +133,8 @@ jobs:
     # !cancelled(): still run, on the configured model, if the probe job itself fails.
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 14 live-model tests: about 2 min normally, 8.5 min when watsonx is slow (30 Sep).
+    timeout-minutes: 15
     needs: model-probe
     env:
       MODEL_NAME: ${{ needs.model-probe.outputs.model || secrets.MODEL_NAME }}
