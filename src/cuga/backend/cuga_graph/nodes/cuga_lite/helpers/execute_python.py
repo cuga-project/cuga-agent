@@ -40,7 +40,7 @@ EXECUTE_PYTHON_DESCRIPTION = (
     "loaded to be called from code. Variables from earlier steps (including saved results of earlier tool calls) "
     "are available by name, and variables you create persist. End with print() of what you need: printed output "
     "is what you get back. Print a sample of unfamiliar data before filtering on it; if the code fails or finds "
-    "nothing, inspect, fix and rerun rather than concluding. A tool call that fails raises an exception whose message says why. When the code computes content an action needs, call "
+    "nothing, inspect, fix and rerun rather than concluding. A tool call that fails raises an exception whose message says why. To delete, move or change items of a paged list, fetch every page first and then act on the collected ids — changing the list while paging through it shifts items between pages and skips some. When the code computes content an action needs, call "
     "that action from the same code instead of retyping the data. Allowed imports: json, re, typing, datetime, asyncio."
 )
 
