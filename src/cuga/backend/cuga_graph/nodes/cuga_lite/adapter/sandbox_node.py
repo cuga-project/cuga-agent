@@ -30,6 +30,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.reflection import reflection_task
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import VerifyDecision
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.pagination_audit import (
+    audit_pagination,
+    render_pagination_notes,
+)
 from cuga.backend.cuga_graph.utils.context_management_utils import (
     prepare_reflection_context,
     truncate_text_for_context,
@@ -71,6 +75,11 @@ def _record_weak_schema_shapes(adapter: Any, tool_calls: list) -> None:
         if name not in weak_schema_tool_names or name in observed or call.get("error"):
             continue
         observed[name] = _describe_observed_shape(call.get("result"))
+
+
+def _pagination_audit_enabled() -> bool:
+    """advanced_features.pagination_audit_enabled (default on), read per block."""
+    return bool(getattr(settings.advanced_features, "pagination_audit_enabled", True))
 
 
 def _needs_shape_tracking(adapter: Any) -> bool:
@@ -149,10 +158,15 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         # tool name/duration but never arguments/results/errors — but shape
         # tracking reads the result payload, so it takes precedence and forces
         # full recording when a weak-schema shape still needs to be observed.
+        # The pagination audit (#750) reads only the per-record pagination facts,
+        # which the tracker keeps in timings-only mode, so when nothing else asked
+        # for tracking it is forced on in that mode: no payload capture, and the
+        # records never reach state (they are only kept when track_tool_calls).
         needs_shape = _needs_shape_tracking(adapter)
+        pagination_audit_on = _pagination_audit_enabled()
         ToolCallTracker.start_tracking(
-            enabled=bool(track_tool_calls) or needs_shape,
-            timings_only=track_tool_calls == "timings_only" and not needs_shape,
+            enabled=bool(track_tool_calls) or needs_shape or pagination_audit_on,
+            timings_only=(track_tool_calls == "timings_only" or not track_tool_calls) and not needs_shape,
         )
         # Tool-call budgets: carry the turn count from earlier steps and the
         # conversation count from earlier turns, so max_tool_calls_per_run caps the run
@@ -265,6 +279,17 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
 
             # Output is already formatted and trimmed by code_executor
             logger.debug(f"\n\n------\n\n📝 Execution output:\n\n{output}\n\n------\n\n")
+
+            # Pagination audit (#750): a list call that returned exactly page_limit
+            # items with no next page requested is flagged in the observation the
+            # model reads next — before reflection, so the summary can echo it.
+            if pagination_audit_on:
+                pagination_notes = audit_pagination(ToolCallTracker.get_current_calls())
+                if pagination_notes:
+                    output = f"{output}\n\n{render_pagination_notes(pagination_notes)}"
+                    adapter._tracker.collect_step(
+                        step=Step(name="PaginationAudit", data=json.dumps(pagination_notes))
+                    )
 
             # Update variables using CugaLiteState's variables_manager
             # This automatically updates state.variables_storage
