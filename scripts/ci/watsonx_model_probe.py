@@ -174,7 +174,7 @@ def main() -> int:
     chosen = args.primary
     if unhealthy:
         check = chat(url, token, request_body(args.fallback, project_id, messages))
-        if check.error is None and check.content.strip():
+        if check.error is None and check.content.strip() and not check.truncated:
             chosen = args.fallback
             print(f"::warning::{verdict}. Using {args.fallback} for this run (#784).")
         else:
