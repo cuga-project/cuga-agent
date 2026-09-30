@@ -46,7 +46,8 @@ jobs:
 
   smoke-pip-isolated:
     name: Wheel install + demo_crm OpenAPI
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # !cancelled(): still run, on the configured model, if the probe job itself fails.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: model-probe

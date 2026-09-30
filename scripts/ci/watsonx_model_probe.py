@@ -137,7 +137,7 @@ def main() -> int:
 
     try:
         messages = json.loads(REQUEST_FILE.read_text())["messages"]
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, TypeError) as exc:
         print(
             f"::warning::watsonx model probe could not read {REQUEST_FILE.name} ({type(exc).__name__}); keeping the configured model"
         )

@@ -89,7 +89,8 @@ jobs:
 
   stability-tests-windows:
     name: Stability Tests Windows Smoke (Python 3.12)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # !cancelled(): still run, on the configured model, if the probe job itself fails.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: windows-latest
     timeout-minutes: 10
     # One test (test_list_my_accounts_fast), which Llama 4 Maverick passes; no one-flake margin.
