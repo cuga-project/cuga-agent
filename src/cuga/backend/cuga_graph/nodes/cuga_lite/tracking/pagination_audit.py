@@ -235,6 +235,13 @@ def describe_pagination(
         # listing carries no cursor argument).
         cursor_from = more_field
         index_key, index = "cursor", None
+    # Effective page values for the preview: a page key the model omitted is
+    # shown with the value that applied (a schema-derived page_index is 0).
+    page_values: Dict[str, Any] = {limit_key: limit}
+    if index is not None:
+        page_values[index_key] = index
+    elif cursor_key and cursor_key in args:
+        page_values[cursor_key] = args[cursor_key]
     scope_args = {k: v for k, v in args.items() if k not in page_keys and k not in _SCOPE_IGNORED_KEYS}
     # The scope is only a grouping key, so it is stored as a fingerprint: the
     # record is persisted in timings-only mode too, which must not carry
@@ -251,7 +258,12 @@ def describe_pagination(
         "continues": more is True,
         "terminal": more is False,
         "more_field": more_field,
-        "args_preview": _args_preview(args, redact_values),
+        # Preview what the model wrote plus the page keys (a defaulted page_index=0
+        # names the parameter to advance); other schema defaults it never passed
+        # (archived=False, min_created_at='1500-01-01', …) would only be noise.
+        "args_preview": _args_preview(
+            {**arguments, **{k: v for k, v in page_values.items() if k not in arguments}}, redact_values
+        ),
     }
 
 
