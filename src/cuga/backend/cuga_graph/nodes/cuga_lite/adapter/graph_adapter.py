@@ -16,6 +16,9 @@ from langgraph.types import Command
 from loguru import logger
 
 from cuga.backend.activity_tracker.tracker import Step
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import (
+    extract_code_from_model_response,
+)
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
     format_current_plan_section,
     format_task_todos_system_block,
@@ -36,12 +39,30 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.tool_exec_node import create_tool_exec_node
+from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.wire_names import wire_name
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import EXECUTE_PYTHON_NAME
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_effects import (
+    NOOP_ANSWER_CORRECTION,
+    NOOP_ANSWER_CORRECTION_KEY,
+    has_write_tools,
+    is_noop_answer,
+    turn_made_a_write,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.deferred import (
+    SEARCH_ONLY_CORRECTION,
+    SEARCH_ONLY_CORRECTION_KEY,
+    bind_deferred,
+    bind_names,
+    search_only_turn,
+    surface_from_meta,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import (
     _bind_tools_mode_from_settings,
     resolve_model_with_bind_tools,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
-    EXECUTION_MODE_FUNCTION_CALLING,
+    EXECUTION_MODE_HYBRID,
+    is_native_mode,
     resolve_execution_mode,
     resolved_runtime_model_name,
     runtime_defaults_for_model,
@@ -228,6 +249,23 @@ def _looks_like_python_block(content: str, tool_names: Any = ()) -> bool:
     return False
 
 
+def _turn_start(history: List[Any]) -> int:
+    """Index of the user message that opened the current turn (corrections excluded)."""
+    synthetic = {EMPTY_RESPONSE_CORRECTION, FC_MODE_VIOLATION_CORRECTION}
+    for i in range(len(history) - 1, -1, -1):
+        m = history[i]
+        if _message_role(m) in ("human", "user"):
+            text = _message_text(m)
+            if (
+                text in synthetic
+                or text.startswith(SEARCH_ONLY_CORRECTION[:40])
+                or text.startswith(NOOP_ANSWER_CORRECTION[:20])
+            ):
+                continue
+            return i
+    return 0
+
+
 def _few_shot_to_messages(few_shot: List[Any]) -> List[BaseMessage]:
     """The prepare node's normalized ``{role, content}`` demos, as real chat messages."""
     msgs: List[BaseMessage] = []
@@ -362,7 +400,22 @@ class AgentGraphAdapter(CoreGraphAdapter):
         # default is bind mode "none". Upgrade only when the *resolved* mode is none
         # — an explicit non-none choice from configurable, a model profile or
         # settings is respected. Additive: no effect in codeact.
-        if self._execution_mode(configurable) == EXECUTION_MODE_FUNCTION_CALLING:
+        if is_native_mode(self._execution_mode(configurable)):
+            surface = surface_from_meta(self._tools_context_ref)
+            if surface is not None:
+                # Deferred loading: core ∪ pinned ∪ loaded, minified, no model call.
+                names, evicted = bind_names(
+                    surface, self.get_messages(state), getattr(state, "discovered_tools", None)
+                )
+                logger.info(
+                    "[fc] tool_search bind: {} tool(s) ({} core, {} pinned, {} loaded){}",
+                    len(names),
+                    len(surface.core),
+                    len(surface.pinned),
+                    len(names) - len(set(surface.core) | set(surface.pinned)),
+                    f"; evicted {evicted}" if evicted else "",
+                )
+                return bind_deferred(active_model, surface, names)
             if self._resolved_bind_mode(configurable) == "none":
                 # Advertise exactly the executable set prepare built (filtered per
                 # sub-task / relevant apps), not the registry-wide catalogue: a tool
@@ -540,7 +593,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
         that cannot be verified: there is no approval interrupt on this path
         yet, and silently running a guarded tool is worse than not running.
         """
-        if self._execution_mode(configurable) != EXECUTION_MODE_FUNCTION_CALLING:
+        if not is_native_mode(self._execution_mode(configurable)):
             return None
 
         from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
@@ -679,6 +732,32 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 },
             )
 
+        # Hybrid: a fenced Python block is not a violation — it is CodeAct written as
+        # text (weaker models do this). Run it as an execute_python call instead.
+        if (
+            self._execution_mode(configurable) == EXECUTION_MODE_HYBRID
+            and not budget_exhausted
+            and _looks_like_python_block(content, self._tools_context)
+        ):
+            code = extract_code_from_model_response(content, None)
+            if code:
+                logger.info("[hybrid] fenced code in reply -> execute_python")
+                call = {
+                    "name": EXECUTE_PYTHON_NAME,
+                    "args": {"code": code},
+                    "id": f"fence_{new_step_count}",
+                    "type": "tool_call",
+                }
+                return Command(
+                    goto="tool_exec",
+                    update={
+                        self.messages_key: history + [AIMessage(content="", tool_calls=[call])],
+                        "script": None,
+                        "step_count": new_step_count,
+                        self.metadata_key: base_meta,
+                    },
+                )
+
         prior_violations = int(base_meta.get("fc_mode_violations", 0) or 0)
         if (
             _looks_like_python_block(content, self._tools_context)
@@ -702,6 +781,59 @@ class AgentGraphAdapter(CoreGraphAdapter):
                     "execution_complete": False,
                     "step_count": new_step_count,
                     self.metadata_key: {**base_meta, "fc_mode_violations": violations},
+                },
+            )
+
+        # Searched but never called a tool (M3 hockey #9: the right tool was loaded, the
+        # model answered "no access"). One corrective turn per user turn, tool search only.
+        if (
+            surface_from_meta(self._tools_context_ref) is not None
+            and not budget_exhausted
+            and new_step_count < max_steps
+            and not base_meta.get(SEARCH_ONLY_CORRECTION_KEY)
+        ):
+            loaded = search_only_turn(history, _turn_start(history))
+            if loaded:
+                logger.warning("[fc] answer after tool_search with no tool call — one corrective turn")
+                correction = SEARCH_ONLY_CORRECTION.format(
+                    loaded=", ".join(wire_name(x) for x in loaded[:10])
+                )
+                return Command(
+                    goto="call_model",
+                    update={
+                        self.messages_key: final_messages + [HumanMessage(content=correction)],
+                        "script": None,
+                        "final_answer": "",
+                        "execution_complete": False,
+                        "step_count": new_step_count,
+                        self.metadata_key: {**base_meta, SEARCH_ONLY_CORRECTION_KEY: True},
+                    },
+                )
+
+        # Did-nothing check: "N/A" (or no answer) after a turn that changed nothing, while
+        # state-changing tools exist — on action requests the model sometimes stops before
+        # acting (AppWorld: "order the benches" -> "N/A", no order call). One corrective
+        # turn per user turn; plain questions with a real answer never trigger it.
+        tools_by_name = (self._tools_context_ref or {}).get("_lc_bind_tools_structured_by_name") or {}
+        if (
+            not budget_exhausted
+            and new_step_count < max_steps
+            and not base_meta.get(NOOP_ANSWER_CORRECTION_KEY)
+            and is_noop_answer(content)
+            and has_write_tools(tools_by_name)
+            and not turn_made_a_write(history, _turn_start(history), tools_by_name)
+        ):
+            logger.warning("[fc] no-op answer after a turn with no state change — one corrective turn")
+            correction = NOOP_ANSWER_CORRECTION.format(answer=(content or "").strip() or "no answer")
+            return Command(
+                goto="call_model",
+                update={
+                    self.messages_key: final_messages + [HumanMessage(content=correction)],
+                    "script": None,
+                    "final_answer": "",
+                    "execution_complete": False,
+                    "step_count": new_step_count,
+                    self.metadata_key: {**base_meta, NOOP_ANSWER_CORRECTION_KEY: True},
                 },
             )
 

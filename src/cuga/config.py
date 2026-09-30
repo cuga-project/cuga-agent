@@ -223,6 +223,23 @@ validators = [
     Validator("advanced_features.cuga_lite_execution_mode", default="codeact"),
     Validator("advanced_features.cuga_lite_step_discipline", default="off"),
     Validator("advanced_features.cuga_lite_fc_prompt_fragments", default=[]),
+    # Faithful tool input models + pre-execution validation — docs/design/fc-deferred-tool-search.md §3.9.
+    Validator("advanced_features.cuga_lite_tool_validation", default="lax"),
+    # Deferred tool loading / tool_search — docs/design/fc-deferred-tool-search.md.
+    Validator("advanced_features.cuga_lite_tool_search", default="auto"),
+    Validator("advanced_features.cuga_lite_tool_search_context_pct", default=10),
+    Validator("advanced_features.cuga_lite_tool_search_max_results", default=5),
+    Validator("advanced_features.cuga_lite_tool_search_loaded_token_budget", default=6000),
+    Validator("advanced_features.cuga_lite_tool_search_loaded_max", default=20),
+    Validator("advanced_features.cuga_lite_tool_search_llm_fallback", default="low_confidence"),
+    Validator("advanced_features.cuga_lite_tool_search_min_score", default=10),
+    Validator("advanced_features.cuga_lite_tool_search_margin_ratio", default=0.2),
+    Validator("advanced_features.cuga_lite_tool_search_time_budget_s", default=20),
+    Validator("advanced_features.cuga_lite_tool_search_list_names_max", default=150),
+    Validator("advanced_features.cuga_lite_tool_search_seed_k", default=0),
+    Validator("advanced_features.cuga_lite_tool_description_max_chars", default=300),
+    Validator("advanced_features.cuga_lite_signature_max_chars", default=600),
+    Validator("advanced_features.cuga_lite_find_tools_render", default="markdown"),
     # Read at prepare_node without a getattr guard; without this a settings.toml
     # missing the key raises AttributeError mid-run instead of using the default.
     Validator("advanced_features.shortlisting_tool_threshold", default=35),

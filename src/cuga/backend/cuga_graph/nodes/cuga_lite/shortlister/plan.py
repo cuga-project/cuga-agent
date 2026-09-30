@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 Seam = Literal["discovery", "bind_cap"]
 
-BUILTIN_STRATEGIES = ("llm", "embedding", "hybrid")
+BUILTIN_STRATEGIES = ("llm", "embedding", "hybrid", "keyword")
 
 # Defaults live here, not in settings.toml, so a missing section can never break
 # resolution. settings.toml restates them for discoverability.

@@ -23,6 +23,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.base import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.embedding import EmbeddingShortlister
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.hybrid import HybridShortlister
+from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.keyword import KeywordShortlister
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.llm import LLMShortlister
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.plan import (
     BUILTIN_STRATEGIES,
@@ -59,6 +60,7 @@ _BUILDERS: Dict[str, Callable[[ShortlisterPlan], Any]] = {
     "llm": _build_llm,
     "embedding": _build_embedding,
     "hybrid": _build_hybrid,
+    "keyword": lambda plan: KeywordShortlister(),
 }
 
 

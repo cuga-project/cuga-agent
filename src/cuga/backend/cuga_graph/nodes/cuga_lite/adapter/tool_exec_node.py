@@ -26,6 +26,7 @@ including provider-side ``invalid_tool_calls`` — receives a reply.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import inspect
 import json
 from typing import Any, Callable, Dict, List, Optional
@@ -34,6 +35,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from loguru import logger
+from pydantic import BaseModel, ValidationError
 
 from cuga.backend.activity_tracker.tracker import Step
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
@@ -42,8 +44,27 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     create_error_command as core_create_error_command,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import _budget_updates
+from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.deferred import (
+    DeferredToolSurface,
+    discovered_in_history,
+    merge_ordered,
+    surface_from_meta,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import (
+    EXECUTE_PYTHON_NAME,
+    run_code,
+    save_native_result,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_effects import page_note
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_search import (
+    TOOL_SEARCH_NAME,
+    ToolSearchResult,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_validation_errors import format_validation_error
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
+    EXECUTION_MODE_HYBRID,
     STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
+    resolve_execution_mode,
     resolve_step_discipline,
     resolved_runtime_model_name,
 )
@@ -51,6 +72,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
     ToolCallBudgetExceeded,
     ToolCallTracker,
     counted_tool_call,
+)
+from cuga.backend.tools_env.registry.utils.schema_model import (
+    VALIDATION_MODE_OFF,
+    validation_mode_from_settings,
 )
 from cuga.config import settings
 
@@ -126,6 +151,128 @@ class _BatchOutputBudget:
         return text
 
 
+def _validate_args(
+    adapter: Any, name: str, kwargs: Dict[str, Any], display_name: Optional[str] = None
+) -> Optional[str]:
+    """Readable validation error for ``kwargs``, or ``None`` when they pass (or can't be checked).
+
+    Rejection only: the tool still receives the model's original ``kwargs``, and
+    registry tools re-validate (and coerce) with the same model inside. So a tool
+    whose ``args_schema`` is looser than its function never changes behaviour
+    here, and ``cuga_lite_tool_validation = "off"`` restores the old path exactly.
+    """
+    if validation_mode_from_settings() == VALIDATION_MODE_OFF:
+        return None
+    by_name = (getattr(adapter, "_tools_context_ref", None) or {}).get(
+        "_lc_bind_tools_structured_by_name"
+    ) or {}
+    schema = getattr(by_name.get(name), "args_schema", None)
+    if not (isinstance(schema, type) and issubclass(schema, BaseModel)):
+        return None
+    try:
+        schema.model_validate(kwargs)
+    except ValidationError as exc:
+        return format_validation_error(display_name or name, exc, list(schema.model_fields))
+    except Exception as exc:  # a broken schema must never block the call
+        logger.debug(f"tool_exec: skipping validation for {name}: {exc}")
+    return None
+
+
+def _collect_step(adapter: Any, name: str, data: Dict[str, Any]) -> None:
+    """Trajectory step for eval analysis; tracker failures never affect the call."""
+    try:
+        adapter._tracker.collect_step(
+            step=Step(name=name, data=json.dumps(data, ensure_ascii=False, default=str))
+        )
+    except Exception as exc:
+        logger.debug(f"tool_exec tracker error: {exc}")
+
+
+def _variable_updates(state: Any) -> Dict[str, Any]:
+    """The variable-store fields a node must return after changing variables (as the sandbox does)."""
+    return {
+        "variables_storage": state.variables_storage,
+        "variable_counter_state": state.variable_counter_state,
+        "variable_creation_order": state.variable_creation_order,
+    }
+
+
+async def _run_execute_python(
+    adapter: Any, raw_args: Any, *, call_id: str, hybrid: Dict[str, Any]
+) -> ToolMessage:
+    """Hybrid mode: run the block in the CodeAct sandbox executor and reply with its output."""
+    kwargs, arg_error = _coerce_args(raw_args)
+    code = (kwargs or {}).get("code") if not arg_error else None
+    if not isinstance(code, str) or not code.strip():
+        return _error_message(
+            arg_error or "execute_python needs a non-empty `code` string.",
+            call_id=call_id,
+            name=EXECUTE_PYTHON_NAME,
+        )
+    try:
+        output, new_vars, called = await run_code(
+            hybrid["state"],
+            code,
+            adapter._tools_context,
+            thread_id=hybrid.get("thread_id"),
+            apps_list=hybrid.get("apps_list"),
+        )
+    except ToolCallBudgetExceeded as exc:
+        return _error_message(str(exc), call_id=call_id, name=EXECUTE_PYTHON_NAME)
+    except Exception as exc:
+        return _error_message(f"execute_python failed: {exc}", call_id=call_id, name=EXECUTE_PYTHON_NAME)
+    _collect_step(adapter, "Assistant_code", {"code": code, "new_variables": sorted(new_vars)})
+    text = (output or "").strip() or "(no output — end the code with print() of what you need)"
+    # ``called``: tools the code ran — the did-anything check reads it (code calls
+    # never appear as ToolMessages of their own).
+    return ToolMessage(
+        content=text, tool_call_id=call_id, name=EXECUTE_PYTHON_NAME, artifact={"code_calls": called}
+    )
+
+
+def _unknown_tool_text(adapter: Any, name: str, surface: Optional[DeferredToolSurface]) -> str:
+    """With tool search, never list the catalogue (hundreds of names): suggest close ones."""
+    known = sorted(k for k in adapter._tools_context if not k.startswith("_"))
+    if surface is None:
+        return f"Unknown tool '{name}'. Choose one of the provided tools: {', '.join(known) or '(none)'}."
+    close = [
+        surface.to_wire(n) for n in difflib.get_close_matches(surface.to_real(name), known, n=5, cutoff=0.5)
+    ]
+    hint = f" Did you mean: {', '.join(close)}?" if close else ""
+    return f"Unknown tool '{name}'.{hint} Use {TOOL_SEARCH_NAME} to find the right tool."
+
+
+async def _run_tool_search(
+    adapter: Any, raw_args: Any, *, call_id: str, timeout: Optional[float]
+) -> ToolMessage:
+    fn = adapter._tools_context.get(TOOL_SEARCH_NAME)
+    kwargs, arg_error = _coerce_args(raw_args)
+    if arg_error or fn is None:
+        return _error_message(
+            arg_error or "tool_search is unavailable.", call_id=call_id, name=TOOL_SEARCH_NAME
+        )
+    validation_error = _validate_args(adapter, TOOL_SEARCH_NAME, kwargs)
+    if validation_error:
+        return _error_message(validation_error, call_id=call_id, name=TOOL_SEARCH_NAME)
+    try:
+        result = await asyncio.wait_for(fn(**kwargs), timeout=timeout)
+    except asyncio.TimeoutError:
+        return _error_message(
+            f"tool_search timed out after {timeout}s. Try select:<name> or fewer keywords.",
+            call_id=call_id,
+            name=TOOL_SEARCH_NAME,
+        )
+    except Exception as exc:
+        return _error_message(f"tool_search failed: {exc}", call_id=call_id, name=TOOL_SEARCH_NAME)
+    if isinstance(result, ToolSearchResult):
+        logger.info("[fc] tool_search stage={} loaded={}", result.stage, result.discovered)
+        _collect_step(adapter, "Tool_search", {"arguments": kwargs, **result.artifact()})
+        return ToolMessage(
+            content=result.text, tool_call_id=call_id, name=TOOL_SEARCH_NAME, artifact=result.artifact()
+        )
+    return ToolMessage(content=_stringify(result), tool_call_id=call_id, name=TOOL_SEARCH_NAME)
+
+
 def _error_message(text: str, *, call_id: str, name: str) -> ToolMessage:
     return ToolMessage(content=text, tool_call_id=call_id, name=name or "unknown", status="error")
 
@@ -142,6 +289,7 @@ def create_tool_exec_node(adapter: Any) -> Callable:
             configurable_llm=configurable.get("llm"), graph_default_model=getattr(adapter, "_model", None)
         )
         one_per_step = resolve_step_discipline(configurable, model_name) == STEP_DISCIPLINE_ONE_TOOL_PER_STEP
+        hybrid = resolve_execution_mode(configurable, model_name) == EXECUTION_MODE_HYBRID
         # One batch is the function-calling analogue of one code block, so the
         # outer bound per call is the block wall clock. Registry tools keep their
         # own inner ``tool_call_timeout``.
@@ -171,6 +319,20 @@ def create_tool_exec_node(adapter: Any) -> Callable:
         # One turn's batch of calls is the function-calling analogue of one code block.
         ToolCallTracker.seed_block_budget()
 
+        # Deferred loading (tool_search active): what the model has loaded so far.
+        surface = surface_from_meta(getattr(adapter, "_tools_context_ref", None))
+        discovered = (
+            set(
+                merge_ordered(
+                    surface.seed,
+                    getattr(state, "discovered_tools", None) or [],
+                    discovered_in_history(messages, surface.deferred),
+                )
+            )
+            if surface is not None
+            else set()
+        )
+
         results: List[ToolMessage] = []
         executed = 0
         execution_tool_calls: List[Dict[str, Any]] = []
@@ -184,6 +346,17 @@ def create_tool_exec_node(adapter: Any) -> Callable:
                     one_per_step=one_per_step,
                     timeout=timeout,
                     output_budget=output_budget,
+                    surface=surface,
+                    discovered=discovered,
+                    hybrid=(
+                        {
+                            "state": state,
+                            "thread_id": configurable.get("thread_id") or getattr(state, "thread_id", None),
+                            "apps_list": configurable.get("apps_list"),
+                        }
+                        if hybrid
+                        else None
+                    ),
                 )
             finally:
                 execution_tool_calls = ToolCallTracker.stop_tracking()
@@ -239,16 +412,21 @@ def create_tool_exec_node(adapter: Any) -> Callable:
                 len(results),
                 executed,
             )
-            return Command(
-                goto="call_model",
-                update={
-                    adapter.messages_key: updated_messages,
-                    "script": None,
-                    "step_count": state.step_count + 1,
-                    "tool_calls": accumulated_tool_calls,
-                    **_budget_updates(),
-                },
-            )
+            update = {
+                adapter.messages_key: updated_messages,
+                "script": None,
+                "step_count": state.step_count + 1,
+                "tool_calls": accumulated_tool_calls,
+                **_budget_updates(),
+            }
+            if hybrid:
+                # execute_python blocks and saved native results changed the variable store.
+                update.update(_variable_updates(state))
+            if surface is not None:
+                newly = [n for n in discovered_in_history(results, surface.deferred) if n not in discovered]
+                if newly:
+                    update["discovered_tools"] = newly  # union_ordered reducer appends
+            return Command(goto="call_model", update=update)
         except Exception as exc:
             # Mirrors the sandbox's outer guard: a failure outside the per-call
             # handling must still report the budget the batch spent, or the
@@ -294,6 +472,9 @@ async def _run_batch(
     one_per_step: bool,
     timeout: Optional[float],
     output_budget: _BatchOutputBudget,
+    surface: Optional[DeferredToolSurface] = None,
+    discovered: Optional[set] = None,
+    hybrid: Optional[Dict[str, Any]] = None,
 ) -> int:
     """Run one turn's calls in order, appending one ``ToolMessage`` per id to ``results``.
 
@@ -302,30 +483,43 @@ async def _run_batch(
     """
     executed = 0
     budget_stop: Optional[str] = None
+    discovered = discovered if discovered is not None else set()
+    attempted = 0  # real (non tool_search) calls reached so far, for step discipline
     for index, call in enumerate(calls):
         call_id, name, raw_args = _tool_call_parts(call)
         call_id = call_id or f"call_{index}"
         if not name:
             results.append(_error_message("Tool call carried no tool name.", call_id=call_id, name=""))
             continue
+        if surface is not None and name != TOOL_SEARCH_NAME:
+            # The model calls tools by their provider-safe wire name (≤64 chars);
+            # dispatch, validation and the recorded ToolMessage use the registered one.
+            name = surface.to_real(name)
+        if surface is not None and name == TOOL_SEARCH_NAME:
+            # A meta call: no side effects, so it is never deferred by step discipline,
+            # never counted against the tool-call budgets, and never truncated.
+            results.append(await _run_tool_search(adapter, raw_args, call_id=call_id, timeout=timeout))
+            continue
         if budget_stop:
             results.append(_error_message(budget_stop, call_id=call_id, name=name))
             continue
-        if one_per_step and index > 0:
+        if one_per_step and attempted > 0:
             # By position, not by success: an error on the first call is the result
             # the model must read before it decides the next one.
             results.append(_error_message(DEFERRED_CALL_MESSAGE, call_id=call_id, name=name))
             continue
+        attempted += 1
+
+        if hybrid is not None and name == EXECUTE_PYTHON_NAME:
+            reply = await _run_execute_python(adapter, raw_args, call_id=call_id, hybrid=hybrid)
+            executed += reply.status != "error"
+            results.append(reply)
+            continue
 
         fn = adapter._tools_context.get(name)
         if fn is None or not callable(fn):
-            known = ", ".join(sorted(k for k in adapter._tools_context if not k.startswith("_")))
             results.append(
-                _error_message(
-                    f"Unknown tool '{name}'. Choose one of the provided tools: {known or '(none)'}.",
-                    call_id=call_id,
-                    name=name,
-                )
+                _error_message(_unknown_tool_text(adapter, name, surface), call_id=call_id, name=name)
             )
             continue
 
@@ -334,14 +528,43 @@ async def _run_batch(
             results.append(_error_message(arg_error, call_id=call_id, name=name))
             continue
 
+        # Validate against the tool's schema before the call is counted, the order
+        # Claude Code uses (safeParse -> permissions -> call): a malformed call spends
+        # no run/thread budget and never reaches the remote API.
+        shown = surface.to_wire(name) if surface is not None else name
+        validation_error = _validate_args(adapter, name, kwargs, display_name=shown)
+        if validation_error:
+            if surface is not None and surface.is_deferred(name) and name not in discovered:
+                # buildSchemaNotSentHint: the model called a tool whose schema it never saw.
+                validation_error += (
+                    f"\n{shown}'s schema is not loaded, so its parameters were guessed. "
+                    f'Call {TOOL_SEARCH_NAME} with query "select:{shown}", then retry.'
+                )
+            _collect_step(
+                adapter,
+                "Tool_validation_error",
+                {"tool": name, "arguments": kwargs, "error": validation_error},
+            )
+            results.append(_error_message(validation_error, call_id=call_id, name=name))
+            continue
+
         awaitable = fn if inspect.iscoroutinefunction(fn) else make_tool_awaitable(fn)
         counted = counted_tool_call(awaitable)
         try:
             result = await asyncio.wait_for(counted(**kwargs), timeout=timeout)
             executed += 1
-            results.append(
-                ToolMessage(content=output_budget.take(_stringify(result)), tool_call_id=call_id, name=name)
-            )
+            content = output_budget.take(_stringify(result))
+            structured = (getattr(adapter, "_tools_context_ref", None) or {}).get(
+                "_lc_bind_tools_structured_by_name"
+            ) or {}
+            note = page_note(structured.get(name), kwargs, result, hybrid=hybrid is not None)
+            if note:
+                content += f"\n{note}"
+            if hybrid is not None:
+                saved = save_native_result(hybrid["state"], name, result)
+                if saved:
+                    content += f"\n[Result saved as variable `{saved}` (this call's output only) — usable in execute_python.]"
+            results.append(ToolMessage(content=content, tool_call_id=call_id, name=name))
         except asyncio.TimeoutError:
             results.append(
                 _error_message(

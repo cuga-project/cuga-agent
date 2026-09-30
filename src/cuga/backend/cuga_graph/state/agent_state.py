@@ -28,6 +28,7 @@ from cuga.backend.cuga_graph.state.api_planner_history import (
 )
 from cuga.config import settings
 from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
+from cuga.backend.cuga_graph.utils.message_utils import pair_safe_tail
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 
 
@@ -43,6 +44,20 @@ def keep_highest(current: Optional[int], incoming: Optional[int]) -> int:
     the ceiling mid-conversation.
     """
     return max(current or 0, incoming or 0)
+
+
+def union_ordered(current: Optional[List[str]], incoming: Optional[List[str]]) -> List[str]:
+    """LangGraph reducer: an append-only, order-preserving set of names.
+
+    Used for ``discovered_tools`` (deferred tools the model has loaded through
+    ``tool_search``). Like ``keep_highest``, it can only grow: a caller that
+    rebuilds state with the default ``[]`` cannot unload tools mid-conversation,
+    and summarization dropping the ``tool_search`` messages does not either.
+    """
+    out: Dict[str, None] = dict.fromkeys(current or [])
+    for name in incoming or []:
+        out.setdefault(name, None)
+    return list(out)
 
 
 class ToolCallRecord(BaseModel):
@@ -997,6 +1012,9 @@ class AgentState(BaseModel):
     # makes it monotonic, so a caller that rebuilds state and passes the default 0 (the
     # server does exactly this per turn) cannot silently reset the ceiling.
     tool_calls_used_thread: Annotated[int, keep_highest] = 0
+    # Deferred tools loaded via tool_search (function-calling mode). Parent-level for the
+    # same reason as tool_calls_used_thread: it must outlive each subgraph re-entry.
+    discovered_tools: Annotated[List[str], union_ordered] = Field(default_factory=list)
     service_scope: Optional[Dict[str, str]] = Field(
         default_factory=lambda: {"tenant_id": "", "instance_id": ""},
         description="Tenant and instance context for multi-tenant/prod DB scoping",
@@ -1149,19 +1167,19 @@ class AgentState(BaseModel):
             logger.info(
                 f"Applying sliding window: trimming chat_messages from {len(self.chat_messages)} to {limit}"
             )
-            self.chat_messages = self.chat_messages[-limit:]
+            self.chat_messages = pair_safe_tail(self.chat_messages, limit)
 
         if self.chat_agent_messages and len(self.chat_agent_messages) > limit:
             logger.info(
                 f"Applying sliding window: trimming chat_agent_messages from {len(self.chat_agent_messages)} to {limit}"
             )
-            self.chat_agent_messages = self.chat_agent_messages[-limit:]
+            self.chat_agent_messages = pair_safe_tail(self.chat_agent_messages, limit)
 
         if self.supervisor_chat_messages and len(self.supervisor_chat_messages) > limit:
             logger.info(
                 f"Applying sliding window: trimming supervisor_chat_messages from {len(self.supervisor_chat_messages)} to {limit}"
             )
-            self.supervisor_chat_messages = self.supervisor_chat_messages[-limit:]
+            self.supervisor_chat_messages = pair_safe_tail(self.supervisor_chat_messages, limit)
 
     def format_subtask(self):
         app = (self.sub_task_app or "")[:30]

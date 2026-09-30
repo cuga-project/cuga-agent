@@ -19,7 +19,7 @@ from cuga.backend.cuga_graph.utils.token_counter import (
     ensure_model_context_profile,
     resolve_model_identifier,
 )
-from cuga.backend.cuga_graph.utils.message_utils import convert_to_proper_message_type
+from cuga.backend.cuga_graph.utils.message_utils import convert_to_proper_message_type, pair_safe_tail
 
 # Optional imports for middleware invocation (may not be available in all LangChain versions)
 try:
@@ -329,7 +329,7 @@ class ContextSummarizer:
             # partial results) — signal it loudly with counts, and return metrics rich
             # enough for the tracker/eval analysis to find affected tasks (issue #563).
             # keep_n <= 0 must keep nothing: messages[-0:] would return the WHOLE list.
-            kept_messages = messages[-keep_n:] if keep_n > 0 else []
+            kept_messages = pair_safe_tail(messages, keep_n)
             dropped = len(messages) - len(kept_messages)
             logger.exception(f"Failed to summarize messages: {e}")
             logger.error(
@@ -505,7 +505,7 @@ class ContextSummarizer:
 
         if not new_messages:
             logger.warning("Middleware returned no messages, using fallback")
-            return original_messages[-keep_n:]
+            return pair_safe_tail(original_messages, keep_n)
 
         return new_messages
 

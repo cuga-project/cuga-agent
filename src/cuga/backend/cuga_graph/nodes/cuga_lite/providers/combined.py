@@ -20,9 +20,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import (
     create_tool_from_api_dict,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_validation_errors import format_any_validation_error
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import resolve_tool_call_args
 from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apps, get_registry_base_url
-from cuga.backend.tools_env.registry.utils.schema_utils import python_type_for_schema
+from cuga.backend.tools_env.registry.utils.schema_model import build_input_model, params_to_json_schema
 from cuga.config import settings
 
 
@@ -37,66 +38,25 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
     Returns:
         StructuredTool instance that calls tracker.invoke_tool
     """
-    from pydantic import Field, ValidationError, create_model
+    from pydantic import ValidationError
 
     description = tool_def.get("description", "")
-    parameters = tool_def.get("parameters", {})
     operation_id = tool_def.get("operation_id")  # Original OpenAPI operationId if available
 
-    # Convert OpenAPI parameter format to JSON schema format if needed
-    if isinstance(parameters, list):
-        # Use the same conversion function from tool_registry_provider
-        def _convert_openapi_params_to_json_schema(params):
-            properties = {}
-            required = []
-            for param in params:
-                name = param.get("name", "")
-                param_type = param.get("schema", {}).get("type", "string")
-                param_desc = param.get("description", "")
-                properties[name] = {"type": param_type, "description": param_desc}
+    # Parameter lists → JSON Schema; enums/bounds/item types are recovered from the
+    # constraint strings and per-param ``schema`` (see schema_model.params_to_json_schema).
+    parameters = params_to_json_schema(tool_def.get("parameters", {}))
 
-                # Handle constraints
-                constraints = param.get("constraints", [])
-                if constraints:
-                    properties[name]["constraints"] = constraints
-
-                if param.get("required", False):
-                    required.append(name)
-            return {"properties": properties, "required": required}
-
-        parameters = _convert_openapi_params_to_json_schema(parameters)
-
-    field_definitions = {}
     param_constraints = {}
-    if isinstance(parameters, dict):
-        if "properties" in parameters:
-            props = parameters["properties"]
-            required = parameters.get("required", [])
-            for param_name, param_schema in props.items():
-                param_desc = param_schema.get("description", "")
-                python_type = python_type_for_schema(param_schema)
+    for param_name, param_schema in (parameters.get("properties") or {}).items():
+        # Store constraints for later use in prompt
+        constraints = (param_schema or {}).get("constraints", [])
+        if constraints:
+            param_constraints[param_name] = constraints
 
-                # Store constraints for later use in prompt
-                constraints = param_schema.get("constraints", [])
-                if constraints:
-                    param_constraints[param_name] = constraints
-
-                if param_name in required:
-                    field_definitions[param_name] = (python_type, Field(..., description=param_desc))
-                else:
-                    default_val = param_schema.get("default", None)
-                    # Make sure default values are hashable if needed
-                    if isinstance(default_val, list):
-                        default_val = None  # Skip unhashable defaults
-                    field_definitions[param_name] = (
-                        Optional[python_type],
-                        Field(default=default_val, description=param_desc),
-                    )
-
-    if field_definitions:
-        InputModel = create_model(f"{tool_name}Input", **field_definitions)
-    else:
-        InputModel = create_model(f"{tool_name}Input")
+    # Faithful model unless cuga_lite_tool_validation = "off" (flat legacy model).
+    InputModel = build_input_model(tool_name, parameters)
+    param_names = list(InputModel.model_fields.keys())
 
     # Capture operation_id in closure for the tool function
     _operation_id = operation_id
@@ -115,7 +75,6 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
         error_msg = None
 
         try:
-            param_names = list(field_definitions.keys()) if field_definitions else []
             all_kwargs, unexpected = resolve_tool_call_args(args, kwargs, param_names)
             if unexpected:
                 error_msg = f"Unexpected argument(s) for {tool_name}: {', '.join(unexpected)}"
@@ -125,7 +84,7 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
             try:
                 all_kwargs = InputModel.model_validate(all_kwargs).model_dump(exclude_unset=True)
             except ValidationError as e:
-                error_msg = f"Tool input validation error for {tool_name}: {e}"
+                error_msg = format_any_validation_error(tool_name, e, param_names)
                 logger.error(error_msg)
                 return {"error": error_msg}
 
@@ -190,6 +149,8 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
     for target in (tool.func, tool.coroutine, tool):
         target._operation_id = operation_id
         target._app_name = app_name
+        target._http_method = str(tool_def.get("method") or "").upper()
+        target._http_path = str(tool_def.get("path") or "")
 
     return tool
 

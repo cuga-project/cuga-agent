@@ -125,6 +125,16 @@ def resolve_bind_tools_fields(
 
 EXECUTION_MODE_CODEACT = "codeact"
 EXECUTION_MODE_FUNCTION_CALLING = "function_calling"
+# Function calling plus an ``execute_python`` tool (CodeAct as one native tool).
+EXECUTION_MODE_HYBRID = "hybrid"
+# Modes whose model turns are native tool_calls routed to tool_exec.
+NATIVE_EXECUTION_MODES = frozenset({EXECUTION_MODE_FUNCTION_CALLING, EXECUTION_MODE_HYBRID})
+
+
+def is_native_mode(mode: str) -> bool:
+    """True for function_calling and hybrid (native tool_calls), False for codeact."""
+    return mode in NATIVE_EXECUTION_MODES
+
 
 _EXECUTION_MODE_ALIASES: Dict[str, str] = {
     "codeact": EXECUTION_MODE_CODEACT,
@@ -132,6 +142,7 @@ _EXECUTION_MODE_ALIASES: Dict[str, str] = {
     "function_calling": EXECUTION_MODE_FUNCTION_CALLING,
     "function-calling": EXECUTION_MODE_FUNCTION_CALLING,
     "fc": EXECUTION_MODE_FUNCTION_CALLING,
+    "hybrid": EXECUTION_MODE_HYBRID,
 }
 
 STEP_DISCIPLINE_OFF = "off"

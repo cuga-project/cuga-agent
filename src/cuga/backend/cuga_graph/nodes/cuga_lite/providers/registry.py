@@ -12,8 +12,9 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 from langchain_core.tools import StructuredTool
 from loguru import logger
-from pydantic import Field, ValidationError, create_model
+from pydantic import ValidationError
 
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_validation_errors import format_any_validation_error
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import resolve_tool_call_args
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
     BlockToolCallCounter,
@@ -24,7 +25,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     ToolProviderInterface,
 )
 from cuga.backend.tools_env.registry.utils.api_utils import get_apis, get_apps, get_registry_base_url
-from cuga.backend.tools_env.registry.utils.schema_utils import python_type_for_schema
+from cuga.backend.tools_env.registry.utils.schema_model import build_input_model, params_to_json_schema
 from cuga.config import settings
 
 
@@ -107,48 +108,6 @@ async def call_api(
         )
 
 
-def _convert_openapi_params_to_json_schema(parameters: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Convert OpenAPI parameter format to JSON schema format.
-
-    Args:
-        parameters: List of parameter dicts in OpenAPI format
-
-    Returns:
-        Dict in JSON schema format with 'properties' and 'required' keys
-    """
-    if not isinstance(parameters, list):
-        return parameters  # Already in JSON schema format
-
-    properties = {}
-    required = []
-
-    for param in parameters:
-        param_name = param.get("name", "")
-        if not param_name:
-            continue
-
-        properties[param_name] = {
-            "type": param.get("type", "string"),
-            "description": param.get("description", ""),
-        }
-
-        # Handle default values
-        default_val = param.get("default")
-        if default_val is not None:
-            properties[param_name]["default"] = default_val
-
-        # Handle constraints
-        constraints = param.get("constraints", [])
-        if constraints:
-            properties[param_name]["constraints"] = constraints
-
-        # Handle required
-        if param.get("required", False):
-            required.append(param_name)
-
-    return {"properties": properties, "required": required}
-
-
 def create_tool_from_api_dict(
     tool_name: str, tool_def: Dict[str, Any], app_name: str, agent_id: Optional[str] = None
 ) -> StructuredTool:
@@ -168,52 +127,30 @@ def create_tool_from_api_dict(
     response_schemas = tool_def.get("response_schemas", {})
     operation_id = tool_def.get("operation_id")  # Original OpenAPI operationId
 
-    # Convert OpenAPI parameter format to JSON schema format if needed
-    if isinstance(parameters, list):
-        parameters = _convert_openapi_params_to_json_schema(parameters)
+    # Registry parameter lists → JSON Schema, recovering the enums, bounds and item
+    # types the registry encodes as constraint strings / ``schema`` summaries.
+    parameters = params_to_json_schema(parameters)
 
-    field_definitions = {}
     param_constraints = {}
-    if isinstance(parameters, dict):
-        if "properties" in parameters:
-            props = parameters["properties"]
-            required = parameters.get("required", [])
-            for param_name, param_schema in props.items():
-                param_desc = param_schema.get("description", "")
-                python_type = python_type_for_schema(param_schema)
+    for param_name, param_schema in (parameters.get("properties") or {}).items():
+        # Store constraints for later use in prompt
+        constraints = (param_schema or {}).get("constraints", [])
+        if constraints:
+            param_constraints[param_name] = constraints
 
-                # Store constraints for later use in prompt
-                constraints = param_schema.get("constraints", [])
-                if constraints:
-                    param_constraints[param_name] = constraints
-
-                if param_name in required:
-                    field_definitions[param_name] = (python_type, Field(..., description=param_desc))
-                else:
-                    default_val = param_schema.get("default", None)
-                    # Make sure default values are hashable if needed
-                    if isinstance(default_val, list):
-                        default_val = None  # Skip unhashable defaults
-                    field_definitions[param_name] = (
-                        Optional[python_type],
-                        Field(default=default_val, description=param_desc),
-                    )
-
-    if field_definitions:
-        InputModel = create_model(f"{tool_name}Input", **field_definitions)
-    else:
-        InputModel = create_model(f"{tool_name}Input")
+    # Faithful model unless cuga_lite_tool_validation = "off" (flat legacy model).
+    InputModel = build_input_model(tool_name, parameters)
+    param_names = list(InputModel.model_fields.keys())
 
     # Capture operation_id and agent_id in closure for the tool function
     _operation_id = operation_id
     _agent_id = agent_id
 
     def _validation_error_message(exc: BaseException) -> str:
-        return f"Tool input validation error for {tool_name}: {exc}"
+        return format_any_validation_error(tool_name, exc, param_names)
 
     async def tool_func(*args, **kwargs):
         try:
-            param_names = list(field_definitions.keys()) if field_definitions else []
             all_kwargs, unexpected = resolve_tool_call_args(args, kwargs, param_names)
             if unexpected:
                 error_msg = f"Unexpected argument(s) for {tool_name}: {', '.join(unexpected)}"
@@ -292,9 +229,15 @@ def create_tool_from_api_dict(
         tool.coroutine._param_constraints = param_constraints
 
     # Store metadata for tool call tracking
+    search_hint = tool_def.get("summary") or ""
     for target in (tool.func, tool.coroutine, tool):
         target._operation_id = operation_id
         target._app_name = app_name
+        # Scored by the keyword ranker (tool_search) above the description.
+        target._search_hint = search_hint
+        # HTTP method/path: lets the loop tell reads from state changes (tool_effects).
+        target._http_method = str(tool_def.get("method") or "").upper()
+        target._http_path = str(tool_def.get("path") or "")
 
     return tool
 

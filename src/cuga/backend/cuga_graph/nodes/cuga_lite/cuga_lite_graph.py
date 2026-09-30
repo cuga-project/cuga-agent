@@ -26,7 +26,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.agent_graph_adapter import AgentGraphAdapter
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
-from cuga.backend.cuga_graph.state.agent_state import AgentState, keep_highest
+from cuga.backend.cuga_graph.state.agent_state import AgentState, keep_highest, union_ordered
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.utils.helpers import load_one_prompt
 from cuga.config import settings
@@ -120,6 +120,9 @@ class CugaLiteState(BaseModel):
     # ``keep_highest`` keeps it monotonic, so a caller rebuilding state with the default 0
     # (the server does this every turn) cannot reset the ceiling.
     tool_calls_used_thread: Annotated[int, keep_highest] = 0
+    # Deferred tools the model loaded through tool_search — bound on every later call.
+    # Shared with AgentState (same key + reducer) so it survives turns and summarization.
+    discovered_tools: Annotated[List[str], union_ordered] = Field(default_factory=list)
     # Set once a terminal budget (turn or conversation) is spent. call_model then
     # withholds tools for one final synthesis pass and ends the turn.
     tool_budget_exhausted: bool = False

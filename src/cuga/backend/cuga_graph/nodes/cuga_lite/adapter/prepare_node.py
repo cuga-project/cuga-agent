@@ -29,12 +29,23 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import (
     _web_search_enabled,
     create_find_tools_tool,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.deferred import META_KEY as TOOL_SEARCH_META_KEY
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import (
+    EXECUTE_PYTHON_NAME,
+    create_execute_python_tool,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_search import (
+    TOOL_SEARCH_NAME,
+    prepare_tool_search_surface,
+    render_tool_search_section,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import (
     _get_knowledge_tool_scope_context,
     _knowledge_scope_instruction,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
-    EXECUTION_MODE_FUNCTION_CALLING,
+    EXECUTION_MODE_HYBRID,
+    is_native_mode,
     STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
     resolve_execution_mode,
     resolve_fc_prompt_fragments,
@@ -297,7 +308,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             few_shot_examples = []
             logger.debug("MCP few-shots disabled (cuga_lite_enable_few_shots=false)")
         if (
-            _execution_mode == EXECUTION_MODE_FUNCTION_CALLING
+            is_native_mode(_execution_mode)
             and few_shot_examples
             and configurable.get("mcp_few_shot_examples") is None
         ):
@@ -734,6 +745,18 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                     effective_instructions = assembled.text
             except Exception as e:
                 logger.debug(f"Knowledge awareness injection skipped: {e}")
+        # Hybrid: CodeAct as one native tool. Registered before the executable-name index
+        # so both bind paths (tool search and the legacy cap) include it; tool_exec
+        # dispatches it by name to the sandbox executor.
+        if _execution_mode == EXECUTION_MODE_HYBRID:
+            _exec_py = create_execute_python_tool()
+            adapter._tools_context[EXECUTE_PYTHON_NAME] = _exec_py.coroutine
+            tools_for_prompt = [
+                t for t in (tools_for_prompt or []) if getattr(t, "name", None) != EXECUTE_PYTHON_NAME
+            ]
+            tools_for_prompt.append(_exec_py)
+        else:
+            adapter._tools_context.pop(EXECUTE_PYTHON_NAME, None)
         if lc_bind_tools_meta is not None:
             lc_bind_tools_meta["_lc_bind_tools_overlay_structured_tools"] = [
                 t for t in (tools_for_prompt or []) if getattr(t, "name", None)
@@ -747,6 +770,40 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             lc_bind_tools_meta["_lc_bind_tools_executable_names"] = [
                 n for n in dict.fromkeys(_candidates) if n and n in adapter._tools_context
             ]
+            # Name → StructuredTool for the same executable set: tool_exec validates
+            # native calls against ``args_schema`` before they count against the budget.
+            # Overlays last, so an in-graph tool wins a name clash, as in native bind.
+            lc_bind_tools_meta["_lc_bind_tools_structured_by_name"] = {
+                t.name: t
+                for t in [*(tools_for_execution or []), *(tools_for_prompt or [])]
+                if getattr(t, "name", None) and t.name in adapter._tools_context
+            }
+
+        # Deferred tool loading (function-calling only): registry tools are bound only
+        # once the model loads them through tool_search. The meta dict outlives a run,
+        # so the surface is reset every prepare — a CodeAct or small-catalogue run must
+        # never inherit the previous run's.
+        _tool_search_index = None
+        if lc_bind_tools_meta is not None:
+            lc_bind_tools_meta[TOOL_SEARCH_META_KEY] = None
+            if is_native_mode(_execution_mode):
+                _prepared = prepare_tool_search_surface(
+                    tools_for_execution=tools_for_execution or [],
+                    tools_for_prompt=tools_for_prompt or [],
+                    tools_context=adapter._tools_context,
+                    apps=apps_for_prompt or [],
+                    configurable=configurable,
+                    model_name=_runtime_model_name,
+                    llm=configurable.get("llm") or adapter._model,
+                    task_context=_first_user_message_text(state.chat_messages),
+                    threshold=shortlisting_threshold,
+                )
+                if _prepared is not None:
+                    _surface, _tool_search_index = _prepared
+                    lc_bind_tools_meta[TOOL_SEARCH_META_KEY] = _surface
+                    lc_bind_tools_meta["_lc_bind_tools_structured_by_name"][TOOL_SEARCH_NAME] = (
+                        _surface.tools_by_name[TOOL_SEARCH_NAME]
+                    )
 
         # Use tools_for_execution, not tools_for_prompt: when find_tools shortlisting
         # is active (the common case once an app has more than a handful of tools),
@@ -764,7 +821,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # Create prompt dynamically
         dynamic_prompt = adapter._static_prompt
 
-        if _execution_mode == EXECUTION_MODE_FUNCTION_CALLING:
+        if is_native_mode(_execution_mode):
             # Function-calling mode: the CodeAct prompt is never rendered. Tools
             # travel natively via bind_tools, so this prompt is only the behavioural
             # contract plus the same instructions / special_instructions. A static
@@ -788,7 +845,24 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 fragments=_fragments,
                 skills_prompt_section=skills_prompt_section if skills_enabled else "",
                 agents_prompt_section=agents_prompt_section if agents_enabled else "",
-                apps=_find_tools_apps if enable_find_tools else None,
+                # With tool search, find_tools is unbound — its app_name catalogue would
+                # point at a tool the model cannot call; the FINDING TOOLS block replaces it.
+                apps=_find_tools_apps if enable_find_tools and _tool_search_index is None else None,
+                hybrid=_execution_mode == EXECUTION_MODE_HYBRID,
+                tool_search_section=(
+                    render_tool_search_section(
+                        _tool_search_index,
+                        loaded=list(getattr(state, "discovered_tools", None) or []),
+                        list_names_max=int(
+                            configurable.get("cuga_lite_tool_search_list_names_max")
+                            or getattr(
+                                settings.advanced_features, "cuga_lite_tool_search_list_names_max", 150
+                            )
+                        ),
+                    )
+                    if _tool_search_index is not None
+                    else ""
+                ),
             )
             logger.info(
                 "Prepared CugaLite function-calling prompt: step_discipline={} fragments={} prompt_chars={}",
@@ -843,6 +917,8 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # drop the counter here — prepare runs exactly once per turn on both paths.
         _turn_metadata = dict(state.cuga_lite_metadata or {})
         _turn_metadata.pop("fc_mode_violations", None)
+        _turn_metadata.pop("fc_search_only_retry", None)
+        _turn_metadata.pop("fc_noop_answer_retry", None)
         update_payload: dict[str, Any] = {
             "tools_prepared": True,
             "prepared_prompt": dynamic_prompt,

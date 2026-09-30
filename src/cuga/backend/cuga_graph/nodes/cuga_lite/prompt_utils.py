@@ -611,6 +611,7 @@ class PromptUtils:
             ShortlistRequest,
             ShortlisterRouter,
             render_tools_markdown,
+            render_tools_signatures,
             run_shortlister,
         )
         from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.llm import compose_query
@@ -651,6 +652,8 @@ class PromptUtils:
             candidates = candidates[: plan.max_results]
 
         display_query = compose_query(query, task_context) if task_context else query
+        if _find_tools_render_mode(run_config) == "signature":
+            return render_tools_signatures(candidates, all_tools, result.notes)
         return render_tools_markdown(candidates, all_tools, display_query, result.notes)
 
     @staticmethod
@@ -913,6 +916,14 @@ def _fc_prompt_template():
     return load_one_prompt(str(path), relative_to_caller=False)
 
 
+def _find_tools_render_mode(run_config: Any = None) -> str:
+    """``cuga_lite_find_tools_render``: ``markdown`` (default, unchanged) | ``signature``."""
+    raw = _configurable_of(run_config).get("cuga_lite_find_tools_render")
+    if raw is None:
+        raw = getattr(getattr(settings, "advanced_features", None), "cuga_lite_find_tools_render", "markdown")
+    return "signature" if str(raw).strip().lower() == "signature" else "markdown"
+
+
 def render_fc_prompt(
     *,
     instructions: Optional[str] = None,
@@ -924,8 +935,11 @@ def render_fc_prompt(
     skills_prompt_section: Optional[str] = None,
     agents_prompt_section: Optional[str] = None,
     apps: Optional[list] = None,
+    tool_search_section: Optional[str] = None,
+    hybrid: bool = False,
 ) -> str:
-    """System prompt for ``cuga_lite_execution_mode = "function_calling"``.
+    """System prompt for ``cuga_lite_execution_mode = "function_calling"`` (and ``"hybrid"``,
+    which adds the ``execute_python`` tool and the when-to-use-code guidance).
 
     Deliberately short. Tool names, parameters and types travel in the API's
     native ``tools`` parameter (``bind_tools``), which the model was trained to
@@ -935,7 +949,8 @@ def render_fc_prompt(
     - the generic preamble (always),
     - the step-discipline line when ``cuga_lite_step_discipline`` is on,
     - opt-in fragments from ``cuga_lite_fc_prompt_fragments`` (``evidence_first``),
-    - the app catalogue when ``find_tools`` is bound (it takes an ``app_name``), and
+    - the app catalogue when ``find_tools`` is bound (it takes an ``app_name``), or the
+      ``FINDING TOOLS`` block when tool search defers the catalogue, and
       the skill / agent catalogues when those tools are bound (``load_skill`` /
       ``delegate_to_*`` take a name; the model has to be able to pick a valid one),
     - then the agent's ``instructions`` and the caller's ``special_instructions``.
@@ -952,6 +967,8 @@ def render_fc_prompt(
         apps=format_apps_for_prompt(apps) if apps else [],
         skills_prompt_section=(skills_prompt_section or "").strip(),
         agents_prompt_section=(agents_prompt_section or "").strip(),
+        tool_search_section=(tool_search_section or "").strip(),
+        hybrid=bool(hybrid),
         instructions=(instructions or "").strip(),
         special_instructions=(special_instructions or "").strip(),
     )

@@ -63,7 +63,8 @@ async def test_invalid_types_return_structured_error_on_sandbox_path():
         assert isinstance(result, dict)
         assert "error" in result
         assert "quantity" in result["error"]
-        assert "Tool input validation error for place_order:" in result["error"]
+        assert "Invalid arguments for place_order:" in result["error"]
+        assert 'quantity expected integer, received string "two"' in result["error"]
         calls = ToolCallTracker.get_current_calls()
         assert len(calls) == 1
         assert calls[0]["name"] == "place_order"

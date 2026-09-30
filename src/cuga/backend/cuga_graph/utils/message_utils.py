@@ -5,6 +5,8 @@ This module provides common message handling utilities used across
 the codebase to avoid duplication.
 """
 
+from typing import Any, List
+
 from langchain_core.messages import (
     BaseMessage,
     AIMessage,
@@ -82,3 +84,41 @@ def convert_to_proper_message_type(message: BaseMessage) -> BaseMessage:
 
 
 # Made with Bob
+
+
+def _tool_call_ids(message: Any) -> set:
+    calls = getattr(message, "tool_calls", None) or []
+    return {c.get("id") for c in calls if isinstance(c, dict) and c.get("id")}
+
+
+def pair_safe_tail(messages: List[BaseMessage], keep: int) -> List[BaseMessage]:
+    """The last ``keep`` messages, never starting on an orphaned tool reply.
+
+    A plain ``messages[-keep:]`` can cut between an ``AIMessage`` carrying
+    ``tool_calls`` and its ``ToolMessage`` replies, leaving replies to a call the
+    provider never sees — which strict function-calling providers reject. Same
+    rule as LangChain's ``SummarizationMiddleware._find_safe_cutoff_point``: if
+    the cut lands on tool replies, move it back to include the assistant turn that
+    issued them; if that turn cannot be found, move it forward past the orphans.
+    ``keep <= 0`` keeps nothing (``messages[-0:]`` would keep everything).
+    """
+    if keep <= 0 or not messages:
+        return []
+    if len(messages) <= keep:
+        return list(messages)
+    cut = len(messages) - keep
+
+    def is_tool(m: Any) -> bool:
+        return getattr(m, "type", None) == "tool"
+
+    if not is_tool(messages[cut]):
+        return list(messages[cut:])
+    reply_ids = set()
+    idx = cut
+    while idx < len(messages) and is_tool(messages[idx]):
+        reply_ids.add(getattr(messages[idx], "tool_call_id", None))
+        idx += 1
+    for back in range(cut - 1, -1, -1):
+        if getattr(messages[back], "type", None) == "ai" and _tool_call_ids(messages[back]) & reply_ids:
+            return list(messages[back:])
+    return list(messages[idx:])

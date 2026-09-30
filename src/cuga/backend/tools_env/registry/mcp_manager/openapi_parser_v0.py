@@ -520,6 +520,9 @@ class OpenAPITransformer:
             "path": path_str,
             "method": method_str.upper(),
             "description": description,
+            # The operation's one-line summary: the curated phrase tool_search scores
+            # as a search hint (it is what fixed the hockey find_tools miss).
+            "summary": op_obj.get('summary', '') or '',
             "parameters": parameters,
             "response_schemas": response_schemas,
             "canary_string": canary_string,

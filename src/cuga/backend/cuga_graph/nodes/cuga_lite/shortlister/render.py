@@ -99,3 +99,23 @@ def render_tools_markdown(
     if note_text:
         return f"{markdown}\n{note_text}"
     return markdown
+
+
+def render_tools_signatures(
+    candidates: List[ShortlistCandidate],
+    tools: List[StructuredTool],
+    notes: Optional[List[str]] = None,
+) -> str:
+    """Compact alternative to :func:`render_tools_markdown` (``cuga_lite_find_tools_render
+    = "signature"``): one TS-style signature + one-line description per tool, rendered from
+    the same ``args_schema`` the call is validated against. Several times smaller than the
+    markdown (see docs/design/fc-deferred-tool-search.md §3.10 B)."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.signature_render import render_signature
+
+    by_name = {t.name: t for t in tools}
+    lines = [render_signature(by_name[c.name]) for c in candidates if c.name in by_name]
+    note_text = "\n\n".join(n for n in (notes or []) if n)
+    if not lines:
+        return f"{NO_MATCH_MESSAGE}\n\n{note_text}" if note_text else NO_MATCH_MESSAGE
+    body = "Matching tools (call them as Python functions with keyword arguments):\n" + "\n".join(lines)
+    return f"{body}\n\n{note_text}" if note_text else body

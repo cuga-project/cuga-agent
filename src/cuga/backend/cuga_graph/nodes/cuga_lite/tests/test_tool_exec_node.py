@@ -514,3 +514,124 @@ async def test_step_discipline_defers_by_position_even_when_the_first_call_fails
     assert m1.status == "error" and "Unknown tool" in m1.content
     assert (m2.tool_call_id, m2.content, m2.status) == ("c2", DEFERRED_CALL_MESSAGE, "error")
     assert calls == []
+
+
+# ── pre-budget argument validation (fc-deferred-tool-search §3.9 B) ──────────
+
+
+def _validated_adapter(fn, *, name: str = "list_games") -> _Adapter:
+    from langchain_core.tools import StructuredTool
+
+    from cuga.backend.tools_env.registry.utils.schema_model import build_input_model
+
+    model = build_input_model(
+        name,
+        [
+            {"name": "season", "type": "integer", "required": True},
+            {
+                "name": "order",
+                "type": "string",
+                "required": False,
+                "constraints": ["must be one of: [asc, desc]"],
+            },
+        ],
+        mode="lax",
+    )
+    tool = StructuredTool.from_function(coroutine=fn, name=name, description="d", args_schema=model)
+    adapter = _Adapter({name: fn})
+    adapter._tools_context_ref = {"_lc_bind_tools_structured_by_name": {name: tool}}
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_invalid_args_are_rejected_before_the_budget_and_never_run(monkeypatch):
+    _caps(monkeypatch, run=5)
+    ran = []
+
+    async def list_games(**kwargs):
+        ran.append(kwargs)
+        return "ok"
+
+    node = create_tool_exec_node(_validated_adapter(list_games))
+    last = AIMessage(
+        content="", tool_calls=[_call("list_games", {"season": 2020, "order": "ascending"}, "c1")]
+    )
+
+    result = await node(_state(last), config={"configurable": {}})
+
+    (msg,) = _tool_messages(result)
+    assert msg.status == "error" and msg.tool_call_id == "c1"
+    assert msg.content.startswith("Invalid arguments for list_games:")
+    assert 'order must be one of "asc" | "desc"' in msg.content
+    assert ran == [], "a rejected call never reaches the tool"
+    assert _update(result)["tool_calls_used_run"] == 0, "a rejected call spends no budget"
+
+
+@pytest.mark.asyncio
+async def test_valid_args_pass_through_unchanged(monkeypatch):
+    _caps(monkeypatch)
+    ran = []
+
+    async def list_games(**kwargs):
+        ran.append(kwargs)
+        return "ok"
+
+    node = create_tool_exec_node(_validated_adapter(list_games))
+    # "2020" is valid in lax mode; the tool still receives exactly what the model sent.
+    last = AIMessage(content="", tool_calls=[_call("list_games", {"season": "2020"}, "c1")])
+
+    result = await node(_state(last), config={"configurable": {}})
+
+    assert [m.status for m in _tool_messages(result)] == ["success"]
+    assert ran == [{"season": "2020"}]
+
+
+@pytest.mark.asyncio
+async def test_validation_off_restores_the_unvalidated_path(monkeypatch):
+    from cuga.config import settings
+
+    _caps(monkeypatch)
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_tool_validation", "off", raising=False)
+    ran = []
+
+    async def list_games(**kwargs):
+        ran.append(kwargs)
+        return "ok"
+
+    node = create_tool_exec_node(_validated_adapter(list_games))
+    last = AIMessage(content="", tool_calls=[_call("list_games", {"order": "sideways"}, "c1")])
+
+    await node(_state(last), config={"configurable": {}})
+
+    assert ran == [{"order": "sideways"}]
+
+
+@pytest.mark.asyncio
+async def test_tools_without_a_schema_index_are_not_validated(monkeypatch):
+    _caps(monkeypatch)
+
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    adapter = _Adapter({"add": add})  # no _tools_context_ref at all (CodeAct-built adapters)
+    node = create_tool_exec_node(adapter)
+    last = AIMessage(content="", tool_calls=[_call("add", {"a": 1, "b": 2}, "c1")])
+
+    assert [m.content for m in _tool_messages(await node(_state(last), config={"configurable": {}}))] == ["3"]
+
+
+@pytest.mark.asyncio
+async def test_validation_rejections_are_recorded_as_trajectory_steps(monkeypatch):
+    _caps(monkeypatch)
+
+    async def list_games(**kwargs):
+        return "ok"
+
+    adapter = _validated_adapter(list_games)
+    node = create_tool_exec_node(adapter)
+    last = AIMessage(content="", tool_calls=[_call("list_games", {"order": "x"}, "c1")])
+
+    await node(_state(last), config={"configurable": {}})
+
+    names = [c.kwargs["step"].name for c in adapter._tracker.collect_step.call_args_list]
+    assert "Tool_validation_error" in names

@@ -64,6 +64,31 @@ cuga_lite_step_discipline = "off"
 # Opt-in prompt fragments for function_calling mode. Known: "evidence_first" (call a tool before answering; never
 # answer from prior knowledge). Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_FC_PROMPT_FRAGMENTS='["evidence_first"]'
 cuga_lite_fc_prompt_fragments = []
+# Tool input models, both modes: lax (default) | strict | off. lax/strict build a faithful Pydantic model per registry
+# tool (enums, array item types, nested fields, bounds — recovered from the registry's constraint strings) and reject
+# unknown keys; lax still coerces "5" -> 5, strict does not. off keeps the legacy flat model (top-level types only).
+# Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_TOOL_VALIDATION
+cuga_lite_tool_validation = "lax"
+# Deferred tool loading for function_calling mode (Claude Code's ToolSearch model) — docs/design/fc-deferred-tool-search.md.
+# off | auto (default: defer registry tools when more than shortlisting_tool_threshold are executable) | on.
+# Deferred tools are bound only after the model loads them with the `tool_search` tool (top-N per search); the
+# legacy bind-everything-then-cap path (and its per-call shortlister round-trip) is skipped while active.
+# Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_TOOL_SEARCH
+cuga_lite_tool_search = "auto"
+cuga_lite_tool_search_context_pct = 10  # auto: also defer when the minified schemas would take this % of the context window (0 = count only)
+cuga_lite_tool_search_max_results = 5  # Tools loaded per tool_search call (Claude Code's default)
+cuga_lite_tool_search_loaded_token_budget = 6000  # Minified-schema token budget for loaded tools; LRU eviction past it
+cuga_lite_tool_search_loaded_max = 20  # Hard cap on loaded (deferred) tools bound at once
+cuga_lite_tool_search_llm_fallback = "low_confidence"  # never | low_confidence (LLM only when keyword is unsure and no embedding) | always
+cuga_lite_tool_search_min_score = 10  # Keyword stage is confident when top score >= this ...
+cuga_lite_tool_search_margin_ratio = 0.2  # ... and (top - first cut-off score) / top >= this. Calibrated on the M3 REST catalogue
+# (scripts/tool_search_calibration.py): 0.2 answers ~91% of searches without a model call at ~98% recall@5.
+cuga_lite_tool_search_time_budget_s = 20  # Wall-clock budget per search (< sandbox_execution_timeout); past it, embedding/LLM stages are skipped
+cuga_lite_tool_search_list_names_max = 150  # List deferred tool names in the prompt up to this many; above, apps + counts only
+cuga_lite_tool_search_seed_k = 0  # Pre-load the top-K keyword matches for the first user message (no model call); 0 = off
+cuga_lite_tool_description_max_chars = 300  # Wire-schema tool description cap on the tool_search bind path
+cuga_lite_signature_max_chars = 600  # Per-tool budget for compact signatures in tool_search results
+cuga_lite_find_tools_render = "markdown"  # CodeAct find_tools output: markdown (unchanged) | signature (compact TS-style signatures)
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 cuga_lite_blocked_claim_retry = true  # When an NL turn claims tools/data are unavailable but no code has executed and tools ARE bound, retry once with a corrective message instead of finalizing the false refusal (issue #610). Only active when cuga_lite_nl_auto_continue is on.
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
