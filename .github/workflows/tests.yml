@@ -33,6 +33,24 @@ env:
 # to add a test_*.py path. See AGENTS.md.
 
 jobs:
+  model-probe:
+    name: watsonx model probe
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      model: ${{ steps.probe.outputs.model }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+      # gpt-oss-120b on watsonx truncates replies at times (#784). Empty output keeps
+      # secrets.MODEL_NAME / the TOML model; otherwise the live-LLM jobs use the fallback.
+      - id: probe
+        continue-on-error: true
+        run: python3 scripts/ci/watsonx_model_probe.py
+
   lint:
     name: Lint
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -49,9 +67,13 @@ jobs:
 
   unit-a:
     name: Unit (graph)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # !cancelled(): still run, on the configured model, if the probe job itself fails.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    needs: model-probe
+    env:
+      MODEL_NAME: ${{ needs.model-probe.outputs.model || secrets.MODEL_NAME }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -70,9 +92,13 @@ jobs:
 
   unit-b:
     name: Unit (tests/)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # !cancelled(): still run, on the configured model, if the probe job itself fails.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    needs: model-probe
+    env:
+      MODEL_NAME: ${{ needs.model-probe.outputs.model || secrets.MODEL_NAME }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -104,9 +130,14 @@ jobs:
 
   policy-a:
     name: Policy (e2e)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # !cancelled(): still run, on the configured model, if the probe job itself fails.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 14 live-model tests: about 2 min normally, 8.5 min when watsonx is slow (30 Sep).
+    timeout-minutes: 15
+    needs: model-probe
+    env:
+      MODEL_NAME: ${{ needs.model-probe.outputs.model || secrets.MODEL_NAME }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -117,9 +148,13 @@ jobs:
 
   policy-b:
     name: Policy (unit)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # !cancelled(): still run, on the configured model, if the probe job itself fails.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: model-probe
+    env:
+      MODEL_NAME: ${{ needs.model-probe.outputs.model || secrets.MODEL_NAME }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -132,9 +167,13 @@ jobs:
 
   sdk:
     name: SDK integration
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # !cancelled(): still run, on the configured model, if the probe job itself fails.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: model-probe
+    env:
+      MODEL_NAME: ${{ needs.model-probe.outputs.model || secrets.MODEL_NAME }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -147,9 +186,13 @@ jobs:
 
   extras:
     name: Manager and load units
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # !cancelled(): still run, on the configured model, if the probe job itself fails.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    needs: model-probe
+    env:
+      MODEL_NAME: ${{ needs.model-probe.outputs.model || secrets.MODEL_NAME }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
