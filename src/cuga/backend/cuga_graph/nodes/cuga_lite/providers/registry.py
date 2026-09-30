@@ -35,6 +35,7 @@ async def call_api(
     operation_id: Optional[str] = None,
     agent_id: Optional[str] = None,
     arg_defaults: Optional[Dict[str, Any]] = None,
+    param_names: Optional[List[str]] = None,
 ):
     """Call an API tool via the registry server.
 
@@ -45,6 +46,7 @@ async def call_api(
         operation_id: Optional original OpenAPI operationId for tracking
         agent_id: Optional agent ID for multi-agent support
         arg_defaults: Schema defaults for omitted args (tracking only, not sent)
+        param_names: The tool's declared parameter names (tracking only, not sent)
 
     Returns:
         The API response
@@ -107,6 +109,7 @@ async def call_api(
             duration_ms=duration_ms,
             error=error_msg,
             arg_defaults=arg_defaults,
+            param_names=param_names,
         )
 
 
@@ -265,6 +268,7 @@ def create_tool_from_api_dict(
                 operation_id=_operation_id,
                 agent_id=_agent_id,
                 arg_defaults=arg_defaults,
+                param_names=param_names,
             )
             return result
         except TimeoutError:
