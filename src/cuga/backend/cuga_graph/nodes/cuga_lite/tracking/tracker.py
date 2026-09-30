@@ -203,6 +203,7 @@ class ToolCallTracker:
         duration_ms: Optional[float] = None,
         error: Optional[str] = None,
         arg_defaults: Optional[Dict[str, Any]] = None,
+        param_names: Optional[List[str]] = None,
     ) -> None:
         """Record a tool call.
 
@@ -216,6 +217,8 @@ class ToolCallTracker:
             error: Error message if the call failed
             arg_defaults: Schema defaults for arguments the caller omitted
                 (only used for the pagination facts, see #750)
+            param_names: The tool's declared parameter names, when known
+                (only used to tell whether the tool paginates, see #750)
         """
         if not ToolCallTracker.is_enabled():
             return
@@ -236,11 +239,20 @@ class ToolCallTracker:
             "timestamp": datetime.now().isoformat(),
             "duration_ms": duration_ms,
             "error": None if timings_only else error,
+            # Outcome flag kept in every mode: a boolean, so it carries no
+            # payload — the audit needs it because the error text above is
+            # dropped in timings-only mode (a failed next-page request must
+            # not count as progress).
+            "succeeded": error is None,
             # Pagination facts for the post-block audit (#750): page index/limit,
             # result length and a scope key — never the payload, so it is kept
             # in timings-only mode too (with non-page argument values redacted).
             "pagination": describe_pagination(
-                arguments, result, arg_defaults=arg_defaults, redact_values=timings_only
+                arguments,
+                result,
+                arg_defaults=arg_defaults,
+                redact_values=timings_only,
+                param_names=param_names,
             ),
         }
 
@@ -497,6 +509,7 @@ def make_recording_awaitable(
                 operation_id=tool_name,
                 duration_ms=duration_ms,
                 error=error_msg,
+                param_names=param_names,
             )
 
     return _recorded
