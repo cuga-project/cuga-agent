@@ -21,17 +21,36 @@ permissions:
   contents: read
 
 jobs:
+  model-probe:
+    name: watsonx model probe
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      model: ${{ steps.probe.outputs.model }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+      # gpt-oss-120b on watsonx truncates replies at times (#784). Empty output keeps
+      # secrets.MODEL_NAME / the TOML model; otherwise the live-LLM jobs use the fallback.
+      - id: probe
+        continue-on-error: true
+        run: python3 scripts/ci/watsonx_model_probe.py
+
   smoke-pip-isolated:
     name: Wheel install + demo_crm OpenAPI
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: model-probe
     env:
       AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
       WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
       WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
       WATSONX_URL: ${{ vars.WATSONX_URL }}
-      MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      MODEL_NAME: ${{ needs.model-probe.outputs.model || secrets.MODEL_NAME }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
