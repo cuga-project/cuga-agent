@@ -97,7 +97,9 @@ def chat(url: str, token: str, body: dict) -> Reply:
             finish_reason=choice.get("finish_reason"),
             completion_tokens=payload.get("usage", {}).get("completion_tokens"),
         )
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError, IndexError) as exc:
+    # Broad on purpose: one bad reply (IncompleteRead, a non-dict body, ...) must count as an
+    # error, not crash the pool and leave the run without a model output.
+    except Exception as exc:  # noqa: BLE001
         return Reply(time.monotonic() - start, error=type(exc).__name__ + ": " + str(exc)[:200])
 
 
