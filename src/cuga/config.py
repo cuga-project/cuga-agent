@@ -240,6 +240,10 @@ validators = [
     Validator("advanced_features.cuga_lite_tool_description_max_chars", default=300),
     Validator("advanced_features.cuga_lite_signature_max_chars", default=600),
     Validator("advanced_features.cuga_lite_find_tools_render", default="markdown"),
+    Validator("advanced_features.cuga_lite_execute_python_timeout", default=90),
+    Validator("advanced_features.cuga_lite_tool_result_keep_recent", default=3),
+    Validator("advanced_features.cuga_lite_tool_result_clear_min_chars", default=2000),
+    Validator("advanced_features.cuga_lite_repeat_call_nudge_after", default=3),
     # Read at prepare_node without a getattr guard; without this a settings.toml
     # missing the key raises AttributeError mid-run instead of using the default.
     Validator("advanced_features.shortlisting_tool_threshold", default=35),

@@ -118,6 +118,7 @@ class CodeExecutor:
         mode: Optional[Literal['local', 'e2b', 'opensandbox']] = None,
         plan: Optional[ExecutionPlan] = None,
         variable_manager: Optional[Any] = None,
+        timeout: Optional[float] = None,
     ) -> tuple[str, dict[str, Any]]:
         """Execute code with async tools available in the local namespace.
 
@@ -133,6 +134,8 @@ class CodeExecutor:
                 Python execution path unless ``mode`` is given explicitly.
             variable_manager: Variable manager to record new variables into.
                 Defaults to ``state.variables_manager`` (preserves prior behavior).
+            timeout: Wall-clock limit in seconds for the local executor. Defaults to
+                ``sandbox_execution_timeout``; hybrid's ``execute_python`` passes its own.
 
         Returns:
             Tuple of (execution result, new variables dictionary)
@@ -177,6 +180,7 @@ class CodeExecutor:
                 plan=plan,
                 variable_manager=variable_manager,
                 skills_on=skills_on,
+                timeout=timeout,
             )
         finally:
             reset_skills_relaxed_execution(skills_token)
@@ -195,6 +199,7 @@ class CodeExecutor:
         plan: Optional[ExecutionPlan] = None,
         variable_manager: Optional[Any] = None,
         skills_on: bool,
+        timeout: Optional[float] = None,
     ) -> tuple[str, dict[str, Any]]:
         result = ""
 
@@ -256,7 +261,7 @@ class CodeExecutor:
                 result = await executor.execute(
                     wrapped_code=wrapped_code,
                     context_locals=_locals,
-                    timeout=settings.advanced_features.sandbox_execution_timeout,
+                    timeout=timeout or settings.advanced_features.sandbox_execution_timeout,
                 )
 
         except Exception as e:

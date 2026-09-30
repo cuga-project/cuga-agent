@@ -89,6 +89,17 @@ cuga_lite_tool_search_seed_k = 0  # Pre-load the top-K keyword matches for the f
 cuga_lite_tool_description_max_chars = 300  # Wire-schema tool description cap on the tool_search bind path
 cuga_lite_signature_max_chars = 600  # Per-tool budget for compact signatures in tool_search results
 cuga_lite_find_tools_render = "markdown"  # CodeAct find_tools output: markdown (unchanged) | signature (compact TS-style signatures)
+# Hybrid mode: wall clock per execute_python block (seconds). Longer than sandbox_execution_timeout because
+# execute_python is where loops over many API calls go. Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_EXECUTE_PYTHON_TIMEOUT
+cuga_lite_execute_python_timeout = 90
+# Function-calling / hybrid: clear old tool results from what is sent to the model (Claude Code's microcompact).
+# Keep the N newest results (and everything the model has not answered yet) whole; older results of at least
+# clear_min_chars become a one-line stub — in hybrid naming the variable the full result is saved in. 0 = off.
+cuga_lite_tool_result_keep_recent = 3
+cuga_lite_tool_result_clear_min_chars = 2000
+# Function-calling / hybrid: after this many consecutive calls to one tool with only one argument changing (or
+# none), add one runtime note suggesting execute_python (hybrid) or a bulk endpoint. 0 = off.
+cuga_lite_repeat_call_nudge_after = 3
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 cuga_lite_blocked_claim_retry = true  # When an NL turn claims tools/data are unavailable but no code has executed and tools ARE bound, retry once with a corrective message instead of finalizing the false refusal (issue #610). Only active when cuga_lite_nl_auto_continue is on.
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)

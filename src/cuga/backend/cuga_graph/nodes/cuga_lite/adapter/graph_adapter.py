@@ -41,6 +41,18 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.tool_exec_node import create_tool_exec_node
 from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.wire_names import wire_name
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import EXECUTE_PYTHON_NAME
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.harness_messages import (
+    for_model,
+    harness_kind,
+    harness_message,
+    is_harness_message,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.repeat_calls import (
+    REPEAT_NUDGE_KEY,
+    detect_repeat_streak,
+    repeat_nudge_text,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_result_clearing import clear_old_tool_results
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_effects import (
     NOOP_ANSWER_CORRECTION,
     NOOP_ANSWER_CORRECTION_KEY,
@@ -205,13 +217,17 @@ def _normalize_history_for_replay(messages: List[Any]) -> List[BaseMessage]:
             elif _message_text(msg).strip():
                 out.append(msg)
             continue  # an empty assistant shell is dropped
+        if isinstance(m, HumanMessage) and is_harness_message(m):
+            out.append(for_model(m))
+            continue
         if isinstance(m, (HumanMessage, SystemMessage)):
             out.append(m)
             continue
         role = _message_role(m)
         text = _message_text(m)
         if role in ("human", "user"):
-            out.append(HumanMessage(content=text))
+            kind = harness_kind(m)
+            out.append(for_model(harness_message(text, kind)) if kind else HumanMessage(content=text))
         elif role in ("ai", "assistant"):
             if "<|" in text:
                 text = strip_harmony_tokens(text)
@@ -250,20 +266,44 @@ def _looks_like_python_block(content: str, tool_names: Any = ()) -> bool:
 
 
 def _turn_start(history: List[Any]) -> int:
-    """Index of the user message that opened the current turn (corrections excluded)."""
+    """Index of the user message that opened the current turn (runtime notes excluded).
+
+    Runtime notes are tagged (``harness_messages``); the text checks cover threads
+    persisted before the tag existed.
+    """
     synthetic = {EMPTY_RESPONSE_CORRECTION, FC_MODE_VIOLATION_CORRECTION}
     for i in range(len(history) - 1, -1, -1):
         m = history[i]
         if _message_role(m) in ("human", "user"):
             text = _message_text(m)
             if (
-                text in synthetic
+                is_harness_message(m)
+                or text in synthetic
                 or text.startswith(SEARCH_ONLY_CORRECTION[:40])
                 or text.startswith(NOOP_ANSWER_CORRECTION[:20])
             ):
                 continue
             return i
     return 0
+
+
+def _fc_setting(configurable: dict, key: str, default: Any) -> Any:
+    """``configurable`` first (per-invoke override), then ``advanced_features``."""
+    if key in (configurable or {}):
+        return configurable[key]
+    return getattr(settings.advanced_features, key, default)
+
+
+def _variable_exists_fn(state: Any):
+    """Whether a saved variable is still in the store (stubs only point at live ones)."""
+    manager = getattr(state, "variables_manager", None)
+    try:
+        names = set(manager.get_variable_names()) if manager is not None else None
+    except Exception:
+        names = None
+    if names is None:
+        return lambda _name: False
+    return lambda name: name in names
 
 
 def _few_shot_to_messages(few_shot: List[Any]) -> List[BaseMessage]:
@@ -626,9 +666,41 @@ class AgentGraphAdapter(CoreGraphAdapter):
             logger.error("[fc] refusing to start: no tools are bound to the model")
             return create_error_command(self, history, AIMessage(content=FC_BIND_FAILED), state.step_count)
 
+        hybrid = self._execution_mode(configurable) == EXECUTION_MODE_HYBRID
+
+        # Repeated native calls this turn (the same tool, one argument changing, or no
+        # change at all): one runtime note per streak. Persisted ahead of the reply so the
+        # transcript shows what the model was told.
+        repeat_streak = None
+        nudge_after = int(_fc_setting(cfg, "cuga_lite_repeat_call_nudge_after", 3) or 0)
+        if nudge_after >= 2 and not budget_exhausted:
+            streak = detect_repeat_streak(history[_turn_start(history) :])
+            already = (self.get_metadata(state) or {}).get(REPEAT_NUDGE_KEY)
+            if streak is not None and streak.length >= nudge_after and already != streak.first_call_id:
+                logger.warning(
+                    "[fc] {} called {} times in a row ({}) — runtime note",
+                    streak.tool_name,
+                    streak.length,
+                    f"varying {streak.varying_arg}" if streak.varying_arg else "identical arguments",
+                )
+                repeat_streak = streak
+                history = history + [
+                    harness_message(repeat_nudge_text(streak, hybrid=hybrid), "repeat_calls")
+                ]
+
+        replay = _normalize_history_for_replay(history)
+        keep_recent = int(_fc_setting(cfg, "cuga_lite_tool_result_keep_recent", 3) or 0)
+        if keep_recent > 0:
+            replay = clear_old_tool_results(
+                replay,
+                keep_recent=keep_recent,
+                min_chars=int(_fc_setting(cfg, "cuga_lite_tool_result_clear_min_chars", 2000) or 0),
+                var_exists=_variable_exists_fn(state),
+            )
+
         msgs: List[BaseMessage] = [SystemMessage(content=system_content)]
         msgs.extend(_few_shot_to_messages(self.get_few_shot_messages(state)))
-        msgs.extend(_normalize_history_for_replay(history))
+        msgs.extend(replay)
         if variables_addendum:
             # Outbound only, like call_model's CodeAct path (#600): never persisted.
             for i in range(len(msgs) - 1, -1, -1):
@@ -639,7 +711,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
                     break
         if budget_exhausted:
             # Outbound only as well.
-            msgs.append(HumanMessage(content=TOOL_BUDGET_EXHAUSTED_INSTRUCTION))
+            msgs.append(for_model(harness_message(TOOL_BUDGET_EXHAUSTED_INSTRUCTION, "budget_exhausted")))
 
         clamp_watsonx_completion_for_messages(bound, msgs)
         response = await bound.ainvoke(msgs, config=invoke_config)
@@ -699,6 +771,8 @@ class AgentGraphAdapter(CoreGraphAdapter):
             return limit_cmd
 
         base_meta = dict(self.build_metadata_update(state, playbook_fired=playbook_fired) or {})
+        if repeat_streak is not None:
+            base_meta[REPEAT_NUDGE_KEY] = repeat_streak.first_call_id
 
         if has_calls:
             logger.info("[fc] {} native tool_call(s) -> tool_exec", len(tool_calls) + len(invalid_tool_calls))
@@ -723,7 +797,8 @@ class AgentGraphAdapter(CoreGraphAdapter):
             return Command(
                 goto="call_model",
                 update={
-                    self.messages_key: final_messages + [HumanMessage(content=EMPTY_RESPONSE_CORRECTION)],
+                    self.messages_key: final_messages
+                    + [harness_message(EMPTY_RESPONSE_CORRECTION, "empty_reply")],
                     "script": None,
                     "final_answer": "",
                     "execution_complete": False,
@@ -734,11 +809,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
 
         # Hybrid: a fenced Python block is not a violation — it is CodeAct written as
         # text (weaker models do this). Run it as an execute_python call instead.
-        if (
-            self._execution_mode(configurable) == EXECUTION_MODE_HYBRID
-            and not budget_exhausted
-            and _looks_like_python_block(content, self._tools_context)
-        ):
+        if hybrid and not budget_exhausted and _looks_like_python_block(content, self._tools_context):
             code = extract_code_from_model_response(content, None)
             if code:
                 logger.info("[hybrid] fenced code in reply -> execute_python")
@@ -775,7 +846,8 @@ class AgentGraphAdapter(CoreGraphAdapter):
             return Command(
                 goto="call_model",
                 update={
-                    self.messages_key: final_messages + [HumanMessage(content=FC_MODE_VIOLATION_CORRECTION)],
+                    self.messages_key: final_messages
+                    + [harness_message(FC_MODE_VIOLATION_CORRECTION, "mode_violation")],
                     "script": None,
                     "final_answer": "",
                     "execution_complete": False,
@@ -801,7 +873,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 return Command(
                     goto="call_model",
                     update={
-                        self.messages_key: final_messages + [HumanMessage(content=correction)],
+                        self.messages_key: final_messages + [harness_message(correction, "search_only")],
                         "script": None,
                         "final_answer": "",
                         "execution_complete": False,
@@ -828,7 +900,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
             return Command(
                 goto="call_model",
                 update={
-                    self.messages_key: final_messages + [HumanMessage(content=correction)],
+                    self.messages_key: final_messages + [harness_message(correction, "noop_answer")],
                     "script": None,
                     "final_answer": "",
                     "execution_complete": False,

@@ -25,6 +25,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import TOOL_BUDGET_EXHAUSTED_INSTRUCTION
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter import graph_adapter as ga
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.harness_messages import harness_message, wrap_reminder
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import (
     FC_BIND_FAILED,
     FC_BUDGET_CALL_REPLY,
@@ -161,7 +162,7 @@ async def test_code_block_without_tool_calls_is_a_mode_violation_never_executed(
 
     assert cmd.goto == "call_model", "one corrective turn, not the sandbox"
     assert cmd.update["script"] is None
-    assert cmd.update["chat_messages"][-1] == HumanMessage(content=FC_MODE_VIOLATION_CORRECTION)
+    assert cmd.update["chat_messages"][-1] == harness_message(FC_MODE_VIOLATION_CORRECTION, "mode_violation")
     assert cmd.update["cuga_lite_metadata"]["fc_mode_violations"] == 1
     assert cmd.update["step_count"] == 1, "charged as a step so it cannot loop forever"
     assert state.cuga_lite_metadata == {}, "metadata travels in the update, state is not mutated in place"
@@ -172,7 +173,7 @@ async def test_empty_reply_is_retried_once_then_finalized():
     cmd = await _turn(_adapter(), _Model(AIMessage(content="")), _state(), FC)
 
     assert cmd.goto == "call_model"
-    assert cmd.update["chat_messages"][-1] == HumanMessage(content=EMPTY_RESPONSE_CORRECTION)
+    assert cmd.update["chat_messages"][-1] == harness_message(EMPTY_RESPONSE_CORRECTION, "empty_reply")
     assert cmd.update["cuga_lite_metadata"][EMPTY_RESPONSE_CORRECTION_KEY] is True
 
     retried = _state(metadata={EMPTY_RESPONSE_CORRECTION_KEY: True})
@@ -192,8 +193,8 @@ async def test_budget_exhausted_turn_ignores_tool_calls_and_sends_the_instructio
 
     assert cmd.goto == END and cmd.update["final_answer"] == "From what I have: 3."
     (outbound,) = model.seen
-    assert outbound[-1] == HumanMessage(content=TOOL_BUDGET_EXHAUSTED_INSTRUCTION)
-    assert all(m.content != TOOL_BUDGET_EXHAUSTED_INSTRUCTION for m in cmd.update["chat_messages"]), (
+    assert outbound[-1].content == wrap_reminder(TOOL_BUDGET_EXHAUSTED_INSTRUCTION)
+    assert all(TOOL_BUDGET_EXHAUSTED_INSTRUCTION not in m.content for m in cmd.update["chat_messages"]), (
         "never persisted"
     )
     ai, reply = cmd.update["chat_messages"][-2:]

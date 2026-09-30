@@ -560,11 +560,14 @@ async def _run_batch(
             note = page_note(structured.get(name), kwargs, result, hybrid=hybrid is not None)
             if note:
                 content += f"\n{note}"
+            artifact = None
             if hybrid is not None:
                 saved = save_native_result(hybrid["state"], name, result)
                 if saved:
                     content += f"\n[Result saved as variable `{saved}` (this call's output only) — usable in execute_python.]"
-            results.append(ToolMessage(content=content, tool_call_id=call_id, name=name))
+                    # Old-result clearing (tool_result_clearing.py) points its stub here.
+                    artifact = {"saved_as": saved}
+            results.append(ToolMessage(content=content, tool_call_id=call_id, name=name, artifact=artifact))
         except asyncio.TimeoutError:
             results.append(
                 _error_message(

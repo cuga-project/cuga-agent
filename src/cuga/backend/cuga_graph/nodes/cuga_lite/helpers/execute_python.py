@@ -40,7 +40,7 @@ EXECUTE_PYTHON_DESCRIPTION = (
     "loaded to be called from code. Variables from earlier steps (including saved results of earlier tool calls) "
     "are available by name, and variables you create persist. End with print() of what you need: printed output "
     "is what you get back. Print a sample of unfamiliar data before filtering on it; if the code fails or finds "
-    "nothing, inspect, fix and rerun rather than concluding. When the code computes content an action needs, call "
+    "nothing, inspect, fix and rerun rather than concluding. A tool call that fails raises an exception whose message says why. When the code computes content an action needs, call "
     "that action from the same code instead of retyping the data. Allowed imports: json, re, typing, datetime, asyncio."
 )
 
@@ -49,8 +49,31 @@ EXECUTE_PYTHON_DESCRIPTION = (
 CODE_CALLS: ContextVar[Optional[List[str]]] = ContextVar("execute_python_calls", default=None)
 
 
+class ToolCallError(Exception):
+    """A tool called from ``execute_python`` failed; the message says why."""
+
+
+def _failure_message(result: Any) -> Optional[str]:
+    """The reason when ``result`` is a tool's failure reply, else ``None``.
+
+    Registry tools report failures (argument validation, HTTP errors) by *returning*
+    ``{"error": "<reason>"}`` rather than raising. A native call shows that dict to the
+    model; code does not — it goes on to iterate the dict's keys and dies on an
+    unrelated ``TypeError`` (AppWorld ``4d12842``: ``page_limit=100`` against a cap of
+    20, five failed blocks, the validator's "page_limit must be <= 20" never seen).
+    Only that exact shape counts, so a real payload with an ``error`` field among
+    others is left alone.
+    """
+    if isinstance(result, dict) and len(result) == 1:
+        reason = result.get("error")
+        if isinstance(reason, str) and reason.strip():
+            return reason
+    return None
+
+
 def _recording(name: str, fn: Any) -> Any:
-    """Wrap a tool so calls from code are recorded — tool_exec can't see them otherwise."""
+    """Wrap a tool for code: record the call (tool_exec can't see calls made from code)
+    and raise :class:`ToolCallError` on a failure reply, so the reason reaches the model."""
 
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -58,7 +81,11 @@ def _recording(name: str, fn: Any) -> Any:
         if calls is not None:
             calls.append(name)
         result = fn(*args, **kwargs)
-        return await result if inspect.isawaitable(result) else result
+        result = await result if inspect.isawaitable(result) else result
+        reason = _failure_message(result)
+        if reason is not None:
+            raise ToolCallError(f"{wire_name(name)} failed: {reason}")
+        return result
 
     return wrapper
 
@@ -110,7 +137,12 @@ async def run_code(
     apps_list: Optional[List[str]] = None,
 ) -> Tuple[str, Dict[str, Any], List[str]]:
     """Execute ``code`` like the CodeAct sandbox; returns ``(output, new_vars, called_tools)``
-    and stores new vars."""
+    and stores new vars.
+
+    The wall clock is ``cuga_lite_execute_python_timeout`` (90 s), not the sandbox's 30 s
+    block limit: this is the tool for loops over many API calls, and a timeout halfway
+    through a batch of writes leaves the job half done.
+    """
     from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionRouter
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import is_find_tools_listing_markdown
@@ -126,6 +158,7 @@ async def run_code(
             thread_id=thread_id,
             apps_list=apps_list,
             plan=ExecutionRouter.resolve(settings),
+            timeout=execute_python_timeout(),
         )
     finally:
         CODE_CALLS.reset(token)
@@ -134,6 +167,15 @@ async def run_code(
             continue
         state.variables_manager.add_variable(value, name=name, description="Created during code execution")
     return output, new_vars or {}, calls
+
+
+def execute_python_timeout() -> float:
+    """Seconds an ``execute_python`` block may run (falls back to the sandbox block limit)."""
+    from cuga.config import settings
+
+    features = settings.advanced_features
+    value = getattr(features, "cuga_lite_execute_python_timeout", None)
+    return float(value or getattr(features, "sandbox_execution_timeout", 30) or 30)
 
 
 _IDENT = re.compile(r"[^0-9a-zA-Z_]+")
