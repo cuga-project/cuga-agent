@@ -18,6 +18,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import create_to
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.pagination_audit import (
     NOTE_FOOTER,
     audit_pagination,
+    continuation,
     describe_pagination,
     list_length,
     render_pagination_notes,
@@ -25,12 +26,17 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.pagination_audit import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
 
 
-def _call(name, args, result, *, app="gmail", error=None, defaults=None):
+# AppWorld-style schema: page_index is declared even when the model omits it.
+PAGED = ["query", "page_index", "page_limit"]
+
+
+def _call(name, args, result, *, app="gmail", error=None, defaults=None, params=PAGED):
     return {
         "name": name,
         "app_name": app,
         "error": error,
-        "pagination": describe_pagination(args, result, arg_defaults=defaults),
+        "succeeded": error is None,
+        "pagination": describe_pagination(args, result, arg_defaults=defaults, param_names=params),
     }
 
 
@@ -89,7 +95,7 @@ def test_describe_uses_schema_defaults_for_omitted_args():
     info = describe_pagination({"query": "q"}, _rows(5), arg_defaults={"page_index": 0, "page_limit": 5})
     assert info["limit"] == 5 and info["index"] == 0
     # Explicit values win over defaults.
-    info = describe_pagination({"page_limit": 10}, _rows(5), arg_defaults={"page_limit": 5})
+    info = describe_pagination({"page_limit": 10}, _rows(5), arg_defaults={"page_index": 0, "page_limit": 5})
     assert info["limit"] == 10
 
 
@@ -114,9 +120,45 @@ def test_describe_scope_is_a_fingerprint_not_the_arguments():
 def test_describe_records_explicit_terminal_indicator():
     assert describe_pagination({"page_limit": 5}, {"items": _rows(5), "has_more": False})["terminal"] is True
     assert describe_pagination({"page_limit": 5}, {"items": _rows(5), "next_page": None})["terminal"] is True
-    assert describe_pagination({"page_limit": 5}, {"items": _rows(5), "has_more": True})["terminal"] is False
-    assert describe_pagination({"page_limit": 5}, {"items": _rows(5)})["terminal"] is False
-    assert describe_pagination({"page_limit": 5}, _rows(5))["terminal"] is False
+    info = describe_pagination({"page_limit": 5}, {"items": _rows(5), "has_more": True})
+    assert info["terminal"] is False and info["continues"] is True and info["more_field"] == "has_more"
+    info = describe_pagination({"page_limit": 5}, {"items": _rows(5)}, param_names=PAGED)
+    assert info["terminal"] is False and info["continues"] is False
+    assert describe_pagination({"page_limit": 5}, _rows(5), param_names=PAGED)["terminal"] is False
+
+
+# ── pagination contract gate (non-paginated tools with overlapping names) ──
+
+
+@pytest.mark.unit
+def test_bare_limit_without_any_pagination_evidence_is_not_audited():
+    """`search(limit=10)` returning the top 10 is not a page; no note may invent page_index."""
+    assert describe_pagination({"query": "x", "limit": 10}, _rows(10)) is None
+    assert describe_pagination({"size": 20}, _rows(20), param_names=["size", "seed"]) is None
+    assert audit_pagination([_call("search", {"query": "x", "limit": 10}, _rows(10), params=None)]) == []
+    assert audit_pagination([_call("sample_records", {"size": 20}, _rows(20), params=["size", "seed"])]) == []
+
+
+@pytest.mark.unit
+def test_schema_declared_page_parameter_is_a_contract_even_when_omitted():
+    """The model called `show_orders(page_limit=20)`; the schema has page_index → audited, note names it."""
+    info = describe_pagination({"page_limit": 20}, _rows(20), param_names=["page_index", "page_limit"])
+    assert info["index_key"] == "page_index" and info["index"] == 0
+    notes = audit_pagination(
+        [_call("show_orders", {"page_limit": 20}, _rows(20), params=["page_index", "page_limit"])]
+    )
+    assert len(notes) == 1 and "page_index=1 was never requested" in notes[0]
+    # Schema declares a cursor instead: cursor wording, no invented page_index.
+    notes = audit_pagination([_call("list_rows", {"limit": 20}, _rows(20), params=["cursor", "limit"])])
+    assert len(notes) == 1 and "the next cursor" in notes[0] and "page_index" not in notes[0]
+
+
+@pytest.mark.unit
+def test_response_pagination_field_is_a_contract_without_schema():
+    """Unknown schema, bare limit, but the response carries has_more → audited."""
+    info = describe_pagination({"limit": 10}, {"items": _rows(10), "has_more": True})
+    assert info is not None and info["continues"] is True
+    assert describe_pagination({"limit": 10}, {"items": _rows(10), "has_more": False})["terminal"] is True
 
 
 @pytest.mark.unit
@@ -166,12 +208,14 @@ def test_completed_pagination_is_not_flagged():
 
 @pytest.mark.unit
 def test_advancing_past_the_full_page_is_not_flagged():
-    """Page 1 requested in this block — even if its result is not list-shaped."""
+    """Page 1 requested in this block and it returned a page (full or not)."""
     calls = [
         _call("show_inbox", {"page_index": 0, "page_limit": 5}, _rows(5)),
-        _call("show_inbox", {"page_index": 1, "page_limit": 5}, {"status": "exception", "message": "x"}),
+        _call("show_inbox", {"page_index": 1, "page_limit": 5}, {"threads": _rows(5), "page": 1}),
     ]
-    assert audit_pagination(calls) == []
+    # Page 1 is itself full and last: still flagged, for page 2.
+    notes = audit_pagination(calls)
+    assert len(notes) == 1 and "page_index=2" in notes[0]
 
 
 @pytest.mark.unit
@@ -320,7 +364,9 @@ def test_cursor_pagination_is_followed_by_call_order():
 def test_cursor_listing_left_on_a_full_page_is_flagged():
     calls = [_call("list_events", {"cursor": None, "limit": 50}, {"items": _rows(50), "next_cursor": "tok1"})]
     notes = audit_pagination(calls)
-    assert len(notes) == 1 and "the next cursor was never requested" in notes[0]
+    # The response's own token is the stronger signal, so that is what the note cites.
+    assert len(notes) == 1 and "says more pages exist (`next_cursor`)" in notes[0]
+    assert "the next cursor (from `next_cursor`) was never requested" in notes[0]
     # Advanced once and stopped on another full page: still flagged, once.
     calls.append(
         _call("list_events", {"cursor": "tok1", "limit": 50}, {"items": _rows(50), "next_cursor": "tok2"})
@@ -330,7 +376,8 @@ def test_cursor_listing_left_on_a_full_page_is_flagged():
 
 @pytest.mark.unit
 def test_cursor_listing_is_recognised_from_the_response_when_the_first_call_has_no_cursor():
-    first = _call("list_events", {"limit": 50}, {"items": _rows(50), "next_cursor": "tok1"})
+    # Unknown schema (params=None): only the response reveals the cursor contract.
+    first = _call("list_events", {"limit": 50}, {"items": _rows(50), "next_cursor": "tok1"}, params=None)
     notes = audit_pagination([first])
     assert len(notes) == 1
     assert "the next cursor (from `next_cursor`) was never requested" in notes[0]
@@ -338,10 +385,93 @@ def test_cursor_listing_is_recognised_from_the_response_when_the_first_call_has_
     # Following the token completes the same listing.
     walk = [
         first,
-        _call("list_events", {"cursor": "tok1", "limit": 50}, {"items": _rows(3), "next_cursor": None}),
+        _call(
+            "list_events",
+            {"cursor": "tok1", "limit": 50},
+            {"items": _rows(3), "next_cursor": None},
+            params=None,
+        ),
     ]
     assert audit_pagination(walk) == []
     assert len({c["pagination"]["scope"] for c in walk}) == 1
+
+
+@pytest.mark.unit
+def test_short_page_with_continuation_token_is_flagged():
+    """A short page is not the end when the response says more pages exist."""
+    calls = [
+        _call(
+            "list_events",
+            {"cursor": None, "limit": 50},
+            {"items": _rows(7), "next_cursor": "tok1"},
+            params=None,
+        )
+    ]
+    notes = audit_pagination(calls)
+    assert len(notes) == 1
+    assert "returned 7 items and its response says more pages exist (`next_cursor`)" in notes[0]
+    assert "the next cursor" in notes[0]
+    # Page-index flavour: has_more on a short page.
+    calls = [
+        _call("show_inbox", {"page_index": 0, "page_limit": 20}, {"threads": _rows(3), "has_more": True})
+    ]
+    notes = audit_pagination(calls)
+    assert len(notes) == 1 and "(`has_more`)" in notes[0] and "page_index=1 was never requested" in notes[0]
+    # Following the token to a page that says "no more" resolves it.
+    calls = [
+        _call(
+            "list_events",
+            {"cursor": None, "limit": 50},
+            {"items": _rows(7), "next_cursor": "tok1"},
+            params=None,
+        ),
+        _call(
+            "list_events",
+            {"cursor": "tok1", "limit": 50},
+            {"items": _rows(2), "next_cursor": ""},
+            params=None,
+        ),
+    ]
+    assert audit_pagination(calls) == []
+
+
+@pytest.mark.unit
+def test_nested_pagination_metadata_is_recognised():
+    """Slack-style response_metadata.next_cursor and GraphQL pageInfo.hasNextPage."""
+    slack_more = {"members": _rows(20), "response_metadata": {"next_cursor": "dXNlcjpVMEc5V0ZYTlo="}}
+    slack_end = {"members": _rows(20), "response_metadata": {"next_cursor": ""}}
+    assert continuation(slack_more) == (True, "next_cursor")
+    assert continuation(slack_end) == (False, "next_cursor")
+    notes = audit_pagination([_call("users_list", {"limit": 20}, slack_more, params=["cursor", "limit"])])
+    assert len(notes) == 1 and "next_cursor" in notes[0] and "page_index" not in notes[0]
+    assert audit_pagination([_call("users_list", {"limit": 20}, slack_end, params=["cursor", "limit"])]) == []
+    graphql = {"edges": _rows(10), "pageInfo": {"hasNextPage": True, "endCursor": "abc"}}
+    assert continuation(graphql) == (True, "hasNextPage")
+    assert continuation({"edges": _rows(10), "pageInfo": {"hasNextPage": False}}) == (False, "hasNextPage")
+    assert continuation(_rows(3)) == (None, None)
+    assert continuation({"items": _rows(3)}) == (None, None)
+
+
+@pytest.mark.unit
+def test_failed_next_page_request_is_not_progress():
+    """timings-only drops the error text; the outcome flag must still exclude the call."""
+    calls = [
+        _call("show_inbox", {"page_index": 0, "page_limit": 5}, _rows(5)),
+        {  # what a failed page-1 request looks like in a timings-only record
+            "name": "show_inbox",
+            "app_name": "gmail",
+            "error": None,
+            "succeeded": False,
+            "pagination": describe_pagination({"page_index": 1, "page_limit": 5}, None, param_names=PAGED),
+        },
+    ]
+    notes = audit_pagination(calls)
+    assert len(notes) == 1 and "page_index=1 was never requested" in notes[0]
+    # An exception-shaped 200 on page 1 is not progress either.
+    calls[1] = _call(
+        "show_inbox", {"page_index": 1, "page_limit": 5}, {"status": "exception", "message": "500"}
+    )
+    assert len(audit_pagination(calls)) == 1
 
 
 @pytest.mark.unit
@@ -387,14 +517,22 @@ def test_tracker_records_pagination_facts_in_timings_only_mode():
             result=_rows(5),
             app_name="gmail",
         )
-        record = ToolCallTracker.get_current_calls()[0]
+        ToolCallTracker.record_call(
+            tool_name="show_inbox",
+            arguments={"query": "secret text", "page_index": 1, "page_limit": 5},
+            result=None,
+            app_name="gmail",
+            error="HTTP 500",
+        )
+        record, failed = ToolCallTracker.get_current_calls()
     finally:
         ToolCallTracker.stop_tracking()
+    assert record["succeeded"] is True and failed["succeeded"] is False and failed["error"] is None
     assert record["arguments"] is None and record["result"] is None
     info = record["pagination"]
     assert info["limit"] == 5 and info["result_len"] == 5
     assert "secret" not in json.dumps(info)  # neither in the preview nor in the scope
-    assert audit_pagination([record])
+    assert audit_pagination([record, failed])  # the failed page-1 call is not progress
 
 
 @pytest.mark.unit
@@ -418,11 +556,19 @@ async def test_registry_tool_passes_schema_defaults_to_the_record():
         app_name="amazon",
     )
 
-    async def fake_call_api(app_name, api_name, args, operation_id=None, agent_id=None, arg_defaults=None):
+    async def fake_call_api(
+        app_name, api_name, args, operation_id=None, agent_id=None, arg_defaults=None, param_names=None
+    ):
         assert args == {}  # defaults are not sent on the wire
         assert arg_defaults == {"page_index": 0, "page_limit": 5}
+        assert param_names == ["page_index", "page_limit", "query"]
         ToolCallTracker.record_call(
-            tool_name=api_name, arguments=args, result=_rows(5), app_name=app_name, arg_defaults=arg_defaults
+            tool_name=api_name,
+            arguments=args,
+            result=_rows(5),
+            app_name=app_name,
+            arg_defaults=arg_defaults,
+            param_names=param_names,
         )
         return _rows(5)
 
