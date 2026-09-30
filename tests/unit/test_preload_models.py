@@ -40,8 +40,8 @@ def test_supported_image_builds_memory_ui_and_bakes_evolve_for_offline_runtime()
     assert "TRANSFORMERS_OFFLINE=1" in dockerfile
     assert "UV_OFFLINE=1" in dockerfile
     assert "CUGA_EMBEDDED_EVOLVE=false" in dockerfile
-    assert "embedded-evolve-supervisor.py" in dockerfile
-    assert "CUGA_EMBEDDED_EVOLVE:-false" in entrypoint
+    assert "embedded-evolve-supervisor.py" not in dockerfile
+    assert "container_services.py" in entrypoint
     assert not (REPO_ROOT / "Dockerfile.memory").exists()
 
 

@@ -153,7 +153,6 @@ COPY --chown=1001:0 --chmod=0775 \
   /app/cuga_workspace/
 COPY --chown=1001:0 --chmod=0775 scripts/docker-entrypoint.sh /app/scripts/docker-entrypoint.sh
 COPY --chown=1001:0 --chmod=0775 scripts/container_services.py /app/scripts/container_services.py
-COPY --chown=1001:0 --chmod=0755 scripts/embedded-evolve-supervisor.py /app/scripts/embedded-evolve-supervisor.py
 
 USER 1001
 
