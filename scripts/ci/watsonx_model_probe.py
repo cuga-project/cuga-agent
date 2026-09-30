@@ -101,8 +101,7 @@ def chat(url: str, token: str, body: dict) -> Reply:
         return Reply(time.monotonic() - start, error=type(exc).__name__ + ": " + str(exc)[:200])
 
 
-def request_body(model: str, project_id: str) -> dict:
-    messages = json.loads(REQUEST_FILE.read_text())["messages"]
+def request_body(model: str, project_id: str, messages: list) -> dict:
     return {
         "model_id": model,
         "project_id": project_id,
@@ -135,6 +134,15 @@ def main() -> int:
         return 0
 
     try:
+        messages = json.loads(REQUEST_FILE.read_text())["messages"]
+    except (OSError, ValueError, KeyError) as exc:
+        print(
+            f"::warning::watsonx model probe could not read {REQUEST_FILE.name} ({type(exc).__name__}); keeping the configured model"
+        )
+        write_github_file("GITHUB_OUTPUT", "model=")
+        return 0
+
+    try:
         token = iam_token(api_key)
     except (urllib.error.URLError, OSError, KeyError, ValueError) as exc:
         print(
@@ -143,7 +151,7 @@ def main() -> int:
         write_github_file("GITHUB_OUTPUT", "model=")
         return 0
 
-    body = request_body(args.primary, project_id)
+    body = request_body(args.primary, project_id, messages)
     with concurrent.futures.ThreadPoolExecutor(PROBE_CONCURRENCY) as pool:
         replies = list(pool.map(lambda _: chat(url, token, body), range(args.requests)))
 
@@ -160,10 +168,10 @@ def main() -> int:
     )
     print(verdict)
 
-    unhealthy = truncated or len(errors) * 2 >= len(replies)
+    unhealthy = bool(truncated) or len(errors) * 2 >= len(replies)
     chosen = args.primary
     if unhealthy:
-        check = chat(url, token, request_body(args.fallback, project_id))
+        check = chat(url, token, request_body(args.fallback, project_id, messages))
         if check.error is None and check.content.strip():
             chosen = args.fallback
             print(f"::warning::{verdict}. Using {args.fallback} for this run (#784).")
