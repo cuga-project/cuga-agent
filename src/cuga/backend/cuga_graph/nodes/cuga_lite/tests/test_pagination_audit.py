@@ -100,6 +100,23 @@ def test_describe_uses_schema_defaults_for_omitted_args():
 
 
 @pytest.mark.unit
+def test_preview_shows_model_arguments_and_page_keys_only():
+    """Schema defaults the model never passed stay out of the note; a defaulted page key stays in."""
+    info = describe_pagination(
+        {"query": "promo", "page_limit": 20},
+        _rows(20),
+        arg_defaults={"page_index": 0, "archived": False, "min_created_at": "1500-01-01", "page_limit": 5},
+    )
+    assert info["args_preview"] == "query='promo', page_limit=20, page_index=0"
+    assert "archived" not in info["args_preview"] and "1500-01-01" not in info["args_preview"]
+    # The scope still includes every non-page argument, defaults included.
+    other = describe_pagination(
+        {"query": "promo", "page_limit": 20}, _rows(20), arg_defaults={"page_index": 0, "archived": True}
+    )
+    assert other["scope"] != info["scope"]
+
+
+@pytest.mark.unit
 def test_describe_scope_ignores_page_keys_and_access_token():
     a = describe_pagination({"query": "q", "page_index": 0, "page_limit": 5, "access_token": "t1"}, [])
     b = describe_pagination({"query": "q", "page_index": 3, "page_limit": 5, "access_token": "t2"}, [])
