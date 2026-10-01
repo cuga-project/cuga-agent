@@ -465,3 +465,151 @@ class TestBuildAgentsFromStoredSubAgents:
         assert overrides.get("cuga_lite_max_steps") == 12
         assert overrides.get("enable_filesystem_tools") is True
         assert overrides.get("shortlisting_tool_threshold") == 7
+
+
+@pytest.mark.unit
+class TestACPProtocolMigration:
+    """Corrected subprocess ACP loads while legacy remote fields fail clearly."""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_valid_subprocess_acp_config_loads(self):
+        yaml_content = """
+supervisor:
+  strategy: adaptive
+
+agents:
+  - name: coding-agent
+    description: External ACP coding agent
+    acp_protocol:
+      enabled: true
+      command: external-agent
+      args: [--acp]
+      cwd: .
+      env: [PROVIDER_API_KEY]
+      startup_timeout: 15
+      prompt_timeout: 120
+      shutdown_grace_period: 5
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+
+        try:
+            config = await load_supervisor_config(temp_path)
+            entry = config.agents["coding-agent"]
+            assert entry["type"] == "external"
+            assert entry["config"]["description"] == "External ACP coding agent"
+            assert entry["config"]["acp_protocol"]["command"] == "external-agent"
+        finally:
+            os.unlink(temp_path)
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_enabled_legacy_acp_config_requires_migration(self):
+        yaml_content = """
+supervisor:
+  strategy: adaptive
+
+agents:
+  - name: legacy-acp
+    acp_protocol:
+      enabled: true
+      endpoint: https://agent.example.com/acp
+      agent_name: remote-agent
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+
+        try:
+            with pytest.raises(ValueError, match="Obsolete remote ACP configuration"):
+                await load_supervisor_config(temp_path)
+        finally:
+            os.unlink(temp_path)
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_dual_protocol_guard_precedes_acp_migration_error(self):
+        yaml_content = """
+supervisor:
+  strategy: adaptive
+
+agents:
+  - name: dual-protocol
+    acp_protocol:
+      enabled: true
+      endpoint: https://agent.example.com/acp
+    a2a_protocol:
+      enabled: true
+      endpoint: http://localhost:8000/a2a
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+
+        try:
+            with pytest.raises(ValueError, match="exactly one enabled protocol block"):
+                await load_supervisor_config(temp_path)
+        finally:
+            os.unlink(temp_path)
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("acp_fragment", "message"),
+        [
+            ("enabled: 'true'\n      command: external-agent", "enabled must be a boolean"),
+            ("enabled: true\n      prompt_timout: 5", "Unknown acp_protocol"),
+            ("enabled: false\n      endpoint: https://legacy.example", "Obsolete remote ACP"),
+        ],
+    )
+    async def test_yaml_rejects_malformed_unknown_and_disabled_legacy_acp(
+        self, acp_fragment: str, message: str
+    ):
+        yaml_content = f"""
+supervisor:
+  strategy: adaptive
+
+agents:
+  - name: invalid-acp
+    acp_protocol:
+      {acp_fragment}
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+
+        try:
+            with pytest.raises(ValueError, match=message):
+                await load_supervisor_config(temp_path)
+        finally:
+            os.unlink(temp_path)
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_disabled_acp_block_preserves_a2a_loading(self):
+        yaml_content = """
+supervisor:
+  strategy: adaptive
+
+agents:
+  - name: mixed-agent
+    acp_protocol:
+      enabled: false
+    a2a_protocol:
+      enabled: true
+      endpoint: http://localhost:8000/a2a
+      transport: http
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+
+        try:
+            config = await load_supervisor_config(temp_path)
+            entry = config.agents["mixed-agent"]
+            assert entry["type"] == "external"
+            assert entry["config"]["a2a_protocol"]["enabled"] is True
+        finally:
+            os.unlink(temp_path)

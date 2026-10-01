@@ -2,6 +2,8 @@
 
 ## How to Contribute
 
+By default, all issues are **team only**. External contributors may work on issues labeled `good first issue` or `help wanted` without prior approval. For any issue without either label, external contributors must discuss the proposed contribution in the issue and receive maintainer approval before starting work.
+
 1. Fork the repository to your own GitHub account. (not needed if you are CUGA team)
 2. Create a feature branch from `main` in your fork: `git checkout -b feature/<short-topic>` (see Branch Naming Convention below).
 3. Keep PRs small and focused (prefer < ~300 changed lines and limited file count).

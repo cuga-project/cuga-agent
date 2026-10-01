@@ -394,10 +394,9 @@ async def call_mcp_function(
                             )
                             if isinstance(result_json, dict) and "access_token" in result_json:
                                 token = result_json["access_token"]
-                                # Update the auth manager's stored token (via _store so its
-                                # fetch time is recorded for the age-based refresh)
-                                if registry.auth_manager:
-                                    registry.auth_manager._store(request.app_name, token)
+                                # Store it in the calling agent's registry (reg), never the
+                                # global default one, so agents never share login tokens.
+                                if reg.store_captured_token(request.app_name, token):
                                     logger.info(
                                         f"✅ Updated stored token for {request.app_name} from /auth/token endpoint"
                                     )

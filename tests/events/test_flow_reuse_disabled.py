@@ -173,10 +173,13 @@ async def test_same_push_watch_armed_twice_keeps_both_flows(tmp_path, monkeypatc
     names = {s.flow_name for s in live}
     assert len(names) == 2, f"both arms produced the SAME flow name: {names}"
 
-    # 2) behaviour that actually matters — no subscription's flow was deleted by its sibling
+    # 2) behaviour that actually matters — no subscription's flow was deleted by its sibling.
+    #    github is now a DIRECT backend (PR #604): a github push arms a direct subscription with no
+    #    AP flow (ap_flow_id=None) and never touches the engine, so it trivially references no
+    #    deleted flow. An AP-backed subscription must still point at a live flow.
     assert engine.deleted == [], f"a same-named create deleted a sibling flow: {engine.deleted}"
     live_ids = set(engine.by_name.values())
-    assert all(s.ap_flow_id in live_ids for s in live), (
+    assert all(s.ap_flow_id is None or s.ap_flow_id in live_ids for s in live), (
         f"a subscription references a deleted flow: {[(s.id, s.ap_flow_id) for s in live]} live={live_ids}"
     )
 

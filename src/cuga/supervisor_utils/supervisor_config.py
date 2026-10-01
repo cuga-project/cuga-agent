@@ -2,8 +2,10 @@
 Supervisor Configuration Loader - Loads supervisor configuration from YAML files
 """
 
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
 import yaml
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from loguru import logger
 from pydantic import BaseModel
 
@@ -20,6 +22,18 @@ class SupervisorConfig(BaseModel):
     supervisor: Dict[str, Any] = {}
     agents: Dict[str, Any] = {}  # Can contain CugaAgent instances or A2A configs
     a2a: Dict[str, Any] = {}
+
+
+def _protocol_block(
+    agent_config: Mapping[str, Any], protocol_name: str, agent_name: str
+) -> Mapping[str, Any] | None:
+    """Compatibility helper retained for callers that inspect one block."""
+    if protocol_name not in agent_config:
+        return None
+    block = agent_config[protocol_name]
+    if not isinstance(block, Mapping):
+        raise ValueError(f"Agent '{agent_name}': {protocol_name} must be a mapping")
+    return block
 
 
 async def build_agents_from_list(
@@ -45,9 +59,31 @@ async def build_agents_from_list(
 
     for agent_config in agents_list:
         agent_name = agent_config["name"]
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
+            acp_process_config_from_mapping,
+            validate_external_protocol_config,
+        )
+
+        try:
+            acp_protocol, a2a_protocol = validate_external_protocol_config(agent_config)
+            if acp_protocol is not None and acp_protocol["enabled"]:
+                acp_process_config_from_mapping(
+                    acp_protocol,
+                    name=agent_name,
+                    description=agent_config.get("description"),
+                )
+        except ValueError as exc:
+            raise ValueError(f"Agent '{agent_name}': {exc}") from exc
+
+        if acp_protocol is not None and acp_protocol["enabled"]:
+            agents[agent_name] = {
+                "type": "external",
+                "config": agent_config,
+            }
+            logger.info(f"Registered external ACP agent: {agent_name}")
 
         # Check if this is an external agent (has a2a_protocol)
-        if "a2a_protocol" in agent_config and agent_config.get("a2a_protocol", {}).get("enabled"):
+        elif a2a_protocol is not None and a2a_protocol.get("enabled"):
             # External agent via A2A - store config for later connection
             agents[agent_name] = {
                 "type": "external",
@@ -125,9 +161,11 @@ async def build_agents_from_list(
             # README, plus cuga_graph/graph.py), so hardcoding False disabled policy loading for
             # every downstream supervisor user regardless of their settings — with no error to
             # notice. Headless callers now ask for it explicitly instead of imposing it on all.
+            policy_system = agent_config.get("policy_system")
             agent = CugaAgent(
                 tools=tools,
                 tool_provider=tool_provider,
+                policy_system=policy_system,
                 special_instructions=agent_config.get("special_instructions"),
                 model=model,
                 auto_load_policies=agent_config.get("auto_load_policies", auto_load_policies),
@@ -169,7 +207,10 @@ async def load_supervisor_config(
 
 
 async def build_agents_from_stored_subagents(
-    sub_agents: List[Dict[str, Any]], *, auto_load_policies: Optional[bool] = None
+    sub_agents: List[Dict[str, Any]],
+    *,
+    auto_load_policies: Optional[bool] = None,
+    use_draft: bool = False,
 ) -> Dict[str, Any]:
     """
     Build a ``{agent_name: CugaAgent | external-config-dict}`` map from the manage-UI's
@@ -188,8 +229,11 @@ async def build_agents_from_stored_subagents(
     """
     import os
 
-    from cuga.backend.server.config_store import load_config
-    from cuga.backend.server.manage_routes.helpers import extract_agent_feature_overrides
+    from cuga.backend.server.config_store import load_config, load_draft
+    from cuga.backend.server.manage_routes.helpers import (
+        extract_agent_feature_overrides,
+    )
+    from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
 
     agent_configs: List[Dict[str, Any]] = []
 
@@ -199,9 +243,20 @@ async def build_agents_from_stored_subagents(
             ref = entry.get("ref")
             if not ref:
                 continue
-            ref_config, _ = await load_config(None, ref)
+            resolved_draft = use_draft
+            if use_draft:
+                ref_config = await load_draft(ref)
+                if not ref_config:
+                    # No draft exists for this subagent; fall back to published config and
+                    # read from the published policy collection, not the (empty) draft one.
+                    ref_config, _ = await load_config(None, ref)
+                    resolved_draft = False
+            else:
+                ref_config, _ = await load_config(None, ref)
             if not ref_config:
-                logger.warning(f"Supervisor sub-agent '{ref}': no published config found, skipping")
+                logger.warning(
+                    f"Supervisor sub-agent '{ref}': no {'draft' if use_draft else 'published'} config found, skipping"
+                )
                 continue
             agent_meta = ref_config.get("agent") or {}
             tools_list = ref_config.get("tools") or []
@@ -210,6 +265,16 @@ async def build_agents_from_stored_subagents(
                 for t in tools_list
                 if t.get("name") and isinstance(t.get("include"), list) and len(t["include"]) > 0
             } or None
+
+            # Do not pass policies_data here: create_agent_policy_system with policies_data
+            # clears and repopulates persistent storage, which would overwrite any more-recent
+            # save with the snapshot in ref_config. Supervisor subagent construction is a
+            # read-only operation; the already-persisted collection is used as-is.
+            sub_policy_system = await create_agent_policy_system(
+                agent_id=ref,
+                draft=resolved_draft,
+            )
+
             # ref_config["tools"] holds registry-app entries (name + include filter), not
             # loadable langchain tool defs — pass app names through `apps` and skip the
             # `tools` key so `_load_tools_from_config` (a langchain-only stub) doesn't warn.
@@ -223,6 +288,7 @@ async def build_agents_from_stored_subagents(
                     or agent_meta.get("description"),
                     "model": _model_config_from_stored_llm(ref_config.get("llm")),
                     "feature_overrides": extract_agent_feature_overrides(ref_config),
+                    "policy_system": sub_policy_system,
                 }
             )
         elif kind == "a2a":
