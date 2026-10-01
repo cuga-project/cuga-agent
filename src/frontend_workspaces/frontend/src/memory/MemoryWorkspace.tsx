@@ -1232,24 +1232,6 @@ export function MemoryWorkspace({
             </div>
           </div>
 
-          <Grid className="memory-workspace__page-head">
-            <Column sm={4} md={5} lg={11} className="memory-workspace__page-copy">
-              <p className="memory-workspace__eyebrow">Your memory</p>
-              <h1>Memory</h1>
-              <p>Review what {agentName} remembers about you and delete memories that are no longer useful.</p>
-            </Column>
-            <Column sm={4} md={3} lg={5} className="memory-workspace__summary">
-              <strong>{memoryTotal}</strong>
-              <span>memories about you</span>
-              {capabilities && (
-                <>
-                  <p>{capabilities.rules.length} published retention {capabilities.rules.length === 1 ? "rule" : "rules"}</p>
-                  <p>{capabilities.scheduleLabel}</p>
-                </>
-              )}
-            </Column>
-          </Grid>
-
           <MemoryPreferences />
           <Grid className="memory-workspace__toolbar">
             <Column sm={4} md={8} lg={5}>
