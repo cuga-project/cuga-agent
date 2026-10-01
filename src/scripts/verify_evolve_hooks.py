@@ -26,23 +26,34 @@ def verify_evolve_hooks() -> None:
             namespace = "cuga-hook-check"
             client.create_namespace(namespace)
             email = "airgap-check@example.com"
+            person = "John Smith"
             updates = client.update_entities(
                 namespace,
-                [Entity(type="guideline", content=f"Contact {email}", metadata={"task_id": "hook-check"})],
+                [
+                    Entity(
+                        type="guideline",
+                        content=f"Contact {person} at {email}",
+                        metadata={"task_id": "hook-check"},
+                    )
+                ],
                 enable_conflict_resolution=False,
             )
             entity_id = updates[0].id
             saved = client.get_entity_by_id(namespace, entity_id)
             assert saved is not None
-            assert email not in saved.content and "[REDACTED]" in saved.content
+            assert (
+                email not in saved.content and person not in saved.content and "[REDACTED]" in saved.content
+            )
             assert saved.metadata.get("created_at") and saved.metadata.get("trace_id") == "hook-check"
             persisted = client.scan_entities(namespace, filters={"id": entity_id}, limit=1)[0]
             assert persisted.metadata.get("last_accessed"), "Memory retrieval did not record access"
 
             messages = dispatch_llm_pre_call(
-                [{"role": "user", "content": f"Contact {email}"}], "airgap-check"
+                [{"role": "user", "content": f"Contact {person} at {email}"}], "airgap-check"
             )
-            assert email not in str(messages) and "[REDACTED]" in str(messages)
+            assert (
+                email not in str(messages) and person not in str(messages) and "[REDACTED]" in str(messages)
+            )
 
             client.patch_entity_metadata(namespace, entity_id, {"legal_hold": True})
             try:
@@ -54,7 +65,7 @@ def verify_evolve_hooks() -> None:
             assert client.scan_entities(namespace, filters={"id": entity_id}, limit=1)
         finally:
             client.backend.close()
-    print("Evolve PII redaction, metadata, access tracking and legal hold verified offline")
+    print("Evolve READI and regex PII redaction, metadata, access tracking and legal hold verified offline")
 
 
 if __name__ == "__main__":
