@@ -133,13 +133,9 @@ We provide specific PR templates to help you create well-structured pull request
 - **Documentation PRs**: `?template=docs.md` - For documentation updates and improvements
 - **Chore PRs**: `?template=chore.md` - For maintenance tasks, dependency updates, and refactoring
 
-Each template includes:
-- Related issue linking
-- Type of changes checkboxes
-- Testing checklist
-- Standard review checklist
-
-GitHub will also automatically suggest these templates when you create a new pull request.
+Each template is short: a line to link the issue it closes (`Closes #` / `Fixes #`), a **Summary**
+section, and, for features and bug fixes, a one-item testing checklist. GitHub does not offer these
+automatically; add the `?template=…` parameter above to the "open a pull request" URL to use one.
 
 ### Pre-PR Checklist (run locally)
 
