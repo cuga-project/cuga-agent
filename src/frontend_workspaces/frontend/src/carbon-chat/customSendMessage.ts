@@ -612,6 +612,7 @@ export async function customSendMessage(
           let answerText = accumulatedText || "";
           let answerSources: MessageSource[] = [];
           let answerMemoryUsage: { count: number; entityIds: string[] } | null = null;
+          let answerMemorySaved: { count: number; entityIds: string[] } | null = null;
           if (typeof event.data === "string") {
             const parsed = parseAnswerEventData(event.data, accumulatedText);
             if (parsed.isToolApproval && parsed.policyInfo && parsed.policyData) {
@@ -632,6 +633,7 @@ export async function customSendMessage(
             answerText = parsed.answerText;
             answerSources = parsed.sources as MessageSource[];
             answerMemoryUsage = parsed.memoryUsage;
+            answerMemorySaved = parsed.memorySaved;
           } else if (!answerText) {
             answerText = event.data?.answer || JSON.stringify(event.data);
           }
@@ -677,15 +679,17 @@ export async function customSendMessage(
             answerGenericItems.push(sourcesItem);
           }
 
-          if (answerMemoryUsage) {
+          for (const [relationship, disclosure] of [["used", answerMemoryUsage], ["saved", answerMemorySaved]] as const) {
+            if (!disclosure) continue;
             const memoryUsageItem = {
               response_type: MessageResponseTypes.USER_DEFINED,
               user_defined: {
                 type: "cuga_memory_usage",
-                count: answerMemoryUsage.count,
-                entity_ids: answerMemoryUsage.entityIds,
+                relationship,
+                count: disclosure.count,
+                entity_ids: disclosure.entityIds,
               },
-              streaming_metadata: { id: "cuga-memory-usage" },
+              streaming_metadata: { id: `cuga-memory-${relationship}` },
             };
             instance.messaging.addMessageChunk({
               complete_item: memoryUsageItem,
