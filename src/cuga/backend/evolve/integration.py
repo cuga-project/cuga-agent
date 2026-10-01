@@ -8,6 +8,7 @@ logged as warnings and never crash the agent.
 """
 
 import json
+import hashlib
 from typing import Any, List, Optional
 
 import aiohttp
@@ -46,7 +47,7 @@ class EvolveIntegration:
 
     @classmethod
     def is_enabled(cls) -> bool:
-        """Check if Evolve integration is active based on settings."""
+        """Return the operator default; runtime use is governed by preferences.memory_enabled."""
         return bool(settings.evolve.enabled)
 
     @classmethod
@@ -58,8 +59,6 @@ class EvolveIntegration:
         session_id: Optional[str] = None,
     ) -> Optional[str]:
         """Fetch guidelines from Evolve for the given task description."""
-        if not cls.is_enabled():
-            return None
         try:
             user_id = normalize_evolve_identifier(user_id)
             namespace_id = normalize_evolve_identifier(namespace_id)
@@ -90,8 +89,6 @@ class EvolveIntegration:
         session_id: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """Fetch formatted guidelines and the entity IDs included in the prompt."""
-        if not cls.is_enabled():
-            return None
         try:
             args: dict[str, Any] = {"task": task}
             for key, value in {
@@ -112,6 +109,7 @@ class EvolveIntegration:
                     str(entity_id) for entity_id in result.get("entity_ids", []) if str(entity_id).strip()
                 ],
                 "namespace_id": result.get("namespace_id"),
+                "entity_revisions": result.get("entity_revisions", {}),
             }
         except Exception as e:
             logger.warning(f"Evolve attributed guideline retrieval failed (non-fatal): {e}")
@@ -126,8 +124,6 @@ class EvolveIntegration:
         namespace_id: Optional[str] = None,
     ) -> None:
         """Store durable user facts/preferences without interrupting lite execution."""
-        if not cls.is_enabled():
-            return
         if not user_id or not message:
             return
 
@@ -138,6 +134,14 @@ class EvolveIntegration:
                 "metadata": json.dumps(metadata or {}),
                 "namespace_id": namespace_id,
             }
+            # Old external Evolve deployments retain append-only behavior until
+            # they explicitly advertise safe scoped reconciliation and provenance.
+            try:
+                status = await cls.get_compliance_status(namespace_id=namespace_id)
+                capabilities = status.get("memory_capabilities", {}) if isinstance(status, dict) else {}
+                payload["enable_conflict_resolution"] = capabilities.get("scoped_conflict_resolution") is True
+            except Exception:
+                payload["enable_conflict_resolution"] = False
             result = await cls._call_tool("store_user_facts", payload)
             if isinstance(result, dict):
                 logger.info(
@@ -157,8 +161,6 @@ class EvolveIntegration:
         agent_id: Optional[str] = None,
     ) -> Optional[dict]:
         """Retrieve durable user facts/preferences without interrupting lite execution."""
-        if not cls.is_enabled():
-            return None
         if not user_id or not query:
             return None
 
@@ -192,8 +194,6 @@ class EvolveIntegration:
         agent_id: Optional[str] = None,
     ) -> None:
         """Save the agent trajectory to Evolve for tip generation."""
-        if not cls.is_enabled():
-            return
         if success and not settings.evolve.save_on_success:
             return
         if not success and not settings.evolve.save_on_failure:
@@ -245,7 +245,7 @@ class EvolveIntegration:
         namespace_id: Optional[str] = None,
     ) -> Optional[dict]:
         """Delete an entity through Evolve's ownership checks."""
-        if not cls.is_enabled() or not entity_id:
+        if not entity_id:
             return None
         args: dict[str, Any] = {"entity_id": entity_id}
         for key, value in {
@@ -407,8 +407,6 @@ class EvolveIntegration:
         tool_name: str,
         args: dict[str, Any],
     ) -> Optional[dict]:
-        if not cls.is_enabled():
-            return None
         try:
             result = await cls._call_tool(tool_name, args)
             return result if isinstance(result, dict) else None
@@ -438,13 +436,86 @@ class EvolveIntegration:
         return result
 
     @classmethod
+    async def _episodic_profile(cls) -> dict:
+        """Resolve a service-owned profile, safely creating it across replicas."""
+        namespace = get_service_instance_id().strip()
+        profile_id = "cuga-episodic-v1-" + hashlib.sha256(namespace.encode()).hexdigest()
+        lookup = {"profile_id": profile_id}
+        try:
+            profile = await cls._call_tool("get_processing_profile", lookup)
+        except Exception:
+            profile = None
+        if not profile:
+            try:
+                profile = await cls._call_tool(
+                    "set_processing_profile",
+                    {
+                        **lookup,
+                        "expected_revision": 0,
+                        "definition": {
+                            "processors": [
+                                {
+                                    "id": "guidelines",
+                                    "plugin": "evolve.guidelines",
+                                    "config": {"guidelines_mode": "all", "consistency_method": "fast"},
+                                }
+                            ]
+                        },
+                    },
+                )
+            except Exception:
+                # A competing replica may have created the profile. Never overwrite it.
+                profile = await cls._call_tool("get_processing_profile", lookup)
+        if (
+            not isinstance(profile, dict)
+            or profile.get("id") != profile_id
+            or type(profile.get("revision")) is not int
+            or profile["revision"] < 1
+        ):
+            raise RuntimeError("Evolve episodic processing profile is unavailable")
+        return profile
+
+    @classmethod
     async def _call_tool(cls, tool_name: str, args: dict):
         """Call an Evolve MCP tool via the registry or direct SSE."""
-        if tool_name != "validate_retention_policy":
+        if tool_name not in {"validate_retention_policy", "get_processing_profile", "set_processing_profile"}:
             namespace_id = get_service_instance_id().strip()
             if not namespace_id:
                 raise ValueError("Evolve requires a configured service instance ID")
             args = {**args, "namespace_id": namespace_id}
+        from cuga.backend.evolve.preferences import get_preferences
+
+        preference = await get_preferences(args.get("user_id") or "default_user")
+        automatic_tools = {
+            "get_guidelines",
+            "get_guidelines_with_attribution",
+            "store_user_facts",
+            "retrieve_user_facts",
+            "save_trajectory",
+        }
+        read_tools = {
+            "list_entities",
+            "get_entity",
+            "list_retention_policies",
+            "list_retention_runs",
+            "get_compliance_status",
+            "list_retention_candidates",
+            "list_retention_audit",
+            "list_retention_schedules",
+            "get_retention_schedule",
+            "get_processing_profile",
+        }
+        if tool_name in automatic_tools:
+            if not preference["effective_enabled"]:
+                return None
+            if tool_name in {"save_trajectory", "get_guidelines", "get_guidelines_with_attribution"}:
+                if not preference["episodic_enabled"]:
+                    return None
+            if tool_name == "save_trajectory":
+                profile = await cls._episodic_profile()
+                args = {**args, "processing_profile": profile["id"], "profile_revision": profile["revision"]}
+        elif not preference["instance_enabled"] and tool_name not in read_tools:
+            raise RuntimeError("Memory is read-only while disabled for this service")
         mode = cls._get_mode()
         registry_enabled = bool(getattr(settings.advanced_features, "registry", False))
 
