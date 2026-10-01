@@ -208,9 +208,10 @@ def cadence_of(text: str) -> dict:
         return {"interval_seconds": _num(m.group(1)) * _UNIT_SECS.get(m.group(2).lower(), 60)}
     at = _AT_TIME.search(text or "")
     if at:
-        hour = int(at.group(1)) % 12
-        if (at.group(3) or "").lower() == "pm":
-            hour += 12
+        hour = int(at.group(1))
+        ampm = (at.group(3) or "").lower()
+        if ampm:  # 12-hour clock: 12am → 0, 12pm → 12, 9pm → 21
+            hour = hour % 12 + (12 if ampm == "pm" else 0)
         minute = int(at.group(2) or 0)
         dow = "1-5" if _WEEKDAY.search(text or "") else "*"
         return {"cron": f"{minute} {hour} * * {dow}"}
