@@ -487,6 +487,12 @@ def test_bundled_redaction_preserves_email_ownership(boundary, monkeypatch):
     from altk_evolve.hooks.manager import initialize_hooks, shutdown_hooks
     from altk_evolve.schema.core import Entity
 
+    # This test exercises ownership projection, not the model. The offline image
+    # check covers the real READI detector and bundled weights.
+    monkeypatch.setattr(
+        "altk_evolve.hooks.plugins.readi.build_readi_detector",
+        lambda **kwargs: lambda text: [],
+    )
     hooks = Path(__file__).resolve().parents[2] / "src/cuga/configurations/evolve/hooks.yaml"
     initialize_hooks(HooksConfig(plugins_yaml=str(hooks)))
     subject = "alice@example.com"
