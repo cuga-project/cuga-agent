@@ -616,3 +616,18 @@ async def get_instance_memory_settings(current_user: Optional[UserInfo] = Depend
     from cuga.backend.evolve.preferences import get_preferences
 
     return await get_preferences(_user_id(current_user))
+
+
+class EpisodicPreferenceUpdate(BaseModel):
+    enabled: bool
+
+    model_config = {"extra": "forbid"}
+
+
+@router.put("/manage/memory/settings/episodic")
+async def set_episodic_memory_settings(
+    body: EpisodicPreferenceUpdate, current_user: Optional[UserInfo] = Depends(require_manage_access)
+):
+    from cuga.backend.evolve.preferences import set_episodic_preference
+
+    return await set_episodic_preference(user_id=_user_id(current_user), enabled=body.enabled)
