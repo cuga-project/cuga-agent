@@ -29,7 +29,7 @@ export function MemoryPreferences({ admin = false }: { admin?: boolean }) {
     finally { setSaving(false); }
   };
 
-  return <Grid className="memory-preferences" fullWidth>
+  return <Grid className={`memory-preferences${admin ? " memory-preferences--admin" : ""}`} fullWidth>
     <Column sm={4} md={8} lg={16}>
       <div className="memory-settings__row">
         <div>
