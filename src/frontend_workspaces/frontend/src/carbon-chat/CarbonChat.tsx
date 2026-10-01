@@ -106,7 +106,7 @@ interface CarbonChatProps {
   sessionDocsVersion?: number;
   onSessionDocsChanged?: () => void;
   onOpenKnowledge?: () => void;
-  onOpenMemoryUsage?: (entityIds: string[]) => void;
+  onOpenMemoryUsage?: (entityIds: string[], relationship: "used" | "saved") => void;
   onPreviewKnowledgeAttachment?: (attachment: KnowledgeAttachmentSnapshot) => void;
 }
 
@@ -346,15 +346,16 @@ const CarbonChat = ({
         ? item.user_defined.entity_ids.filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
         : [];
       if (entityIds.length === 0) return undefined;
+      const relationship = item.user_defined.relationship === "saved" ? "saved" : "used";
       const count = typeof item.user_defined.count === 'number' ? item.user_defined.count : entityIds.length;
       return (
         <Button
           className="cuga-memory-usage-link"
           kind="ghost"
           size="sm"
-          onClick={() => onOpenMemoryUsage(entityIds)}
+          onClick={() => onOpenMemoryUsage(entityIds, relationship)}
         >
-          {count} {count === 1 ? "memory" : "memories"} used
+          {count} {count === 1 ? "memory" : "memories"} {relationship}
         </Button>
       );
     }
