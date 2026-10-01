@@ -35,7 +35,7 @@ async def get_preferences(user_id: str) -> dict:
         "instance_override": values.get("instance"),
         "instance_enabled": instance_enabled,
         "user_enabled": user_enabled,
-        "episodic_enabled": values.get("episodic", False),
+        "episodic_enabled": values.get("episodic", True),
         "effective_enabled": instance_enabled and user_enabled,
     }
 
