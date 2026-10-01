@@ -861,7 +861,7 @@ def _resolve_apps(
 def start(
     service: str = typer.Argument(
         ...,
-        help="Service to start: demo, demo_skills, demo_knowledge, demo_crm, demo_docs, demo_health, demo_supervisor, manager, registry, or appworld",
+        help="Service to start: demo, demo_skills, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, travel_agent, manager, registry, or appworld",
     ),
     host: str = typer.Option(
         "127.0.0.1",
@@ -2015,7 +2015,7 @@ def manage_service(action: str, service: str):
 def stop(
     service: str = typer.Argument(
         ...,
-        help="Service to stop: demo, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, travel_agent, registry, or appworld",
+        help="Service to stop: demo, demo_skills, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, travel_agent, manager, registry, or appworld",
     ),
 ):
     """
@@ -2073,7 +2073,7 @@ def viz():
 def status(
     service: str = typer.Argument(
         "all",
-        help="Service to check status: demo, demo_crm, demo_docs, demo_health, demo_supervisor, travel_agent, registry, appworld, or all",
+        help="Service to check status: demo, demo_skills, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, travel_agent, manager, registry, appworld, or all",
     ),
 ):
     """
@@ -2085,6 +2085,7 @@ def status(
       - demo_crm: Shows status of all CRM demo services (email sink, email MCP, CRM API, registry, demo)
       - demo_docs: Shows docs MCP, registry, and demo
       - demo_health: Shows oak-health API, registry, and demo
+      - demo_knowledge: Shows registry and demo
       - demo_supervisor: Same as demo_crm
       - travel_agent: Shows status of Travel Agent demo services (registry, demo)
       - registry: Shows status of registry service only (direct process)
@@ -2099,7 +2100,7 @@ def status(
       cuga status registry     # Show status of registry only
       cuga status appworld     # Show status of AppWorld servers
     """
-    if service in ("demo", "demo_skills", "manager", "travel_agent"):
+    if service in ("demo", "demo_skills", "demo_knowledge", "manager", "travel_agent"):
         for service_name in ["registry", "demo"]:
             if service_name in direct_processes:
                 process = direct_processes[service_name]
