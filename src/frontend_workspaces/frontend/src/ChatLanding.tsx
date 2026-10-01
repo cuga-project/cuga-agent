@@ -367,6 +367,7 @@ export function ChatLanding() {
   const [memoryEnabled, setMemoryEnabled] = useState(false);
   const [activeView, setActiveView] = useState<"chat" | "memory">("chat");
   const [focusedMemoryIds, setFocusedMemoryIds] = useState<string[]>([]);
+  const [focusedMemoryRelationship, setFocusedMemoryRelationship] = useState<"used" | "saved">("used");
   const effectiveChatAgentId = agentRegistry === false ? "cuga-default" : (routeAgentId || "cuga-default");
   const canManageMemory =
     !authLoading &&
@@ -1292,6 +1293,7 @@ export function ChatLanding() {
             agentName={agentConfig.name}
             canManage={canManageMemory}
             focusEntityIds={focusedMemoryIds}
+            focusRelationship={focusedMemoryRelationship}
             onClearFocus={() => setFocusedMemoryIds([])}
             onClose={() => setActiveView("chat")}
             onOpenConversation={(threadId) => {
@@ -1314,7 +1316,8 @@ export function ChatLanding() {
             sessionDocsVersion={sessionDocsVersion}
             onSessionDocsChanged={handleSessionDocsChanged}
             onOpenKnowledge={handleToggleKnowledge}
-            onOpenMemoryUsage={memoryEnabled ? (entityIds) => {
+            onOpenMemoryUsage={memoryEnabled ? (entityIds, relationship) => {
+              setFocusedMemoryRelationship(relationship);
               setFocusedMemoryIds(entityIds);
               setActiveView("memory");
             } : undefined}
