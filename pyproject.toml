@@ -168,7 +168,15 @@ constraint-dependencies = [
     "anyio>=4.14.2",
 ]
 # litellm 1.83.4 pins python-dotenv==1.0.1; fastmcp needs >=1.1.0 — allow newer for sync/lock only.
-override-dependencies = ["python-dotenv>=1.1.0"]
+# READI pins application-wide packages; preserve CUGA's patched versions and
+# the pandas range supported by watsonx. Exercise READI in the offline image check.
+override-dependencies = [
+    "python-dotenv>=1.1.0",
+    "nltk>=3.10.3",
+    "pytz>=2025.1",
+    "pandas>=2.3.3,<2.4",
+    "safetensors>=0.8.0",
+]
 
 [tool.uv.sources]
 torch                 = { index = "pytorch-cpu" }
@@ -266,6 +274,13 @@ digital_sales_openapi = "scripts.commands:run_digital_sales_openapi"
 test_llm = "scripts.commands:test_llm"
 
 [dependency-groups]
+# Image-only dependencies: uv applies the READI compatibility overrides above.
+# Keep these out of the published evolve extra, whose pip consumers do not use uv overrides.
+evolve-image = [
+    "altk-evolve[pii-semantic]>=1.4,<2; python_version>='3.12'",
+    "readi-privacy==0.1.7; python_version>='3.12'",
+    "en-core-web-trf @ https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl ; python_version>='3.12'",
+]
 dev = [
     "pytz>=2025.1",
     "ruff>=0.9.4",
