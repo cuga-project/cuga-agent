@@ -23,6 +23,11 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import (
     CodeExecutor,
     is_find_tools_listing_markdown,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
+    STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
+    resolve_step_discipline,
+    resolved_runtime_model_name,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
     decide_pre_execute_verify,
     log_pre_execute_verify,
@@ -243,14 +248,33 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     _exec_plan.filesystem_backend,
                 )
             logger.debug(f"\n\n------\n\n📝 Generated code:\n\n{state.script}\n\n------\n\n")
-            output, new_vars = await CodeExecutor.eval_with_tools_async(
-                code=state.script,
-                _locals=context,
-                state=state,  # Pass CugaLiteState - it has variables_manager property
-                thread_id=current_thread_id,
-                apps_list=current_apps_list,
-                plan=_exec_plan,
+            # Step discipline: cap this block at one tool call. The cap rides the
+            # existing per-block budget, so the second call is refused by
+            # enforce_call_budget with the one-tool message and the executor
+            # keeps the block's variables (see LocalExecutor).
+            one_tool_per_step = (
+                resolve_step_discipline(
+                    configurable,
+                    resolved_runtime_model_name(
+                        configurable_llm=configurable.get("llm"),
+                        graph_default_model=getattr(adapter, "_model", None),
+                    ),
+                )
+                == STEP_DISCIPLINE_ONE_TOOL_PER_STEP
             )
+            cap_token = ToolCallTracker.set_block_cap_override(1) if one_tool_per_step else None
+            try:
+                output, new_vars = await CodeExecutor.eval_with_tools_async(
+                    code=state.script,
+                    _locals=context,
+                    state=state,  # Pass CugaLiteState - it has variables_manager property
+                    thread_id=current_thread_id,
+                    apps_list=current_apps_list,
+                    plan=_exec_plan,
+                )
+            finally:
+                if cap_token is not None:
+                    ToolCallTracker.reset_block_cap_override(cap_token)
 
             adapter._tracker.collect_step(step=Step(name="User_output", data=output))
             adapter._tracker.collect_step(

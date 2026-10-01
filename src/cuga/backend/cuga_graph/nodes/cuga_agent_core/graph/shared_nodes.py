@@ -191,6 +191,22 @@ def create_call_model_node(
                 ai_content = msg.content if hasattr(msg, "content") else (msg.get("content") or "")
                 messages_for_model.append({"role": "assistant", "content": ai_content})
 
+            elif msg_role == "tool":
+                # A native tool result left by a function-calling turn on this thread.
+                # Matched on ``type``: persisted history crosses the SDK boundary as bare
+                # BaseMessage shells. Rendered like an execution output so a CodeAct
+                # turn on the same thread still sees what the tool returned.
+                modified_messages.append(msg)
+                tool_name = (
+                    getattr(msg, "name", None)
+                    or (msg.get("name") if isinstance(msg, dict) else None)
+                    or "tool"
+                )
+                tool_content = msg.content if hasattr(msg, "content") else (msg.get("content") or "")
+                messages_for_model.append(
+                    {"role": "user", "content": f"Tool result ({tool_name}):\n{tool_content}"}
+                )
+
             else:
                 modified_messages.append(msg)
                 logger.warning("call_model: skipping message {} with unknown role: {}", i, msg_role)
@@ -226,6 +242,28 @@ def create_call_model_node(
         # Pass the full node config so LangChain keeps parent_run_id linkage for
         # Langfuse. Passing only {"callbacks": [...]} starts orphan root traces.
         invoke_config = config if config is not None else {}
+
+        # ── Native function-calling seam ───────────────────────────────────
+        # The base adapter returns None, so this is a no-op for the Supervisor
+        # graph and for every CodeAct run. CugaLite returns a Command here when
+        # cuga_lite_execution_mode resolves to function_calling, and the CodeAct
+        # path below is skipped entirely — never blended.
+        fc_command = await adapter.execute_call_model_fc(
+            state=state,
+            config=config,
+            configurable=configurable,
+            active_model=active_model,
+            bound=bound,
+            invoke_config=invoke_config,
+            system_content=system_content,
+            modified_messages=modified_messages,
+            budget_exhausted=budget_exhausted,
+            playbook_fired=playbook_fired,
+            variables_addendum=variables_addendum,
+        )
+        if fc_command is not None:
+            return fc_command
+
         response = await adapter.ainvoke_model(bound, messages_for_model, invoke_config)
 
         # ── Normalise response ─────────────────────────────────────────────
