@@ -11,15 +11,15 @@ mcpServers:
   cuga_web:
     url: https://cuga-apps-mcp-web.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
     transport: http
-    description: web search / browse / weather / wiki
+    description: web search / fetch pages & links / RSS feeds / YouTube info & transcripts
   cuga_knowledge:
     url: https://cuga-apps-mcp-knowledge.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
     transport: http
-    description: search_arxiv (recent papers)
+    description: Wikipedia / arXiv / Semantic Scholar lookup
   cuga_geo:
     url: https://cuga-apps-mcp-geo.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
     transport: http
-    description: country capital / population / region
+    description: geocoding / hikes / attractions / weather
   cuga_finance:
     url: https://cuga-apps-mcp-finance.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
     transport: http
@@ -27,7 +27,7 @@ mcpServers:
   cuga_code:
     url: https://cuga-apps-mcp-code.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
     transport: http
-    description: explain / analyze code
+    description: Python syntax check / code metrics / language detection
   cuga_local:
     url: https://cuga-apps-mcp-local.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
     transport: http
@@ -35,4 +35,4 @@ mcpServers:
   cuga_text:
     url: https://cuga-apps-mcp-text.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
     transport: http
-    description: summarize / translate / text utilities
+    description: text chunking / token counting / document-to-text extraction
