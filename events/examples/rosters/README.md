@@ -63,6 +63,52 @@ notes in its comments down to only the AP-free triggers so the file is honestly 
 - **Supervisor name stays `cuga`** so a file is drop-in: events still address the one agent `cuga`;
   only its roster (and personality) changes per domain.
 
+## Write your own roster in 10 minutes
+
+Copy this skeleton into `events/examples/rosters/no_ap_<your_domain>.yaml`, then point
+`CUGA_SUPERVISOR_ROSTER` at it. Keep the supervisor named `cuga` so it stays a drop-in, and
+give each sub-agent exactly one job.
+
+```yaml
+supervisor:
+  name: cuga            # keep "cuga" so the file is a drop-in replacement
+  special_instructions: |
+    You are the <Team> supervisor. Delegate EVERY task to exactly ONE sub-agent and return its
+    answer; never answer yourself. Route <kind of request> to <agent_a>, <other kind> to <agent_b>.
+agents:
+  - name: agent_a
+    special_instructions: |
+      <One job. Which tools to use. What the answer should look like.>
+    mcp_servers:
+      - name: cuga_knowledge
+  - name: agent_b
+    special_instructions: |
+      <…>
+    mcp_servers:
+      - name: cuga_web
+```
+
+Sub-agents pick their tools from the shared cuga-apps MCP servers:
+
+| Server | Tools |
+|---|---|
+| `cuga_web` | web_search, fetch_webpage, fetch_webpage_links, fetch_feed, search_feeds, get_youtube_video_info, get_youtube_transcript |
+| `cuga_knowledge` | search_wikipedia, get_wikipedia_article, get_article_summary, get_article_sections, get_related_articles, search_arxiv, get_arxiv_paper, search_semantic_scholar, get_paper_references |
+| `cuga_geo` | geocode, find_hikes, search_attractions, get_weather |
+| `cuga_finance` | get_crypto_price, get_stock_quote |
+| `cuga_code` | check_python_syntax, extract_code_metrics, detect_language |
+| `cuga_text` | chunk_text, count_tokens, extract_text |
+
+Tips for good agent instructions:
+
+- one job per agent;
+- name the tools it should use;
+- describe the shape of the answer;
+- add one "don't make things up" rule, e.g. "never summarise a page you did not fetch".
+
+If your roster only uses the servers above (no external SaaS triggers), name the file
+`no_ap_<domain>.yaml` and add a row to the table earlier in this README.
+
 ## How to test one
 
 Point `CUGA_SUPERVISOR_ROSTER` at the file you want and bounce the servers. Nothing is copied
