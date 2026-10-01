@@ -182,6 +182,8 @@ cuga viz
 ```
 
 
+<a id="llm-configuration---advanced-options"></a>
+
 <details>
 <summary> LLM Configuration - Advanced Options</summary>
 
@@ -1264,7 +1266,7 @@ CUGA supports three types of tool integrations. Each approach has its own use ca
 ## **Additional Resources**
 
 - **Tool Registry**: [./src/cuga/backend/tools_env/registry/README.md](./src/cuga/backend/tools_env/registry/README.md)
-- **Comprehensive example with different tools + MCP**: [./docs/examples/cuga_with_runtime_tools/README.md](Adding Tools)
+- **Comprehensive example with different tools + MCP**: [Adding Tools](./docs/examples/cuga_with_runtime_tools/README.md)
 - **CUGA as MCP**: [./docs/examples/cuga_as_mcp/README.md](docs/examples/cuga_as_mcp)
 - **Knowledge Engine demo**: [./docs/examples/knowledge_demo/README.md](./docs/examples/knowledge_demo) — agent-level + session-level knowledge walkthrough
 
