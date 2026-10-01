@@ -137,6 +137,23 @@ def preload_evolve() -> None:
         model.encode(["airgap warmup"])
 
 
+def preload_readi() -> None:
+    """Warm the installed READI model without invoking runtime model downloads."""
+    import importlib.util
+
+    from altk_evolve.hooks.plugins.readi import build_readi_detector, redact_text
+
+    if importlib.util.find_spec("en_core_web_trf") is None:
+        raise RuntimeError(
+            "READI requires the en_core_web_trf model installed by the evolve-image dependency group"
+        )
+    detector = build_readi_detector(extractor="spacy", model="en_core_web_trf")
+    redacted = redact_text("John Smith lives in London.", detector)
+    if "John Smith" in redacted or "[REDACTED]" not in redacted:
+        raise RuntimeError("READI did not redact the model warmup name")
+    print("READI spaCy model loaded and name redaction verified")
+
+
 def preload_tiktoken() -> None:
     """Cache every registered encoding, including the GPT-2 vocabulary."""
     import tiktoken
@@ -179,6 +196,7 @@ if __name__ == "__main__":
     preload_fastembed_tokenizer()
     preload_docling()
     preload_evolve()
+    preload_readi()
     preload_tiktoken()
     if os.environ.get("PRELOAD_EVOLVE_MODELS", "0") == "1":
         preload_evolve_sentence_transformers()
