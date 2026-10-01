@@ -16,7 +16,7 @@ A FastAPI server to register and query API/Application metadata.
 ## Configuration
 
 - **MCP Servers**  
-  Define your MCP servers in `agent/api/config/mcp_servers.json`.  
+  Define your MCP servers in `src/cuga/backend/tools_env/registry/config/mcp_servers.yaml`, or point the `MCP_SERVERS_FILE` environment variable at your own YAML file.  
 - **Authentication**  
   `AppWorldAuthManager` handles per‑app tokens for AppWorld;
   - In order to support more authentication types just inherit from the `BaseAuthManager` class
@@ -27,7 +27,7 @@ A FastAPI server to register and query API/Application metadata.
 For dev mode (working on the server)
 
 ```bash
-python api_registry_server
+uv run python -m cuga.backend.tools_env.registry.registry.api_registry_server
 ```
 
 By default, the server listens on `http://127.0.0.1:8001`.  
