@@ -306,6 +306,13 @@ export async function loadMemoryEntity(agentId: string, entityId: string): Promi
   return mapEntity(entity);
 }
 
+export async function loadAdminMemoryEntity(agentId: string, entityId: string): Promise<MemoryRecord> {
+  const entity = await requestJson<EvolveEntity>(
+    scopedPath(`/api/manage/memory/entities/${encodeURIComponent(entityId)}`, agentId),
+  );
+  return mapEntity(entity, true, true);
+}
+
 export async function loadAdminMemoryPage(agentId: string, cursor?: string): Promise<MemoryPage> {
   const params = new URLSearchParams({ agent_id: agentId, limit: "200" });
   if (cursor) params.set("cursor", cursor);
