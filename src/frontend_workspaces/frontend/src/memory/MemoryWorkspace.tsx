@@ -16,6 +16,7 @@ import {
   TabPanel,
   UnorderedList,
   ListItem,
+  Tag,
 } from "@carbon/react";
 import { ArrowRight, Close, Renew } from "@carbon/icons-react";
 import {
@@ -701,27 +702,49 @@ function CollectionActivity({memories, refreshKey, onOpen}: {
     else groups.set(key, {event, count: 1});
     return groups;
   }, new Map<string, {event: RetentionAuditEvent; count: number}>()).values());
-  return <section className="memory-workspace__section" aria-label="Durable retention activity">
-    <h2>Marked memories</h2>
-    {error && <p role="alert">{error}</p>}
-    {loading && <p>Loading retention activity…</p>}
-    {!loading && !error && !pending.length && <p>No memories are currently marked.</p>}
-    <ul className="memory-workspace__list">
-      {visible.map(({item, memory}) => <li key={`${item.policy_id}:${item.entity_id}`}>
-        <Button kind="ghost" onClick={() => onOpen(memory.id)}>{memory.title}</Button>
-        <p>{item.status === "held" ? "Deletion blocked by legal hold" : item.status === "review" ? "Flagged for review" : "Awaiting deletion"} · {item.policy_id}</p>
-      </li>)}
-    </ul>
-    {pending.length > visible.length && <p>Other marked memories are outside the current memory view. Their status is available in audit details.</p>}
-    <h2>Committed outcomes</h2>
-    <p>Outcomes remain available even when a run is interrupted.</p>
-    <ul className="memory-workspace__list">
-      {groups.map(({event, count}) => <li key={event.event_id}>
-        <strong>{displayType(event.outcome)} · {event.policy_id}</strong>
-        <p>{count} {count === 1 ? "memory" : "memories"} · {new Date(event.occurred_at).toLocaleDateString()}</p>
-      </li>)}
-    </ul>
-    <Accordion><AccordionItem title="Candidate and action references">
+  const outcomeLabel = (outcome: string) => ({
+    deleted: "Deleted", held: "On legal hold", flagged: "Flagged for review", marked: "Marked for deletion",
+  }[outcome] ?? displayType(outcome));
+  return <section className="memory-activity" aria-label="Retention activity">
+    {error && <p className="memory-activity__notice" role="alert">{error}</p>}
+    {loading && <p className="memory-activity__notice" role="status">Loading retention activity…</p>}
+    <div className="memory-activity__columns">
+      <section aria-labelledby="memory-awaiting-action">
+        <div className="memory-activity__heading">
+          <h2 id="memory-awaiting-action">Awaiting action</h2>
+          {!loading && !error && <span>{pending.length} {pending.length === 1 ? "memory" : "memories"}</span>}
+        </div>
+        <p className="memory-activity__description">Memories kept for review or waiting for deletion.</p>
+        {!loading && !error && !pending.length && <p className="memory-activity__empty">No memories are awaiting action.</p>}
+        <ul className="memory-activity__entries">
+          {visible.map(({item, memory}) => <li className="memory-activity__entry" key={`${item.policy_id}:${item.entity_id}`}>
+            <div className="memory-activity__entry-main">
+              <Button className="memory-activity__memory-link" kind="ghost" size="sm" onClick={() => onOpen(memory.id)}>{memory.title}</Button>
+              <span className="memory-activity__policy">Policy: {item.policy_id}</span>
+            </div>
+            <Tag size="sm" type={item.status === "held" ? "purple" : item.status === "review" ? "blue" : "gray"}>
+              {item.status === "held" ? "Legal hold" : item.status === "review" ? "Needs review" : "Awaiting deletion"}
+            </Tag>
+          </li>)}
+        </ul>
+        {pending.length > visible.length && <p className="memory-activity__description">Other marked memories are outside the current view. See audit details for their status.</p>}
+      </section>
+      <section aria-labelledby="memory-recent-outcomes">
+        <div className="memory-activity__heading"><h2 id="memory-recent-outcomes">Recent outcomes</h2></div>
+        <p className="memory-activity__description">Recorded actions, including work completed before a run stopped.</p>
+        {!loading && !error && !groups.length && <p className="memory-activity__empty">No retention actions recorded yet.</p>}
+        <ul className="memory-activity__entries">
+          {groups.map(({event, count}) => <li className="memory-activity__entry" key={event.event_id}>
+            <div className="memory-activity__entry-main">
+              <span className="memory-activity__outcome">{outcomeLabel(event.outcome)}</span>
+              <span className="memory-activity__policy">{count} {count === 1 ? "memory" : "memories"} · {event.policy_id}</span>
+            </div>
+            <time className="memory-activity__date" dateTime={event.occurred_at}>{new Date(event.occurred_at).toLocaleDateString(undefined, {month: "short", day: "numeric", year: "numeric"})}</time>
+          </li>)}
+        </ul>
+      </section>
+    </div>
+    <Accordion className="memory-activity__audit"><AccordionItem title="Audit details">
       <p>Showing up to 1,000 recent candidates and actions for this service instance.</p>
       <div className="memory-workspace__audit-table"><table>
         <caption>Current marks</caption><thead><tr><th scope="col">Reference</th><th scope="col">Status</th><th scope="col">Policy</th></tr></thead>
@@ -1479,7 +1502,7 @@ export function MemoryWorkspace({
           )}
 
           {adminTab === "activity" && (
-            <div role="tabpanel" aria-label="Activity">
+            <div role="tabpanel" aria-label="Activity" className="memory-activity-panel">
               <CollectionActivity memories={adminMemories} refreshKey={runs} onOpen={(id) => {
                 setAdminOwner("all"); setAdminState("all");
                 setSelectedAdminMemoryId(id); setAdminTab("memory"); setDetailOpen(true);
@@ -1502,7 +1525,7 @@ export function MemoryWorkspace({
                           scope="activity"
                           selected={run.runId === selectedRun?.runId}
                           title="Retention run"
-                          meta={`${new Date(run.createdAt).toLocaleString()} / ${run.runId}`}
+                          meta={new Date(run.createdAt).toLocaleString()}
                           status={runStatus(run)}
                           detail={run.summary}
                           onSelect={() => {
