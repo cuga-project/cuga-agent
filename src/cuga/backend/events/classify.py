@@ -209,12 +209,17 @@ def cadence_of(text: str) -> dict:
     at = _AT_TIME.search(text or "")
     if at:
         hour = int(at.group(1))
+        minute = int(at.group(2) or 0)
         ampm = (at.group(3) or "").lower()
         if ampm:  # 12-hour clock: 12am → 0, 12pm → 12, 9pm → 21
+            valid = 1 <= hour <= 12
             hour = hour % 12 + (12 if ampm == "pm" else 0)
-        minute = int(at.group(2) or 0)
-        dow = "1-5" if _WEEKDAY.search(text or "") else "*"
-        return {"cron": f"{minute} {hour} * * {dow}"}
+        else:
+            valid = hour <= 23
+        # an impossible time ("at 25:00", "at 13pm", "at 9:75") is not an anchor
+        if valid and minute <= 59:
+            dow = "1-5" if _WEEKDAY.search(text or "") else "*"
+            return {"cron": f"{minute} {hour} * * {dow}"}
     if m:
         return {"interval_seconds": _num(None) * _UNIT_SECS.get(m.group(2).lower(), 60)}
     return {}
