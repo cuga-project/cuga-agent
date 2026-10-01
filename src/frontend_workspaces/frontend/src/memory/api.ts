@@ -465,6 +465,7 @@ export type MemoryPreferencesState = {
   operator_default: boolean;
   instance_override: boolean | null;
   instance_enabled: boolean;
+  episodic_enabled: boolean;
   user_enabled: boolean;
   effective_enabled: boolean;
 };
@@ -475,6 +476,12 @@ export function loadMemoryPreferences(admin = false): Promise<MemoryPreferencesS
 
 export function saveMemoryPreference(enabled: boolean | null, admin = false): Promise<MemoryPreferencesState> {
   return requestJson(admin ? "/api/manage/memory/settings" : "/api/memory/settings", {
+    method: "PUT", body: JSON.stringify({ enabled }),
+  });
+}
+
+export function saveEpisodicMemoryPreference(enabled: boolean): Promise<MemoryPreferencesState> {
+  return requestJson("/api/manage/memory/settings/episodic", {
     method: "PUT", body: JSON.stringify({ enabled }),
   });
 }
