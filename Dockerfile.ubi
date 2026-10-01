@@ -42,7 +42,7 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 
 RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + \
-    && uv sync --frozen --no-editable --no-dev --extra evolve
+    && uv sync --frozen --no-editable --no-dev --extra evolve --group evolve-image
 
 RUN uv run --no-sync python src/scripts/preload_models.py
 
@@ -67,9 +67,9 @@ COPY src/ ./src/
 COPY docs/ ./docs/
 COPY --from=frontend-builder /workspace/frontend/dist/ ./src/cuga/frontend/dist/
 
-# Include observability and Evolve memory support in the published image.
+# Include observability, Evolve and READI with its pinned spaCy model.
 RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + \
-    && uv sync --frozen --no-editable --no-dev --extra observability --extra evolve
+    && uv sync --frozen --no-editable --no-dev --extra observability --extra evolve --group evolve-image
 
 
 # Slim down torch: remove test suite and C++ headers (not needed at runtime) ~143MB
