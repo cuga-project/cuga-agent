@@ -177,6 +177,7 @@ export interface ParsedAnswerResult {
    * `MessageSource` type exported by `agentic_chat/Citations`. */
   sources: any[];
   memoryUsage: MemoryUsageDisclosure | null;
+  memorySaved: MemoryUsageDisclosure | null;
 }
 
 export interface MemoryUsageDisclosure {
@@ -208,6 +209,7 @@ export function parseAnswerEventData(
     policyData: null,
     sources: [],
     memoryUsage: null,
+    memorySaved: null,
   };
 
   try {
@@ -218,6 +220,7 @@ export function parseAnswerEventData(
       result.sources = parsed.sources;
     }
     result.memoryUsage = parseMemoryUsage(parsed.memory_usage);
+    result.memorySaved = parseMemoryUsage(parsed.memory_saved);
 
     if (typeof innerData === "string") {
       try {
