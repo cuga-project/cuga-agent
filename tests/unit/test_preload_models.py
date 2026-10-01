@@ -24,6 +24,7 @@ def test_supported_image_builds_memory_ui_and_bakes_evolve_for_offline_runtime()
     assert "altk-evolve[pii-regex]>=1.4,<2" in project
     assert "github.com/AgentToolkit/altk-evolve/archive/" not in project
     assert "--frozen --no-editable --no-dev" in dockerfile
+    assert dockerfile.count("--group evolve-image") == 2
     assert "uv pip install" not in dockerfile
     assert dockerfile.count("@sha256:") >= 3
     assert (
