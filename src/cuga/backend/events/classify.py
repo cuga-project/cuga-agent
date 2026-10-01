@@ -216,10 +216,12 @@ def cadence_of(text: str) -> dict:
             hour = hour % 12 + (12 if ampm == "pm" else 0)
         else:
             valid = hour <= 23
-        # an impossible time ("at 25:00", "at 13pm", "at 9:75") is not an anchor
-        if valid and minute <= 59:
-            dow = "1-5" if _WEEKDAY.search(text or "") else "*"
-            return {"cron": f"{minute} {hour} * * {dow}"}
+        # an impossible time ("at 25:00", "at 13pm", "at 9:75") gets no cadence at all, rather
+        # than falling back to the unit-only interval and running at a time nobody asked for
+        if not valid or minute > 59:
+            return {}
+        dow = "1-5" if _WEEKDAY.search(text or "") else "*"
+        return {"cron": f"{minute} {hour} * * {dow}"}
     if m:
         return {"interval_seconds": _num(None) * _UNIT_SECS.get(m.group(2).lower(), 60)}
     return {}

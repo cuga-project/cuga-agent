@@ -271,9 +271,9 @@ def test_classify_cadence_and_source():
     assert classify.cadence_of("every day at 12:00")["cron"] == "0 12 * * *"
     assert classify.cadence_of("every day at 12pm")["cron"] == "0 12 * * *"
     assert classify.cadence_of("every day at 12am")["cron"] == "0 0 * * *"
-    # impossible times must not become a cron value
+    # impossible times get no cadence at all
     for text in ("every day at 25:00", "every day at 13pm", "every day at 9:75"):
-        assert "cron" not in classify.cadence_of(text)
+        assert classify.cadence_of(text) == {}
 
 
 def test_classify_ttl_bounded_runs():
