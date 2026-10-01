@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Column, Grid, InlineNotification, Toggle } from "@carbon/react";
-import { loadMemoryPreferences, saveMemoryPreference, type MemoryPreferencesState } from "./api";
+import { loadMemoryPreferences, saveMemoryPreference, saveEpisodicMemoryPreference, type MemoryPreferencesState } from "./api";
 
 export function MemoryPreferences({ admin = false }: { admin?: boolean }) {
   const [preferences, setPreferences] = useState<MemoryPreferencesState | null>(null);
@@ -18,11 +18,11 @@ export function MemoryPreferences({ admin = false }: { admin?: boolean }) {
     return () => { active = false; window.removeEventListener("focus", refresh); window.removeEventListener("memory-preferences-changed", refresh); };
   }, [admin]);
 
-  const save = async (enabled: boolean | null) => {
+  const save = async (enabled: boolean, episodic = false) => {
     setSaving(true);
     setError("");
     try {
-      setPreferences(await saveMemoryPreference(enabled, admin));
+      setPreferences(await (episodic ? saveEpisodicMemoryPreference(enabled) : saveMemoryPreference(enabled, admin)));
       window.dispatchEvent(new Event("memory-preferences-changed"));
     }
     catch (err) { setError(err instanceof Error ? err.message : "Memory settings could not be saved."); }
@@ -50,6 +50,22 @@ export function MemoryPreferences({ admin = false }: { admin?: boolean }) {
         </div>
 
       </div>
+      {admin && <div className="memory-settings__row">
+        <div>
+          <Toggle
+            id="instance-episodic-memory-enabled"
+            labelText="Episodic memory"
+            labelA="Off" labelB="On"
+            toggled={preferences?.episodic_enabled ?? false}
+            disabled={!preferences || saving || !preferences.instance_enabled}
+            onToggle={(enabled) => void save(enabled, true)}
+            aria-describedby="episodic-memory-description"
+          />
+          <p id="episodic-memory-description" className="memory-settings__note">
+            Learn from past conversations to improve future responses. When off, memory only saves and uses facts about users.
+          </p>
+        </div>
+      </div>}
       {error && <InlineNotification kind="error" title={error} lowContrast hideCloseButton />}
     </Column>
   </Grid>;
