@@ -340,7 +340,7 @@ wheels = [
 
 [[package]]
 name = "altk-evolve"
-version = "1.3.0"
+version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "arize-phoenix", marker = "python_full_version >= '3.12'" },
@@ -358,9 +358,9 @@ dependencies = [
     { name = "tzdata", marker = "python_full_version >= '3.12'" },
     { name = "uvicorn", version = "0.35.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e8/e6/6f88f134821fa45936e6414c34552ae8cb5c8c0b3903527aa4fd06685dde/altk_evolve-1.3.0.tar.gz", hash = "sha256:725cf903c54aeebfc4107940cbf9465895a6fbf31bdd569ae8ab4af289ba028a", size = 400225, upload-time = "2026-09-25T19:29:15.168Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b0/ab/b736e30c280d549124127f54d760ee19164833b763394dfbb60a4d0e31c8/altk_evolve-1.4.0.tar.gz", hash = "sha256:8db110e1d2e824e48fc9d951c59f5cad89d4e094e8eb99d1701352b40d5688f4", size = 440463, upload-time = "2026-10-01T00:25:53.353Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/58/e9/f5f4cf48b64be27d32fafed986c3d14a4aa7533826d568cbb6c96f572ad7/altk_evolve-1.3.0-py3-none-any.whl", hash = "sha256:c278d326ff109a2c728b3089d9e7294717758c3038f4e6403fdf8d9652753d6f", size = 436288, upload-time = "2026-09-25T19:29:13.527Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/58/d4f49d4725b5ca832508147c2382551e1194f0c319d40e153da194972b5f/altk_evolve-1.4.0-py3-none-any.whl", hash = "sha256:ff8e5554ef2deec98e01cafecb945602b6099ad39871aceb422a3c6a3ca2902d", size = 479444, upload-time = "2026-10-01T00:25:51.692Z" },
 ]
 
 [package.optional-dependencies]
@@ -1466,7 +1466,7 @@ requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.12.1,<0.13" },
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "aiosmtpd" },
-    { name = "altk-evolve", extras = ["pii-regex"], marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = ">=1.3,<2" },
+    { name = "altk-evolve", extras = ["pii-regex"], marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = ">=1.4,<2" },
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "boto3", specifier = ">=1.34.0" },
