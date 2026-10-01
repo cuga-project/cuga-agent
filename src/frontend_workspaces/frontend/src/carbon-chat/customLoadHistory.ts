@@ -229,13 +229,15 @@ async function customLoadHistory(
                 },
               });
             }
-            if (parsed.memoryUsage) {
+            for (const [relationship, disclosure] of [["used", parsed.memoryUsage], ["saved", parsed.memorySaved]] as const) {
+              if (!disclosure) continue;
               genericItems.push({
                 response_type: MessageResponseTypes.USER_DEFINED,
                 user_defined: {
                   type: "cuga_memory_usage",
-                  count: parsed.memoryUsage.count,
-                  entity_ids: parsed.memoryUsage.entityIds,
+                  relationship,
+                  count: disclosure.count,
+                  entity_ids: disclosure.entityIds,
                 },
               });
             }
@@ -307,13 +309,15 @@ async function loadBasicMessages(threadId: string): Promise<HistoryItem[]> {
             text: parsed.answerText,
           },
         ];
-        if (parsed.memoryUsage) {
+        for (const [relationship, disclosure] of [["used", parsed.memoryUsage], ["saved", parsed.memorySaved]] as const) {
+          if (!disclosure) continue;
           genericItems.push({
             response_type: MessageResponseTypes.USER_DEFINED,
             user_defined: {
               type: "cuga_memory_usage",
-              count: parsed.memoryUsage.count,
-              entity_ids: parsed.memoryUsage.entityIds,
+              relationship,
+              count: disclosure.count,
+              entity_ids: disclosure.entityIds,
             },
           });
         }
