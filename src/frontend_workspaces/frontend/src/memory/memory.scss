@@ -966,6 +966,16 @@
   border-bottom: 1px solid var(--cds-border-subtle-01);
 }
 
+.memory-preferences--admin {
+  border-bottom: 0;
+
+  .memory-settings__row + .memory-settings__row {
+    margin-top: var(--cds-spacing-05, 1rem);
+    padding-top: var(--cds-spacing-06, 1.5rem);
+    border-top: 1px solid var(--cds-border-subtle-01);
+  }
+}
+
 .memory-workspace__source-list {
   margin: 0;
   padding: 0;
