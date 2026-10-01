@@ -8,6 +8,7 @@ logged as warnings and never crash the agent.
 """
 
 import json
+import hashlib
 from typing import Any, List, Optional
 
 import aiohttp
@@ -435,9 +436,49 @@ class EvolveIntegration:
         return result
 
     @classmethod
+    async def _episodic_profile(cls) -> dict:
+        """Resolve a service-owned profile, safely creating it across replicas."""
+        namespace = get_service_instance_id().strip()
+        profile_id = "cuga-episodic-v1-" + hashlib.sha256(namespace.encode()).hexdigest()
+        lookup = {"profile_id": profile_id}
+        try:
+            profile = await cls._call_tool("get_processing_profile", lookup)
+        except Exception:
+            profile = None
+        if not profile:
+            try:
+                profile = await cls._call_tool(
+                    "set_processing_profile",
+                    {
+                        **lookup,
+                        "expected_revision": 0,
+                        "definition": {
+                            "processors": [
+                                {
+                                    "id": "guidelines",
+                                    "plugin": "evolve.guidelines",
+                                    "config": {"guidelines_mode": "all", "consistency_method": "fast"},
+                                }
+                            ]
+                        },
+                    },
+                )
+            except Exception:
+                # A competing replica may have created the profile. Never overwrite it.
+                profile = await cls._call_tool("get_processing_profile", lookup)
+        if (
+            not isinstance(profile, dict)
+            or profile.get("id") != profile_id
+            or type(profile.get("revision")) is not int
+            or profile["revision"] < 1
+        ):
+            raise RuntimeError("Evolve episodic processing profile is unavailable")
+        return profile
+
+    @classmethod
     async def _call_tool(cls, tool_name: str, args: dict):
         """Call an Evolve MCP tool via the registry or direct SSE."""
-        if tool_name != "validate_retention_policy":
+        if tool_name not in {"validate_retention_policy", "get_processing_profile", "set_processing_profile"}:
             namespace_id = get_service_instance_id().strip()
             if not namespace_id:
                 raise ValueError("Evolve requires a configured service instance ID")
@@ -462,10 +503,17 @@ class EvolveIntegration:
             "list_retention_audit",
             "list_retention_schedules",
             "get_retention_schedule",
+            "get_processing_profile",
         }
         if tool_name in automatic_tools:
             if not preference["effective_enabled"]:
                 return None
+            if tool_name in {"save_trajectory", "get_guidelines", "get_guidelines_with_attribution"}:
+                if not preference["episodic_enabled"]:
+                    return None
+            if tool_name == "save_trajectory":
+                profile = await cls._episodic_profile()
+                args = {**args, "processing_profile": profile["id"], "profile_revision": profile["revision"]}
         elif not preference["instance_enabled"] and tool_name not in read_tools:
             raise RuntimeError("Memory is read-only while disabled for this service")
         mode = cls._get_mode()
