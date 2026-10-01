@@ -985,3 +985,63 @@
     margin-top: 0.5rem;
   }
 }
+
+
+.memory-activity {
+  padding: var(--cds-spacing-06, 1.5rem) var(--cds-spacing-07, 2rem);
+  border-bottom: 1px solid var(--cds-border-subtle-01);
+
+  &__columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--cds-spacing-08, 2.5rem);
+  }
+  &__heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--cds-spacing-04, 0.75rem);
+    h2 { margin: 0; font-size: 1rem; font-weight: 600; line-height: 1.5; }
+    > span { color: var(--cds-text-secondary); font-size: 0.75rem; white-space: nowrap; }
+  }
+  &__description, &__notice, &__empty {
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--cds-text-secondary);
+    margin: var(--cds-spacing-03, 0.5rem) 0 var(--cds-spacing-05, 1rem);
+  }
+  &__entries { list-style: none; padding: 0; margin: 0; }
+  &__entry {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--cds-spacing-04, 0.75rem);
+    padding: var(--cds-spacing-05, 1rem) 0;
+    border-top: 1px solid var(--cds-border-subtle-01);
+    .cds--tag { margin: 0; flex-shrink: 0; }
+  }
+  &__entry-main { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+  &__memory-link.cds--btn {
+    padding: 0;
+    min-height: 1.5rem;
+    max-width: 100%;
+    text-align: left;
+    line-height: 1.5;
+  }
+  &__policy, &__date { color: var(--cds-text-secondary); font-size: 0.75rem; line-height: 1.5; }
+  &__policy { overflow-wrap: anywhere; }
+  &__date { flex-shrink: 0; }
+  &__outcome { font-size: 0.875rem; line-height: 1.5; }
+  &__audit { margin-top: var(--cds-spacing-06, 1.5rem); }
+}
+.memory-activity-panel > .memory-workspace__section-head {
+  h2 { font-size: 1rem; font-weight: 600; }
+  p { font-size: 0.875rem; }
+}
+@media (max-width: 1055px) {
+  .memory-activity__columns { grid-template-columns: minmax(0, 1fr); gap: var(--cds-spacing-07, 2rem); }
+}
+@media (max-width: 671px) {
+  .memory-activity { padding: var(--cds-spacing-05, 1rem); }
+  .memory-activity__entry { flex-wrap: wrap; }
+}
