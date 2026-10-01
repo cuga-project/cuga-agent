@@ -161,22 +161,23 @@ async def test_disabled_service_browsing_does_not_register_retention_policy():
 @pytest.mark.asyncio
 async def test_episodic_setting_is_shared_scoped_and_preserved(monkeypatch):
     await preferences.set_preference(user_id="admin", enabled=True, instance=True)
-    assert not (await preferences.get_preferences("alice"))["episodic_enabled"]
-    await preferences.set_episodic_preference(user_id="admin", enabled=True)
+    assert (await preferences.get_preferences("alice"))["episodic_enabled"]
+    await preferences.set_episodic_preference(user_id="admin", enabled=False)
     get_storage().invalidate_relational_stores()
-    assert (await preferences.get_preferences("bob"))["episodic_enabled"]
+    assert not (await preferences.get_preferences("bob"))["episodic_enabled"]
     await preferences.set_preference(user_id="admin", enabled=False, instance=True)
-    assert (await preferences.get_preferences("bob"))["episodic_enabled"]
+    assert not (await preferences.get_preferences("bob"))["episodic_enabled"]
     assert not await preferences.memory_enabled("bob")
     monkeypatch.setenv("DYNACONF_SERVICE__INSTANCE_ID", "service-b")
-    assert not (await preferences.get_preferences("bob"))["episodic_enabled"]
+    assert (await preferences.get_preferences("bob"))["episodic_enabled"]
     monkeypatch.setenv("DYNACONF_SERVICE__INSTANCE_ID", "service-a")
     monkeypatch.setenv("DYNACONF_SERVICE__TENANT_ID", "tenant-b")
-    assert not (await preferences.get_preferences("bob"))["episodic_enabled"]
+    assert (await preferences.get_preferences("bob"))["episodic_enabled"]
 
 
 @pytest.mark.asyncio
 async def test_semantic_only_skips_guidelines_and_processing_but_keeps_facts():
+    await preferences.set_episodic_preference(user_id="admin", enabled=False)
     await preferences.set_preference(user_id="admin", enabled=True, instance=True)
     with (
         patch.object(EvolveIntegration, "_get_mode", return_value="direct"),
