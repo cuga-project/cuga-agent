@@ -466,3 +466,15 @@ def test_untagged_fences_are_violations_only_when_they_run_something():
         "notation, not code"
     )
     assert not _looks_like_python_block("```json\n{\"a\": 1}\n```", {"add"})
+
+
+@pytest.mark.asyncio
+async def test_watsonx_reasoning_key_is_read_like_the_codeact_path():
+    """#796: WatsonX reports the reasoning channel as ``reasoning``, not ``reasoning_content``.
+    The FC turn uses it for the empty-content fallback, so it must read both spellings."""
+    response = AIMessage(content="", additional_kwargs={"reasoning": "The total is 42."})
+    state = _state(metadata={EMPTY_RESPONSE_CORRECTION_KEY: True})  # past the empty-reply retry
+
+    cmd = await _turn(_adapter(), _Model(response), state, FC)
+
+    assert cmd.goto == END and cmd.update["final_answer"] == "The total is 42."

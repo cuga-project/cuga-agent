@@ -595,9 +595,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
         tool_calls = list(getattr(response, "tool_calls", None) or [])
         invalid_tool_calls = list(getattr(response, "invalid_tool_calls", None) or [])
         content = strip_harmony_tokens(normalize_assistant_text(getattr(response, "content", "")) or "")
-        reasoning = normalize_assistant_text(
-            (getattr(response, "additional_kwargs", None) or {}).get("reasoning_content")
-        )
+        _ak = getattr(response, "additional_kwargs", None) or {}
+        # Both spellings, same as normalize_response: WatsonX reports "reasoning" (#796).
+        reasoning = normalize_assistant_text(_ak.get("reasoning_content") or _ak.get("reasoning"))
         if not isinstance(response, AIMessage):
             response = AIMessage(content=content, tool_calls=tool_calls)
 
