@@ -22,7 +22,7 @@ async def get_preferences(user_id: str) -> dict:
     rows = await store.fetchall(
         "SELECT subject_kind, enabled FROM evolve_memory_preferences "
         "WHERE tenant_id = ? AND instance_id = ? AND "
-        "((subject_kind = 'instance' AND subject_id = '') OR "
+        "((subject_kind IN ('instance', 'episodic') AND subject_id = '') OR "
         "(subject_kind = 'user' AND subject_id = ?))",
         (get_tenant_id(), get_service_instance_id(), user_id),
     )
@@ -35,17 +35,26 @@ async def get_preferences(user_id: str) -> dict:
         "instance_override": values.get("instance"),
         "instance_enabled": instance_enabled,
         "user_enabled": user_enabled,
+        "episodic_enabled": values.get("episodic", False),
         "effective_enabled": instance_enabled and user_enabled,
     }
 
 
 async def set_preference(*, user_id: str, enabled: bool | None, instance: bool = False) -> dict:
+    return await _set_preference(user_id, enabled, "instance" if instance else "user")
+
+
+async def set_episodic_preference(*, user_id: str, enabled: bool) -> dict:
+    return await _set_preference(user_id, enabled, "episodic")
+
+
+async def _set_preference(user_id: str, enabled: bool | None, kind: str) -> dict:
     store = await _store()
     scope = (
         get_tenant_id(),
         get_service_instance_id(),
-        "instance" if instance else "user",
-        "" if instance else user_id,
+        kind,
+        user_id if kind == "user" else "",
     )
     if enabled is None:
         await store.execute(
