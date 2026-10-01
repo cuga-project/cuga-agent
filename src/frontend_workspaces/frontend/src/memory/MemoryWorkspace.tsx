@@ -17,12 +17,15 @@ import {
   UnorderedList,
   ListItem,
   Tag,
+  DataTable, Table, TableHead, TableRow, TableHeader, TableBody, TableCell,
+  TableContainer, TableToolbar, TableToolbarContent, TableToolbarSearch, Pagination,
 } from "@carbon/react";
 import { ArrowRight, Close, Renew } from "@carbon/icons-react";
 import {
   loadMemoryPreferences,
   deleteMemory,
   loadAdminMemoryPage,
+  loadAdminMemoryEntity,
   loadMemoryEntity,
   loadMemoryPage,
   loadProtectionStatus,
@@ -674,27 +677,43 @@ function RetentionRunDetail({
   );
 }
 
-function CollectionActivity({memories, refreshKey, onOpen}: {
-  memories: MemoryRecord[]; refreshKey: RetentionRun[]; onOpen: (memoryId: string) => void;
+function CollectionActivity({agentId, refreshKey, onOpen}: {
+  agentId: string; refreshKey: RetentionRun[]; onOpen: (memory: MemoryRecord) => void;
 }) {
   const [candidates, setCandidates] = useState<RetentionCandidate[]>([]);
+  const [candidateMemories, setCandidateMemories] = useState<Record<string, MemoryRecord>>({});
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(5);
   const [events, setEvents] = useState<RetentionAuditEvent[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   React.useEffect(() => {
     let active = true;
     setLoading(true);
-    loadRetentionCollection().then((data) => {
-      if (active) {setCandidates(data.candidates); setEvents(data.audit); setError("");}
+    setCandidates([]);
+    setCandidateMemories({});
+    setEvents([]);
+    setPage(1);
+    loadRetentionCollection().then(async (data) => {
+      const pendingIds = [...new Set(data.candidates.filter((item) => ["pending", "held", "review"].includes(item.status)).map((item) => item.entity_id))];
+      const records: Record<string, MemoryRecord> = {};
+      // Bound requests independently of the Memory tab's inventory pagination.
+      for (let offset = 0; offset < pendingIds.length && active; offset += 6) {
+        const batch = await Promise.allSettled(pendingIds.slice(offset, offset + 6).map((id) => loadAdminMemoryEntity(agentId, id)));
+        for (const result of batch) if (result.status === "fulfilled") records[result.value.entityId] = result.value;
+      }
+      if (active) {setCandidates(data.candidates); setCandidateMemories(records); setEvents(data.audit); setError("");}
     }).catch(() => {if (active) setError("Retention activity could not be loaded.");})
       .finally(() => {if (active) setLoading(false);});
     return () => {active = false;};
-  }, [refreshKey]);
+  }, [refreshKey, agentId]);
+  const statusLabel = (status: string) => status === "held" ? "Legal hold" : status === "review" ? "Needs review" : "Awaiting deletion";
   const pending = candidates.filter((item) => ["pending", "held", "review"].includes(item.status));
-  const visible = pending.flatMap((item) => {
-    const memory = memories.find((memory) => memory.entityId === item.entity_id);
-    return memory ? [{item, memory}] : [];
-  });
+  const filtered = pending.filter((item) => [candidateMemories[item.entity_id]?.title, item.entity_id, item.policy_id, statusLabel(item.status)].join(" ").toLowerCase().includes(query.trim().toLowerCase()));
+  const currentPage = Math.min(page, Math.max(1, Math.ceil(filtered.length / pageSize)));
+  const tableRows = filtered.map((item) => ({id: JSON.stringify([item.policy_id, item.entity_id]), memory: candidateMemories[item.entity_id]?.title ?? `Memory ${item.entity_id}`, status: statusLabel(item.status), policy: item.policy_id}));
+  const headers = [{key: "memory", header: "Memory"}, {key: "status", header: "Status"}, {key: "policy", header: "Policy"}];
   const groups = Array.from(events.reduce((groups, event) => {
     const key = `${event.occurred_at.slice(0, 10)}:${event.policy_id}:${event.outcome}`;
     const existing = groups.get(key);
@@ -715,19 +734,42 @@ function CollectionActivity({memories, refreshKey, onOpen}: {
           {!loading && !error && <span>{pending.length} {pending.length === 1 ? "memory" : "memories"}</span>}
         </div>
         <p className="memory-activity__description">Memories kept for review or waiting for deletion.</p>
-        {!loading && !error && !pending.length && <p className="memory-activity__empty">No memories are awaiting action.</p>}
-        <ul className="memory-activity__entries">
-          {visible.map(({item, memory}) => <li className="memory-activity__entry" key={`${item.policy_id}:${item.entity_id}`}>
-            <div className="memory-activity__entry-main">
-              <Button className="memory-activity__memory-link" kind="ghost" size="sm" onClick={() => onOpen(memory.id)}>{memory.title}</Button>
-              <span className="memory-activity__policy">Policy: {item.policy_id}</span>
-            </div>
-            <Tag size="sm" type={item.status === "held" ? "purple" : item.status === "review" ? "blue" : "gray"}>
-              {item.status === "held" ? "Legal hold" : item.status === "review" ? "Needs review" : "Awaiting deletion"}
-            </Tag>
-          </li>)}
-        </ul>
-        {pending.length > visible.length && <p className="memory-activity__description">Other marked memories are outside the current view. See audit details for their status.</p>}
+        <DataTable rows={tableRows} headers={headers} size="lg">
+          {({rows, headers: tableHeaders, getTableProps, getHeaderProps, getRowProps}) => (
+            <TableContainer className="memory-activity__table-container">
+              <TableToolbar aria-label="Pending memory controls">
+                <TableToolbarContent>
+                  <TableToolbarSearch persistent placeholder="Search pending memories" labelText="Search pending memories" value={query}
+                    onChange={(event) => {setQuery(event ? event.target.value : ""); setPage(1);}} />
+                </TableToolbarContent>
+              </TableToolbar>
+              <div className="memory-activity__table-scroll" role="region" aria-label="Pending memories table" tabIndex={0}>
+                <Table {...getTableProps()} aria-label="Memories awaiting action">
+                  <TableHead><TableRow>{tableHeaders.map((header) => <TableHeader {...getHeaderProps({header})}>{header.header}</TableHeader>)}</TableRow></TableHead>
+                  <TableBody>
+                    {rows.slice((currentPage - 1) * pageSize, currentPage * pageSize).map((row) => {
+                      const item = pending.find((item) => JSON.stringify([item.policy_id, item.entity_id]) === row.id);
+                      if (!item) return null;
+                      const memory = candidateMemories[item.entity_id];
+                      return <TableRow {...getRowProps({row})}>
+                        <TableCell>{memory
+                          ? <Button className="memory-activity__memory-link" kind="ghost" size="sm" onClick={() => onOpen(memory)}>{memory.title}</Button>
+                          : <span>Memory {item.entity_id}<span className="memory-activity__unavailable">Details unavailable</span></span>}</TableCell>
+                        <TableCell><Tag size="sm" type={item.status === "held" ? "purple" : item.status === "review" ? "blue" : "gray"}>{statusLabel(item.status)}</Tag></TableCell>
+                        <TableCell>{item.policy_id}</TableCell>
+                      </TableRow>;
+                    })}
+                    {!rows.length && <TableRow><TableCell colSpan={3}>
+                      {loading ? "Loading pending memories…" : error ? "Pending memories could not be loaded." : query ? "No memories match your search." : "No memories are awaiting action."}
+                    </TableCell></TableRow>}
+                  </TableBody>
+                </Table>
+              </div>
+              <Pagination page={currentPage} pageSize={pageSize} pageSizes={[5, 10, 20]} totalItems={filtered.length} size="sm"
+                itemsPerPageText="Rows per page:" onChange={({page, pageSize}) => {setPage(page); setPageSize(pageSize);}} />
+            </TableContainer>
+          )}
+        </DataTable>
       </section>
       <section aria-labelledby="memory-recent-outcomes">
         <div className="memory-activity__heading"><h2 id="memory-recent-outcomes">Recent outcomes</h2></div>
@@ -1503,9 +1545,10 @@ export function MemoryWorkspace({
 
           {adminTab === "activity" && (
             <div role="tabpanel" aria-label="Activity" className="memory-activity-panel">
-              <CollectionActivity memories={adminMemories} refreshKey={runs} onOpen={(id) => {
+              <CollectionActivity agentId={agentId} refreshKey={runs} onOpen={(memory) => {
+                setAdminMemories((items) => items.some((item) => item.id === memory.id) ? items.map((item) => item.id === memory.id ? memory : item) : [...items, memory]);
                 setAdminOwner("all"); setAdminState("all");
-                setSelectedAdminMemoryId(id); setAdminTab("memory"); setDetailOpen(true);
+                setSelectedAdminMemoryId(memory.id); setAdminTab("memory"); setDetailOpen(true);
               }} />
               <div className="memory-workspace__section-head">
                 <div>
