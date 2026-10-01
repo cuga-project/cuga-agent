@@ -192,7 +192,7 @@ First set `tracker_enabled = true` in the `settings.toml`
 
 Now you can start running the example.
 
-1. **Update API URL** in [mcp_servers.yaml](src/cuga/backend/tools_env/registry/config/mcp_servers.yaml):  
+1. **Update API URL** in [mcp_servers.yaml](../backend/tools_env/registry/config/mcp_servers.yaml):  
    ```yaml
    url: http://localhost:8000/openapi.json
    ```
@@ -215,7 +215,7 @@ cuga evaluate -t <test file path> -r <results file path>
 ```
 
 Steps:
-1. Update [mcp_servers.yaml](src/cuga/backend/tools_env/registry/config/mcp_servers.yaml) with your APIs or create a new YAML file and run 
+1. Update [mcp_servers.yaml](../backend/tools_env/registry/config/mcp_servers.yaml) with your APIs or create a new YAML file and run 
 ```shell
 export MCP_SERVERS_FILE=<location>
 ```
