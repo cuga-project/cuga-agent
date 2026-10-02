@@ -63,6 +63,50 @@ notes in its comments down to only the AP-free triggers so the file is honestly 
 - **Supervisor name stays `cuga`** so a file is drop-in: events still address the one agent `cuga`;
   only its roster (and personality) changes per domain.
 
+## Write your own roster in 10 minutes
+
+Start from this drop-in skeleton:
+
+```yaml
+supervisor:
+  name: cuga            # keep "cuga" so the file is a drop-in replacement
+  special_instructions: |
+    You are the <Team> supervisor. Delegate EVERY task to exactly ONE sub-agent and return its
+    answer; never answer yourself. Route <kind of request> to <agent_a>, <other kind> to <agent_b>.
+agents:
+  - name: agent_a
+    special_instructions: |
+      <One job. Which tools to use. What the answer should look like.>
+    mcp_servers:
+      - name: cuga_knowledge
+  - name: agent_b
+    special_instructions: |
+      <One job. Which tools to use. What the answer should look like.>
+    mcp_servers:
+      - name: cuga_web
+```
+
+Use only server names that exist in the CUGA Apps MCP registry:
+
+| Server | Tools |
+|---|---|
+| `cuga_web` | web_search, fetch_webpage, fetch_webpage_links, fetch_feed, search_feeds, get_youtube_video_info, get_youtube_transcript |
+| `cuga_knowledge` | search_wikipedia, get_wikipedia_article, get_article_summary, get_article_sections, get_related_articles, search_arxiv, get_arxiv_paper, search_semantic_scholar, get_paper_references |
+| `cuga_geo` | geocode, find_hikes, search_attractions, get_weather |
+| `cuga_finance` | get_crypto_price, get_stock_quote |
+| `cuga_code` | check_python_syntax, extract_code_metrics, detect_language |
+| `cuga_text` | chunk_text, count_tokens, extract_text |
+
+Keep instructions easy to route and easy to verify:
+
+1. Give each agent one job.
+2. Name the tools it should use.
+3. Describe the shape of the answer.
+4. Add a grounding rule such as "never summarise a page you did not fetch."
+
+If the roster uses only the servers above and no external SaaS triggers, start its filename with
+`no_ap_`. Add a row for the new roster to the table above so people can discover it.
+
 ## How to test one
 
 Point `CUGA_SUPERVISOR_ROSTER` at the file you want and bounce the servers. Nothing is copied
