@@ -98,6 +98,7 @@ def test_next_fire_after_interval_is_lazy():
 
 # ── process_due: fire-once, reschedule, catch-up, bounded run ────────────────
 def _run(coro):
+    """Run one coroutine synchronously for tests."""
     return asyncio.get_event_loop().run_until_complete(coro) if False else asyncio.run(coro)
 
 
@@ -122,6 +123,7 @@ def test_process_due_fires_and_reschedules():
 
 
 async def _noop(acc, sub):
+    """Record the fired subscription id without external side effects."""
     acc.append(sub.id)
 
 
@@ -187,7 +189,16 @@ def test_cron_invalid_expressions_explain_the_problem():
 
     # Numeric weekday ranges stay valid, including 7=Sunday handling.
     ns.next_cron("0 9 * * 1-5", time.time())
-    ns.next_cron("0 9 * * 7", time.time())
+    sat = time.mktime((2026, 1, 3, 12, 0, 0, 0, 0, -1))
+    nxt = time.localtime(ns.next_cron("0 9 * * 7", sat))
+    assert (nxt.tm_year, nxt.tm_mon, nxt.tm_mday, nxt.tm_hour, nxt.tm_min, nxt.tm_wday) == (
+        2026,
+        1,
+        4,
+        9,
+        0,
+        6,
+    )
 
 
 def test_process_due_retires_an_unschedulable_row_without_stalling_the_tick():
