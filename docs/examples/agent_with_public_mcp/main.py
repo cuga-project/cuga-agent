@@ -17,10 +17,12 @@ MCP_SERVERS = {
 
 
 async def load_tools():
+    """Load the tools advertised by the fixed public MCP example server."""
     return await MultiServerMCPClient(MCP_SERVERS).get_tools()
 
 
 async def main() -> None:
+    """Run one example CugaAgent turn using the public MCP tools."""
     tools = await load_tools()
     print("MCP tools:", [t.name for t in tools])
     agent = CugaAgent(tools=tools)
