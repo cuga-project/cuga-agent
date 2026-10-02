@@ -172,6 +172,21 @@ def test_cron_step_zero_is_refused_by_the_parser():
             ns.next_cron(expr, time.time())
 
 
+
+def test_cron_invalid_expressions_explain_the_problem():
+    for expr, message in (
+        ("0 9 * * MON", "not a number"),
+        ("@daily", "needs exactly 5"),
+        ("0 60 * * *", "out of range"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            ns.next_cron(expr, time.time())
+
+    # Numeric weekday ranges stay valid, including 7=Sunday handling.
+    ns.next_cron("0 9 * * 1-5", time.time())
+    ns.next_cron("0 9 * * 7", time.time())
+
+
 def test_process_due_retires_an_unschedulable_row_without_stalling_the_tick():
     """A malformed cron must cost ONE subscription, not every subscription behind it.
 
