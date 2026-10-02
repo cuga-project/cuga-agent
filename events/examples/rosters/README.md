@@ -59,7 +59,7 @@ notes in its comments down to only the AP-free triggers so the file is honestly 
 - **Each sub-agent does ONE meaningful thing**, and its comments note the exact triggers it covers
   (mirrored from `src/cuga/backend/events/triggers.py`). No sub-agent is a catch-all.
 - **Tools stay within the real MCP set**: `cuga_finance · cuga_knowledge · cuga_geo · cuga_web ·
-  cuga_code · cuga_text`. No invented servers.
+  cuga_code · cuga_text · cuga_local`. No invented servers.
 - **Supervisor name stays `cuga`** so a file is drop-in: events still address the one agent `cuga`;
   only its roster (and personality) changes per domain.
 
@@ -86,7 +86,7 @@ agents:
       - name: cuga_web
 ```
 
-Use only server names that exist in the CUGA Apps MCP registry:
+Use only server names that exist in the CUGA Apps MCP registry. The table below is an intentionally selected quick-reference for roster examples, not a complete registry inventory; use the canonical registry configuration as the source of truth for all available servers (including `cuga_local`) and their current capabilities:
 
 | Server | Tools |
 |---|---|
