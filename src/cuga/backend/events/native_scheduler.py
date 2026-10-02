@@ -34,13 +34,27 @@ def enabled() -> bool:
 
 
 # ── standard cron (minute hour day-of-month month day-of-week) ─────────────────────────────────────
+def _num(s: str, spec: str) -> int:
+    """One number inside a cron field, with an error that says what to write instead."""
+    try:
+        return int(s)
+    except ValueError:
+        raise ValueError(
+            f"cron field {spec!r} has {s!r}, which is not a number; use numbers only "
+            "(e.g. 1 for MON or JAN)"
+        ) from None
+
+
 def _field_matches(spec: str, value: int, lo: int, hi: int) -> bool:
     """Does ``value`` match one cron field? Supports '*', 'a', 'a-b', 'a,b,c', '*/n', 'a-b/n'."""
+    parsed: list[tuple[int, int, int]] = []
+    # Parse and validate every comma-separated part before deciding whether the field matches.
+    # Otherwise an early wildcard/match could return True and silently skip a malformed later part.
     for part in spec.split(","):
         step = 1
         if "/" in part:
             part, step_s = part.split("/", 1)
-            step = int(step_s)
+            step = _num(step_s, spec)
             # `*/0` is not a schedule — it used to reach the modulo below and raise
             # ZeroDivisionError from deep inside the tick. Refuse it here, as a ValueError like
             # every other malformed field, so it is rejected when the expression is first parsed
@@ -51,12 +65,17 @@ def _field_matches(spec: str, value: int, lo: int, hi: int) -> bool:
             start, end = lo, hi
         elif "-" in part:
             a, b = part.split("-", 1)
-            start, end = int(a), int(b)
+            start, end = _num(a, spec), _num(b, spec)
         else:
-            start = end = int(part)
-        if start <= value <= end and (value - start) % step == 0:
-            return True
-    return False
+            start = end = _num(part, spec)
+        if not (lo <= start <= hi and lo <= end <= hi):
+            raise ValueError(f"cron field {spec!r} is out of range; allowed values are {lo}-{hi}")
+        parsed.append((start, end, step))
+
+    return any(
+        start <= value <= end and (value - start) % step == 0
+        for start, end, step in parsed
+    )
 
 
 def _matches(expr: str, t: time.struct_time) -> bool:
@@ -77,6 +96,12 @@ def _matches(expr: str, t: time.struct_time) -> bool:
 def next_cron(expr: str, after: float) -> float:
     """Next epoch strictly after ``after`` matching a 5-field cron expression (local time). Scans
     minute-by-minute (bounded to ~366 days). Runs once per fire, not per tick, so the scan is cheap."""
+    fields = expr.split()
+    if len(fields) != 5:
+        raise ValueError(
+            f"cron {expr!r} has {len(fields)} field(s); it needs exactly 5: "
+            "minute hour day-of-month month day-of-week (macros like @daily are not supported)"
+        )
     # start at the next whole minute after `after`
     t = int(after) - (int(after) % 60) + 60
     for _ in range(366 * 24 * 60):

@@ -22,6 +22,8 @@ import pytest  # noqa: E402
 import native_scheduler as ns  # noqa: E402
 from subscriptions import SubscriptionStore, Subscription  # noqa: E402
 
+pytestmark = pytest.mark.unit
+
 
 # ── schema + store queries ──────────────────────────────────────────────────
 def test_native_fields_persist_and_due_query():
@@ -96,6 +98,7 @@ def test_next_fire_after_interval_is_lazy():
 
 # ── process_due: fire-once, reschedule, catch-up, bounded run ────────────────
 def _run(coro):
+    """Run one coroutine synchronously for tests."""
     return asyncio.get_event_loop().run_until_complete(coro) if False else asyncio.run(coro)
 
 
@@ -120,6 +123,7 @@ def test_process_due_fires_and_reschedules():
 
 
 async def _noop(acc, sub):
+    """Record the fired subscription id without external side effects."""
     acc.append(sub.id)
 
 
@@ -170,6 +174,31 @@ def test_cron_step_zero_is_refused_by_the_parser():
     for expr in ("*/0 * * * *", "* */0 * * *", "0 0 * * */0", "*/-1 * * * *"):
         with pytest.raises(ValueError):
             ns.next_cron(expr, time.time())
+
+
+
+def test_cron_invalid_expressions_explain_the_problem():
+    for expr, message in (
+        ("0 9 * * MON", "not a number"),
+        ("@daily", "needs exactly 5"),
+        ("0 60 * * *", "out of range"),
+        ("0 9 * * *,MON", "not a number"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            ns.next_cron(expr, time.time())
+
+    # Numeric weekday ranges stay valid, including 7=Sunday handling.
+    ns.next_cron("0 9 * * 1-5", time.time())
+    sat = time.mktime((2026, 1, 3, 12, 0, 0, 0, 0, -1))
+    nxt = time.localtime(ns.next_cron("0 9 * * 7", sat))
+    assert (nxt.tm_year, nxt.tm_mon, nxt.tm_mday, nxt.tm_hour, nxt.tm_min, nxt.tm_wday) == (
+        2026,
+        1,
+        4,
+        9,
+        0,
+        6,
+    )
 
 
 def test_process_due_retires_an_unschedulable_row_without_stalling_the_tick():
