@@ -47,6 +47,9 @@ def _num(s: str, spec: str) -> int:
 
 def _field_matches(spec: str, value: int, lo: int, hi: int) -> bool:
     """Does ``value`` match one cron field? Supports '*', 'a', 'a-b', 'a,b,c', '*/n', 'a-b/n'."""
+    parsed: list[tuple[int, int, int]] = []
+    # Parse and validate every comma-separated part before deciding whether the field matches.
+    # Otherwise an early wildcard/match could return True and silently skip a malformed later part.
     for part in spec.split(","):
         step = 1
         if "/" in part:
@@ -67,9 +70,12 @@ def _field_matches(spec: str, value: int, lo: int, hi: int) -> bool:
             start = end = _num(part, spec)
         if not (lo <= start <= hi and lo <= end <= hi):
             raise ValueError(f"cron field {spec!r} is out of range; allowed values are {lo}-{hi}")
-        if start <= value <= end and (value - start) % step == 0:
-            return True
-    return False
+        parsed.append((start, end, step))
+
+    return any(
+        start <= value <= end and (value - start) % step == 0
+        for start, end, step in parsed
+    )
 
 
 def _matches(expr: str, t: time.struct_time) -> bool:
