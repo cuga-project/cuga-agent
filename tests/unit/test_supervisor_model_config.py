@@ -6,6 +6,7 @@ from cuga.supervisor_utils.supervisor_config import _get_model_from_config
 
 @pytest.mark.unit
 def test_yaml_provider_key_forwards_platform(monkeypatch):
+    """The YAML provider key must be forwarded as LLMManager's platform selector."""
     seen = {}
 
     def fake_get_model(_manager, model_settings):
