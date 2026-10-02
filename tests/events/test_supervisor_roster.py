@@ -17,6 +17,8 @@ import glob
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src", "cuga", "backend", "events"))
 
 import seed  # noqa: E402
@@ -92,6 +94,7 @@ def test_no_agent_declares_a_trigger_that_does_not_exist():
                     stale.append((spec.name, app, event))
     assert not stale, f"agents declaring triggers that no longer exist: {stale}"
 
+@pytest.mark.unit
 def test_every_example_roster_is_well_formed():
     """Every roster under events/examples/rosters/ must load: a supervisor with a name and
     instructions, uniquely named agents with instructions, and only MCP servers that exist."""
