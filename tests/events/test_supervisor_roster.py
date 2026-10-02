@@ -91,3 +91,39 @@ def test_no_agent_declares_a_trigger_that_does_not_exist():
                 if app in apps and (app, event) not in known:
                     stale.append((spec.name, app, event))
     assert not stale, f"agents declaring triggers that no longer exist: {stale}"
+
+
+def test_every_example_roster_is_well_formed():
+    """Every roster under events/examples/rosters/ must load with valid structure and MCP servers."""
+    import yaml
+
+    servers_file = os.path.join(
+        ROOT, "src", "cuga", "backend", "tools_env", "registry", "config", "mcp_servers_cuga_apps.yaml"
+    )
+    with open(servers_file, encoding="utf-8") as handle:
+        known_servers = set(yaml.safe_load(handle)["mcpServers"])
+
+    problems = []
+    for path in sorted(glob.glob(os.path.join(ROOT, "events", "examples", "rosters", "*.yaml"))):
+        name = os.path.basename(path)
+        with open(path, encoding="utf-8") as handle:
+            cfg = yaml.safe_load(handle) or {}
+
+        sup = cfg.get("supervisor") or {}
+        if not sup.get("name") or not sup.get("special_instructions"):
+            problems.append(f"{name}: supervisor needs a name and special_instructions")
+
+        agents = cfg.get("agents") or []
+        names = [agent.get("name") for agent in agents]
+        if len(names) != len(set(names)):
+            problems.append(f"{name}: two agents share a name")
+
+        for agent in agents:
+            if not agent.get("name") or not agent.get("special_instructions"):
+                problems.append(f"{name}: every agent needs a name and special_instructions")
+            for server in agent.get("mcp_servers") or []:
+                server_name = server.get("name") if isinstance(server, dict) else server
+                if server_name not in known_servers:
+                    problems.append(f"{name}: {agent.get('name')} uses unknown MCP server {server_name!r}")
+
+    assert not problems, "\n".join(problems)
