@@ -22,6 +22,8 @@ import pytest  # noqa: E402
 import native_scheduler as ns  # noqa: E402
 from subscriptions import SubscriptionStore, Subscription  # noqa: E402
 
+pytestmark = pytest.mark.unit
+
 
 # ── schema + store queries ──────────────────────────────────────────────────
 def test_native_fields_persist_and_due_query():
@@ -178,6 +180,7 @@ def test_cron_invalid_expressions_explain_the_problem():
         ("0 9 * * MON", "not a number"),
         ("@daily", "needs exactly 5"),
         ("0 60 * * *", "out of range"),
+        ("0 9 * * *,MON", "not a number"),
     ):
         with pytest.raises(ValueError, match=message):
             ns.next_cron(expr, time.time())
