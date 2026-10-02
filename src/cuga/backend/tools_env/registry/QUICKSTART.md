@@ -84,7 +84,7 @@ mcpServers:
 uv run python -m cuga.backend.tools_env.registry.registry.api_registry_server
 
 # Run tests
-uv run pytest cuga/backend/tools_env/registry/tests/ -v
+uv run pytest src/cuga/backend/tools_env/registry/tests/ -v
 
 # Start with custom config
 MCP_SERVERS_FILE=/path/to/config.yaml uv run python -m cuga.backend.tools_env.registry.registry.api_registry_server
@@ -96,9 +96,9 @@ tail -f logs/registry_server.log
 ## 6. Next Steps
 
 - Read the full [README.md](README.md) for detailed configuration options
-- Check [config/sample_complete.yaml](config/sample_complete.yaml) for advanced examples
-- Explore [config/sample_filesystem.yaml](config/sample_filesystem.yaml) for file system servers
-- Review [config/sample_mcp_servers.yaml](config/sample_mcp_servers.yaml) for various MCP server types
+- Check [config/mcp_servers.yaml](config/mcp_servers.yaml) for the default configuration
+- See [config/mcp_servers_crm.yaml](config/mcp_servers_crm.yaml) for a multi-server example
+- Review [../../../../../docs/examples/cuga_with_runtime_tools/mcp_servers.yaml](../../../../../docs/examples/cuga_with_runtime_tools/mcp_servers.yaml) for an example mixing different tool types
 
 ## 🆘 Troubleshooting
 

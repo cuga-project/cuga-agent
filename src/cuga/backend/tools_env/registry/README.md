@@ -202,7 +202,7 @@ trmServices:
 ### Complete Sample Configuration
 
 ```yaml
-# config/sample_complete.yaml
+# Complete sample configuration
 
 # OpenAPI Services
 services:
@@ -357,12 +357,12 @@ curl -X POST http://localhost:8001/functions/call \
 
 ```bash
 # Run all registry tests
-uv run pytest cuga/backend/tools_env/registry/tests/ -v
+uv run pytest src/cuga/backend/tools_env/registry/tests/ -v
 
 # Run specific test categories
-uv run pytest cuga/backend/tools_env/registry/tests/test_legacy_openapi.py -v
-uv run pytest cuga/backend/tools_env/registry/tests/test_mcp_server.py -v
-uv run pytest cuga/backend/tools_env/registry/tests/test_mixed_configuration.py -v
+uv run pytest src/cuga/backend/tools_env/registry/tests/test_legacy_openapi.py -v
+uv run pytest src/cuga/backend/tools_env/registry/tests/test_mcp_server.py -v
+uv run pytest src/cuga/backend/tools_env/registry/tests/test_mixed_configuration.py -v
 ```
 
 ### Test Configurations
@@ -455,7 +455,7 @@ This approach provides structured output schema information that can be used by 
 
 **Reference Example:**
 
-See `docs/examples/client_package_usage/fast_mcp_example.py` for a complete implementation of this workaround.
+See `docs/examples/cuga_with_runtime_tools/fast_mcp_example.py` for a complete implementation of this workaround.
 
 ## 🔍 Debugging and Troubleshooting
 
