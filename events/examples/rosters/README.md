@@ -36,10 +36,11 @@ domain-specific (e.g. "route a resume to resume_reviewer, a recording to recordi
 
 A second, orthogonal cut for demoing "the teams an enterprise would deploy." These are named
 `no_ap_*` / `ap_*` so the Activepieces dependency is legible from the filename alone. **AP-dependency
-is a property of the *triggers*, not the agents** — an `ap_*` roster fields SaaS push events
-(Gmail/GitHub/Box/Calendar) that CUGA can't watch directly, so it needs AP; a `no_ap_*` roster's
-triggers are all direct channels (Slack/Discord/Telegram) + native cron/poll/RSS, so it runs with
-**zero AP infra**. All agents are pulled verbatim from `supervisor_agents_full.yaml` — regrouped, not
+is a property of the *triggers*, not the agents** — an `ap_*` roster fields AP-backed push events
+(Gmail/GitHub/Box/Calendar, or `rss/new_item`) that CUGA can't watch directly, so it needs AP; a
+`no_ap_*` roster has no AP-backed event triggers and runs with **zero AP infra**. Pulling RSS with
+the ordinary `cuga_web.fetch_feed` tool is AP-free and does not change that label. All agents are
+pulled verbatim from `supervisor_agents_full.yaml` — regrouped, not
 rewritten. Where a borrowed agent had a mixed trigger set, the `no_ap_*` files trim the trigger
 notes in its comments down to only the AP-free triggers so the file is honestly no-AP.
 
@@ -104,8 +105,10 @@ Keep instructions easy to route and easy to verify:
 3. Describe the shape of the answer.
 4. Add a grounding rule such as "never summarise a page you did not fetch."
 
-If the roster uses only the servers above and no external SaaS triggers, start its filename with
-`no_ap_`. Add a row for the new roster to the roster family table earlier in this README so people can discover it.
+If the roster has no AP-backed event triggers, start its filename with `no_ap_`. Tool calls do not
+make a roster AP-dependent: for example, `cuga_web.fetch_feed` is an AP-free pull, while the
+`rss/new_item` push trigger is AP-backed. Add a row for the new roster to the roster family table
+earlier in this README so people can discover it.
 
 ## How to test one
 
