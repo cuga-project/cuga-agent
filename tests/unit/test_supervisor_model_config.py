@@ -20,3 +20,13 @@ def test_yaml_provider_key_forwards_platform(monkeypatch):
     assert seen["provider"] == "openai"
     assert seen["platform"] == "openai"
     assert seen["model_name"] == "gpt-4o-mini"
+
+
+@pytest.mark.unit
+def test_yaml_provider_key_builds_real_openai_model(monkeypatch):
+    """The real OpenAI construction path should accept provider-only YAML config."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    model = _get_model_from_config({"provider": "openai", "model_name": "gpt-4o-mini"})
+
+    assert model is not None
