@@ -95,6 +95,7 @@ class TestFilterNewVariables:
             "looks_like_set": {"__set_type__": "set", "items": [1, 2, 3]},
             "looks_like_frozenset": {"__set_type__": "frozenset", "items": ["a"]},
             "looks_like_tuple": {"__tuple_type__": "tuple", "items": [1, 2]},
+            "looks_like_dict": {"__dict_type__": "dict", "items": [[1, 2]]},
         }
         sanitized = VariableUtils.sanitize_value(originals)
         restored = VariableUtils.hydrate_value(json.loads(json.dumps(sanitized)))
@@ -132,6 +133,41 @@ class TestFilterNewVariables:
         assert VariableUtils.is_serializable(frozenset({"a", "b"})) is True
         assert VariableUtils.is_serializable(set()) is True
         assert VariableUtils.is_serializable({object()}) is False
+
+    @pytest.mark.unit
+    def test_filter_tuple_keyed_dicts(self):
+        """Dicts with tuple keys survive the executor path to json.dumps and hydrate back."""
+        all_locals = {
+            'by_city': {(2022, "London", "0-3y"): 42},
+            'nested_keys': {((1, 2), 3): "a", (4, (5, 6)): "b"},
+            'mixed_keys': {(1, 2): "tuple", "name": "str", 3: "int"},
+            'frozenset_key': {frozenset({1, 2}): "fs"},
+        }
+
+        result = VariableUtils.filter_new_variables(all_locals, set())
+        round_tripped = json.loads(json.dumps(result))
+
+        for name, original in all_locals.items():
+            assert VariableUtils.hydrate_value(round_tripped[name]) == original
+
+    @pytest.mark.unit
+    def test_tuple_keyed_dict_inside_containers_round_trips(self):
+        original = {"rows": [{(1, "a"): {"inner": {(2, "b"): [3]}}}]}
+        sanitized = VariableUtils.sanitize_value(original)
+        restored = VariableUtils.hydrate_value(json.loads(json.dumps(sanitized)))
+        assert restored == original
+
+    @pytest.mark.unit
+    def test_plain_dicts_are_not_wrapped(self):
+        """Only dicts with keys JSON can't hold get the envelope."""
+        original = {"a": 1, 2: "b", 3.5: None, True: [1]}
+        assert VariableUtils.sanitize_value(original) == original
+
+    @pytest.mark.unit
+    def test_is_serializable_rejects_tuple_keys_until_sanitized(self):
+        tuple_keyed = {(1, 2): 3}
+        assert VariableUtils.is_serializable(tuple_keyed) is False
+        assert VariableUtils.is_serializable(VariableUtils.sanitize_value(tuple_keyed)) is True
 
     def test_filter_excludes_internal_variables(self):
         """Test that internal variables (starting with _) are filtered out."""

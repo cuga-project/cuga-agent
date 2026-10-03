@@ -7,6 +7,9 @@ from loguru import logger
 _TODO_CONFIRMATION_VALUES = frozenset({"Todos updated", "Todos have been updated"})
 _SET_TYPE_KEY = "__set_type__"
 _TUPLE_TYPE_KEY = "__tuple_type__"
+_DICT_TYPE_KEY = "__dict_type__"
+# Key types json.dumps accepts; any other key (e.g. a tuple) needs the dict envelope.
+_JSON_KEY_TYPES = (str, int, float, bool, type(None))
 # Marks envelopes we created so ordinary user dicts with the same keys stay dicts.
 _ENC_KEY = "__cuga_enc__"
 
@@ -30,6 +33,15 @@ class VariableUtils:
             and value.get(_ENC_KEY) is True
             and value.get(_TUPLE_TYPE_KEY) == "tuple"
             and set(value.keys()) == {_TUPLE_TYPE_KEY, "items", _ENC_KEY}
+        )
+
+    @staticmethod
+    def _is_dict_tag(value: Any) -> bool:
+        return (
+            isinstance(value, dict)
+            and value.get(_ENC_KEY) is True
+            and value.get(_DICT_TYPE_KEY) == "dict"
+            and set(value.keys()) == {_DICT_TYPE_KEY, "items", _ENC_KEY}
         )
 
     @staticmethod
@@ -63,6 +75,7 @@ class VariableUtils:
         - bytes: UTF-8 string if decodable, else base64-encoded ASCII string
         - complex: {"real": float, "imag": float}
         - dict / list: recursive traversal
+        - dicts with keys JSON can't hold (e.g. tuples): tagged [key, value] pairs
         - set / frozenset: tagged JSON-safe dicts (see hydrate_value)
         - tuples inside sets: tagged so nested hashables round-trip
 
@@ -133,8 +146,23 @@ class VariableUtils:
         # --- containers ---
         if isinstance(obj, dict):
             # Already-encoded envelopes from a prior sanitize — leave intact.
-            if VariableUtils._is_set_tag(obj) or VariableUtils._is_tuple_tag(obj):
+            if (
+                VariableUtils._is_set_tag(obj)
+                or VariableUtils._is_tuple_tag(obj)
+                or VariableUtils._is_dict_tag(obj)
+            ):
                 return obj
+            if not all(isinstance(k, _JSON_KEY_TYPES) for k in obj):
+                # json.dumps can't write these keys, and turning them into strings would lose
+                # their type and could make two keys collide, so store [key, value] pairs.
+                return {
+                    _DICT_TYPE_KEY: "dict",
+                    "items": [
+                        [VariableUtils._sanitize_key(k), VariableUtils._sanitize_recursive(v)]
+                        for k, v in obj.items()
+                    ],
+                    _ENC_KEY: True,
+                }
             return {k: VariableUtils._sanitize_recursive(v) for k, v in obj.items()}
         if isinstance(obj, list):
             return [VariableUtils._sanitize_recursive(v) for v in obj]
@@ -173,6 +201,17 @@ class VariableUtils:
         return sanitized
 
     @staticmethod
+    def _sanitize_key(obj: Any) -> Any:
+        """Sanitize a dict key so it hydrates back to an equal, hashable key."""
+        if isinstance(obj, frozenset):
+            return {
+                _SET_TYPE_KEY: "frozenset",
+                "items": [VariableUtils._sanitize_set_element(v) for v in obj],
+                _ENC_KEY: True,
+            }
+        return VariableUtils._sanitize_set_element(obj)
+
+    @staticmethod
     def _hydrate_mapping(value: dict) -> Any:
         """Hydrate dict values; preserve identity when nothing changes."""
         out = {}
@@ -198,13 +237,17 @@ class VariableUtils:
 
     @staticmethod
     def hydrate_value(value: Any) -> Any:
-        """Restore set/frozenset/tuple tags produced by sanitize_value."""
+        """Restore set/frozenset/tuple/dict tags produced by sanitize_value."""
         if isinstance(value, dict):
             if VariableUtils._is_set_tag(value):
                 items = [VariableUtils.hydrate_value(v) for v in value["items"]]
                 return set(items) if value[_SET_TYPE_KEY] == "set" else frozenset(items)
             if VariableUtils._is_tuple_tag(value):
                 return tuple(VariableUtils.hydrate_value(v) for v in value["items"])
+            if VariableUtils._is_dict_tag(value):
+                return {
+                    VariableUtils.hydrate_value(k): VariableUtils.hydrate_value(v) for k, v in value["items"]
+                }
             return VariableUtils._hydrate_mapping(value)
         if isinstance(value, list):
             return VariableUtils._hydrate_sequence(value)
@@ -260,9 +303,10 @@ class VariableUtils:
             return all(VariableUtils.is_serializable(item) for item in value)
 
         if isinstance(value, dict):
+            # json.dumps only accepts these key types; anything else (e.g. a tuple key) must go
+            # through sanitize_value first, which wraps the dict in a tagged envelope.
             return all(
-                VariableUtils.is_serializable(k) and VariableUtils.is_serializable(v)
-                for k, v in value.items()
+                isinstance(k, _JSON_KEY_TYPES) and VariableUtils.is_serializable(v) for k, v in value.items()
             )
 
         if isinstance(
