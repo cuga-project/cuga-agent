@@ -105,7 +105,7 @@ Keep instructions easy to route and easy to verify:
 4. Add a grounding rule such as "never summarise a page you did not fetch."
 
 If the roster uses only the servers above and no external SaaS triggers, start its filename with
-`no_ap_`. Add a row for the new roster to the table above so people can discover it.
+`no_ap_`. Add a row for the new roster to the roster family table earlier in this README so people can discover it.
 
 ## How to test one
 
