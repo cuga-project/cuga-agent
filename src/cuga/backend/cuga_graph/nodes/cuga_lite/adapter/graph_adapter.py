@@ -53,6 +53,11 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.harness_messages import (
     harness_message,
     is_harness_message,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.prompt_cache import (
+    add_cache_markers,
+    cache_markers_enabled,
+    stable_system_prompt,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.repeat_calls import (
     REPEAT_NUDGE_KEY,
     detect_repeat_streak,
@@ -396,11 +401,21 @@ class AgentGraphAdapter(CoreGraphAdapter):
         return getattr(state, "pi", None)
 
     def prepare_system_content(self, state: Any, configurable: dict, base_prompt: str) -> str:
+        if stable_system_prompt(configurable):
+            # Run state goes to the tail instead (prepare_turn_context).
+            return base_prompt
+        return base_prompt + self._run_state_blocks(state)
+
+    def prepare_turn_context(self, state: Any, configurable: dict) -> str:
+        return self._run_state_blocks(state) if stable_system_prompt(configurable) else ""
+
+    def _run_state_blocks(self, state: Any) -> str:
+        """Todos and observed tool shapes: what changes while a task runs."""
         if self._task_todos_ref:
-            content = base_prompt + format_task_todos_system_block(self._task_todos_ref)
+            content = format_task_todos_system_block(self._task_todos_ref)
         else:
             task_todos = getattr(state, "task_todos", None)
-            content = base_prompt + format_current_plan_section(task_todos) if task_todos else base_prompt
+            content = format_current_plan_section(task_todos) if task_todos else ""
 
         if self._observed_tool_shapes:
             content += _format_observed_tool_shapes_block(self._observed_tool_shapes)
@@ -417,6 +432,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
         return {"callbacks": callbacks}
 
     async def ainvoke_model(self, bound: Any, messages: list, invoke_config: dict) -> Any:
+        configurable = (invoke_config or {}).get("configurable") or {}
+        if cache_markers_enabled(configurable, self._runtime_model_name(configurable)):
+            messages = add_cache_markers(messages)
         try:
             clamp_watsonx_completion_for_messages(bound, messages)
             return await bound.ainvoke(messages, config=invoke_config)
@@ -620,6 +638,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
         budget_exhausted: bool,
         playbook_fired: bool,
         variables_addendum: str = "",
+        turn_context: str = "",
     ) -> Optional[Command]:
         """Function-calling turn: invoke with real message objects, route on ``tool_calls``.
 
@@ -707,7 +726,15 @@ class AgentGraphAdapter(CoreGraphAdapter):
         msgs: List[BaseMessage] = [SystemMessage(content=system_content)]
         msgs.extend(_few_shot_to_messages(self.get_few_shot_messages(state)))
         msgs.extend(replay)
-        if variables_addendum:
+        if cache_markers_enabled(cfg, self._runtime_model_name(cfg)):
+            msgs = add_cache_markers(msgs)
+        if stable_system_prompt(cfg):
+            # Outbound only (#600), and last: the run state changes after nearly every
+            # call, so anywhere earlier it would invalidate the cached prefix behind it.
+            tail = (turn_context + variables_addendum).strip()
+            if tail:
+                msgs.append(for_model(harness_message(tail, "run_state")))
+        elif variables_addendum:
             # Outbound only, like call_model's CodeAct path (#600): never persisted.
             for i in range(len(msgs) - 1, -1, -1):
                 if isinstance(msgs[i], HumanMessage):

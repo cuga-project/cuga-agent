@@ -94,6 +94,16 @@ class CoreGraphAdapter(ABC):
         Default: returns ``base_prompt`` unchanged (Supervisor behaviour)."""
         return base_prompt
 
+    def prepare_turn_context(self, state: Any, configurable: dict) -> str:
+        """Run state that changes during a task (todos, observed shapes), sent at the end of
+        the outbound messages instead of inside the system prompt.
+
+        A system prompt that changes mid-task invalidates the provider's prompt cache for
+        everything after it on every call; the tail of the conversation changes anyway.
+        Outbound only, never persisted. Default: ``""`` (Supervisor behaviour).
+        """
+        return ""
+
     def get_variables_storage(self, state: Any) -> Optional[Any]:
         """Return the variables-storage dict for context summarisation.
         Default: ``state.variables_storage``; Supervisor uses a different key."""
@@ -148,6 +158,7 @@ class CoreGraphAdapter(ABC):
         budget_exhausted: bool,
         playbook_fired: bool,
         variables_addendum: str = "",
+        turn_context: str = "",
     ) -> Optional[Command]:
         """Native function-calling seam.
 

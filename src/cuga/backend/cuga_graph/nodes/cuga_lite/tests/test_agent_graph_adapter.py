@@ -385,11 +385,14 @@ def test_prepare_system_content_no_todos_returns_base_prompt():
     assert result == "You are an agent."
 
 
+_LEGACY = {"cuga_lite_stable_system_prompt": False}
+
+
 def test_prepare_system_content_appends_todos_ref_when_present():
     todos = [{"title": "Step 1", "status": "pending"}]
     adapter = _make_adapter(task_todos_ref=todos)
     state = SimpleNamespace(task_todos=None)
-    result = adapter.prepare_system_content(state, {}, "You are an agent.")
+    result = adapter.prepare_system_content(state, _LEGACY, "You are an agent.")
     assert result != "You are an agent."
     assert len(result) > len("You are an agent.")
 
@@ -398,7 +401,7 @@ def test_prepare_system_content_appends_observed_tool_shapes_when_present():
     adapter = _make_adapter(task_todos_ref=[])
     adapter._observed_tool_shapes = {"file_readfile": "list of 3 items"}
     state = SimpleNamespace(task_todos=None)
-    result = adapter.prepare_system_content(state, {}, "You are an agent.")
+    result = adapter.prepare_system_content(state, _LEGACY, "You are an agent.")
     assert result.startswith("You are an agent.")
     assert "file_readfile" in result
     assert "list of 3 items" in result
@@ -416,10 +419,26 @@ def test_prepare_system_content_combines_todos_and_observed_shapes():
     adapter = _make_adapter(task_todos_ref=todos)
     adapter._observed_tool_shapes = {"file_readfile": "list of 3 items"}
     state = SimpleNamespace(task_todos=None)
-    result = adapter.prepare_system_content(state, {}, "You are an agent.")
+    result = adapter.prepare_system_content(state, _LEGACY, "You are an agent.")
     assert "file_readfile" in result
     assert "list of 3 items" in result
     assert result.startswith("You are an agent.")
+
+
+def test_stable_system_prompt_moves_todos_and_shapes_to_the_turn_context():
+    todos = [{"text": "Step 1", "status": "pending"}]
+    adapter = _make_adapter(task_todos_ref=todos)
+    adapter._observed_tool_shapes = {"file_readfile": "list of 3 items"}
+    state = SimpleNamespace(task_todos=None)
+
+    assert adapter.prepare_system_content(state, {}, "You are an agent.") == "You are an agent."
+    context = adapter.prepare_turn_context(state, {})
+    assert "Step 1" in context and "file_readfile" in context
+
+
+def test_legacy_mode_has_no_turn_context():
+    adapter = _make_adapter(task_todos_ref=[{"text": "Step 1", "status": "pending"}])
+    assert adapter.prepare_turn_context(SimpleNamespace(task_todos=None), _LEGACY) == ""
 
 
 def test_new_adapter_has_empty_weak_schema_state_by_default():

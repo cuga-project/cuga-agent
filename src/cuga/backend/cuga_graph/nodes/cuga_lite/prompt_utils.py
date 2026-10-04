@@ -819,6 +819,7 @@ def create_mcp_prompt(
     few_shots_enabled: Optional[bool] = None,
     agents_enabled: bool = False,
     agents_prompt_section: str = "",
+    plan_in_reminder: bool = False,
 ):
     """Create a prompt for CodeAct agent that works with MCP tools.
 
@@ -835,6 +836,8 @@ def create_mcp_prompt(
         prompt_template: Jinja2 template for the prompt
         enable_find_tools: If True, includes find_tools instructions in the prompt
         enable_todos: If True, includes create_update_todos instructions in the prompt
+        plan_in_reminder: If True, the prompt says Current Plan arrives at the end of the latest
+            message (``cuga_lite_stable_system_prompt``), not at the bottom of the system prompt
         skills_enabled: If True, render the skills block (load_skill, available skills list)
         skills_prompt_section: Pre-formatted markdown/XML block from the skills registry
         enable_shell_tool: If True, include run_command / npm / sandbox workspace bullets in the prompt (OpenSandbox shell tools; defaults False in settings)
@@ -898,6 +901,7 @@ def create_mcp_prompt(
             "has_knowledge": has_knowledge,
             "agents_enabled": agents_enabled,
             "agents_prompt_section": agents_prompt_section,
+            "plan_in_reminder": plan_in_reminder,
         }
     ).to_string()
     return prompt

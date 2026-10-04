@@ -106,6 +106,12 @@ cuga_lite_output_truncation_retries = 2
 # Every mode: when the provider rejects a request as too long for its context window, the history is summarized
 # and any message longer than this many characters is cut, then the call is retried once.
 cuga_lite_reactive_compact_max_message_chars = 20000
+# Keep the system prompt fixed for the whole run so the provider's prompt cache keeps hitting: todos and observed
+# tool shapes (and, in function-calling mode, the variables summary) go at the end of the outbound messages instead.
+cuga_lite_stable_system_prompt = true
+# Anthropic cache_control breakpoints on the system prompt and the last two turns: off | auto (Claude/Anthropic model
+# names only, e.g. behind LiteLLM or OpenRouter) | on. Off by default: a gateway that rejects content blocks fails every call.
+cuga_lite_prompt_cache_markers = "off"
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 cuga_lite_blocked_claim_retry = true  # When an NL turn claims tools/data are unavailable but no code has executed and tools ARE bound, retry once with a corrective message instead of finalizing the false refusal (issue #610). Only active when cuga_lite_nl_auto_continue is on.
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)

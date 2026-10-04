@@ -23,6 +23,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.tools.runtime_tools import (
     build_runtime_tools,
     resolve_runtime_backends,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.prompt_cache import stable_system_prompt
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import (
     _ensure_web_app,
     _first_user_message_text,
@@ -911,6 +912,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 few_shots_enabled=few_shots_enabled,
                 agents_enabled=agents_enabled,
                 agents_prompt_section=agents_prompt_section,
+                plan_in_reminder=stable_system_prompt(configurable),
             )
             logger.info(
                 "Prepared CugaLite prompt: enable_find_tools={} few_shot_message_turns={} "

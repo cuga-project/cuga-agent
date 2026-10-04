@@ -9,6 +9,7 @@ Differences handled via hooks:
 - Few-shot messages: ``adapter.get_few_shot_messages``
 - Personal Instructions: ``adapter.get_pi``
 - System content augmentation (todos): ``adapter.prepare_system_content``
+- Run state sent at the tail instead (todos, shapes): ``adapter.prepare_turn_context``
 - Variable storage key: ``adapter.get_variables_storage``
 - Activity tracker: ``adapter.get_tracker``
 - Langfuse: pass full LangGraph ``config`` into ``ainvoke`` (preserves parent run ids)
@@ -98,6 +99,9 @@ def create_call_model_node(
         # ── System content (may be augmented, e.g. with todos) ─────────────
         base_prompt: str = getattr(state, "prepared_prompt", "") or ""
         system_content: str = adapter.prepare_system_content(state, configurable, base_prompt)
+        # Run state that changes mid-task goes at the end of the outbound messages, so the
+        # system prompt — and the provider's prompt cache behind it — stays stable.
+        turn_context: str = adapter.prepare_turn_context(state, configurable)
 
         # ── Variables summary (count toward context before summarization) ──
         var_manager = adapter.get_variable_manager(state)
@@ -130,7 +134,7 @@ def create_call_model_node(
             if playbook_guidance:
                 logger.info("Will inject playbook guidance into last user message (first time only)")
 
-        summarization_system_prompt = system_content + variables_addendum
+        summarization_system_prompt = system_content + turn_context + variables_addendum
         if playbook_guidance:
             summarization_system_prompt += f"\n\n## Task Guidance\n{playbook_guidance}"
 
@@ -192,8 +196,10 @@ def create_call_model_node(
                 # which are guarded to fire once per conversation/task — this one has no
                 # such guard, so it is the only addendum that accumulates.
                 outbound_content = content
-                if variables_summary_text and is_last:
-                    outbound_content = content + variables_addendum
+                if is_last:
+                    outbound_content = (
+                        content + turn_context + (variables_addendum if variables_summary_text else "")
+                    )
 
                 modified_messages.append(msg.model_copy(update={"content": content}) if modified else msg)
                 messages_for_model.append({"role": "user", "content": outbound_content})
@@ -222,6 +228,15 @@ def create_call_model_node(
             else:
                 modified_messages.append(msg)
                 logger.warning("call_model: skipping message {} with unknown role: {}", i, msg_role)
+
+        last_is_human = bool(effective_messages) and (
+            isinstance(effective_messages[-1], HumanMessage)
+            or getattr(effective_messages[-1], "type", None) in ("human", "user")
+        )
+        if turn_context and not last_is_human:
+            # No user message at the tail to carry it: send the run state on its own.
+            tail = turn_context + (variables_addendum if variables_summary_text else "")
+            messages_for_model.append({"role": "user", "content": tail.strip()})
 
         logger.info(
             "call_model: {} messages → model ({})",
@@ -279,6 +294,7 @@ def create_call_model_node(
                 budget_exhausted=budget_exhausted,
                 playbook_fired=playbook_fired,
                 variables_addendum=variables_addendum,
+                turn_context=turn_context,
             )
             if fc_command is not None:
                 return fc_command

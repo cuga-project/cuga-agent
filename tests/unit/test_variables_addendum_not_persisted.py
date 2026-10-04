@@ -51,6 +51,7 @@ def _make_adapter(captured_outbound: List[List[dict]]) -> MagicMock:
     a.sender_name = "unit-test"
 
     a.prepare_system_content.return_value = "SYSTEM"
+    a.prepare_turn_context.return_value = ""
     a.get_few_shot_messages.return_value = []
     a.get_pi.return_value = None
     a.get_metadata.return_value = {}

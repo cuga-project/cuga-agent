@@ -241,6 +241,25 @@ async def test_few_shot_demos_go_out_as_chat_messages_before_history():
 
 @pytest.mark.asyncio
 async def test_variables_addendum_rides_the_last_human_turn_outbound_only():
+    """Legacy placement (``cuga_lite_stable_system_prompt = false``)."""
+    model = _Model(AIMessage(content="ok"))
+    state = _state([HumanMessage(content="first"), AIMessage(content="sure"), HumanMessage(content="last")])
+    addendum = "\n\n## Available Variables\n\nvar_1: ..."
+
+    cmd = await _turn(
+        _adapter(), model, state, {**FC, "cuga_lite_stable_system_prompt": False}, variables_addendum=addendum
+    )
+
+    (outbound,) = model.seen
+    humans = [m for m in outbound if isinstance(m, HumanMessage)]
+    assert humans[-1].content == "last" + addendum and humans[0].content == "first"
+    assert all(addendum not in m.content for m in cmd.update["chat_messages"]), "never persisted (#600)"
+
+
+@pytest.mark.asyncio
+async def test_run_state_goes_last_so_the_cached_prefix_survives():
+    """Stable mode: variables (and any turn context) are a trailing reminder, so the
+    history before it — the user's request included — is byte-identical across calls."""
     model = _Model(AIMessage(content="ok"))
     state = _state([HumanMessage(content="first"), AIMessage(content="sure"), HumanMessage(content="last")])
     addendum = "\n\n## Available Variables\n\nvar_1: ..."
@@ -248,9 +267,9 @@ async def test_variables_addendum_rides_the_last_human_turn_outbound_only():
     cmd = await _turn(_adapter(), model, state, FC, variables_addendum=addendum)
 
     (outbound,) = model.seen
-    humans = [m for m in outbound if isinstance(m, HumanMessage)]
-    assert humans[-1].content == "last" + addendum and humans[0].content == "first"
-    assert all(addendum not in m.content for m in cmd.update["chat_messages"]), "never persisted (#600)"
+    assert outbound[1:4] == state.chat_messages, "history goes out untouched"
+    assert outbound[-1].content.startswith("<system-reminder>") and "var_1" in outbound[-1].content
+    assert all("var_1" not in m.content for m in cmd.update["chat_messages"]), "never persisted (#600)"
 
 
 def test_replay_sanitizer_drops_reasoning_and_strips_harmony_without_touching_history(monkeypatch):
