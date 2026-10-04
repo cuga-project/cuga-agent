@@ -100,6 +100,12 @@ cuga_lite_tool_result_clear_min_chars = 2000
 # Function-calling / hybrid: after this many consecutive calls to one tool with only one argument changing (or
 # none), add one runtime note suggesting execute_python (hybrid) or a bulk endpoint. 0 = off.
 cuga_lite_repeat_call_nudge_after = 3
+# Every mode: a reply cut off at the output-token limit (unfinished code block, unclosed tool-call JSON, half an
+# answer) is discarded and the call retried with a note asking for less output, up to this many times in a row. 0 = off.
+cuga_lite_output_truncation_retries = 2
+# Every mode: when the provider rejects a request as too long for its context window, the history is summarized
+# and any message longer than this many characters is cut, then the call is retried once.
+cuga_lite_reactive_compact_max_message_chars = 20000
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 cuga_lite_blocked_claim_retry = true  # When an NL turn claims tools/data are unavailable but no code has executed and tools ARE bound, retry once with a corrective message instead of finalizing the false refusal (issue #610). Only active when cuga_lite_nl_auto_continue is on.
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)

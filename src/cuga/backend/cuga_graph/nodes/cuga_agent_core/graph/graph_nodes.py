@@ -20,6 +20,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.graph import END
 from langgraph.types import Command
 from loguru import logger
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.model_call_recovery import ONE_SHOT_RECOVERY_KEYS
 from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
 
 EMPTY_RESPONSE_CORRECTION_KEY = "_empty_response_correction"
@@ -207,12 +208,14 @@ class CoreGraphAdapter(ABC):
         """Return the *value* (not the full key/value pair) for the metadata
         state key after a call_model response.
 
-        Clears the one-shot empty-reply marker so a later empty reply can
-        retry again. Adds ``playbook_guidance_added: True`` when a playbook
+        Clears the one-shot empty-reply and size-recovery markers so a later
+        failure can retry again. Adds ``playbook_guidance_added: True`` when a playbook
         fired.
         """
         meta = dict(self.get_metadata(state) or {})
         meta.pop(EMPTY_RESPONSE_CORRECTION_KEY, None)
+        for key in ONE_SHOT_RECOVERY_KEYS:
+            meta.pop(key, None)
         if playbook_fired:
             meta["playbook_guidance_added"] = True
         return meta

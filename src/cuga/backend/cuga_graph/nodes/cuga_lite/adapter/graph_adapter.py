@@ -23,6 +23,12 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
     format_current_plan_section,
     format_task_todos_system_block,
 )
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.model_call_recovery import (
+    max_truncation_retries,
+    pending_truncation_note,
+    truncation_retries_used,
+    truncation_retry_command,
+)
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     EMPTY_RESPONSE_CORRECTION,
     EMPTY_RESPONSE_CORRECTION_KEY,
@@ -87,7 +93,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import 
     normalize_assistant_text,
 )
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
-from cuga.backend.llm.errors import extract_code_from_tool_use_failed
+from cuga.backend.llm.errors import extract_code_from_tool_use_failed, is_output_truncated
 from cuga.config import settings
 
 
@@ -712,6 +718,11 @@ class AgentGraphAdapter(CoreGraphAdapter):
         if budget_exhausted:
             # Outbound only as well.
             msgs.append(for_model(harness_message(TOOL_BUDGET_EXHAUSTED_INSTRUCTION, "budget_exhausted")))
+        else:
+            # The previous reply was cut off at the output-token limit and discarded.
+            truncation_note = pending_truncation_note(self.get_metadata(state))
+            if truncation_note:
+                msgs.append(for_model(harness_message(truncation_note, "output_truncated")))
 
         clamp_watsonx_completion_for_messages(bound, msgs)
         response = await bound.ainvoke(msgs, config=invoke_config)
@@ -773,6 +784,23 @@ class AgentGraphAdapter(CoreGraphAdapter):
         base_meta = dict(self.build_metadata_update(state, playbook_fired=playbook_fired) or {})
         if repeat_streak is not None:
             base_meta[REPEAT_NUDGE_KEY] = repeat_streak.first_call_id
+
+        # Cut off at the output-token limit: tool calls whose arguments all parsed are
+        # complete and run as usual; a call whose JSON never closed (it lands in
+        # invalid_tool_calls) or a half-written answer is discarded and retried.
+        if is_output_truncated(response) and not budget_exhausted:
+            if tool_calls and not invalid_tool_calls:
+                logger.warning("[fc] reply hit the output-token limit after complete tool call(s)")
+            elif (
+                truncation_retries_used(self.get_metadata(state)) < max_truncation_retries(settings)
+                and new_step_count < max_steps
+            ):
+                logger.warning("[fc] reply hit the output-token limit — discarded, retrying with less output")
+                return truncation_retry_command(
+                    self, state, messages=history, base_meta=base_meta, new_step_count=new_step_count
+                )
+            else:
+                logger.error("[fc] reply hit the output-token limit and no retries are left")
 
         if has_calls:
             logger.info("[fc] {} native tool_call(s) -> tool_exec", len(tool_calls) + len(invalid_tool_calls))

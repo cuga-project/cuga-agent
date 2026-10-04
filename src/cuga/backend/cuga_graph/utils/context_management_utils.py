@@ -174,6 +174,101 @@ async def apply_context_summarization(
         return messages
 
 
+REACTIVE_COMPACT_TRUNCATION_NOTE = "[truncated: the full text did not fit the context window]"
+
+
+def _message_chars(messages: List[BaseMessage]) -> int:
+    return sum(len(m.content) if isinstance(m.content, str) else len(str(m.content)) for m in messages)
+
+
+def cap_oversized_messages(messages: List[BaseMessage], max_chars: int) -> List[BaseMessage]:
+    """Cut every message whose text is longer than ``max_chars`` down to its head.
+
+    Copies, never mutates. Only string contents are cut; ids, ``tool_call_id`` and
+    ``tool_calls`` are kept, so a function-calling transcript stays replayable.
+    """
+    if max_chars <= 0:
+        return list(messages)
+    capped: List[BaseMessage] = []
+    for msg in messages:
+        content = getattr(msg, "content", None)
+        if isinstance(content, str) and len(content) > max_chars:
+            msg = msg.model_copy(
+                update={"content": f"{content[:max_chars]}\n\n{REACTIVE_COMPACT_TRUNCATION_NOTE}"}
+            )
+        capped.append(msg)
+    return capped
+
+
+async def force_context_compaction(
+    messages: List[BaseMessage],
+    model: Any,
+    *,
+    max_message_chars: int,
+    tracker: Optional[ActivityTracker] = None,
+) -> Optional[List[BaseMessage]]:
+    """Shrink ``messages`` after the provider rejected them as too long for its context window.
+
+    Free-code's reactive compact: the proactive check in :func:`apply_context_summarization`
+    runs on an estimate (which undercounts on some providers), so when the real request
+    still overflows, summarize now — bypassing the trigger — and then cut any message
+    longer than ``max_message_chars`` (one huge tool result inside the kept tail is
+    something summarization alone cannot fix).
+
+    Returns the smaller list, or ``None`` when nothing could be removed.
+    """
+    if not messages:
+        return None
+    before_chars = _message_chars(messages)
+    compacted = list(messages)
+
+    from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
+
+    try:
+        model_name = resolve_model_identifier(model, fallback_name="gpt-4")
+        summarizer = ContextSummarizer(model, model_name)
+        if summarizer.middleware is not None:
+            compacted, metrics = await summarizer.summarize_messages(compacted)
+            logger.info(
+                "Reactive compaction: summarization {} ({} -> {} messages)",
+                "skipped: " + str(metrics["skipped"]) if "skipped" in metrics else "done",
+                len(messages),
+                len(compacted),
+            )
+    except Exception as exc:
+        logger.warning(f"Reactive compaction: summarization failed, only capping messages: {exc}")
+        compacted = list(messages)
+
+    compacted = cap_oversized_messages(compacted, max_message_chars)
+    after_chars = _message_chars(compacted)
+    if after_chars >= before_chars:
+        logger.error(f"Reactive compaction removed nothing ({before_chars} chars, {len(messages)} messages)")
+        return None
+
+    logger.warning(
+        f"Reactive compaction: {len(messages)} -> {len(compacted)} messages, "
+        f"{before_chars} -> {after_chars} chars"
+    )
+    if tracker:
+        try:
+            tracker.collect_step(
+                Step(
+                    name="ReactiveCompaction",
+                    data=json.dumps(
+                        {
+                            "messages_before": len(messages),
+                            "messages_after": len(compacted),
+                            "chars_before": before_chars,
+                            "chars_after": after_chars,
+                        }
+                    ),
+                )
+            )
+        except Exception as e:
+            logger.debug(f"Failed to record reactive compaction in tracker: {e}")
+    return compacted
+
+
 def _log_and_track_metrics(
     original: List[BaseMessage],
     summarized: List[BaseMessage],

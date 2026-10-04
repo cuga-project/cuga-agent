@@ -153,3 +153,75 @@ def extract_code_from_tool_use_failed(err: Any) -> Optional[str]:
     if not failed_gen:
         return None
     return failed_gen_to_code(failed_gen)
+
+
+# Lower-cased fragments of the errors providers raise when the request does not fit the
+# context window. OpenAI/vLLM/Groq/LiteLLM ("maximum context length", code
+# context_length_exceeded), Anthropic ("prompt is too long"), Bedrock ("input is too
+# long"), WatsonX ("cannot exceed the total tokens limit"), Gemini ("exceeds the maximum
+# number of tokens"), newer vLLM ("maximum model length").
+_CONTEXT_OVERFLOW_FRAGMENTS = (
+    "context_length_exceeded",
+    "maximum context length",
+    "context window",
+    "prompt is too long",
+    "input is too long",
+    "cannot exceed the total tokens limit",
+    "exceeds the maximum number of tokens",
+    "maximum model length",
+    "reduce the length of the messages",
+)
+_CONTEXT_OVERFLOW_TYPE_FRAGMENTS = ("contextwindowexceeded", "contextoverflow", "contextlengthexceeded")
+
+
+def is_context_overflow_error(err: Any) -> bool:
+    """True when the provider rejected the request because it does not fit the context window.
+
+    Checks the exception, its ``body`` and its cause chain: LangChain wrappers re-raise
+    the provider error with the original as ``__cause__``. Deliberately narrow — a
+    tokens-per-minute rate limit ("Request too large ... tokens per min") is not an
+    overflow and must not trigger a compaction.
+    """
+    seen = 0
+    current = err
+    while current is not None and seen < 5:
+        seen += 1
+        type_name = type(current).__name__.lower()
+        if any(fragment in type_name for fragment in _CONTEXT_OVERFLOW_TYPE_FRAGMENTS):
+            return True
+        text = (current if isinstance(current, str) else str(current)).lower()
+        body = getattr(current, "body", None)
+        if body is not None:
+            text += " " + str(body).lower()
+        if "per min" not in text and any(fragment in text for fragment in _CONTEXT_OVERFLOW_FRAGMENTS):
+            return True
+        if isinstance(current, str):
+            break
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    return False
+
+
+# Stop reasons meaning "the output-token limit cut the reply": OpenAI/WatsonX/vLLM
+# ``finish_reason="length"``, Anthropic ``stop_reason="max_tokens"``, Gemini
+# ``finish_reason="MAX_TOKENS"``, Ollama ``done_reason="length"``.
+_TRUNCATED_STOP_REASONS = frozenset({"length", "max_tokens", "max_output_tokens"})
+
+
+def is_output_truncated(response: Any) -> bool:
+    """True when the model stopped because it hit the output-token limit."""
+    meta = getattr(response, "response_metadata", None) or {}
+    if not isinstance(meta, dict):
+        return False
+    generation_info = meta.get("generation_info") if isinstance(meta.get("generation_info"), dict) else {}
+    for reason in (
+        meta.get("finish_reason"),
+        meta.get("stop_reason"),
+        meta.get("done_reason"),
+        generation_info.get("finish_reason"),
+    ):
+        if (
+            reason is not None
+            and str(getattr(reason, "name", reason)).strip().lower() in _TRUNCATED_STOP_REASONS
+        ):
+            return True
+    return False

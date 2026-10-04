@@ -17,6 +17,9 @@ Differences handled via hooks:
 - Tracker side-effects: ``adapter.on_response_processed``
 - Metadata update: ``adapter.build_metadata_update``
 - NL auto-continue: ``adapter.classify_auto_continue``
+
+Size failures (context overflow, output cut off at the token limit) are retried here
+for every graph; see ``model_call_recovery``.
 """
 
 from __future__ import annotations
@@ -39,12 +42,21 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     CoreGraphAdapter,
     enforce_step_limit,
 )
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.model_call_recovery import (
+    code_parses,
+    max_truncation_retries,
+    pending_truncation_note,
+    reactive_compact_command,
+    truncation_retries_used,
+    truncation_retry_command,
+)
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
 from cuga.backend.cuga_graph.utils.harmony import contains_harmony_tokens
 from cuga.backend.cuga_graph.utils.context_management_utils import (
     apply_context_summarization,
     truncate_text_for_context,
 )
+from cuga.backend.llm.errors import is_context_overflow_error, is_output_truncated
 
 
 TOOL_BUDGET_EXHAUSTED_INSTRUCTION = (
@@ -230,6 +242,12 @@ def create_call_model_node(
             # Outbound only, like the variables addendum: this instruction is
             # rebuilt per turn and must not accumulate in persisted history.
             messages_for_model.append({"role": "user", "content": TOOL_BUDGET_EXHAUSTED_INSTRUCTION})
+        else:
+            # The previous reply was cut off at the output-token limit and discarded:
+            # same request, plus a note asking for less. Outbound only.
+            truncation_note = pending_truncation_note(metadata)
+            if truncation_note:
+                messages_for_model.append({"role": "user", "content": truncation_note})
 
         # ── Resolve bound model (bind-tools, Lite-only) ────────────────────
         bound = (
@@ -248,23 +266,37 @@ def create_call_model_node(
         # graph and for every CodeAct run. CugaLite returns a Command here when
         # cuga_lite_execution_mode resolves to function_calling, and the CodeAct
         # path below is skipped entirely — never blended.
-        fc_command = await adapter.execute_call_model_fc(
-            state=state,
-            config=config,
-            configurable=configurable,
-            active_model=active_model,
-            bound=bound,
-            invoke_config=invoke_config,
-            system_content=system_content,
-            modified_messages=modified_messages,
-            budget_exhausted=budget_exhausted,
-            playbook_fired=playbook_fired,
-            variables_addendum=variables_addendum,
-        )
-        if fc_command is not None:
-            return fc_command
+        try:
+            fc_command = await adapter.execute_call_model_fc(
+                state=state,
+                config=config,
+                configurable=configurable,
+                active_model=active_model,
+                bound=bound,
+                invoke_config=invoke_config,
+                system_content=system_content,
+                modified_messages=modified_messages,
+                budget_exhausted=budget_exhausted,
+                playbook_fired=playbook_fired,
+                variables_addendum=variables_addendum,
+            )
+            if fc_command is not None:
+                return fc_command
 
-        response = await adapter.ainvoke_model(bound, messages_for_model, invoke_config)
+            response = await adapter.ainvoke_model(bound, messages_for_model, invoke_config)
+        except Exception as exc:
+            if not is_context_overflow_error(exc):
+                raise
+            # The provider says the request does not fit: compact and try again once.
+            return await reactive_compact_command(
+                adapter,
+                state,
+                error=exc,
+                messages=modified_messages,
+                model=active_model,
+                base_meta=adapter.build_metadata_update(state, playbook_fired=playbook_fired),
+                settings=settings,
+            )
 
         # ── Normalise response ─────────────────────────────────────────────
         content, reasoning = adapter.normalize_response(response)
@@ -302,6 +334,36 @@ def create_call_model_node(
         )
         if limit_cmd is not None:
             return limit_cmd
+
+        # ── Output cut off at the token limit: discard and retry ───────────
+        # A truncated reply is usable only when it carries a complete code block (the
+        # cut fell after the closing fence). Anything else — a block that ends
+        # mid-statement, or a half-written answer — is dropped, never persisted, and
+        # the same request goes out again with a note asking for less output.
+        if is_output_truncated(response) and not budget_exhausted:
+            code_complete = code_parses(code) and ("```" not in content or content.count("```") >= 2)
+            if code_complete:
+                logger.warning(
+                    f"{adapter.sender_name}: reply hit the output-token limit after a complete code block"
+                )
+            elif (
+                truncation_retries_used(metadata) < max_truncation_retries(settings)
+                and new_step_count < max_steps
+            ):
+                logger.warning(
+                    f"{adapter.sender_name}: reply hit the output-token limit — discarded, retrying with less output"
+                )
+                return truncation_retry_command(
+                    adapter,
+                    state,
+                    messages=modified_messages,
+                    base_meta=adapter.build_metadata_update(state, playbook_fired=playbook_fired),
+                    new_step_count=new_step_count,
+                )
+            else:
+                logger.error(
+                    f"{adapter.sender_name}: reply hit the output-token limit and no retries are left"
+                )
 
         # ── Tool-approval interrupt for generated code ─────────────────────
         if code and settings.policy.enabled:
