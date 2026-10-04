@@ -161,6 +161,20 @@ enabled = false
 max_spawn_depth = 2
 forward_sync_subagent_events = true
 
+[large_output]
+# Function-calling / hybrid: a tool result longer than threshold_chars is saved to a file instead of being
+# truncated (free-code's persisted-output, utils/toolResultStorage.ts), and a search subagent greps/reads that
+# file for what the agent needs; only its findings and a short preview reach the agent. Off: the batch output
+# budget truncates as before. helpers/large_output.py. Env: DYNACONF_LARGE_OUTPUT__ENABLED
+enabled = false
+threshold_chars = 50000  # free-code's DEFAULT_MAX_RESULT_SIZE_CHARS; 0 = advanced_features.execution_output_max_length
+spill_dir = ""  # "" = <system temp>/cuga_large_output/<thread_id>/<tool_call_id>.txt
+search_max_steps = 8  # grep/read calls per research round
+max_rounds = 2  # 1 = no check; N > 1 = after each round a checker looks for gaps and sends the subagent back (up to N rounds)
+subagent_timeout = 120  # seconds for the whole search (all rounds); past it the agent gets the path and preview only
+max_answer_chars = 4000  # cap on the findings returned to the agent
+preview_chars = 2000  # free-code's PREVIEW_SIZE_BYTES
+
 [skills]
 # When false, agent skills (SKILL.md, load_skill, sandbox upload, /api/skills) are disabled.
 enabled = false

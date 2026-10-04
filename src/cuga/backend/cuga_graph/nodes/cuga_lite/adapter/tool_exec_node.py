@@ -55,6 +55,11 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import (
     run_code,
     save_native_result,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.large_output import (
+    handle_large_result,
+    large_output_enabled,
+    large_output_threshold,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_effects import page_note
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_search import (
     TOOL_SEARCH_NAME,
@@ -85,6 +90,9 @@ DEFERRED_CALL_MESSAGE = (
 )
 
 TRUNCATION_MARKER = "\n... [result truncated: {limit} characters of output remain for this batch]"
+
+#: What ``format_execution_output`` appends when it trims an ``execute_python`` block's output.
+CODE_TRIM_MARKER = "[Output trimmed to "
 
 
 def _tool_call_parts(call: Any) -> tuple[str, str, Any]:
@@ -198,7 +206,12 @@ def _variable_updates(state: Any) -> Dict[str, Any]:
 
 
 async def _run_execute_python(
-    adapter: Any, raw_args: Any, *, call_id: str, hybrid: Dict[str, Any]
+    adapter: Any,
+    raw_args: Any,
+    *,
+    call_id: str,
+    hybrid: Dict[str, Any],
+    large_output: Optional[Dict[str, Any]] = None,
 ) -> ToolMessage:
     """Hybrid mode: run the block in the CodeAct sandbox executor and reply with its output."""
     kwargs, arg_error = _coerce_args(raw_args)
@@ -223,11 +236,44 @@ async def _run_execute_python(
         return _error_message(f"execute_python failed: {exc}", call_id=call_id, name=EXECUTE_PYTHON_NAME)
     _collect_step(adapter, "Assistant_code", {"code": code, "new_variables": sorted(new_vars)})
     text = (output or "").strip() or "(no output — end the code with print() of what you need)"
+    if large_output is not None and CODE_TRIM_MARKER in text:
+        text = await _searched_code_output(text, new_vars, kwargs, call_id=call_id, large_output=large_output)
     # ``called``: tools the code ran — the did-anything check reads it (code calls
     # never appear as ToolMessages of their own).
     return ToolMessage(
         content=text, tool_call_id=call_id, name=EXECUTE_PYTHON_NAME, artifact={"code_calls": called}
     )
+
+
+async def _searched_code_output(
+    text: str, new_vars: Dict[str, Any], args: Any, *, call_id: str, large_output: Dict[str, Any]
+) -> str:
+    """A block printed something too large and the executor trimmed it: search the variable instead.
+
+    The printed text is already cut, but the value behind it is the largest new
+    variable, whole. Its trimmed print is replaced by the saved file plus the search
+    subagent's findings; the variables summary after the trim marker is kept.
+    """
+    sized = [(len(_stringify(v)), name, v) for name, v in (new_vars or {}).items()]
+    size, var_name, value = max(sized, key=lambda item: item[0], default=(0, None, None))
+    if var_name is None or size <= large_output["threshold"]:
+        return text
+    persisted = await handle_large_result(
+        value,
+        tool_name=f"{EXECUTE_PYTHON_NAME} (variable `{var_name}`)",
+        call_id=call_id,
+        thread_id=large_output["thread_id"],
+        messages=large_output["messages"],
+        args=args,
+        model=large_output["model"],
+        invoke_config=large_output["invoke_config"],
+        saved_as=var_name,
+    )
+    if persisted is None:
+        return text
+    _, _, after = text.partition(CODE_TRIM_MARKER)
+    _, _, summary = after.partition("]")
+    return f"{persisted}\n{summary.strip()}".strip()
 
 
 def _unknown_tool_text(adapter: Any, name: str, surface: Optional[DeferredToolSurface]) -> str:
@@ -333,6 +379,21 @@ def create_tool_exec_node(adapter: Any) -> Callable:
             else set()
         )
 
+        thread_id = configurable.get("thread_id") or getattr(state, "thread_id", None)
+        large_output = (
+            {
+                "threshold": large_output_threshold(),
+                "model": configurable.get("llm") or getattr(adapter, "_model", None),
+                "invoke_config": (
+                    adapter.get_invoke_config(configurable) if hasattr(adapter, "get_invoke_config") else {}
+                ),
+                "thread_id": thread_id,
+                "messages": messages,
+            }
+            if large_output_enabled()
+            else None
+        )
+
         results: List[ToolMessage] = []
         executed = 0
         execution_tool_calls: List[Dict[str, Any]] = []
@@ -351,12 +412,13 @@ def create_tool_exec_node(adapter: Any) -> Callable:
                     hybrid=(
                         {
                             "state": state,
-                            "thread_id": configurable.get("thread_id") or getattr(state, "thread_id", None),
+                            "thread_id": thread_id,
                             "apps_list": configurable.get("apps_list"),
                         }
                         if hybrid
                         else None
                     ),
+                    large_output=large_output,
                 )
             finally:
                 execution_tool_calls = ToolCallTracker.stop_tracking()
@@ -475,6 +537,7 @@ async def _run_batch(
     surface: Optional[DeferredToolSurface] = None,
     discovered: Optional[set] = None,
     hybrid: Optional[Dict[str, Any]] = None,
+    large_output: Optional[Dict[str, Any]] = None,
 ) -> int:
     """Run one turn's calls in order, appending one ``ToolMessage`` per id to ``results``.
 
@@ -511,7 +574,9 @@ async def _run_batch(
         attempted += 1
 
         if hybrid is not None and name == EXECUTE_PYTHON_NAME:
-            reply = await _run_execute_python(adapter, raw_args, call_id=call_id, hybrid=hybrid)
+            reply = await _run_execute_python(
+                adapter, raw_args, call_id=call_id, hybrid=hybrid, large_output=large_output
+            )
             executed += reply.status != "error"
             results.append(reply)
             continue
@@ -553,7 +618,23 @@ async def _run_batch(
         try:
             result = await asyncio.wait_for(counted(**kwargs), timeout=timeout)
             executed += 1
-            content = output_budget.take(_stringify(result))
+            saved = save_native_result(hybrid["state"], name, result) if hybrid is not None else None
+            text = _stringify(result)
+            persisted = None
+            if large_output is not None and len(text) > large_output["threshold"]:
+                # Before the batch budget would cut it: save it, search it, reply with the findings.
+                persisted = await handle_large_result(
+                    result,
+                    tool_name=shown,
+                    call_id=call_id,
+                    thread_id=large_output["thread_id"],
+                    messages=large_output["messages"],
+                    args=kwargs,
+                    model=large_output["model"],
+                    invoke_config=large_output["invoke_config"],
+                    saved_as=saved,
+                )
+            content = output_budget.take(persisted if persisted is not None else text)
             structured = (getattr(adapter, "_tools_context_ref", None) or {}).get(
                 "_lc_bind_tools_structured_by_name"
             ) or {}
@@ -561,12 +642,11 @@ async def _run_batch(
             if note:
                 content += f"\n{note}"
             artifact = None
-            if hybrid is not None:
-                saved = save_native_result(hybrid["state"], name, result)
-                if saved:
+            if saved:
+                if persisted is None:
                     content += f"\n[Result saved as variable `{saved}` (this call's output only) — usable in execute_python.]"
-                    # Old-result clearing (tool_result_clearing.py) points its stub here.
-                    artifact = {"saved_as": saved}
+                # Old-result clearing (tool_result_clearing.py) points its stub here.
+                artifact = {"saved_as": saved}
             results.append(ToolMessage(content=content, tool_call_id=call_id, name=name, artifact=artifact))
         except asyncio.TimeoutError:
             results.append(

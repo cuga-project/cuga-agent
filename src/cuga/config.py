@@ -272,6 +272,15 @@ validators = [
     Validator("agent_spawn.enabled", default=False),
     Validator("agent_spawn.max_spawn_depth", default=2, is_type_of=int, gt=0),
     Validator("agent_spawn.forward_sync_subagent_events", default=True),
+    # Large tool results (function-calling / hybrid): save to a file + search subagent — helpers/large_output.py.
+    Validator("large_output.enabled", default=False),
+    Validator("large_output.threshold_chars", default=50000, is_type_of=int, gte=0),
+    Validator("large_output.spill_dir", default=""),
+    Validator("large_output.search_max_steps", default=8, is_type_of=int, gt=0),
+    Validator("large_output.max_rounds", default=2, is_type_of=int, gt=0),
+    Validator("large_output.subagent_timeout", default=120, is_type_of=(int, float), gt=0),
+    Validator("large_output.max_answer_chars", default=4000, is_type_of=int, gt=0),
+    Validator("large_output.preview_chars", default=2000, is_type_of=int, gte=0),
     Validator(
         "advanced_features.sandbox_execution_timeout",
         default=30,
