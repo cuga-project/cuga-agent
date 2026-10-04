@@ -13,6 +13,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     EXECUTION_OUTPUT_PREFIX,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.model_call_recovery import ONE_SHOT_RECOVERY_KEYS
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.stop_checks import STOP_CHECK_PREFIX
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import VERIFY_BLOCKED_PREFIX
 
 
@@ -33,6 +34,7 @@ def reflection_current_task(state: Any) -> str:
             EXECUTION_OUTPUT_PREFIX,
             VERIFY_BLOCKED_PREFIX,
             EMPTY_RESPONSE_CORRECTION,
+            STOP_CHECK_PREFIX,
         )
         for msg in reversed(state.chat_messages):
             if isinstance(msg, HumanMessage):

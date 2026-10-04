@@ -67,6 +67,7 @@ def _make_adapter(captured_outbound: List[List[dict]]) -> MagicMock:
     a.normalize_response.return_value = ("done, no code here", "")
     a.on_response_processed.return_value = None
     a.classify_auto_continue = AsyncMock(return_value=False)
+    a.check_before_finish = AsyncMock(return_value=None)  # no stop checks
     a.resolve_bind_tools = AsyncMock(return_value=None)
     a.execute_call_model_fc = AsyncMock(return_value=None)  # base seam: no-op in CodeAct
 

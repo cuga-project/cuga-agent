@@ -13,6 +13,7 @@ from loguru import logger
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.arg_warning import make_arg_warning_callable
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.model_call_recovery import ONE_SHOT_RECOVERY_KEYS
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.stop_checks import STOP_CHECKS_FIRED_KEY
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
     TODOS_TOOL_NAME,
     create_update_todos_tool,
@@ -943,7 +944,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         _turn_metadata.pop("fc_mode_violations", None)
         _turn_metadata.pop("fc_search_only_retry", None)
         _turn_metadata.pop("fc_noop_answer_retry", None)
-        for _key in ONE_SHOT_RECOVERY_KEYS:
+        for _key in (STOP_CHECKS_FIRED_KEY, *ONE_SHOT_RECOVERY_KEYS):
             _turn_metadata.pop(_key, None)
         update_payload: dict[str, Any] = {
             "tools_prepared": True,

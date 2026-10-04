@@ -94,6 +94,16 @@ class CoreGraphAdapter(ABC):
         Default: returns ``base_prompt`` unchanged (Supervisor behaviour)."""
         return base_prompt
 
+    async def check_before_finish(
+        self, state: Any, configurable: dict, answer: str
+    ) -> Optional[Tuple[str, str]]:
+        """Stop checks (``stop_checks.py``) on the answer the model is about to give.
+
+        ``(check name, correction text)`` sends the model back with the text; ``None``
+        lets the answer through. Default: ``None`` (Supervisor behaviour).
+        """
+        return None
+
     def prepare_turn_context(self, state: Any, configurable: dict) -> str:
         """Run state that changes during a task (todos, observed shapes), sent at the end of
         the outbound messages instead of inside the system prompt.

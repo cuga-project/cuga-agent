@@ -20,6 +20,10 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
     TODOS_TOOL_NAME,
     create_update_todos_tool,
 )
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.stop_checks import (
+    STOP_CHECK_PREFIX,
+    STOP_CHECKS_FIRED_KEY,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import (
     AgentGraphAdapter,
     _steps_since_todos_update,
@@ -216,3 +220,60 @@ def test_no_reminder_for_a_finished_plan_or_when_off():
 def test_fc_prompt_explains_planning_only_when_the_tool_is_bound():
     assert "create_update_todos" in render_fc_prompt(todos=True)
     assert "create_update_todos" not in render_fc_prompt(todos=False)
+
+
+# ── stop check: unfinished plan (function-calling) ──────────────────────────
+
+
+class _Model:
+    def __init__(self, response):
+        self.response = response
+
+    async def ainvoke(self, messages, config=None, **kwargs):
+        return self.response
+
+
+async def _fc_turn(adapter, metadata):
+    state = SimpleNamespace(
+        chat_messages=[HumanMessage(content="refund the late orders")],
+        step_count=0,
+        cuga_lite_metadata=metadata,
+        mcp_few_shot_messages=[],
+        cuga_lite_max_steps=None,
+        task_todos=None,
+    )
+    return await adapter.execute_call_model_fc(
+        state=state,
+        config=None,
+        configurable={"cuga_lite_execution_mode": "function_calling"},
+        active_model=object(),
+        bound=_Model(AIMessage(content="Done.")),
+        invoke_config={},
+        system_content="SYS",
+        modified_messages=list(state.chat_messages),
+        budget_exhausted=False,
+        playbook_fired=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unstarted_plan_step_sends_the_fc_model_back_once(monkeypatch):
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.policy, "enabled", False, raising=False)
+    adapter = _adapter(
+        [
+            {"text": "list late orders", "status": "completed"},
+            {"text": "refund each", "status": "pending"},
+            {"text": "answer", "status": "pending"},
+        ]
+    )
+
+    first = await _fc_turn(adapter, {})
+    assert first.goto == "call_model"
+    note = first.update["chat_messages"][-1]
+    assert note.content.startswith(STOP_CHECK_PREFIX) and "refund each" in note.content
+    assert first.update["cuga_lite_metadata"][STOP_CHECKS_FIRED_KEY] == ["pending_todos"]
+
+    second = await _fc_turn(adapter, {STOP_CHECKS_FIRED_KEY: ["pending_todos"]})
+    assert second.update["final_answer"] == "Done.", "each check fires once per turn"

@@ -247,6 +247,7 @@ validators = [
     Validator("advanced_features.cuga_lite_stable_system_prompt", default=True),
     Validator("advanced_features.cuga_lite_prompt_cache_markers", default="off"),
     Validator("advanced_features.cuga_lite_todo_reminder_after", default=6),
+    Validator("advanced_features.cuga_lite_stop_checks", default=["pending_todos"]),
     Validator("advanced_features.cuga_lite_tool_result_clear_min_chars", default=2000),
     Validator("advanced_features.cuga_lite_repeat_call_nudge_after", default=3),
     # Read at prepare_node without a getattr guard; without this a settings.toml

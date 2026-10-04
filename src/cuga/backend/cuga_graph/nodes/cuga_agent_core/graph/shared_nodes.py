@@ -51,6 +51,10 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.model_call_recovery imp
     truncation_retries_used,
     truncation_retry_command,
 )
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.stop_checks import (
+    STOP_CHECKS_FIRED_KEY,
+    fired_checks,
+)
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
 from cuga.backend.cuga_graph.utils.harmony import contains_harmony_tokens
 from cuga.backend.cuga_graph.utils.context_management_utils import (
@@ -502,6 +506,25 @@ def create_call_model_node(
                             break
         if not (content or "").strip() and final_answer:
             final_messages = modified_messages + [AIMessage(content=final_answer)]
+
+        # ── Stop checks: may send the model back once each per turn ────────
+        if not budget_exhausted and new_step_count < max_steps:
+            objection = await adapter.check_before_finish(state, configurable, final_answer or "")
+            if objection:
+                check_name, correction = objection
+                meta = dict(adapter.build_metadata_update(state, playbook_fired=playbook_fired) or {})
+                meta[STOP_CHECKS_FIRED_KEY] = fired_checks(adapter.get_metadata(state)) + [check_name]
+                return Command(
+                    goto="call_model",
+                    update={
+                        adapter.messages_key: final_messages + [HumanMessage(content=correction)],
+                        "script": None,
+                        "final_answer": "",
+                        "execution_complete": False,
+                        "step_count": new_step_count,
+                        adapter.metadata_key: meta,
+                    },
+                )
 
         return Command(
             goto=END,

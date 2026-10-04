@@ -24,6 +24,13 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
     format_current_plan_section,
     format_task_todos_system_block,
 )
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.stop_checks import (
+    STOP_CHECKS_FIRED_KEY,
+    StopContext,
+    configured_stop_checks,
+    fired_checks,
+    run_stop_checks,
+)
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.model_call_recovery import (
     max_truncation_retries,
     pending_truncation_note,
@@ -446,6 +453,21 @@ class AgentGraphAdapter(CoreGraphAdapter):
             if unfinished and stale and stale % every == 0:
                 context += TODOS_STALE_REMINDER.format(steps=stale, unfinished=unfinished)
         return context
+
+    async def check_before_finish(
+        self, state: Any, configurable: dict, answer: str
+    ) -> Optional[Tuple[str, str]]:
+        specs = configured_stop_checks(configurable, settings)
+        if not specs:
+            return None
+        ctx = StopContext(
+            answer=answer,
+            messages=self.get_messages(state),
+            todos=list(self._task_todos_ref or getattr(state, "task_todos", None) or []),
+            configurable=dict(configurable or {}),
+            execution_mode=self._execution_mode(configurable),
+        )
+        return await run_stop_checks(ctx, specs, fired_checks(self.get_metadata(state)))
 
     def _run_state_blocks(self, state: Any) -> str:
         """Todos and observed tool shapes: what changes while a task runs."""
@@ -1012,6 +1034,26 @@ class AgentGraphAdapter(CoreGraphAdapter):
                     break
         if not content.strip() and final_answer:
             final_messages = history + [AIMessage(content=final_answer)]
+
+        # Stop checks (stop_checks.py): each may send the model back once per turn.
+        if not budget_exhausted and new_step_count < max_steps:
+            objection = await self.check_before_finish(state, cfg, final_answer)
+            if objection:
+                check_name, correction = objection
+                return Command(
+                    goto="call_model",
+                    update={
+                        self.messages_key: final_messages + [harness_message(correction, "stop_check")],
+                        "script": None,
+                        "final_answer": "",
+                        "execution_complete": False,
+                        "step_count": new_step_count,
+                        self.metadata_key: {
+                            **base_meta,
+                            STOP_CHECKS_FIRED_KEY: fired_checks(self.get_metadata(state)) + [check_name],
+                        },
+                    },
+                )
 
         logger.info("[fc] no tool_calls -> final answer (END)")
         return Command(
