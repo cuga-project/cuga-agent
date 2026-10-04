@@ -37,6 +37,10 @@ CLEARED_CODE = (
     "[Earlier execute_python output cleared from context ({chars} chars). Variables that code created "
     "still exist — print them from execute_python if you need them again.]"
 )
+CLEARED_FILE = (
+    "[Earlier result of {name} cleared from context ({chars} chars). The full result is saved as file "
+    '`{file}` — ask about it with query_saved_output(file="{file}", question=...).]'
+)
 CLEARED_PLAIN = (
     "[Earlier result of {name} cleared from context ({chars} chars). Call the tool again if you need it.]"
 )
@@ -60,6 +64,10 @@ def _stub(message: ToolMessage, var_exists: Callable[[str], bool]) -> str:
     name = message.name or "tool"
     if name == EXECUTE_PYTHON_NAME:
         return CLEARED_CODE.format(chars=chars)
+    artifact = message.artifact if isinstance(message.artifact, dict) else {}
+    saved_file = artifact.get("saved_file")
+    if isinstance(saved_file, str) and saved_file:
+        return CLEARED_FILE.format(name=name, chars=chars, file=saved_file)
     var = saved_variable(message)
     if var and var_exists(var):
         return CLEARED_SAVED.format(name=name, chars=chars, var=var)

@@ -16,6 +16,10 @@ A second loop checks the findings: a separate call compares them with the need a
 when something is missing, the subagent goes back to the file with that gap stated —
 up to ``large_output.max_rounds`` rounds.
 
+Later questions about the same result — a later step, a later turn — go through
+``query_saved_output(file, question)``, a native tool bound in function-calling and
+hybrid modes that runs the same subagent over a file this thread saved.
+
 Off by default (``large_output.enabled``); any failure falls back to plain truncation.
 """
 
@@ -44,6 +48,13 @@ PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 
 GREP_NAME = "grep"
 READ_NAME = "read"
+QUERY_SAVED_OUTPUT_NAME = "query_saved_output"
+
+QUERY_SAVED_OUTPUT_DESCRIPTION = (
+    "Ask a question about a large tool result that was saved to a file (a <persisted-output> reply names "
+    "the file). A search subagent reads the file and returns what answers the question. Use it when the "
+    "findings in that reply do not cover what you need now, instead of calling the original tool again."
+)
 
 _WRAP_AT = 4000  # longer lines (minified JSON/HTML) are split so grep/read stay line-oriented
 _WRAP_CHUNK = 2000
@@ -471,6 +482,27 @@ async def research(
     return Research(answer=answer, rounds=rounds, tool_calls=total_calls, complete=complete, missing=missing)
 
 
+async def _research_with_timeout(
+    model: Any, file: OutputFile, need: str, *, invoke_config: Optional[Dict[str, Any]], label: str
+) -> Optional[Research]:
+    timeout = float(_cfg("subagent_timeout", 120))
+    try:
+        return await asyncio.wait_for(
+            research(model, file, need, total_chars=file.path.stat().st_size, invoke_config=invoke_config),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"large_output: search subagent timed out after {timeout}s on {label}")
+    except Exception as exc:
+        logger.warning(f"large_output: search subagent failed on {label}: {exc}")
+    return None
+
+
+def _cut_answer(answer: str) -> str:
+    max_answer = int(_cfg("max_answer_chars", 4000))
+    return answer if len(answer) <= max_answer else answer[:max_answer] + " …[findings cut]"
+
+
 # ── the reply the agent sees ─────────────────────────────────────────────────
 
 
@@ -484,7 +516,6 @@ def persisted_message(
     saved_as: Optional[str] = None,
 ) -> str:
     """``<persisted-output>`` stub (free-code's shape) with the subagent's findings on top."""
-    max_answer = int(_cfg("max_answer_chars", 4000))
     head, more = preview(text, int(_cfg("preview_chars", 2000)))
     lines = [
         PERSISTED_OUTPUT_TAG,
@@ -492,10 +523,11 @@ def persisted_message(
         f"Full output saved to: {path}",
     ]
     if findings is not None:
-        answer = findings.answer
-        if len(answer) > max_answer:
-            answer = answer[:max_answer] + " …[findings cut]"
-        lines += ["", "A search subagent read the saved output for what this step needs. Findings:", answer]
+        lines += [
+            "",
+            "A search subagent read the saved output for what this step needs. Findings:",
+            _cut_answer(findings.answer),
+        ]
         if findings.complete is False and findings.missing:
             lines.append(f"(Still unresolved after {findings.rounds} round(s): {findings.missing})")
     if saved_as:
@@ -506,11 +538,19 @@ def persisted_message(
         ]
     lines += [
         "",
+        f'Ask more about it with {QUERY_SAVED_OUTPUT_NAME}(file="{path.name}", question="...").',
+        "",
         f"Preview (first {len(head):,} chars):",
         head + ("\n..." if more else ""),
         PERSISTED_OUTPUT_CLOSING_TAG,
     ]
     return "\n".join(lines)
+
+
+@dataclass
+class Persisted:
+    text: str  # the reply for the agent
+    path: Path  # the saved file
 
 
 async def handle_large_result(
@@ -524,7 +564,7 @@ async def handle_large_result(
     model: Any,
     invoke_config: Optional[Dict[str, Any]] = None,
     saved_as: Optional[str] = None,
-) -> Optional[str]:
+) -> Optional[Persisted]:
     """Save ``result`` to a file and return the reply for the agent; ``None`` = use the old path.
 
     The file is written first, so even when the subagent fails or times out the
@@ -541,16 +581,9 @@ async def handle_large_result(
     findings: Optional[Research] = None
     if model is not None:
         need = describe_need(messages, tool_name, args)
-        timeout = float(_cfg("subagent_timeout", 120))
-        try:
-            findings = await asyncio.wait_for(
-                research(model, file, need, total_chars=len(text), invoke_config=invoke_config),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(f"large_output: search subagent timed out after {timeout}s on {tool_name}")
-        except Exception as exc:
-            logger.warning(f"large_output: search subagent failed on {tool_name}: {exc}")
+        findings = await _research_with_timeout(
+            model, file, need, invoke_config=invoke_config, label=tool_name
+        )
     logger.info(
         "[large_output] {} -> {} ({} chars); findings={} rounds={} calls={}",
         tool_name,
@@ -560,7 +593,7 @@ async def handle_large_result(
         findings.rounds if findings else 0,
         findings.tool_calls if findings else 0,
     )
-    return persisted_message(
+    reply = persisted_message(
         tool_name=tool_name,
         path=file.path,
         text=text,
@@ -568,3 +601,93 @@ async def handle_large_result(
         findings=findings,
         saved_as=saved_as,
     )
+    return Persisted(text=reply, path=file.path)
+
+
+# ── follow-up questions: query_saved_output ──────────────────────────────────
+
+
+class QuerySavedOutputInput(BaseModel):
+    file: str = Field(
+        ..., description="The saved file's name (or full path) from the <persisted-output> reply."
+    )
+    question: str = Field(..., description="What you need from that result now.")
+
+
+async def _query_placeholder(**_: Any) -> str:  # pragma: no cover - tool_exec dispatches by name
+    raise RuntimeError("query_saved_output is dispatched by tool_exec, not called directly")
+
+
+def create_query_saved_output_tool() -> StructuredTool:
+    """The bindable tool (its execution lives in :func:`query_saved_output`)."""
+    return StructuredTool.from_function(
+        coroutine=_query_placeholder,
+        name=QUERY_SAVED_OUTPUT_NAME,
+        description=QUERY_SAVED_OUTPUT_DESCRIPTION,
+        args_schema=QuerySavedOutputInput,
+    )
+
+
+def saved_files(thread_id: Optional[str]) -> List[Path]:
+    directory = spill_dir(thread_id)
+    if not directory.is_dir():
+        return []
+    return sorted(directory.glob("*.txt"), key=lambda p: p.stat().st_mtime)
+
+
+def resolve_saved_file(ref: str, thread_id: Optional[str]) -> Optional[Path]:
+    """The saved file ``ref`` names — only ever one this thread saved, never an arbitrary path."""
+    name = Path(str(ref or "").strip()).name
+    if not name:
+        return None
+    candidates = [name] if name.endswith(".txt") else [name, f"{name}.txt"]
+    by_name = {p.name: p for p in saved_files(thread_id)}
+    for candidate in candidates:
+        if candidate in by_name:
+            return by_name[candidate]
+    return None
+
+
+async def query_saved_output(
+    ref: str,
+    question: str,
+    *,
+    thread_id: Optional[str],
+    messages: Sequence[BaseMessage],
+    model: Any,
+    invoke_config: Optional[Dict[str, Any]] = None,
+) -> tuple[str, bool]:
+    """Answer ``question`` from a file this thread saved; returns ``(text, ok)``."""
+    path = resolve_saved_file(ref, thread_id)
+    if path is None:
+        names = [p.name for p in saved_files(thread_id)]
+        known = ", ".join(names[-10:]) if names else "none yet"
+        return f"No saved output named {ref!r} in this conversation. Saved files: {known}.", False
+    if not str(question or "").strip():
+        return f"{QUERY_SAVED_OUTPUT_NAME} needs a non-empty question.", False
+    if model is None:
+        return f"{QUERY_SAVED_OUTPUT_NAME} is unavailable: no model is configured.", False
+
+    request = ""
+    for message in reversed(list(messages)):
+        if isinstance(message, HumanMessage) and not is_harness_message(message):
+            request = _text_of(message.content)
+            break
+    need = f"Question about the saved result:\n{_cut(question)}\n\nUser request:\n{_cut(request) or '(unavailable)'}"
+    file = OutputFile(path)
+    findings = await _research_with_timeout(
+        model, file, need, invoke_config=invoke_config, label=f"{QUERY_SAVED_OUTPUT_NAME}({path.name})"
+    )
+    logger.info(
+        "[large_output] query {} -> findings={} rounds={} calls={}",
+        path.name,
+        findings is not None,
+        findings.rounds if findings else 0,
+        findings.tool_calls if findings else 0,
+    )
+    if findings is None:
+        return f"The search subagent could not answer from {path.name}. Try a more specific question.", False
+    text = f"Findings from {path.name} ({file.total_lines:,} lines):\n{_cut_answer(findings.answer)}"
+    if findings.complete is False and findings.missing:
+        text += f"\n(Still unresolved after {findings.rounds} round(s): {findings.missing})"
+    return text, True

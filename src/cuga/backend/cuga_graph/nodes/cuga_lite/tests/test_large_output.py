@@ -212,12 +212,85 @@ async def test_running_out_of_searches_still_answers(cfg):
 
 @pytest.mark.asyncio
 async def test_without_a_model_the_agent_still_gets_the_path_and_a_preview(cfg):
-    reply = await lo.handle_large_result(
+    persisted = await lo.handle_large_result(
         _haystack(), tool_name="get_doc", call_id="c1", thread_id="t", messages=[], args={}, model=None
     )
+    reply = persisted.text
+    assert persisted.path == cfg / "t" / "c1.txt"
     assert reply.startswith(lo.PERSISTED_OUTPUT_TAG) and reply.endswith(lo.PERSISTED_OUTPUT_CLOSING_TAG)
-    assert str(cfg / "t" / "c1.txt") in reply and "Findings" not in reply
+    assert str(persisted.path) in reply and "Findings" not in reply
+    assert 'query_saved_output(file="c1.txt"' in reply
     assert "line 1:" in reply and NEEDLE not in reply
+
+
+# ── query_saved_output ───────────────────────────────────────────────────────
+
+
+def test_only_files_this_thread_saved_can_be_queried(cfg):
+    lo.spill_to_file("mine", thread_id="t1", call_id="c1")
+    lo.spill_to_file("theirs", thread_id="t2", call_id="c2")
+    (cfg / "secret.txt").write_text("not a saved output")
+    assert lo.resolve_saved_file("c1.txt", "t1") == cfg / "t1" / "c1.txt"
+    assert lo.resolve_saved_file("c1", "t1") == cfg / "t1" / "c1.txt", "the call id alone is enough"
+    assert lo.resolve_saved_file(str(cfg / "t1" / "c1.txt"), "t1") == cfg / "t1" / "c1.txt"
+    assert lo.resolve_saved_file("c2.txt", "t1") is None, "another thread's file"
+    assert lo.resolve_saved_file("../secret.txt", "t1") is None
+    assert lo.resolve_saved_file("/etc/passwd", "t1") is None
+
+
+@pytest.mark.asyncio
+async def test_query_runs_the_subagent_on_the_saved_file(cfg):
+    lo.spill_to_file(_haystack(), thread_id="t", call_id="c1")
+    model = _ScriptedModel(
+        [
+            _grep_call("Nandakumar"),
+            AIMessage(content="Priya Nandakumar, line 1500."),
+            AIMessage(content='{"complete": true}'),
+        ]
+    )
+    text, ok = await lo.query_saved_output(
+        "c1.txt", "who serviced Wing C?", thread_id="t", messages=[HumanMessage(content="hi")], model=model
+    )
+    assert ok and text.startswith("Findings from c1.txt (3,000 lines):\nPriya Nandakumar")
+    assert "who serviced Wing C?" in model.sent[0][1].content
+    assert NEEDLE in model.sent[1][-1].content
+
+
+@pytest.mark.asyncio
+async def test_query_for_an_unknown_file_lists_the_saved_ones(cfg):
+    lo.spill_to_file("x", thread_id="t", call_id="c1")
+    text, ok = await lo.query_saved_output(
+        "nope.txt", "q", thread_id="t", messages=[], model=_ScriptedModel([])
+    )
+    assert not ok and "c1.txt" in text
+
+
+def test_code_cannot_call_query_saved_output():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import code_context
+
+    state = SimpleNamespace(variables_manager=MagicMock(get_variable_names=lambda: []))
+
+    async def tool() -> str:
+        return ""
+
+    context = code_context(state, {"query_saved_output": tool, "get_doc": tool})
+    assert "get_doc" in context and "query_saved_output" not in context
+
+
+def test_a_cleared_saved_result_points_at_its_file():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_result_clearing import clear_old_tool_results
+
+    old = ToolMessage(content="x" * 5000, tool_call_id="1", name="get_doc", artifact={"saved_file": "1.txt"})
+    messages = [
+        HumanMessage(content="q"),
+        AIMessage(content="", tool_calls=[{"name": "get_doc", "args": {}, "id": "1"}]),
+        old,
+        AIMessage(content="", tool_calls=[{"name": "get_doc", "args": {}, "id": "2"}]),
+        ToolMessage(content="y", tool_call_id="2", name="get_doc"),
+        AIMessage(content="done"),
+    ]
+    cleared = clear_old_tool_results(messages, keep_recent=1, min_chars=100)[2]
+    assert 'query_saved_output(file="1.txt"' in cleared.content
 
 
 # ── tool_exec wiring ─────────────────────────────────────────────────────────
@@ -253,10 +326,8 @@ def _reset_budget_contexts():
     tracker_module._block_tool_call_cap_override_context.set(None)
 
 
-def _state():
-    last = AIMessage(
-        content="", tool_calls=[{"name": "get_doc", "args": {}, "id": "call_1", "type": "tool_call"}]
-    )
+def _state(call: dict):
+    last = AIMessage(content="", tool_calls=[{**call, "type": "tool_call"}])
     return SimpleNamespace(
         chat_messages=[HumanMessage(content="who serviced the Wing C generator?"), last],
         step_count=0,
@@ -266,16 +337,17 @@ def _state():
     )
 
 
-async def _run_node(model):
+async def _run_node(model, monkeypatch, call: Optional[dict] = None) -> ToolMessage:
     from cuga.config import settings
 
-    settings.advanced_features.max_tool_calls_per_block = 0
+    monkeypatch.setattr(settings.advanced_features, "max_tool_calls_per_block", 0, raising=False)
 
     async def get_doc() -> str:
         return _haystack()
 
+    call = call or {"name": "get_doc", "args": {}, "id": "call_1"}
     node = create_tool_exec_node(_Adapter({"get_doc": get_doc}, model=model))
-    result = await node(_state(), config={"configurable": {"thread_id": "thread-x"}})
+    result = await node(_state(call), config={"configurable": {"thread_id": "thread-x"}})
     return [m for m in result.update["chat_messages"] if isinstance(m, ToolMessage)][0]
 
 
@@ -291,12 +363,33 @@ async def test_a_large_native_result_is_saved_and_searched_instead_of_truncated(
             AIMessage(content='{"complete": true}'),
         ]
     )
-    reply = await _run_node(model)
+    reply = await _run_node(model, monkeypatch)
     assert reply.content.startswith(lo.PERSISTED_OUTPUT_TAG)
     assert "Findings:\nPriya Nandakumar." in reply.content
     assert "result truncated" not in reply.content
+    assert reply.artifact == {"saved_file": "call_1.txt"}
     assert (cfg / "thread-x" / "call_1.txt").read_text() == _haystack()
     assert "who serviced the Wing C generator?" in model.sent[0][1].content
+
+
+@pytest.mark.asyncio
+async def test_query_saved_output_is_dispatched_by_tool_exec(cfg, monkeypatch):
+    lo.spill_to_file(_haystack(), thread_id="thread-x", call_id="call_1")
+    model = _ScriptedModel(
+        [_grep_call("Wing C"), AIMessage(content="Priya Nandakumar."), AIMessage(content="{}")]
+    )
+    call = {
+        "name": "query_saved_output",
+        "args": {"file": "call_1.txt", "question": "who serviced it?"},
+        "id": "q1",
+    }
+    reply = await _run_node(model, monkeypatch, call)
+    assert reply.status == "success" and reply.content.startswith("Findings from call_1.txt")
+
+    missing = await _run_node(
+        _ScriptedModel([]), monkeypatch, {**call, "args": {"file": "other.txt", "question": "q"}}
+    )
+    assert missing.status == "error" and "call_1.txt" in missing.content
 
 
 @pytest.mark.asyncio
@@ -306,6 +399,6 @@ async def test_disabled_keeps_the_batch_truncation(cfg, monkeypatch):
     monkeypatch.setattr(settings.large_output, "enabled", False, raising=False)
     monkeypatch.setattr(settings.advanced_features, "execution_output_max_length", 5000, raising=False)
     model = _ScriptedModel([])
-    reply = await _run_node(model)
+    reply = await _run_node(model, monkeypatch)
     assert "result truncated" in reply.content and lo.PERSISTED_OUTPUT_TAG not in reply.content
     assert model.sent == [] and not (cfg / "thread-x").exists()

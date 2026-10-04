@@ -56,9 +56,11 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import (
     save_native_result,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.large_output import (
+    QUERY_SAVED_OUTPUT_NAME,
     handle_large_result,
     large_output_enabled,
     large_output_threshold,
+    query_saved_output,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_effects import page_note
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_search import (
@@ -273,7 +275,30 @@ async def _searched_code_output(
         return text
     _, _, after = text.partition(CODE_TRIM_MARKER)
     _, _, summary = after.partition("]")
-    return f"{persisted}\n{summary.strip()}".strip()
+    return f"{persisted.text}\n{summary.strip()}".strip()
+
+
+async def _run_query_saved_output(
+    adapter: Any, raw_args: Any, *, call_id: str, large_output: Dict[str, Any]
+) -> ToolMessage:
+    """A follow-up question about a result this thread saved; a meta call, never budgeted."""
+    kwargs, arg_error = _coerce_args(raw_args)
+    if not arg_error:
+        arg_error = _validate_args(adapter, QUERY_SAVED_OUTPUT_NAME, kwargs)
+    if arg_error:
+        return _error_message(arg_error, call_id=call_id, name=QUERY_SAVED_OUTPUT_NAME)
+    text, ok = await query_saved_output(
+        str(kwargs.get("file") or ""),
+        str(kwargs.get("question") or ""),
+        thread_id=large_output["thread_id"],
+        messages=large_output["messages"],
+        model=large_output["model"],
+        invoke_config=large_output["invoke_config"],
+    )
+    _collect_step(adapter, "Query_saved_output", {"arguments": kwargs, "ok": ok})
+    if not ok:
+        return _error_message(text, call_id=call_id, name=QUERY_SAVED_OUTPUT_NAME)
+    return ToolMessage(content=text, tool_call_id=call_id, name=QUERY_SAVED_OUTPUT_NAME)
 
 
 def _unknown_tool_text(adapter: Any, name: str, surface: Optional[DeferredToolSurface]) -> str:
@@ -581,6 +606,12 @@ async def _run_batch(
             results.append(reply)
             continue
 
+        if large_output is not None and name == QUERY_SAVED_OUTPUT_NAME:
+            results.append(
+                await _run_query_saved_output(adapter, raw_args, call_id=call_id, large_output=large_output)
+            )
+            continue
+
         fn = adapter._tools_context.get(name)
         if fn is None or not callable(fn):
             results.append(
@@ -634,19 +665,21 @@ async def _run_batch(
                     invoke_config=large_output["invoke_config"],
                     saved_as=saved,
                 )
-            content = output_budget.take(persisted if persisted is not None else text)
+            content = output_budget.take(persisted.text if persisted is not None else text)
             structured = (getattr(adapter, "_tools_context_ref", None) or {}).get(
                 "_lc_bind_tools_structured_by_name"
             ) or {}
             note = page_note(structured.get(name), kwargs, result, hybrid=hybrid is not None)
             if note:
                 content += f"\n{note}"
-            artifact = None
+            artifact: Optional[Dict[str, Any]] = None
             if saved:
                 if persisted is None:
                     content += f"\n[Result saved as variable `{saved}` (this call's output only) — usable in execute_python.]"
                 # Old-result clearing (tool_result_clearing.py) points its stub here.
                 artifact = {"saved_as": saved}
+            if persisted is not None:
+                artifact = {**(artifact or {}), "saved_file": persisted.path.name}
             results.append(ToolMessage(content=content, tool_call_id=call_id, name=name, artifact=artifact))
         except asyncio.TimeoutError:
             results.append(
