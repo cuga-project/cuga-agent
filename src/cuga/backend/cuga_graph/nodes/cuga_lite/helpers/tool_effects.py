@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.stop_checks import register_stop_check
+
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # POSTs that authenticate rather than change user data.
 _NON_WRITE_MARKERS = ("login", "logout", "auth", "token", "signup")
@@ -62,6 +64,9 @@ def paging(tool: Any, kwargs: Dict[str, Any]) -> Optional[tuple]:
         return None
 
 
+PARTIAL_PAGE_PREFIX = "[Partial result: "
+
+
 def page_note(tool: Any, kwargs: Dict[str, Any], result: Any, *, hybrid: bool) -> Optional[str]:
     """A warning when a paged call returned a *full* page — there are probably more."""
     info = paging(tool, kwargs)
@@ -74,7 +79,7 @@ def page_note(tool: Any, kwargs: Dict[str, Any], result: Any, *, hybrid: bool) -
         else f"request {page_field}={page + 1} and onwards until a page comes back empty"
     )
     return (
-        f"[Partial result: this is {page_field}={page} with {limit} items per page, and the page is full — "
+        f"{PARTIAL_PAGE_PREFIX}this is {page_field}={page} with {limit} items per page, and the page is full — "
         f"there are probably more. Before counting, filtering or acting on all of them, {how}.]"
     )
 
@@ -121,3 +126,81 @@ def turn_made_a_write(messages: Any, turn_start: int, tools_by_name: Dict[str, A
 
 def has_write_tools(tools_by_name: Dict[str, Any]) -> bool:
     return any(is_write_tool(t) for t in tools_by_name.values())
+
+
+# ── stop check: a full page was the last one read ────────────────────────────
+
+UNFINISHED_PAGING = (
+    "the last page you read of {tool} ({page_field}={page}) was full, and you did not fetch the next one, "
+    "so there are probably more items. If your answer depends on all of them — counting, filtering, finding "
+    "a particular one, or acting on every one — fetch the remaining pages first{how}. If that page was enough "
+    "(for example you only needed the most recent item), give your answer as it is."
+)
+
+
+def unfinished_paging(ctx: Any) -> Optional[str]:
+    """Stop check: a native paged read in this turn returned a full page and nothing read further.
+
+    "Further" means a later native call to the same tool with a higher page and otherwise the
+    same arguments, or an ``execute_python`` block that called the tool (code paginates itself).
+    Full pages are the ones ``page_note`` flagged. Native calls only; CodeAct turns have none.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import EXECUTE_PYTHON_NAME
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.harness_messages import is_harness_message
+
+    messages = list(ctx.messages or [])
+    start = 0
+    for i in range(len(messages) - 1, -1, -1):
+        if _role(messages[i]) == "human" and not is_harness_message(messages[i]):
+            start = i + 1
+            break
+    calls: Dict[str, tuple] = {}
+    events: list = []  # (kind, name, args, page) in order
+    for message in messages[start:]:
+        for call in _get(message, "tool_calls") or []:
+            if isinstance(call, dict) and call.get("id"):
+                args = call.get("args") if isinstance(call.get("args"), dict) else {}
+                calls[call["id"]] = (str(call.get("name") or ""), args)
+        if _role(message) != "tool" or _get(message, "status") == "error":
+            continue
+        name, args = calls.get(_get(message, "tool_call_id"), (_get(message, "name") or "", {}))
+        if name == EXECUTE_PYTHON_NAME:
+            artifact = _get(message, "artifact")
+            for called in (artifact.get("code_calls") or []) if isinstance(artifact, dict) else []:
+                events.append(("code", called, {}, None))
+            continue
+        info = paging(ctx.tools_by_name.get(name), args)
+        if info is None:
+            continue
+        content = _get(message, "content")
+        full = isinstance(content, str) and PARTIAL_PAGE_PREFIX in content
+        events.append(("page", name, args, (info, full)))
+
+    hybrid = ctx.execution_mode == "hybrid"
+    for index, (kind, name, args, detail) in enumerate(events):
+        if kind != "page" or not detail[1]:
+            continue
+        (page_field, page, _limit) = detail[0]
+        rest = {k: v for k, v in args.items() if k not in PAGE_FIELDS + LIMIT_FIELDS}
+        continued = False
+        for later_kind, later_name, later_args, later_detail in events[index + 1 :]:
+            if later_name != name:
+                continue
+            if later_kind == "code":
+                continued = True
+                break
+            later_rest = {k: v for k, v in later_args.items() if k not in PAGE_FIELDS + LIMIT_FIELDS}
+            if later_rest == rest and later_detail[0][1] > page:
+                continued = True
+                break
+        if not continued:
+            how = (
+                " in execute_python (loop until a page comes back empty)"
+                if hybrid
+                else f" ({page_field}={page + 1} and onwards until a page comes back empty)"
+            )
+            return UNFINISHED_PAGING.format(tool=name, page_field=page_field, page=page, how=how)
+    return None
+
+
+register_stop_check("unfinished_paging", unfinished_paging)

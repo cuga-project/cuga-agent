@@ -466,6 +466,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
             todos=list(self._task_todos_ref or getattr(state, "task_todos", None) or []),
             configurable=dict(configurable or {}),
             execution_mode=self._execution_mode(configurable),
+            tools_by_name=dict(
+                (self._tools_context_ref or {}).get("_lc_bind_tools_structured_by_name") or {}
+            ),
         )
         return await run_stop_checks(ctx, specs, fired_checks(self.get_metadata(state)))
 

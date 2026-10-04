@@ -118,7 +118,8 @@ cuga_lite_todo_reminder_after = 6
 # Checks run when the agent is about to give its final answer (free-code's stop hooks). Each may send the model back
 # with a correction, at most once per user turn. Entries: a registered name, or "package.module:function" taking a
 # StopContext and returning None or a correction (see cuga_agent_core/graph/stop_checks.py). Built in: pending_todos
-# (Current Plan still has unfinished steps; inert unless todos are enabled). [] = off.
+# (Current Plan still has unfinished steps; inert unless todos are enabled) and unfinished_paging (opt-in: a native
+# paged read returned a full page and nothing read the next one). [] = off.
 cuga_lite_stop_checks = ["pending_todos"]
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 cuga_lite_blocked_claim_retry = true  # When an NL turn claims tools/data are unavailable but no code has executed and tools ARE bound, retry once with a corrective message instead of finalizing the false refusal (issue #610). Only active when cuga_lite_nl_auto_continue is on.

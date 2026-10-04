@@ -37,6 +37,8 @@ class StopContext:
     todos: List[Dict[str, Any]] = field(default_factory=list)
     configurable: Dict[str, Any] = field(default_factory=dict)
     execution_mode: str = "codeact"
+    #: Name -> StructuredTool for the tools this run can call (schemas, HTTP method).
+    tools_by_name: Dict[str, Any] = field(default_factory=dict)
 
 
 StopCheck = Callable[[StopContext], Union[Optional[str], Awaitable[Optional[str]]]]
