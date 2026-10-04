@@ -172,7 +172,8 @@ def _check_prereqs() -> None:
         )
     else:
         print(
-            f"large_output: threshold {settings.large_output.threshold_chars:,} chars, "
+            f"large_output: mode {settings.large_output.mode}, "
+            f"threshold {settings.large_output.threshold_chars:,} chars, "
             f"max_rounds {settings.large_output.max_rounds}, search_max_steps {settings.large_output.search_max_steps}\n"
         )
 

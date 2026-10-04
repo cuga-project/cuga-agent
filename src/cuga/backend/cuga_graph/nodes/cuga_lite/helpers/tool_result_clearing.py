@@ -27,6 +27,7 @@ from typing import Callable, List, Optional
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import EXECUTE_PYTHON_NAME
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.large_output import saved_file_hint
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_search import TOOL_SEARCH_NAME
 
 CLEARED_SAVED = (
@@ -39,7 +40,7 @@ CLEARED_CODE = (
 )
 CLEARED_FILE = (
     "[Earlier result of {name} cleared from context ({chars} chars). The full result is saved as file "
-    '`{file}` — ask about it with query_saved_output(file="{file}", question=...).]'
+    "`{file}`. {hint}]"
 )
 CLEARED_PLAIN = (
     "[Earlier result of {name} cleared from context ({chars} chars). Call the tool again if you need it.]"
@@ -67,7 +68,7 @@ def _stub(message: ToolMessage, var_exists: Callable[[str], bool]) -> str:
     artifact = message.artifact if isinstance(message.artifact, dict) else {}
     saved_file = artifact.get("saved_file")
     if isinstance(saved_file, str) and saved_file:
-        return CLEARED_FILE.format(name=name, chars=chars, file=saved_file)
+        return CLEARED_FILE.format(name=name, chars=chars, file=saved_file, hint=saved_file_hint(saved_file))
     var = saved_variable(message)
     if var and var_exists(var):
         return CLEARED_SAVED.format(name=name, chars=chars, var=var)

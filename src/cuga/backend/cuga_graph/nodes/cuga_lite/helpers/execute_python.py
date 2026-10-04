@@ -30,7 +30,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.wire_names import wire_name
-from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.large_output import QUERY_SAVED_OUTPUT_NAME
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.large_output import SAVED_OUTPUT_TOOL_NAMES
 
 EXECUTE_PYTHON_NAME = "execute_python"
 
@@ -119,7 +119,12 @@ def code_context(state: Any, tools_context: Dict[str, Any]) -> Dict[str, Any]:
         if not is_find_tools_listing_markdown(value):
             context[name] = value
     for name, fn in tools_context.items():
-        if name.startswith("_") or name in (EXECUTE_PYTHON_NAME, QUERY_SAVED_OUTPUT_NAME) or not callable(fn):
+        if (
+            name.startswith("_")
+            or name == EXECUTE_PYTHON_NAME
+            or name in SAVED_OUTPUT_TOOL_NAMES
+            or not callable(fn)
+        ):
             continue
         wrapped = _recording(name, fn)
         context[name] = wrapped

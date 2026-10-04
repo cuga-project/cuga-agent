@@ -36,6 +36,23 @@ Measured 2026-10-04, `gpt-oss-120b`, hybrid, fresh mode:
 | hard (1.7M chars, 2 decoys/needle) | 5/5, 81K tokens | 4/5, 914K tokens |
 | extreme (8.6M chars, 4 decoys/needle) | 5/5, 112K tokens | not run |
 
+Ablation, `DYNACONF_LARGE_OUTPUT__MODE=main_agent`: no subagent — the agent gets
+`grep_saved_output`/`read_saved_output` from the start and only the path + preview
+when a result is too large, and searches the file itself (free-code's own pattern).
+Same model and date:
+
+| Run | `mode=subagent` | `mode=main_agent` |
+|---|---|---|
+| easy, hybrid, fresh | 5/5, 85K tokens | 5/5, 41K tokens |
+| hard, hybrid, fresh | 5/5, 81K tokens | 5/5, 38K tokens |
+| extreme, hybrid, fresh | 5/5, 112K tokens | 5/5, 57K tokens |
+| hard, function_calling, convo (5 turns) | 5/5, 27K tokens | 5/5, 19K tokens |
+
+In main_agent mode one grep per question found the note, decoys included. These
+needles are distinctive one-line facts, so the probe does not exercise what the
+subagent is for: many searches whose raw output would otherwise stay in the
+agent's context, or findings that need reading and reconciling several regions.
+
 ## Why an unstructured-text fixture
 
 `large_output_dispatch.py` branches on the *shape* of the oversized tool

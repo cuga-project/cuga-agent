@@ -20,6 +20,11 @@ Later questions about the same result — a later step, a later turn — go thro
 ``query_saved_output(file, question)``, a native tool bound in function-calling and
 hybrid modes that runs the same subagent over a file this thread saved.
 
+``large_output.mode = "main_agent"`` is the ablation without a subagent: the agent
+itself gets ``grep_saved_output``/``read_saved_output`` from the start of the run and,
+when a result is too large, only free-code's reply (path + preview) — it searches the
+file itself, the way free-code's model Greps/Reads a persisted result.
+
 Off by default (``large_output.enabled``); any failure falls back to plain truncation.
 """
 
@@ -55,6 +60,14 @@ QUERY_SAVED_OUTPUT_DESCRIPTION = (
     "the file). A search subagent reads the file and returns what answers the question. Use it when the "
     "findings in that reply do not cover what you need now, instead of calling the original tool again."
 )
+
+GREP_SAVED_NAME = "grep_saved_output"
+READ_SAVED_NAME = "read_saved_output"
+#: Every tool this module binds to the agent, whatever the mode (tool_exec dispatches them).
+SAVED_OUTPUT_TOOL_NAMES = frozenset({QUERY_SAVED_OUTPUT_NAME, GREP_SAVED_NAME, READ_SAVED_NAME})
+
+MODE_SUBAGENT = "subagent"
+MODE_MAIN_AGENT = "main_agent"
 
 _WRAP_AT = 4000  # longer lines (minified JSON/HTML) are split so grep/read stay line-oriented
 _WRAP_CHUNK = 2000
@@ -108,6 +121,12 @@ def _cfg(key: str, default: Any) -> Any:
 
 def large_output_enabled() -> bool:
     return bool(_cfg("enabled", False))
+
+
+def large_output_mode() -> str:
+    """``subagent`` (a search subagent reads the file) or ``main_agent`` (the agent greps it)."""
+    mode = str(_cfg("mode", MODE_SUBAGENT) or MODE_SUBAGENT).strip().lower()
+    return mode if mode in (MODE_SUBAGENT, MODE_MAIN_AGENT) else MODE_SUBAGENT
 
 
 def large_output_threshold() -> int:
@@ -506,6 +525,17 @@ def _cut_answer(answer: str) -> str:
 # ── the reply the agent sees ─────────────────────────────────────────────────
 
 
+def saved_file_hint(file_name: str) -> str:
+    """How the agent gets more out of a saved file, in the current mode."""
+    if large_output_mode() == MODE_MAIN_AGENT:
+        return (
+            f'Search it with {GREP_SAVED_NAME}(file="{file_name}", pattern="...") and read around a match with '
+            f'{READ_SAVED_NAME}(file="{file_name}", offset=..., limit=...). Search for the most distinctive '
+            "term first; never read the whole file."
+        )
+    return f'Ask more about it with {QUERY_SAVED_OUTPUT_NAME}(file="{file_name}", question="...").'
+
+
 def persisted_message(
     *,
     tool_name: str,
@@ -538,7 +568,7 @@ def persisted_message(
         ]
     lines += [
         "",
-        f'Ask more about it with {QUERY_SAVED_OUTPUT_NAME}(file="{path.name}", question="...").',
+        saved_file_hint(path.name),
         "",
         f"Preview (first {len(head):,} chars):",
         head + ("\n..." if more else ""),
@@ -579,7 +609,7 @@ async def handle_large_result(
         return None
 
     findings: Optional[Research] = None
-    if model is not None:
+    if model is not None and large_output_mode() == MODE_SUBAGENT:
         need = describe_need(messages, tool_name, args)
         findings = await _research_with_timeout(
             model, file, need, invoke_config=invoke_config, label=tool_name
@@ -691,3 +721,67 @@ async def query_saved_output(
     if findings.complete is False and findings.missing:
         text += f"\n(Still unresolved after {findings.rounds} round(s): {findings.missing})"
     return text, True
+
+
+# ── main_agent mode: the agent's own grep/read over saved files ──────────────
+
+
+class GrepSavedInput(_GrepInput):
+    file: str = Field(
+        ..., description="The saved file's name (or full path) from the <persisted-output> reply."
+    )
+
+
+class ReadSavedInput(_ReadInput):
+    file: str = Field(
+        ..., description="The saved file's name (or full path) from the <persisted-output> reply."
+    )
+
+
+async def _saved_tool_placeholder(**_: Any) -> str:  # pragma: no cover - tool_exec dispatches by name
+    raise RuntimeError("saved-output tools are dispatched by tool_exec, not called directly")
+
+
+def create_saved_output_tools() -> List[StructuredTool]:
+    """What the agent gets for saved results in the current mode (bound from the start of a run)."""
+    if large_output_mode() == MODE_MAIN_AGENT:
+        return [
+            StructuredTool.from_function(
+                coroutine=_saved_tool_placeholder,
+                name=GREP_SAVED_NAME,
+                description=(
+                    "Search a large tool result that was saved to a file (a <persisted-output> reply names the "
+                    "file) for a regex, literal if the regex is invalid. Returns matching lines with line numbers "
+                    '("123: ..." for a match, "123- ..." for context) and the total match count.'
+                ),
+                args_schema=GrepSavedInput,
+            ),
+            StructuredTool.from_function(
+                coroutine=_saved_tool_placeholder,
+                name=READ_SAVED_NAME,
+                description=(
+                    "Read lines of a large tool result that was saved to a file, by 1-based line number. "
+                    f"Use it around a {GREP_SAVED_NAME} match, not to read the whole file."
+                ),
+                args_schema=ReadSavedInput,
+            ),
+        ]
+    return [create_query_saved_output_tool()]
+
+
+def run_saved_file_tool(name: str, kwargs: Dict[str, Any], *, thread_id: Optional[str]) -> tuple[str, bool]:
+    """``grep_saved_output`` / ``read_saved_output`` on a file this thread saved; ``(text, ok)``."""
+    ref = str(kwargs.get("file") or "")
+    path = resolve_saved_file(ref, thread_id)
+    if path is None:
+        names = [p.name for p in saved_files(thread_id)]
+        known = ", ".join(names[-10:]) if names else "none yet"
+        return f"No saved output named {ref!r} in this conversation. Saved files: {known}.", False
+    args = {k: v for k, v in kwargs.items() if k != "file"}
+    file = OutputFile(path)
+    try:
+        if name == GREP_SAVED_NAME:
+            return file.grep(**args), True
+        return file.read(**args), True
+    except TypeError as exc:
+        return f"{name} rejected these arguments: {exc}", False

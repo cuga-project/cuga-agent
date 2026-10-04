@@ -35,8 +35,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import (
     create_execute_python_tool,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.large_output import (
-    QUERY_SAVED_OUTPUT_NAME,
-    create_query_saved_output_tool,
+    SAVED_OUTPUT_TOOL_NAMES,
+    create_saved_output_tools,
     large_output_enabled,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_search import (
@@ -762,17 +762,18 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             tools_for_prompt.append(_exec_py)
         else:
             adapter._tools_context.pop(EXECUTE_PYTHON_NAME, None)
-        # Large results (native modes): follow-up questions about a saved result go
-        # through query_saved_output, which tool_exec dispatches by name.
+        # Large results (native modes): the tools for a saved result — query_saved_output
+        # (subagent mode) or grep/read_saved_output (main_agent mode) — bound from the
+        # start; tool_exec dispatches them by name.
+        for _name in SAVED_OUTPUT_TOOL_NAMES:
+            adapter._tools_context.pop(_name, None)
+        tools_for_prompt = [
+            t for t in (tools_for_prompt or []) if getattr(t, "name", None) not in SAVED_OUTPUT_TOOL_NAMES
+        ]
         if is_native_mode(_execution_mode) and large_output_enabled():
-            _query_saved = create_query_saved_output_tool()
-            adapter._tools_context[QUERY_SAVED_OUTPUT_NAME] = _query_saved.coroutine
-            tools_for_prompt = [
-                t for t in (tools_for_prompt or []) if getattr(t, "name", None) != QUERY_SAVED_OUTPUT_NAME
-            ]
-            tools_for_prompt.append(_query_saved)
-        else:
-            adapter._tools_context.pop(QUERY_SAVED_OUTPUT_NAME, None)
+            for _saved_tool in create_saved_output_tools():
+                adapter._tools_context[_saved_tool.name] = _saved_tool.coroutine
+                tools_for_prompt.append(_saved_tool)
         if lc_bind_tools_meta is not None:
             lc_bind_tools_meta["_lc_bind_tools_overlay_structured_tools"] = [
                 t for t in (tools_for_prompt or []) if getattr(t, "name", None)

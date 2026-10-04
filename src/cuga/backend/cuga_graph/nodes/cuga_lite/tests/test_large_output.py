@@ -402,3 +402,58 @@ async def test_disabled_keeps_the_batch_truncation(cfg, monkeypatch):
     reply = await _run_node(model, monkeypatch)
     assert "result truncated" in reply.content and lo.PERSISTED_OUTPUT_TAG not in reply.content
     assert model.sent == [] and not (cfg / "thread-x").exists()
+
+
+# ── main_agent mode (ablation: no subagent) ──────────────────────────────────
+
+
+@pytest.fixture
+def main_agent(cfg, monkeypatch):
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.large_output, "mode", "main_agent", raising=False)
+    return cfg
+
+
+def test_each_mode_binds_its_own_tools(cfg, monkeypatch):
+    from cuga.config import settings
+
+    assert [t.name for t in lo.create_saved_output_tools()] == ["query_saved_output"]
+    monkeypatch.setattr(settings.large_output, "mode", "main_agent", raising=False)
+    assert [t.name for t in lo.create_saved_output_tools()] == ["grep_saved_output", "read_saved_output"]
+
+
+@pytest.mark.asyncio
+async def test_main_agent_mode_saves_the_file_and_never_runs_a_subagent(main_agent, monkeypatch):
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.advanced_features, "execution_output_max_length", 5000, raising=False)
+    model = _ScriptedModel([])
+    reply = await _run_node(model, monkeypatch)
+    assert model.sent == [], "no subagent call"
+    assert reply.content.startswith(lo.PERSISTED_OUTPUT_TAG) and "Findings" not in reply.content
+    assert 'grep_saved_output(file="call_1.txt"' in reply.content
+    assert (main_agent / "thread-x" / "call_1.txt").read_text() == _haystack()
+
+
+@pytest.mark.asyncio
+async def test_main_agent_greps_and_reads_the_saved_file_itself(main_agent, monkeypatch):
+    lo.spill_to_file(_haystack(), thread_id="thread-x", call_id="call_1")
+    grep = await _run_node(
+        None,
+        monkeypatch,
+        {"name": "grep_saved_output", "args": {"file": "call_1.txt", "pattern": "Nandakumar"}, "id": "g"},
+    )
+    assert grep.status == "success" and f"1500: {NEEDLE}" in grep.content
+    read = await _run_node(
+        None,
+        monkeypatch,
+        {"name": "read_saved_output", "args": {"file": "call_1", "offset": 1500, "limit": 1}, "id": "r"},
+    )
+    assert read.status == "success" and read.content.startswith(f"1500: {NEEDLE}")
+    other = await _run_node(
+        None,
+        monkeypatch,
+        {"name": "grep_saved_output", "args": {"file": "../x.txt", "pattern": "a"}, "id": "o"},
+    )
+    assert other.status == "error" and "call_1.txt" in other.content

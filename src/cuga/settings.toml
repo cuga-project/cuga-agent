@@ -170,6 +170,10 @@ enabled = false
 threshold_chars = 50000  # free-code's DEFAULT_MAX_RESULT_SIZE_CHARS; 0 = advanced_features.execution_output_max_length
 spill_dir = ""  # "" = <system temp>/cuga_large_output/<thread_id>/<tool_call_id>.txt
 search_max_steps = 8  # grep/read calls per research round
+# subagent: a search subagent reads the saved file and the agent gets its findings (+ query_saved_output for
+# follow-ups). main_agent (ablation): no subagent — the agent gets grep_saved_output/read_saved_output from the
+# start and only the path + preview when a result is too large, and searches the file itself.
+mode = "subagent"
 max_rounds = 2  # 1 = no check; N > 1 = after each round a checker looks for gaps and sends the subagent back (up to N rounds)
 subagent_timeout = 120  # seconds for the whole search (all rounds); past it the agent gets the path and preview only
 max_answer_chars = 4000  # cap on the findings returned to the agent

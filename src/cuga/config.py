@@ -277,6 +277,7 @@ validators = [
     Validator("large_output.threshold_chars", default=50000, is_type_of=int, gte=0),
     Validator("large_output.spill_dir", default=""),
     Validator("large_output.search_max_steps", default=8, is_type_of=int, gt=0),
+    Validator("large_output.mode", default="subagent", is_in=["subagent", "main_agent"]),
     Validator("large_output.max_rounds", default=2, is_type_of=int, gt=0),
     Validator("large_output.subagent_timeout", default=120, is_type_of=(int, float), gt=0),
     Validator("large_output.max_answer_chars", default=4000, is_type_of=int, gt=0),

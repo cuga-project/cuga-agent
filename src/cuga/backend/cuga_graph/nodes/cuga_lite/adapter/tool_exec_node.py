@@ -56,11 +56,14 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import (
     save_native_result,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.large_output import (
+    GREP_SAVED_NAME,
     QUERY_SAVED_OUTPUT_NAME,
+    READ_SAVED_NAME,
     handle_large_result,
     large_output_enabled,
     large_output_threshold,
     query_saved_output,
+    run_saved_file_tool,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_effects import page_note
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_search import (
@@ -299,6 +302,22 @@ async def _run_query_saved_output(
     if not ok:
         return _error_message(text, call_id=call_id, name=QUERY_SAVED_OUTPUT_NAME)
     return ToolMessage(content=text, tool_call_id=call_id, name=QUERY_SAVED_OUTPUT_NAME)
+
+
+def _run_saved_file_tool(
+    adapter: Any, name: str, raw_args: Any, *, call_id: str, large_output: Dict[str, Any]
+) -> ToolMessage:
+    """main_agent mode: the agent's own grep/read over a saved result; meta calls, never budgeted."""
+    kwargs, arg_error = _coerce_args(raw_args)
+    if not arg_error:
+        arg_error = _validate_args(adapter, name, kwargs)
+    if arg_error:
+        return _error_message(arg_error, call_id=call_id, name=name)
+    text, ok = run_saved_file_tool(name, kwargs, thread_id=large_output["thread_id"])
+    _collect_step(adapter, "Saved_output_search", {"tool": name, "arguments": kwargs, "ok": ok})
+    if not ok:
+        return _error_message(text, call_id=call_id, name=name)
+    return ToolMessage(content=text, tool_call_id=call_id, name=name)
 
 
 def _unknown_tool_text(adapter: Any, name: str, surface: Optional[DeferredToolSurface]) -> str:
@@ -609,6 +628,13 @@ async def _run_batch(
         if large_output is not None and name == QUERY_SAVED_OUTPUT_NAME:
             results.append(
                 await _run_query_saved_output(adapter, raw_args, call_id=call_id, large_output=large_output)
+            )
+            continue
+        if large_output is not None and name in (GREP_SAVED_NAME, READ_SAVED_NAME):
+            results.append(
+                await asyncio.to_thread(
+                    _run_saved_file_tool, adapter, name, raw_args, call_id=call_id, large_output=large_output
+                )
             )
             continue
 
