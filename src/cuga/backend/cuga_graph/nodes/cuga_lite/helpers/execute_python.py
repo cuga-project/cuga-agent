@@ -192,6 +192,8 @@ def save_native_result(state: Any, tool_name: str, result: Any) -> Optional[str]
 
     Best effort: a result that cannot be stored never affects the call's reply.
     """
+    from cuga.backend.cuga_graph.state.agent_state import NATIVE_RESULT_DESCRIPTION_PREFIX
+
     try:
         base = _IDENT.sub("_", wire_name(tool_name)).strip("_")[:48] or "tool"
         base = f"{base}_result"
@@ -200,7 +202,7 @@ def save_native_result(state: Any, tool_name: str, result: Any) -> Optional[str]
         while name in existing:
             name, n = f"{base}_{n}", n + 1
         return state.variables_manager.add_variable(
-            result, name=name, description=f"Result of native call {tool_name}"
+            result, name=name, description=f"{NATIVE_RESULT_DESCRIPTION_PREFIX}{tool_name}"
         )
     except Exception as exc:  # never let bookkeeping break a tool reply
         logger.debug(f"could not save native result of {tool_name}: {exc}")

@@ -60,6 +60,11 @@ def union_ordered(current: Optional[List[str]], incoming: Optional[List[str]]) -
     return list(out)
 
 
+# Description stamped on variables that hold a native tool result (hybrid mode,
+# ``execute_python.save_native_result``); the summary lists their fields instead of a preview.
+NATIVE_RESULT_DESCRIPTION_PREFIX = "Result of native call "
+
+
 class ToolCallRecord(BaseModel):
     """Record of a tool call for tracking purposes."""
 
@@ -304,6 +309,16 @@ class VariablesManager(object):
             for name, metadata in self.variables.items()
         }
 
+    @staticmethod
+    def _fields_line(value: Any) -> Optional[str]:
+        """Field names of a dict, or of a list's first dict item — what code needs to read it."""
+        sample = value[0] if isinstance(value, list) and value else value
+        if isinstance(sample, dict) and sample:
+            keys = list(sample)
+            shown = ", ".join(str(k) for k in keys[:30]) + (", ..." if len(keys) > 30 else "")
+            return f"- Fields{' (per item)' if isinstance(value, list) else ''}: {shown}"
+        return None
+
     def get_variables_summary(
         self, variable_names: list[str] = None, last_n: Optional[int] = None, max_length: Optional[int] = 5000
     ) -> str:
@@ -382,9 +397,23 @@ class VariablesManager(object):
                 f"- Type: {metadata.type}",
                 f"- Items: {metadata.count_items}",
                 f"- Description: {metadata.description or 'No description'}",
-                f"- Value Preview: {self._get_value_preview(metadata.value, max_length=max_length)}",
-                "",
             ]
+            if (metadata.description or "").startswith(NATIVE_RESULT_DESCRIPTION_PREFIX):
+                # A native tool result: the data is already in the transcript as that call's
+                # reply, so a preview here only repeats it — on every later call. Field names
+                # are what code needs to read it; print it in code to see the values.
+                from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import (
+                    VariableUtils,
+                )
+
+                fields = self._fields_line(VariableUtils.hydrate_value(metadata.value))
+                if fields:
+                    lines.append(fields)
+            else:
+                lines.append(
+                    f"- Value Preview: {self._get_value_preview(metadata.value, max_length=max_length)}"
+                )
+            lines.append("")
             summary_lines.extend(lines)
 
         return '\n'.join(summary_lines)
