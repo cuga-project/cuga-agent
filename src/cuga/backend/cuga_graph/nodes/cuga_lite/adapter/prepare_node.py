@@ -13,7 +13,10 @@ from loguru import logger
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.arg_warning import make_arg_warning_callable
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.model_call_recovery import ONE_SHOT_RECOVERY_KEYS
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import create_update_todos_tool
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
+    TODOS_TOOL_NAME,
+    create_update_todos_tool,
+)
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import (
     ExecutionRouter,
     split_execution_note,
@@ -342,7 +345,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 if hasattr(todos_tool, 'coroutine') and todos_tool.coroutine
                 else todos_tool.func
             )
-            adapter._tools_context['create_update_todos'] = make_tool_awaitable(todos_tool_func)
+            adapter._tools_context[TODOS_TOOL_NAME] = make_tool_awaitable(todos_tool_func)
 
         # Apply tool guide if guides exist in metadata and haven't been applied yet
         # Guides should apply regardless of whether a playbook matched
@@ -868,6 +871,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 # point at a tool the model cannot call; the FINDING TOOLS block replaces it.
                 apps=_find_tools_apps if enable_find_tools and _tool_search_index is None else None,
                 hybrid=_execution_mode == EXECUTION_MODE_HYBRID,
+                todos=bool(enable_todos) and TODOS_TOOL_NAME in adapter._tools_context,
                 tool_search_section=(
                     render_tool_search_section(
                         _tool_search_index,

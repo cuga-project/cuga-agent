@@ -941,6 +941,7 @@ def render_fc_prompt(
     apps: Optional[list] = None,
     tool_search_section: Optional[str] = None,
     hybrid: bool = False,
+    todos: bool = False,
 ) -> str:
     """System prompt for ``cuga_lite_execution_mode = "function_calling"`` (and ``"hybrid"``,
     which adds the ``execute_python`` tool and the when-to-use-code guidance).
@@ -952,6 +953,7 @@ def render_fc_prompt(
 
     - the generic preamble (always),
     - the step-discipline line when ``cuga_lite_step_discipline`` is on,
+    - the planning line when ``create_update_todos`` is bound (``enable_todos``),
     - opt-in fragments from ``cuga_lite_fc_prompt_fragments`` (``evidence_first``),
     - the app catalogue when ``find_tools`` is bound (it takes an ``app_name``), or the
       ``FINDING TOOLS`` block when tool search defers the catalogue, and
@@ -973,6 +975,7 @@ def render_fc_prompt(
         agents_prompt_section=(agents_prompt_section or "").strip(),
         tool_search_section=(tool_search_section or "").strip(),
         hybrid=bool(hybrid),
+        todos=bool(todos),
         instructions=(instructions or "").strip(),
         special_instructions=(special_instructions or "").strip(),
     )

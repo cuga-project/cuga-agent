@@ -20,6 +20,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction imp
     extract_code_from_model_response,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
+    TODOS_TOOL_NAME,
     format_current_plan_section,
     format_task_todos_system_block,
 )
@@ -334,6 +335,31 @@ def _few_shot_to_messages(few_shot: List[Any]) -> List[BaseMessage]:
     return msgs
 
 
+TODOS_STALE_REMINDER = (
+    "\nCurrent Plan was last updated {steps} steps ago and still has {unfinished} unfinished step(s). "
+    "If you have made progress, update the statuses with create_update_todos; if the plan no longer "
+    "fits the task, replace it. Do not mention this note to the user.\n"
+)
+
+
+def _steps_since_todos_update(history: List[Any]) -> int:
+    """Assistant turns since the last one that updated the todos (native call or CodeAct block).
+
+    0 when the latest assistant turn updated them; the whole count when none did.
+    """
+    steps = 0
+    for message in reversed(history):
+        if _message_role(message) not in ("ai", "assistant"):
+            continue
+        calls = getattr(message, "tool_calls", None) or []
+        if any(isinstance(c, dict) and c.get("name") == TODOS_TOOL_NAME for c in calls):
+            return steps
+        if f"{TODOS_TOOL_NAME}(" in _message_text(message):
+            return steps
+        steps += 1
+    return steps
+
+
 def _format_observed_tool_shapes_block(shapes: Dict[str, str]) -> str:
     lines = ["", "---", "", "## Observed tool output shapes (this session)", ""]
     for name, description in shapes.items():
@@ -407,7 +433,19 @@ class AgentGraphAdapter(CoreGraphAdapter):
         return base_prompt + self._run_state_blocks(state)
 
     def prepare_turn_context(self, state: Any, configurable: dict) -> str:
-        return self._run_state_blocks(state) if stable_system_prompt(configurable) else ""
+        if not stable_system_prompt(configurable):
+            return ""
+        context = self._run_state_blocks(state)
+        every = int(_fc_setting(configurable, "cuga_lite_todo_reminder_after", 6) or 0)
+        todos = self._task_todos_ref or getattr(state, "task_todos", None) or []
+        if every > 0 and todos:
+            unfinished = sum(
+                1 for t in todos if str(t.get("status", "pending")).strip().lower() != "completed"
+            )
+            stale = _steps_since_todos_update(list(getattr(state, "chat_messages", None) or []))
+            if unfinished and stale and stale % every == 0:
+                context += TODOS_STALE_REMINDER.format(steps=stale, unfinished=unfinished)
+        return context
 
     def _run_state_blocks(self, state: Any) -> str:
         """Todos and observed tool shapes: what changes while a task runs."""

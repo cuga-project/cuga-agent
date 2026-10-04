@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import TODOS_TOOL_NAME
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import EXECUTE_PYTHON_NAME
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_search import TOOL_SEARCH_NAME
 
@@ -58,15 +59,16 @@ def _field(message: Any, key: str) -> Any:
 
 
 def _calls(messages: Sequence[Any]) -> List[Any]:
-    """Native calls in order, as ``(name, args, id)``; ``tool_search`` is skipped (it is not
-    work), ``execute_python`` is a break."""
+    """Native calls in order, as ``(name, args, id)``; ``tool_search`` and
+    ``create_update_todos`` are skipped (they are not work — a plan update between two
+    item lookups must not hide the loop), ``execute_python`` is a break."""
     out: List[Any] = []
     for message in messages:
         for index, call in enumerate(_field(message, "tool_calls") or []):
             if not isinstance(call, dict):
                 continue
             name = str(call.get("name") or "")
-            if not name or name == TOOL_SEARCH_NAME:
+            if not name or name in (TOOL_SEARCH_NAME, TODOS_TOOL_NAME):
                 continue
             if name == EXECUTE_PYTHON_NAME:
                 out.append(_BREAK)

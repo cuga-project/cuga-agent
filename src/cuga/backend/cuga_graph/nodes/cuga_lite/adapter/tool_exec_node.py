@@ -39,6 +39,7 @@ from pydantic import BaseModel, ValidationError
 
 from cuga.backend.activity_tracker.tracker import Step
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import TODOS_TOOL_NAME
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     append_chat_messages_with_step_limit as core_append_with_step_limit,
     create_error_command as core_create_error_command,
@@ -363,6 +364,55 @@ async def _run_tool_search(
     return ToolMessage(content=_stringify(result), tool_call_id=call_id, name=TOOL_SEARCH_NAME)
 
 
+TODOS_UPDATED_REPLY = (
+    "Plan updated: {total} step(s) — {completed} completed, {in_progress} in progress, {pending} pending. "
+    "It is shown under Current Plan; keep the statuses current as you work."
+)
+
+
+async def _run_update_todos(
+    adapter: Any, raw_args: Any, *, call_id: str, timeout: Optional[float]
+) -> ToolMessage:
+    """``create_update_todos`` as a native call: bookkeeping, not work.
+
+    Like free-code's TodoWrite it touches no external system, so — as with
+    ``tool_search`` — it is never deferred by step discipline, never charged to the
+    tool-call budgets, and never saved as a hybrid variable. The plan itself reaches the
+    model through the run state (``prepare_turn_context``), so the reply is one line.
+    """
+    fn = adapter._tools_context.get(TODOS_TOOL_NAME)
+    kwargs, arg_error = _coerce_args(raw_args)
+    if arg_error or fn is None:
+        return _error_message(
+            arg_error or "create_update_todos is unavailable.", call_id=call_id, name=TODOS_TOOL_NAME
+        )
+    validation_error = _validate_args(adapter, TODOS_TOOL_NAME, kwargs)
+    if validation_error:
+        return _error_message(validation_error, call_id=call_id, name=TODOS_TOOL_NAME)
+    awaitable = fn if inspect.iscoroutinefunction(fn) else make_tool_awaitable(fn)
+    try:
+        result = await asyncio.wait_for(awaitable(**kwargs), timeout=timeout)
+    except Exception as exc:
+        return _error_message(f"create_update_todos failed: {exc}", call_id=call_id, name=TODOS_TOOL_NAME)
+    # The awaitable wrapper returns the tool's output model_dump'ed; accept either shape.
+    items = result.get("todos") if isinstance(result, dict) else getattr(result, "todos", None)
+    statuses = [
+        str((t.get("status") if isinstance(t, dict) else getattr(t, "status", "")) or "").strip().lower()
+        for t in (items or [])
+    ]
+    _collect_step(adapter, "Todos_updated", {"todos": kwargs.get("todos")})
+    return ToolMessage(
+        content=TODOS_UPDATED_REPLY.format(
+            total=len(statuses),
+            completed=statuses.count("completed"),
+            in_progress=statuses.count("in_progress"),
+            pending=len(statuses) - statuses.count("completed") - statuses.count("in_progress"),
+        ),
+        tool_call_id=call_id,
+        name=TODOS_TOOL_NAME,
+    )
+
+
 def _error_message(text: str, *, call_id: str, name: str) -> ToolMessage:
     return ToolMessage(content=text, tool_call_id=call_id, name=name or "unknown", status="error")
 
@@ -606,6 +656,9 @@ async def _run_batch(
             # A meta call: no side effects, so it is never deferred by step discipline,
             # never counted against the tool-call budgets, and never truncated.
             results.append(await _run_tool_search(adapter, raw_args, call_id=call_id, timeout=timeout))
+            continue
+        if name == TODOS_TOOL_NAME and name in adapter._tools_context:
+            results.append(await _run_update_todos(adapter, raw_args, call_id=call_id, timeout=timeout))
             continue
         if budget_stop:
             results.append(_error_message(budget_stop, call_id=call_id, name=name))

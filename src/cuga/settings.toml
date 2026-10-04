@@ -112,6 +112,9 @@ cuga_lite_stable_system_prompt = true
 # Anthropic cache_control breakpoints on the system prompt and the last two turns: off | auto (Claude/Anthropic model
 # names only, e.g. behind LiteLLM or OpenRouter) | on. Off by default: a gateway that rejects content blocks fails every call.
 cuga_lite_prompt_cache_markers = "off"
+# With todos enabled and the stable system prompt: when Current Plan has unfinished steps and was not updated for
+# this many assistant steps, the run state carries a one-line reminder (again every N steps). 0 = off.
+cuga_lite_todo_reminder_after = 6
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 cuga_lite_blocked_claim_retry = true  # When an NL turn claims tools/data are unavailable but no code has executed and tools ARE bound, retry once with a corrective message instead of finalizing the false refusal (issue #610). Only active when cuga_lite_nl_auto_continue is on.
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)

@@ -7,6 +7,8 @@ from typing import Any, Callable, Dict, List, Optional
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+TODOS_TOOL_NAME = "create_update_todos"
+
 
 class Todo(BaseModel):
     """A single todo item with text and status."""
@@ -143,7 +145,7 @@ async def create_update_todos_tool(
 
     return StructuredTool.from_function(
         func=create_update_todos_func,
-        name="create_update_todos",
+        name=TODOS_TOOL_NAME,
         description=(
             "Create or update a list of todos for complex multi-step tasks. Pass `todos` as a "
             "list of objects with 'text' and 'status' ('pending', 'in_progress', or 'completed'). "
