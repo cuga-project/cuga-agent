@@ -230,7 +230,7 @@ jobs:
           git add -A
           git reset .bob/ || true
           git reset .venv/ || true
-          git commit -m "fix: address issue #${ISSUE_NUMBER}
+          git commit --signoff -m "fix: address issue #${ISSUE_NUMBER}
 
           ${ISSUE_TITLE}
 
