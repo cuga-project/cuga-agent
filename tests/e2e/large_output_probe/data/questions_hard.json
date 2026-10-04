@@ -1,0 +1,98 @@
+[
+  {
+    "id": "needle_1",
+    "question": "According to the archive notes buried in the document, who serviced the backup generator for Wing C, and on what date?",
+    "required_substrings": [
+      [
+        "Priya Nandakumar"
+      ],
+      [
+        "14th of September",
+        "September 14"
+      ]
+    ],
+    "needle_text": "[ARCHIVE NOTE 4471] The backup generator for Wing C was last serviced on the 14th of September by technician Priya Nandakumar.",
+    "char_offset": 221517,
+    "depth_pct_actual": 0.1274,
+    "decoy_offsets": [
+      101133,
+      628142
+    ]
+  },
+  {
+    "id": "needle_2",
+    "question": "What is the consignment number of the shipment of ceramic tiles bound for Rotterdam, and how many crates does it contain?",
+    "required_substrings": [
+      [
+        "KL-90231"
+      ],
+      [
+        "seventeen",
+        "17"
+      ]
+    ],
+    "needle_text": "[ARCHIVE NOTE 4472] Shipment consignment number KL-90231 contains seventeen crates of ceramic tiles bound for the Rotterdam depot.",
+    "char_offset": 568182,
+    "depth_pct_actual": 0.3267,
+    "decoy_offsets": [
+      756266,
+      1102243
+    ]
+  },
+  {
+    "id": "needle_3",
+    "question": "Who signed off the quarterly safety inspection at Site 9, and how many violations were recorded?",
+    "required_substrings": [
+      [
+        "Marcus Whitfield"
+      ],
+      [
+        "zero",
+        "0"
+      ]
+    ],
+    "needle_text": "[ARCHIVE NOTE 4473] The quarterly safety inspection at Site 9 was signed off by inspector Marcus Whitfield, with zero violations recorded.",
+    "char_offset": 817836,
+    "depth_pct_actual": 0.4703,
+    "decoy_offsets": [
+      261901,
+      1223721
+    ]
+  },
+  {
+    "id": "needle_4",
+    "question": "What is the catalog item number for the east elevator's replacement part, and when does the backorder clear?",
+    "required_substrings": [
+      [
+        "EL-6693-R"
+      ],
+      [
+        "3rd of November",
+        "November 3"
+      ]
+    ],
+    "needle_text": "[ARCHIVE NOTE 4474] The replacement part for the east elevator is catalog item EL-6693-R, currently on backorder until the 3rd of November.",
+    "char_offset": 1067282,
+    "depth_pct_actual": 0.6137,
+    "decoy_offsets": [
+      440694,
+      866541
+    ]
+  },
+  {
+    "id": "needle_5",
+    "question": "What visitor badge number was issued to the delegation from Helsinki?",
+    "required_substrings": [
+      [
+        "VB-2207"
+      ]
+    ],
+    "needle_text": "[ARCHIVE NOTE 4475] Visitor badge number VB-2207 was issued to a delegation from Helsinki, valid through the end of the month.",
+    "char_offset": 1291723,
+    "depth_pct_actual": 0.7427,
+    "decoy_offsets": [
+      999692,
+      1402883
+    ]
+  }
+]
