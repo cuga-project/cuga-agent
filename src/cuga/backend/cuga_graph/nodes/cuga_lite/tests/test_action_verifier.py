@@ -260,3 +260,198 @@ async def test_runs_through_the_stop_check_registry_once_per_turn():
     name, correction = await run_stop_checks(ctx, ["verify_actions"], fired=[])
     assert name == "verify_actions" and correction.startswith("Before you finish: ")
     assert await run_stop_checks(ctx, ["verify_actions"], fired=["verify_actions"]) is None
+
+
+# ── before a committing write ────────────────────────────────────────────────
+
+
+def test_commit_calls_are_writes_whose_name_or_path_names_a_commitment():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.action_verifier import is_commit_call
+
+    patterns = ["order", "send"]
+    assert is_commit_call(_tool("amazon_place_order", "POST", "/orders"), patterns)
+    assert is_commit_call(_tool("gmail_x", "POST", "/messages/send"), patterns), "the path counts"
+    assert not is_commit_call(_tool("amazon_delete_from_cart", "DELETE", "/cart/{id}"), patterns)
+    assert not is_commit_call(_tool("amazon_show_orders", "GET", "/orders"), patterns), "reads never"
+
+
+def _pending(call_id="c3"):
+    return AIMessage(
+        content="Ordering the dish rack now.",
+        tool_calls=[{"name": "amazon_place_order", "args": {"payment_card_id": 1}, "id": call_id}],
+    )
+
+
+async def _check(model, messages):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.action_verifier import check_before_write
+
+    tools, context, seen = _setup()
+    reply = await check_before_write(
+        tool=tools["amazon_place_order"],
+        args={"payment_card_id": 1},
+        messages=messages,
+        tools_by_name=tools,
+        tools_context=context,
+        model=model,
+    )
+    return reply, seen
+
+
+async def test_block_reads_the_state_and_answers_the_call_with_the_problems():
+    model = _Model(
+        [
+            AIMessage(content="", tool_calls=[{"name": "amazon_show_cart", "args": {}, "id": "v1"}]),
+            AIMessage(content="VERDICT: BLOCK\n- the cart also holds products 96 and 756; remove them first"),
+        ]
+    )
+    reply, seen = await _check(model, _turn()[:5] + [_pending()])
+    assert reply.startswith("Not run: a check before this call found problems:")
+    assert "products 96 and 756" in reply
+    assert seen == [("amazon_show_cart", {})], "read the cart; the order itself never ran"
+    assert set(model.bound_names) == {"amazon_show_cart", wire_name(LONG_GET)}
+
+
+async def test_proceed_and_no_verdict_run_the_call():
+    for text in ("VERDICT: PROCEED", "fine"):
+        reply, _ = await _check(_Model([AIMessage(content=text)]), _turn()[:5] + [_pending()])
+        assert reply is None
+
+
+async def test_block_limit_per_tool_per_turn_lets_the_call_run(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.action_verifier import (
+        WRITE_CHECK_BLOCKED,
+        WRITE_CHECK_KEY,
+    )
+
+    monkeypatch.setattr(
+        action_verifier, "_cfg", lambda key, default: 1 if key == "before_write_max_blocks" else default
+    )
+    blocked = ToolMessage(
+        content="Not run",
+        tool_call_id="c2",
+        name="amazon_place_order",
+        status="error",
+        artifact={WRITE_CHECK_KEY: WRITE_CHECK_BLOCKED},
+    )
+    model = _Model([AIMessage(content="VERDICT: BLOCK\n- x")])
+    reply, _ = await _check(model, _turn()[:5] + [blocked, _pending()])
+    assert reply is None and model.calls == 0
+
+
+async def test_tool_exec_blocks_a_commit_call_before_it_runs(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.tool_exec_node import create_tool_exec_node
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking import tracker as tracker_module
+
+    tools, context, seen = _setup()
+    model = _Model([AIMessage(content="VERDICT: BLOCK\n- the cart holds unrequested items")])
+
+    class _Adapter:
+        messages_key = "chat_messages"
+        metadata_key = "cuga_lite_metadata"
+        execute_node_name = "sandbox"
+        sender_name = "CugaLite"
+        _tools_context = context
+        _tools_context_ref = {"_lc_bind_tools_structured_by_name": tools}
+        _tracker = MagicMock()
+        _model = model
+
+        def get_messages(self, state):
+            return list(state.chat_messages)
+
+        def resolve_max_steps(self, state, override):
+            return 50
+
+        def get_invoke_config(self, configurable):
+            return {}
+
+    state = SimpleNamespace(
+        chat_messages=_turn()[:5] + [_pending()],
+        step_count=0,
+        tool_calls=[],
+        tool_calls_used_run=0,
+        tool_calls_used_thread=0,
+    )
+    try:
+        node = create_tool_exec_node(_Adapter())
+        result = await node(
+            state,
+            config={
+                "configurable": {
+                    "thread_id": "t",
+                    "cuga_lite_execution_mode": "function_calling",
+                    "cuga_lite_verify_before_write": True,
+                }
+            },
+        )
+    finally:
+        for name in (
+            "_tool_call_budget_context",
+            "_thread_tool_call_budget_context",
+            "_block_tool_call_budget_context",
+            "_block_tool_call_cap_override_context",
+        ):
+            getattr(tracker_module, name).set(None)
+    reply = [m for m in result.update["chat_messages"] if isinstance(m, ToolMessage)][-1]
+    assert reply.status == "error" and "unrequested items" in reply.content
+    assert reply.artifact == {"write_check": "blocked"}
+    assert ("amazon_place_order", {"payment_card_id": 1}) not in seen
+
+
+async def test_commit_calls_from_code_are_checked_and_a_block_raises_in_the_code():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.action_verifier import guard_code_tools
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import (
+        CODE_CALLS,
+        ToolCallError,
+        _recording,
+    )
+
+    tools, context, seen = _setup()
+    model = _Model([AIMessage(content="VERDICT: BLOCK\n- the cart holds products 96 and 756")])
+    blocked: list = []
+    guarded = guard_code_tools(
+        context,
+        tools,
+        code="await amazon_place_order(payment_card_id=1)",
+        messages=_turn()[:5],
+        model=model,
+        blocked=blocked,
+    )
+    assert guarded["amazon_show_cart"] is context["amazon_show_cart"], "reads are not wrapped"
+    calls: list = []
+    token = CODE_CALLS.set(calls)
+    try:
+        with pytest.raises(ToolCallError, match="products 96 and 756"):
+            await _recording("amazon_place_order", guarded["amazon_place_order"])(payment_card_id=1)
+    finally:
+        CODE_CALLS.reset(token)
+    assert blocked == ["amazon_place_order"]
+    assert calls == [], "a blocked call is not recorded as made"
+    assert ("amazon_place_order", {"payment_card_id": 1}) not in seen
+
+    model.replies.append(AIMessage(content="VERDICT: PROCEED"))
+    assert await guarded["amazon_place_order"](payment_card_id=1) == {"message": "placed"}
+
+
+def test_blocks_inside_code_count_toward_the_limit():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.action_verifier import blocks_this_turn
+
+    messages = _turn()[:5] + [
+        ToolMessage(
+            content="ToolCallError",
+            tool_call_id="p",
+            name="execute_python",
+            artifact={"code_calls": [], "write_check": ["amazon_place_order"]},
+        ),
+        ToolMessage(
+            content="Not run",
+            tool_call_id="c9",
+            name="amazon_place_order",
+            status="error",
+            artifact={"write_check": "blocked"},
+        ),
+    ]
+    assert blocks_this_turn(messages, "amazon_place_order") == 2
+    assert blocks_this_turn(messages, "amazon_show_cart") == 0

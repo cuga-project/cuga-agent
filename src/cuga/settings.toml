@@ -192,7 +192,14 @@ max_steps = 10  # read calls the verifier may make
 max_tools = 40  # GET tools bound to the verifier (tools the turn already used come first)
 max_result_chars = 4000  # per tool result, in the log and in the verifier's own reads
 max_log_chars = 24000  # the turn's call log; oldest calls dropped first
-subagent_timeout = 120  # seconds; past it the answer goes through unchecked
+subagent_timeout = 120  # seconds; past it the answer (or the write) goes through unchecked
+# Before a native call that commits something (state-changing, and its name or path matches before_write_patterns),
+# tool_exec runs the same subagent with the call's app's GET tools; VERDICT: BLOCK answers the call with the problems
+# instead of running it. Independent of the stop check. Per invoke: configurable["cuga_lite_verify_before_write"].
+# Env: DYNACONF_VERIFY_ACTIONS__BEFORE_WRITE
+before_write = false
+before_write_patterns = ["order", "checkout", "purchase", "buy", "pay", "send", "transfer"]
+before_write_max_blocks = 3  # per tool per turn; past it the call runs unchecked
 
 [large_output]
 # Function-calling / hybrid: a tool result longer than threshold_chars is saved to a file instead of being

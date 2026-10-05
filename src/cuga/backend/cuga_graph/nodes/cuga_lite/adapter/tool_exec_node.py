@@ -66,6 +66,13 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.large_output import (
     query_saved_output,
     run_saved_file_tool,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.action_verifier import (
+    WRITE_CHECK_BLOCKED,
+    WRITE_CHECK_KEY,
+    before_write_enabled,
+    check_before_write,
+    guard_code_tools,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_effects import page_note
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_search import (
     TOOL_SEARCH_NAME,
@@ -218,6 +225,8 @@ async def _run_execute_python(
     call_id: str,
     hybrid: Dict[str, Any],
     large_output: Optional[Dict[str, Any]] = None,
+    write_check: Optional[Dict[str, Any]] = None,
+    earlier: Optional[List[ToolMessage]] = None,
 ) -> ToolMessage:
     """Hybrid mode: run the block in the CodeAct sandbox executor and reply with its output."""
     kwargs, arg_error = _coerce_args(raw_args)
@@ -228,11 +237,26 @@ async def _run_execute_python(
             call_id=call_id,
             name=EXECUTE_PYTHON_NAME,
         )
+    tools_context = adapter._tools_context
+    blocked: List[str] = []
+    if write_check is not None:
+        # Commit calls made from the code get the same pre-write check as native ones.
+        tools_context = guard_code_tools(
+            adapter._tools_context,
+            (getattr(adapter, "_tools_context_ref", None) or {}).get("_lc_bind_tools_structured_by_name")
+            or {},
+            code=code,
+            messages=[*write_check["messages"], *(earlier or [])],
+            model=write_check["model"],
+            invoke_config=write_check["invoke_config"],
+            tracker=getattr(adapter, "_tracker", None),
+            blocked=blocked,
+        )
     try:
         output, new_vars, called = await run_code(
             hybrid["state"],
             code,
-            adapter._tools_context,
+            tools_context,
             thread_id=hybrid.get("thread_id"),
             apps_list=hybrid.get("apps_list"),
         )
@@ -246,9 +270,10 @@ async def _run_execute_python(
         text = await _searched_code_output(text, new_vars, kwargs, call_id=call_id, large_output=large_output)
     # ``called``: tools the code ran — the did-anything check reads it (code calls
     # never appear as ToolMessages of their own).
-    return ToolMessage(
-        content=text, tool_call_id=call_id, name=EXECUTE_PYTHON_NAME, artifact={"code_calls": called}
-    )
+    artifact: Dict[str, Any] = {"code_calls": called}
+    if blocked:
+        artifact[WRITE_CHECK_KEY] = blocked
+    return ToolMessage(content=text, tool_call_id=call_id, name=EXECUTE_PYTHON_NAME, artifact=artifact)
 
 
 async def _searched_code_output(
@@ -488,6 +513,18 @@ def create_tool_exec_node(adapter: Any) -> Callable:
             else None
         )
 
+        write_check = (
+            {
+                "model": configurable.get("llm") or getattr(adapter, "_model", None),
+                "invoke_config": (
+                    adapter.get_invoke_config(configurable) if hasattr(adapter, "get_invoke_config") else {}
+                ),
+                "messages": messages,
+            }
+            if before_write_enabled(configurable)
+            else None
+        )
+
         results: List[ToolMessage] = []
         executed = 0
         execution_tool_calls: List[Dict[str, Any]] = []
@@ -513,6 +550,7 @@ def create_tool_exec_node(adapter: Any) -> Callable:
                         else None
                     ),
                     large_output=large_output,
+                    write_check=write_check,
                 )
             finally:
                 execution_tool_calls = ToolCallTracker.stop_tracking()
@@ -632,6 +670,7 @@ async def _run_batch(
     discovered: Optional[set] = None,
     hybrid: Optional[Dict[str, Any]] = None,
     large_output: Optional[Dict[str, Any]] = None,
+    write_check: Optional[Dict[str, Any]] = None,
 ) -> int:
     """Run one turn's calls in order, appending one ``ToolMessage`` per id to ``results``.
 
@@ -672,7 +711,13 @@ async def _run_batch(
 
         if hybrid is not None and name == EXECUTE_PYTHON_NAME:
             reply = await _run_execute_python(
-                adapter, raw_args, call_id=call_id, hybrid=hybrid, large_output=large_output
+                adapter,
+                raw_args,
+                call_id=call_id,
+                hybrid=hybrid,
+                large_output=large_output,
+                write_check=write_check,
+                earlier=results,
             )
             executed += reply.status != "error"
             results.append(reply)
@@ -722,6 +767,34 @@ async def _run_batch(
             )
             results.append(_error_message(validation_error, call_id=call_id, name=name))
             continue
+
+        if write_check is not None:
+            # Before a call that commits something (order, payment, send): a subagent reads
+            # the state it depends on and may block it (action_verifier.check_before_write).
+            structured = (getattr(adapter, "_tools_context_ref", None) or {}).get(
+                "_lc_bind_tools_structured_by_name"
+            ) or {}
+            blocked = await check_before_write(
+                tool=structured.get(name),
+                args=kwargs,
+                messages=[*write_check["messages"], *results],
+                tools_by_name=structured,
+                tools_context=adapter._tools_context,
+                model=write_check["model"],
+                invoke_config=write_check["invoke_config"],
+                tracker=getattr(adapter, "_tracker", None),
+            )
+            if blocked:
+                results.append(
+                    ToolMessage(
+                        content=blocked,
+                        tool_call_id=call_id,
+                        name=name,
+                        status="error",
+                        artifact={WRITE_CHECK_KEY: WRITE_CHECK_BLOCKED},
+                    )
+                )
+                continue
 
         awaitable = fn if inspect.iscoroutinefunction(fn) else make_tool_awaitable(fn)
         counted = counted_tool_call(awaitable)

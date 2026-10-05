@@ -284,6 +284,13 @@ validators = [
     Validator("verify_actions.max_result_chars", default=4000, is_type_of=int, gt=0),
     Validator("verify_actions.max_log_chars", default=24000, is_type_of=int, gt=0),
     Validator("verify_actions.subagent_timeout", default=120, is_type_of=(int, float), gt=0),
+    Validator("verify_actions.before_write", default=False, is_type_of=bool),
+    Validator(
+        "verify_actions.before_write_patterns",
+        default=["order", "checkout", "purchase", "buy", "pay", "send", "transfer"],
+        is_type_of=list,
+    ),
+    Validator("verify_actions.before_write_max_blocks", default=3, is_type_of=int, gte=0),
     # Large tool results (function-calling / hybrid): save to a file + search subagent — helpers/large_output.py.
     Validator("large_output.enabled", default=False),
     Validator("large_output.threshold_chars", default=50000, is_type_of=int, gte=0),
