@@ -175,7 +175,8 @@ def discovered_in_history(messages: Iterable[Any], deferred: Optional[Iterable[s
     """Deferred tools the model has loaded, in first-discovery order.
 
     A tool counts as loaded when a ``tool_search`` result listed it (the
-    ``ToolMessage.artifact["discovered"]``), or when the model called it
+    ``ToolMessage.artifact["discovered"]``, also set by an ``execute_python`` block
+    that searched from code), or when the model called it
     directly and the call succeeded — an undiscovered call only runs once its
     arguments validate, so success implies the model already knows its shape.
     """
@@ -189,6 +190,11 @@ def discovered_in_history(messages: Iterable[Any], deferred: Optional[Iterable[s
             for name in artifact.get("discovered") or []:
                 seen.setdefault(str(name), None)
             continue
+        if isinstance(artifact, dict):
+            # tool_search called from execute_python code
+            for name in artifact.get("discovered") or []:
+                if deferred_set is None or str(name) in deferred_set:
+                    seen.setdefault(str(name), None)
         name = _field(message, "name")
         if name and _field(message, "status") != "error" and (deferred_set is None or name in deferred_set):
             seen.setdefault(str(name), None)

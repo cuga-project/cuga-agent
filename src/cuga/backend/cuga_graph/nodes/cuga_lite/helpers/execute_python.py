@@ -42,16 +42,46 @@ EXECUTE_PYTHON_DESCRIPTION = (
     "are available by name, and variables you create persist. End with print() of what you need: printed output "
     "is what you get back. Print a sample of unfamiliar data before filtering on it; if the code fails or finds "
     "nothing, inspect, fix and rerun rather than concluding. A tool call that fails raises an exception whose message says why. To delete, move or change items of a paged list, fetch every page first and then act on the collected ids — changing the list while paging through it shifts items between pages and skips some. When the code computes content an action needs, call "
-    "that action from the same code instead of retyping the data. Allowed imports: json, re, typing, datetime, asyncio."
+    "that action from the same code instead of retyping the data. To find a tool from code, "
+    "`found = await tool_search(\"keywords\")` — `print(found)` shows the matching signatures and `found.names` "
+    "lists them; they are callable in the same code."
 )
+
+
+def _imports_sentence() -> str:
+    """What the code may import — the real rule, which depends on where it runs."""
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionRouter
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.benchmark_mode import is_relaxed_execution
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.security import SecurityValidator
+    from cuga.config import settings
+
+    try:
+        backend = ExecutionRouter.resolve(settings).python_backend
+    except Exception:
+        backend = "local"
+    if is_relaxed_execution() or backend in ("subprocess", "e2b"):
+        return " Any standard-library module (csv, statistics, collections, itertools, math, ...) can be imported."
+    allowed = sorted(m for m in SecurityValidator.ALLOWED_IMPORTS if not m.startswith("_"))
+    return f" Allowed imports: {', '.join(allowed)}."
+
+
+def execute_python_description() -> str:
+    return EXECUTE_PYTHON_DESCRIPTION + _imports_sentence()
 
 
 #: Registered names of the tools the current ``execute_python`` block called (in order).
 CODE_CALLS: ContextVar[Optional[List[str]]] = ContextVar("execute_python_calls", default=None)
 
+#: Tools the current block found with ``tool_search`` — loaded natively on the next step.
+CODE_DISCOVERED: ContextVar[Optional[List[str]]] = ContextVar("execute_python_discovered", default=None)
+
 
 class ToolCallError(Exception):
     """A tool called from ``execute_python`` failed; the message says why."""
+
+
+# Tracebacks shown to the model read "ToolCallError: ...", not the module path.
+ToolCallError.__module__ = "builtins"
 
 
 def _failure_message(result: Any) -> Optional[str]:
@@ -104,20 +134,41 @@ def create_execute_python_tool() -> StructuredTool:
     return StructuredTool.from_function(
         coroutine=_placeholder,
         name=EXECUTE_PYTHON_NAME,
-        description=EXECUTE_PYTHON_DESCRIPTION,
+        description=execute_python_description(),
         args_schema=ExecutePythonInput,
     )
 
 
-def code_context(state: Any, tools_context: Dict[str, Any]) -> Dict[str, Any]:
-    """Stored variables + callable tools, with ≤64-char wire-name aliases for long names."""
-    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import is_find_tools_listing_markdown
+def _code_tool_search(fn: Any) -> Any:
+    """``tool_search`` for code: returns :class:`FoundTools` (prints as the signatures,
+    ``.names`` lists them), records what it found so the next step binds those tools
+    natively, and is not charged against the tool-call budgets — it reads the catalogue,
+    nothing else (same as a native ``tool_search``)."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.rpc_client.cuga_tools import FoundTools
 
-    context: Dict[str, Any] = {}
-    for name in list(state.variables_manager.get_variable_names()):
-        value = state.variables_manager.get_variable(name)
-        if not is_find_tools_listing_markdown(value):
-            context[name] = value
+    async def tool_search(
+        query: str, app_name: Optional[str] = None, max_results: Optional[int] = None
+    ) -> Any:
+        result = fn(query=query, app_name=app_name, max_results=max_results)
+        result = await result if inspect.isawaitable(result) else result
+        names = [str(n) for n in (getattr(result, "discovered", None) or [])]
+        found = CODE_DISCOVERED.get()
+        if found is not None:
+            found.extend(n for n in names if n not in found)
+        return FoundTools(str(getattr(result, "text", result)), [wire_name(n) for n in names])
+
+    tool_search._cuga_budget_counted = True  # type: ignore[attr-defined]  # counted_tool_call skips it
+    return tool_search
+
+
+def code_tools(tools_context: Dict[str, Any]) -> Dict[str, Any]:
+    """The callable tools code may use, with ≤64-char wire-name aliases for long names.
+
+    The same set serves ``execute_python`` and commands ``run_command`` starts.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_search import TOOL_SEARCH_NAME
+
+    tools: Dict[str, Any] = {}
     for name, fn in tools_context.items():
         if (
             name.startswith("_")
@@ -126,12 +177,47 @@ def code_context(state: Any, tools_context: Dict[str, Any]) -> Dict[str, Any]:
             or not callable(fn)
         ):
             continue
+        if name == TOOL_SEARCH_NAME:
+            tools[name] = _code_tool_search(fn)
+            continue
         wrapped = _recording(name, fn)
-        context[name] = wrapped
+        tools[name] = wrapped
         alias = wire_name(name)
         if alias != name:
-            context.setdefault(alias, wrapped)
-    return context
+            tools.setdefault(alias, wrapped)
+    return tools
+
+
+def shell_tools(tools_context: Dict[str, Any]) -> Dict[str, Any]:
+    """:func:`code_tools` for commands ``run_command`` starts, each charged to the budgets.
+
+    ``eval_with_tools_async`` charges the tools it hands to code; a command's calls come
+    over the tool channel instead, so they are wrapped here. ``run_command`` itself is
+    left out — a command does not start commands through the channel.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import counted_tool_call
+
+    return {
+        name: counted_tool_call(fn) if inspect.iscoroutinefunction(fn) else fn
+        for name, fn in code_tools(tools_context).items()
+        if name != "run_command"
+    }
+
+
+def _stored_variables(state: Any) -> Dict[str, Any]:
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import is_find_tools_listing_markdown
+
+    variables: Dict[str, Any] = {}
+    for name in list(state.variables_manager.get_variable_names()):
+        value = state.variables_manager.get_variable(name)
+        if not is_find_tools_listing_markdown(value):
+            variables[name] = value
+    return variables
+
+
+def code_context(state: Any, tools_context: Dict[str, Any]) -> Dict[str, Any]:
+    """Stored variables + callable tools (:func:`code_tools`)."""
+    return {**_stored_variables(state), **code_tools(tools_context)}
 
 
 async def run_code(
@@ -141,9 +227,11 @@ async def run_code(
     *,
     thread_id: Optional[str] = None,
     apps_list: Optional[List[str]] = None,
+    discovered: Optional[List[str]] = None,
 ) -> Tuple[str, Dict[str, Any], List[str]]:
     """Execute ``code`` like the CodeAct sandbox; returns ``(output, new_vars, called_tools)``
-    and stores new vars.
+    and stores new vars. Tools the code found with ``tool_search`` are appended to
+    ``discovered`` when given.
 
     The wall clock is ``cuga_lite_execute_python_timeout`` (90 s), not the sandbox's 30 s
     block limit: this is the tool for loops over many API calls, and a timeout halfway
@@ -152,14 +240,22 @@ async def run_code(
     from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionRouter
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import is_find_tools_listing_markdown
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.tool_rpc import SHELL_TOOLS
     from cuga.config import settings
 
     calls: List[str] = []
-    token = CODE_CALLS.set(calls)
+    found: List[str] = discovered if discovered is not None else []
+    tools = code_tools(tools_context)
+    tokens = (
+        CODE_CALLS.set(calls),
+        CODE_DISCOVERED.set(found),
+        # ``await run_command(...)`` from this code: the command can call the same tools.
+        SHELL_TOOLS.set(shell_tools(tools_context)),
+    )
     try:
         output, new_vars = await CodeExecutor.eval_with_tools_async(
             code=code,
-            _locals=code_context(state, tools_context),
+            _locals={**_stored_variables(state), **tools},
             state=state,
             thread_id=thread_id,
             apps_list=apps_list,
@@ -167,7 +263,9 @@ async def run_code(
             timeout=execute_python_timeout(),
         )
     finally:
-        CODE_CALLS.reset(token)
+        SHELL_TOOLS.reset(tokens[2])
+        CODE_DISCOVERED.reset(tokens[1])
+        CODE_CALLS.reset(tokens[0])
     for name, value in (new_vars or {}).items():
         if is_find_tools_listing_markdown(value):
             continue
@@ -185,6 +283,21 @@ def execute_python_timeout() -> float:
 
 
 _IDENT = re.compile(r"[^0-9a-zA-Z_]+")
+
+
+def describe_shape(value: Any) -> str:
+    """A few words on what a variable holds: ``list[37] of dict``, ``dict(5 keys)``, ``str(1200 chars)``."""
+    if isinstance(value, bool) or value is None:
+        return type(value).__name__
+    if isinstance(value, (list, tuple, set, frozenset)):
+        kinds = sorted({type(v).__name__ for v in list(value)[:50]})
+        of = f" of {'/'.join(kinds)}" if kinds else ""
+        return f"{type(value).__name__}[{len(value)}]{of}"
+    if isinstance(value, dict):
+        return f"dict({len(value)} keys)"
+    if isinstance(value, str):
+        return f"str({len(value)} chars)"
+    return type(value).__name__
 
 
 def save_native_result(state: Any, tool_name: str, result: Any) -> Optional[str]:

@@ -51,10 +51,14 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.deferred import (
     merge_ordered,
     surface_from_meta,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.tool_rpc import SHELL_TOOLS
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import (
+    CODE_CALLS,
     EXECUTE_PYTHON_NAME,
+    describe_shape,
     run_code,
     save_native_result,
+    shell_tools,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.large_output import (
     GREP_SAVED_NAME,
@@ -256,6 +260,7 @@ async def _run_execute_python(
             tracker=getattr(adapter, "_tracker", None),
             blocked=blocked,
         )
+    discovered: List[str] = []
     try:
         output, new_vars, called = await run_code(
             hybrid["state"],
@@ -263,6 +268,7 @@ async def _run_execute_python(
             tools_context,
             thread_id=hybrid.get("thread_id"),
             apps_list=hybrid.get("apps_list"),
+            discovered=discovered,
         )
     except ToolCallBudgetExceeded as exc:
         return _error_message(str(exc), call_id=call_id, name=EXECUTE_PYTHON_NAME)
@@ -277,6 +283,12 @@ async def _run_execute_python(
     artifact: Dict[str, Any] = {"code_calls": called}
     if blocked:
         artifact[WRITE_CHECK_KEY] = blocked
+    if discovered:
+        # Tools the code found with tool_search: bound natively from the next step.
+        artifact["discovered"] = discovered
+    if new_vars:
+        # What the block left behind, for the stub that replaces this reply once it is old.
+        artifact["variables"] = {name: describe_shape(value) for name, value in list(new_vars.items())[:20]}
     return ToolMessage(content=text, tool_call_id=call_id, name=EXECUTE_PYTHON_NAME, artifact=artifact)
 
 
@@ -440,6 +452,38 @@ async def _run_update_todos(
         tool_call_id=call_id,
         name=TODOS_TOOL_NAME,
     )
+
+
+RUN_COMMAND_NAME = "run_command"
+
+
+def _shell_bridge(
+    adapter: Any,
+    kwargs: Dict[str, Any],
+    *,
+    write_check: Optional[Dict[str, Any]],
+    earlier: List[ToolMessage],
+) -> Dict[str, Any]:
+    """The tools a native ``run_command`` (hybrid) lets its command call back into.
+
+    The same set ``execute_python`` gets — recorded, failures raised — with commit tools
+    behind the pre-write check, so a script cannot place an order the check would block.
+    """
+    blocked: List[str] = []
+    tools_context = adapter._tools_context
+    if write_check is not None:
+        tools_context = guard_code_tools(
+            adapter._tools_context,
+            (getattr(adapter, "_tools_context_ref", None) or {}).get("_lc_bind_tools_structured_by_name")
+            or {},
+            code=str(kwargs.get("cmd") or ""),
+            messages=[*write_check["messages"], *earlier],
+            model=write_check["model"],
+            invoke_config=write_check["invoke_config"],
+            tracker=getattr(adapter, "_tracker", None),
+            blocked=blocked,
+        )
+    return {"tools": shell_tools(tools_context), "calls": [], "blocked": blocked}
 
 
 def _error_message(text: str, *, call_id: str, name: str) -> ToolMessage:
@@ -802,8 +846,20 @@ async def _run_batch(
 
         awaitable = fn if inspect.iscoroutinefunction(fn) else make_tool_awaitable(fn)
         counted = counted_tool_call(awaitable)
+        shell: Optional[Dict[str, Any]] = None
+        if hybrid is not None and name == RUN_COMMAND_NAME:
+            shell = _shell_bridge(adapter, kwargs, write_check=write_check, earlier=results)
         try:
-            result = await asyncio.wait_for(counted(**kwargs), timeout=timeout)
+            if shell is not None:
+                tokens = (CODE_CALLS.set(shell["calls"]), SHELL_TOOLS.set(shell["tools"]))
+                try:
+                    # A command runs as long as its own timeout allows (120 s), not a tool call's.
+                    result = await counted(**kwargs)
+                finally:
+                    SHELL_TOOLS.reset(tokens[1])
+                    CODE_CALLS.reset(tokens[0])
+            else:
+                result = await asyncio.wait_for(counted(**kwargs), timeout=timeout)
             executed += 1
             saved = save_native_result(hybrid["state"], name, result) if hybrid is not None else None
             text = _stringify(result)
@@ -836,6 +892,12 @@ async def _run_batch(
                 artifact = {"saved_as": saved}
             if persisted is not None:
                 artifact = {**(artifact or {}), "saved_file": persisted.path.name}
+            if shell is not None:
+                # Tools the command's scripts called, like execute_python's: the write
+                # detection and the verifier read them from here.
+                artifact = {**(artifact or {}), "code_calls": list(shell["calls"])}
+                if shell["blocked"]:
+                    artifact[WRITE_CHECK_KEY] = list(shell["blocked"])
             results.append(ToolMessage(content=content, tool_call_id=call_id, name=name, artifact=artifact))
         except asyncio.TimeoutError:
             results.append(

@@ -16,7 +16,9 @@ eval traces and replay still see them). A cleared message stays cleared on every
 call, so the provider's prompt cache is only invalidated at the boundary. Never cleared:
 results the model has not answered yet (everything after the last assistant turn), the
 ``keep_recent`` newest results, ``tool_search`` results (small, and they carry the loaded
-signatures), error replies, and anything shorter than ``min_chars``.
+signatures), and anything shorter than ``min_chars``. Old error replies are not cleared but
+shortened to their opening and last line (the model must still know what failed). A cleared
+``execute_python`` reply names the variables the block created and their shapes.
 """
 
 from __future__ import annotations
@@ -38,6 +40,14 @@ CLEARED_CODE = (
     "[Earlier execute_python output cleared from context ({chars} chars). Variables that code created "
     "still exist — print them from execute_python if you need them again.]"
 )
+CLEARED_CODE_VARS = (
+    "[Earlier execute_python output cleared from context ({chars} chars). The code created: {variables} — "
+    "they still exist; print them from execute_python if you need them again.]"
+)
+SHORTENED_ERROR = "[Earlier error shortened ({chars} chars)] {head} ...{tail}"
+
+#: An old error reply longer than this is cut to its first and last lines.
+ERROR_KEEP_CHARS = 800
 CLEARED_FILE = (
     "[Earlier result of {name} cleared from context ({chars} chars). The full result is saved as file "
     "`{file}`. {hint}]"
@@ -63,9 +73,13 @@ def saved_variable(message: ToolMessage) -> Optional[str]:
 def _stub(message: ToolMessage, var_exists: Callable[[str], bool]) -> str:
     chars = len(message.content)
     name = message.name or "tool"
-    if name == EXECUTE_PYTHON_NAME:
-        return CLEARED_CODE.format(chars=chars)
     artifact = message.artifact if isinstance(message.artifact, dict) else {}
+    if name == EXECUTE_PYTHON_NAME:
+        variables = artifact.get("variables")
+        if isinstance(variables, dict) and variables:
+            listed = ", ".join(f"`{k}` ({v})" for k, v in variables.items())
+            return CLEARED_CODE_VARS.format(chars=chars, variables=listed)
+        return CLEARED_CODE.format(chars=chars)
     saved_file = artifact.get("saved_file")
     if isinstance(saved_file, str) and saved_file:
         return CLEARED_FILE.format(name=name, chars=chars, file=saved_file, hint=saved_file_hint(saved_file))
@@ -73,6 +87,24 @@ def _stub(message: ToolMessage, var_exists: Callable[[str], bool]) -> str:
     if var and var_exists(var):
         return CLEARED_SAVED.format(name=name, chars=chars, var=var)
     return CLEARED_PLAIN.format(name=name, chars=chars)
+
+
+def _shortened_error(message: ToolMessage) -> Optional[str]:
+    """An old error keeps its opening (what failed) and its last line (the exception), not the middle.
+
+    Errors are never cleared outright — the model needs to remember what already failed —
+    but a long traceback or a dumped payload is only worth its first and last lines once
+    the model has moved on.
+    """
+    content = message.content if isinstance(message.content, str) else ""
+    if len(content) <= ERROR_KEEP_CHARS:
+        return None
+    lines = [line for line in content.strip().splitlines() if line.strip()]
+    head = content.strip()[:300].rstrip()
+    tail = lines[-1].strip()[:300] if lines else ""
+    if tail and tail in head:
+        tail = ""
+    return SHORTENED_ERROR.format(chars=len(content), head=head, tail=f" {tail}" if tail else "")
 
 
 def clear_old_tool_results(
@@ -98,7 +130,14 @@ def clear_old_tool_results(
     out: List[BaseMessage] = list(messages)
     for i in tool_positions:
         m = out[i]
-        if i in protected or m.name == TOOL_SEARCH_NAME or m.status == "error":
+        if i in protected or m.name == TOOL_SEARCH_NAME:
+            continue
+        failed_code = m.name == EXECUTE_PYTHON_NAME and "Error during execution" in str(m.content)
+        if m.status == "error" or failed_code:
+            # A failed block reports as normal output; it is an error all the same.
+            shortened = _shortened_error(m)
+            if shortened is not None:
+                out[i] = m.model_copy(update={"content": shortened})
             continue
         if not isinstance(m.content, str) or len(m.content) < max(min_chars, 1):
             continue

@@ -873,6 +873,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 apps=_find_tools_apps if enable_find_tools and _tool_search_index is None else None,
                 hybrid=_execution_mode == EXECUTION_MODE_HYBRID,
                 todos=bool(enable_todos) and TODOS_TOOL_NAME in adapter._tools_context,
+                shell="run_command" in adapter._tools_context,
                 tool_search_section=(
                     render_tool_search_section(
                         _tool_search_index,

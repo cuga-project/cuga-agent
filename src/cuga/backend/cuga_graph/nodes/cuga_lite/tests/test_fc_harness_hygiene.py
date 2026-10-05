@@ -131,9 +131,62 @@ def test_off_small_errors_and_tool_search_are_never_cleared():
 
     msgs[2] = _tool("c0", "get", "short")
     msgs[4] = _tool("c1", "tool_search", BIG)
-    msgs[6] = _tool("c2", "get", BIG, status="error")
+    msgs[6] = _tool("c2", "get", "Tool 'get' failed: 404 not found", status="error")
     out = clear_old_tool_results(msgs, keep_recent=1, min_chars=2000)
-    assert [m.content for m in out if isinstance(m, ToolMessage)] == ["short", BIG, BIG, BIG]
+    assert [m.content for m in out if isinstance(m, ToolMessage)] == [
+        "short",
+        BIG,
+        "Tool 'get' failed: 404 not found",
+        BIG,
+    ]
+
+
+def test_an_old_long_error_keeps_its_opening_and_last_line():
+    msgs = _transcript(3)
+    long_error = (
+        "Tool 'get' failed: bad request\n" + "detail line\n" * 200 + "ValueError: page_limit must be <= 20"
+    )
+    msgs[2] = _tool("c0", "get", long_error, status="error")
+    out = [
+        m for m in clear_old_tool_results(msgs, keep_recent=1, min_chars=2000) if isinstance(m, ToolMessage)
+    ]
+    shortened = out[0].content
+    assert shortened.startswith(
+        f"[Earlier error shortened ({len(long_error)} chars)] Tool 'get' failed: bad request"
+    )
+    assert shortened.endswith("ValueError: page_limit must be <= 20")
+    assert len(shortened) < 800
+    assert out[0].status == "error"
+
+
+def test_an_old_failed_code_block_is_shortened_not_cleared():
+    msgs = _transcript(3)
+    failed = (
+        "Output before error:\n"
+        + "row\n" * 800
+        + "Error during execution: KeyError('songs')\nKeyError: 'songs'"
+    )
+    msgs[2] = _tool("c0", ep.EXECUTE_PYTHON_NAME, failed)
+    out = [
+        m for m in clear_old_tool_results(msgs, keep_recent=1, min_chars=2000) if isinstance(m, ToolMessage)
+    ]
+    assert out[0].content.startswith("[Earlier error shortened")
+    assert out[0].content.endswith("KeyError: 'songs'")
+
+
+def test_a_cleared_code_block_names_the_variables_it_created():
+    msgs = _transcript(3)
+    msgs[2] = ToolMessage(
+        content=BIG,
+        tool_call_id="c0",
+        name=ep.EXECUTE_PYTHON_NAME,
+        artifact={"code_calls": [], "variables": {"songs": "list[37] of dict", "total": "int"}},
+    )
+    out = [
+        m for m in clear_old_tool_results(msgs, keep_recent=1, min_chars=2000) if isinstance(m, ToolMessage)
+    ]
+    assert "`songs` (list[37] of dict), `total` (int)" in out[0].content
+    assert BIG not in out[0].content
 
 
 def test_results_the_model_has_not_answered_are_never_cleared():
