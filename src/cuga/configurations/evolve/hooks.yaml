@@ -4,7 +4,7 @@
 plugins:
   - name: readi_pii
     display_name: Personal information
-    description: Uses READI to redact names, locations and other named entities before memories are saved or sent to the model.
+    description: Redacts names, locations and other personal information.
     show_in_ui: true
     kind: altk_evolve.hooks.plugins.readi.ReadiSemanticPIIPlugin
     hooks: [memory_pre_write, llm_pre_call]
@@ -18,7 +18,7 @@ plugins:
 
   - name: pii_filter_memory
     display_name: Personal identifiers
-    description: Masks detected email addresses, phone numbers and other structured personal identifiers.
+    description: Masks email addresses, phone numbers and other personal identifiers.
     show_in_ui: true
     kind: altk_evolve.hooks.plugins.pii.PIIFilterMemoryPlugin
     hooks: [memory_pre_write, llm_pre_call]

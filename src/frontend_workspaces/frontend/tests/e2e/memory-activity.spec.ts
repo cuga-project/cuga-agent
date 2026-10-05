@@ -23,6 +23,13 @@ for (const count of [0, 3, 12]) {
     await page.getByRole("button", { name: "Administration", exact: true }).click();
     await page.getByRole("tab", { name: "Activity", exact: true }).click();
     const table = page.getByRole("table", { name: "Memories awaiting action" });
+    await page.getByRole("tab", { name: "History", exact: true }).click();
+    await expect(table).not.toBeVisible();
+    await expect(page.getByRole("heading", { name: "Recent outcomes", exact: true })).toBeVisible();
+    await expect(page.getByText("No retention runs recorded yet.")).toBeVisible();
+    await page.getByRole("tab", { name: "Awaiting action", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Recent outcomes", exact: true })).not.toBeVisible();
+
     if (!count) {
       await expect(table.getByText("No memories are awaiting action.")).toBeVisible();
       return;

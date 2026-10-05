@@ -106,7 +106,7 @@ type RetentionPolicyResponse = {
   enabled: boolean;
   created_at?: string;
   updated_at?: string;
-  rules?: RetentionCapabilitiesResponse["rules"];
+  policy: { rules?: RetentionCapabilitiesResponse["rules"] };
 };
 
 async function readJson<T>(response: Response, fallback: string): Promise<T> {
@@ -168,6 +168,8 @@ function shortReference(value: string): string {
 }
 
 function displayType(value: string): string {
+  if (value === "trajectory") return "Conversation memory";
+  if (value === "user_preferences" || value === "preference") return "Preference";
   return value
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (character) => character.toUpperCase());
@@ -181,7 +183,7 @@ function titleFor(entity: EvolveEntity, content?: string): string {
     const firstLine = content.split("\n", 1)[0].trim();
     if (firstLine) return firstLine.length > 96 ? `${firstLine.slice(0, 93)}...` : firstLine;
   }
-  return `${displayType(entity.type)} memory`;
+  return entity.type === "trajectory" ? "Conversation memory" : `${displayType(entity.type)} memory`;
 }
 
 function mapEntity(entity: EvolveEntity, includeContent = true, includeOwner = false): MemoryRecord {
@@ -223,7 +225,7 @@ function mapEntity(entity: EvolveEntity, includeContent = true, includeOwner = f
     createdAt,
     createdLabel: relativeDate(createdAt, "Saved date unavailable"),
     lastUsedAt,
-    lastUsedLabel: relativeDate(lastUsedAt, "Not used in an available conversation"),
+    lastUsedLabel: relativeDate(lastUsedAt, "Not used yet"),
     usageCount: Number.isFinite(usage.count) ? usage.count : 0,
     recentUsage: (usage.recent ?? []).map((entry) => ({
       threadId: String(entry.thread_id ?? ""),
@@ -284,11 +286,11 @@ function mapRule(rule: NonNullable<RetentionCapabilitiesResponse["rules"]>[numbe
   };
 }
 
-export async function loadMemoryPage(agentId: string, cursor?: string): Promise<MemoryPage> {
+export async function loadMemoryPage(agentId: string, cursor?: string, pageSize = 20): Promise<MemoryPage> {
   const params = new URLSearchParams({
     agent_id: agentId,
     include_content: "true",
-    limit: "200",
+    limit: String(pageSize),
   });
   if (cursor) params.set("cursor", cursor);
   const inventory = await requestJson<EntityInventory>(`/api/memory/entities?${params}`);
@@ -330,7 +332,7 @@ export async function loadProtectionStatus(): Promise<ProtectionStatus[]> {
     {
       id: "save-check",
       title: "Protection before saving",
-      description: "Checks every memory before it is stored and stops saves rejected by configured protection plugins.",
+      description: "Checks and protects memories before they are saved.",
       hook: "memory_pre_write",
     },
     {
@@ -375,7 +377,7 @@ export async function loadRetentionPolicies(): Promise<RetentionPolicy[]> {
     enabled: policy.enabled,
     createdAt: policy.created_at,
     updatedAt: policy.updated_at,
-    rules: (policy.rules ?? []).map(mapRule),
+    rules: (policy.policy.rules ?? []).map(mapRule),
   }));
 }
 

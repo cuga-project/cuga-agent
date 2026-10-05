@@ -154,7 +154,7 @@ export function RetentionSchedules({
   };
   return (
     <section className="memory-schedules" aria-label="Retention schedules">
-<div className="memory-settings__row"><div><h2>Schedules</h2><p>Schedules are stored and executed by Evolve.</p></div>      <Button size="md" disabled={readOnly || busy || !enabled} onClick={() => edit("new")}>
+<div className="memory-settings__row"><div><h2>Schedules</h2></div>      <Button size="md" disabled={readOnly || busy || !enabled} onClick={() => edit("new")}>
         Add schedule
       </Button>
 </div>
@@ -202,7 +202,7 @@ export function RetentionSchedules({
           {item.definition.agent_id && (
             <p>
               Agent scope: {item.definition.agent_id}. Saving here applies it to
-              all users and agents in this service instance.
+              everyone using this service.
             </p>
           )}
           {item.definition.dry_run && (

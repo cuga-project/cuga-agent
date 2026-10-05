@@ -46,7 +46,6 @@ export function MemoryPreferences({ admin = false }: { admin?: boolean }) {
               : preferences && !preferences.instance_enabled ? "Memory is disabled for this service. Your preference is saved."
               : "Allow agents to save and use memories for your conversations across this service."}
           </p>
-          {!admin && <p className="memory-settings__note">This controls whether agents save and use your memories.</p>}
         </div>
 
       </div>
@@ -62,7 +61,7 @@ export function MemoryPreferences({ admin = false }: { admin?: boolean }) {
             aria-describedby="episodic-memory-description"
           />
           <p id="episodic-memory-description" className="memory-settings__note">
-            Learn from past conversations to improve future responses. When off, memory only saves and uses facts about users.
+            Learn from past conversations to improve future responses.
           </p>
         </div>
       </div>}
