@@ -110,6 +110,17 @@ def _get(message: Any, key: str) -> Any:
     return message.get(key) if isinstance(message, dict) else getattr(message, key, None)
 
 
+def current_turn_start(messages: Any) -> int:
+    """Index just past the user's latest message (runtime notes do not start a turn)."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.harness_messages import is_harness_message
+
+    messages = list(messages or [])
+    for i in range(len(messages) - 1, -1, -1):
+        if _role(messages[i]) == "human" and not is_harness_message(messages[i]):
+            return i + 1
+    return 0
+
+
 def turn_made_a_write(messages: Any, turn_start: int, tools_by_name: Dict[str, Any]) -> bool:
     """True if a state-changing tool ran this turn — natively or from ``execute_python`` code."""
     for message in list(messages)[turn_start:]:
@@ -146,14 +157,9 @@ def unfinished_paging(ctx: Any) -> Optional[str]:
     Full pages are the ones ``page_note`` flagged. Native calls only; CodeAct turns have none.
     """
     from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import EXECUTE_PYTHON_NAME
-    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.harness_messages import is_harness_message
 
     messages = list(ctx.messages or [])
-    start = 0
-    for i in range(len(messages) - 1, -1, -1):
-        if _role(messages[i]) == "human" and not is_harness_message(messages[i]):
-            start = i + 1
-            break
+    start = current_turn_start(messages)
     calls: Dict[str, tuple] = {}
     events: list = []  # (kind, name, args, page) in order
     for message in messages[start:]:

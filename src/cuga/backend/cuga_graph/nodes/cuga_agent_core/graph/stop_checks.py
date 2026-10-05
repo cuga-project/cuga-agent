@@ -12,7 +12,9 @@ round again. This is the same seam. A check gets a :class:`StopContext` and retu
 - A check that raises is logged and skipped — a broken check must never stop the agent
   from answering.
 
-Built in: ``pending_todos`` — the plan still has unfinished steps.
+Built in: ``pending_todos`` — the plan still has unfinished steps. Elsewhere:
+``unfinished_paging`` (``cuga_lite/helpers/tool_effects.py``) and ``verify_actions``
+(``cuga_lite/helpers/action_verifier.py``).
 """
 
 from __future__ import annotations
@@ -39,6 +41,13 @@ class StopContext:
     execution_mode: str = "codeact"
     #: Name -> StructuredTool for the tools this run can call (schemas, HTTP method).
     tools_by_name: Dict[str, Any] = field(default_factory=dict)
+    #: Name -> awaitable callable, as the agent's own calls run them (for checks that call tools).
+    tools_context: Dict[str, Any] = field(default_factory=dict)
+    #: The agent's chat model and invoke config (for checks that ask a model).
+    model: Any = None
+    invoke_config: Dict[str, Any] = field(default_factory=dict)
+    #: Activity tracker, so a check can leave a trajectory step. May be ``None``.
+    tracker: Any = None
 
 
 StopCheck = Callable[[StopContext], Union[Optional[str], Awaitable[Optional[str]]]]

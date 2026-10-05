@@ -72,6 +72,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.repeat_calls import (
     repeat_nudge_text,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_result_clearing import clear_old_tool_results
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers import action_verifier  # noqa: F401 — registers verify_actions
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_effects import (
     NOOP_ANSWER_CORRECTION,
     NOOP_ANSWER_CORRECTION_KEY,
@@ -469,6 +470,10 @@ class AgentGraphAdapter(CoreGraphAdapter):
             tools_by_name=dict(
                 (self._tools_context_ref or {}).get("_lc_bind_tools_structured_by_name") or {}
             ),
+            tools_context=dict(self._tools_context or {}),
+            model=(configurable or {}).get("llm") or self._model,
+            invoke_config=self.get_invoke_config(configurable or {}),
+            tracker=self._tracker,
         )
         return await run_stop_checks(ctx, specs, fired_checks(self.get_metadata(state)))
 
