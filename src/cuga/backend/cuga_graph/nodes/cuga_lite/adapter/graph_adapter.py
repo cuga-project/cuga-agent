@@ -163,6 +163,54 @@ def _tool_result_as_text(name: Optional[str], content: str) -> str:
     return f"Tool result ({name or 'tool'}):\n{content}"
 
 
+_WIRE_TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_HARMONY_LEAK = re.compile(r"<\|.*$", re.DOTALL)
+
+
+def _clean_tool_name(name: Any) -> str:
+    """A tool-call name every provider accepts on replay.
+
+    Models (gpt-oss in particular) sometimes emit names with harmony tokens or a
+    ``functions.`` prefix attached (``get_x<|channel|>commentary``). Stored as-is,
+    the name poisons the thread: Bedrock rejects every later request whose history
+    contains it (``toolUse.name`` must match ``[a-zA-Z0-9_-]+``). The leak is stripped;
+    anything still invalid becomes ``_``, so tool_exec answers it as an unknown tool.
+    """
+    text = str(name or "")
+    if _WIRE_TOOL_NAME.match(text):
+        return text
+    text = _HARMONY_LEAK.sub("", text).strip()
+    if text.startswith("functions."):
+        text = text[len("functions.") :]
+    text = re.sub(r"[^A-Za-z0-9_-]+", "_", text).strip("_")[:64]
+    return text or "unknown_tool"
+
+
+def _replayable_tool_calls(response: AIMessage) -> AIMessage:
+    """``response`` with tool-call names and invalid-call arguments a provider accepts on replay."""
+    calls = list(response.tool_calls or [])
+    invalid = list(response.invalid_tool_calls or [])
+    clean_calls = [{**c, "name": _clean_tool_name(c.get("name"))} for c in calls]
+    clean_invalid = []
+    for c in invalid:
+        args = c.get("args")
+        try:
+            ok = isinstance(json.loads(args), dict) if isinstance(args, str) else False
+        except (TypeError, ValueError):
+            ok = False
+        # Bedrock needs a JSON object as toolUse.input; tool_exec still answers the call as malformed.
+        clean_invalid.append({**c, "name": _clean_tool_name(c.get("name")), "args": args if ok else "{}"})
+    if clean_calls == calls and clean_invalid == invalid:
+        return response
+    renamed = [
+        (a.get("name"), b["name"])
+        for a, b in zip(calls + invalid, clean_calls + clean_invalid)
+        if a.get("name") != b["name"]
+    ]
+    logger.warning("[fc] cleaned tool-call names/args before persisting: {}", renamed or "invalid-call args")
+    return response.model_copy(update={"tool_calls": clean_calls, "invalid_tool_calls": clean_invalid})
+
+
 def _unanswered_call_replies(calls: List[Any], invalid: List[Any], reason: str) -> List[ToolMessage]:
     """One error ``ToolMessage`` per id the model issued when nothing will execute them.
 
@@ -830,6 +878,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
         )
         if not isinstance(response, AIMessage):
             response = AIMessage(content=content, tool_calls=tool_calls)
+        response = _replayable_tool_calls(response)
+        tool_calls = list(response.tool_calls or [])
+        invalid_tool_calls = list(response.invalid_tool_calls or [])
 
         max_steps = self.resolve_max_steps(state, cfg.get("cuga_lite_max_steps"))
         new_step_count: int = state.step_count + 1
