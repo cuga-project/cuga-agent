@@ -18,6 +18,7 @@ from cuga.backend.evolve.formatting import (
 )
 from cuga.backend.evolve.integration import EvolveIntegration, normalize_evolve_identifier
 from cuga.backend.evolve.memory_store import record_memory_usage
+from cuga.backend.evolve.preferences import memory_enabled
 from cuga.config import get_service_instance_id, settings
 
 
@@ -33,7 +34,7 @@ async def build_evolve_special_instructions_extension(
     (`get_guidelines`, `retrieve_user_facts`) are bounded by `timeout` and fail
     open. The user-fact write is fire-and-forget.
     """
-    if not EvolveIntegration.is_enabled():
+    if not await memory_enabled(getattr(state, "user_id", None)):
         return ""
 
     if timeout is None:

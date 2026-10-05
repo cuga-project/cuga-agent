@@ -229,6 +229,16 @@ async function customLoadHistory(
                 },
               });
             }
+            if (parsed.memoryUsage) {
+              genericItems.push({
+                response_type: MessageResponseTypes.USER_DEFINED,
+                user_defined: {
+                  type: "cuga_memory_usage",
+                  count: parsed.memoryUsage.count,
+                  entity_ids: parsed.memoryUsage.entityIds,
+                },
+              });
+            }
             const messageResponse: any = {
               id: messageId,
               output: { generic: genericItems },
@@ -290,17 +300,27 @@ async function loadBasicMessages(threadId: string): Promise<HistoryItem[]> {
           time: msg.timestamp,
         };
       } else {
+        const parsed = parseAnswerEventData(msg.content);
+        const genericItems: any[] = [
+          {
+            response_type: MessageResponseTypes.TEXT,
+            text: parsed.answerText,
+          },
+        ];
+        if (parsed.memoryUsage) {
+          genericItems.push({
+            response_type: MessageResponseTypes.USER_DEFINED,
+            user_defined: {
+              type: "cuga_memory_usage",
+              count: parsed.memoryUsage.count,
+              entity_ids: parsed.memoryUsage.entityIds,
+            },
+          });
+        }
         return {
           message: {
             id: messageId,
-            output: {
-              generic: [
-                {
-                  response_type: MessageResponseTypes.TEXT,
-                  text: msg.content,
-                },
-              ],
-            },
+            output: { generic: genericItems },
             message_options: { response_user_profile: RESPONSE_USER_PROFILE },
           } as MessageResponse,
           time: msg.timestamp,

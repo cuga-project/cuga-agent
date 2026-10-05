@@ -371,6 +371,15 @@ pii-regex = [
     { name = "cpex-pii-filter", marker = "python_full_version >= '3.12'" },
 ]
 
+[package.optional-dependencies]
+hooks = [
+    { name = "cpex", marker = "python_full_version >= '3.12'" },
+]
+pii-regex = [
+    { name = "cpex", marker = "python_full_version >= '3.12'" },
+    { name = "cpex-pii-filter", marker = "python_full_version >= '3.12'" },
+]
+
 [[package]]
 name = "annotated-doc"
 version = "0.0.4"
@@ -1479,6 +1488,7 @@ requires-dist = [
     { name = "dynaconf", specifier = ">=3.2.13" },
     { name = "e2b-code-interpreter", marker = "extra == 'e2b'", specifier = ">=2.4.1" },
     { name = "easyocr" },
+    { name = "einops", marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = "==0.8.1" },
     { name = "fastapi", extras = ["standard"] },
     { name = "fastembed", specifier = ">=0.4.0" },
     { name = "fastmcp", specifier = ">=3.3.0,<4" },
