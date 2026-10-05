@@ -862,18 +862,6 @@
   color: var(--cds-text-secondary);
   font-size: 0.875rem;
 }
-.memory-settings__empty {
-  border: 1px solid var(--cds-border-subtle-01);
-  padding: 2rem;
-  margin-bottom: 1.5rem;
-}
-.memory-settings__empty h2 {
-  margin-top: 1.5rem;
-}
-.memory-settings__empty p {
-  margin-bottom: 1.5rem;
-  max-width: 36rem;
-}
 .memory-schedules {
   margin-top: 1.5rem;
 }
@@ -955,8 +943,7 @@
     flex-wrap: wrap;
     gap: 0.5rem;
   }
-  .memory-schedules__editor,
-  .memory-settings__empty {
+  .memory-schedules__editor {
     padding: 1rem;
   }
 }

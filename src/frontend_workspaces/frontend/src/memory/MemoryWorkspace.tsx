@@ -65,7 +65,7 @@ type SettingsItem = {
   description: string;
   status: string;
   detail: string;
-  kind: "protection" | "retention" | "events";
+  kind: "protection" | "retention";
   enabled: boolean;
   healthy?: boolean;
   pluginCount?: number;
@@ -477,28 +477,6 @@ function SettingsDetail({
           <p>No protection plugins reported.</p>
         )}
       </section>
-    );
-  if (settings.kind === "events")
-    return (
-      <>
-        <p className="memory-settings__intro">
-          Connect memory activity to your audit and workflow systems.
-        </p>
-        <section className="memory-settings__empty">
-          <p>Not available yet</p>
-          <h2>Event delivery is coming later</h2>
-          <p>
-            External destinations are not supported yet. Retention outcomes
-            remain available in Activity.
-          </p>
-          <Button disabled kind="tertiary" size="md">
-            Configure destination
-          </Button>
-        </section>
-        <p className="memory-settings__note">
-          No destination configured · No deliveries recorded
-        </p>
-      </>
     );
   return (
     <>
@@ -1057,15 +1035,7 @@ export function MemoryWorkspace({
     return [
       ...protectionItems,
       ...retentionItems,
-      {
-        id: "events",
-        title: "Lifecycle event delivery",
-        description: "Publishes sanitized lifecycle outcomes to an audit, governance, or workflow system.",
-        status: "Unavailable",
-        detail: "No destination configured",
-        kind: "events",
-        enabled: false,
-      },
+
     ];
   }, [capabilities?.available, protections, retentionPolicies]);
 
@@ -1101,7 +1071,6 @@ export function MemoryWorkspace({
     { id: "general", title: "General" },
       ...settingsItems.filter((item) => item.kind === "retention"),
       { id: "filters", title: "Filters" },
-      { id: "events", title: "Lifecycle events" },
   ];
   const settingsIndex = Math.max(
     0,
