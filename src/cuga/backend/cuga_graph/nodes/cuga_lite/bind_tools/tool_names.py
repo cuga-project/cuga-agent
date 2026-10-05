@@ -5,40 +5,35 @@ them) require every function name to match ``^[A-Za-z0-9_-]{1,64}$`` and reject
 the whole request when one name does not, so a single long registry name
 (``<app>_<tool>``) makes every bound tool unusable.
 
-Such tools are bound under a legal alias that lives only in the request: a
-``tool_call`` returned under it is mapped back to the real name before CUGA
-turns it into code, so the approval check and the sandbox see the real name.
-
-- :func:`provider_safe_tool_name` — the alias (legal names come back unchanged).
-- :func:`provider_safe_tools` — the list ``_safe_bind`` hands to ``bind_tools``.
-- :func:`resolve_tool_name` — maps a returned alias back to the real name.
+Such tools are bound under a legal alias that lives only in the request:
+``_safe_bind`` binds :func:`provider_safe_tools`, and the decode boundary
+(``AgentGraphAdapter.normalize_response``) maps every alias in a reply back
+with :func:`resolve_tool_names`, so code, the approval check and the sandbox
+only see real names.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
-from typing import Any, Collection, Dict, Sequence, Set, Tuple
+from typing import Any, Collection, Dict, List, Sequence, Set, Tuple
 
 from langchain_core.tools import BaseTool
 from loguru import logger
 
 __all__ = [
-    "ORIGINAL_TOOL_NAME_KEY",
     "PROVIDER_TOOL_NAME_RE",
     "provider_safe_tool_name",
     "provider_safe_tools",
-    "resolve_tool_name",
+    "resolve_tool_names",
 ]
 
 PROVIDER_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _INVALID = re.compile(r"[^A-Za-z0-9_-]")
-_ALIAS_SUFFIX = re.compile(r"_[0-9a-f]{8}$")
 _MAX_LEN = 64
 _DIGEST_LEN = 8
-
-# Key in an aliased tool copy's ``metadata`` that holds the real tool name.
-ORIGINAL_TOOL_NAME_KEY = "cuga_original_tool_name"
+# A whole token shaped like an alias: up to 55 legal characters, "_", 8 hex digits.
+_ALIAS = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{1,55}_[0-9a-f]{8}(?![A-Za-z0-9_-])")
 
 # ``_safe_bind`` runs on every model call: log each (real, alias) pair once per process.
 _logged_aliases: Set[Tuple[str, str]] = set()
@@ -64,10 +59,9 @@ def provider_safe_tool_name(name: str) -> str:
 def provider_safe_tools(tools: Sequence[Any]) -> Sequence[Any]:
     """Return ``tools`` with every illegal tool name replaced by its alias.
 
-    Aliased entries are copies (``model_copy``) that carry the real name in
-    ``metadata["cuga_original_tool_name"]``; the shared tool objects are never
-    mutated, so prompts, policies and tracking keep seeing real names. When no
-    name needs an alias, ``tools`` itself is returned.
+    Aliased entries are copies (``model_copy``); the shared tool objects are
+    never mutated, so prompts, policies and tracking keep seeing real names.
+    When no name needs an alias, ``tools`` itself is returned.
 
     Raises ``RuntimeError`` when tools with different names would be bound
     under the same name: the model would call one believing it is the other.
@@ -94,12 +88,7 @@ def provider_safe_tools(tools: Sequence[Any]) -> Sequence[Any]:
                     "Rename one of them."
                 )
         if i in aliases:
-            tool = tool.model_copy(
-                update={
-                    "name": final,
-                    "metadata": {**(tool.metadata or {}), ORIGINAL_TOOL_NAME_KEY: name},
-                }
-            )
+            tool = tool.model_copy(update={"name": final})
             if (name, final) not in _logged_aliases:
                 _logged_aliases.add((name, final))
                 logger.info("bind_tools: binding tool {!r} as {!r} (provider-safe name)", name, final)
@@ -107,22 +96,30 @@ def provider_safe_tools(tools: Sequence[Any]) -> Sequence[Any]:
     return safe_tools
 
 
-def resolve_tool_name(name: str, tool_names: Collection[str]) -> str:
-    """Map a tool name the model returned to the tool it stands for.
+def resolve_tool_names(text: str, tool_names: Collection[str]) -> str:
+    """Replace every alias in ``text`` with the real tool name it stands for.
 
-    ``tool_names`` are the real names that can run (the execution context's
-    keys). A name that is the alias of one of them comes back as that real
-    name; any other name comes back unchanged.
+    ``text`` is a model reply, code or a single tool name; ``tool_names`` are
+    the real names that can run (the execution context's keys). Anything that
+    is not the alias of one of them, real names included, is left as it is.
 
-    Raises ``RuntimeError`` when the name is ambiguous: it is the alias of more
-    than one tool, or of one tool and the real name of another.
+    Raises ``RuntimeError`` when an alias is ambiguous: it stands for more than
+    one tool, or for one tool while being the real name of another.
     """
-    if not _ALIAS_SUFFIX.search(name):
-        return name  # every alias ends in "_" + 8 hex digits
-    owners = [n for n in tool_names if n != name and provider_safe_tool_name(n) == name]
-    if not owners:
-        return name
-    if len(owners) > 1 or name in tool_names:
-        clash = owners if len(owners) > 1 else [name, *owners]
-        raise RuntimeError(f"Tool name {name!r} is ambiguous: it matches tools {sorted(clash)!r}.")
-    return owners[0]
+    if not text or not _ALIAS.search(text):
+        return text
+    owners: Dict[str, List[str]] = {}
+    for real in tool_names:
+        alias = provider_safe_tool_name(real)
+        if alias != real:
+            owners.setdefault(alias, []).append(real)
+
+    def _real(match: re.Match) -> str:
+        alias = match.group(0)
+        reals = owners.get(alias, [])
+        clash = [*reals, alias] if reals and alias in tool_names else reals
+        if len(clash) > 1:
+            raise RuntimeError(f"Tool name {alias!r} is ambiguous: it matches tools {sorted(clash)!r}.")
+        return reals[0] if reals else alias
+
+    return _ALIAS.sub(_real, text)

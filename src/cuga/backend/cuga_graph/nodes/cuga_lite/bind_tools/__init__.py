@@ -14,7 +14,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.cap import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.tool_names import (
     provider_safe_tool_name,
     provider_safe_tools,
-    resolve_tool_name,
+    resolve_tool_names,
 )
 
 __all__ = [
@@ -24,5 +24,5 @@ __all__ = [
     "bind_tools_pad_to_cap_from_settings",
     "provider_safe_tool_name",
     "provider_safe_tools",
-    "resolve_tool_name",
+    "resolve_tool_names",
 ]

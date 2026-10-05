@@ -24,12 +24,12 @@ from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import create_prepare_tools_and_apps_node
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import (
     clean_empty_response_retry_meta,
-    extract_code_from_failed_tool_call,
     extract_code_from_response_tool_calls,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import resolve_model_with_bind_tools
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import _first_user_message_text
+from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools import resolve_tool_names
 from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
     BLOCKED_CLAIM_CORRECTION,
     BlockedClaimEvidence,
@@ -37,6 +37,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import 
     normalize_assistant_text,
 )
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
+from cuga.backend.llm.errors import extract_code_from_tool_use_failed
 from cuga.config import settings
 
 
@@ -132,7 +133,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
             clamp_watsonx_completion_for_messages(bound, messages)
             return await bound.ainvoke(messages, config=invoke_config)
         except Exception as exc:
-            code = extract_code_from_failed_tool_call(exc, self._tools_context)
+            code = extract_code_from_tool_use_failed(exc)
             if code:
                 logger.warning(
                     "Model attempted tool call without tools bound (tool_use_failed). "
@@ -172,9 +173,11 @@ class AgentGraphAdapter(CoreGraphAdapter):
     def normalize_response(self, response: Any) -> Tuple[str, Optional[str]]:
         # Harmony framing is removed here, at the decode boundary, so every
         # downstream surface inherits clean text (see the base implementation).
+        # Provider-safe tool aliases (bind_tools/tool_names.py) are mapped back
+        # to real names here for the same reason.
         content = strip_harmony_tokens(normalize_assistant_text(response.content))
         if not content:
-            tool_code = extract_code_from_response_tool_calls(response, self._tools_context)
+            tool_code = extract_code_from_response_tool_calls(response)
             if tool_code:
                 logger.warning("Empty content with tool_calls detected; recovering tool call as Python code")
                 content = tool_code
@@ -182,7 +185,8 @@ class AgentGraphAdapter(CoreGraphAdapter):
         reasoning = normalize_assistant_text(
             additional_kwargs.get("reasoning_content") or additional_kwargs.get("reasoning")
         )
-        return content, reasoning
+        tools = self._tools_context
+        return resolve_tool_names(content, tools), resolve_tool_names(reasoning, tools)
 
     def on_response_processed(
         self,

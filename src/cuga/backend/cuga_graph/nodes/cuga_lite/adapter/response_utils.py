@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Collection, Dict, Optional
+from typing import Any, Dict, Optional
 
 from langchain_core.messages import HumanMessage
 
@@ -12,9 +12,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     EMPTY_RESPONSE_CORRECTION_KEY,
     EXECUTION_OUTPUT_PREFIX,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools import resolve_tool_name
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import VERIFY_BLOCKED_PREFIX
-from cuga.backend.llm.errors import failed_gen_to_code, parse_tool_use_failed_generation
 
 
 def clean_empty_response_retry_meta(meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -47,13 +45,8 @@ def tool_call_kwarg_literal(value: Any) -> str:
     return repr(value)
 
 
-def extract_code_from_response_tool_calls(response: Any, tool_names: Collection[str] = ()) -> Optional[str]:
-    """Recover fenced Python from AIMessage.tool_calls when content is empty.
-
-    A provider-safe alias the model was bound with is mapped back to its real
-    name in ``tool_names``, so the code (and the approval check that reads it)
-    names the real tool.
-    """
+def extract_code_from_response_tool_calls(response: Any) -> Optional[str]:
+    """Recover fenced Python from AIMessage.tool_calls when content is empty."""
     tool_calls = getattr(response, "tool_calls", None) or (
         getattr(response, "additional_kwargs", None) or {}
     ).get("tool_calls")
@@ -74,20 +67,8 @@ def extract_code_from_response_tool_calls(response: Any, tool_names: Collection[
 
     if not name:
         return None
-    if isinstance(name, str):
-        name = resolve_tool_name(name, tool_names)
 
     args_str = ", ".join(
         f"{k}={tool_call_kwarg_literal(v)}" for k, v in (args if isinstance(args, dict) else {}).items()
     )
     return f"```python\nresult = await {name}({args_str})\nprint(result)\n```"
-
-
-def extract_code_from_failed_tool_call(err: Any, tool_names: Collection[str] = ()) -> Optional[str]:
-    """``llm.errors.extract_code_from_tool_use_failed``, with an alias mapped back as above."""
-    failed_gen = parse_tool_use_failed_generation(err)
-    if not isinstance(failed_gen, dict):
-        return None
-    if isinstance(failed_gen.get("name"), str):
-        failed_gen = {**failed_gen, "name": resolve_tool_name(failed_gen["name"], tool_names)}
-    return failed_gen_to_code(failed_gen)

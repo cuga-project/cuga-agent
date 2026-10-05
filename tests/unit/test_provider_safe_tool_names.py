@@ -2,9 +2,9 @@
 
 OpenAI-compatible providers reject a request whose tools array has a name
 outside ``^[A-Za-z0-9_-]{1,64}$``. ``_safe_bind`` binds such tools under an
-alias that lives only in the request: a tool call returned under it is mapped
-back to the real name before CUGA turns it into code, so the approval check
-and the sandbox see the real name.
+alias that lives only in the request; the decode boundary (``normalize_response``)
+maps every alias in a reply back to the real name, so code, the approval check
+and the sandbox only see real names.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.tool_names import (
     PROVIDER_TOOL_NAME_RE,
     provider_safe_tool_name,
     provider_safe_tools,
-    resolve_tool_name,
+    resolve_tool_names,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import (
     _safe_bind,
@@ -67,6 +67,14 @@ def _tool(name: str, **kwargs: Any) -> StructuredTool:
     return StructuredTool(
         name=name, description="Reconcile stock levels.", args_schema=_Args, coroutine=_reconcile, **kwargs
     )
+
+
+def _code(name: str) -> str:
+    return f"```python\nresult = await {name}(value=7)\nprint(result)\n```"
+
+
+def _tool_call(name: str) -> AIMessage:
+    return AIMessage(content="", tool_calls=[{"name": name, "args": {"value": 7}, "id": "call_1"}])
 
 
 def _adapter(tools_context: dict) -> AgentGraphAdapter:
@@ -153,7 +161,7 @@ def test_lone_surrogate_in_a_name_does_not_break_aliasing():
     name = "tool_\ud800_name"
     alias = provider_safe_tool_name(name)
     assert PROVIDER_TOOL_NAME_RE.fullmatch(alias)
-    assert resolve_tool_name(alias, {name: _reconcile}) == name
+    assert resolve_tool_names(alias, {name: _reconcile}) == name
 
 
 # ── Binding ────────────────────────────────────────────────────────────────
@@ -167,8 +175,8 @@ def test_safe_bind_binds_an_aliased_copy_and_leaves_the_tool_alone():
     assert bound.description == tool.description
     assert bound.args_schema is tool.args_schema
     assert bound.coroutine is tool.coroutine
-    assert bound.metadata == {"owner": "acme", "cuga_original_tool_name": LONG}
-    assert (tool.name, tool.metadata) == (LONG, {"owner": "acme"})
+    assert bound.metadata == {"owner": "acme"}
+    assert tool.name == LONG
 
 
 def test_provider_request_carries_only_legal_names():
@@ -230,29 +238,36 @@ async def test_two_tools_bound_under_one_name_fail_loudly():
         )
 
 
-# ── Mapping a returned alias back ──────────────────────────────────────────
+# ── Mapping aliases back ───────────────────────────────────────────────────
 
 
-def test_resolve_tool_name_maps_an_alias_back():
+def test_resolve_tool_names_maps_every_alias_back_and_nothing_else():
     ctx = {LONG: _reconcile, "get_weather": _reconcile}
-    assert resolve_tool_name(ALIAS, ctx) == LONG
-    assert resolve_tool_name("get_weather", ctx) == "get_weather"
-    assert resolve_tool_name("not_a_tool", ctx) == "not_a_tool"
+    assert resolve_tool_names(ALIAS, ctx) == LONG
+    assert resolve_tool_names("get_weather", ctx) == "get_weather"
+    assert resolve_tool_names("", ctx) == ""
+
+    # Only whole alias tokens change: not a longer token, the real name, or an unknown alias shape.
+    text = f"r = await {ALIAS}(value=7)  # not {ALIAS}x, {LONG} or deadbeef_0123abcd"
+    assert resolve_tool_names(text, ctx) == text.replace(f"await {ALIAS}(", f"await {LONG}(")
 
 
-def test_resolve_tool_name_refuses_ambiguous_names(monkeypatch):
+def test_resolve_tool_names_refuses_ambiguous_aliases(monkeypatch):
     with pytest.raises(RuntimeError, match="ambiguous"):
-        resolve_tool_name(ALIAS, {LONG: _reconcile, ALIAS: _reconcile})
+        resolve_tool_names(ALIAS, {LONG: _reconcile, ALIAS: _reconcile})
 
     monkeypatch.setattr(tool_names, "provider_safe_tool_name", lambda name: "shared_0123abcd")
     with pytest.raises(RuntimeError, match="ambiguous"):
-        resolve_tool_name("shared_0123abcd", {"tool_one": _reconcile, "tool_two": _reconcile})
+        resolve_tool_names("shared_0123abcd", {"tool_one": _reconcile, "tool_two": _reconcile})
+
+
+# ── The decode boundary ────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
-    "response",
+    "reply",
     [
-        AIMessage(content="", tool_calls=[{"name": ALIAS, "args": {"value": 7}, "id": "call_1"}]),
+        _tool_call(ALIAS),
         SimpleNamespace(  # raw OpenAI shape
             content="",
             tool_calls=None,
@@ -260,17 +275,24 @@ def test_resolve_tool_name_refuses_ambiguous_names(monkeypatch):
                 "tool_calls": [{"id": "call_1", "function": {"name": ALIAS, "arguments": '{"value": 7}'}}]
             },
         ),
+        AIMessage(content=_code(ALIAS)),  # the model wrote the alias into its own code
     ],
-    ids=["tool_calls", "additional_kwargs"],
+    ids=["tool_call", "raw_tool_call", "code_in_reply"],
 )
-def test_tool_call_under_the_alias_becomes_code_that_names_the_real_tool(response):
-    content, _ = _adapter({LONG: _reconcile}).normalize_response(response)
+def test_reply_naming_the_alias_decodes_to_the_real_tool(reply):
+    content, _ = _adapter({LONG: _reconcile}).normalize_response(reply)
     assert f"await {LONG}(value=7)" in content
     assert ALIAS not in content
 
 
+def test_reasoning_naming_the_alias_decodes_to_the_real_tool():
+    reply = AIMessage(content="Done.", additional_kwargs={"reasoning_content": f"Call {ALIAS} next."})
+    _, reasoning = _adapter({LONG: _reconcile}).normalize_response(reply)
+    assert reasoning == f"Call {LONG} next."
+
+
 @pytest.mark.asyncio
-async def test_tool_use_failed_recovery_maps_the_alias_back():
+async def test_tool_use_failed_recovery_decodes_to_the_real_tool():
     error = Exception(
         "Error code: 400 - {'error': {'message': 'Failed to call a function. tool_use_failed', "
         f"'failed_generation': '{{\"name\": \"{ALIAS}\", \"arguments\": {{\"value\": 7}}}}'}}}}"
@@ -280,21 +302,23 @@ async def test_tool_use_failed_recovery_maps_the_alias_back():
         async def ainvoke(self, messages, config=None):
             raise error
 
-    response = await _adapter({LONG: _reconcile}).ainvoke_model(_Rejecting(), [], {})
-    assert f"await {LONG}(value=7)" in response.content
-    assert ALIAS not in response.content
+    adapter = _adapter({LONG: _reconcile})
+    content, _ = adapter.normalize_response(await adapter.ainvoke_model(_Rejecting(), [], {}))
+    assert f"await {LONG}(value=7)" in content
+    assert ALIAS not in content
 
 
+@pytest.mark.parametrize(
+    "reply", [_tool_call(ALIAS), AIMessage(content=_code(ALIAS))], ids=["tool_call", "code"]
+)
 @pytest.mark.asyncio
-async def test_approval_policy_on_the_real_name_stops_a_call_made_under_the_alias():
+async def test_approval_policy_on_the_real_name_stops_a_call_made_under_the_alias(reply):
     """The call runs as the real tool, so a ToolApproval on the real name must still stop it.
 
     ToolApproval matches real names in the code text: code naming the alias would not match.
     """
     adapter = _adapter({LONG: _reconcile})
-    content, reasoning = adapter.normalize_response(
-        AIMessage(content="", tool_calls=[{"name": ALIAS, "args": {"value": 7}, "id": "call_1"}])
-    )
+    content, reasoning = adapter.normalize_response(reply)
     code = extract_code_from_model_response(content, reasoning)
 
     policy = ToolApproval(
@@ -337,7 +361,8 @@ class _ProviderLikeModel:
     so an extra model call cannot put it out of step.
     """
 
-    def __init__(self):
+    def __init__(self, reply_with: str):
+        self.reply_with = reply_with
         self.bound_names: list[list[str]] = []
 
     def bind_tools(self, tools, **kwargs):
@@ -349,8 +374,8 @@ class _ProviderLikeModel:
         text = last.get("content") if isinstance(last, dict) else getattr(last, "content", "")
         if str(text).startswith(EXECUTION_OUTPUT_PREFIX):
             return AIMessage(content="Reconciled.")
-        call = {"name": self.bound_names[-1][0], "args": {"value": 7}, "id": "call_1"}
-        return AIMessage(content="", tool_calls=[call])
+        name = self.bound_names[-1][0]
+        return AIMessage(content=_code(name)) if self.reply_with == "code" else _tool_call(name)
 
 
 @pytest.fixture
@@ -361,8 +386,9 @@ def _reset_budgets():
     tracker_module._block_tool_call_budget_context.set(None)
 
 
+@pytest.mark.parametrize("reply_with", ["tool_call", "code"])
 @pytest.mark.asyncio
-async def test_native_call_under_the_alias_runs_the_real_tool_on_every_run(monkeypatch, _reset_budgets):
+async def test_call_under_the_alias_runs_the_real_tool_on_every_run(monkeypatch, _reset_budgets, reply_with):
     from cuga.config import settings
 
     monkeypatch.setattr(settings.policy, "enabled", False, raising=False)
@@ -385,7 +411,7 @@ async def test_native_call_under_the_alias_runs_the_real_tool_on_every_run(monke
     tool = StructuredTool(
         name=LONG, description="Reconcile stock levels.", args_schema=_Args, coroutine=reconcile
     )
-    model = _ProviderLikeModel()
+    model = _ProviderLikeModel(reply_with)
     graph = cuga_lite_graph.create_cuga_lite_graph(
         model=model,
         tool_provider=DirectLangChainToolsProvider(tools=[tool], app_name="acme"),
