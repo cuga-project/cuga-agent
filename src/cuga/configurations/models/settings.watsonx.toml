@@ -1,14 +1,31 @@
+# reasoning_effort = "low" works around a watsonx.ai serving defect (#784).
+#
+# With the default effort, gpt-oss-120b on watsonx.ai (us-south) sometimes writes
+# a one-line preamble and then a native tool call instead of a ```python block.
+# The request declares no tools, so watsonx drops that message and returns only
+# the preamble with finish_reason "stop". CugaLite then finalizes the preamble.
+#
+# Measured on 2026-10-05 with the same CugaLite first-turn request:
+#   default: 12/144 replies had no code; 10/30 tool-approval test runs failed
+#   low:      0/136 replies had no code;  0/18 tool-approval test runs failed
+#
+# Other watsonx chat models (llama-4-maverick, llama-3-3-70b, granite-4-h-small)
+# accept the parameter, so a MODEL_NAME override still works.
+# Remove once watsonx fixes the defect (ml-planning 62316).
+
 [agent.planner.model]
 platform = "watsonx"
 model_name = "openai/gpt-oss-120b"
 temperature = 0.1
 max_tokens = 16000
+extra_params = { reasoning_effort = "low" }
 
 [agent.chat.model]
 platform = "watsonx"
 model_name = "openai/gpt-oss-120b"
 temperature = 0.1
 max_tokens = 16000
+extra_params = { reasoning_effort = "low" }
 
 [agent.final_answer.model]
 platform = "watsonx"
@@ -16,21 +33,25 @@ model_name = "openai/gpt-oss-120b"
 api_version ="2024-08-06"
 temperature = 0.1
 max_tokens = 32000
+extra_params = { reasoning_effort = "low" }
 
 [agent.code.model]
 platform = "watsonx"
 model_name = "openai/gpt-oss-120b"
 temperature = 0.1
 max_tokens = 16000
+extra_params = { reasoning_effort = "low" }
 
 [agent.qa.model]
 platform = "watsonx"
 model_name = "openai/gpt-oss-120b"
 temperature = 0.1
 max_tokens = 16000
+extra_params = { reasoning_effort = "low" }
 
 [agent.action.model]
 platform = "watsonx"
 model_name = "openai/gpt-oss-120b"
 temperature = 0.1
 max_tokens = 2000
+extra_params = { reasoning_effort = "low" }
