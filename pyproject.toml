@@ -104,8 +104,8 @@ e2b = ["e2b-code-interpreter>=2.4.1"]
 knowledge = []  # knowledge is now built-in, no extra dependencies needed
 health = ["cuga-oak-health; python_version>='3.12'"]  # kept for backward compat, now also in core deps
 opensandbox = ["opensandbox", "opensandbox-code-interpreter"]
-# Evolve 1.4 adds processing profiles and scoped reconciliation with multiple sources.
-evolve = ["altk-evolve[pii-regex]>=1.4,<2; python_version>='3.12'", "einops==0.8.1; python_version>='3.12'"]
+# Evolve 1.5.1 adds native telemetry and safe refresh of application-owned processing profiles.
+evolve = ["altk-evolve[pii-regex]>=1.5.1,<2; python_version>='3.12'", "einops==0.8.1; python_version>='3.12'"]
 # wxO SDK requires Python >=3.11; keep it an extra so 3.10 installs are unaffected.
 wxo = ["ibm-watsonx-orchestrate-sdk>=2.15.0; python_version>='3.11'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
@@ -277,7 +277,7 @@ test_llm = "scripts.commands:test_llm"
 # Image-only dependencies: uv applies the READI compatibility overrides above.
 # Keep these out of the published evolve extra, whose pip consumers do not use uv overrides.
 evolve-image = [
-    "altk-evolve[pii-semantic]>=1.4,<2; python_version>='3.12'",
+    "altk-evolve[pii-semantic]>=1.5.1,<2; python_version>='3.12'",
     "readi-privacy==0.1.7; python_version>='3.12'",
     "en-core-web-trf @ https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl ; python_version>='3.12'",
 ]

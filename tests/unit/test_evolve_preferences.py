@@ -330,25 +330,17 @@ async def test_episodic_uses_released_processing_manager(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_profile_creation_race_reuses_winning_revision():
-    calls = []
-
+async def test_profile_refresh_uses_server_defaults_and_pins_returned_revision():
     async def tool(name, args):
-        calls.append((name, args))
-        if len(calls) == 1:
-            raise RuntimeError("not found")
-        if name == "set_processing_profile":
-            assert args["expected_revision"] == 0
-            raise RuntimeError("another replica already created it")
-        return {"id": args["profile_id"], "revision": 1}
+        assert name == "ensure_processing_profile"
+        assert args["definition"]["processors"][0]["config"] == {
+            "guidelines_mode": "all",
+            "consistency_method": "fast",
+        }
+        return {"id": args["profile_id"], "revision": 4}
 
     with patch.object(EvolveIntegration, "_call_tool", new=tool):
-        assert (await EvolveIntegration._episodic_profile())["revision"] == 1
-    assert [name for name, _ in calls] == [
-        "get_processing_profile",
-        "set_processing_profile",
-        "get_processing_profile",
-    ]
+        assert (await EvolveIntegration._episodic_profile())["revision"] == 4
 
 
 @pytest.mark.asyncio
@@ -368,3 +360,35 @@ async def test_profile_failure_never_falls_back_to_legacy_generation():
             [HumanMessage(content="hello")], "task", True, user_id="alice"
         )
         assert all(call.args[0] != "save_trajectory" for call in transport.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_episodic_profile_refreshes_models_after_reopening_storage(tmp_path, monkeypatch):
+    from altk_evolve.config import llm
+    from altk_evolve.processing import ProcessingManager, SQLiteProfileRepository
+
+    path = tmp_path / "evolve-profiles.db"
+
+    def restart(model, provider):
+        monkeypatch.setenv("EVOLVE_MODEL_NAME", model)
+        monkeypatch.setenv("EVOLVE_GUIDELINES_MODEL", model)
+        monkeypatch.setenv("EVOLVE_CONFLICT_RESOLUTION_MODEL", model)
+        monkeypatch.setenv("EVOLVE_CUSTOM_LLM_PROVIDER", provider)
+        monkeypatch.setattr(llm, "llm_settings", llm.LLMSettings(_env_file=None))
+        return ProcessingManager(repository=SQLiteProfileRepository(path))
+
+    manager = restart("openai/old-model", "openai")
+
+    async def transport(name, args):
+        assert name == "ensure_processing_profile"
+        return manager.ensure(args["profile_id"], args["definition"])
+
+    with patch.object(EvolveIntegration, "_call_tool", new=transport):
+        initial = await EvolveIntegration._episodic_profile()
+        manager = restart("ollama/new-model", "ollama")
+        updated = await EvolveIntegration._episodic_profile()
+        assert updated["id"] == initial["id"]
+        assert updated["revision"] == 2
+        assert updated["manifest"]["processors"][0]["config"]["guidelines_model"] == "ollama/new-model"
+        assert updated["manifest"]["conflict_resolution"]["custom_llm_provider"] == "ollama"
+        assert (await EvolveIntegration._episodic_profile())["revision"] == 2

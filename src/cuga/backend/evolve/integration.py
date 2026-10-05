@@ -440,32 +440,23 @@ class EvolveIntegration:
         """Resolve a service-owned profile, safely creating it across replicas."""
         namespace = get_service_instance_id().strip()
         profile_id = "cuga-episodic-v1-" + hashlib.sha256(namespace.encode()).hexdigest()
-        lookup = {"profile_id": profile_id}
-        try:
-            profile = await cls._call_tool("get_processing_profile", lookup)
-        except Exception:
-            profile = None
-        if not profile:
-            try:
-                profile = await cls._call_tool(
-                    "set_processing_profile",
-                    {
-                        **lookup,
-                        "expected_revision": 0,
-                        "definition": {
-                            "processors": [
-                                {
-                                    "id": "guidelines",
-                                    "plugin": "evolve.guidelines",
-                                    "config": {"guidelines_mode": "all", "consistency_method": "fast"},
-                                }
-                            ]
-                        },
-                    },
-                )
-            except Exception:
-                # A competing replica may have created the profile. Never overwrite it.
-                profile = await cls._call_tool("get_processing_profile", lookup)
+        # Resolve defaults on the Evolve service, where model/provider settings
+        # live. Evolve preserves operator edits and retries revision conflicts.
+        profile = await cls._call_tool(
+            "ensure_processing_profile",
+            {
+                "profile_id": profile_id,
+                "definition": {
+                    "processors": [
+                        {
+                            "id": "guidelines",
+                            "plugin": "evolve.guidelines",
+                            "config": {"guidelines_mode": "all", "consistency_method": "fast"},
+                        }
+                    ]
+                },
+            },
+        )
         if (
             not isinstance(profile, dict)
             or profile.get("id") != profile_id
@@ -478,7 +469,12 @@ class EvolveIntegration:
     @classmethod
     async def _call_tool(cls, tool_name: str, args: dict):
         """Call an Evolve MCP tool via the registry or direct SSE."""
-        if tool_name not in {"validate_retention_policy", "get_processing_profile", "set_processing_profile"}:
+        if tool_name not in {
+            "validate_retention_policy",
+            "get_processing_profile",
+            "set_processing_profile",
+            "ensure_processing_profile",
+        }:
             namespace_id = get_service_instance_id().strip()
             if not namespace_id:
                 raise ValueError("Evolve requires a configured service instance ID")
