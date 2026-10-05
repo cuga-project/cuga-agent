@@ -12,7 +12,7 @@ overrides:
   lodash-es: '>=4.18.0'
   qs: ^6.16.0
   '@isaacs/brace-expansion': '>=5.0.1'
-  brace-expansion: '>=5.0.9'
+  brace-expansion: '>=5.0.12'
   lodash: '>=4.18.0'
   tar: '>=7.5.19'
   serialize-javascript: '>=7.0.3'
@@ -20,14 +20,14 @@ overrides:
   flatted: '>=3.4.2'
   '@tootallnate/once': '>=3.0.1'
   swiper: '>=12.1.2'
-  axios: '>=1.18.0'
+  axios: '>=1.20.0'
   rollup: '>=4.59.0'
   basic-ftp: '>=5.2.2'
   minimatch: '>=10.2.3'
-  markdown-it: ^14.2.0
-  dompurify: ^3.4.13
+  markdown-it: ^14.3.1
+  dompurify: ^3.4.16
   vite: '>=8.0.16'
-  electron: ^42.5.1
+  electron: ^42.10.0
   '@xmldom/xmldom': '>=0.9.12'
   path-to-regexp: '>=8.4.2'
   defu: '>=6.1.5'
@@ -39,9 +39,10 @@ overrides:
   undici: '>=8.10.2'
   websocket-driver: '>=0.7.5'
   adm-zip: '>=0.6.1'
+  http-cache-semantics: '>=4.3.0'
   js-yaml: ^4.3.2
   postcss: '>=8.5.18'
-  fast-uri: '>=3.1.5 <4.0.0 || >=4.1.3'
+  fast-uri: '>=3.1.5 <4.0.0 || >=4.1.5'
   browserslist: '>=4.28.7'
   nanoid: '>=3.3.18 <4.0.0'
   postcss-selector-parser: '>=7.1.3'
@@ -83,8 +84,8 @@ importers:
         specifier: ^8.0.7
         version: 8.0.17
       axios:
-        specifier: '>=1.18.0'
-        version: 1.19.0
+        specifier: '>=1.20.0'
+        version: 1.20.0
       cockatiel:
         specifier: ^3.2.1
         version: 3.2.1
@@ -255,8 +256,8 @@ importers:
         specifier: workspace:*
         version: link:../agentic_chat
       axios:
-        specifier: '>=1.18.0'
-        version: 1.19.0
+        specifier: '>=1.20.0'
+        version: 1.20.0
       cockatiel:
         specifier: ^3.2.1
         version: 3.2.1
@@ -449,8 +450,8 @@ importers:
         specifier: ^7.1.2
         version: 7.1.4(webpack@5.104.1)
       electron:
-        specifier: ^42.5.1
-        version: 42.9.0
+        specifier: ^42.10.0
+        version: 42.11.10
       electron-builder:
         specifier: '>=26.15.0'
         version: 26.15.3(electron-builder-squirrel-windows@26.15.7)
@@ -3027,8 +3028,8 @@ packages:
   aws4@1.13.2:
     resolution: {integrity: sha512-lHe62zvbTB5eEABUVi/AwVh0ZKY9rMMDhmm+eeyuuUQbQ3+J+fONVQOZyj+DdrvD4BY33uYniyRJ4UJIaSKAfw==}
 
-  axios@1.19.0:
-    resolution: {integrity: sha512-ht/iuYZXEjFxLH/Hkezgd7m6JKlHHXEUSneaDz8uZe1Gj5QZtCnpyDsckvAiEnT89OEbCLmnte4R4sn7P0EKFw==}
+  axios@1.20.0:
+    resolution: {integrity: sha512-r8aOh8j9cGKpgQAqpzrUHnSIc6a59Y3Xf/cv8sy1DrHCkZHzQGEuoq1tARk6qSyDdtQGSDgpb9kFlruzPvrgwg==}
 
   babel-loader@9.2.1:
     resolution: {integrity: sha512-fqe8naHt46e0yIdkjUZYqddSXfej3AHajX+CSO5X7oy0EmPc6o5Xh+RClNoHjnieWz9AW4kZxW9yyFMhVB1QLA==}
@@ -3103,8 +3104,8 @@ packages:
     resolution: {integrity: sha512-F3PH5k5juxom4xktynS7MoFY+NUWH5LC4CnH11YB8NPew+HLpmBLCybSAEyb2F+4pRXhuhWqFesoQd6DAyc2hw==}
     engines: {node: '>=18'}
 
-  brace-expansion@5.0.9:
-    resolution: {integrity: sha512-ScQ4IuvIEF1TMlP7Zt+vjJ//9zlPb2SDcxWxM3bk8s6t6GGdJ7KO1dCcTidOPJKePW30LE/2cT7wCyPho9/Wxg==}
+  brace-expansion@5.0.12:
+    resolution: {integrity: sha512-YovQ3rzhaLMIrDjNDMkNS01tea93qhEhG5xy8f6+R0l+dw3Ki+5sCoIoI942iuLZTHWogWktgwVDhU09iNEimQ==}
     engines: {node: 20 || >=22}
 
   braces@3.0.3:
@@ -3651,8 +3652,8 @@ packages:
     resolution: {integrity: sha512-cgwlv/1iFQiFnU96XXgROh8xTeetsnJiDsTc7TYCLFd9+/WNkIqPTxiM/8pSd8VIrhXGTf1Ny1q1hquVqDJB5w==}
     engines: {node: '>= 4'}
 
-  dompurify@3.4.13:
-    resolution: {integrity: sha512-2vmYIoqjze2d+kakP8S/nS5shfsl587kzwEjcGlTdiksUVgFHnFCsLYDVj/JNqJVOQZGSYBTmuycv0PodwmnMQ==}
+  dompurify@3.4.16:
+    resolution: {integrity: sha512-sqo+pNp3qRhCIpbgRi1y8Tgk27Bo2Ry7w0dC1NBeNTdZChWjz9Xb/KOoZbRP/R6pQZ80Qw8YhXw13hWWBbMRnQ==}
 
   domutils@2.8.0:
     resolution: {integrity: sha512-w96Cjofp72M5IIhpjgobBimYEfoPjx1Vx0BSX9P30WBdZW2WIKU0T1Bd0kz2eNZ9ikjKgHbEyKx8BB6H1L3h3A==}
@@ -3727,8 +3728,8 @@ packages:
     resolution: {integrity: sha512-bO3y10YikuUwUuDUQRM4KfwNkKhnpVO7IPdbsrejwN9/AABJzzTQ4GeHwyzNSrVO+tEH3/Np255a3sVZpZDjvg==}
     engines: {node: '>=8.0.0'}
 
-  electron@42.9.0:
-    resolution: {integrity: sha512-xyKfPbHP43Jx22Z1hItLR4KB5h3/avb5BIX4xaQZ6uPPRY4cQxuHnRVrKCGbSsMa/9zd0bBT4TAVNVuVjYcYtw==}
+  electron@42.11.10:
+    resolution: {integrity: sha512-dLf7r2yitgUxZDXSFBGttBfG5CqNDKM+A82Sh2pFighhwsfarWU6bBzXhF6ctsS0a8xhxfoBkMQ9xkCOP5sTWg==}
     engines: {node: '>= 22.12.0'}
     hasBin: true
 
@@ -3976,8 +3977,8 @@ packages:
     resolution: {integrity: sha512-dwsoQlS7h9hMeYUq1W++23NDcBLV4KqONnITDV9DjfS3q1SgDGVrBdvvTLUotWtPSD7asWDV9/CmsZPy8Hf70A==}
     engines: {node: '>=6'}
 
-  fast-uri@4.1.4:
-    resolution: {integrity: sha512-dODXrIxlS9JSdgAnhIUKOosKV1oMtU2VtVw87QRaHzyl5jxO290Ii5tEZfCfzfWNHi3jKWwBSdQj0qIyshdZdQ==}
+  fast-uri@4.2.1:
+    resolution: {integrity: sha512-TmHQgewjHtMq1E5QKA0tOE0yeYGQs25KZC/ziJpubRtWI15W92e6vPFydWOeZBVROSHBYw/QhD9d5OefdD6LDg==}
 
   fastest-levenshtein@1.0.16:
     resolution: {integrity: sha512-eRnCtTTtGZFpQCwhJiUOuxPQWRXVKYDn0b2PeHfXL6/Zi53SLAzAHfVhVWK2AryC/WH05kGfxhFIPvTF0SXQzg==}
@@ -4266,10 +4267,6 @@ packages:
     resolution: {integrity: sha512-NqADB8VjPFLM2V0VvHUewwwsw0ZWBaIdgo+ieHtK3hasLz4qeCRjYcqfB6AQrBggRKppKF8L52/VqdVsO47Dlw==}
     engines: {node: '>= 0.4'}
 
-  hasown@2.0.3:
-    resolution: {integrity: sha512-ej4AhfhfL2Q2zpMmLo7U1Uv9+PyhIZpgQLGT1F9miIGmiCJIoCgSmczFdrc97mWT4kVY72KA+WnnhJ5pghSvSg==}
-    engines: {node: '>= 0.4'}
-
   hasown@2.0.4:
     resolution: {integrity: sha512-T2UbfbBEF32wiepXIsMlTW9+dDYC6wMh/t/vYA4tuOMKqWz/n3vr1NFSxQiyP+zk2mXsoMA/i/7qV6LKut1t1A==}
     engines: {node: '>= 0.4'}
@@ -4333,8 +4330,8 @@ packages:
   htmlparser2@8.0.2:
     resolution: {integrity: sha512-GYdjWKDkbRLkZ5geuHs5NY1puJ+PXwP7+fHPRz06Eirsb9ugf6d8kkXav6ADhcODhFFPMIXyxkxSuMf3D6NCFA==}
 
-  http-cache-semantics@4.2.0:
-    resolution: {integrity: sha512-dTxcvPXqPvXBQpq5dUr6mEMJX4oIEFv6bwom3FDwKRDsuIjjJGANqhBuoAn9c1RQJIdAKav33ED65E2ys+87QQ==}
+  http-cache-semantics@4.3.0:
+    resolution: {integrity: sha512-M5t5LlJpS1UHMjvwRQVdFHvPISGeLAxNcrWuJkeGh0KxsqCHZ1O3NXZU/8x7cD0BDcGW8kapxMKTvwlqrNkHkA==}
 
   http-deceiver@1.2.7:
     resolution: {integrity: sha512-LmpOGxTfbpgtGVxJrj5k7asXHCgNZp5nLfp+hWc8QQRqtb7fUy6kRY3BO1h9ddF6yIPYUARgxGOwB42DnxIaNw==}
@@ -4996,10 +4993,10 @@ packages:
     resolution: {integrity: sha512-/ko6cba+H6gdZ0DOw7BbNMZtfuJTRp9g/IrGIuz8lYc/EfnmWRpaR3CFPnNbVz0LDvF8Gf1hFGPqrQqq7De0rg==}
     engines: {node: '>=6'}
     peerDependencies:
-      markdown-it: ^14.2.0
+      markdown-it: ^14.3.1
 
-  markdown-it@14.3.0:
-    resolution: {integrity: sha512-RCEsPjR+sr0x+AuYp601tKTkgFG4YEPLCzHST3cQ/fhlJkqAkz1L2/Qbp1j9qw5SBwQHFBoW8+hoN5xssOF0Tw==}
+  markdown-it@14.3.2:
+    resolution: {integrity: sha512-sHHjZ5fJKlgrG4qns2YwVcdNep35h5fERrfkD2YNsb9UFk0UIHarbiTaHKVMlPuWAoiilyK8Fv/jAm11slsY7Q==}
     hasBin: true
 
   marked@16.4.2:
@@ -8215,10 +8212,10 @@ snapshots:
       '@lezer/highlight': 1.2.3
       '@lit/react': 1.0.8(@types/react@18.3.28)
       csv-stringify: 6.7.0
-      dompurify: 3.4.13
+      dompurify: 3.4.16
       lit: 3.3.2
       lodash-es: 4.18.1
-      markdown-it: 14.3.0
+      markdown-it: 14.3.2
       program-language-detector: 0.0.12
       tslib: 2.8.1
     transitivePeerDependencies:
@@ -8239,15 +8236,15 @@ snapshots:
       compute-scroll-into-view: 3.1.1
       csv-stringify: 6.7.0
       dayjs: 1.11.20
-      dompurify: 3.4.13
+      dompurify: 3.4.16
       focus-trap-react: 10.3.1(prop-types@15.8.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       highlight.js: 11.11.1
       intl-messageformat: 10.7.18
       intl-pluralrules: 2.0.1
       lit: 3.3.2
       lodash-es: 4.18.1
-      markdown-it: 14.3.0
-      markdown-it-attrs: 4.3.1(markdown-it@14.3.0)
+      markdown-it: 14.3.2
+      markdown-it-attrs: 4.3.1(markdown-it@14.3.2)
       react: 18.3.1
       react-dom: 18.3.1(react@18.3.1)
       react-intl: 7.1.14(react@18.3.1)(typescript@5.9.3)
@@ -10332,7 +10329,7 @@ snapshots:
   ajv@8.20.0:
     dependencies:
       fast-deep-equal: 3.1.3
-      fast-uri: 4.1.4
+      fast-uri: 4.2.1
       json-schema-traverse: 1.0.0
       require-from-string: 2.0.2
 
@@ -10452,7 +10449,7 @@ snapshots:
 
   aws4@1.13.2: {}
 
-  axios@1.19.0:
+  axios@1.20.0:
     dependencies:
       follow-redirects: 1.16.0
       form-data: 4.0.6
@@ -10555,7 +10552,7 @@ snapshots:
       widest-line: 5.0.0
       wrap-ansi: 9.0.2
 
-  brace-expansion@5.0.9:
+  brace-expansion@5.0.12:
     dependencies:
       balanced-match: 4.0.4
 
@@ -10636,7 +10633,7 @@ snapshots:
     dependencies:
       clone-response: 1.0.3
       get-stream: 5.2.0
-      http-cache-semantics: 4.2.0
+      http-cache-semantics: 4.3.0
       keyv: 4.5.4
       lowercase-keys: 2.0.0
       normalize-url: 6.1.0
@@ -11105,7 +11102,7 @@ snapshots:
     dependencies:
       domelementtype: 2.3.0
 
-  dompurify@3.4.13:
+  dompurify@3.4.16:
     optionalDependencies:
       '@types/trusted-types': 2.0.7
 
@@ -11226,7 +11223,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  electron@42.9.0:
+  electron@42.11.10:
     dependencies:
       '@electron-internal/extract-zip': 1.0.5
       '@electron/get': 5.0.0
@@ -11549,7 +11546,7 @@ snapshots:
 
   fast-redact@3.5.0: {}
 
-  fast-uri@4.1.4: {}
+  fast-uri@4.2.1: {}
 
   fastest-levenshtein@1.0.16: {}
 
@@ -11858,10 +11855,6 @@ snapshots:
     dependencies:
       has-symbols: 1.1.0
 
-  hasown@2.0.3:
-    dependencies:
-      function-bind: 1.1.2
-
   hasown@2.0.4:
     dependencies:
       function-bind: 1.1.2
@@ -11966,7 +11959,7 @@ snapshots:
       domutils: 3.2.2
       entities: 4.5.0
 
-  http-cache-semantics@4.2.0: {}
+  http-cache-semantics@4.3.0: {}
 
   http-deceiver@1.2.7: {}
 
@@ -12133,7 +12126,7 @@ snapshots:
 
   is-core-module@2.16.2:
     dependencies:
-      hasown: 2.0.3
+      hasown: 2.0.4
 
   is-decimal@2.0.1: {}
 
@@ -12573,11 +12566,11 @@ snapshots:
 
   many-keys-map@3.0.3: {}
 
-  markdown-it-attrs@4.3.1(markdown-it@14.3.0):
+  markdown-it-attrs@4.3.1(markdown-it@14.3.2):
     dependencies:
-      markdown-it: 14.3.0
+      markdown-it: 14.3.2
 
-  markdown-it@14.3.0:
+  markdown-it@14.3.2:
     dependencies:
       argparse: 2.0.1
       entities: 4.5.0
@@ -12887,11 +12880,11 @@ snapshots:
 
   minimatch@10.2.5:
     dependencies:
-      brace-expansion: 5.0.9
+      brace-expansion: 5.0.12
 
   minimatch@10.2.6:
     dependencies:
-      brace-expansion: 5.0.9
+      brace-expansion: 5.0.12
 
   minimist@1.2.8: {}
 
