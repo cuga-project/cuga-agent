@@ -212,6 +212,9 @@ validators = [
     # Phase 6: explicit execution axes — override advanced_features when set.
     # None (default) means "read from advanced_features" (full backward-compat).
     Validator("execution.python_backend", default=None),
+    # python_backend = "subprocess": wrap each block's interpreter in an OS sandbox —
+    # auto (sandbox-exec / bwrap when present), on (fail without one), off.
+    Validator("execution.subprocess_sandbox", default="auto"),
     Validator("execution.shell_backend", default=None),
     Validator("execution.filesystem_backend", default=None),
     Validator("execution.workspace_root", default=None),

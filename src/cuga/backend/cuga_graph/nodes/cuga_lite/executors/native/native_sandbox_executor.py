@@ -35,6 +35,11 @@ from loguru import logger
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.run_output import (
     format_run_command_output,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.tool_rpc import (
+    SHELL_TOOLS,
+    bash_path,
+    run_process,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     CUGA_WORKSPACE_DIRNAME,
     normalize_shell_command_paths,
@@ -233,30 +238,19 @@ class NativeSandboxExecutor:
         # UV_CACHE_DIR points at an empty per-thread cache.
         child_env = dict(os.environ)
         child_env.pop("UV_OFFLINE", None)
-        proc = await asyncio.create_subprocess_exec(
-            "sandbox-exec",
-            "-f",
-            POLICY_PATH,
-            "/bin/sh",
-            "-c",
-            full_cmd,
+        # bash under Seatbelt; the agent's tools stay reachable from the command (and the
+        # scripts it starts) over inherited pipes when the caller set SHELL_TOOLS.
+        stdout_text, stderr_text, returncode = await run_process(
+            ["sandbox-exec", "-f", POLICY_PATH, bash_path(), "-c", full_cmd],
             env=child_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            timeout=timeout,
+            tools=SHELL_TOOLS.get(),
         )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            stdout_text = stdout.decode(errors="replace")
-            stderr_text = stderr.decode(errors="replace")
-            returncode = proc.returncode or 0
-            if returncode != 0:
-                stderr_text = (stderr_text + "\n" if stderr_text else "") + (
-                    f"sandbox-exec exited with status {returncode}"
-                )
-            return stdout_text, stderr_text, returncode
-        except asyncio.TimeoutError:
-            proc.kill()
-            raise TimeoutError(f"Command timed out after {timeout}s")
+        if returncode != 0:
+            stderr_text = (stderr_text + "\n" if stderr_text else "") + (
+                f"sandbox-exec exited with status {returncode}"
+            )
+        return stdout_text, stderr_text, returncode
 
     # ------------------------------------------------------------------ #
     # Tool factories (same interface as OpenSandboxExecutor)              #

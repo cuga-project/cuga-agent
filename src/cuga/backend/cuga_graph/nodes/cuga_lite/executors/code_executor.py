@@ -17,6 +17,7 @@ from .e2b import E2BExecutor
 from .docker import DockerExecutor
 from .opensandbox import OpenSandboxExecutor
 from .native import NativeSandboxExecutor
+from .isolated import IsolatedPythonExecutor
 from .base_executor import BaseExecutor, RemoteExecutor
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionPlan
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker, counted_tool_call
@@ -70,6 +71,7 @@ class CodeExecutor:
     _docker_executor: RemoteExecutor = None
     _opensandbox_executor: RemoteExecutor = None
     _native_executor: NativeSandboxExecutor = None
+    _isolated_executor: IsolatedPythonExecutor = None
 
     @classmethod
     def _get_local_executor(cls) -> BaseExecutor:
@@ -108,6 +110,12 @@ class CodeExecutor:
         return cls._native_executor
 
     @classmethod
+    def _get_isolated_executor(cls) -> IsolatedPythonExecutor:
+        if cls._isolated_executor is None:
+            cls._isolated_executor = IsolatedPythonExecutor()
+        return cls._isolated_executor
+
+    @classmethod
     async def eval_with_tools_async(
         cls,
         code: str,
@@ -115,7 +123,7 @@ class CodeExecutor:
         state: AgentState,
         thread_id: Optional[str] = None,
         apps_list: Optional[List[str]] = None,
-        mode: Optional[Literal['local', 'e2b', 'opensandbox']] = None,
+        mode: Optional[Literal['local', 'e2b', 'opensandbox', 'subprocess']] = None,
         plan: Optional[ExecutionPlan] = None,
         variable_manager: Optional[Any] = None,
         timeout: Optional[float] = None,
@@ -195,7 +203,7 @@ class CodeExecutor:
         *,
         thread_id: Optional[str] = None,
         apps_list: Optional[List[str]] = None,
-        mode: Optional[Literal['local', 'e2b', 'opensandbox']] = None,
+        mode: Optional[Literal['local', 'e2b', 'opensandbox', 'subprocess']] = None,
         plan: Optional[ExecutionPlan] = None,
         variable_manager: Optional[Any] = None,
         skills_on: bool,
@@ -205,7 +213,7 @@ class CodeExecutor:
 
         if mode is None:
             if plan is not None:
-                mode = 'e2b' if plan.python_backend == 'e2b' else 'local'
+                mode = plan.python_backend if plan.python_backend in ('e2b', 'subprocess') else 'local'
             else:
                 mode = 'e2b' if settings.advanced_features.e2b_sandbox else 'local'
 
@@ -217,9 +225,14 @@ class CodeExecutor:
             mode = 'local'
 
         # opensandbox: Python runs locally with run_command in context (forwarded to sandbox)
-        # Security checks must run for every execution mode, including E2B turns.
+        # Security checks must run for every execution mode, including E2B turns — except a
+        # subprocess block under an OS sandbox: the sandbox bounds it, not the allowlist.
+        os_isolated = mode == 'subprocess' and cls._get_isolated_executor().os_sandboxed
         try:
-            SecurityValidator.validate_imports(code)
+            if os_isolated:
+                SecurityValidator.validate_syntax(code)
+            else:
+                SecurityValidator.validate_imports(code)
         except CodeSyntaxError as e:
             executor = cls._get_local_executor()
             return executor.format_error(e), {}
@@ -243,10 +256,22 @@ class CodeExecutor:
 
             _locals['_internal_re'] = re
 
-        SecurityValidator.validate_wrapped_code(wrapped_code)
+        if not os_isolated:
+            SecurityValidator.validate_wrapped_code(wrapped_code)
 
         try:
-            if mode == 'e2b':
+            if mode == 'subprocess':
+                executor = cls._get_isolated_executor()
+                result, parsed_locals = await executor.execute_for_cuga_lite(
+                    wrapped_code=wrapped_code,
+                    context_locals=_locals,
+                    state=state,
+                    thread_id=thread_id,
+                    apps_list=apps_list,
+                    timeout=timeout or settings.advanced_features.sandbox_execution_timeout,
+                )
+                _locals.update(parsed_locals)
+            elif mode == 'e2b':
                 executor = cls._get_e2b_executor()
                 result, parsed_locals = await executor.execute_for_cuga_lite(
                     wrapped_code=wrapped_code,

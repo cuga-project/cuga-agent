@@ -36,6 +36,11 @@ from loguru import logger
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.run_output import (
     format_run_command_output,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.tool_rpc import (
+    SHELL_TOOLS,
+    bash_path,
+    run_process,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     CUGA_WORKSPACE_DIRNAME,
     VIRTUAL_WORKSPACE_ROOT,
@@ -205,28 +210,24 @@ class LocalSandboxExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-        else:
-            shell_cmd = f"cd {shlex.quote(str(workspace_root.resolve()))} && {cmd}"
-            proc = await asyncio.create_subprocess_exec(
-                "/bin/sh",
-                "-c",
-                shell_cmd,
-                env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            except asyncio.TimeoutError:
+                proc.kill()
+                raise TimeoutError(f"Command timed out after {timeout}s")
             stdout_text = stdout.decode(errors="replace")
             stderr_text = stderr.decode(errors="replace")
             returncode = proc.returncode or 0
-            if returncode != 0:
-                stderr_text = (stderr_text + "\n" if stderr_text else "") + f"(exit code {returncode})"
-            return stdout_text, stderr_text, returncode
-        except asyncio.TimeoutError:
-            proc.kill()
-            raise TimeoutError(f"Command timed out after {timeout}s")
+        else:
+            # bash, with the agent's tools reachable from the command and anything it starts
+            # (``cuga-tool`` / ``from cuga_tools import call``) when the caller set SHELL_TOOLS.
+            shell_cmd = f"cd {shlex.quote(str(workspace_root.resolve()))} && {cmd}"
+            stdout_text, stderr_text, returncode = await run_process(
+                [bash_path(), "-c", shell_cmd], env=env, timeout=timeout, tools=SHELL_TOOLS.get()
+            )
+        if returncode != 0:
+            stderr_text = (stderr_text + "\n" if stderr_text else "") + f"(exit code {returncode})"
+        return stdout_text, stderr_text, returncode
 
     def create_run_command_tool(self, thread_id: Optional[str] = None) -> Callable:
         executor = self

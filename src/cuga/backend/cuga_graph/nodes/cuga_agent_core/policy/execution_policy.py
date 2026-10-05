@@ -17,7 +17,8 @@ from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-PythonBackend = Literal["local", "e2b"]
+#: ``subprocess`` runs each block in a fresh sandboxed interpreter (``executors/isolated``).
+PythonBackend = Literal["local", "e2b", "subprocess"]
 ShellBackend = Literal["none", "local", "native", "opensandbox", "e2b"]
 FilesystemBackend = Literal["none", "host", "sandbox_remote"]
 
