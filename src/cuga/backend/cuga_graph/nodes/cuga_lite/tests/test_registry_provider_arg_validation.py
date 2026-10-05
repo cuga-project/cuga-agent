@@ -177,3 +177,58 @@ async def test_toolguard_rejects_unknown_args_before_ainvoke():
         assert calls[0]["arguments"]["currency"] == "USD"
     finally:
         ToolCallTracker.stop_tracking()
+
+
+def _guarded(tool):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ToolGuardingToolProvider
+
+    provider = ToolGuardingToolProvider.__new__(ToolGuardingToolProvider)
+    provider._guarded_tools_cache = {}
+    provider._runtime = None
+    provider._runtime_initialized = True
+    provider._get_or_create_toolguard_runtime = AsyncMock(return_value=None)
+    return provider._wrap_tool(tool, "knowledge")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_toolguard_forwards_runtime_kwargs_to_a_function_that_takes_them():
+    """Knowledge tools take ``**_`` so prepare_node can inject ``thread_id``; rejecting it
+    as unknown made every SDK knowledge search return an error."""
+    from langchain_core.tools import StructuredTool
+
+    seen = {}
+
+    async def search(query: str, scope: str = "agent", **_) -> dict:  # as KnowledgeClient's tools
+        seen.update(query=query, scope=scope, **_)
+        return {"results": [query]}
+
+    wrapped = _guarded(
+        StructuredTool.from_function(
+            coroutine=search, name="knowledge_search_knowledge", description="search"
+        )
+    )
+    result = await wrapped.coroutine(query="q", scope="agent", thread_id="t1")
+    assert result == {"results": ["q"]}
+    assert seen == {"query": "q", "scope": "agent", "thread_id": "t1"}
+
+    # Without extras the normal validated path still runs.
+    seen.clear()
+    assert await wrapped.coroutine(query="q2") == {"results": ["q2"]}
+    assert seen == {"query": "q2", "scope": "agent"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_toolguard_still_rejects_unknown_args_for_a_function_without_kwargs():
+    from langchain_core.tools import StructuredTool
+
+    async def search(query: str) -> dict:
+        return {"results": [query]}
+
+    wrapped = _guarded(
+        StructuredTool.from_function(coroutine=search, name="strict_search", description="search")
+    )
+    assert await wrapped.coroutine(query="q", thread_id="t1") == {
+        "error": "Unexpected argument(s) for strict_search: thread_id"
+    }

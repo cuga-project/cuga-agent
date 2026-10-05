@@ -33,6 +33,17 @@ _METADATA_ATTRS = (
 _UNSET = object()
 
 
+def _accepts_var_keyword(tool: BaseTool) -> bool:
+    """Whether the function behind ``tool`` takes ``**kwargs``."""
+    fn = getattr(tool, "coroutine", None) or getattr(tool, "func", None)
+    if fn is None:
+        return False
+    try:
+        return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return False
+
+
 class ToolGuardingToolProvider(ToolProviderInterface):
     """Decorator that adds ToolGuard runtime enforcement to another provider."""
 
@@ -257,8 +268,16 @@ class ToolGuardingToolProvider(ToolProviderInterface):
         param_names = self._get_param_names(tool)
         tool_name = tool.name
         description = tool.description or ""
+        accepts_extra = _accepts_var_keyword(tool)
 
         async def guarded_tool_func(*args: Any, **kwargs: Any) -> Any:
+            # A function that takes **kwargs accepts keywords outside its schema on
+            # purpose: the runtime injects them (knowledge tools get thread_id from
+            # prepare_node). They are forwarded to the function, not rejected.
+            extras: Dict[str, Any] = {}
+            if accepts_extra and param_names:
+                extras = {k: v for k, v in kwargs.items() if k not in param_names}
+                kwargs = {k: v for k, v in kwargs.items() if k in param_names}
             all_kwargs, unexpected = resolve_tool_call_args(args, kwargs, param_names)
             if unexpected:
                 error_msg = f"Unexpected argument(s) for {tool_name}: {', '.join(unexpected)}"
@@ -279,7 +298,7 @@ class ToolGuardingToolProvider(ToolProviderInterface):
                 error = await runtime.guard_tool_call(
                     app_name=app_name,
                     function_name=tool_name,
-                    arguments=all_kwargs,
+                    arguments={**all_kwargs, **extras},
                 )
                 if error:
                     return {
@@ -290,7 +309,12 @@ class ToolGuardingToolProvider(ToolProviderInterface):
                         "app": app_name,
                     }
 
-            result = await tool.ainvoke(all_kwargs)
+            if extras:
+                # ainvoke validates against args_schema and would drop the extras.
+                fn = getattr(tool, "coroutine", None) or getattr(tool, "func", None)
+                result = fn(**all_kwargs, **extras)
+            else:
+                result = await tool.ainvoke(all_kwargs)
             while inspect.isawaitable(result):
                 result = await result
             return result
