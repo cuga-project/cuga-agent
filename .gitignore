@@ -151,3 +151,6 @@ events/deploy/.ce_urls.env
 
 # Local results tracking for the large_output_probe (not part of the repo)
 tests/e2e/large_output_probe/results.md
+
+# multihop_probe: downloaded MuSiQue data and run results
+tests/e2e/multihop_probe/data/
