@@ -60,15 +60,21 @@ dependencies = [
     # 0.6+/0.7.0 publish cryptography<49, which blocks GHSA-g6cj-pr64-35w5 (needs cryptography>=50).
     # Stay on 0.5.x until langchain-litellm lifts that cap; ChatLiteLLM API used here is unchanged.
     "langchain-litellm>=0.5.1,<0.6",
-    # 1.84.0+ fixes GHSA-4xpc-pv4p-pm3w (Host header auth bypass); 1.83.14 was prior floor for fastmcp compat.
-    "litellm>=1.84.0",
+    # 1.89.7+ fixes GHSA-3cv6-jpf6-8222 (SSRF / provider-credential exfiltration via request-body
+    # routing params, 1.89.0..1.89.6); 1.84.0+ fixed GHSA-4xpc-pv4p-pm3w (Host header auth bypass).
+    "litellm>=1.89.7",
     "tavily-python",
     "fastembed>=0.4.0",
     "a2a-sdk[http-server]>=0.3.22",
     "sqlite-vec>=0.1.6", # GHSA-vrcx-gx3g-j3h8 affects <0.1.3 only; 0.1.6 is safe
     "pgvector>=0.4.2",
     "asyncpg>=0.30",
-    "PyJWT[crypto]>=2.13.0",  # GHSA-xgmm-8j9v-c9wx: JWK accepted as HMAC secret (<=2.12.x)
+    # 2.15.0+ fixes GHSA-42vr-xj54-vc7v (RecursionError DoS in pre-verification parse, <=2.14.0) and
+    # the 2.13.x batch: GHSA-ffc3-869f-jxw9, GHSA-p4g4-x82p-q773, GHSA-w2cx-738m-mc7w, GHSA-9j54-fg26-wv3r
+    # (HMAC key-confusion / empty-key bypasses), GHSA-gvp8-978c-rx2q, GHSA-hxm8-2xgr-2p9m,
+    # GHSA-r6x4-923q-g947, GHSA-9v7f-9g4p-ffgj, GHSA-2gx3-rcp4-g85q, GHSA-jwrc-g2q2-pq5p,
+    # GHSA-w6j9-cwv2-h6wq, GHSA-8wjv-2p76-3863.
+    "PyJWT[crypto]>=2.15.0",
     # 50.0.0+ fixes GHSA-g6cj-pr64-35w5 (PKCS#7 Bleichenbacher); 49+ also GHSA-jwv3-5hgf-82ww / GHSA-m2h6-j472-rp4c.
     "cryptography>=50.0.0",
     "hvac>=2.0.0",
@@ -122,7 +128,10 @@ Repository = "https://github.com/cuga-project/cuga-agent"
 package = true
 constraint-dependencies = [
     "pillow>=12.3.0",  # GHSA-62p4-gmf7-7g93 and related Pillow OOB/DoS CVEs in <=12.2.x
-    "urllib3>=2.7.0",  # GHSA-qccp-gfcp-xxvc, GHSA-mf9v-mfxr-j63j (<=2.6.x); prior CVEs fixed in 2.6.3+
+    # GHSA-8988-9cw3-xx77 (HTTPS proxy TLS config ignored), GHSA-vxq7-64xx-v4gw (unbounded chunk-size
+    # line), GHSA-gh4c-6fx4-qh6g (chunked deflate infinite loop), all <2.8.0; earlier GHSA-qccp-gfcp-xxvc,
+    # GHSA-mf9v-mfxr-j63j (<=2.6.x).
+    "urllib3>=2.8.0",
     "h11>=0.16.0",     # CVE-2025-43859: HTTP request smuggling via chunked encoding
     "setuptools>=83.0.0",  # GHSA-h35f-9h28-mq5c (MANIFEST.in bypass via Unicode NFC/NFD collision, <83); earlier GHSA-cx63-2mw6-8hw5, GHSA-5rjg-fvgr-3xxf
     # Security updates for transitive dependencies
@@ -166,6 +175,13 @@ constraint-dependencies = [
     # GHSA-82r6-8w77-94w6 (TLSStream IDNA 2003 host encoding enables cert spoofing), GHSA-5p39-cfhj-2xmp
     # (process-pool workers block on undrained stderr), both <4.14.2.
     "anyio>=4.14.2",
+    # GHSA-jhr6-gm9c-rqjv: local model loading ignores trust_remote_code=False and runs custom Python (<5.6.0).
+    # Pulled in by altk-evolve (evolve extra).
+    "sentence-transformers>=5.6.0",
+    # GHSA-p58f-9548-mpm2 (activate scripts run commands embedded in paths, <=21.7.12), GHSA-x78j-v8h9-3j2q
+    # (--prompt injection in activate.bat), GHSA-94p9-xgh2-xp45 (seed wheels not integrity-checked),
+    # GHSA-9h9j-4vrj-gf7g (pyvenv.cfg line injection). Dev-only, via pre-commit.
+    "virtualenv>=21.7.13",
 ]
 # litellm 1.83.4 pins python-dotenv==1.0.1; fastmcp needs >=1.1.0 — allow newer for sync/lock only.
 override-dependencies = ["python-dotenv>=1.1.0"]
