@@ -280,7 +280,8 @@ validators = [
     Validator("agent_spawn.forward_sync_subagent_events", default=True),
     # Stop check verify_actions: verifier subagent after state changes — helpers/action_verifier.py.
     Validator("verify_actions.max_steps", default=10, is_type_of=int, gt=0),
-    Validator("verify_actions.max_tools", default=40, is_type_of=int, gte=0),
+    Validator("verify_actions.max_tools", default=60, is_type_of=int, gte=0),
+    Validator("verify_actions.context_apps", default=[], is_type_of=list),
     Validator("verify_actions.max_result_chars", default=4000, is_type_of=int, gt=0),
     Validator("verify_actions.max_log_chars", default=24000, is_type_of=int, gt=0),
     Validator("verify_actions.subagent_timeout", default=120, is_type_of=(int, float), gt=0),

@@ -42,6 +42,7 @@ class _Model:
         self.bound_names = None
         self.calls = 0
         self.delay = delay
+        self.sent = []
 
     def bind_tools(self, specs):
         self.bound_names = [s["function"]["name"] for s in specs]
@@ -49,6 +50,7 @@ class _Model:
 
     async def ainvoke(self, messages, config=None):
         self.calls += 1
+        self.sent.append(list(messages))
         if self.delay:
             await asyncio.sleep(self.delay)
         return self.replies.pop(0)
@@ -229,9 +231,85 @@ async def test_fail_sends_the_agent_back_after_reading_state_with_get_tools_only
 
 
 async def test_pass_and_no_verdict_let_the_answer_through():
-    for reply in ("Checked order 3146.\nVERDICT: PASS", "Looks fine to me."):
-        ctx, _ = _ctx(_Model([AIMessage(content=reply)]))
-        assert await verify_actions(ctx) is None
+    # A pass with no reads is sent back once; a second evidence-free pass is accepted.
+    model = _Model([AIMessage(content="VERDICT: PASS"), AIMessage(content="VERDICT: PASS")])
+    ctx, _ = _ctx(model)
+    assert await verify_actions(ctx) is None
+    assert model.calls == 2
+    # No verdict at all is not a pass: nothing to push back on.
+    model = _Model([AIMessage(content="Looks fine to me.")])
+    ctx, _ = _ctx(model)
+    assert await verify_actions(ctx) is None
+    assert model.calls == 1
+
+
+async def test_a_pass_without_reads_is_sent_back_to_look_and_can_turn_into_a_fail():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.action_verifier import NO_EVIDENCE
+
+    tracker = _Tracker()
+    model = _Model(
+        [
+            AIMessage(content="The order looks right.\nVERDICT: PASS"),
+            AIMessage(
+                content="", tool_calls=[{"name": wire_name(LONG_GET), "args": {"order_id": 3146}, "id": "v1"}]
+            ),
+            AIMessage(content="VERDICT: FAIL\n- order 3146 also holds a Picture Frame"),
+        ]
+    )
+    ctx, seen = _ctx(model, tracker=tracker)
+    correction = await verify_actions(ctx)
+    assert "Picture Frame" in correction
+    assert model.sent[1][-1].content == NO_EVIDENCE
+    assert seen == [(LONG_GET, {"order_id": 3146})]
+    data = json.loads(tracker.steps[-1].data)
+    assert data["pushed_back"] is True and data["reads"] == 1
+
+
+async def test_a_fail_without_reads_is_not_sent_back():
+    model = _Model([AIMessage(content="VERDICT: FAIL\n- no order was placed")])
+    ctx, _ = _ctx(model)
+    assert "no order was placed" in await verify_actions(ctx)
+    assert model.calls == 1
+
+
+def test_read_tools_cover_the_turns_apps_and_context_apps_but_never_credentials(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.action_verifier import (
+        context_apps,
+        read_tools,
+        turn_apps,
+        verifier_apps,
+    )
+
+    tools, context, _ = _setup()
+    extra = {
+        "phone_search_contacts": _tool("phone_search_contacts", "GET", "/contacts", app="phone"),
+        "supervisor_profile": _tool("supervisor_profile", "GET", "/profile", app="supervisor"),
+        "supervisor_account_passwords": _tool(
+            "supervisor_account_passwords", "GET", "/account_passwords", app="supervisor"
+        ),
+        "spotify_show_song": _tool("spotify_show_song", "GET", "/song", app="spotify"),
+    }
+    tools.update(extra)
+    context.update({name: context["gmail_show_inbox"] for name in extra})
+    messages = [
+        HumanMessage(content="Email the photos to my roommates."),
+        ToolMessage(
+            content="[...]",
+            tool_call_id="p",
+            name="execute_python",
+            artifact={"code_calls": ["phone_search_contacts"]},
+        ),
+    ]
+    monkeypatch.setattr(
+        action_verifier, "_cfg", lambda key, default: ["supervisor"] if key == "context_apps" else default
+    )
+    apps = verifier_apps(["gmail"], turn_apps(messages, 1, tools), context_apps())
+    assert apps == ["gmail", "phone", "supervisor"]
+    names = [t.name for t in read_tools(messages, 1, tools, context, apps, max_tools=10)]
+    assert names == ["phone_search_contacts", "gmail_show_inbox", "supervisor_profile"], (
+        "used first, then by app priority; no passwords, no unrelated app"
+    )
+    assert [t.name for t in read_tools(messages, 1, tools, context, apps, max_tools=2)] == names[:2]
 
 
 async def test_verifier_cannot_call_a_write_tool():
@@ -239,6 +317,7 @@ async def test_verifier_cannot_call_a_write_tool():
         [
             AIMessage(content="", tool_calls=[{"name": "amazon_place_order", "args": {}, "id": "v1"}]),
             AIMessage(content="VERDICT: PASS"),
+            AIMessage(content="VERDICT: PASS"),  # after the push-back: the refused call was no read
         ]
     )
     ctx, seen = _ctx(model)
@@ -312,9 +391,23 @@ async def test_block_reads_the_state_and_answers_the_call_with_the_problems():
 
 
 async def test_proceed_and_no_verdict_run_the_call():
-    for text in ("VERDICT: PROCEED", "fine"):
-        reply, _ = await _check(_Model([AIMessage(content=text)]), _turn()[:5] + [_pending()])
-        assert reply is None
+    for replies in (["VERDICT: PROCEED", "VERDICT: PROCEED"], ["fine"]):
+        model = _Model([AIMessage(content=text) for text in replies])
+        reply, _ = await _check(model, _turn()[:5] + [_pending()])
+        assert reply is None and model.calls == len(replies)
+
+
+async def test_an_unread_proceed_is_sent_back_and_the_look_can_block_the_call():
+    model = _Model(
+        [
+            AIMessage(content="VERDICT: PROCEED"),
+            AIMessage(content="", tool_calls=[{"name": "amazon_show_cart", "args": {}, "id": "v1"}]),
+            AIMessage(content="VERDICT: BLOCK\n- the cart also holds a workbench (1686)"),
+        ]
+    )
+    reply, seen = await _check(model, _turn()[:5] + [_pending()])
+    assert "workbench (1686)" in reply
+    assert seen == [("amazon_show_cart", {})]
 
 
 async def test_block_limit_per_tool_per_turn_lets_the_call_run(monkeypatch):

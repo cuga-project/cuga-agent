@@ -250,6 +250,48 @@ def changed_apps(messages: Sequence[Any], start: int, tools_by_name: Dict[str, A
     return apps
 
 
+def _turn_calls(messages: Sequence[Any], start: int) -> List[str]:
+    """Names of every tool the turn called — native replies and calls made from code — in order."""
+    names: List[str] = []
+    for message in list(messages)[start:]:
+        if _role(message) != "tool":
+            continue
+        names.append(_get(message, "name"))
+        artifact = _get(message, "artifact")
+        if isinstance(artifact, dict):
+            names += list(artifact.get("code_calls") or [])
+    return [n for n in names if n]
+
+
+def turn_apps(messages: Sequence[Any], start: int, tools_by_name: Dict[str, Any]) -> List[str]:
+    """Apps of every tool the turn called (reads included), in first-call order."""
+    apps: List[str] = []
+    for name in _turn_calls(messages, start):
+        app = _app_of(tools_by_name.get(name))
+        if app and app not in apps:
+            apps.append(app)
+    return apps
+
+
+def context_apps() -> List[str]:
+    """``verify_actions.context_apps``: apps that say who people are (contacts, the user's profile)."""
+    return [str(a).strip() for a in (_cfg("context_apps", None) or []) if str(a).strip()]
+
+
+def verifier_apps(*groups: Sequence[str]) -> List[str]:
+    """The apps whose read tools a verifier gets, in priority order, without repeats."""
+    apps: List[str] = []
+    for group in groups:
+        for app in group:
+            if app and app not in apps:
+                apps.append(app)
+    return apps
+
+
+# Reads a verifier never needs: credentials and session endpoints.
+_NOT_FOR_VERIFIER = ("password", "auth", "login", "logout", "token")
+
+
 def read_tools(
     messages: Sequence[Any],
     start: int,
@@ -259,23 +301,23 @@ def read_tools(
     *,
     max_tools: int,
 ) -> List[Any]:
-    """GET tools of ``apps`` the run can call; the ones the turn already used come first."""
-    wanted = set(apps)
+    """GET tools of ``apps`` the run can call, best first, at most ``max_tools``.
+
+    Order: tools the turn already used, then by the app's place in ``apps`` (the app
+    being checked first, context apps last), then by name. Credential and session
+    endpoints are never included.
+    """
+    rank = {app: i for i, app in enumerate(apps)}
     candidates = [
         tool
         for name, tool in tools_by_name.items()
         if callable(tools_context.get(name))
         and _attr(tool, "_http_method").upper() == "GET"
-        and _app_of(tool) in wanted
+        and _app_of(tool) in rank
+        and not any(word in name.lower() for word in _NOT_FOR_VERIFIER)
     ]
-    used = set()
-    for message in list(messages)[start:]:
-        if _role(message) == "tool":
-            used.add(_get(message, "name"))
-            artifact = _get(message, "artifact")
-            if isinstance(artifact, dict):
-                used.update(artifact.get("code_calls") or [])
-    candidates.sort(key=lambda t: (t.name not in used, t.name))
+    used = set(_turn_calls(messages, start))
+    candidates.sort(key=lambda t: (t.name not in used, rank[_app_of(t)], t.name))
     return candidates[:max_tools]
 
 
@@ -286,6 +328,19 @@ def read_tools(
 class Verification:
     verdict: Verdict
     tool_calls: int
+    #: The verifier passed without reading anything and was sent back once to look.
+    pushed_back: bool = False
+
+
+# free-code's verifier: "if a PASS step has no command output … your report gets rejected".
+# gpt-oss passed 9 of 13 pre-write checks without a single read, including the three that let
+# a wrong order or recipient through; the prompt alone did not make it look.
+NO_EVIDENCE = (
+    "You gave a passing verdict without reading anything. A verdict without evidence is not "
+    "accepted: the log shows what the agent did, not the state the change depends on or left behind. "
+    "Use your read tools now — look at the records, items, people or amounts the request is about — "
+    "then give your verdict."
+)
 
 
 async def _call_tool(fn: Any, args: Any, timeout: float) -> str:
@@ -324,12 +379,19 @@ async def verify(
     messages: List[BaseMessage] = [SystemMessage(content=system), HumanMessage(content=task)]
 
     calls = 0
-    for _ in range(max_steps + 1):
+    pushed_back = False
+    for _ in range(max_steps + 2):  # one extra round for the push-back
         reply = await bound.ainvoke(messages, config=invoke_config)
         messages.append(reply)
         tool_calls = list(getattr(reply, "tool_calls", None) or [])
         if not tool_calls:
-            return Verification(parse_verdict(_text_of(reply.content)), calls)
+            verdict = parse_verdict(_text_of(reply.content))
+            if verdict.passed is True and calls == 0 and tools and not pushed_back:
+                # Once: a second evidence-free pass is accepted, never looped on.
+                pushed_back = True
+                messages.append(HumanMessage(content=NO_EVIDENCE))
+                continue
+            return Verification(verdict, calls, pushed_back)
         for call in tool_calls:
             # Every call gets a reply, run or not, so the transcript stays valid for the provider.
             real = by_wire.get(call.get("name") or "", call.get("name") or "")
@@ -354,15 +416,18 @@ async def verify(
         )
     )
     reply = await model.ainvoke(messages, config=invoke_config)
-    return Verification(parse_verdict(_text_of(reply.content)), calls)
+    return Verification(parse_verdict(_text_of(reply.content)), calls, pushed_back)
 
 
-def build_task(request: str, log: str, answer: str, apps: Sequence[str], tools: Sequence[Any]) -> str:
-    tool_note = (
-        f"Read-only tools of {', '.join(apps)} are bound to you ({len(tools)})."
-        if tools
-        else "No read tools are available: judge from the log alone."
-    )
+def _tools_note(tools: Sequence[Any]) -> str:
+    if not tools:
+        return "No read tools are available: judge from the log alone."
+    apps = list(dict.fromkeys(_app_of(t) for t in tools if _app_of(t)))
+    return f"Read-only tools of {', '.join(apps) or 'the apps involved'} are bound to you ({len(tools)})."
+
+
+def build_task(request: str, log: str, answer: str, tools: Sequence[Any]) -> str:
+    tool_note = _tools_note(tools)
     return (
         f"User request:\n{request or '(unavailable)'}\n\n"
         f"The agent's calls in this turn (changes marked [WRITE]):\n\n{log}\n\n"
@@ -397,7 +462,12 @@ async def verify_actions(ctx: StopContext) -> Optional[str]:
 
     apps = changed_apps(messages, start, ctx.tools_by_name)
     tools = read_tools(
-        messages, start, ctx.tools_by_name, ctx.tools_context, apps, max_tools=int(_cfg("max_tools", 40))
+        messages,
+        start,
+        ctx.tools_by_name,
+        ctx.tools_context,
+        verifier_apps(apps, turn_apps(messages, start, ctx.tools_by_name), context_apps()),
+        max_tools=int(_cfg("max_tools", 60)),
     )
     result_chars = int(_cfg("max_result_chars", 4000))
     log = action_log(
@@ -407,7 +477,7 @@ async def verify_actions(ctx: StopContext) -> Optional[str]:
         result_chars=result_chars,
         total_chars=int(_cfg("max_log_chars", 24000)),
     )
-    task = build_task(user_request(messages, start), log, ctx.answer, apps, tools)
+    task = build_task(user_request(messages, start), log, ctx.answer, tools)
     timeout = float(_cfg("subagent_timeout", 120))
     try:
         outcome = await asyncio.wait_for(
@@ -438,6 +508,7 @@ async def verify_actions(ctx: StopContext) -> Optional[str]:
             "apps": apps,
             "read_tools": len(tools),
             "reads": outcome.tool_calls,
+            "pushed_back": outcome.pushed_back,
             "reply": _cut(verdict.raw, 4000),
         },
     )
@@ -552,11 +623,7 @@ def build_write_task(
     request: str, log: str, note: str, tool: Any, args: Any, tools: Sequence[Any], code: str = ""
 ) -> str:
     description = _cut(str(getattr(tool, "description", "") or ""), 2000)
-    tool_note = (
-        f"Read-only tools of {_app_of(tool) or 'the app'} are bound to you ({len(tools)})."
-        if tools
-        else "No read tools are available: judge from the log alone."
-    )
+    tool_note = _tools_note(tools)
     parts = [
         f"User request:\n{request or '(unavailable)'}",
         f"The agent's calls so far in this turn:\n\n{log or '(none)'}",
@@ -611,8 +678,8 @@ async def check_before_write(
         start,
         tools_by_name,
         tools_context,
-        [app] if app else [],
-        max_tools=int(_cfg("max_tools", 40)),
+        verifier_apps([app] if app else [], turn_apps(messages, start, tools_by_name), context_apps()),
+        max_tools=int(_cfg("max_tools", 60)),
     )
     result_chars = int(_cfg("max_result_chars", 4000))
     log = action_log(
@@ -669,6 +736,7 @@ async def check_before_write(
             "issues": verdict.issues,
             "read_tools": len(tools),
             "reads": outcome.tool_calls,
+            "pushed_back": outcome.pushed_back,
             "reply": _cut(verdict.raw, 4000),
         },
     )

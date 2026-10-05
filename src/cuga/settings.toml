@@ -189,7 +189,11 @@ forward_sync_subagent_events = true
 # reads the turn's calls and the current state through the changed apps' GET tools before the agent answers;
 # VERDICT: FAIL sends the agent back with the problems. helpers/action_verifier.py
 max_steps = 10  # read calls the verifier may make
-max_tools = 40  # GET tools bound to the verifier (tools the turn already used come first)
+max_tools = 60  # GET tools bound to the verifier: ones the turn used, then the checked app's, other apps the turn
+# called, context_apps; credential/session endpoints (password, auth, login, token) are never bound
+# Apps that say who people are, always readable by the verifier (e.g. ["supervisor", "phone"] for AppWorld: the
+# user's profile, contacts and their relationships). Env: DYNACONF_VERIFY_ACTIONS__CONTEXT_APPS
+context_apps = []
 max_result_chars = 4000  # per tool result, in the log and in the verifier's own reads
 max_log_chars = 24000  # the turn's call log; oldest calls dropped first
 subagent_timeout = 120  # seconds; past it the answer (or the write) goes through unchecked
