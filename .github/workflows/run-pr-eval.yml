@@ -228,12 +228,39 @@ jobs:
           report_log="${GITHUB_WORKSPACE}/pr-eval-logs/${log_prefix}-run-pr-eval-report.md"
           exit_code_log="${GITHUB_WORKSPACE}/pr-eval-logs/${log_prefix}-run-pr-eval-exit-code.txt"
           eval_script="${HOME}/pr-regression-testing/cuga-eval/scripts/pr-regression-testing/run-pr-regression-eval.sh"
+          expected_eval_script_sha="edbc48063aaa03094d5ad93df0d5caee382a7ebdba040e60125a343474ae0f4c"
+          eval_script_verified=false
 
-          bash "${eval_script}" \
-            "${COMMENT_BODY}" \
-            > "${output_log}" 2>&1
+          if [[ ! -f "${eval_script}" ]]; then
+            {
+              echo "ERROR: PR evaluation script was not found."
+              echo "Expected path: ${eval_script}"
+            } > "${output_log}"
+            status=1
+          else
+            if command -v sha256sum >/dev/null 2>&1; then
+              actual_eval_script_sha="$(sha256sum "${eval_script}" | awk '{print $1}')"
+            else
+              actual_eval_script_sha="$(shasum -a 256 "${eval_script}" | awk '{print $1}')"
+            fi
 
-          status=$?
+            if [[ "${actual_eval_script_sha}" != "${expected_eval_script_sha}" ]]; then
+              {
+                echo "ERROR: PR evaluation script checksum mismatch."
+                echo "Expected SHA-256: ${expected_eval_script_sha}"
+                echo "Actual SHA-256:   ${actual_eval_script_sha}"
+                echo "Script path:      ${eval_script}"
+              } > "${output_log}"
+              status=1
+            else
+              eval_script_verified=true
+              bash "${eval_script}" \
+                "${COMMENT_BODY}" \
+                > "${output_log}" 2>&1
+              status=$?
+            fi
+          fi
+
           echo "${status}" > "${exit_code_log}"
 
           redact_file() {
@@ -245,7 +272,9 @@ jobs:
 
           redact_file "${output_log}"
           redact_file "${exit_code_log}"
-          if ! bash "${eval_script}" --extract-report "${output_log}" "${report_log}" || [[ ! -f "${report_log}" ]]; then
+          if [[ "${eval_script_verified}" == "true" ]] && bash "${eval_script}" --extract-report "${output_log}" "${report_log}" && [[ -f "${report_log}" ]]; then
+            :
+          else
             {
               echo "No parsed evaluation report was produced."
               echo
@@ -391,3 +420,15 @@ jobs:
               issue_number: context.issue.number,
               body,
             });
+
+# Maintenance note:
+# This workflow intentionally executes the PR regression runner from the
+# self-hosted VM checkout at:
+#   $HOME/pr-regression-testing/cuga-eval/scripts/pr-regression-testing/run-pr-regression-eval.sh
+# The VM cuga-eval checkout is expected to use reviewed commit:
+#   059701be4dbbf86348760a61bcb6a5f9603b17de
+# To update that script, make and review the change in cuga-eval first, update
+# the VM checkout to that reviewed cuga-eval revision, then refresh the
+# expected_eval_script_sha value above with:
+#   shasum -a 256 scripts/pr-regression-testing/run-pr-regression-eval.sh
+# The workflow should not run an unreviewed or checksum-mismatched runner script.
