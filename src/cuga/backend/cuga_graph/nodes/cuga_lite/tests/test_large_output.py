@@ -457,3 +457,13 @@ async def test_main_agent_greps_and_reads_the_saved_file_itself(main_agent, monk
         {"name": "grep_saved_output", "args": {"file": "../x.txt", "pattern": "a"}, "id": "o"},
     )
     assert other.status == "error" and "call_1.txt" in other.content
+
+
+def test_every_part_of_a_long_line_is_reachable(tmp_path):
+    long_line = "a" * 1500 + "NEEDLE" + "b" * 2500
+    path = tmp_path / "out.txt"
+    path.write_text(lo.as_searchable_text(long_line))
+    file = lo.OutputFile(path)
+    hit = file.grep("NEEDLE")
+    assert "NEEDLE" in hit.split("\n", 1)[1], "the matched chunk is shown whole, not cut before the match"
+    assert "line cut" not in file.read(1, 10)

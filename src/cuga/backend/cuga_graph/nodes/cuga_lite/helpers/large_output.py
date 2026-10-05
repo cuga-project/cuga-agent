@@ -69,10 +69,12 @@ SAVED_OUTPUT_TOOL_NAMES = frozenset({QUERY_SAVED_OUTPUT_NAME, GREP_SAVED_NAME, R
 MODE_SUBAGENT = "subagent"
 MODE_MAIN_AGENT = "main_agent"
 
-_WRAP_AT = 4000  # longer lines (minified JSON/HTML) are split so grep/read stay line-oriented
+# Lines are split at _MAX_LINE_CHARS (minified JSON/HTML, long paragraphs) so grep/read stay line-oriented
+# and every character stays reachable: a displayed line is never cut.
+_WRAP_AT = 2000
 _WRAP_CHUNK = 2000
 _MAX_TOOL_OUTPUT_CHARS = 6000
-_MAX_LINE_CHARS = 1000  # per displayed line
+_MAX_LINE_CHARS = _WRAP_AT  # per displayed line; a longer line only exists if the file was not written here
 _MAX_MATCHES = 30
 _MAX_CONTEXT = 5
 _MAX_READ_LINES = 400
