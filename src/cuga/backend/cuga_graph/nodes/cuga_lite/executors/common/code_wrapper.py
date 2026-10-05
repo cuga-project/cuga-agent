@@ -17,18 +17,36 @@ def _split_user_code(code: str) -> Tuple[List[ast.stmt], List[ast.stmt]]:
     return futures, body
 
 
+_LAST_VALUE = "_repl_value"
+
+
 def _maybe_auto_print(body: List[ast.stmt]) -> List[ast.stmt]:
+    """Print a trailing bare expression the way a REPL does — but not ``None``.
+
+    ``await main()`` / ``some_list.append(x)`` as the last line evaluate to ``None``; echoing
+    it adds a stray ``None`` line under the real output, which models read as a result.
+    """
     if not body:
         return body
     last = body[-1]
     if not isinstance(last, ast.Expr) or _is_print_call(last.value):
         return body
-    printed = ast.Expr(
-        value=ast.Call(
-            func=ast.Name(id="print", ctx=ast.Load()),
-            args=[last.value],
-            keywords=[],
-        )
+    printed = ast.If(
+        test=ast.Compare(
+            left=ast.NamedExpr(target=ast.Name(id=_LAST_VALUE, ctx=ast.Store()), value=last.value),
+            ops=[ast.IsNot()],
+            comparators=[ast.Constant(value=None)],
+        ),
+        body=[
+            ast.Expr(
+                value=ast.Call(
+                    func=ast.Name(id="print", ctx=ast.Load()),
+                    args=[ast.Name(id=_LAST_VALUE, ctx=ast.Load())],
+                    keywords=[],
+                )
+            )
+        ],
+        orelse=[],
     )
     return [*body[:-1], printed]
 

@@ -4,13 +4,13 @@ import contextlib
 import difflib
 import io
 import re
-import traceback
 from typing import Any, Optional
 
 from ..base_executor import BaseExecutor
 from ..common.restricted_environment import RestrictedEnvironment
 from ..common.security import CodeSyntaxError, SecurityValidator
 from ..common.benchmark_mode import is_relaxed_execution
+from ..common.rpc_client.cuga_tb import format_code_error, register_source
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
     BlockToolCallCounter,
     ToolCallBudgetExceeded,
@@ -95,7 +95,9 @@ class LocalExecutor(BaseExecutor):
                     SecurityValidator.validate_context_usage(wrapped_code, context_locals)
 
                 exec_locals = {}
-                exec(wrapped_code, restricted_globals, exec_locals)
+                # Named source: tracebacks then show the failing statement, not "<string>".
+                filename = register_source(wrapped_code)
+                exec(compile(wrapped_code, filename, "exec"), restricted_globals, exec_locals)
 
                 async_main = exec_locals['_async_main']
                 BlockToolCallCounter.reset()
@@ -139,7 +141,7 @@ class LocalExecutor(BaseExecutor):
                         f"This code block started {calls_made} tool call(s) before it was killed; "
                         f"{kept_note}"
                         "Do NOT rerun the same code — it will time out again. Restructure instead: "
-                        "use a bulk/aggregate tool (find_tools), or process a small batch of items "
+                        "use a bulk/aggregate tool if one exists, or process a small batch of items "
                         "per code block and store partial progress in a variable.\n"
                     )
                     if partial_stdout.strip():
@@ -262,10 +264,7 @@ class LocalExecutor(BaseExecutor):
             Formatted error string
         """
         if isinstance(error, asyncio.TimeoutError):
-            error_msg = (
-                f"Error during execution: Execution timed out after {self._timeout} seconds"
-                + traceback.format_exc()
-            )
+            error_msg = f"Error during execution: Execution timed out after {self._timeout} seconds"
             captured_stdout = getattr(error, "captured_stdout", None)
             if captured_stdout:
                 error_msg = f"Output before error:\n{captured_stdout.rstrip()}\n\n{error_msg}"
@@ -274,8 +273,10 @@ class LocalExecutor(BaseExecutor):
         if isinstance(error, CodeSyntaxError):
             return f"Error during execution: {error}"
 
+        # Only the frames of the model's own code, each with its source line — not the
+        # executor's task runner and budget wrappers around it.
         error_msg = f"Error during execution: {repr(error)}"
-        error_msg += f"\n{traceback.format_exc()}"
+        error_msg += f"\n{format_code_error(error)}"
 
         captured_stdout = getattr(error, "captured_stdout", None)
         if captured_stdout:
