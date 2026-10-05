@@ -207,3 +207,92 @@ def save_native_result(state: Any, tool_name: str, result: Any) -> Optional[str]
     except Exception as exc:  # never let bookkeeping break a tool reply
         logger.debug(f"could not save native result of {tool_name}: {exc}")
         return None
+
+
+# ── an execute_python call that arrived with no code ─────────────────────────
+
+# Argument names a model has put the program under instead of ``code``.
+_CODE_KEYS = ("code", "source", "python", "script", "program", "input", "cmd", "command")
+
+
+def call_code(args: Any) -> str:
+    """The non-empty ``code`` of an execute_python call's arguments, else ``""``."""
+    code = args.get("code") if isinstance(args, dict) else None
+    return code if isinstance(code, str) and code.strip() else ""
+
+
+def has_empty_code(tool_calls: List[Dict[str, Any]]) -> bool:
+    return any(c.get("name") == EXECUTE_PYTHON_NAME and not call_code(c.get("args")) for c in tool_calls)
+
+
+def _code_from_args(args: Any) -> str:
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.model_call_recovery import code_parses
+
+    if not isinstance(args, dict):
+        return ""
+    keyed = [args.get(k) for k in _CODE_KEYS]
+    strings = [v for v in args.values() if isinstance(v, str)]
+    for value in [*keyed, *(strings if len(strings) == 1 else [])]:
+        if isinstance(value, str) and code_parses(value):
+            return value
+    return ""
+
+
+def salvage_empty_code(
+    tool_calls: List[Dict[str, Any]], invalid_tool_calls: List[Dict[str, Any]], content: str
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
+    """Fill execute_python calls whose ``code`` is missing from wherever the program landed.
+
+    - another argument name (``source``, ``script``, …, or the only string argument);
+    - an invalid call whose raw arguments are Python rather than JSON (it becomes a
+      valid call);
+    - a fenced Python block in the reply text (used for one empty call at most).
+
+    Returns ``(tool_calls, invalid_tool_calls, how)`` — ``how`` names each repair, empty
+    when nothing changed. Only code that compiles is used.
+    """
+    import json
+
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import (
+        extract_code_from_model_response,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.model_call_recovery import code_parses
+
+    how: List[str] = []
+    calls = [dict(c) for c in tool_calls]
+    still_invalid: List[Dict[str, Any]] = []
+    for bad in invalid_tool_calls:
+        raw = bad.get("args")
+        if bad.get("name") == EXECUTE_PYTHON_NAME and isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                parsed = None
+            code = _code_from_args(parsed) if isinstance(parsed, dict) else (raw if code_parses(raw) else "")
+            if code:
+                calls.append(
+                    {
+                        "name": EXECUTE_PYTHON_NAME,
+                        "args": {"code": code},
+                        "id": bad.get("id"),
+                        "type": "tool_call",
+                    }
+                )
+                how.append("invalid_call_raw_code")
+                continue
+        still_invalid.append(bad)
+
+    fenced = extract_code_from_model_response(content, None) if content else ""
+    fenced = fenced if code_parses(fenced) else ""
+    for call in calls:
+        if call.get("name") != EXECUTE_PYTHON_NAME or call_code(call.get("args")):
+            continue
+        code = _code_from_args(call.get("args"))
+        if code:
+            how.append("other_argument")
+        elif fenced:
+            code, fenced = fenced, ""
+            how.append("fenced_block_in_reply")
+        if code:
+            call["args"] = {"code": code}
+    return calls, still_invalid, how

@@ -32,7 +32,10 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.stop_checks import (
     run_stop_checks,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.model_call_recovery import (
+    empty_code_retried,
+    empty_code_retry_command,
     max_truncation_retries,
+    pending_empty_code_note,
     pending_truncation_note,
     truncation_retries_used,
     truncation_retry_command,
@@ -54,7 +57,11 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.tool_exec_node import create_tool_exec_node
 from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.wire_names import wire_name
-from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import EXECUTE_PYTHON_NAME
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.execute_python import (
+    EXECUTE_PYTHON_NAME,
+    has_empty_code,
+    salvage_empty_code,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.harness_messages import (
     for_model,
     harness_kind,
@@ -209,6 +216,45 @@ def _replayable_tool_calls(response: AIMessage) -> AIMessage:
     ]
     logger.warning("[fc] cleaned tool-call names/args before persisting: {}", renamed or "invalid-call args")
     return response.model_copy(update={"tool_calls": clean_calls, "invalid_tool_calls": clean_invalid})
+
+
+def _empty_code_diagnostics(
+    response: Any, content: str, reasoning: Optional[str], bound: Any
+) -> Dict[str, Any]:
+    """What the provider actually sent when an execute_python call came without code.
+
+    Not reproducible outside a real run (a clean prompt never does it), so the raw
+    shape is recorded for the next evaluation to show the cause: the finish reason,
+    the raw argument strings before parsing, the reasoning that led to the call, and
+    which tools were bound.
+    """
+    meta = getattr(response, "response_metadata", None) or {}
+    raw_calls = (getattr(response, "additional_kwargs", None) or {}).get("tool_calls") or []
+    bound_tools = (getattr(bound, "kwargs", None) or {}).get("tools") or []
+    return {
+        "finish_reason": meta.get("finish_reason") or meta.get("stop_reason"),
+        "usage": meta.get("token_usage") or getattr(response, "usage_metadata", None),
+        "raw_arguments": [
+            {
+                "name": (c.get("function") or {}).get("name"),
+                "arguments": str((c.get("function") or {}).get("arguments"))[:800],
+            }
+            for c in raw_calls
+            if isinstance(c, dict)
+        ],
+        "calls": [{"name": c.get("name"), "args": c.get("args")} for c in (response.tool_calls or [])],
+        "invalid": [
+            {"name": c.get("name"), "args": str(c.get("args"))[:800], "error": c.get("error")}
+            for c in (response.invalid_tool_calls or [])
+        ],
+        "content_chars": len(content or ""),
+        "reasoning_chars": len(reasoning or ""),
+        "reasoning_tail": (reasoning or "")[-1500:],
+        "bound_tools": [
+            ((t.get("function") or {}).get("name") if isinstance(t, dict) else getattr(t, "name", str(t)))
+            for t in bound_tools
+        ],
+    }
 
 
 def _unanswered_call_replies(calls: List[Any], invalid: List[Any], reason: str) -> List[ToolMessage]:
@@ -866,6 +912,10 @@ class AgentGraphAdapter(CoreGraphAdapter):
             truncation_note = pending_truncation_note(self.get_metadata(state))
             if truncation_note:
                 msgs.append(for_model(harness_message(truncation_note, "output_truncated")))
+            # The previous reply's execute_python call had no code and was discarded.
+            empty_code_note = pending_empty_code_note(self.get_metadata(state))
+            if empty_code_note:
+                msgs.append(for_model(harness_message(empty_code_note, "empty_code")))
 
         clamp_watsonx_completion_for_messages(bound, msgs)
         response = await bound.ainvoke(msgs, config=invoke_config)
@@ -881,6 +931,28 @@ class AgentGraphAdapter(CoreGraphAdapter):
         response = _replayable_tool_calls(response)
         tool_calls = list(response.tool_calls or [])
         invalid_tool_calls = list(response.invalid_tool_calls or [])
+
+        # Hybrid: an execute_python call with no code — salvage the program from where it
+        # landed, else (below) discard the reply and ask again once.
+        empty_code: Optional[Dict[str, Any]] = None
+        if (
+            hybrid
+            and not budget_exhausted
+            and (
+                has_empty_code(tool_calls)
+                or any(c.get("name") == EXECUTE_PYTHON_NAME for c in invalid_tool_calls)
+            )
+        ):
+            diagnostics = _empty_code_diagnostics(response, content, reasoning, bound)
+            fixed, still_invalid, how = salvage_empty_code(tool_calls, invalid_tool_calls, content)
+            if how:
+                logger.warning("[hybrid] execute_python call without code repaired: {}", how)
+                response = response.model_copy(
+                    update={"tool_calls": fixed, "invalid_tool_calls": still_invalid}
+                )
+                tool_calls, invalid_tool_calls = fixed, still_invalid
+            if how or has_empty_code(tool_calls):
+                empty_code = {**diagnostics, "salvaged": how, "still_empty": has_empty_code(tool_calls)}
 
         max_steps = self.resolve_max_steps(state, cfg.get("cuga_lite_max_steps"))
         new_step_count: int = state.step_count + 1
@@ -930,6 +1002,32 @@ class AgentGraphAdapter(CoreGraphAdapter):
         base_meta = dict(self.build_metadata_update(state, playbook_fired=playbook_fired) or {})
         if repeat_streak is not None:
             base_meta[REPEAT_NUDGE_KEY] = repeat_streak.first_call_id
+
+        if empty_code is not None:
+            retry = (
+                empty_code["still_empty"]
+                and not empty_code_retried(self.get_metadata(state))
+                and new_step_count < max_steps
+            )
+            empty_code["action"] = (
+                "retried" if retry else ("salvaged" if not empty_code["still_empty"] else "ran")
+            )
+            try:
+                self._tracker.collect_step(
+                    step=Step(
+                        name="Empty_code_call", data=json.dumps(empty_code, ensure_ascii=False, default=str)
+                    )
+                )
+            except Exception as exc:
+                logger.debug(f"AgentGraphAdapter fc tracker error: {exc}")
+            if retry:
+                logger.warning(
+                    "[hybrid] execute_python call arrived with no code (finish={}) — discarded, asking again",
+                    empty_code.get("finish_reason"),
+                )
+                return empty_code_retry_command(
+                    self, messages=history, base_meta=base_meta, new_step_count=new_step_count
+                )
 
         # Cut off at the output-token limit: tool calls whose arguments all parsed are
         # complete and run as usual; a call whose JSON never closed (it lands in

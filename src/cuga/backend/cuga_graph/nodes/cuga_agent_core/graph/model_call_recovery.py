@@ -14,6 +14,12 @@ Two failure shapes, both handled the way free-code's ``query.ts`` loop handles t
   with :data:`OUTPUT_TRUNCATED_NOTE` appended to the outbound copy only, up to
   ``cuga_lite_output_truncation_retries`` times in a row. Each retry costs a step, so
   the step limit still bounds it.
+- **A code call with no code.** Hybrid mode: gpt-oss sometimes sends ``execute_python``
+  with empty arguments (AppWorld baeb104: 13 in a row, each answered "needs a non-empty
+  code string", each copied by the next turn). Code that landed elsewhere in the reply is
+  salvaged (``helpers/execute_python.salvage_empty_code``); otherwise the reply is
+  discarded like a truncated one and retried once with :data:`EMPTY_CODE_NOTE`, so the
+  empty call never enters the history the model imitates.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from loguru import logger
 
 OUTPUT_TRUNCATED_KEY = "_output_truncated_retries"
 REACTIVE_COMPACT_KEY = "_reactive_compact_step"
+EMPTY_CODE_KEY = "_empty_code_retries"
 
 OUTPUT_TRUNCATED_NOTE = (
     "Your previous reply hit the output-token limit and was cut off, so it was discarded "
@@ -36,9 +43,15 @@ OUTPUT_TRUNCATED_NOTE = (
     "or give a more concise answer."
 )
 
+EMPTY_CODE_NOTE = (
+    "Your previous reply called execute_python, but its `code` argument arrived empty, so it was "
+    "discarded and nothing ran. Call execute_python again with the complete program as the `code` "
+    "string argument, or call the tool you meant natively."
+)
+
 # Keys the per-response metadata cleanup must drop, so a marker lives for exactly one
 # call_model round trip (the retry sets them again after the cleanup).
-ONE_SHOT_RECOVERY_KEYS = (OUTPUT_TRUNCATED_KEY, REACTIVE_COMPACT_KEY)
+ONE_SHOT_RECOVERY_KEYS = (OUTPUT_TRUNCATED_KEY, REACTIVE_COMPACT_KEY, EMPTY_CODE_KEY)
 
 
 def _advanced_setting(settings: Any, name: str, default: int) -> int:
@@ -65,6 +78,15 @@ def pending_truncation_note(metadata: Optional[dict]) -> Optional[str]:
     return OUTPUT_TRUNCATED_NOTE if truncation_retries_used(metadata) > 0 else None
 
 
+def empty_code_retried(metadata: Optional[dict]) -> bool:
+    return bool((metadata or {}).get(EMPTY_CODE_KEY))
+
+
+def pending_empty_code_note(metadata: Optional[dict]) -> Optional[str]:
+    """The outbound note for a call that retries a discarded reply whose code call was empty."""
+    return EMPTY_CODE_NOTE if empty_code_retried(metadata) else None
+
+
 def code_parses(code: Optional[str]) -> bool:
     """True when ``code`` is complete Python (top-level ``await`` allowed)."""
     if not code or not code.strip():
@@ -87,6 +109,23 @@ def truncation_retry_command(
     """Go back to ``call_model`` without the truncated reply, counting the retry."""
     meta = dict(base_meta)
     meta[OUTPUT_TRUNCATED_KEY] = truncation_retries_used(adapter.get_metadata(state)) + 1
+    return _discard_and_retry(adapter, messages=messages, meta=meta, new_step_count=new_step_count)
+
+
+def empty_code_retry_command(
+    adapter: Any,
+    *,
+    messages: List[Any],
+    base_meta: dict,
+    new_step_count: int,
+) -> Command:
+    """Go back to ``call_model`` without the reply whose code call was empty (once)."""
+    meta = dict(base_meta)
+    meta[EMPTY_CODE_KEY] = 1
+    return _discard_and_retry(adapter, messages=messages, meta=meta, new_step_count=new_step_count)
+
+
+def _discard_and_retry(adapter: Any, *, messages: List[Any], meta: dict, new_step_count: int) -> Command:
     return Command(
         goto="call_model",
         update={

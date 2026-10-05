@@ -234,3 +234,75 @@ async def test_a_full_default_page_carries_the_partial_result_note():
 
     reply = [m for m in model.seen[2] if isinstance(m, ToolMessage) and m.name == "list_threads"][0]
     assert "Partial result" in reply.content and "execute_python" in reply.content
+
+
+@pytest.mark.asyncio
+async def test_an_execute_python_call_without_code_is_discarded_and_asked_again():
+    """AppWorld baeb104: 13 empty execute_python calls in a row, each copied by the next turn."""
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.model_call_recovery import EMPTY_CODE_NOTE
+    from cuga.sdk import CugaAgent
+
+    model = _ScriptedModel(
+        [
+            AIMessage(content="", tool_calls=[_call("execute_python", {}, "empty_1")]),
+            AIMessage(
+                content="",
+                tool_calls=[_call("execute_python", {"code": "print(await double(value=5))"}, "ok_1")],
+            ),
+            AIMessage(content="It is 10."),
+        ]
+    )
+    agent = CugaAgent(tools=_tools(), model=model, execution_mode="hybrid")
+
+    result = await agent.invoke("double 5", thread_id="hybrid-empty-code")
+
+    assert result.answer == "It is 10."
+    assert CALLS == [("double", 5)]
+    retry = model.seen[1]
+    assert EMPTY_CODE_NOTE in retry[-1].content, "the retry carries the note, outbound"
+    assert not any(
+        isinstance(m, AIMessage) and any(c.get("id") == "empty_1" for c in m.tool_calls or []) for m in retry
+    ), "the empty call never enters the history the model sees"
+    assert not any(isinstance(m, ToolMessage) and m.tool_call_id == "empty_1" for m in model.seen[2])
+
+
+@pytest.mark.asyncio
+async def test_a_second_empty_code_call_runs_and_gets_a_clear_error():
+    from cuga.sdk import CugaAgent
+
+    model = _ScriptedModel(
+        [
+            AIMessage(content="", tool_calls=[_call("execute_python", {}, "empty_1")]),
+            AIMessage(content="", tool_calls=[_call("execute_python", {}, "empty_2")]),
+            AIMessage(content="Gave up."),
+        ]
+    )
+    agent = CugaAgent(tools=_tools(), model=model, execution_mode="hybrid")
+
+    await agent.invoke("double 5", thread_id="hybrid-empty-code-twice")
+
+    replies = [m for m in model.seen[2] if isinstance(m, ToolMessage)]
+    assert replies[-1].tool_call_id == "empty_2"
+    assert "arrived with no `code`" in replies[-1].content
+
+
+@pytest.mark.asyncio
+async def test_code_sent_under_another_argument_name_is_used():
+    from cuga.sdk import CugaAgent
+
+    model = _ScriptedModel(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[_call("execute_python", {"source": "print(await double(value=6))"}, "src_1")],
+            ),
+            AIMessage(content="It is 12."),
+        ]
+    )
+    agent = CugaAgent(tools=_tools(), model=model, execution_mode="hybrid")
+
+    result = await agent.invoke("double 6", thread_id="hybrid-code-other-key")
+
+    assert result.answer == "It is 12."
+    assert CALLS == [("double", 6)]
+    assert len(model.seen) == 2, "repaired in place: no retry"

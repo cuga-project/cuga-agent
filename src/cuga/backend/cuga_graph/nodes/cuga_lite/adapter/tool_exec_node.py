@@ -233,7 +233,11 @@ async def _run_execute_python(
     code = (kwargs or {}).get("code") if not arg_error else None
     if not isinstance(code, str) or not code.strip():
         return _error_message(
-            arg_error or "execute_python needs a non-empty `code` string.",
+            arg_error
+            or (
+                "execute_python arrived with no `code`, so nothing ran. Send the whole program as the "
+                "`code` string argument, or call the tool you meant natively."
+            ),
             call_id=call_id,
             name=EXECUTE_PYTHON_NAME,
         )
