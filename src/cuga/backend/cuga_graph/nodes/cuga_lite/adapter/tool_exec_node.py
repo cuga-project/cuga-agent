@@ -46,10 +46,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import _budget_updates
 from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.deferred import (
-    SEARCH_BUDGET_NOTE,
-    SEARCH_BUDGET_REFUSED,
     DeferredToolSurface,
-    search_streak,
     discovered_in_history,
     merge_ordered,
     surface_from_meta,
@@ -460,17 +457,6 @@ async def _run_update_todos(
 RUN_COMMAND_NAME = "run_command"
 
 
-def _search_budget(configurable: Dict[str, Any]) -> int:
-    """``cuga_lite_tool_search_budget``: searches in a row before the model is told to stop (0 = off)."""
-    raw = configurable.get("cuga_lite_tool_search_budget")
-    if raw is None:
-        raw = getattr(settings.advanced_features, "cuga_lite_tool_search_budget", 0)
-    try:
-        return max(int(raw or 0), 0)
-    except (TypeError, ValueError):
-        return 0
-
-
 def _shell_bridge(
     adapter: Any,
     kwargs: Dict[str, Any],
@@ -613,17 +599,6 @@ def create_tool_exec_node(adapter: Any) -> Callable:
                     ),
                     large_output=large_output,
                     write_check=write_check,
-                    searches_in_a_row=search_streak(messages[:-1]) if surface is not None else 0,
-                    search_budget=_search_budget(configurable),
-                    loaded=(
-                        merge_ordered(
-                            surface.seed,
-                            getattr(state, "discovered_tools", None) or [],
-                            discovered_in_history(messages, surface.deferred),
-                        )
-                        if surface is not None
-                        else None
-                    ),
                 )
             finally:
                 execution_tool_calls = ToolCallTracker.stop_tracking()
@@ -744,24 +719,15 @@ async def _run_batch(
     hybrid: Optional[Dict[str, Any]] = None,
     large_output: Optional[Dict[str, Any]] = None,
     write_check: Optional[Dict[str, Any]] = None,
-    searches_in_a_row: int = 0,
-    search_budget: int = 0,
-    loaded: Optional[List[str]] = None,
 ) -> int:
     """Run one turn's calls in order, appending one ``ToolMessage`` per id to ``results``.
 
     Returns how many calls actually executed. Every outcome is a message, never
     an exception, so one failing call cannot take its siblings down.
-
-    ``searches_in_a_row`` is the ``tool_search`` streak before this batch; past
-    ``search_budget`` a search reply tells the model to stop searching, and past twice
-    the budget the search is not run (0 = no budget).
     """
     executed = 0
     budget_stop: Optional[str] = None
     discovered = discovered if discovered is not None else set()
-    # Loaded tools, oldest first, for the search-budget note.
-    loaded_order: List[str] = [n for n in (loaded or []) if n in discovered] or sorted(discovered)
     attempted = 0  # real (non tool_search) calls reached so far, for step discipline
     for index, call in enumerate(calls):
         call_id, name, raw_args = _tool_call_parts(call)
@@ -776,39 +742,8 @@ async def _run_batch(
         if surface is not None and name == TOOL_SEARCH_NAME:
             # A meta call: no side effects, so it is never deferred by step discipline,
             # never counted against the tool-call budgets, and never truncated.
-            searches_in_a_row += 1
-            over = search_budget > 0 and searches_in_a_row > search_budget
-
-            def _loaded() -> str:
-                # Newest first: what the latest searches loaded is what the model was circling.
-                shown = [surface.to_wire(n) for n in reversed(loaded_order)][:20]
-                return ", ".join(shown) if shown else "none"
-
-            if over and searches_in_a_row > 2 * search_budget:
-                logger.info("[fc] search budget: search {} refused", searches_in_a_row)
-                results.append(
-                    ToolMessage(
-                        content=SEARCH_BUDGET_REFUSED.format(count=searches_in_a_row - 1, loaded=_loaded()),
-                        tool_call_id=call_id,
-                        name=TOOL_SEARCH_NAME,
-                        status="error",
-                    )
-                )
-                continue
-            reply = await _run_tool_search(adapter, raw_args, call_id=call_id, timeout=timeout)
-            if isinstance(reply.artifact, dict):
-                for found in reply.artifact.get("discovered") or []:
-                    discovered.add(found)
-                    if found in loaded_order:
-                        loaded_order.remove(found)
-                    loaded_order.append(found)
-            if over:
-                logger.info("[fc] search budget: note on search {}", searches_in_a_row)
-                note = SEARCH_BUDGET_NOTE.format(count=searches_in_a_row, loaded=_loaded())
-                reply = reply.model_copy(update={"content": f"{reply.content}\n\n{note}"})
-            results.append(reply)
+            results.append(await _run_tool_search(adapter, raw_args, call_id=call_id, timeout=timeout))
             continue
-        searches_in_a_row = 0
         if name == TODOS_TOOL_NAME and name in adapter._tools_context:
             results.append(await _run_update_todos(adapter, raw_args, call_id=call_id, timeout=timeout))
             continue

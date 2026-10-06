@@ -84,10 +84,6 @@ cuga_lite_tool_search_min_score = 10  # Keyword stage is confident when top scor
 cuga_lite_tool_search_margin_ratio = 0.2  # ... and (top - first cut-off score) / top >= this. Calibrated on the M3 REST catalogue
 # (scripts/tool_search_calibration.py): 0.2 answers ~91% of searches without a model call at ~98% recall@5.
 cuga_lite_tool_search_time_budget_s = 20  # Wall-clock budget per search (< sandbox_execution_timeout); past it, embedding/LLM stages are skipped
-# Function-calling / hybrid with tool search: after this many tool_search calls in a row (no other tool called), each
-# search reply tells the model to call the closest loaded tool or answer; past twice this many, searches are refused.
-# 0 = off. Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_TOOL_SEARCH_BUDGET
-cuga_lite_tool_search_budget = 6
 cuga_lite_tool_search_list_names_max = 150  # List deferred tool names in the prompt up to this many; above, apps + counts only
 cuga_lite_tool_search_seed_k = 0  # Pre-load the top-K keyword matches for the first user message (no model call); 0 = off
 cuga_lite_tool_description_max_chars = 300  # Wire-schema tool description cap on the tool_search bind path

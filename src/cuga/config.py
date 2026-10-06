@@ -244,7 +244,6 @@ validators = [
     Validator("advanced_features.cuga_lite_signature_max_chars", default=600),
     Validator("advanced_features.cuga_lite_find_tools_render", default="markdown"),
     Validator("advanced_features.cuga_lite_execute_python_timeout", default=90),
-    Validator("advanced_features.cuga_lite_tool_search_budget", default=6),
     Validator("advanced_features.cuga_lite_tool_result_keep_recent", default=3),
     Validator("advanced_features.cuga_lite_output_truncation_retries", default=2),
     Validator("advanced_features.cuga_lite_reactive_compact_max_message_chars", default=20000),

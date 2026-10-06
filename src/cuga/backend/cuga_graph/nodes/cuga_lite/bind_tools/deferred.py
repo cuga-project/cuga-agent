@@ -322,39 +322,3 @@ def search_only_turn(messages: Sequence[Any], turn_start: int) -> Optional[List[
             for name in artifact.get("discovered") or []:
                 loaded.setdefault(str(name), None)
     return list(loaded) or None
-
-
-# ── search budget ────────────────────────────────────────────────────────────
-
-SEARCH_BUDGET_NOTE = (
-    "[Search budget] That was {count} tool searches in a row without calling a tool. Stop searching now. "
-    "Loaded tools: {loaded}. Call the closest one — a tool that only roughly matches the wording often "
-    "answers the question — or give your answer with what you have."
-)
-SEARCH_BUDGET_REFUSED = (
-    "[Search budget] Search not run: {count} tool searches in a row without calling a tool. Searching again "
-    "will not find a better tool. Loaded tools: {loaded}. Call the closest one, or give your answer with "
-    "what you have."
-)
-
-
-def search_streak(messages: Sequence[Any]) -> int:
-    """``tool_search`` replies since the last other tool reply or user message (newest first).
-
-    Opus-class models keep searching when the only matching tool is approximate (M3 hockey:
-    19 and 22 searches in a row, then the step limit, no answer) — the streak is what the
-    search budget in ``tool_exec`` counts.
-    """
-    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_search import TOOL_SEARCH_NAME
-
-    count = 0
-    for message in reversed(list(messages or [])):
-        role = _role(message)
-        if role in ("human", "user"):
-            break
-        if role != "tool":
-            continue
-        if _field(message, "name") != TOOL_SEARCH_NAME:
-            break
-        count += 1
-    return count
