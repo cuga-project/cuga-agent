@@ -364,6 +364,7 @@ async def test_profile_failure_never_falls_back_to_legacy_generation():
 
 @pytest.mark.asyncio
 async def test_episodic_profile_refreshes_models_after_reopening_storage(tmp_path, monkeypatch):
+    pytest.importorskip("altk_evolve")
     from altk_evolve.config import llm
     from altk_evolve.processing import ProcessingManager, SQLiteProfileRepository
 
