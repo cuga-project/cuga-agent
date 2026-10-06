@@ -14,7 +14,6 @@ from pathlib import Path
 
 EVOLVE_SENTENCE_TRANSFORMER_MODELS = (
     ("sentence-transformers/all-MiniLM-L6-v2", "1110a243fdf4706b3f48f1d95db1a4f5529b4d41", False),
-    ("nomic-ai/CodeRankEmbed", "3c4b60807d71f79b43f3c4363786d9493691f8b1", True),
 )
 
 
@@ -164,7 +163,7 @@ def preload_tiktoken() -> None:
 
 
 def preload_evolve_sentence_transformers() -> None:
-    """Cache every SentenceTransformer model used by the pinned Evolve build."""
+    """Cache the default consistency model; optional sbert_large is not bundled."""
     print("→ Preloading Evolve sentence-transformer models...")
     try:
         from sentence_transformers import SentenceTransformer
