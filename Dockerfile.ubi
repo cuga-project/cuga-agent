@@ -32,8 +32,7 @@ ENV PATH=/usr/local/bin:$PATH \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers \
     TIKTOKEN_CACHE_DIR=/app/.cache/tiktoken \
     LITELLM_LOCAL_MODEL_COST_MAP=True \
-    MODEL_PRELOAD_STRICT=1 \
-    PRELOAD_EVOLVE_MODELS=1
+    MODEL_PRELOAD_STRICT=1
 
 USER root
 WORKDIR /app

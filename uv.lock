@@ -348,7 +348,7 @@ wheels = [
 
 [[package]]
 name = "altk-evolve"
-version = "1.5.1"
+version = "1.5.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio", marker = "python_full_version >= '3.12'" },
@@ -370,9 +370,9 @@ dependencies = [
     { name = "tzdata", marker = "python_full_version >= '3.12'" },
     { name = "uvicorn", version = "0.35.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c2/a7/d0e8905cc1a268192e1e6c8679b7779040f3b255e1b4093b00473881b987/altk_evolve-1.5.1.tar.gz", hash = "sha256:0d18f508aa90c38c0325f591e37642e62f37db87b987fa1229678e113bd95e26", size = 451004, upload-time = "2026-10-05T16:52:35.094Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0a/e4/1bb32ab84cc8943650552b2c8b835baee3f6f986458ed7a49721d37ce218/altk_evolve-1.5.2.tar.gz", hash = "sha256:ef0df65c8b0431dfb1138679a156942a8507e37d10910af06ce6fb947373b317", size = 451017, upload-time = "2026-10-06T12:37:31.881Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/de/4e/a103de9f51fcae8d3a9d7444d2e816f783c5f89faffb12e393e98f2f32d1/altk_evolve-1.5.1-py3-none-any.whl", hash = "sha256:d5398e1485ac6c12181afbcec7f7ea769830c0a1774cf762786b117e3d73f196", size = 488567, upload-time = "2026-10-05T16:52:33.605Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/68/05a5293e7f09c9c2884f516ab7532a9373ca341b5868d8ef4094a6a95d21/altk_evolve-1.5.2-py3-none-any.whl", hash = "sha256:eab8501dda06b857f044ac23670c98aaa11450934f2e80d4187ff2f667173b2c", size = 488715, upload-time = "2026-10-06T12:37:30.3Z" },
 ]
 
 [package.optional-dependencies]
@@ -1662,7 +1662,7 @@ requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.12.1,<0.13" },
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "aiosmtpd" },
-    { name = "altk-evolve", extras = ["pii-regex"], marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = ">=1.5.1,<2" },
+    { name = "altk-evolve", extras = ["pii-regex"], marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = ">=1.5.2,<2" },
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "boto3", specifier = ">=1.34.0" },
@@ -1741,7 +1741,7 @@ dev = [
     { name = "termcolor" },
 ]
 evolve-image = [
-    { name = "altk-evolve", extras = ["pii-semantic"], marker = "python_full_version >= '3.12'", specifier = ">=1.5.1,<2" },
+    { name = "altk-evolve", extras = ["pii-semantic"], marker = "python_full_version >= '3.12'", specifier = ">=1.5.2,<2" },
     { name = "en-core-web-trf", marker = "python_full_version >= '3.12'", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl" },
     { name = "readi-privacy", marker = "python_full_version >= '3.12'", specifier = "==0.1.7" },
 ]

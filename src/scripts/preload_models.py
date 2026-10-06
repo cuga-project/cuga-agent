@@ -12,11 +12,6 @@ import sys
 from pathlib import Path
 
 
-EVOLVE_SENTENCE_TRANSFORMER_MODELS = (
-    ("sentence-transformers/all-MiniLM-L6-v2", "1110a243fdf4706b3f48f1d95db1a4f5529b4d41", False),
-)
-
-
 def strict_preload_enabled() -> bool:
     """Return whether a missing model should fail the preload process."""
     return os.environ.get("MODEL_PRELOAD_STRICT", "0") == "1"
@@ -79,8 +74,6 @@ def preload_fastembed() -> None:
 
 
 def preload_docling() -> None:
-    from pathlib import Path
-
     print("→ Preloading docling models...")
     from docling.models.utils.hf_model_download import download_hf_model
     from docling.utils.model_downloader import download_models
@@ -121,18 +114,26 @@ def preload_fastembed_tokenizer() -> None:
 
 def preload_evolve() -> None:
     """Cache Evolve's default embedding model and configured alternatives."""
+    from altk_evolve.config.guidelines import guidelines_settings
     from altk_evolve.config.milvus import milvus_other_settings
     from altk_evolve.config.postgres import postgres_db_settings
     from sentence_transformers import SentenceTransformer
 
     models = {
-        "sentence-transformers/all-MiniLM-L6-v2",
-        milvus_other_settings.embedding_model,
-        postgres_db_settings.embedding_model,
+        (milvus_other_settings.embedding_model, False),
+        (postgres_db_settings.embedding_model, False),
+        (
+            guidelines_settings.consistency_embedding_model_small or milvus_other_settings.embedding_model,
+            guidelines_settings.consistency_embedding_trust_remote_code,
+        ),
+        (
+            guidelines_settings.consistency_embedding_model_large or milvus_other_settings.embedding_model,
+            guidelines_settings.consistency_embedding_trust_remote_code,
+        ),
     }
-    for model_name in sorted(models):
+    for model_name, trust_remote_code in sorted(models):
         print(f"→ Preloading Evolve embedding model {model_name}...")
-        model = SentenceTransformer(model_name, device="cpu")
+        model = SentenceTransformer(model_name, device="cpu", trust_remote_code=trust_remote_code)
         model.encode(["airgap warmup"])
 
 
@@ -162,33 +163,6 @@ def preload_tiktoken() -> None:
         tiktoken.get_encoding(name).encode("airgap warmup")
 
 
-def preload_evolve_sentence_transformers() -> None:
-    """Cache the default consistency model; optional sbert_large is not bundled."""
-    print("→ Preloading Evolve sentence-transformer models...")
-    try:
-        from sentence_transformers import SentenceTransformer
-
-        cache_dir = os.environ.get("SENTENCE_TRANSFORMERS_HOME")
-        for model_name, revision, trust_remote_code in EVOLVE_SENTENCE_TRANSFORMER_MODELS:
-            print(f"  Downloading {model_name}...")
-            model = SentenceTransformer(
-                model_name,
-                cache_folder=cache_dir,
-                revision=revision,
-                trust_remote_code=trust_remote_code,
-            )
-            model.encode(["warmup"])
-            if cache_dir:
-                # Runtime requests the default revision. Alias it to the exact
-                # snapshot baked above so offline lookup never needs a Hub HEAD.
-                reference = Path(cache_dir) / ("models--" + model_name.replace("/", "--")) / "refs" / "main"
-                reference.parent.mkdir(parents=True, exist_ok=True)
-                reference.write_text(revision)
-            print(f"  ✓ {model_name}")
-    except Exception as error:
-        handle_preload_error("Evolve sentence-transformer", error)
-
-
 if __name__ == "__main__":
     print("Preloading models for airgapped operation...\n")
     preload_fastembed()
@@ -197,7 +171,5 @@ if __name__ == "__main__":
     preload_evolve()
     preload_readi()
     preload_tiktoken()
-    if os.environ.get("PRELOAD_EVOLVE_MODELS", "0") == "1":
-        preload_evolve_sentence_transformers()
     print("\nDone. Set HF_HUB_OFFLINE=1 at runtime to enforce airgap.")
     sys.exit(0)

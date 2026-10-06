@@ -21,7 +21,7 @@ def test_supported_image_builds_memory_ui_and_bakes_evolve_for_offline_runtime()
     assert "pnpm --filter ./frontend build" in dockerfile
     project = (REPO_ROOT / "pyproject.toml").read_text()
     assert "altk-evolve[pii-regex]" in project
-    assert "altk-evolve[pii-regex]>=1.5.1,<2" in project
+    assert "altk-evolve[pii-regex]>=1.5.2,<2" in project
     assert "github.com/AgentToolkit/altk-evolve/archive/" not in project
     assert "--frozen --no-editable --no-dev" in dockerfile
     assert dockerfile.count("--group evolve-image") == 2
@@ -33,7 +33,6 @@ def test_supported_image_builds_memory_ui_and_bakes_evolve_for_offline_runtime()
     )
     assert "ARG NODE_IMAGE=node:22-bookworm-slim@sha256:" in dockerfile
     assert "ARG UV_IMAGE=ghcr.io/astral-sh/uv:latest@sha256:" in dockerfile
-    assert "PRELOAD_EVOLVE_MODELS=1" in dockerfile
     assert "SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers" in dockerfile
     assert "uv run --no-sync playwright install" in dockerfile
     assert "AS model-cache" in dockerfile
@@ -133,36 +132,35 @@ def test_airgap_preload_covers_cuga_layout_engine_repos() -> None:
 
 
 @pytest.mark.unit
-def test_preload_evolve_sentence_transformers_warms_all_required_models(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from scripts.preload_models import (
-        EVOLVE_SENTENCE_TRANSFORMER_MODELS,
-        preload_evolve_sentence_transformers,
-    )
+@pytest.mark.parametrize("override", [None, "custom-consistency-model"])
+def test_preload_evolve_uses_configured_models_without_extra_defaults(override) -> None:
+    from scripts.preload_models import preload_evolve
 
-    monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(tmp_path))
-    models = [MagicMock() for _ in EVOLVE_SENTENCE_TRANSFORMER_MODELS]
+    sentence_transformer = MagicMock()
+    modules = {
+        "altk_evolve.config.guidelines": SimpleNamespace(
+            guidelines_settings=SimpleNamespace(
+                consistency_embedding_model_small=None,
+                consistency_embedding_model_large=override,
+                consistency_embedding_trust_remote_code=False,
+            )
+        ),
+        "altk_evolve.config.milvus": SimpleNamespace(
+            milvus_other_settings=SimpleNamespace(embedding_model="BAAI/bge-small-en-v1.5")
+        ),
+        "altk_evolve.config.postgres": SimpleNamespace(
+            postgres_db_settings=SimpleNamespace(embedding_model="BAAI/bge-small-en-v1.5")
+        ),
+        "sentence_transformers": SimpleNamespace(SentenceTransformer=sentence_transformer),
+    }
+    with patch.dict(sys.modules, modules):
+        preload_evolve()
 
-    sentence_transformer = MagicMock(side_effect=models)
-    fake_module = SimpleNamespace(SentenceTransformer=sentence_transformer)
-    with patch.dict(sys.modules, {"sentence_transformers": fake_module}):
-        preload_evolve_sentence_transformers()
-
+    expected = ["BAAI/bge-small-en-v1.5"] + ([override] if override else [])
     assert sentence_transformer.call_args_list == [
-        call(
-            model_name,
-            cache_folder=str(tmp_path),
-            revision=revision,
-            trust_remote_code=trust_remote_code,
-        )
-        for model_name, revision, trust_remote_code in EVOLVE_SENTENCE_TRANSFORMER_MODELS
+        call(model, device="cpu", trust_remote_code=False) for model in expected
     ]
-    for model_name, revision, _ in EVOLVE_SENTENCE_TRANSFORMER_MODELS:
-        reference = tmp_path / ("models--" + model_name.replace("/", "--")) / "refs" / "main"
-        assert reference.read_text() == revision
-    for model in models:
-        model.encode.assert_called_once_with(["warmup"])
+    assert sentence_transformer.return_value.encode.call_count == len(expected)
 
 
 @pytest.mark.unit
