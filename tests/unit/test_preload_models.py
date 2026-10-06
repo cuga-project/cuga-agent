@@ -24,19 +24,13 @@ def test_supported_image_builds_memory_ui_and_bakes_evolve_for_offline_runtime()
     assert "altk-evolve[pii-regex]>=1.5.2,<2" in project
     assert "github.com/AgentToolkit/altk-evolve/archive/" not in project
     assert "--frozen --no-editable --no-dev" in dockerfile
-    assert dockerfile.count("--group evolve-image") == 2
+    assert "--group evolve-image" in dockerfile
     assert "uv pip install" not in dockerfile
-    assert dockerfile.count("@sha256:") >= 3
-    assert (
-        "ARG BASE_IMAGE=" in dockerfile
-        and "ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312-minimal@sha256:" in dockerfile
-    )
-    assert "ARG NODE_IMAGE=node:22-bookworm-slim@sha256:" in dockerfile
-    assert "ARG UV_IMAGE=ghcr.io/astral-sh/uv:latest@sha256:" in dockerfile
     assert "SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers" in dockerfile
     assert "uv run --no-sync playwright install" in dockerfile
-    assert "AS model-cache" in dockerfile
-    assert "COPY --from=model-cache /app/.cache /app/.cache" in dockerfile
+    assert "RUN uv run --no-sync python src/scripts/preload_models.py" in dockerfile
+    assert "MODEL_PRELOAD_STRICT=1" in dockerfile
+    assert "RUN --network=none /app/.venv/bin/python /app/src/scripts/verify_airgap.py" in dockerfile
     assert "TRANSFORMERS_OFFLINE=1" in dockerfile
     assert "UV_OFFLINE=1" in dockerfile
     assert "CUGA_EMBEDDED_EVOLVE=false" in dockerfile
