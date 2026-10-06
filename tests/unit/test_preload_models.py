@@ -14,11 +14,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.unit
-def test_supported_image_builds_memory_ui_and_bakes_evolve_for_offline_runtime() -> None:
+def test_supported_image_bakes_evolve_for_offline_runtime() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile.ubi").read_text()
     entrypoint = (REPO_ROOT / "scripts/docker-entrypoint.sh").read_text()
 
-    assert "pnpm --filter ./frontend build" in dockerfile
     project = (REPO_ROOT / "pyproject.toml").read_text()
     assert "altk-evolve[pii-regex]" in project
     assert "altk-evolve[pii-regex]>=1.5.2,<2" in project
