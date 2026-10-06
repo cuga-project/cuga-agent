@@ -29,6 +29,46 @@ from pydantic import BaseModel, Field
 pytestmark = pytest.mark.e2e
 
 
+@pytest.fixture(autouse=True)
+def scripted_approval_model(monkeypatch):
+    """Exercise real approval/resume/execution without live model tool-choice variance."""
+    from langchain_core.language_models import FakeListChatModel
+    from langchain_core.messages import AIMessage
+
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import EXECUTION_OUTPUT_PREFIX
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import AgentGraphAdapter
+    from cuga.backend.llm.models import LLMManager
+    from cuga.config import settings
+
+    class ApprovalModel(FakeListChatModel):
+        def bind_tools(self, *args, **kwargs):
+            return self
+
+        def with_structured_output(self, *args, **kwargs):
+            # The full graph builds browser/planner chains even in Lite mode.
+            return self
+
+    model = ApprovalModel(responses=["unexpected model invocation"])
+    monkeypatch.setattr(LLMManager, "get_model", lambda *args, **kwargs: model)
+    monkeypatch.setattr(settings.evolve, "enabled", False)
+
+    async def invoke_model(self, bound, messages, invoke_config):
+        last = messages[-1]["content"]
+        if last.startswith(EXECUTION_OUTPUT_PREFIX):
+            # Derive the answer from actual tool output, never a canned success.
+            return AIMessage(content=last)
+        return AIMessage(
+            content=(
+                "```python\n"
+                "result = await digital_sales_get_my_accounts_my_accounts_get(limit=10)\n"
+                "print(result)\n"
+                "```"
+            )
+        )
+
+    monkeypatch.setattr(AgentGraphAdapter, "ainvoke_model", invoke_model)
+
+
 def _normalize_final_answer_text(text: str) -> str:
     """Normalize LLM final answers for stable substring assertions."""
     text = unicodedata.normalize("NFKC", text)
@@ -75,6 +115,8 @@ def create_digital_sales_tool_provider() -> ToolProviderInterface:
     class GetAccountsInput(BaseModel):
         limit: int = Field(default=10, description="Number of accounts to return")
 
+    calls = []
+
     async def get_my_accounts(limit: int = 10) -> str:
         """Get my accounts from digital sales.
 
@@ -84,6 +126,7 @@ def create_digital_sales_tool_provider() -> ToolProviderInterface:
         Returns:
             JSON string with account data
         """
+        calls.append(limit)
         return '{"accounts": [{"id": "acc_1", "name": "Acme Corp", "revenue": 1500000}]}'
 
     get_my_accounts_tool = StructuredTool.from_function(
@@ -94,6 +137,9 @@ def create_digital_sales_tool_provider() -> ToolProviderInterface:
     )
 
     class DigitalSalesToolProvider(ToolProviderInterface):
+        def __init__(self):
+            self.executions = calls
+
         async def initialize(self):
             pass
 
@@ -179,6 +225,7 @@ async def test_tool_approval_approve_flow():
         print("\n📋 Step 6: Verifying interrupt")
         print("-" * 80)
         assert state_snapshot.next, "Graph should be interrupted waiting for approval"
+        assert tool_provider.executions == [], "Tools must not execute before approval"
         print("  ✅ Graph interrupted for approval")
 
         # Verify hitl_action is set
@@ -229,6 +276,7 @@ async def test_tool_approval_approve_flow():
         assert "✋" not in final_state.final_answer, (
             "Final answer should not be the approval banner after approval"
         )
+        assert tool_provider.executions == [10], "Approved tool should execute exactly once"
         normalized_answer = _normalize_final_answer_text(final_state.final_answer)
         assert "Acme Corp" in normalized_answer, (
             "Final answer should include tool output after approved execution"
@@ -315,6 +363,7 @@ async def test_tool_approval_deny_flow():
         print("\n📋 Step 6: Verifying interrupt")
         print("-" * 80)
         assert state_snapshot.next, "Graph should be interrupted waiting for approval"
+        assert tool_provider.executions == [], "Tools must not execute before approval"
         print("  ✅ Graph interrupted for approval")
 
         # Verify hitl_action is set
@@ -350,6 +399,7 @@ async def test_tool_approval_deny_flow():
             "cancelled" in final_state.final_answer.lower() or "denied" in final_state.final_answer.lower()
         ), "Final answer should indicate execution was cancelled or denied"
         print(f"  Final answer indicates: {final_state.final_answer[:100]}...")
+        assert tool_provider.executions == [], "Denied tool must not execute"
         print("  ✅ Tool execution cancelled successfully")
 
         print("\n✅ Tool Approval Deny Flow Test PASSED")
@@ -430,6 +480,7 @@ async def test_tool_approval_modification_flow():
         print("\n📋 Step 6: Verifying interrupt and getting original code")
         print("-" * 80)
         assert state_snapshot.next, "Graph should be interrupted waiting for approval"
+        assert tool_provider.executions == [], "Tools must not execute before approval"
         print("  ✅ Graph interrupted for approval")
 
         # Verify hitl_action is set
@@ -521,6 +572,7 @@ async def test_tool_approval_modification_flow():
         # Step 12: Verify execution completed successfully
         print("\n📋 Step 12: Verifying final execution completion")
         print("-" * 80)
+        assert tool_provider.executions == [10], "Only the approved request may execute"
         final_state_2 = AgentState(**final_snapshot_2.values)
         print(
             f"  Final answer length: {len(final_state_2.final_answer) if final_state_2.final_answer else 0} chars"
