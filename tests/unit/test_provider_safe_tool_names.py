@@ -126,7 +126,6 @@ def test_long_name_gets_a_deterministic_64_char_alias():
     name = "app_" + "b" * 61  # 65 characters
     expected = f"{name[:55]}_{hashlib.sha1(name.encode()).hexdigest()[:8]}"
     assert provider_safe_tool_name(name) == expected
-    assert provider_safe_tool_name(name) == expected
     assert len(expected) == 64 and PROVIDER_TOOL_NAME_RE.fullmatch(expected)
 
 

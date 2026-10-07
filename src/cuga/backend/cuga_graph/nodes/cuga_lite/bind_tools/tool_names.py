@@ -1,15 +1,11 @@
 """Provider-safe tool names for native ``bind_tools``.
 
-OpenAI-compatible endpoints (OpenAI, Azure OpenAI, LiteLLM proxies in front of
-them) require every function name to match ``^[A-Za-z0-9_-]{1,64}$`` and reject
-the whole request when one name does not, so a single long registry name
-(``<app>_<tool>``) makes every bound tool unusable.
-
-Such tools are bound under a legal alias that lives only in the request:
-``_safe_bind`` binds :func:`provider_safe_tools`, and the decode boundary
-(``AgentGraphAdapter.normalize_response``) maps every alias in a reply back
-with :func:`resolve_tool_names`, so code, the approval check and the sandbox
-only see real names.
+OpenAI-compatible APIs reject a request when any tool name is outside
+``^[A-Za-z0-9_-]{1,64}$``, so one long registry name (``<app>_<tool>``) makes
+every bound tool unusable. Such tools are bound under an alias that exists only
+in the request: ``_safe_bind`` binds :func:`provider_safe_tools`, and
+``AgentGraphAdapter.normalize_response`` maps aliases in a reply back with
+:func:`resolve_tool_names`, so code, approval checks and the sandbox see real names.
 """
 
 from __future__ import annotations
@@ -40,13 +36,12 @@ _logged_aliases: Set[Tuple[str, str]] = set()
 
 
 def provider_safe_tool_name(name: str) -> str:
-    """Legal names come back unchanged; anything else gets a deterministic legal alias.
+    """Return ``name`` if providers accept it, else a deterministic legal alias.
 
     The alias is the name with illegal characters replaced by ``_``, cut to 55
-    characters, then ``_`` and the first 8 hex digits of the SHA-1 of the
-    *original* name, so ``a.b`` and ``a_b`` stay distinct. Plain truncation is
-    not safe: long names of one family share their prefixes, and a merged name
-    makes the model call the wrong tool without any error.
+    characters, plus ``_`` and 8 hex digits of the SHA-1 of the original name.
+    Truncation alone would merge long names that share a prefix, and the model
+    would call the wrong tool.
     """
     if PROVIDER_TOOL_NAME_RE.fullmatch(name):
         return name
@@ -57,14 +52,10 @@ def provider_safe_tool_name(name: str) -> str:
 
 
 def provider_safe_tools(tools: Sequence[Any]) -> Sequence[Any]:
-    """Return ``tools`` with every illegal tool name replaced by its alias.
+    """Return ``tools`` with illegal names replaced by aliases, or ``tools`` itself if none are.
 
-    Aliased entries are copies (``model_copy``); the shared tool objects are
-    never mutated, so prompts, policies and tracking keep seeing real names.
-    When no name needs an alias, ``tools`` itself is returned.
-
-    Raises ``RuntimeError`` when tools with different names would be bound
-    under the same name: the model would call one believing it is the other.
+    Aliased entries are copies; the shared tool objects are never mutated.
+    Raises ``RuntimeError`` when two tools would be bound under the same name.
     """
     aliases: Dict[int, str] = {}
     for i, tool in enumerate(tools):
@@ -97,14 +88,11 @@ def provider_safe_tools(tools: Sequence[Any]) -> Sequence[Any]:
 
 
 def resolve_tool_names(text: str, tool_names: Collection[str]) -> str:
-    """Replace every alias in ``text`` with the real tool name it stands for.
+    """Replace each alias in ``text`` with the real name in ``tool_names`` it stands for.
 
-    ``text`` is a model reply, code or a single tool name; ``tool_names`` are
-    the real names that can run (the execution context's keys). Anything that
-    is not the alias of one of them, real names included, is left as it is.
-
-    Raises ``RuntimeError`` when an alias is ambiguous: it stands for more than
-    one tool, or for one tool while being the real name of another.
+    ``text`` can be a reply, code or a single tool name; everything else in it,
+    real names included, is left as it is. Raises ``RuntimeError`` when an alias
+    could mean more than one tool.
     """
     if not text or not _ALIAS.search(text):
         return text

@@ -19,8 +19,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools import (
     BindToolsUnsupportedError,
     apply_bind_tools_cap_and_merge,
     bind_tools_max_count_from_settings,
-    provider_safe_tools,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.tool_names import provider_safe_tools
 
 
 def _record_bind_tools_degraded(reason: str) -> None:
@@ -49,11 +49,8 @@ def _safe_bind(model: BaseChatModel, tools: List[StructuredTool]) -> Runnable:
     guard it would be caught by the cap's deliberate ``except RuntimeError:
     raise`` in ``resolve_model_with_bind_tools`` and crash ``call_model``
     instead of degrading to the unbound (code-act) model.
-
-    Names OpenAI-compatible providers reject are bound under an alias
-    (:func:`provider_safe_tools`); the response side maps it back.
     """
-    tools = provider_safe_tools(tools)
+    tools = provider_safe_tools(tools)  # alias names providers reject; normalize_response maps them back
     try:
         return model.bind_tools(tools)
     except NotImplementedError:
