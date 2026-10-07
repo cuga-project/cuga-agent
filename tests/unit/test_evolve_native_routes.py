@@ -530,3 +530,27 @@ def test_bundled_redaction_preserves_email_ownership(boundary, monkeypatch):
         assert boundary.client.patch(path, json={"metadata": {"title": "Other user"}}).status_code == 403
     finally:
         shutdown_hooks()
+
+
+def test_disabled_service_allows_personal_deletion_but_keeps_legal_holds(boundary, monkeypatch):
+    from altk_evolve.schema.core import Entity
+    from cuga.backend.evolve import preferences
+
+    monkeypatch.setattr(preferences, "get_preferences", AsyncMock(return_value={"instance_enabled": False}))
+    for held in (False, True):
+        entity = Entity(
+            type="fact",
+            content="personal",
+            metadata={
+                "user_id": "alice",
+                "owner_id": "alice",
+                "agent_id": "cuga-default",
+                "legal_hold": held,
+            },
+        )
+        boundary.evolve.update_entities("instance-a", [entity], enable_conflict_resolution=False)
+        entity = boundary.evolve.scan_entities("instance-a", filters={"metadata.legal_hold": held})[0]
+        response = boundary.client.delete(f"/api/memory/entities/{entity.id}")
+        assert response.status_code == (400 if held else 200), response.text
+        remaining = boundary.evolve.scan_entities("instance-a", filters={"id": entity.id})
+        assert bool(remaining) is held
