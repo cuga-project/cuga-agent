@@ -15,6 +15,9 @@ class Auth(BaseModel):
     - 'api-key': API key in query parameter
     - 'basic': Basic authentication (Authorization: Basic <base64>)
     - 'query': Custom query parameter authentication
+    - 'oauth2': AppWorld login done by the registry (it fetches the password and logs in)
+    - 'oauth2_agent': AppWorld login done by the agent; the registry only attaches the
+      token from the agent's own /auth/token call and never logs in itself
 
     Examples:
         # Header auth

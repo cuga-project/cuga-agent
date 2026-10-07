@@ -178,8 +178,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
             if tool_code:
                 logger.warning("Empty content with tool_calls detected; recovering tool call as Python code")
                 content = tool_code
+        additional_kwargs = getattr(response, "additional_kwargs", None) or {}
         reasoning = normalize_assistant_text(
-            (getattr(response, "additional_kwargs", None) or {}).get("reasoning_content")
+            additional_kwargs.get("reasoning_content") or additional_kwargs.get("reasoning")
         )
         return content, reasoning
 

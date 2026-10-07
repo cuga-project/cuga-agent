@@ -23,6 +23,7 @@ interface FollowupActionProps {
     max_length?: number;
     min_length?: number;
     color?: string;
+    additional_data?: { tool?: any };
   };
   callback: (response: any) => void;
 }
@@ -95,6 +96,8 @@ export const FollowupAction = ({ followupAction, callback }: FollowupActionProps
       response_type: type,
       timestamp: new Date().toISOString(),
       response_time_ms: Date.now() - startTime,
+      // Echo the action's identity (e.g. ACP permission pending_id) so stale approvals are rejected.
+      additional_data: followupAction.additional_data,
       client_info: {
         user_agent: navigator.userAgent,
         language: navigator.language,

@@ -168,6 +168,7 @@ validators = [
     Validator("features.chat", default=True),
     Validator("playwright_args", default=[]),
     Validator("server_ports.registry_host", default=None),
+    Validator("server_ports.apis_host", default=None),
     Validator("server_ports.demo_server_startup_max_retries", default=360),
     Validator("storage.mode", default="local"),
     Validator("storage.local_db_path", default=""),

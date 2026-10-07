@@ -65,6 +65,8 @@ def create_cuga_supervisor_graph(
     prompt: Optional[str] = None,
     callbacks: Optional[List[BaseCallbackHandler]] = None,
     plan_approval: bool = False,
+    pending_acp_registry: Any = None,
+    interactive: bool = True,
     supervisor_id: Optional[str] = None,
 ) -> StateGraph:
     """
@@ -92,6 +94,8 @@ def create_cuga_supervisor_graph(
         static_prompt=prompt,
         plan_approval=plan_approval,
         supervisor_id=supervisor_id,
+        pending_acp_registry=pending_acp_registry,
+        interactive=interactive,
     )
     prepare_node = sup_adapter.build_prepare_node()
     execute_node = sup_adapter.build_execute_node()

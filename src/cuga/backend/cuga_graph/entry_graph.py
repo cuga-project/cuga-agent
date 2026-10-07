@@ -56,6 +56,7 @@ class CugaEntryGraph:
         supervisor_agents: Optional[dict] = None,
         supervisor_enabled: Optional[bool] = None,
         supervisor_plan_approval: bool = False,
+        supervisor_interactive: bool = True,
         supervisor_id: Optional[str] = None,
     ):
         self.final_answer_agent = FinalAnswerNode(FinalAnswerAgent.create())
@@ -90,6 +91,8 @@ class CugaEntryGraph:
         self.supervisor_enabled: Optional[bool] = supervisor_enabled
         self.supervisor_plan_approval = supervisor_plan_approval
         self.supervisor_id = supervisor_id
+        self.supervisor_interactive = supervisor_interactive
+        self._pending_acp_registry = None
         self.graph = None
 
     def _supervisor_is_enabled(self) -> bool:
@@ -233,12 +236,19 @@ class CugaEntryGraph:
                     llm_manager, model_config
                 )
             supervisor_model = llm_manager.get_model(model_config.copy())
+            from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+                PendingACPDelegationRegistry,
+            )
+
+            self._pending_acp_registry = PendingACPDelegationRegistry()
             supervisor_subgraph = create_cuga_supervisor_graph(
                 supervisor_model=supervisor_model,
                 agents=agents,
                 special_instructions=supervisor_special_instructions,
                 plan_approval=self.supervisor_plan_approval,
                 supervisor_id=self.supervisor_id,
+                pending_acp_registry=self._pending_acp_registry,
+                interactive=self.supervisor_interactive,
             )
             compiled_supervisor_subgraph = supervisor_subgraph.compile()
             graph.add_node("CugaSupervisorSubgraph", compiled_supervisor_subgraph)
@@ -299,6 +309,10 @@ class CugaEntryGraph:
             }
 
         return agents, supervisor_special_instructions
+
+    async def aclose(self) -> None:
+        if self._pending_acp_registry is not None:
+            await self._pending_acp_registry.aclose()
 
     def add_edges(self, graph):
         graph.add_edge(START, self.chat.chat_agent.name)

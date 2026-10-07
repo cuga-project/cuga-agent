@@ -48,6 +48,8 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
         base_callbacks: Optional[List[Any]] = None,
         static_prompt: Optional[str] = None,
         plan_approval: bool = False,
+        pending_acp_registry: Any = None,
+        interactive: bool = True,
         supervisor_id: Optional[str] = None,
     ) -> None:
         self._agents = agents
@@ -60,6 +62,8 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
         from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import agent_map_memory_scopes
 
         self._agent_memory_scopes: Dict[str, str] = agent_map_memory_scopes(agents)
+        self._pending_acp_registry = pending_acp_registry
+        self._interactive = interactive
         self._agent_tools_context: Dict[str, Any] = {}
 
     def get_messages(self, state: Any) -> List[BaseMessage]:
