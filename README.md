@@ -149,12 +149,14 @@ Experience CUGA's hybrid capabilities by combining API calls with web interactio
 ```bash
 git clone -b feat/cross-platform-setup-cli https://github.com/cuga-project/cuga-agent.git
 cd cuga-agent
-bash scripts/setup.sh
+source scripts/setup.sh
 ```
 
-The setup script auto-detects your OS and chip (macOS Intel/Apple Silicon M1–M5+, Linux, Windows via Git Bash), installs any missing dependencies (git, Python 3.10–3.12, uv), creates and activates a virtual environment, runs `uv sync`, and smoke-tests the result with `cuga --help`.
+The setup script auto-detects your OS and chip (macOS Intel/Apple Silicon M1–M5+, Linux, Windows via Git Bash), installs any missing dependencies (git, Python 3.10–3.12, uv), creates a virtual environment, runs `uv sync`, smoke-tests `cuga --help`, and — because it is **sourced** — activates the environment directly in your shell.
 
 ### 2. Activate the environment
+
+The environment is activated automatically when you use `source scripts/setup.sh`. If you ever open a new terminal, re-activate with:
 
 ```bash
 source .venv/bin/activate    # macOS / Linux

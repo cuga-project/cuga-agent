@@ -6,14 +6,22 @@
 # Python virtual environment, and installs all project dependencies via uv.
 #
 # Usage:
-#   bash scripts/setup.sh          # interactive
+#   source scripts/setup.sh        # setup + activate in one step (recommended)
+#   bash scripts/setup.sh          # setup only; activate separately afterwards
 #   CI=1 bash scripts/setup.sh     # non-interactive (CI mode)
 #
 # Supports: macOS (Intel/ARM), Linux (x86_64/aarch64), Windows (Git Bash/WSL)
 # Requires: bash 4+, internet access
 # =============================================================================
 
-set -euo pipefail
+# Detect whether we are being sourced (activation will persist to caller's
+# shell) or executed as a subprocess (activation won't persist).
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+  _SOURCED=true
+else
+  _SOURCED=false
+  set -euo pipefail   # safe to use strict mode only when not sourced
+fi
 
 # ---------------------------------------------------------------------------
 # Colour helpers
@@ -338,28 +346,50 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Done — print next steps
+# Activate in the caller's shell (only works when sourced)
 # ---------------------------------------------------------------------------
 echo ""
 echo -e "${GREEN}${BOLD}══════════════════════════════════════════${RESET}"
 echo -e "${GREEN}${BOLD}✅  Setup complete!${RESET}"
 echo -e "${GREEN}${BOLD}══════════════════════════════════════════${RESET}"
 echo ""
-echo -e "${BOLD}Next steps:${RESET}"
-echo ""
-echo -e "  1. Activate the environment:"
-echo -e "     ${YELLOW}${BOLD}$ACTIVATE_CMD${RESET}"
-echo ""
-echo -e "  2. Verify CUGA:"
-echo -e "     ${YELLOW}${BOLD}cuga --version${RESET}"
-echo ""
-echo -e "  3. Start CUGA:"
-echo -e "     ${YELLOW}${BOLD}cuga start demo_crm --read-only${RESET}"
-echo ""
-echo -e "  4. Open in browser:"
-echo -e "     ${YELLOW}${BOLD}https://localhost:7860${RESET}"
+
+if $_SOURCED; then
+  # shellcheck source=/dev/null
+  source "$ACTIVATE_SCRIPT"
+  success "Environment activated in your current shell ($VIRTUAL_ENV)"
+  echo ""
+  echo -e "${BOLD}Next steps:${RESET}"
+  echo ""
+  echo -e "  1. Verify CUGA:"
+  echo -e "     ${YELLOW}${BOLD}cuga --version${RESET}"
+  echo ""
+  echo -e "  2. Start CUGA:"
+  echo -e "     ${YELLOW}${BOLD}cuga start demo_crm --read-only${RESET}"
+  echo ""
+  echo -e "  3. Open in browser:"
+  echo -e "     ${YELLOW}${BOLD}https://localhost:7860${RESET}"
+else
+  echo -e "${BOLD}Next steps:${RESET}"
+  echo ""
+  echo -e "  1. Activate the environment:"
+  echo -e "     ${YELLOW}${BOLD}$ACTIVATE_CMD${RESET}"
+  echo ""
+  echo -e "     ${BLUE}Tip: run  source scripts/setup.sh  next time to activate automatically${RESET}"
+  echo ""
+  echo -e "  2. Verify CUGA:"
+  echo -e "     ${YELLOW}${BOLD}cuga --version${RESET}"
+  echo ""
+  echo -e "  3. Start CUGA:"
+  echo -e "     ${YELLOW}${BOLD}cuga start demo_crm --read-only${RESET}"
+  echo ""
+  echo -e "  4. Open in browser:"
+  echo -e "     ${YELLOW}${BOLD}https://localhost:7860${RESET}"
+fi
+
 echo ""
 echo -e "${BOLD}Documentation:${RESET}"
 echo -e "  • ${BLUE}https://cuga.dev${RESET}"
 echo -e "  • ${BLUE}README.md${RESET} in project root"
 echo ""
+unset _SOURCED
