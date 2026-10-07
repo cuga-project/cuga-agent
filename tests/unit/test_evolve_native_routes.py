@@ -532,7 +532,39 @@ def test_bundled_redaction_preserves_email_ownership(boundary, monkeypatch):
         shutdown_hooks()
 
 
-def test_disabled_service_allows_personal_deletion_but_keeps_legal_holds(boundary, monkeypatch):
+@pytest.fixture
+def legal_hold_plugin(tmp_path):
+    from altk_evolve.config.hooks import HooksConfig
+    from altk_evolve.hooks.manager import initialize_hooks, shutdown_hooks
+
+    # Plain CI does not load the container's hook configuration. Install the
+    # protection this test exercises explicitly, without loading READI models.
+    hooks = tmp_path / "hooks.json"
+    hooks.write_text(
+        json.dumps(
+            {
+                "plugins": [
+                    {
+                        "name": "legal_hold",
+                        "kind": "altk_evolve.hooks.plugins.legal_hold.LegalHoldMemoryPlugin",
+                        "hooks": ["memory_pre_delete"],
+                        "mode": "sequential",
+                        "on_error": "fail",
+                    }
+                ]
+            }
+        )
+    )
+    initialize_hooks(HooksConfig(plugins_yaml=str(hooks)))
+    try:
+        yield
+    finally:
+        shutdown_hooks()
+
+
+def test_disabled_service_allows_personal_deletion_but_keeps_legal_holds(
+    boundary, monkeypatch, legal_hold_plugin
+):
     from altk_evolve.schema.core import Entity
     from cuga.backend.evolve import preferences
 
