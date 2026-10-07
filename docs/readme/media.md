@@ -1,6 +1,6 @@
 # README media
 
-The README uses freshly captured product screens and a short visual tour to show how CUGA is configured. All media is stored in the repository so readers do not depend on the older Hugging Face demo.
+The README uses freshly captured product screens and a short visual tour to show how CUGA is configured. The tour plays inline through a GitHub video attachment. Source media is also stored in the repository so readers do not depend on the older Hugging Face demo.
 
 | Asset | Content |
 | --- | --- |
@@ -13,8 +13,9 @@ The README uses freshly captured product screens and a short visual tour to show
 | `../images/readme/events.jpg` | Events Studio dashboard with sample CRON and document-triggered workflows and illustrative run history. |
 | `../images/readme/memory.jpg` | Memory workspace with sample guidance, preferences, source conversations, and usage. |
 | `../images/readme/memory-retention.jpg` | Administrator memory lifecycle settings with sample retention rules. |
-| `../images/readme/product-tour.gif` | Looping, captioned tour for Markdown renderers. |
-| `../images/readme/product-tour.mp4` | Silent H.264 video of the same six screens with chapter captions and transitions. |
+| [Embedded product tour](https://github.com/user-attachments/assets/cb21fd61-b04b-4188-8f3e-e33197df1b9e) | GitHub attachment of `product-tour.mp4`, used for the README's inline player. |
+| `../images/readme/product-tour.gif` | Looping, captioned copy for Markdown renderers without video playback. |
+| `../images/readme/product-tour.mp4` | Source copy of the silent H.264 video, with six screens, chapter captions, and transitions. |
 | [media-fixture.json](media-fixture.json) | Illustrative agent configuration, tools, dashboard entries, event flows, run statuses, and memory records used for the captures. |
 
 Both header graphics retain the original [CUGA owl logo](../../src/frontend_workspaces/extension/src/assets/cuga-logo.png), embedded without changing its artwork.
@@ -38,6 +39,7 @@ This capture shows a configured memory lifecycle policy, with sample rules to fl
 3. Capture `/manage`, `/manage/revenue-ops`, the Tool Approval configuration dialog, `/studio`, and `/chat/revenue-ops` at the desktop breakpoint. Open **Memory** from chat, then **Administration → Memory lifecycle** for retention controls. These captures used a 1440 × 960 browser viewport.
 4. Confirm that loading indicators have cleared and the intended controls are visible. Preserve the product UI and label any sample data.
 5. Rebuild the captioned GIF and video from the updated screens. Keep the disclosure on every frame and replace both formats together. Show agent management, tools and policies, approvals, events, memory, and chat in that order.
+6. Upload the MP4 through a GitHub Markdown editor's attachment control. Put the returned `https://github.com/user-attachments/assets/...` URL on its own line in the README and update the attachment link above. Check that the inline player loads and plays before publishing.
 
 ## A future live workflow demo
 
@@ -51,4 +53,4 @@ For a recording of actual automation, use an isolated CRM demo with a working mo
 | Review | A real approval request, the proposed action, and the user's decision. |
 | Verify | The resulting report, tool execution trace, and actual run receipt. |
 
-Publish a live recording only after verifying the run, removing credentials, and labeling the model and environment used. For GitHub inline video playback, upload the verified video as a repository attachment and use its returned URL in the README. The checked-in MP4 remains a portable download; the GIF is the embedded preview.
+Publish a live recording only after verifying the run, removing credentials, and labeling the model and environment used. For GitHub inline video playback, upload the verified video as an attachment and put its returned URL on its own line in the README, as the product tour does now. Keep the checked-in MP4 as a portable copy.
