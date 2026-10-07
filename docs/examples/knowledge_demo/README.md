@@ -63,7 +63,7 @@ docs/examples/knowledge_demo/
 
 - Python 3.12 (see `.python-version`)
 - A working LLM provider key — follow the
-  [main README LLM configuration section](../../../README.md#llm-configuration---advanced-options)
+  [LLM configuration section](../../guides/configuration.md#llm-configuration---advanced-options)
 - Repository installed once from the repo root:
 
   ```bash
@@ -259,6 +259,6 @@ For the full architecture — startup flow, backends, security model — see
 
 ## Further reading
 
-- Main README — [Knowledge Base section](../../../README.md#knowledge-base)
+- [Knowledge base](../../guides/configuration.md#knowledge-base)
 - [Knowledge pipeline reference](../../../src/cuga/backend/knowledge/KNOWLEDGE_PIPELINE.md)
 - [Reference knowledge settings](../../../src/cuga/configurations/knowledge/knowledge_settings.toml)
