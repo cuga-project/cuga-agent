@@ -145,7 +145,7 @@ Experience CUGA's hybrid capabilities by combining API calls with web interactio
 ## Quick Start
 
 ```bash
-git clone https://github.com/cuga-project/cuga-agent.git
+git clone -b feat/cross-platform-setup-cli https://github.com/cuga-project/cuga-agent.git
 cd cuga-agent
 bash scripts/setup.sh
 ```
