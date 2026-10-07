@@ -23,6 +23,16 @@ test("conversation history keeps used and saved memory disclosures distinct", as
   await expect(page.getByRole("button", { name: "2 memories used", exact: true })).toBeVisible();
   const saved = page.getByRole("button", { name: "1 memory saved", exact: true });
   await expect(saved).toBeVisible();
+  const chat = page.locator(".carbon-chat-contained");
+  await expect(chat).toBeVisible();
+  await chat.evaluate((element) => { (window as any).__originalChat = element; });
   await saved.click();
   await expect(page.getByText("Showing 1 saved in the response. Show all")).toBeVisible();
+  await expect(chat).toBeAttached();
+  await expect(chat).toBeHidden();
+  expect(await chat.evaluate((element) => element === (window as any).__originalChat)).toBe(true);
+  await page.getByRole("button", { name: /Back to chat/i }).click();
+  await expect(chat).toBeVisible();
+  expect(await chat.evaluate((element) => element === (window as any).__originalChat)).toBe(true);
+  await expect(saved).toBeVisible();
 });
