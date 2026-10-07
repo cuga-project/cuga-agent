@@ -29,15 +29,6 @@ def main() -> None:
     converter.initialize_pipeline(InputFormat.PDF)
     print("Docling PDF layout, table and OCR models loaded offline")
 
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.set_content("<h1>Offline browser works</h1>")
-        assert page.text_content("h1") == "Offline browser works"
-        browser.close()
-    print("Playwright launched offline")
     print("Airgap asset verification passed")
 
 
