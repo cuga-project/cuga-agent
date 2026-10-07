@@ -51,6 +51,33 @@ class EvolveIntegration:
         return bool(settings.evolve.enabled)
 
     @classmethod
+    async def is_configured(cls) -> bool:
+        """Detect a provisioned integration independently of memory preferences.
+
+        Remote Evolve deployments do not require the local server package. The
+        default auto/local endpoint is only advertised when that package exists.
+        This is configuration detection, not a service health check.
+        """
+        from importlib.util import find_spec
+
+        mode = cls._get_mode()
+        if mode in {"auto", "registry"} and bool(getattr(settings.advanced_features, "registry", False)):
+            try:
+                if await cls._registry_has_app(cls._get_app_name()):
+                    return True
+            except Exception:
+                # Registry discovery must not break UI configuration or startup.
+                pass
+        if mode == "registry":
+            return False
+        url = str(getattr(settings.evolve, "url", "") or "").strip().rstrip("/")
+        if not url:
+            return False
+        if mode == "direct" or url != "http://127.0.0.1:8201/sse":
+            return True
+        return find_spec("altk_evolve") is not None
+
+    @classmethod
     async def get_guidelines(
         cls,
         task: str,
@@ -510,7 +537,10 @@ class EvolveIntegration:
             if tool_name == "save_trajectory":
                 profile = await cls._episodic_profile()
                 args = {**args, "processing_profile": profile["id"], "profile_revision": profile["revision"]}
-        elif not preference["instance_enabled"] and tool_name not in read_tools:
+        elif not preference["instance_enabled"] and tool_name not in read_tools | {
+            "delete_entity",
+            "record_source_deletion",
+        }:
             raise RuntimeError("Memory is read-only while disabled for this service")
         mode = cls._get_mode()
         registry_enabled = bool(getattr(settings.advanced_features, "registry", False))
