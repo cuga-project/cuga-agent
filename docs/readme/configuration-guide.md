@@ -32,7 +32,7 @@ Current presets are in [`src/cuga/configurations/models/`](../../src/cuga/config
 2. **TOML Configuration** (medium priority)
 3. **Default Values** (lowest priority)
 
-### Option 1: OpenAI 
+### Option 1: OpenAI
 
 **Setup Instructions:**
 
@@ -56,7 +56,7 @@ Current presets are in [`src/cuga/configurations/models/`](../../src/cuga/config
 - API Version: OpenAI's default API Version
 - Base URL: OpenAI's default endpoint
 
-### Option 2: IBM WatsonX 
+### Option 2: IBM WatsonX
 
 **Setup Instructions:**
 
@@ -111,7 +111,7 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
    OPENAI_BASE_URL=https://your-litellm-endpoint.com  # Override base URL
    OPENAI_API_VERSION=2024-08-06        # Override API version
    ```
-### Option 5: Groq Support 
+### Option 5: Groq Support
 
 **Setup Instructions:**
 
@@ -122,7 +122,7 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
    # Groq Configuration
    GROQ_API_KEY=your-groq-api-key-here
    AGENT_SETTING_CONFIG="settings.groq.toml"
-   
+
    # Optional override
    MODEL_NAME=llama-3.1-70b-versatile  # Override model name
    ```
