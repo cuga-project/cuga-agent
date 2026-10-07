@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import json
 from typing import Any, Literal, Optional
 
@@ -21,7 +23,9 @@ from cuga.backend.server.evolve_native_routes import MemoryServiceRoute, router 
 
 
 async def require_service_memory(request: Request) -> None:
-    # Settings must remain reachable so administrators can re-enable the service.
+    # Reading, personal deletion and settings remain available while memory is off.
+    if request.method == "DELETE" and re.fullmatch(r"/api/memory/entities/[^/]+/?", request.url.path):
+        return
     if request.method in {"GET", "HEAD"}:
         return
     if request.url.path.rstrip("/") in {"/api/memory/settings", "/api/manage/memory/settings"}:
