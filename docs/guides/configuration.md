@@ -137,10 +137,10 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
    ```env
    # OpenAI Configuration
    OPENAI_API_KEY=sk-...your-key-here...
-   AGENT_SETTING_CONFIG="settings.openai.toml"  # pragma: allowlist secret
+   AGENT_SETTING_CONFIG="settings.openai.toml"
 
    # Optional overrides
-   MODEL_NAME=gpt-4o                    # Override model name  # pragma: allowlist secret
+   MODEL_NAME=gpt-4o                    # Override model name
    OPENAI_BASE_URL=https://api.openai.com/v1  # Override base URL
    OPENAI_API_VERSION=2024-08-06        # Override API version
    ```
@@ -164,14 +164,14 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
 
    ```env
    # WatsonX Configuration
-   WATSONX_API_KEY=your-watsonx-api-key  # pragma: allowlist secret
+   WATSONX_API_KEY=your-watsonx-api-key
    WATSONX_PROJECT_ID=your-project-id
    # WATSONX_SPACE_ID=your-space-id  # Alternative to WATSONX_PROJECT_ID
-   WATSONX_URL=https://your-region.ml.cloud.ibm.com  # or your region  # pragma: allowlist secret
+   WATSONX_URL=https://your-region.ml.cloud.ibm.com  # or your region
    # Set AGENT_SETTING_CONFIG to the WatsonX TOML in src/cuga/configurations/models/
 
    # Optional override
-   MODEL_NAME=meta-llama/llama-4-maverick-17b-128e-instruct-fp8  # Override model for all agents  # pragma: allowlist secret
+   MODEL_NAME=meta-llama/llama-4-maverick-17b-128e-instruct-fp8  # Override model for all agents
    ```
 
 **Default Values:**
@@ -184,7 +184,7 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
 
 1. Add to your `.env` file:
    ```env
-    AGENT_SETTING_CONFIG="settings.azure.toml"  # Default config uses ETE  # pragma: allowlist secret
+    AGENT_SETTING_CONFIG="settings.azure.toml"  # Default config uses ETE
     AZURE_OPENAI_API_KEY="<your azure apikey>"
     AZURE_OPENAI_ENDPOINT="<your azure endpoint>"
     OPENAI_API_VERSION="2024-08-01-preview"
@@ -199,10 +199,10 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
    ```env
    # LiteLLM Configuration (using OpenAI settings)
    OPENAI_API_KEY=your-api-key
-   AGENT_SETTING_CONFIG="settings.openai.toml"  # pragma: allowlist secret
+   AGENT_SETTING_CONFIG="settings.openai.toml"
 
    # Override for LiteLLM
-   MODEL_NAME=Azure/gpt-4o              # Override model name  # pragma: allowlist secret
+   MODEL_NAME=Azure/gpt-4o              # Override model name
    OPENAI_BASE_URL=https://your-litellm-endpoint.com  # Override base URL
    OPENAI_API_VERSION=2024-08-06        # Override API version
    ```
@@ -216,10 +216,10 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
    ```env
    # Groq Configuration
    GROQ_API_KEY=your-groq-api-key-here
-   AGENT_SETTING_CONFIG="settings.groq.toml"  # pragma: allowlist secret
+   AGENT_SETTING_CONFIG="settings.groq.toml"
    
    # Optional override
-   MODEL_NAME=llama-3.1-70b-versatile  # Override model name  # pragma: allowlist secret
+   MODEL_NAME=llama-3.1-70b-versatile  # Override model name
    ```
 
 **Default Values:**
@@ -235,10 +235,10 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
    ```env
    # OpenRouter Configuration
    OPENROUTER_API_KEY=your-openrouter-api-key
-   AGENT_SETTING_CONFIG="settings.openrouter.toml"  # pragma: allowlist secret
+   AGENT_SETTING_CONFIG="settings.openrouter.toml"
    OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
     # Optional override
-   MODEL_NAME=openai/gpt-4o                    # Override model name  # pragma: allowlist secret
+   MODEL_NAME=openai/gpt-4o                    # Override model name
     ```
 
 ### Option 7: RITS Support
@@ -247,13 +247,13 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
 2. Add to your `.env` file:
    ```env
    # RITS Configuration — direct RITS endpoint (default preset)
-   RITS_API_KEY=your-rits-api-key  # pragma: allowlist secret
-   AGENT_SETTING_CONFIG="settings.rits.toml"  # pragma: allowlist secret
+   RITS_API_KEY=your-rits-api-key
+   AGENT_SETTING_CONFIG="settings.rits.toml"
 
    # Optional overrides — update MODEL_NAME and RITS_BASE_URL together for
    # direct RITS setups, since each model has a model-specific URL path.
    # Setting MODEL_NAME alone will leave you pointed at the previous model's URL.
-   MODEL_NAME=google/gemma-4-31B-it  # pragma: allowlist secret
+   MODEL_NAME=google/gemma-4-31B-it
    RITS_BASE_URL="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
    ```
 
@@ -278,12 +278,12 @@ guardrails, and are billed against its entitlement.
 3. Add to your `.env` file:
    ```env
    # watsonx Orchestrate Configuration
-   WXO_API_KEY=your-wxo-api-key  # pragma: allowlist secret
+   WXO_API_KEY=your-wxo-api-key
    WXO_INSTANCE_URL=https://api.dl.watson-orchestrate.ibm.com/instances/your-instance-id
-   AGENT_SETTING_CONFIG="settings.wxo.toml"  # pragma: allowlist secret
+   AGENT_SETTING_CONFIG="settings.wxo.toml"
 
    # Optional override — model ids are provider-prefixed per your tenant's Settings -> Models list
-   MODEL_NAME=your-provider/your-model-id  # prefixed id from Settings -> Models  # pragma: allowlist secret
+   MODEL_NAME=your-provider/your-model-id  # prefixed id from Settings -> Models
    ```
 
 To target a local ADK dev server instead of a hosted tenant, set `WXO_INSTANCE_URL=http://localhost:4321`
@@ -1152,7 +1152,7 @@ EVOLVE_PG_PORT=5432
 EVOLVE_PG_USER=postgres
 EVOLVE_PG_PASSWORD=postgres
 EVOLVE_PG_DBNAME=evolve
-EVOLVE_MODEL_NAME=Azure/gpt-4o  # pragma: allowlist secret
+EVOLVE_MODEL_NAME=Azure/gpt-4o
 OPENAI_API_KEY=env://OPENAI_API_KEY
 OPENAI_BASE_URL=env://OPENAI_BASE_URL
 ```
