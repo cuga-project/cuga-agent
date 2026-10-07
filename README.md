@@ -144,21 +144,47 @@ Experience CUGA's hybrid capabilities by combining API calls with web interactio
 
 ## Quick Start
 
+### 1. Clone and run setup
+
 ```bash
 git clone -b feat/cross-platform-setup-cli https://github.com/cuga-project/cuga-agent.git
 cd cuga-agent
 bash scripts/setup.sh
 ```
 
-The setup script detects your OS and chip (macOS Intel/Apple Silicon M1–M5+, Linux, Windows via Git Bash), installs any missing dependencies (git, Python 3.10–3.12, uv), creates and activates a virtual environment, and runs `uv sync`. It finishes with a smoke test of `cuga --help`.
+The setup script auto-detects your OS and chip (macOS Intel/Apple Silicon M1–M5+, Linux, Windows via Git Bash), installs any missing dependencies (git, Python 3.10–3.12, uv), creates and activates a virtual environment, runs `uv sync`, and smoke-tests the result with `cuga --help`.
 
-Once setup completes:
+### 2. Activate the environment
 
 ```bash
-source .venv/bin/activate          # activate the environment
-echo "OPENAI_API_KEY=sk-..." > .env  # add your API key
-cuga start demo_crm --read-only    # open https://localhost:7860
+source .venv/bin/activate    # macOS / Linux
+# Windows (Git Bash): source .venv/Scripts/activate
 ```
+
+### 3. Add your API key
+
+```bash
+echo "OPENAI_API_KEY=sk-..." > .env
+```
+
+> See [LLM Configuration](#llm-configuration) below for other providers (IBM watsonx, Groq, Ollama, etc.).
+
+### 4. Start CUGA
+
+```bash
+cuga start demo_crm --read-only
+```
+
+Then open **https://localhost:7860** in your browser and try:
+> *"From contacts.txt show me which users belong to the CRM system"*
+
+### 5. View agent trajectories *(optional)*
+
+```bash
+cuga viz
+```
+
+Launches a web dashboard for visualising agent execution, decision-making, and tool usage.
 
 <details>
 <summary><em>Manual setup (without the script)</em></summary>
