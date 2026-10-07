@@ -144,42 +144,35 @@ Experience CUGA's hybrid capabilities by combining API calls with web interactio
 
 ## Quick Start
 
-<details>
-<summary><em style="color: #666;"> Prerequisites (click to expand)</em></summary>
-
-- **Python 3.12+** - [Download here](https://www.python.org/downloads/)
-- **uv package manager** - [Installation guide](https://docs.astral.sh/uv/getting-started/installation/)
-
-</details>
-
 ```bash
-# In terminal, clone the repository and navigate into it
 git clone https://github.com/cuga-project/cuga-agent.git
 cd cuga-agent
-
-# 1. Create and activate virtual environment
-uv venv --python=3.12 && source .venv/bin/activate
-
-# 2. Install dependencies
-uv sync
-
-# 3. Set up environment variables
-# Create .env file with your API keys
-echo "OPENAI_API_KEY=your-openai-api-key-here" > .env
-
-# 4. Start the demo
-cuga start demo_crm --read-only
-
-# Chrome will open automatically at https://localhost:7860
-# then try sending your task to CUGA: 'from contacts.txt show me which users belong to the crm system'
-
-# 5. View agent trajectories (optional)
-cuga viz
-
-# This launches a web-based dashboard for visualizing and analyzing
-# agent execution trajectories, decision-making, and tool usage
-
+bash scripts/setup.sh
 ```
+
+The setup script detects your OS and chip (macOS Intel/Apple Silicon M1–M5+, Linux, Windows via Git Bash), installs any missing dependencies (git, Python 3.10–3.12, uv), creates and activates a virtual environment, and runs `uv sync`. It finishes with a smoke test of `cuga --help`.
+
+Once setup completes:
+
+```bash
+source .venv/bin/activate          # activate the environment
+echo "OPENAI_API_KEY=sk-..." > .env  # add your API key
+cuga start demo_crm --read-only    # open https://localhost:7860
+```
+
+<details>
+<summary><em>Manual setup (without the script)</em></summary>
+
+**Prerequisites:** Python 3.10–3.12 · [uv](https://docs.astral.sh/uv/getting-started/installation/)
+
+```bash
+uv venv --python=3.12 && source .venv/bin/activate
+uv sync
+echo "OPENAI_API_KEY=your-key" > .env
+cuga start demo_crm --read-only
+```
+
+</details>
 
 
 <details>
