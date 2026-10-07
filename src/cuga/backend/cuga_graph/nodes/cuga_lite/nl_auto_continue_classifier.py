@@ -17,7 +17,9 @@ You receive one transcript that concatenates:
 1) Assistant content — user-visible reply (may be empty)
 2) Reasoning — internal chain-of-thought when the platform provides it (may be empty)
 
-Read the full transcript. Do not decide from reasoning alone: if the visible content is already a complete, substantive answer, use auto_continue false even when reasoning mentions extra steps. Do not ignore reasoning when visible content is empty or a vague one-liner.
+You may additionally receive a runtime state summary, which contains recent chat, known variables, and available executable tools. Use the runtime state summary when available. It tells you whether the assistant already has enough information and tools to continue execution.
+
+Read the full transcript and the runtime state summary. Do not decide from reasoning alone: if the visible content is already a complete, substantive answer, use auto_continue false even when reasoning mentions extra steps. Do not ignore reasoning when visible content is empty or a vague one-liner.
 
 Return ONLY JSON, no markdown, no prose: {"auto_continue": true} or {"auto_continue": false}
 
@@ -30,11 +32,20 @@ _REASONING_MAX = 8000
 _COMBINED_MAX = 20000
 
 
-def build_combined_content_and_reasoning(visible: str, reasoning: str) -> str:
+def build_combined_content_and_reasoning(
+        visible: str, 
+        reasoning: str, 
+        state_context: Optional[str] = None,
+) -> str:
     """Single transcript: user-visible content plus internal reasoning (either part may be omitted)."""
+    s = (state_context or "").strip()
     v = (visible or "").strip()[:_VISIBLE_MAX]
     r = (reasoning or "").strip()[:_REASONING_MAX]
     parts: list[str] = []
+    if s:
+        # Keep this bounded independently. The caller should already summarize,
+        # but this prevents accidental prompt explosion.
+        parts.append(f"## Runtime state summary\n{s[:6000]}")
     if v:
         parts.append(f"## Assistant content (user-visible)\n{v}")
     if r:
@@ -98,13 +109,19 @@ async def classify_nl_auto_continue(
     llm: BaseChatModel,
     assistant_visible: Any,
     reasoning_excerpt: Optional[Any],
+    state_context: Optional[Any] = None,
 ) -> bool:
     """Return True if the graph should append a user ``continue`` message and re-invoke the coder model."""
     if not getattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True):
         return False
     visible = normalize_assistant_text(assistant_visible)
     reasoning = normalize_assistant_text(reasoning_excerpt)
-    combined = build_combined_content_and_reasoning(visible, reasoning)
+    state_context_text = normalize_assistant_text(state_context)
+    combined = build_combined_content_and_reasoning(
+        visible,
+        reasoning,
+        state_context=state_context_text,
+    )
     if not combined.strip():
         return False
     user_block = (

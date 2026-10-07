@@ -54,6 +54,7 @@ evaluation/logs
 evaluation/logger
 evaluation_*
 logging_*
+!src/cuga/backend/memory_graph/logging_utils.py
 evaluation/experiments/outputs/*
 .DS_Store
 appworld

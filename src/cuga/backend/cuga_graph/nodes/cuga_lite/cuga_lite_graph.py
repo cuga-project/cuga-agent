@@ -32,6 +32,8 @@ from cuga.backend.llm.utils.helpers import load_one_prompt
 from cuga.config import settings
 from cuga.configurations.instructions_manager import get_all_instructions_formatted
 
+from cuga.backend.cuga_graph.tooling.profile import ToolingProfile
+
 tracker = ActivityTracker()
 llm_manager = LLMManager()
 
@@ -166,6 +168,7 @@ def create_cuga_lite_graph(
     callbacks: Optional[List[BaseCallbackHandler]] = None,
     special_instructions: Optional[str] = None,
     model_settings: Optional[Dict[str, Any]] = None,
+    tooling_profile: Optional[ToolingProfile] = None,
 ) -> StateGraph:
     """
     Create a unified CugaLite subgraph combining CodeAct and CugaAgent functionality.
@@ -199,6 +202,7 @@ def create_cuga_lite_graph(
         tools_context=tools_context,
         static_prompt=prompt,
         thread_id=thread_id,
+        tooling_profile=tooling_profile,
     )
 
     prepare_node = adapter.build_prepare_node(lc_bind_tools_meta)

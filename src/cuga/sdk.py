@@ -123,6 +123,13 @@ from cuga.backend.cuga_graph.policy.models import (
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 
+from cuga.backend.cuga_graph.tooling import (
+    ToolMode,
+    ToolingProfile,
+    build_tooling_profile,
+)
+
+
 llm_manager = LLMManager()
 
 
@@ -1594,6 +1601,8 @@ class CugaAgent:
         self,
         tools: Optional[List[BaseTool]] = None,
         tool_provider: Optional[ToolProviderInterface] = None,
+        tool_mode: ToolMode = "internal",
+        tooling_profile: Optional[ToolingProfile] = None,
         model: Optional[BaseChatModel] = None,
         callbacks: Optional[List[BaseCallbackHandler]] = None,
         policy_system: Optional[PolicyConfigurable] = None,
@@ -1612,6 +1621,8 @@ class CugaAgent:
         Args:
             tools: List of LangChain tools (BaseTool or @tool decorated functions)
             tool_provider: Custom tool provider (overrides tools parameter)
+            tool_mode: Tooling mode. "internal" uses CUGA's default product tool surface. "external" uses only runtime tools supplied to this agent.
+            tooling_profile: Optional pre-resolved tooling profile. Advanced override.
             model: Language model to use (defaults to configured model)
             callbacks: List of callback handlers
             policy_system: Optional PolicyConfigurable instance (auto-created if not provided)
@@ -1656,6 +1667,11 @@ class CugaAgent:
         self._policy_system = policy_system
         self._special_instructions = special_instructions
 
+        # Prompt-verification Playbooks are snapshotted lazily on the first
+        # user invocation, after the initial policy system is ready but before
+        # the incoming user message is processed.
+        self._verification_playbook_session_id: Optional[str] = None
+
         # Use settings defaults if not provided
         self.cuga_folder = cuga_folder if cuga_folder is not None else settings.policy.cuga_folder
         self._auto_load_policies = (
@@ -1675,16 +1691,33 @@ class CugaAgent:
 
         # Setup tool provider. ToolGuard is installed immediately as a transparent
         # provider-level decorator so create-agent-first, add-guard-later flows work.
+        # Resolve the tool surface once at the SDK composition root.
+        # Lower-level nodes should consume the resolved profile/capabilities, not
+        # check tool_mode strings themselves.
+        self.tool_mode = tool_mode
+        self.tooling_profile = tooling_profile or build_tooling_profile(
+            tool_mode=tool_mode,
+            tools=tools,
+            tool_provider=tool_provider,
+        )
+
+        base_provider = self.tooling_profile.base_tool_provider
+
+        if tooling_profile is not None:
+            logger.info("Using provided ToolingProfile")
+        elif tool_provider is not None:
+            logger.info("Using custom tool provider through ToolingProfile")
+        elif tool_mode == "external":
+            logger.info(
+                "Using external tool mode with %d runtime tools",
+                len(tools or []),
+            )
+        elif tool_mode == "internal":
+            logger.info("Using internal tool mode")
+
+        # ToolGuard is installed immediately as a transparent provider-level decorator
+        # so create-agent-first, add-guard-later flows work.
         policy_storage = self._policy_system.storage if self._policy_system is not None else None
-        if tool_provider:
-            base_provider = tool_provider
-            logger.info("Using custom tool provider")
-        elif tools:
-            base_provider = DirectLangChainToolsProvider(tools=tools, app_name="runtime_tools")
-            logger.info(f"Created DirectLangChainToolsProvider with {len(tools)} tools")
-        else:
-            base_provider = DirectLangChainToolsProvider(tools=[], app_name="runtime_tools")
-            logger.warning("No tools provided - agent will have limited capabilities")
 
         self.tool_provider = ensure_toolguard_provider(
             base_provider,
@@ -1740,6 +1773,104 @@ class CugaAgent:
             await self.policies._ensure_policy_system()
             logger.debug("Policy system initialized during agent.initialize()")
 
+    async def _ensure_prompt_verification_playbooks_initialized(
+        self,
+        *,
+        session_id: str,
+    ) -> None:
+        """Snapshot the initially configured Playbooks for prompt verification."""
+
+        if not getattr(
+            settings.advanced_features,
+            "prompt_verification_enabled",
+            False,
+        ):
+            return
+
+        if self._verification_playbook_session_id == session_id:
+            return
+
+        from cuga.backend.cuga_graph.nodes.cuga_agent_core.verification.prompt_verifier import (
+            AuthoritySource,
+            initialize_playbook_graph,
+        )
+        from cuga.backend.cuga_graph.policy.models import Playbook
+
+        playbooks: List[AuthoritySource] = []
+
+        policy_system = self._policy_system
+        storage = (
+            getattr(policy_system, "storage", None)
+            if policy_system is not None
+            else None
+        )
+
+        if storage is not None:
+            policies = await storage.list_policies(
+                enabled_only=True,
+                limit=1000,
+            )
+
+            for policy in policies:
+                if not isinstance(policy, Playbook):
+                    continue
+
+                content = (policy.markdown_content or "").strip()
+                if not content:
+                    continue
+
+                playbooks.append(
+                    AuthoritySource(
+                        source_id=f"playbook:{policy.id}",
+                        content=content,
+                        metadata={
+                            **dict(policy.metadata or {}),
+                            "policy_id": policy.id,
+                            "policy_name": policy.name,
+                        },
+                    )
+                )
+
+        await initialize_playbook_graph(
+            session_id=session_id,
+            playbooks=playbooks,
+        )
+
+        # Set only after successful graph creation.
+        self._verification_playbook_session_id = session_id
+
+        logger.info(
+            "Prompt-verification Playbook graph initialized for "
+            "session {}: playbooks={}",
+            session_id,
+            len(playbooks),
+        )
+
+        def _build_callbacks(self) -> List[BaseCallbackHandler]:
+            """
+            Build callbacks list including TokenUsageTracker for trajectory tracking.
+
+            This ensures that all SDK invocations automatically track prompts and responses
+            for trajectory visualization in tools like cuga-viz.
+
+            Returns:
+                List of callback handlers including TokenUsageTracker and user-provided callbacks
+            """
+            from cuga.backend.activity_tracker.tracker import ActivityTracker
+            from cuga.backend.cuga_graph.utils.agent_loop import TokenUsageTracker
+
+            tracker = ActivityTracker()
+            callbacks: List[BaseCallbackHandler] = [TokenUsageTracker(tracker)]
+
+            # Add user-provided callbacks
+            if self._callbacks:
+                callbacks.extend(self._callbacks)
+                logger.debug(f"Built callbacks: TokenUsageTracker + {len(self._callbacks)} user callback(s)")
+            else:
+                logger.debug("Built callbacks: TokenUsageTracker only")
+
+            return callbacks
+
     def _build_callbacks(self) -> List[BaseCallbackHandler]:
         """
         Build callbacks list including TokenUsageTracker for trajectory tracking.
@@ -1754,12 +1885,17 @@ class CugaAgent:
         from cuga.backend.cuga_graph.utils.agent_loop import TokenUsageTracker
 
         tracker = ActivityTracker()
-        callbacks: List[BaseCallbackHandler] = [TokenUsageTracker(tracker)]
+        callbacks: List[BaseCallbackHandler] = [
+            TokenUsageTracker(tracker)
+        ]
 
         # Add user-provided callbacks
         if self._callbacks:
             callbacks.extend(self._callbacks)
-            logger.debug(f"Built callbacks: TokenUsageTracker + {len(self._callbacks)} user callback(s)")
+            logger.debug(
+                f"Built callbacks: TokenUsageTracker + "
+                f"{len(self._callbacks)} user callback(s)"
+            )
         else:
             logger.debug("Built callbacks: TokenUsageTracker only")
 
@@ -1820,6 +1956,12 @@ class CugaAgent:
         """Ensure tool provider is initialized."""
         if not hasattr(self.tool_provider, 'initialized') or not self.tool_provider.initialized:
             await self.tool_provider.initialize()
+
+        # External/strict profiles may disable CUGA knowledge completely.
+        # In that case, do not auto-inject knowledge tools into the runtime provider.
+        if not self.tooling_profile.capabilities.enable_knowledge:
+            self._knowledge_auto_injected = True
+            return
 
         # Auto-inject knowledge tools (lazy, once, deduplicated)
         if not self._knowledge_auto_injected:
@@ -1896,6 +2038,7 @@ class CugaAgent:
             thread_id=thread_id,
             callbacks=self._build_callbacks(),
             special_instructions=self._special_instructions,
+            tooling_profile=self.tooling_profile,
         )
         # Compile subgraph without checkpointer so it streams internal updates
         compiled_subgraph = cuga_lite_subgraph.compile()
@@ -2219,6 +2362,54 @@ class CugaAgent:
             await self.policies._ensure_policy_system()
             logger.debug("Policy system auto-initialized during first invoke()")
 
+        # --------------------------------------------------------------
+        # Resolve the session/thread before authority initialization.
+        #
+        # Resumes already require an existing thread_id, so only generate
+        # one for a normal new user invocation.
+        # --------------------------------------------------------------
+        is_resume = message is None or action_response is not None
+
+        if not is_resume and not thread_id:
+            thread_id = f"sdk_{uuid.uuid4().hex[:8]}"
+            logger.debug(
+                f"Auto-generated thread_id: {thread_id}"
+            )
+
+        # --------------------------------------------------------------
+        # Authority bootstrap.
+        #
+        # This happens after CUGA initialization / initial playbook loading,
+        # but before CUGA interprets or stores the incoming user message.
+        # --------------------------------------------------------------
+        if not is_resume:
+            assert thread_id is not None
+
+            await self._ensure_prompt_verification_playbooks_initialized(
+                session_id=thread_id,
+            )
+
+        # --------------------------------------------------------------
+        # From this point onward CUGA may process the incoming user message.
+        # --------------------------------------------------------------
+        slash_result = None
+
+        dispatch_slash = getattr(self, "_dispatch_slash", None)
+
+        if isinstance(message, str) and dispatch_slash is not None:
+            try:
+                slash_result = await dispatch_slash(
+                    message,
+                    thread_id,
+                )
+            except Exception as e:
+                return InvokeResult(
+                    answer="",
+                    tool_calls=[],
+                    thread_id=thread_id,
+                    error=f"Slash dispatch failed: {e}",
+                )
+
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
 
@@ -2311,11 +2502,6 @@ class CugaAgent:
             new_messages = [HumanMessage(content=message)]
         else:
             new_messages = message
-
-        # Auto-generate thread_id if not provided (required for checkpointer)
-        if not thread_id:
-            thread_id = f"sdk_{uuid.uuid4().hex[:8]}"
-            logger.debug(f"Auto-generated thread_id: {thread_id}")
 
         # Setup config early to check for existing state
         run_config["configurable"]["thread_id"] = thread_id
@@ -2536,6 +2722,21 @@ class CugaAgent:
             await self.policies._ensure_policy_system()
             logger.debug("Policy system auto-initialized during first stream()")
 
+        is_resume = message is None or action_response is not None
+
+        if not is_resume and not thread_id:
+            thread_id = f"sdk_{uuid.uuid4().hex[:8]}"
+            logger.debug(
+                f"Auto-generated thread_id: {thread_id}"
+            )
+
+        if not is_resume:
+            assert thread_id is not None
+
+            await self._ensure_prompt_verification_playbooks_initialized(
+                session_id=thread_id,
+            )
+
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
 
@@ -2588,11 +2789,6 @@ class CugaAgent:
             messages = [HumanMessage(content=message)]
         else:
             messages = message
-
-        # Auto-generate thread_id if not provided (required for checkpointer)
-        if not thread_id:
-            thread_id = f"sdk_{uuid.uuid4().hex[:8]}"
-            logger.debug(f"Auto-generated thread_id: {thread_id}")
 
         # Create initial state for HITL wrapper graph (uses AgentState format)
         initial_state = {
@@ -2682,6 +2878,45 @@ class CugaAgent:
         """
         for tool in tools:
             self.add_tool(tool)
+
+
+    def set_external_tools(self, tools: List[BaseTool]) -> None:
+        """
+        Replace runtime tools for external mode.
+
+        This is intended for benchmark/integration scenarios where each task
+        provides a different tool surface, for example tau.
+        """
+        if self.tool_mode != "external":
+            raise ValueError(
+                "set_external_tools() is only supported in external tool mode. "
+                "For normal product usage, pass tools at construction time or use add_tool()."
+            )
+
+        base_provider = unwrap_tool_provider(self.tool_provider)
+
+        if not isinstance(base_provider, DirectLangChainToolsProvider):
+            raise ValueError(
+                "set_external_tools() requires the active provider to be a "
+                "DirectLangChainToolsProvider. If you supplied a custom provider, "
+                "update that provider directly."
+            )
+
+        base_provider.tools = tools or []
+        base_provider._validate_tools()
+        base_provider.initialized = False
+
+        invalidate_toolguard_provider(self.tool_provider)
+
+        # Force graph recreation so stale tool context cannot leak.
+        self._graph = None
+        self._compiled_graph = None
+
+        logger.info(
+            "Replaced external runtime tools with %d tools. "
+            "Graph will be recreated on next invocation.",
+            len(tools or []),
+        )
 
 
 class CugaSupervisor:
