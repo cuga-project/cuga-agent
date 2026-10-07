@@ -41,16 +41,11 @@ Configure tools and policies beside a draft chat, then publish a version for use
 | ![Tool Approval configuration requiring human approval for CRM account updates](docs/images/readme/policies.jpg) | ![Agent dashboard with Revenue Operations, Knowledge Assistant, and Operations Supervisor examples](docs/images/readme/agents.jpg) |
 | Choose which tools need approval and show the proposed code before execution. | Configure individual agents and supervisors for different business workflows. |
 
-<details>
-<summary><b>Watch the product tour</b></summary>
+### Watch the product tour
 
-![CUGA product tour: manage agents, connect tools, configure approvals, inspect events and memory, and open chat](docs/images/readme/product-tour.gif)
-
-**[Watch or download the video](docs/images/readme/product-tour.mp4)**
+https://github.com/user-attachments/assets/cb21fd61-b04b-4188-8f3e-e33197df1b9e
 
 *Visual tour of the current UI with sample configuration, flows, run history, and memory records. It does not show a live agent run. [Media details](docs/readme/media.md).*
-
-</details>
 
 ## From a business request to a completed workflow
 
