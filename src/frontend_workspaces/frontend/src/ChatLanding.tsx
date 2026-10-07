@@ -1283,7 +1283,7 @@ export function ChatLanding() {
         </div>
         )}
 
-      {activeView === "memory" && memoryEnabled ? (
+      {activeView === "memory" && memoryEnabled && (
         <div
           className="memory-workspace-shell"
           style={{ marginTop: headerHeight, height: `calc(100vh - ${headerHeight}px)` }}
@@ -1302,8 +1302,9 @@ export function ChatLanding() {
             }}
           />
         </div>
-      ) : (
-        <div className="chat-content-area" style={{ position: "relative", height: `calc(100vh - ${headerHeight}px)` }}>
+      )}
+      {/* Keep the chat instance and its active stream alive while viewing memory. */}
+        <div className="chat-content-area" hidden={activeView === "memory" && memoryEnabled} style={{ display: activeView === "memory" && memoryEnabled ? "none" : undefined, position: "relative", height: `calc(100vh - ${headerHeight}px)` }}>
           <CarbonChat
             contained={true}
             threadId={effectiveChatThreadId}
@@ -1324,7 +1325,6 @@ export function ChatLanding() {
             onPreviewKnowledgeAttachment={handlePreviewKnowledgeAttachment}
           />
         </div>
-      )}
 
       {/* ══════════════════════════════════════════════════════════════════════
           LEFT PANEL — fixed, transparent, slides over chat
