@@ -63,7 +63,7 @@ docs/examples/knowledge_demo/
 
 - Python 3.12 (see `.python-version`)
 - A working LLM provider key — follow the
-  [main README LLM configuration section](../../../README.md#llm-configuration---advanced-options)
+  [model configuration guide](../../readme/configuration-guide.md#supported-platforms)
 - Repository installed once from the repo root:
 
   ```bash
@@ -254,11 +254,11 @@ cuga stop demo_knowledge
 - **Retrieval:** agent's reasoning graph calls knowledge search tools that run
   against the collection resolved from the caller's agent / session identity
 
-For the full architecture — startup flow, backends, security model — see
-[`src/cuga/backend/knowledge/KNOWLEDGE_PIPELINE.md`](../../../src/cuga/backend/knowledge/KNOWLEDGE_PIPELINE.md).
+For knowledge setup, storage options, ingestion, and retrieval, see the
+[Knowledge Base documentation](https://docs.cuga.dev/docs/build/knowledge/).
 
 ## Further reading
 
-- Main README — [Knowledge Base section](../../../README.md#knowledge-base)
-- [Knowledge pipeline reference](../../../src/cuga/backend/knowledge/KNOWLEDGE_PIPELINE.md)
+- Configuration guide — [Knowledge Base section](../../readme/configuration-guide.md#knowledge-base)
+- [Knowledge documentation](https://docs.cuga.dev/docs/build/knowledge/)
 - [Reference knowledge settings](../../../src/cuga/configurations/knowledge/knowledge_settings.toml)
