@@ -81,7 +81,6 @@ async def test_service_allows_reads_but_blocks_mutations_and_agent_retrieval():
         for tool in [
             "run_retention",
             "sweep_retention",
-            "delete_entity",
             "record_access",
             "start_retention_schedule",
         ]:
@@ -90,14 +89,17 @@ async def test_service_allows_reads_but_blocks_mutations_and_agent_retrieval():
         transport.assert_not_awaited()
         assert await EvolveIntegration.list_entities(user_id="alice") == {"items": []}
         assert transport.await_count == 1
+        for tool in ("delete_entity", "record_source_deletion"):
+            await EvolveIntegration._call_tool(tool, {"user_id": "alice"})
+        assert transport.await_count == 3
         await preferences.set_preference(user_id="admin", enabled=True, instance=True)
         await preferences.set_episodic_preference(user_id="admin", enabled=True)
         for tool in automatic:
             await EvolveIntegration._call_tool(tool, {"user_id": "alice"})
-        assert transport.await_count == 6
+        assert transport.await_count == 8
         await preferences.set_preference(user_id="alice", enabled=False)
         await EvolveIntegration._call_tool("store_user_facts", {"user_id": "alice"})
-        assert transport.await_count == 6
+        assert transport.await_count == 8
 
 
 def test_routes_use_authenticated_identity_and_require_admin():
@@ -113,7 +115,12 @@ def test_routes_use_authenticated_identity_and_require_admin():
     app.dependency_overrides[require_manage_access] = deny_admin
     with TestClient(app) as client:
         assert client.get("/api/memory/settings").status_code == 200
-        assert client.delete("/api/memory/entities/fact-a").status_code == 403
+        with patch.object(
+            EvolveIntegration, "delete_entity", new=AsyncMock(return_value={"success": True})
+        ) as delete:
+            assert client.delete("/api/memory/entities/fact-a").status_code == 200
+            assert delete.call_args.kwargs["user_id"] == "alice"
+        assert client.post("/api/manage/retention/runs", json={}).status_code == 403
         assert client.get("/api/manage/memory/entities").status_code == 403
         assert client.put("/api/manage/memory/settings", json={"enabled": True}).status_code == 403
         assert (
