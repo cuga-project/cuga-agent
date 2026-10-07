@@ -168,7 +168,7 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
    WATSONX_PROJECT_ID=your-project-id
    # WATSONX_SPACE_ID=your-space-id  # Alternative to WATSONX_PROJECT_ID
    WATSONX_URL=https://your-region.ml.cloud.ibm.com  # or your region  # pragma: allowlist secret
-   AGENT_SETTING_CONFIG="your-settings.toml"  # pragma: allowlist secret
+   # Set AGENT_SETTING_CONFIG to the WatsonX TOML in src/cuga/configurations/models/
 
    # Optional override
    MODEL_NAME=meta-llama/llama-4-maverick-17b-128e-instruct-fp8  # Override model for all agents  # pragma: allowlist secret
@@ -257,7 +257,7 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
    RITS_BASE_URL="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
    ```
 
-To front RITS with a local LiteLLM proxy instead, use `AGENT_SETTING_CONFIG="settings.rits.proxy.toml"`.  # pragma: allowlist secret
+To front RITS with a local LiteLLM proxy instead, use `AGENT_SETTING_CONFIG="settings.rits.proxy.toml"`.
 
 **Default Values:**
 
@@ -287,7 +287,7 @@ guardrails, and are billed against its entitlement.
    ```
 
 To target a local ADK dev server instead of a hosted tenant, set `WXO_INSTANCE_URL=http://localhost:4321`
-and omit `WXO_API_KEY` — local instances are auto-detected and don't require a key.  # pragma: allowlist secret
+and omit `WXO_API_KEY` — local instances are auto-detected and don't require a key.
 
 **Default Values:**
 
@@ -300,7 +300,7 @@ and omit `WXO_API_KEY` — local instances are auto-detected and don't require a
 CUGA uses TOML configuration files located in `src/cuga/configurations/models/`:
 
 - `settings.openai.toml` - OpenAI configuration (also supports LiteLLM via base URL override)
-- `your-settings.toml` - WatsonX configuration
+- WatsonX configuration in [`src/cuga/configurations/models/`](../../src/cuga/configurations/models/)
 - `settings.azure.toml` - Azure OpenAI configuration
 - `settings.groq.toml` - Groq configuration
 - `settings.openrouter.toml` - OpenRouter configuration
