@@ -321,7 +321,6 @@ function MemoryDetail({
   onDelete,
   onOpenConversation,
   admin = false,
-  readOnly = false,
 }: {
   memory: MemoryRecord;
   capabilities: RetentionCapabilities | null;
@@ -329,7 +328,6 @@ function MemoryDetail({
   onDelete?: () => void;
   onOpenConversation?: (threadId: string) => void;
   admin?: boolean;
-  readOnly?: boolean;
 }) {
   const source = memory.sources?.length ? (
     <ul className="memory-workspace__source-list">
@@ -422,7 +420,7 @@ function MemoryDetail({
             <Button
               kind="danger"
               size="sm"
-              disabled={readOnly || memory.legalHold || deleting}
+              disabled={memory.legalHold || deleting}
               onClick={onDelete}
             >
               {deleting ? "Deleting..." : "Forget"}
@@ -1267,7 +1265,7 @@ export function MemoryWorkspace({
 
   return (
     <main ref={rootRef} className="memory-workspace">
-      {!serviceEnabled && <p className="memory-workspace__message" role="status">Memory is off for this service. You can browse existing data, but changes and agent memory use are disabled.</p>}
+      {!serviceEnabled && <p className="memory-workspace__message" role="status">Memory is off for this service. You can view existing data and delete your memories. Agents cannot save or use memories.</p>}
       {message && (
         <div className="memory-workspace__message" role="status" aria-live="polite">
           <span>{message}</span>
@@ -1345,7 +1343,6 @@ export function MemoryWorkspace({
             list={memoryList}
             detail={selectedMemory ? (
               <MemoryDetail
-                readOnly={!serviceEnabled}
                 memory={selectedMemory}
                 capabilities={capabilities}
                 deleting={deleting}
@@ -1535,7 +1532,7 @@ export function MemoryWorkspace({
                   </div>
                 )}
                 detail={selectedAdminMemory
-                  ? <MemoryDetail readOnly={!serviceEnabled} memory={selectedAdminMemory} capabilities={capabilities} admin onOpenConversation={onOpenConversation} />
+                  ? <MemoryDetail memory={selectedAdminMemory} capabilities={capabilities} admin onOpenConversation={onOpenConversation} />
                   : <p className="memory-workspace__empty">Select a memory to view its details.</p>}
                 detailLabel="Admin memory details"
                 sheetOpen={detailOpen}
