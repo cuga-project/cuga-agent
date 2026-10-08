@@ -4,9 +4,18 @@ set -euo pipefail
 CUGA_RELEASE="0.4.1"
 UV_BOOTSTRAP_RELEASE="0.9.8"
 fail() { printf 'CUGA installation failed: %s\n' "$*" >&2; exit 1; }
-case "$(uname -s)" in
+cuga_os=$(uname -s)
+cuga_arch=$(uname -m)
+cuga_python_request="3.12"
+case "$cuga_os" in
   Darwin)
-    [[ "$(uname -m)" == "arm64" ]] || fail 'This release requires Apple Silicon on macOS (CPU PyTorch wheels are unavailable for Intel Macs).'
+    if [[ "$cuga_arch" == "x86_64" ]] && [[ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" == "1" ]]; then
+      cuga_arch="arm64"
+      printf 'Detected Apple Silicon through Rosetta; selecting native ARM64 Python.\n'
+    fi
+    [[ "$cuga_arch" == "arm64" ]] || fail 'This release requires Apple Silicon on macOS (CPU PyTorch wheels are unavailable for Intel Macs).'
+    # Match the ARM CPU wheels even when uv or the calling terminal uses Rosetta.
+    cuga_python_request="cpython-3.12-macos-aarch64-none"
     mac_major=$(sw_vers -productVersion | cut -d. -f1)
     (( mac_major >= 14 )) || fail 'macOS 14 or newer is required by the approved PyTorch wheel.'
     ;;
@@ -18,7 +27,7 @@ case "$(uname -s)" in
     ;;
   *) fail 'Supported systems: macOS, Linux, and WSL (run inside your Linux terminal).' ;;
 esac
-case "$(uname -m)" in
+case "$cuga_arch" in
   x86_64|aarch64|arm64) ;;
   *) fail 'A 64-bit x86 or ARM machine is required.' ;;
 esac
@@ -40,7 +49,7 @@ if (( uv_major == 0 && (uv_minor < 9 || (uv_minor == 9 && uv_patch < 8)) )); the
   fail 'uv 0.9.8 or newer is required. Run uv self update, then retry.'
 fi
 printf 'Installing CUGA %s with Python 3.12 in a dedicated uv tool environment…\n' "$CUGA_RELEASE"
-"$uv_cmd" python install 3.12
+"$uv_cmd" python install "$cuga_python_request"
 # BEGIN CONSTRAINTS (synchronized with scripts/install/constraints.txt)
 cat > "$task_tmp/constraints.txt" <<'CUGA_CONSTRAINTS'
 pillow>=12.3.0
@@ -88,7 +97,7 @@ CUGA_OVERRIDES
 # END OVERRIDES
 # Hash-pinned CPU wheels from the approved release lockfile. All other packages
 # resolve from PyPI; an extra global index would shadow dependencies such as setuptools.
-case "$(uname -s)-$(uname -m)" in
+case "$cuga_os-$cuga_arch" in
   Darwin-arm64)
     torch_req="torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.13.0-cp312-cp312-macosx_14_0_arm64.whl#sha256=2fe228aba290d14b9f31b049be550dbd469c3fd3013d7a19705b30454da97027"
     vision_req="torchvision @ https://download-r2.pytorch.org/whl/cpu/torchvision-0.28.0-cp312-cp312-macosx_14_0_arm64.whl#sha256=e9f54c30cd52e3ef7fd034cc69b7bb7e0964e1c8f8743e018ab92e95b40f9eee"
@@ -103,7 +112,7 @@ case "$(uname -s)-$(uname -m)" in
     ;;
   *) fail "No approved CPU PyTorch wheels for this platform." ;;
 esac
-"$uv_cmd" tool install --no-config --python 3.12 --force \
+"$uv_cmd" tool install --no-config --python "$cuga_python_request" --force \
   --with "$torch_req" --with "$vision_req" \
   --constraints "$task_tmp/constraints.txt" --overrides "$task_tmp/overrides.txt" \
   "cuga==$CUGA_RELEASE"
