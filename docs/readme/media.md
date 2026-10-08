@@ -6,7 +6,7 @@ The README uses freshly captured product screens and a short visual tour to show
 | --- | --- |
 | `../images/readme/hero.svg` | Editable SVG introducing sovereignty, execution policies, and inference efficiency. |
 | `../images/readme/hero-mobile.svg` | Responsive version of the opening graphic for narrow screens. |
-| `../images/readme/manager.jpg` | Current manager UI: tools, policies, draft chat, and Publish. |
+| `../images/readme/manager.jpg` | Current manager UI: tools, policies, draft chat, and Publish. Native 3456 × 1992 capture. |
 | `../images/readme/policies.jpg` | Tool Approval configuration for CRM updates. |
 | `../images/readme/agents.jpg` | Agent dashboard with single agents and a supervisor. |
 | `../images/readme/chat.jpg` | Chat welcome screen for the sample agent. |
@@ -24,6 +24,8 @@ Both header graphics retain the original [CUGA owl logo](../../src/frontend_work
 
 Screens were captured on October 8, 2026 from the frontend built at commit `ffd0c4700`, using local fixture services to supply sample data. The UI was not redesigned for the screenshots. Internal model and tool URLs, policy names, tool counts, agent descriptions, published version numbers, event flows, run statuses and outputs, memory records, usage counts, and retention settings are illustrative. No model calls, event flows, channel deliveries, retention operations, or connected business operations were executed.
 
+The standalone manager screenshot was recaptured on October 8, 2026 from the frontend at commit `1de195395`, with the same sample configuration. Its native 3456 × 1992 JPEG is stored directly, without resizing or recompression. The product tour retains its original manager frame.
+
 The video is a visual tour assembled from six captured screens, approximately 23 seconds long. It shows agent management, configuration, approval policy settings, Events Studio, memory, and chat. It is not a recording of a completed agent task. The sample-data and no-live-inference disclosure appears in the README and every tour frame.
 
 ## Memory retention controls
@@ -36,9 +38,9 @@ This capture shows a configured memory lifecycle policy, with sample rules to fl
 
 1. Build the current frontend using the [frontend workspace instructions](../../src/frontend_workspaces/README.md).
 2. Start a local manager or an isolated UI fixture service. Use sample data with no credentials or private records. The JSON fixture above documents the example values used here.
-3. Capture `/manage`, `/manage/revenue-ops`, the Tool Approval configuration dialog, `/studio`, and `/chat/revenue-ops` at the desktop breakpoint. Open **Memory** from chat, then **Administration → Memory lifecycle** for retention controls. These captures used a 1440 × 960 browser viewport.
+3. Capture `/manage`, `/manage/revenue-ops`, the Tool Approval configuration dialog, `/studio`, and `/chat/revenue-ops` at the desktop breakpoint. Open **Memory** from chat, then **Administration → Memory lifecycle** for retention controls. The original tour captures used a 1440 × 960 browser viewport. Save screenshot bytes at native resolution; avoid resized previews and repeated JPEG compression.
 4. Confirm that loading indicators have cleared and the intended controls are visible. Preserve the product UI and label any sample data.
-5. Rebuild the captioned GIF and video from the updated screens. Keep the disclosure on every frame and replace both formats together. Show agent management, tools and policies, approvals, events, memory, and chat in that order.
+5. When refreshing the tour, rebuild the captioned GIF and video from the updated screens. Keep the disclosure on every frame and replace both formats together. Show agent management, tools and policies, approvals, events, memory, and chat in that order.
 6. Upload the MP4 through a GitHub Markdown editor's attachment control. Put the returned `https://github.com/user-attachments/assets/...` URL on its own line in the README and update the attachment link above. Check that the inline player loads and plays before publishing.
 
 ## A future live workflow demo
