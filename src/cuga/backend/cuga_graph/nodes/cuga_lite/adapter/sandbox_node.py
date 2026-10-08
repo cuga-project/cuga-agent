@@ -115,7 +115,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         sync_langfuse_callbacks_from_config(config)
         max_steps = configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
         if "thread_id" in configurable:
-            current_thread_id = configurable["thread_id"]
+            current_thread_id = configurable.get("logical_thread_id") or configurable["thread_id"]
         else:
             current_thread_id = state.thread_id or base_thread_id
         current_apps_list = configurable.get("apps_list", base_apps_list)
