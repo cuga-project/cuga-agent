@@ -27,6 +27,8 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import StructuredTool
 
+from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.schema import model_tool_schema
+
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _NON_WORD = re.compile(r"[^0-9a-zA-Z]+")
 _WS = re.compile(r"\s+")
@@ -81,10 +83,7 @@ def _param_lines(tool: StructuredTool, limit: int = 24) -> List[str]:
     args_schema = getattr(tool, "args_schema", None)
     if args_schema is not None:
         try:
-            if hasattr(args_schema, "model_json_schema"):
-                schema = args_schema.model_json_schema()
-            elif hasattr(args_schema, "schema"):
-                schema = args_schema.schema()
+            schema = model_tool_schema(tool)
         except (AttributeError, TypeError, ValueError):
             schema = {}
     properties = (schema or {}).get("properties") or {}
