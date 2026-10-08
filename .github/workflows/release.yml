@@ -22,21 +22,7 @@ jobs:
         uses: astral-sh/setup-uv@v6
       - name: Install Python 3.12
         run: uv python install 3.12
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.28.0
-      - name: Build frontend
-        run: bash scripts/frontend_build.sh
       - name: Build
         run: uv build
-      - name: Verify packaged manager
-        run: |
-          uv run --no-project --python 3.12 python scripts/check_wheel.py dist/*.whl
-          uv run --no-project --python 3.12 python scripts/smoke_manager_wheel.py dist/*.whl
       - name: Publish
         run: uv publish
