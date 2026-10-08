@@ -577,6 +577,8 @@ def format_time_custom():
 async def lifespan(app: FastAPI):
     """Asynchronous context manager for application startup and shutdown."""
     logger.info("Application is starting up...")
+    from cuga.backend.server.onboarding import manager_lifespan, manager_mode
+
     app_state.set_subsystem_status("policy", "starting", "Initializing policy subsystem")
     app_state.set_subsystem_status("knowledge", "starting", "Initializing knowledge subsystem")
 
@@ -697,7 +699,6 @@ async def lifespan(app: FastAPI):
     # Knowledge engine — in-process LangChain + vector store (storage_local / pgvector / …)
     # -------------------------------------------------------------------
     from cuga.backend.knowledge.config import KnowledgeConfig
-    from cuga.backend.knowledge.engine import KnowledgeEngine
 
     async def initialize_knowledge_engine(app_state, kb_config: "KnowledgeConfig") -> None:
         """Start the knowledge engine, session provider, MCP server, and warmup.
@@ -705,8 +706,13 @@ async def lifespan(app: FastAPI):
         Can be called at startup or on-demand (e.g. when user enables knowledge via UI publish).
         Safe to call when engine is already running (no-op).
         """
+        from cuga.backend.knowledge.engine import KnowledgeEngine
+
         if getattr(app_state, "knowledge_engine", None) is not None:
             return  # Already running
+
+        if manager_mode():
+            kb_config.persist_dir = KnowledgeConfig.from_settings(settings).persist_dir
 
         app_state.set_subsystem_status("knowledge", "starting", "Initializing knowledge engine")
         from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
@@ -719,7 +725,9 @@ async def lifespan(app: FastAPI):
         from cuga.backend.knowledge.session_provider import PersistentSessionProvider
 
         if not getattr(app_state, "knowledge_provider", None):
-            _kb_state_path = Path.cwd() / ".cuga" / "session_knowledge.json"
+            from cuga.backend.server.onboarding import knowledge_session_path
+
+            _kb_state_path = knowledge_session_path(kb_config.persist_dir)
             app_state.knowledge_provider = PersistentSessionProvider(_kb_state_path)
 
         # Wire per-session citation overrides into the knowledge sources module
@@ -759,6 +767,10 @@ async def lifespan(app: FastAPI):
             token = secrets.token_urlsafe(32)
             app_state.internal_token = token
             token_path = Path.cwd() / ".cuga" / ".internal_token"
+            if manager_mode():
+                from cuga.local_setup import data_directory
+
+                token_path = data_directory() / ".internal_token"
             token_path.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
                 mode="w", dir=token_path.parent, delete=False, suffix=".tmp"
@@ -827,6 +839,10 @@ async def lifespan(app: FastAPI):
 
     # Store the initializer on app_state so manage_routes can call it on-demand
     app_state.initialize_knowledge_engine = initialize_knowledge_engine
+    if manager_mode():
+        async with manager_lifespan(app_state, draft_app_state):
+            yield
+        return
 
     # Load config from settings if available, otherwise use defaults
     try:
@@ -1552,6 +1568,39 @@ def apply_request_user_context(state: AgentState, user_id: Optional[str]) -> Non
 
     state.user_id = user_id
     state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
+
+
+async def configured_event_stream(*args, **kwargs):
+    from contextlib import nullcontext
+    from cuga.backend.llm.models import llm_config_context
+    from cuga.backend.secrets.secret_resolver import secret_agent_context
+    from cuga.backend.server.onboarding import manager_mode
+
+    agent = kwargs.get("agent") or app_state.agent
+    config = getattr(agent, "llm_config", None)
+    agent_id = kwargs.get("agent_id") or getattr(app_state, "agent_id", "cuga-default")
+    guided = manager_mode()
+
+    def scope():
+        return secret_agent_context(agent_id) if guided else nullcontext()
+
+    def model_scope():
+        return llm_config_context(config) if guided else nullcontext()
+
+    stream = event_stream(*args, **kwargs)
+    try:
+        while True:
+            # Reset before yielding to the response consumer. It may stop early
+            # or close this generator in a different asyncio context.
+            with model_scope(), scope():
+                try:
+                    chunk = await anext(stream)
+                except StopAsyncIteration:
+                    return
+            yield chunk
+    finally:
+        with model_scope(), scope():
+            await stream.aclose()
 
 
 async def event_stream(
@@ -2784,9 +2833,15 @@ async def stream(
     if not agent_registry.is_agent_registry_enabled():
         agent_id_header = "cuga-default"
     if agent_id_header == "cuga-default":
+        from cuga.backend.server.onboarding import ensure_default_agent, manager_mode
+
         run_agent = None
         runtime_llm = app_state.current_llm
-        if use_draft:
+        if manager_mode():
+            run_agent = await ensure_default_agent(request, app_state, draft_app_state, use_draft)
+            execution_state = draft_app_state if use_draft else app_state
+            runtime_llm = execution_state.current_llm
+        elif use_draft:
             draft_state = getattr(request.app.state, "draft_app_state", None)
             if draft_state and getattr(draft_state, "agent", None):
                 run_agent = draft_state.agent
@@ -2796,7 +2851,7 @@ async def stream(
         runtime_llm = None
 
     return StreamingResponse(
-        event_stream(
+        configured_event_stream(
             query if isinstance(query, str) else None,
             api_mode=settings.advanced_features.mode == "api",
             resume=query if isinstance(query, ActionResponse) else None,
@@ -2824,7 +2879,9 @@ async def stream(
 from cuga.backend.server.run_routes import build_run_router, run_api_enabled  # noqa: E402
 
 if run_api_enabled():
-    app.include_router(build_run_router(event_stream=event_stream, default_user_id=DEFAULT_USER_ID))
+    app.include_router(
+        build_run_router(event_stream=configured_event_stream, default_user_id=DEFAULT_USER_ID)
+    )
     logger.info("/run and /run/agents mounted (machine seam)")
 
 
