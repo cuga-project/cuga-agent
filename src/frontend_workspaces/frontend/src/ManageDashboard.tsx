@@ -29,6 +29,7 @@ import {
 import * as api from "./api";
 import { CugaHeader } from "./CugaHeader";
 import "./ManageDashboard.css";
+import { FirstRunSetup } from "./FirstRunSetup";
 
 export interface AgentItem {
   id: string;
@@ -212,6 +213,7 @@ export function ManageDashboard() {
       />
 
       <div className="manage-dashboard-content" style={{ flex: 1, overflow: "auto", padding: "2rem 3rem", marginTop: "3rem", width: "100%" }}>
+        <FirstRunSetup />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.5rem" }}>
           <Heading>Agent dashboard</Heading>
           {agentRegistry && (
