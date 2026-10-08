@@ -25,4 +25,7 @@ async def rebuild_agent_from_config(agent: Any, config: dict[str, Any]) -> None:
         agent.enable_filesystem_tools = overrides["enable_filesystem_tools"]
     llm_cfg = (config or {}).get("llm") or {}
     agent.llm_config = llm_cfg if llm_cfg else None
-    await agent.build_graph()
+    from cuga.backend.server.onboarding import guided_llm_context
+
+    with guided_llm_context(llm_cfg):
+        await agent.build_graph()
