@@ -1,4 +1,6 @@
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Tuple
 
 from loguru import logger
@@ -6,6 +8,21 @@ from loguru import logger
 from cuga.backend.secrets.backends.env_backend import EnvBackend
 
 _ENV_VAR_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_secret_agent_id: ContextVar[str | None] = ContextVar("cuga_secret_agent_id", default=None)
+
+
+def get_secret_agent_id() -> str | None:
+    return _secret_agent_id.get()
+
+
+@contextmanager
+def secret_agent_context(agent_id: str):
+    """Resolve model credentials for one agent without widening their DB scope."""
+    token = _secret_agent_id.set(agent_id)
+    try:
+        yield
+    finally:
+        _secret_agent_id.reset(token)
 
 
 def parse_ref(ref: str) -> Tuple[str, str]:
@@ -92,6 +109,7 @@ def resolve_secret(
     tenant_id: str | None = None,
     instance_id: str | None = None,
 ) -> str | None:
+    agent_id = agent_id if agent_id is not None else _secret_agent_id.get()
     if ref is None:
         return None
     if not isinstance(ref, str):
