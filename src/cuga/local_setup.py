@@ -16,12 +16,13 @@ def prepare_local_manager() -> Path:
     """Run before importing settings; never overwrite a key or explicit settings."""
     root = data_directory()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.environ.setdefault("CUGA_GUIDED_SETUP", "true")
+    os.environ.setdefault("CUGA_LOCAL_MANAGER", "true")
+    os.environ.setdefault("CUGA_DATA_DIR", str(root))
     os.environ.setdefault("CUGA_DBS_DIR", str(root / "dbs"))
     os.environ.setdefault("CUGA_LOGGING_DIR", str(root / "logs"))
     os.environ.setdefault("DYNACONF_STORAGE__PRESERVE_CONFIGS_ON_STARTUP", "any")
     os.environ.setdefault("DYNACONF_KNOWLEDGE__PERSIST_DIR", str(root / "knowledge"))
-    os.environ.setdefault("DYNACONF_SECRETS__FORCE_ENV", "false")
+    os.environ.setdefault("CUGA_WORKSPACE_PATH", str(root / "workspace"))
     if not os.environ.get("CUGA_SECRET_KEY"):
         key_path = root / "secret.key"
         try:
