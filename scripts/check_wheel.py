@@ -19,15 +19,15 @@ def check_wheel(path: Path) -> None:
                 continue
             if root + asset.lstrip("/") not in names:
                 raise ValueError(f"Wheel frontend asset is missing: {asset}")
-        for required in ("cuga/local_setup.py", "cuga/backend/server/onboarding.py"):
+        for required in ("cuga/local_setup.py", "cuga/setup_cli.py"):
             if required not in names:
                 raise ValueError(f"Wheel setup module is missing: {required}")
         bundles = b"".join(
             wheel.read(name) for name in names if name.startswith(root) and name.endswith(".js")
         )
-        if b"Set up your first agent" not in bundles:
-            raise ValueError("Rebuild the frontend: guided setup is missing from the wheel")
-    print(f"Verified {path.name}: guided setup and all frontend assets are packaged.")
+        if b"Set up your first agent" in bundles:
+            raise ValueError("Rebuild the frontend: removed browser setup is still in the wheel")
+    print(f"Verified {path.name}: terminal setup and all frontend assets are packaged.")
 
 
 if __name__ == "__main__":
