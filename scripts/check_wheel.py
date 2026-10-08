@@ -19,7 +19,7 @@ def check_wheel(path: Path) -> None:
                 continue
             if root + asset.lstrip("/") not in names:
                 raise ValueError(f"Wheel frontend asset is missing: {asset}")
-        for required in ("cuga/local_setup.py", "cuga/setup_cli.py"):
+        for required in ("cuga/local_setup.py", "cuga/setup_cli.py", "cuga/setup_terminal.py"):
             if required not in names:
                 raise ValueError(f"Wheel setup module is missing: {required}")
         bundles = b"".join(
