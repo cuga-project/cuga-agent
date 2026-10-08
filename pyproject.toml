@@ -41,6 +41,7 @@ dependencies = [
     "mcp[cli]>=1.28.1",
     "psutil>=7.0.0",
     "typer>=0.15.3",
+    "prompt-toolkit>=3.0.52,<4",
     "typer-slim>=0.15.3", # explicit: docling pulls typer meta-package which needs typer-slim
     # <4: fastmcp 4.0.0 is currently beta. Lift to >=4.0.0 once a stable release exists.
     # >=3.3.0 so the fastmcp/ package has exactly one owner. Up to 3.2.x the fastmcp
