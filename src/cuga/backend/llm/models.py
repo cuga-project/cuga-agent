@@ -942,16 +942,6 @@ class LLMManager:
                 return str(toml_url).strip()
             return None
 
-        # Packaged profiles use model_name; their defaults yield to .env overrides.
-        # Manager JSON uses model and retains its explicit connection URL.
-        if model_settings.get("model_name"):
-            variable = {
-                "openai": "OPENAI_BASE_URL",
-                "openrouter": "OPENROUTER_BASE_URL",
-                "minimax": "MINIMAX_BASE_URL",
-            }.get(platform)
-            if variable and os.getenv(variable):
-                return os.environ[variable]
         config_url = model_settings.get("base_url") or model_settings.get("url")
         if config_url and str(config_url).strip():
             return str(config_url).strip()
@@ -1316,7 +1306,7 @@ class LLMManager:
             )
             watsonx_params: Dict[str, Any] = {"params": wx_gen_params}
 
-            watsonx_url = os.getenv("WATSONX_URL") or model_settings.get("url")
+            watsonx_url = model_settings.get("url")
             if watsonx_url:
                 watsonx_params["url"] = watsonx_url
 
@@ -1656,13 +1646,6 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
     if not isinstance(toml_max_tokens, int):
         toml_max_tokens = 16000
     max_tokens = _resolve_max_tokens_from_llm_cfg(llm_cfg, toml_max_tokens)
-
-    # Terminal setup owns the connection for the local manager. Saved agent
-    # tools/policies stay in the DB, but an old LLM section must not replace .env.
-    if os.getenv("CUGA_LOCAL_MANAGER", "").lower() == "true" and bool(
-        getattr(getattr(settings, "secrets", None), "force_env", False)
-    ):
-        return mgr.get_model(settings.agent.code.model)
 
     if is_mock_llm_enabled():
         mock = clone_load_test_mock_chat_model()
