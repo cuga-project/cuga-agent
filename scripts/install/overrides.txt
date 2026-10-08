@@ -1,5 +1,0 @@
-python-dotenv>=1.1.0
-nltk>=3.10.3
-pytz>=2025.1
-pandas>=2.3.3,<2.4
-safetensors>=0.8.0
