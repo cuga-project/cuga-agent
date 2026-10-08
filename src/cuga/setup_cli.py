@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -236,6 +237,36 @@ def configure(path: Path) -> bool:
     return True
 
 
+def manager_launch(path: Path, root: Path) -> tuple[list[str], dict[str, str]]:
+    """Use this installation and the saved connection even outside its shell PATH."""
+    command = [sys.executable, "-m", "cuga.cli", "start", "manager"]
+    environment = {**os.environ, "CUGA_DATA_DIR": str(root)}
+    if environment.get("ENV_FILE"):
+        environment["ENV_FILE"] = str(path)
+    return command, environment
+
+
+def manager_launch_hint(path: Path, root: Path, *, saved=False) -> str:
+    command, environment = manager_launch(path, root)
+    # Only paths and executable arguments are included; never print the environment.
+    settings = {"CUGA_DATA_DIR": str(root)}
+    # A fresh save must win over old variables still exported by the parent shell.
+    if saved or environment.get("ENV_FILE"):
+        settings["ENV_FILE"] = str(path)
+    if os.name == "nt":
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        assignments = " ".join(f"$env:{key}={quote(value)};" for key, value in settings.items())
+        return f"Set-Location -LiteralPath {quote(Path.cwd())}; {assignments} & " + " ".join(
+            quote(argument) for argument in command
+        )
+    return f"cd {shlex.quote(str(Path.cwd()))} && " + shlex.join(
+        ["env", *(f"{key}={value}" for key, value in settings.items()), *command]
+    )
+
+
 def valid_endpoint(value: str) -> bool:
     try:
         url = urlsplit(value)
@@ -318,9 +349,11 @@ def main(argv=None) -> int:
         )
         return 1
     try:
+        from cuga.setup_terminal import TerminalUI, connection_ready
+
+        verified = False
         if not missing_configuration():
             print("Existing provider configuration detected.")
-            from cuga.setup_terminal import TerminalUI
 
             choice = TerminalUI().choose(
                 "Existing configuration",
@@ -328,17 +361,47 @@ def main(argv=None) -> int:
                 [("keep", "Keep existing configuration"), ("change", "Change provider configuration")],
                 default="keep",
             )
-            if choice != "change":
-                return 0 if choice == "keep" else 1
-        if not configure(path):
-            return 1
+            if choice is None:
+                return 1
+            if choice == "change":
+                if not configure(path):
+                    return 1
+                verified = True
+        else:
+            if not configure(path):
+                return 1
+            verified = True
+        while True:
+            action = connection_ready(path, verified=verified)
+            if action != "edit":
+                break
+            try:
+                if configure(path):
+                    verified = True
+            except (EOFError, KeyboardInterrupt):
+                print("\nEdit cancelled; your saved connection was preserved.")
     except (EOFError, KeyboardInterrupt):
         print("\nSetup cancelled; existing configuration was preserved.", file=sys.stderr)
         return 1
     except (OSError, ValueError):
         print("Could not save configuration. Check the .env file path and permissions.", file=sys.stderr)
         return 1
-    print("Next: cuga start manager. In Configure & try it out, ask: What can you help me automate?")
+    if action == "start":
+        print("In Configure & try it out, ask: What can you help me automate?", flush=True)
+        command, environment = manager_launch(path, root)
+        try:
+            # Replace setup so Ctrl+C and the manager's process cleanup keep their usual behavior.
+            os.execvpe(command[0], command, environment)
+        except OSError:
+            print("Could not start the manager. Run the saved launch command:", file=sys.stderr)
+            print(manager_launch_hint(path, root, saved=verified), file=sys.stderr)
+            return 1
+    else:
+        print("Setup complete.")
+        if path.is_file():
+            print(f"Configuration file: {path}.")
+        print("Start the manager later with:\n" + manager_launch_hint(path, root, saved=verified))
+        print("In Configure & try it out, ask: What can you help me automate?")
     return 0
 
 
