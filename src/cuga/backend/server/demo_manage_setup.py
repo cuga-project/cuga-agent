@@ -529,14 +529,8 @@ def setup_demo_manage_config(
         "What are the key capabilities of Sovereign Core, including the Compliance Center and AI Services?",
     ]
 
-    guided_manager = demo_type == "manager" and os.getenv("CUGA_GUIDED_SETUP", "").lower() == "true"
-    if guided_manager:
-        from cuga.backend.server.config_store import has_any_config
-
-        preserve_existing = run_sync(has_any_config(agent_id))
-    else:
-        preserve_existing = run_sync(resolve_preserve_existing(agent_id))
-    if not preserve_existing and not guided_manager:
+    preserve_existing = run_sync(resolve_preserve_existing(agent_id))
+    if not preserve_existing:
         reset_config_db()
 
     # Only wipe knowledge data when explicitly requested (--reset flag).
