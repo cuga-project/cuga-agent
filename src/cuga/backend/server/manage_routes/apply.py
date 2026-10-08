@@ -10,6 +10,14 @@ from cuga.backend.server.manage_routes.draft_ops import rebuild_agent_from_confi
 from cuga.backend.server.manage_routes.helpers import policies_list_from_config
 
 
+def _create_configured_llm(llm_cfg: dict):
+    from cuga.backend.llm.models import create_llm_from_config
+    from cuga.backend.server.onboarding import guided_llm_context
+
+    with guided_llm_context(llm_cfg):
+        return create_llm_from_config(llm_cfg)
+
+
 async def apply_published_config(app_state: Any, config: dict[str, Any]) -> None:
     from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
 
@@ -22,7 +30,7 @@ async def apply_published_config(app_state: Any, config: dict[str, Any]) -> None
     llm_cfg = (config or {}).get("llm") or {}
     if isinstance(llm_cfg, dict):
         try:
-            from cuga.backend.llm.models import LLMManager, create_llm_from_config
+            from cuga.backend.llm.models import LLMManager
             from cuga.config import settings
 
             _secrets = getattr(settings, "secrets", None)
@@ -49,7 +57,7 @@ async def apply_published_config(app_state: Any, config: dict[str, Any]) -> None
             app_state.current_llm = None
         else:
             try:
-                app_state.current_llm = create_llm_from_config(llm_cfg)
+                app_state.current_llm = _create_configured_llm(llm_cfg)
                 logger.info(
                     "Applied LLM from config (mode=%s): provider=%s model=%s",
                     secrets_mode,
@@ -113,7 +121,7 @@ def apply_llm_to_state(state: Any, llm_cfg: dict) -> None:
     if not isinstance(llm_cfg, dict):
         return
     try:
-        from cuga.backend.llm.models import LLMManager, create_llm_from_config
+        from cuga.backend.llm.models import LLMManager
         from cuga.config import settings
 
         _secrets = getattr(settings, "secrets", None)
@@ -138,7 +146,7 @@ def apply_llm_to_state(state: Any, llm_cfg: dict) -> None:
         state.current_llm = None
     else:
         try:
-            state.current_llm = create_llm_from_config(llm_cfg)
+            state.current_llm = _create_configured_llm(llm_cfg)
             logger.info(
                 "Applied LLM from PATCH (provider=%s model=%s)",
                 llm_cfg.get("provider"),
@@ -170,9 +178,7 @@ def apply_llm_to_draft_state(state: Any, llm_cfg: dict) -> None:
     if not isinstance(llm_cfg, dict):
         return
     try:
-        from cuga.backend.llm.models import create_llm_from_config
-
-        state.current_llm = create_llm_from_config(llm_cfg)
+        state.current_llm = _create_configured_llm(llm_cfg)
         logger.info(
             "Applied draft LLM to draft state (provider=%s model=%s)",
             llm_cfg.get("provider"),
