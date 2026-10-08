@@ -11,46 +11,14 @@ from cuga.backend.server.manage_routes.router import router
 _PROVIDER_MODELS_URL = {
     "groq": "https://api.groq.com/openai/v1/models",
     "openai": "https://api.openai.com/v1/models",
-    "openrouter": "https://openrouter.ai/api/v1/models",
     "litellm": None,
 }
 
 _PROVIDER_API_KEY_REF = {
     "groq": "GROQ_API_KEY",
     "openai": "OPENAI_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
     "litellm": "OPENAI_API_KEY",
 }
-
-
-@router.get("/setup/status")
-async def setup_status(agent_id: Optional[str] = None):
-    from cuga.backend.server.config_store import load_draft
-    from cuga.backend.server.onboarding import manager_mode
-
-    config = await load_draft(agent_id or "cuga-default") or {}
-    llm = config.get("llm") or {}
-    from cuga.backend.server.onboarding import config_fingerprint
-
-    return {
-        "enabled": manager_mode(),
-        "configured": config.get("setup_verified") == config_fingerprint(llm),
-    }
-
-
-@router.post("/setup/validate")
-async def setup_validate(agent_id: Optional[str] = None):
-    from cuga.backend.server.config_store import load_draft, save_draft
-    from cuga.backend.server.onboarding import config_fingerprint, validate_llm
-    from cuga.backend.server.manage_routes.helpers import agent_draft_lock
-
-    agent_id = agent_id or "cuga-default"
-    async with agent_draft_lock(agent_id):
-        config = await load_draft(agent_id) or {}
-        await validate_llm(config.get("llm") or {}, agent_id)
-        config["setup_verified"] = config_fingerprint(config.get("llm") or {})
-        await save_draft(config, agent_id)
-    return {"status": "success", "message": "Connection verified. You can try your first task."}
 
 
 @router.get("/llm/models")
@@ -122,13 +90,12 @@ async def list_llm_models(
 
     if provider_key not in _PROVIDER_MODELS_URL:
         raise HTTPException(
-            status_code=400,
-            detail=f"provider must be one of: groq, openai, openrouter, litellm (got: {provider_key})",
+            status_code=400, detail=f"provider must be one of: groq, openai, litellm (got: {provider_key})"
         )
 
     # Get URL
     url = _PROVIDER_MODELS_URL[provider_key]
-    if provider_key == "litellm" or (provider_key == "openai" and base_url):
+    if provider_key == "litellm":
         if not base_url:
             raise HTTPException(
                 status_code=400,
@@ -147,13 +114,13 @@ async def list_llm_models(
 
     api_key_ref = llm_cfg.api_key
     if api_key_ref:
-        if api_key_ref.startswith(("vault://", "db://", "env://")):
-            resolved = resolve_secret(api_key_ref, agent_id=agent_id)
-            if resolved and not resolved.startswith(("vault://", "db://", "env://")):
+        if api_key_ref.startswith("vault://"):
+            resolved = resolve_secret(api_key_ref)
+            if resolved and not resolved.startswith("vault://"):
                 api_key_ref = resolved
-                logger.info("Resolved api_key from secret store")
+                logger.info("Resolved api_key from vault")
             else:
-                logger.error("Failed to resolve api_key from secret store")
+                logger.error(f"Failed to resolve api_key from vault: {api_key_ref}")
                 api_key_ref = None
         # else: plain value, use as-is
 
