@@ -51,7 +51,8 @@ def create_spawn_tools(
 ) -> list[StructuredTool]:
     """Factory: returns [spawn_agent_tool, get_agent_result_tool]."""
 
-    parent_thread_id = (parent_config or {}).get("configurable", {}).get("thread_id", "") or ""
+    cfg = (parent_config or {}).get("configurable", {})
+    parent_thread_id = cfg.get("logical_thread_id") or cfg.get("thread_id") or ""
 
     async def spawn_agent(
         task: str = "",
