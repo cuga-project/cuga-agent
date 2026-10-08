@@ -90,7 +90,7 @@ from cuga.backend.server.tool_guard_generation import (
     build_tool_guard_generation_agent,
     generate_tool_guards_for_policy,
 )
-from cuga.backend.server.conversation_history import get_conversation_db
+from cuga.backend.server.conversation_history import ThreadOwnershipError, get_conversation_db
 
 # Default user ID for conversation history
 DEFAULT_USER_ID = "default_user"
@@ -102,13 +102,25 @@ def _workspace_thread_id(request: Request, query_thread_id: Optional[str]) -> Op
     return tid or None
 
 
-async def _assert_thread_access(thread_id: str, user_id: str) -> None:
-    """Reject access when thread_id is owned by a different user."""
-    conversation_db = get_conversation_db()
-    rows = await conversation_db.get_thread_history(thread_id)
-    for row in rows:
-        if row.user_id and row.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Access denied: thread belongs to another user")
+async def _assert_thread_access(thread_id: str, user_id: str, agent_id: Optional[str] = None) -> str:
+    """Persist ownership before any thread read, run, or control operation."""
+    if not isinstance(thread_id, str) or not thread_id.strip():
+        raise HTTPException(status_code=400, detail="thread_id is required")
+    try:
+        return await get_conversation_db().claim_thread(thread_id, user_id, agent_id)
+    except ThreadOwnershipError as exc:
+        raise HTTPException(
+            status_code=403, detail="Access denied: thread belongs to another user or agent"
+        ) from exc
+    except Exception as exc:
+        logger.error(f"Thread ownership unavailable: {exc}")
+        raise HTTPException(status_code=503, detail="Thread ownership unavailable") from exc
+
+
+def _checkpoint_thread_id(thread_id: str, user_id: str, agent_id: str) -> str:
+    from cuga.backend.server.thread_scope import checkpoint_thread_id
+
+    return checkpoint_thread_id(thread_id, user_id, agent_id)
 
 
 def _workspace_user_id(current_user: Optional[UserInfo]) -> str:
@@ -1577,6 +1589,9 @@ async def event_stream(
     memory_turn_id = str(uuid.uuid4()) if not resume else ""
     run_agent = agent if agent is not None else app_state.agent
     runtime_agent_id = agent_id or app_state.agent_id
+    thread_id = thread_id or str(uuid.uuid4())
+    await _assert_thread_access(thread_id, user_id, runtime_agent_id)
+    checkpoint_thread_id = _checkpoint_thread_id(thread_id, user_id, runtime_agent_id)
     if current_llm is _RUNTIME_LLM_UNSET:
         runtime_llm = (
             app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None)
@@ -1609,7 +1624,7 @@ async def event_stream(
         if thread_id:
             try:
                 latest_state_values = run_agent.graph.get_state(
-                    {"configurable": {"thread_id": thread_id}}
+                    {"configurable": {"thread_id": checkpoint_thread_id}}
                 ).values
                 if latest_state_values:
                     # Load existing state for followup questions
@@ -1643,7 +1658,9 @@ async def event_stream(
     else:
         # For resume, fetch state from LangGraph
         if thread_id:
-            latest_state_values = run_agent.graph.get_state({"configurable": {"thread_id": thread_id}}).values
+            latest_state_values = run_agent.graph.get_state(
+                {"configurable": {"thread_id": checkpoint_thread_id}}
+            ).values
             if latest_state_values:
                 local_state = AgentState(**latest_state_values)
                 local_state.thread_id = thread_id
@@ -1769,6 +1786,7 @@ async def event_stream(
         graph=run_agent.graph,
         langfuse_handler=langfuse_handler,
         thread_id=thread_id,
+        checkpoint_thread_id=checkpoint_thread_id,
         tracker=local_tracker,
         policy_system=run_agent.policy_system,
         enable_todos=getattr(run_agent, "enable_todos", None),
@@ -1817,7 +1835,7 @@ async def event_stream(
                         # Update local state from graph
                         if thread_id:
                             latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": thread_id}}
+                                {"configurable": {"thread_id": checkpoint_thread_id}}
                             ).values
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
@@ -1845,7 +1863,7 @@ async def event_stream(
                         active_policies = []
                         if thread_id:
                             latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": thread_id}}
+                                {"configurable": {"thread_id": checkpoint_thread_id}}
                             ).values
 
                             if latest_state_values:
@@ -1978,7 +1996,7 @@ async def event_stream(
 
                         if thread_id:
                             latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": thread_id}}
+                                {"configurable": {"thread_id": checkpoint_thread_id}}
                             ).values
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
@@ -1995,7 +2013,7 @@ async def event_stream(
                     elif event.has_tools:
                         if thread_id:
                             latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": thread_id}}
+                                {"configurable": {"thread_id": checkpoint_thread_id}}
                             ).values
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
@@ -2031,7 +2049,8 @@ async def event_stream(
 
                         if thread_id and local_state:
                             run_agent.graph.update_state(
-                                {"configurable": {"thread_id": thread_id}}, local_state.model_dump()
+                                {"configurable": {"thread_id": checkpoint_thread_id}},
+                                local_state.model_dump(),
                             )
                             # Conversation history will be saved at the end with stream events
                         agent_stream_gen = agent_loop_obj.run_stream(state=None)
@@ -2040,7 +2059,7 @@ async def event_stream(
                     logger.debug("Yield {}".format(event))
                     if thread_id:
                         latest_state_values = run_agent.graph.get_state(
-                            {"configurable": {"thread_id": thread_id}}
+                            {"configurable": {"thread_id": checkpoint_thread_id}}
                         ).values
                         if latest_state_values:
                             local_state = AgentState(**latest_state_values)
@@ -2732,13 +2751,18 @@ async def stream(
 
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     query = await get_query(request)
-    user_attachments = await get_attachment_snapshot(request)
     thread_id = request.headers.get("X-Thread-ID")
     if not thread_id:
         thread_id = str(uuid.uuid4())
         logger.info(f"No X-Thread-ID header found, generated new thread_id: {thread_id}")
     else:
         logger.info(f"Using provided thread_id: {thread_id}")
+
+    agent_id_header = request.headers.get("X-Agent-ID") or "cuga-default"
+    if not agent_registry.is_agent_registry_enabled():
+        agent_id_header = "cuga-default"
+    await _assert_thread_access(thread_id, user_id, agent_id_header)
+    user_attachments = await get_attachment_snapshot(request)
 
     # User message will be saved as part of the event stream buffer
     # No need to save it separately here to avoid race conditions
@@ -2780,9 +2804,6 @@ async def stream(
     if disable_history:
         logger.info(f"History saving disabled for thread_id: {thread_id}")
 
-    agent_id_header = request.headers.get("X-Agent-ID") or "cuga-default"
-    if not agent_registry.is_agent_registry_enabled():
-        agent_id_header = "cuga-default"
     if agent_id_header == "cuga-default":
         run_agent = None
         runtime_llm = app_state.current_llm
@@ -2840,6 +2861,9 @@ async def stop(request: Request, current_user: Optional[UserInfo] = Depends(requ
         except Exception:
             pass
 
+    await _assert_thread_access(
+        thread_id, _workspace_user_id(current_user), request.headers.get("X-Agent-ID")
+    )
     if thread_id:
         logger.info(f"Received stop request for thread_id: {thread_id}")
         # Create event if it doesn't exist, then set it
@@ -2853,18 +2877,6 @@ async def stop(request: Request, current_user: Optional[UserInfo] = Depends(requ
         except Exception as e:
             logger.warning(f"Failed to clear spawn caches on stop for {thread_id}: {e}")
         return {"status": "success", "message": f"Stop request received for thread_id: {thread_id}"}
-    else:
-        logger.warning("Received stop request without thread_id, stopping all threads")
-        # Fallback: stop all threads (for backward compatibility)
-        for event in app_state.stop_events.values():
-            event.set()
-        try:
-            from cuga.backend.agent_spawn import clear_runtime_caches
-
-            clear_runtime_caches()
-        except Exception as e:
-            logger.warning(f"Failed to clear spawn caches on stop-all: {e}")
-        return {"status": "success", "message": "Stop request received for all threads"}
 
 
 @app.post("/reset")
@@ -2886,6 +2898,9 @@ async def reset_agent_state(
             except Exception:
                 pass
 
+        await _assert_thread_access(
+            thread_id, _workspace_user_id(current_user), request.headers.get("X-Agent-ID")
+        )
         if thread_id:
             logger.info(f"Resetting state for thread_id: {thread_id}")
             # Clear stop event for this thread
@@ -2907,18 +2922,6 @@ async def reset_agent_state(
             # for a fresh start. If we need to clear the thread state, we would need to delete it from
             # the checkpointer, but for now we'll just clear the stop flag.
             # The LangGraph state will remain but won't be accessed if client uses a new thread_id.
-        else:
-            logger.info("No thread_id provided for reset, clearing all thread stop events")
-            # Clear all stop events (for backward compatibility)
-            for event in app_state.stop_events.values():
-                event.clear()
-            try:
-                from cuga.backend.agent_spawn import clear_runtime_caches
-
-                clear_runtime_caches()
-            except Exception as e:
-                logger.warning(f"Failed to clear spawn caches on reset-all: {e}")
-
         # Note: We don't reset the agent graph or environment as they are shared resources.
         # State is managed per-thread via LangGraph's checkpointer.
 
@@ -2928,6 +2931,8 @@ async def reset_agent_state(
         # var_manger.reset()
         logger.info("Agent state reset successfully")
         return {"status": "success", "message": "Agent state reset successfully"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to reset agent state: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to reset agent state: {str(e)}")
@@ -3865,11 +3870,21 @@ async def get_agent_state(
                 detail="thread_id is required (provide via X-Thread-ID header or thread_id query parameter)",
             )
 
-        if not app_state.agent or not app_state.agent.graph:
+        user_id = _workspace_user_id(current_user)
+        agent_id = await _assert_thread_access(thread_id, user_id, request.headers.get("X-Agent-ID"))
+        agent_id = agent_id or "cuga-default"
+        use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
+        run_agent = app_state.agent
+        if agent_id != "cuga-default" or use_draft:
+            resolved = await _resolve_stream_agent(request, agent_id, use_draft)
+            run_agent = resolved or run_agent
+        if not run_agent or not run_agent.graph:
             raise HTTPException(status_code=503, detail="Agent graph not initialized")
 
         try:
-            state_snapshot = app_state.agent.graph.get_state({"configurable": {"thread_id": thread_id}})
+            state_snapshot = run_agent.graph.get_state(
+                {"configurable": {"thread_id": _checkpoint_thread_id(thread_id, user_id, agent_id)}}
+            )
 
             if not state_snapshot or not state_snapshot.values:
                 return JSONResponse(
