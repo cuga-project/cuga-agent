@@ -25,7 +25,7 @@ if ! command -v pnpm >/dev/null; then
 fi
 
 echo "== install workspace deps (first run downloads Carbon/React — a few min) =="
-( cd "$WS" && pnpm install --frozen-lockfile )
+( cd "$WS" && pnpm install )
 
 echo "== build + publish (delegates to frontend/build.sh — production, copies into the package) =="
 ( cd "$FE" && bash build.sh )
