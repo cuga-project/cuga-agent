@@ -79,15 +79,18 @@ def configure_in_terminal(command, cwd, env, endpoint, *, change=False):
         stderr=slave,
     )
     os.close(slave)
-    answers = ([(b"Change it? [y/N]:", b"y\n")] if change else []) + [
-        (b"Provider [1]:", b"4\n" if change else b"5\n"),
-        (b"Model identifier", b"cuga-smoke-updated\n" if change else b"cuga-smoke\n"),
-        (b"Endpoint URL", (endpoint + "\n").encode()),
+    # Exercise actual arrow-key menus and prefilled inputs, not a separate test UI.
+    answers = ([(b"Existing configuration", b"\x1b[B\r")] if change else []) + [
+        (b"Inference provider", b"\x1b[A\r" if change else b"\x1b[B" * 4 + b"\r"),
+        (b"Model identifier", b"\x01\x0bcuga-smoke-updated\r" if change else b"\x01\x0bcuga-smoke\r"),
+        (b"Endpoint URL", b"\x01\x0b" + endpoint.encode() + b"\r"),
     ]
     if not change:
-        answers.append((b"OPENAI_API_KEY", b"cuga-wheel-smoke-local-value\n"))  # pragma: allowlist secret
+        answers.append((b"API key", b"cuga-wheel-smoke-local-value\r"))  # pragma: allowlist secret
+    answers.append((b"Review & test", b"\r"))
 
     output = b""
+    screen_output = b""
     deadline = time.monotonic() + 180
     try:
         while time.monotonic() < deadline:
@@ -99,8 +102,14 @@ def configure_in_terminal(command, cwd, env, endpoint, *, change=False):
                 if not chunk:
                     break
                 output += chunk
-                if answers and answers[0][0] in output:
+                screen_output += chunk
+                # prompt_toolkit requests a cursor position when drawing an inline UI.
+                if b"\x1b[6n" in chunk:
+                    os.write(master, b"\x1b[1;1R")
+                visible = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", screen_output)
+                if answers and answers[0][0] in visible:
                     _, answer = answers.pop(0)
+                    screen_output = b""
                     os.write(master, answer)
             if process.poll() is not None:
                 break
@@ -123,8 +132,9 @@ def main():
         env = {
             k: v
             for k, v in os.environ.items()
-            if k not in ("PYTHONPATH", "ENV_FILE", "MODEL_NAME", "CUGA_SECRET_KEY")
-            and not k.endswith(("API_KEY", "APIKEY"))
+            if k
+            not in ("CI", "PYTHONPATH", "ENV_FILE", "MODEL_NAME", "CUGA_SECRET_KEY", "AGENT_SETTING_CONFIG")
+            and not k.endswith(("API_KEY", "APIKEY", "BASE_URL", "ENDPOINT"))
             and not k.startswith(("DYNACONF_", "CUGA_"))
         }
         env.update(
@@ -133,6 +143,7 @@ def main():
             CUGA_DATA_DIR=str(root / "data"),
             CUGA_TEST_ENV="true",
             CUGA_MANAGER_MODE="true",
+            TERM="xterm-256color",
         )
         wheels = json.loads((source / "install/torch-wheels.json").read_text())
         cpu = wheels[f"{platform.system()}-{platform.machine()}"]
