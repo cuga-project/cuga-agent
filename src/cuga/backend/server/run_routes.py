@@ -713,7 +713,17 @@ async def run_sync(request: Request):
         finally:
             await _release_supervisor(supervisor)
     try:
-        async for frame in _EVENT_STREAM(
+        runtime_kwargs = {}
+        from contextlib import aclosing
+        from cuga.backend.server.onboarding import ensure_default_agent, manager_mode
+
+        if manager_mode():
+            use_draft = str(body.get("use_draft", "")).lower() in ("1", "true", "yes", "on")
+            state = request.app.state
+            run_agent = await ensure_default_agent(request, state.app_state, state.draft_app_state, use_draft)
+            execution_state = state.draft_app_state if use_draft else state.app_state
+            runtime_kwargs["current_llm"] = execution_state.current_llm
+        frames = _EVENT_STREAM(
             query,
             api_mode=settings.advanced_features.mode == "api",
             resume=resume,
@@ -722,25 +732,28 @@ async def run_sync(request: Request):
             disable_history=disable_history,
             user_id=user_id,
             user_attachments=attachments,
-        ):
-            try:
-                ev = StreamEvent.parse(
-                    frame.decode("utf-8") if isinstance(frame, (bytes, bytearray)) else str(frame)
-                )
-            except Exception:  # noqa: BLE001 — a malformed/foreign frame must not sink the run
-                continue
-            if ev is None or not ev.name:
-                continue
-            if ev.name in _RUN_ANSWER_NAMES:
-                out = _run_unpack_answer(ev.data)
-                status = "ok"
-                break
-            if ev.name in _RUN_ERROR_NAMES:
-                unpacked = _run_unpack_answer(ev.data)
-                err = unpacked.get("answer") or f"agent {ev.name}"
-                status = "error"
-                break
-            # every other frame is in-flight progress — the whole point of /run is to drop it
+            **runtime_kwargs,
+        )
+        async with aclosing(frames):
+            async for frame in frames:
+                try:
+                    ev = StreamEvent.parse(
+                        frame.decode("utf-8") if isinstance(frame, (bytes, bytearray)) else str(frame)
+                    )
+                except Exception:  # noqa: BLE001 — a malformed/foreign frame must not sink the run
+                    continue
+                if ev is None or not ev.name:
+                    continue
+                if ev.name in _RUN_ANSWER_NAMES:
+                    out = _run_unpack_answer(ev.data)
+                    status = "ok"
+                    break
+                if ev.name in _RUN_ERROR_NAMES:
+                    unpacked = _run_unpack_answer(ev.data)
+                    err = unpacked.get("answer") or f"agent {ev.name}"
+                    status = "error"
+                    break
+                # every other frame is in-flight progress — the whole point of /run is to drop it
     except Exception:  # noqa: BLE001
         logger.exception("/run failed")  # detail stays here, not in the reply
         return JSONResponse(
