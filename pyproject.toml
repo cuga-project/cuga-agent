@@ -1,6 +1,6 @@
 [project]
 name = "cuga"
-version = "0.4.0"
+version = "0.4.1"
 description = "CUGA is an open-source generalist agent for the enterprise, supporting complex task execution on web and APIs, OpenAPI/MCP integrations, composable architecture, reasoning modes, and policy-aware features."
 readme = "README.md"
 license = "Apache-2.0"
@@ -41,6 +41,7 @@ dependencies = [
     "mcp[cli]>=1.28.1",
     "psutil>=7.0.0",
     "typer>=0.15.3",
+    "prompt-toolkit>=3.0.52,<4",
     "typer-slim>=0.15.3", # explicit: docling pulls typer meta-package which needs typer-slim
     # <4: fastmcp 4.0.0 is currently beta. Lift to >=4.0.0 once a stable release exists.
     # >=3.3.0 so the fastmcp/ package has exactly one owner. Up to 3.2.x the fastmcp
@@ -93,6 +94,9 @@ dependencies = [
     "toolguard>=0.2.17",
     "cuga-oak-health; python_version>='3.12'",
     "aiosmtpd",
+    # Publish stricter floors for direct dependencies; the installer carries transitive constraints.
+    "python-dotenv>=1.1.0",
+
 ]
 
 [project.optional-dependencies]
@@ -265,7 +269,7 @@ eval_api = "scripts.commands:run_eval_api"
 appworld_eval = "evaluation.appworld_eval:run_main"
 appworld_setup = "scripts.commands:setup_appworld_environment"
 appworld_setup_docker = "scripts.commands:setup_appworld_environment_docker"
-cuga = "cuga.cli:app"
+cuga = "cuga.cli:run_cli"
 cuga-acp = "cuga.backend.server.acp.stdio:main"
 code = "evaluation.code_generator:main"
 exp = "scripts.eval_gui:main"
