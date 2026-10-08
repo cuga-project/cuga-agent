@@ -33,10 +33,7 @@ async def apply_published_config(app_state: Any, config: dict[str, Any]) -> None
             secrets_mode = "local"
             force_env = False
 
-        if force_env and os.getenv("CUGA_LOCAL_MANAGER", "").lower() == "true":
-            LLMManager()._models.clear()
-            app_state.current_llm = None
-        elif force_env:
+        if force_env:
             if "model" in llm_cfg and llm_cfg["model"]:
                 os.environ["MODEL_NAME"] = str(llm_cfg["model"])
             else:
@@ -125,10 +122,7 @@ def apply_llm_to_state(state: Any, llm_cfg: dict) -> None:
         logger.debug(f"Failed to get secrets settings: {_e}")
         force_env = False
 
-    if force_env and os.getenv("CUGA_LOCAL_MANAGER", "").lower() == "true":
-        LLMManager()._models.clear()
-        state.current_llm = None
-    elif force_env:
+    if force_env:
         if llm_cfg.get("model"):
             os.environ["MODEL_NAME"] = str(llm_cfg["model"])
         else:
