@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Harborline Sales</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,520;9..144,640&family=Outfit:wght@380;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark">H</span>
+      <div>
+        <strong>Harborline</strong>
+        <em>Sales desk</em>
+      </div>
+    </div>
+    <nav class="views" aria-label="Sales views">
+      <button type="button" data-view="pipeline" class="active">Pipeline</button>
+      <button type="button" data-view="accounts">Accounts</button>
+      <button type="button" data-view="leads">Leads</button>
+      <button type="button" data-view="contacts">Contacts</button>
+    </nav>
+  </header>
+
+  <section class="kpis" id="kpis" aria-live="polite"></section>
+
+  <main>
+    <section class="board" id="board" aria-live="polite"></section>
+    <aside class="chat" aria-label="Sales assistant">
+      <header>
+        <div>
+          <strong>Assistant</strong>
+          <span>Uses the Harborline book</span>
+        </div>
+      </header>
+      <div class="messages" id="messages">
+        <article class="bubble assistant">
+          <p>Ask about the open pipeline, a named account, or tell me to move a deal.</p>
+        </article>
+      </div>
+      <form id="chat-form">
+        <label class="sr" for="chat-input">Message</label>
+        <textarea id="chat-input" rows="2" placeholder="Which deals are in negotiation?"></textarea>
+        <button type="submit" id="send">Send</button>
+      </form>
+    </aside>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
