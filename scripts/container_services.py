@@ -114,8 +114,18 @@ def main() -> int:
     if mode == "registry" or (url and url != "http://127.0.0.1:8201/sse"):
         os.execvp(command[0], command)
     evolve_command = shutil.which("evolve-mcp")
+    embedded = os.environ.get("CUGA_EMBEDDED_EVOLVE", "false").lower() == "true"
     if evolve_command is None:
+        if embedded:
+            raise RuntimeError("CUGA_EMBEDDED_EVOLVE=true requires the Evolve extra")
         os.execvp(command[0], command)
+    if embedded:
+        from cuga.config import get_service_instance_id
+
+        service_instance_id = get_service_instance_id().strip()
+        if not service_instance_id:
+            raise RuntimeError("DYNACONF_SERVICE__INSTANCE_ID is required when CUGA_EMBEDDED_EVOLVE=true")
+        os.environ["EVOLVE_NAMESPACE_ID"] = service_instance_id
     data_dir = Path(os.environ.setdefault("EVOLVE_DATA_DIR", "/data/dbs/evolve"))
     data_dir.mkdir(parents=True, exist_ok=True)
     # The deployer owns the integration toggle. Provision the installed service
