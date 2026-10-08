@@ -19,21 +19,34 @@ The installer selects matched, hash-pinned CPU PyTorch wheels. On Apple Silicon,
 
 ## Configure your provider locally
 
-Open the URL printed by the CLI, then open `/manage`.
+On the first `cuga start manager`, an interactive terminal guides you through provider selection before starting the manager.
 
-1. In **Set up your first agent**, choose OpenAI, OpenRouter, Groq, Ollama, or an OpenAI-compatible private endpoint.
-2. Enter a model identifier available to your provider. For Ollama or a private endpoint, enter its base URL. Enter an API key when required.
-3. Select **Save and test connection**. CUGA encrypts the credential in its local secret store and saves a reference in the draft. The test sends a short inference request to your selected provider. Check the provider, model, endpoint, and credential if it fails.
-4. Select **Try your first task**. In **Try it out**, ask: **What can you help me automate?** Then connect tools and try a task using them.
+1. Choose OpenAI, OpenRouter, watsonx, Ollama, Groq, Azure OpenAI, RITS, MiniMax, or an OpenAI-compatible private endpoint.
+2. Enter a model identifier and endpoint URL. Credentials use hidden terminal input. For watsonx, also choose a project or space ID.
+3. CUGA sends a short inference request using the selected connection. It saves the configuration only after a successful test, in a local `.env` with permissions `0600`. A failed test preserves existing configuration.
+4. Open the printed URL and go to `/manage`. In **Configure & try it out**, ask **What can you help me automate?** Then connect tools and try a task using them.
 5. Select **Publish** when your draft is ready. Published versions are used in **Chat**.
 
-Change an existing provider through the manager's **LLM** section. Repeated installation and normal manager restarts preserve configuration and local data.
+Existing provider configuration is detected and reused without prompts or additional test requests. To change or validate it explicitly:
+
+```bash
+cuga setup         # Change provider/model/credentials interactively
+cuga setup --check # Test the existing connection without changing it
+cuga start manager
+```
+
+Terminal setup uses the existing packaged model profiles, including `settings.watsonx.toml`, and writes `AGENT_SETTING_CONFIG`, `MODEL_NAME`, and provider environment variables. For watsonx, it recognizes both `WATSONX_API_KEY` and the existing `WATSONX_APIKEY` alias. It preserves unrelated `.env` keys and comments. Explicit `ENV_FILE` selects a file using CUGA's existing loading precedence; otherwise a project `.env` is used when found, with stored local configuration filling missing values. Shell values take precedence over implicit `.env` files.
+
+For the local manager, the terminal connection remains authoritative even when saved agent configurations contain an older model or endpoint. Tools, policies, knowledge, and agent data remain in the manager. Repeated installation and normal restarts preserve them. Stop and restart the manager after changing the terminal configuration.
+
+Docker presets, including the default CRM and knowledge agents in `Dockerfile.ubi`, keep their existing startup flow. They do not show a setup wizard or prompt for provider credentials. CI and other noninteractive launches do not prompt; configure the environment first, or use `ENV_FILE=/path/to/.env cuga start manager`.
 
 ## Local data
 
 | Item | Default location |
 | --- | --- |
-| Agent configurations, policies, and encrypted secrets | `~/.local/share/cuga/dbs/cuga.db` |
+| Provider configuration | `~/.local/share/cuga/.env` (credentials stored locally, permissions `0600`) |
+| Agent configurations, policies, and encrypted manager secrets | `~/.local/share/cuga/dbs/cuga.db` |
 | Encryption key | `~/.local/share/cuga/secret.key` (permissions `0600`) |
 | Workspace | `~/.local/share/cuga/workspace/` |
 | Logs | `~/.local/share/cuga/logs/` |
@@ -41,7 +54,7 @@ Change an existing provider through the manager's **LLM** section. Repeated inst
 | Isolated environment | Shown by `uv tool dir` |
 | Command directory | Shown by `uv tool dir --bin` |
 
-Set `CUGA_DATA_DIR` or `XDG_DATA_HOME` to select another data directory. Existing explicit storage, logging, encryption-key, and provider environment settings take precedence. Back up the database **and encryption key together**; the key decrypts your saved credentials. Keep this directory private.
+Set `CUGA_DATA_DIR` or `XDG_DATA_HOME` to select another data directory. Existing explicit storage, logging, and encryption-key settings take precedence. Provider loading follows the precedence described above. Back up the database **and encryption key together**; the key decrypts your saved credentials. Keep this directory private.
 
 The manager binds to `127.0.0.1` by default. Enterprise deployments should configure authentication and storage/secret backends through the [configuration guide](readme/configuration-guide.md#authentication-and-access-control).
 
