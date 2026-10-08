@@ -284,7 +284,12 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
             }
         )
 
-        runtime_thread_id = cfg.get("thread_id") or state.thread_id
+        runtime_thread_id = (
+            cfg.get("workspace_thread_id")
+            or cfg.get("logical_thread_id")
+            or cfg.get("thread_id")
+            or state.thread_id
+        )
         runtime_backends = resolve_runtime_backends(settings, cfg)
         runtime_bundle = build_runtime_tools(thread_id=runtime_thread_id, backends=runtime_backends)
         adapter._agent_tools_context.update(runtime_bundle.execution_callables)
