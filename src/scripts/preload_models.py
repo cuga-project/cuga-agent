@@ -117,23 +117,24 @@ def preload_evolve() -> None:
     from altk_evolve.config.guidelines import guidelines_settings
     from altk_evolve.config.milvus import milvus_other_settings
     from altk_evolve.config.postgres import postgres_db_settings
-    from sentence_transformers import SentenceTransformer
+    from altk_evolve.embeddings import get_embedding_model
+    from altk_evolve.embedding_assets import CODERANK_MODEL, MINILM_MODEL
 
     models = {
         (milvus_other_settings.embedding_model, False),
         (postgres_db_settings.embedding_model, False),
         (
-            guidelines_settings.consistency_embedding_model_small or milvus_other_settings.embedding_model,
+            guidelines_settings.consistency_embedding_model_small or MINILM_MODEL,
             guidelines_settings.consistency_embedding_trust_remote_code,
         ),
         (
-            guidelines_settings.consistency_embedding_model_large or milvus_other_settings.embedding_model,
+            guidelines_settings.consistency_embedding_model_large or CODERANK_MODEL,
             guidelines_settings.consistency_embedding_trust_remote_code,
         ),
     }
     for model_name, trust_remote_code in sorted(models):
         print(f"→ Preloading Evolve embedding model {model_name}...")
-        model = SentenceTransformer(model_name, device="cpu", trust_remote_code=trust_remote_code)
+        model = get_embedding_model(model_name, trust_remote_code=trust_remote_code)
         model.encode(["airgap warmup"])
 
 

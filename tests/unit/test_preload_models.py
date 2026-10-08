@@ -19,8 +19,8 @@ def test_supported_image_bakes_evolve_for_offline_runtime() -> None:
     entrypoint = (REPO_ROOT / "scripts/docker-entrypoint.sh").read_text()
 
     project = (REPO_ROOT / "pyproject.toml").read_text()
-    assert "altk-evolve[pii-regex]" in project
-    assert "altk-evolve[pii-regex]>=1.5.2,<2" in project
+    assert "altk-evolve[fastembed,pii-regex]" in project
+    assert "altk-evolve[fastembed,pii-regex]>=1.6.1,<2" in project
     assert "github.com/AgentToolkit/altk-evolve/archive/" not in project
     assert "--frozen --no-editable --no-dev" in dockerfile
     assert "--group evolve-image" in dockerfile
@@ -129,12 +129,13 @@ def test_airgap_preload_covers_cuga_layout_engine_repos() -> None:
 def test_preload_evolve_uses_configured_models_without_extra_defaults(override) -> None:
     from scripts.preload_models import preload_evolve
 
-    sentence_transformer = MagicMock()
+    loader = MagicMock()
+    export = MagicMock()
     modules = {
         "altk_evolve.config.guidelines": SimpleNamespace(
             guidelines_settings=SimpleNamespace(
-                consistency_embedding_model_small=None,
-                consistency_embedding_model_large=override,
+                consistency_embedding_model_small="BAAI/bge-small-en-v1.5",
+                consistency_embedding_model_large=override or "BAAI/bge-small-en-v1.5",
                 consistency_embedding_trust_remote_code=False,
             )
         ),
@@ -144,16 +145,23 @@ def test_preload_evolve_uses_configured_models_without_extra_defaults(override) 
         "altk_evolve.config.postgres": SimpleNamespace(
             postgres_db_settings=SimpleNamespace(embedding_model="BAAI/bge-small-en-v1.5")
         ),
-        "sentence_transformers": SimpleNamespace(SentenceTransformer=sentence_transformer),
+        "altk_evolve.embeddings": SimpleNamespace(
+            get_embedding_model=loader,
+            EmbeddingSettings=lambda: SimpleNamespace(embedding_provider="fastembed"),
+        ),
+        "altk_evolve.export_embeddings": SimpleNamespace(export_coderank=export),
+        "altk_evolve.embedding_assets": SimpleNamespace(
+            CODERANK_MODEL="nomic-ai/CodeRankEmbed",
+            MINILM_MODEL="sentence-transformers/all-MiniLM-L6-v2",
+        ),
     }
     with patch.dict(sys.modules, modules):
         preload_evolve()
+    export.assert_not_called()
 
-    expected = ["BAAI/bge-small-en-v1.5"] + ([override] if override else [])
-    assert sentence_transformer.call_args_list == [
-        call(model, device="cpu", trust_remote_code=False) for model in expected
-    ]
-    assert sentence_transformer.return_value.encode.call_count == len(expected)
+    expected = sorted({"BAAI/bge-small-en-v1.5", override or "BAAI/bge-small-en-v1.5"})
+    assert loader.call_args_list == [call(model, trust_remote_code=False) for model in expected]
+    assert loader.return_value.encode.call_count == len(expected)
 
 
 @pytest.mark.unit
@@ -164,3 +172,44 @@ def test_strict_preload_turns_optional_failure_into_build_failure(monkeypatch: p
 
     with pytest.raises(RuntimeError, match="docling preload failed"):
         handle_preload_error("docling", ValueError("download unavailable"))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stage", ["builder", "runtime"])
+def test_image_evolve_embedding_settings_match_preloaded_bge(stage, monkeypatch) -> None:
+    """Read each image stage's defaults through Evolve's real settings classes."""
+    import shlex
+
+    milvus = pytest.importorskip("altk_evolve.config.milvus")
+    postgres = pytest.importorskip("altk_evolve.config.postgres")
+    guidelines = pytest.importorskip("altk_evolve.config.guidelines")
+
+    dockerfile = (REPO_ROOT / "Dockerfile.ubi").read_text()
+    stages = dockerfile.split("FROM ${BASE_IMAGE}")
+    source = stages[1 if stage == "builder" else 2].replace(chr(92) + "\n", " ")
+    env = {}
+    for line in source.splitlines():
+        if line.startswith("ENV "):
+            for assignment in shlex.split(line[4:]):
+                if "=" in assignment:
+                    key, value = assignment.split("=", 1)
+                    env[key] = value
+    for key in (
+        "EVOLVE_EMBEDDING_MODEL",
+        "EVOLVE_PG_EMBEDDING_MODEL",
+        "EVOLVE_CONSISTENCY_EMBEDDING_MODEL_SMALL",
+        "EVOLVE_CONSISTENCY_EMBEDDING_MODEL_LARGE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+        if key in env:
+            monkeypatch.setenv(key, env[key])
+
+    assert env["EVOLVE_EMBEDDING_PROVIDER"] == "fastembed"
+    expected = "BAAI/bge-small-en-v1.5"
+    milvus_settings = milvus.MilvusOtherSettings(_env_file=None)
+    assert milvus_settings.embedding_model == expected
+    assert milvus.MilvusDBSettings(_env_file=None).embedding_model == expected
+    assert postgres.PostgresDBSettings(_env_file=None).embedding_model == expected
+    settings = guidelines.GuidelinesSettings(_env_file=None)
+    assert settings.consistency_embedding_model_small == expected
+    assert settings.consistency_embedding_model_large == expected
