@@ -1,12 +1,14 @@
-"""Install a wheel without project context; check credential-free manager startup."""
+"""Install outside a checkout; exercise terminal setup and a first manager task."""
 
 import json
 import os
 import platform
+import pty
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import re
 import signal
+import select
 import socket
 import subprocess
 import sys
@@ -66,6 +68,53 @@ def request_json(base, path, body=None, method=None):
         return json.load(response)
 
 
+def configure_in_terminal(command, cwd, env, endpoint, *, change=False):
+    master, slave = pty.openpty()
+    process = subprocess.Popen(
+        [command, "setup"],
+        cwd=cwd,
+        env=env,
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+    )
+    os.close(slave)
+    answers = ([(b"Change it? [y/N]:", b"y\n")] if change else []) + [
+        (b"Provider [1]:", b"4\n" if change else b"5\n"),
+        (b"Model identifier", b"cuga-smoke-updated\n" if change else b"cuga-smoke\n"),
+        (b"Endpoint URL", (endpoint + "\n").encode()),
+    ]
+    if not change:
+        answers.append((b"OPENAI_API_KEY", b"cuga-wheel-smoke-local-value\n"))  # pragma: allowlist secret
+
+    output = b""
+    deadline = time.monotonic() + 180
+    try:
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], 0.2)[0]:
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                output += chunk
+                if answers and answers[0][0] in output:
+                    _, answer = answers.pop(0)
+                    os.write(master, answer)
+            if process.poll() is not None:
+                break
+        assert process.wait(timeout=5) == 0, output.decode(errors="replace")
+        assert not answers, output.decode(errors="replace")
+        assert b"Connection verified." in output, output.decode(errors="replace")
+        assert b"cuga-wheel-smoke-local-value" not in output, "Terminal credential was echoed"
+    finally:
+        os.close(master)
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+
+
 def main():
     wheel = Path(sys.argv[1]).resolve()
     source = Path(__file__).resolve().parent
@@ -118,16 +167,39 @@ def main():
         provider = ThreadingHTTPServer(("127.0.0.1", 0), TestProvider)
         provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
         provider_thread.start()
+
+        class SecondProvider(TestProvider):
+            requests = []
+
+        second_provider = ThreadingHTTPServer(("127.0.0.1", 0), SecondProvider)
+        second_thread = threading.Thread(target=second_provider.serve_forever, daemon=True)
+        second_thread.start()
         endpoint = f"http://127.0.0.1:{provider.server_port}/v1"
         env["CUGA_RUN_TOKEN"] = "cuga-wheel-smoke-local-token"
         env["CUGA_EVENTS_ENABLED"] = "true"
         key = None
         try:
+            cwd = root / "setup-directory"
+            cwd.mkdir()
+            configure_in_terminal(str(root / "bin/cuga"), cwd, env, endpoint)
+            stored_env = (root / "data/.env").read_bytes()
+            assert (root / "data/.env").stat().st_mode & 0o777 == 0o600
+            subprocess.run([str(root / "bin/cuga"), "setup", "--check"], cwd=cwd, env=env, check=True)
             for repeat in (False, True):
                 cwd = root / ("second-directory" if repeat else "first-directory")
                 cwd.mkdir()
                 if repeat:
                     subprocess.run(install_command, cwd=cwd, env=env, check=True)
+                    # Change a connection after both draft and published configs exist.
+                    old_count = len(TestProvider.requests)
+                    configure_in_terminal(
+                        str(root / "bin/cuga"),
+                        cwd,
+                        env,
+                        f"http://127.0.0.1:{second_provider.server_port}/v1",
+                        change=True,
+                    )
+                    stored_env = (root / "data/.env").read_bytes()
                 with (root / f"startup-{repeat}.log").open("w+") as log:
                     process = subprocess.Popen(
                         [str(root / "bin/cuga"), "start", "manager"],
@@ -138,7 +210,17 @@ def main():
                         start_new_session=True,
                     )
                     try:
-                        check_manager(base, process, root, endpoint, repeat, env["CUGA_RUN_TOKEN"])
+                        check_manager(base, process, repeat, env["CUGA_RUN_TOKEN"])
+                        assert (root / "data/.env").read_bytes() == stored_env
+                        if repeat:
+                            assert len(TestProvider.requests) == old_count, (
+                                "Old endpoint was used after setup changed"
+                            )
+                            assert SecondProvider.requests
+                            assert all(
+                                model == "cuga-smoke-updated" and auth == "Bearer ollama"
+                                for model, auth in SecondProvider.requests
+                            ), SecondProvider.requests
                         current_key = (root / "data/secret.key").read_bytes()
                         assert len(current_key) == 44
                         if repeat:
@@ -153,50 +235,40 @@ def main():
                             os.killpg(process.pid, signal.SIGTERM)
                         process.wait(timeout=15)
         finally:
+            second_provider.shutdown()
+            second_provider.server_close()
+            second_thread.join(timeout=5)
             provider.shutdown()
             provider.server_close()
             provider_thread.join(timeout=5)
         assert TestProvider.requests
         assert all(auth == "Bearer cuga-wheel-smoke-local-value" for _, auth in TestProvider.requests)
         print(
-            "Verified installed wheel: manager/frontend, provider validation, first task, and preserved configuration after reinstall from another directory."
+            "Verified installed wheel: hidden terminal credentials, provider validation, existing manager/frontend, first task, and preserved .env/configuration after reinstall from another directory."
         )
 
 
-def check_manager(base, process, root, endpoint, repeat, token):
+def check_manager(base, process, repeat, token):
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
         try:
-            with urlopen(base + "/api/manage/setup/status", timeout=2) as response:
-                status = json.load(response)
-            assert status == {"enabled": True, "configured": repeat}, status
+            with urlopen(base + "/manage", timeout=2) as response:
+                assert response.status == 200
             break
         except OSError:
             if process.poll() is not None:
-                raise RuntimeError("Manager exited before setup was available")
+                raise RuntimeError("Manager exited before the UI was available")
             time.sleep(1)
     else:
-        raise RuntimeError("Manager did not serve setup within 180 seconds")
+        raise RuntimeError("Manager did not serve the UI within 180 seconds")
     with urlopen(base + "/manage", timeout=5) as response:
         html = response.read().decode()
     for asset in re.findall(r'src=["\']([^"\']+\.js)["\']', html):
         with urlopen(base + "/" + asset.lstrip("/"), timeout=5) as response:
             assert response.status == 200
     if not repeat:
-        secret = request_json(
-            base,
-            "/api/secrets",
-            {"id": "wheel-smoke", "value": "cuga-wheel-smoke-local-value", "agent_id": "cuga-default"},
-        )
-        request_json(
-            base,
-            "/api/manage/config/draft/llm",
-            {"provider": "openai", "model": "cuga-smoke", "base_url": endpoint, "api_key": secret["ref"]},
-            "PATCH",
-        )
-        request_json(base, "/api/manage/setup/validate", {}, "POST")
         draft = request_json(base, "/api/manage/config?draft=1")["config"]
-        assert draft["llm"]["api_key"] == "db://wheel-smoke"
+        assert draft["llm"]["model"] == "cuga-smoke"
         request = Request(
             base + "/stream",
             data=json.dumps({"query": "Say hello."}).encode(),
@@ -222,7 +294,15 @@ def check_manager(base, process, root, endpoint, repeat, token):
             knowledge_stream
         )
         request_json(base, "/api/manage/config", {"config": draft}, "POST")
-        assert request_json(base, "/api/manage/setup/status")["configured"]
+    if repeat:
+        draft_request = Request(
+            base + "/stream",
+            data=json.dumps({"query": "Say hello."}).encode(),
+            headers={"Content-Type": "application/json", "X-Use-Draft": "true"},
+        )
+        with urlopen(draft_request, timeout=180) as response:
+            stream = response.read().decode()
+        assert "event: Answer" in stream and "CUGA first task completed." in stream, stream
     request = Request(
         base + "/run",
         data=json.dumps({"query": "Say hello.", "disable_history": True}).encode(),
