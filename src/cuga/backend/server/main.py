@@ -46,6 +46,10 @@ from cuga.backend.server.error_responses import (
     safe_error_payload,
     safe_error_response,
 )
+from cuga.backend.server.health import (
+    build_subsystem_status,
+    make_readiness_response,
+)
 from cuga.config import (
     get_app_name_from_url,
     get_user_data_path,
@@ -488,18 +492,19 @@ class AppState:
         self.initialize_sdk()
 
     def set_subsystem_status(
-        self, name: str, state: str, message: str = "", details: Optional[Dict[str, Any]] = None
+        self,
+        name: str,
+        state: str,
+        message: str = "",
+        details: Optional[Dict[str, Any]] = None,
+        required: Optional[bool] = None,
     ) -> None:
-        payload = {
-            "state": state,
-            "message": message,
-            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        }
-        if details:
-            payload["details"] = details
-        else:
-            payload["details"] = {}
-        self.subsystem_statuses[name] = payload
+        self.subsystem_statuses[name] = build_subsystem_status(
+            state=state,
+            message=message,
+            details=details,
+            required=required,
+        )
 
     def get_subsystem_status(self, name: str) -> Dict[str, Any]:
         return self.subsystem_statuses.get(
@@ -507,6 +512,7 @@ class AppState:
             {
                 "state": "unknown",
                 "message": "",
+                "required": False,
                 "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "details": {},
             },
@@ -2189,34 +2195,10 @@ async def health():
 
 @app.get("/health/readiness")
 async def readiness(subsystem: Optional[str] = Query(None)):
-    statuses = app_state.get_subsystem_statuses()
-
-    if subsystem:
-        status = app_state.get_subsystem_status(subsystem)
-        return JSONResponse(
-            {
-                "subsystem": subsystem,
-                "status": status["state"],
-                "ready": status["state"] == "ready",
-                "message": status.get("message", ""),
-                "details": status.get("details", {}),
-                "updated_at": status.get("updated_at"),
-            }
-        )
-
-    active_states = [info["state"] for info in statuses.values() if info["state"] != "disabled"]
-    overall = "ready"
-    if any(state == "failed" for state in active_states):
-        overall = "degraded"
-    elif any(state != "ready" for state in active_states):
-        overall = "starting"
-
-    return JSONResponse(
-        {
-            "status": overall,
-            "ready": overall == "ready",
-            "subsystems": statuses,
-        }
+    return make_readiness_response(
+        subsystem=subsystem,
+        statuses=app_state.get_subsystem_statuses(),
+        get_subsystem_status_fn=app_state.get_subsystem_status,
     )
 
 
