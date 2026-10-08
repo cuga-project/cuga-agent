@@ -163,13 +163,13 @@ class InstructionsManager:
             file_path = file_path[2:]
 
         # Get the absolute path of the current config.py file
-        config_dir = Path(__file__).parent.parent.absolute()
+        config_dir = Path(__file__).parent.parent.resolve()
         full_path = config_dir / file_path
 
         # Validate that the path is within the config directory for security
         try:
             full_path = full_path.resolve()
-            if not str(full_path).startswith(str(config_dir)):
+            if not full_path.is_relative_to(config_dir):
                 logger.warning(f"Security warning: Path {file_path} is outside config directory")
                 return ""
         except Exception as e:
