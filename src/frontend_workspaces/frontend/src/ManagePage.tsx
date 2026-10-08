@@ -77,7 +77,6 @@ import {
 import { parseImportedSupervisorFields } from "./manage/parseImportedConfig";
 import { isAbortError } from "./manage/hooks/saveHelpers";
 import "./ManagePage.css";
-import { FirstRunSetup } from "./FirstRunSetup";
 
 export type { ToolEntry } from "./types/tools";
 
@@ -115,7 +114,7 @@ export interface AgentConfig {
   agent?: { name?: string; description?: string; kind?: "single" | "supervisor" };
   supervisor?: { subAgents?: SubAgentRef[]; planApproval?: boolean; _saveSeq?: number };
   llm?: {
-    provider?: "groq" | "openai" | "openrouter" | "litellm";
+    provider?: "groq" | "openai" | "litellm";
     api_key?: string;
     auth_type?: "api_key" | "auth_header";
     auth_header_name?: string;
@@ -321,7 +320,6 @@ export interface ConfigVersion {
 const LLM_PROVIDERS = [
   { id: "groq", label: "Groq", defaultModel: "llama-3.3-70b-versatile", defaultBase: "" },
   { id: "openai", label: "OpenAI", defaultModel: "gpt-4o", defaultBase: "" },
-  { id: "openrouter", label: "OpenRouter", defaultModel: "", defaultBase: "" },
   { id: "litellm", label: "LiteLLM", defaultModel: "", defaultBase: "http://localhost:4000" },
 ] as const;
 
@@ -1550,8 +1548,6 @@ export function ManagePage() {
       <div className="manage-layout">
         <div className="manage-config-panel">
           <div className="manage-config-scroll">
-            {effectiveAgentId === "cuga-default" && <FirstRunSetup />}
-            {new URLSearchParams(search).has("first-task") && <InlineNotification kind="info" title="Try your first task" subtitle="In Try it out, ask: What can you help me automate? Your settings are saved as a draft. Publish when you are ready to use them in Chat." lowContrast hideCloseButton />}
             <Layer withBackground>
             <Accordion align="start" size="md">
               <AccordionItem title="Agent" open>
@@ -1713,7 +1709,7 @@ export function ManagePage() {
                         id="llm-provider"
                         value={llm.provider ?? "openai"}
                         onChange={(e) => {
-                          const id = (e.target.value || "openai") as "groq" | "openai" | "openrouter" | "litellm";
+                          const id = (e.target.value || "openai") as "groq" | "openai" | "litellm";
                           const prov = LLM_PROVIDERS.find((p) => p.id === id);
                           setLlmConfig((prev) => {
                             const next = { ...(prev ?? {}), provider: id };
