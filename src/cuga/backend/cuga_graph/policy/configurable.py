@@ -415,7 +415,7 @@ class PolicyConfigurable:
 
         return PolicyContext(
             user_input=user_input,
-            thread_id=configurable.get("thread_id"),
+            thread_id=configurable.get("logical_thread_id") or configurable.get("thread_id"),
             chat_messages=chat_messages,
             current_agent=current_agent,
             current_node=current_node,
