@@ -1,7 +1,8 @@
 """Terminal provider setup using CUGA's existing model profiles and .env loader."""
 
 import argparse
-import getpass
+from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -95,8 +96,82 @@ def missing_configuration() -> list[str]:
     return missing
 
 
-def test_connection(values: dict[str, str]) -> bool:
-    """Check the actual model client in a fresh process with a bounded timeout."""
+CONNECTION_MESSAGES = {
+    "ready": "Provider connection verified.",
+    "authentication": "Authentication was rejected. Check the API key and access permissions.",
+    "not_found": "The model or endpoint was not found. Check the model identifier and endpoint URL.",
+    "request": "The provider rejected the configuration. Check the model and provider-specific settings.",
+    "quota": "The provider reported a rate or quota limit. Check your allowance or retry later.",
+    "timeout": "The connection timed out. Check the endpoint or retry.",
+    "network": "Could not reach the provider. Check the endpoint and network connection.",
+    "tls": "Certificate verification failed. Check the endpoint certificate and local trust configuration.",
+    "dependency": "A provider dependency could not be loaded. Check the CUGA installation.",
+    "unknown": "Check your model, endpoint and credentials.",
+}
+CONNECTION_RESULT_PREFIX = "CUGA_SETUP_RESULT:"
+
+
+@dataclass(frozen=True)
+class ConnectionResult:
+    ok: bool
+    reason: str = "unknown"
+
+    def __bool__(self):
+        return self.ok
+
+    @property
+    def message(self) -> str:
+        return CONNECTION_MESSAGES.get(self.reason, CONNECTION_MESSAGES["unknown"])
+
+
+def connection_failure_reason(error: Exception) -> str:
+    """Classify provider errors without returning exception text or response bodies."""
+    seen = set()
+    fallback = "unknown"
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        status = getattr(error, "status_code", None) or getattr(
+            getattr(error, "response", None), "status_code", None
+        )
+        if status in (401, 403):
+            return "authentication"
+        if status == 404:
+            return "not_found"
+        if status == 429:
+            return "quota"
+        if status in (400, 422):
+            return "request"
+        name = type(error).__name__.lower()
+        if "ssl" in name or "certificate" in name:
+            return "tls"
+        if isinstance(error, TimeoutError) or "timeout" in name:
+            return "timeout"
+        if isinstance(error, ImportError):
+            return "dependency"
+        if "connection" in name or "connecterror" in name:
+            fallback = "network"
+        error = error.__cause__ or error.__context__
+    return fallback
+
+
+def validate_connection() -> int:
+    try:
+        from cuga.config import settings
+        from cuga.backend.llm.models import LLMManager
+
+        model_settings = dict(settings.agent.code.model)
+        model_settings.update(timeout=30, max_tokens=64)
+        model = LLMManager().get_model(model_settings)
+        model.invoke("Reply with: CUGA is ready.")
+    except Exception as error:
+        reason = connection_failure_reason(error)
+        print(CONNECTION_RESULT_PREFIX + json.dumps({"reason": reason}))
+        return 1
+    return 0
+
+
+def test_connection(values: dict[str, str]) -> ConnectionResult:
+    """Check the model client in a bounded subprocess; never echo provider output."""
     try:
         environment = {**os.environ, **values}
         # Candidate values must win over the previous explicit .env during validation.
@@ -108,9 +183,24 @@ def test_connection(values: dict[str, str]) -> bool:
             timeout=60,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return ConnectionResult(False, "timeout")
+    except OSError:
+        return ConnectionResult(False, "dependency")
+    if result.returncode == 0:
+        return ConnectionResult(True, "ready")
+    output = getattr(result, "stdout", b"")
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="replace")
+    for line in reversed(output.splitlines()):
+        if line.startswith(CONNECTION_RESULT_PREFIX):
+            try:
+                reason = json.loads(line[len(CONNECTION_RESULT_PREFIX) :])["reason"]
+                if isinstance(reason, str) and reason in CONNECTION_MESSAGES:
+                    return ConnectionResult(False, reason)
+            except (ValueError, KeyError, TypeError):
+                break
+    return ConnectionResult(False)
 
 
 def save_environment(path: Path, values: dict[str, str]) -> None:
@@ -133,69 +223,12 @@ def save_environment(path: Path, values: dict[str, str]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def prompt_value(label: str, current: str = "", *, secret: bool = False) -> str:
-    suffix = " [Enter to keep existing]" if secret and current else f" [{current}]" if current else ""
-    while True:
-        entered = getpass.getpass(f"{label}{suffix}: ") if secret else input(f"{label}{suffix}: ")
-        value = entered.strip() or current
-        if value:
-            return value
-        print("A value is required.")
-
-
 def configure(path: Path) -> bool:
-    print("\nConfigure your CUGA inference provider")
-    print(f"Configuration file: {path}")
-    for number, provider in enumerate(PROVIDERS, 1):
-        print(f"  {number}. {provider[0]}")
-    selected = None
-    while selected is None:
-        answer = input("Provider [1]: ").strip() or "1"
-        if answer.isdigit() and 1 <= int(answer) <= len(PROVIDERS):
-            selected = PROVIDERS[int(answer) - 1]
-        else:
-            print("Choose a provider number from the list.")
-    label, provider, credential, endpoint, default_endpoint = selected
-    filename = f"settings.{provider}.toml"
-    same_provider = filename == profile_name()
-    profile = read_profile(filename)
-    model = os.getenv("MODEL_NAME", "") if same_provider else ""
-    values = {
-        "AGENT_SETTING_CONFIG": filename,
-        "MODEL_NAME": prompt_value("Model identifier", model or profile.get("model_name", "")),
-        "DYNACONF_SECRETS__FORCE_ENV": "true",
-    }
-    if endpoint:
-        current = os.getenv(endpoint, "") if same_provider else ""
-        value = prompt_value("Endpoint URL", current or default_endpoint or profile.get("url", ""))
-        while not valid_endpoint(value):
-            print("Enter an http:// or https:// URL without embedded credentials.")
-            value = prompt_value("Endpoint URL")
-        values[endpoint] = value.rstrip("/")
-    if credential:
-        current_key = os.getenv(credential, "")
-        if provider == "watsonx":
-            current_key = current_key or os.getenv("WATSONX_APIKEY", "")
-        values[credential] = prompt_value(credential, current_key, secret=True)
-        if provider == "watsonx":
-            values["WATSONX_APIKEY"] = values[credential]
-    else:
-        values["OPENAI_API_KEY"] = "ollama"  # pragma: allowlist secret (Local server placeholder.)
-    if provider in ("openai", "ollama"):
-        values["LLM_AUTH_HEADER"] = ""
-    if provider == "watsonx":
-        current_scope = "space" if os.getenv("WATSONX_SPACE_ID") else "project"
-        scope_name = prompt_value("watsonx scope (project or space)", current_scope)
-        while scope_name not in ("project", "space"):
-            scope_name = prompt_value("watsonx scope (project or space)", current_scope)
-        scope = "WATSONX_SPACE_ID" if scope_name == "space" else "WATSONX_PROJECT_ID"
-        values[scope] = prompt_value(scope, os.getenv(scope, ""))
-        values["WATSONX_PROJECT_ID" if scope_name == "space" else "WATSONX_SPACE_ID"] = ""
-    print("Testing the connection with a short inference request…")
-    if not test_connection(values):
-        print(
-            f"Connection test failed for {label}. Check your model, endpoint and credentials; existing configuration was preserved."
-        )
+    from cuga.setup_terminal import run_setup
+
+    values = run_setup(path)
+    if values is None:
+        print("Setup cancelled; existing configuration was preserved.")
         return False
     save_environment(path, values)
     os.environ.update(values)
@@ -255,14 +288,7 @@ def main(argv=None) -> int:
     parser.add_argument("--validate", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.validate:
-        from cuga.config import settings
-        from cuga.backend.llm.models import LLMManager
-
-        model_settings = dict(settings.agent.code.model)
-        model_settings.update(timeout=30, max_tokens=64)
-        model = LLMManager().get_model(model_settings)
-        model.invoke("Reply with: CUGA is ready.")
-        return 0
+        return validate_connection()
     from cuga.local_setup import prepare_local_manager
 
     try:
@@ -279,8 +305,9 @@ def main(argv=None) -> int:
         if missing:
             print("Missing configuration: " + ", ".join(missing), file=sys.stderr)
             return 1
-        if not test_connection({}):
-            print("Connection test failed. Check your model, endpoint and credentials.", file=sys.stderr)
+        result = test_connection({})
+        if not result:
+            print(f"Connection test failed. {result.message}", file=sys.stderr)
             return 1
         print("Provider connection verified.")
         return 0
@@ -293,8 +320,16 @@ def main(argv=None) -> int:
     try:
         if not missing_configuration():
             print("Existing provider configuration detected.")
-            if input("Change it? [y/N]: ").strip().lower() not in ("y", "yes"):
-                return 0
+            from cuga.setup_terminal import TerminalUI
+
+            choice = TerminalUI().choose(
+                "Existing configuration",
+                "A provider is already configured. Keep it or update the connection?",
+                [("keep", "Keep existing configuration"), ("change", "Change provider configuration")],
+                default="keep",
+            )
+            if choice != "change":
+                return 0 if choice == "keep" else 1
         if not configure(path):
             return 1
     except (EOFError, KeyboardInterrupt):
