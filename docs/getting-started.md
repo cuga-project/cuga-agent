@@ -22,8 +22,8 @@ The installer selects matched, hash-pinned CPU PyTorch wheels. On Apple Silicon,
 On the first `cuga start manager`, an interactive terminal guides you through provider selection before starting the manager.
 
 1. Choose OpenAI, OpenRouter, watsonx, Ollama, Groq, Azure OpenAI, RITS, MiniMax, or an OpenAI-compatible private endpoint.
-2. Enter a model identifier and endpoint URL. Credentials use hidden terminal input. For watsonx, also choose a project or space ID.
-3. CUGA sends a short inference request using the selected connection. It saves the configuration only after a successful test, in a local `.env` with permissions `0600`. A failed test preserves existing configuration.
+2. Enter a model identifier and endpoint URL. Credentials use hidden terminal input. For watsonx, also choose a project or space ID. Use arrow keys to select, **Enter** to continue, **Tab** to move between controls, and **Esc** or **Back** to revisit a step. Existing values are prefilled.
+3. Review the connection and select **Test connection & save**. CUGA sends a short inference request and saves only after a successful test, in a local `.env` with permissions `0600`. If validation fails, your answers remain in the wizard: edit one field or retry without restarting. **Cancel** or **Ctrl+C** leaves the previous configuration unchanged.
 4. Open the printed URL and go to `/manage`. In **Configure & try it out**, ask **What can you help me automate?** Then connect tools and try a task using them.
 5. Select **Publish** when your draft is ready. Published versions are used in **Chat**.
 
