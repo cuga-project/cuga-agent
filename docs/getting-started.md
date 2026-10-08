@@ -15,7 +15,7 @@ The installer installs or reuses uv, selects Python 3.12, and installs the appro
 | Linux | x86_64 or aarch64, glibc 2.28 or newer |
 | WSL | A Linux distribution meeting the Linux requirements; run inside its Linux terminal |
 
-The installer selects matched, hash-pinned CPU PyTorch wheels. Intel Macs and musl distributions such as Alpine lack compatible wheels for this release. The default manager runs without Docker. Browser automation and optional sandbox integrations have separate setup requirements.
+The installer selects matched, hash-pinned CPU PyTorch wheels. On Apple Silicon, a terminal running under Rosetta is supported: the installer detects the hardware and selects native ARM64 Python. Intel Macs and musl distributions such as Alpine lack compatible wheels for this release. The default manager runs without Docker. Browser automation and optional sandbox integrations have separate setup requirements.
 
 ## Configure your provider locally
 
