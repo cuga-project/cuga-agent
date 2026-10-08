@@ -186,16 +186,6 @@ app = typer.Typer(
     short_help="Service management tool for Cuga components",
 )
 
-
-@app.command(help="Configure a local inference provider and test its connection")
-def setup(
-    check: bool = typer.Option(False, "--check", help="Test existing configuration without changing it"),
-):
-    from cuga.setup_cli import main
-
-    raise typer.Exit(main(["--check"] if check else []))
-
-
 app.add_typer(policy_app, name="policy")
 app.add_typer(purge_app, name="purge")
 # ``cuga knowledge`` lives in its own module per Sami review
@@ -1295,13 +1285,8 @@ def start(
             )
 
             app_mgr = _make_app_manager()
-            workspace_path = (
-                cuga_workspace
-                or os.getenv("CUGA_WORKSPACE_PATH")
-                or os.path.join(os.getcwd(), "cuga_workspace")
-            )
+            workspace_path = cuga_workspace or os.path.join(os.getcwd(), "cuga_workspace")
             workspace_abs = os.path.abspath(workspace_path)
-            os.environ["CUGA_WORKSPACE_PATH"] = workspace_abs
             os.environ["CUGA_POLICIES_CONTENT"] = _build_workspace_policies(
                 workspace_abs, include_email=app_email
             )
