@@ -1936,6 +1936,7 @@ async def event_stream(
                             if event.sources:
                                 answer_payload["sources"] = event.sources
                             if memory_turn_id:
+                                answer_payload["memory_turn_id"] = memory_turn_id
                                 from cuga.backend.evolve.memory_store import get_turn_memory_usage
 
                                 try:
@@ -3039,6 +3040,12 @@ async def get_conversation_stream_events(
             event.model_dump() if hasattr(event, 'model_dump') else dict(event)
             for event in stream_history.events
         ]
+        from cuga.backend.evolve.saved_memory_tracking import enrich_saved_memories
+
+        try:
+            events_dict = await enrich_saved_memories(events_dict, agent_id=agent_id, user_id=user_id)
+        except Exception:
+            logger.warning("Saved-memory tracking unavailable; returning conversation history")
         return JSONResponse({"events": events_dict})
     except Exception as e:
         logger.error(f"Failed to get conversation stream events: {e}")
