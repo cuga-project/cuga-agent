@@ -1,3 +1,5 @@
+from contextvars import ContextVar
+from contextlib import contextmanager
 import asyncio
 import math
 import re
@@ -303,16 +305,31 @@ def _resolve_max_tokens_from_llm_cfg(llm_cfg: Mapping[str, Any], toml_default: i
     return value
 
 
-_current_llm_override: Optional[Dict[str, Any]] = None
+_current_llm_override: ContextVar[Optional[Dict[str, Any]]] = ContextVar("cuga_llm_override", default=None)
 
 
 def get_current_llm_override() -> Optional[Dict[str, Any]]:
-    return _current_llm_override
+    return _current_llm_override.get()
 
 
 def set_current_llm_override(override: Optional[Dict[str, Any]]) -> None:
-    global _current_llm_override
-    _current_llm_override = override
+    _current_llm_override.set(override)
+
+
+@contextmanager
+def llm_config_context(config: Optional[Dict[str, Any]]):
+    """Keep role models consistent with the selected provider, isolated per task."""
+    override = None
+    if config:
+        override = dict(config)
+        override["platform"] = config.get("provider", "openai")
+        override["url"] = config.get("base_url") or config.get("url")
+        override = {k: v for k, v in override.items() if v is not None}
+    token = _current_llm_override.set(override)
+    try:
+        yield
+    finally:
+        _current_llm_override.reset(token)
 
 
 class _ModelSettingsWrap:
@@ -622,6 +639,12 @@ class LLMManager:
 
         for key in keys_to_delete:
             del d[key]
+
+        from cuga.backend.secrets.secret_resolver import get_secret_agent_id
+
+        secret_agent_id = get_secret_agent_id()
+        if secret_agent_id is not None:
+            d["secret_agent_scope"] = secret_agent_id
 
         # Add resolved values to ensure cache key reflects actual configuration
         platform = model_settings.get('platform')
@@ -1410,9 +1433,12 @@ class LLMManager:
             logger.debug(f"Creating OpenRouter model: {model_name}")
             is_reasoning = self._is_reasoning_model(model_name)
 
-            api_key = _normalize_secret(resolve_secret("OPENROUTER_API_KEY")) or os.environ.get(
-                "OPENROUTER_API_KEY"
-            )
+            api_key_ref = model_settings.get("api_key")
+            api_key = _normalize_secret(resolve_secret(api_key_ref)) if api_key_ref else None
+            if not api_key:
+                api_key = _normalize_secret(resolve_secret("OPENROUTER_API_KEY")) or os.environ.get(
+                    "OPENROUTER_API_KEY"
+                )
             if not api_key:
                 raise ValueError("OPENROUTER_API_KEY environment variable not set")
 
@@ -1630,8 +1656,9 @@ class LLMManager:
 def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
     """Create a fresh LLM instance directly from a UI llm_cfg dict.
     No caching. Used by manage_routes after publish/draft-save.
-    When force_env is true or mode is "local", db:// and vault:// refs are ignored so env vars are used.
-    In local mode, provider/platform is taken from settings.agent.code.model (e.g. settings.groq.toml).
+    When force_env is true, db:// and vault:// refs are ignored and provider/model
+    settings come from settings.agent.code.model. Otherwise the saved configuration
+    and its secret references are used, including in local encrypted-secret mode.
 
     Raises ValueError if the LLM cannot be instantiated (e.g. API key unresolvable).
     Callers should catch this and fall back to env/TOML settings.
@@ -1655,9 +1682,7 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
 
     api_key = llm_cfg.get("api_key") or None
     _secrets = getattr(settings, "secrets", None)
-    use_env = _secrets and (
-        getattr(_secrets, "force_env", False) or getattr(_secrets, "mode", "local") == "local"
-    )
+    use_env = _secrets and getattr(_secrets, "force_env", False)
     if (
         use_env
         and api_key
@@ -1691,7 +1716,7 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         except Exception:
             pass
 
-    # For non-local/non-force_env modes (e.g. vault), verify the API key is actually
+    # When force_env is disabled, verify the API key is actually
     # resolvable before attempting to instantiate. Providers like openai require a key
     # and will raise at construction time if it is missing — which would crash startup.
     if not use_env and platform in ("openai", "azure", "openrouter"):
@@ -1710,7 +1735,7 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
     settings_dict = {
         "platform": platform,
         "model": model,
-        "url": llm_cfg.get("base_url") or None,
+        "url": llm_cfg.get("base_url") or llm_cfg.get("url") or None,
         "api_key": api_key,
         "temperature": llm_cfg.get("temperature", 0.1),
         "disable_ssl": llm_cfg.get("disable_ssl", False),
@@ -1719,6 +1744,7 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         "auth_header_name": llm_cfg.get("auth_header_name"),
         "max_tokens": max_tokens,
         "streaming": False,
+        "timeout": llm_cfg.get("timeout"),
     }
     for key in _OPTIONAL_SAMPLING_KEYS:
         if key in llm_cfg and llm_cfg[key] is not None:
