@@ -92,12 +92,13 @@ def connection_values(index: int, fields: list[SetupField]) -> dict[str, str]:
 
 
 class TerminalUI:
-    """Small inline dialogs; drafts and secret inputs never enter command history."""
+    """Fixed terminal dialogs; drafts and secret inputs never enter command history."""
 
     def _application(self, dialog, focus, *, back=False, on_back=None):
         from prompt_toolkit import Application
         from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.layout import Layout
+        from prompt_toolkit.widgets import Box
         from prompt_toolkit.styles import Style
 
         keys = KeyBindings()
@@ -121,9 +122,10 @@ class TerminalUI:
             event.app.layout.focus_previous()
 
         return Application(
-            layout=Layout(dialog, focused_element=focus),
+            layout=Layout(Box(dialog, style="class:dialog"), focused_element=focus),
             key_bindings=keys,
-            full_screen=False,
+            # The alternate screen anchors redraws and restores prior terminal output on exit.
+            full_screen=True,
             erase_when_done=True,
             mouse_support=True,
             style=Style.from_dict(
@@ -176,7 +178,7 @@ class TerminalUI:
                 padding=1,
             ),
             buttons=buttons,
-            width=Dimension(max=88),
+            width=Dimension(preferred=88, max=88),
         )
         app = self._application(dialog, menu, back=back)
 
@@ -231,7 +233,7 @@ class TerminalUI:
                 Button("Back", handler=go_back),
                 Button("Cancel", handler=lambda: get_app().exit(result=None)),
             ],
-            width=Dimension(max=88),
+            width=Dimension(preferred=88, max=88),
         )
         return self._application(dialog, entry, back=True, on_back=retain_draft).run()
 
