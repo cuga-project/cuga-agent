@@ -11,7 +11,7 @@
 
 CUGA turns business requests into actions across your applications, APIs, and documents. Deploy in your private cloud or prepare an air-gapped environment, enforce fine-grained execution policies, and use open models on infrastructure you control. Connect your tools, configure your workflows, and optimize inference for your workload.
 
-**[Get started](#develop-from-source)** · **[Documentation](https://docs.cuga.dev)** · **[Python SDK](#build-with-the-python-sdk)** · **[Deploy on Kubernetes](deployment/README.md)**
+**[Get started](#quick-install)** · **[Documentation](https://docs.cuga.dev)** · **[Python SDK](#build-with-the-python-sdk)** · **[Deploy on Kubernetes](deployment/README.md)**
 
 [Apache 2.0](LICENSE) · Configurable Generalist Agent · Built with IBM SiL
 
@@ -38,6 +38,8 @@ cuga start manager
 ```
 
 On first launch, choose your provider and model in the terminal, enter credentials privately, and test the connection. Then try your first task in the local manager. No cloning, virtual environment setup, or frontend build. [Installation and setup guide](docs/getting-started.md).
+
+Prefer the existing `uv` workflow? [Develop from source](#develop-from-source).
 
 ## See what you can build
 
@@ -82,13 +84,16 @@ Start with the [CRM demo](#develop-from-source), the [knowledge walkthrough](doc
 
 ## Develop from source
 
-Use **Python 3.12** and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+<details>
+<summary>Clone the repository and run with uv</summary>
+
+Use **Python 3.12** and [uv](https://docs.astral.sh/uv/getting-started/installation/). [uv manages the project environment automatically](https://docs.astral.sh/uv/guides/projects/#running-commands), so you can run commands with `uv run` without creating or activating an environment manually.
 
 ```bash
 git clone https://github.com/cuga-project/cuga-agent.git
 cd cuga-agent
 uv sync --python 3.12
-cp .env.example .env
+test -f .env || cp .env.example .env
 ```
 
 Edit `.env` to choose a model provider and set its credentials. For an OpenAI endpoint:
@@ -129,6 +134,8 @@ MODEL_NAME=your-served-model-name
 ```
 
 Use the model identifier exposed by your server. Hosted providers and private endpoints share the same harness; model capability, task complexity, and your configuration determine accuracy and inference spending.
+
+</details>
 
 ## Apply guardrails before action
 
