@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.tools import StructuredTool
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.base import ShortlistCandidate
+from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.schema import model_tool_schema
 
 NO_MATCH_MESSAGE = "No matching tools found for your query."
 
@@ -42,7 +43,7 @@ def _input_schema_for(tool: StructuredTool) -> Dict[str, Any]:
     if not args_schema:
         return {}
     try:
-        return args_schema.schema()
+        return model_tool_schema(tool)
     except Exception:
         return {}
 
