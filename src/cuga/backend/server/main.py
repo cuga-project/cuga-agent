@@ -697,7 +697,6 @@ async def lifespan(app: FastAPI):
     # Knowledge engine — in-process LangChain + vector store (storage_local / pgvector / …)
     # -------------------------------------------------------------------
     from cuga.backend.knowledge.config import KnowledgeConfig
-    from cuga.backend.knowledge.engine import KnowledgeEngine
 
     async def initialize_knowledge_engine(app_state, kb_config: "KnowledgeConfig") -> None:
         """Start the knowledge engine, session provider, MCP server, and warmup.
@@ -705,6 +704,8 @@ async def lifespan(app: FastAPI):
         Can be called at startup or on-demand (e.g. when user enables knowledge via UI publish).
         Safe to call when engine is already running (no-op).
         """
+        from cuga.backend.knowledge.engine import KnowledgeEngine
+
         if getattr(app_state, "knowledge_engine", None) is not None:
             return  # Already running
 
@@ -719,7 +720,12 @@ async def lifespan(app: FastAPI):
         from cuga.backend.knowledge.session_provider import PersistentSessionProvider
 
         if not getattr(app_state, "knowledge_provider", None):
-            _kb_state_path = Path.cwd() / ".cuga" / "session_knowledge.json"
+            _kb_root = (
+                Path(os.environ["CUGA_DATA_DIR"])
+                if os.getenv("CUGA_LOCAL_MANAGER") == "true"
+                else Path.cwd() / ".cuga"
+            )
+            _kb_state_path = _kb_root / "session_knowledge.json"
             app_state.knowledge_provider = PersistentSessionProvider(_kb_state_path)
 
         # Wire per-session citation overrides into the knowledge sources module
@@ -759,6 +765,8 @@ async def lifespan(app: FastAPI):
             token = secrets.token_urlsafe(32)
             app_state.internal_token = token
             token_path = Path.cwd() / ".cuga" / ".internal_token"
+            if os.getenv("CUGA_LOCAL_MANAGER") == "true":
+                token_path = Path(os.environ["CUGA_DATA_DIR"]) / ".internal_token"
             token_path.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
                 mode="w", dir=token_path.parent, delete=False, suffix=".tmp"
