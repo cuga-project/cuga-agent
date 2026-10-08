@@ -292,6 +292,12 @@ async def get_latest_version(agent_id: str = "cuga-default") -> tuple[str | None
 
 
 async def save_draft(config: dict[str, Any], agent_id: str = "cuga-default") -> None:
+    # Keep server-owned verification when UI full saves omit it, only for the same connection.
+    from cuga.backend.server.onboarding import config_fingerprint
+
+    existing = await load_draft(agent_id)
+    if existing and existing.get("setup_verified") == config_fingerprint(config.get("llm") or {}):
+        config = {**config, "setup_verified": existing["setup_verified"]}
     normalize_policies_for_save(config)
     base_agent_id = _parse_agent_id(agent_id)
     store = _get_store()
