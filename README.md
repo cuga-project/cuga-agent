@@ -11,7 +11,7 @@
 
 CUGA turns business requests into actions across your applications, APIs, and documents. Deploy in your private cloud or prepare an air-gapped environment, enforce fine-grained execution policies, and use open models on infrastructure you control. Connect your tools, configure your workflows, and optimize inference for your workload.
 
-**[Get started](#quick-start)** · **[Documentation](https://docs.cuga.dev)** · **[Python SDK](#build-with-the-python-sdk)** · **[Deploy on Kubernetes](deployment/README.md)**
+**[Get started](#develop-from-source)** · **[Documentation](https://docs.cuga.dev)** · **[Python SDK](#build-with-the-python-sdk)** · **[Deploy on Kubernetes](deployment/README.md)**
 
 [Apache 2.0](LICENSE) · Configurable Generalist Agent · Built with IBM SiL
 
@@ -27,6 +27,17 @@ CUGA turns business requests into actions across your applications, APIs, and do
 | **Faster delivery** | Connect MCP servers, OpenAPI services, and Python tools. Configure and test an agent in the UI before publishing a version. |
 | **Recurring automation** | Use the separate events service to run agents on schedules, webhooks, and application events, with run history in Events Studio. |
 | **Reusable experience** | Load task-specific skills and use a configured Evolve integration to retrieve relevant guidance and user preferences. |
+
+## Quick install
+
+*Prepared for v0.4.1; the public installer will become available after the release is published.*
+
+```bash
+curl -fsSL https://cuga.dev/install.sh | bash
+cuga start manager
+```
+
+Choose your provider and model in the local manager, test the connection, and try your first task. No cloning, virtual environment setup, or frontend build. [Installation and setup guide](docs/getting-started.md).
 
 ## See what you can build
 
@@ -57,7 +68,7 @@ https://github.com/user-attachments/assets/cb21fd61-b04b-4188-8f3e-e33197df1b9e
 | **Browser and API automation** | Combine structured API calls with browser interactions for workflows spanning services and web interfaces. |
 | **Recurring operations** | Schedule a weekday report or react to a new document through the events service, then deliver the result to a configured channel. |
 
-Start with the [CRM demo](#quick-start), the [knowledge walkthrough](docs/examples/knowledge_demo/README.md), or the [multi-agent examples](docs/readme/configuration-guide.md#cugasupervisor-multi-agent).
+Start with the [CRM demo](#develop-from-source), the [knowledge walkthrough](docs/examples/knowledge_demo/README.md), or the [multi-agent examples](docs/readme/configuration-guide.md#cugasupervisor-multi-agent).
 
 ### Build agents around your team's expertise
 
@@ -69,7 +80,7 @@ Start with the [CRM demo](#quick-start), the [knowledge walkthrough](docs/exampl
 | **Execution visibility** | Inspect trajectories with `cuga viz` and enable per-run receipts for token usage, model calls, tool calls, and elapsed time. [Run receipts](docs/readme/configuration-guide.md#run-receipt). |
 | **Access control** | Configure OIDC sign-in and enable separate chat and management role checks. [Authentication setup](docs/readme/configuration-guide.md#authentication-and-access-control). |
 
-## Quick start
+## Develop from source
 
 Use **Python 3.12** and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
