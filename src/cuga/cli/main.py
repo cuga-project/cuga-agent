@@ -1285,8 +1285,15 @@ def start(
             )
 
             app_mgr = _make_app_manager()
-            workspace_path = cuga_workspace or os.path.join(os.getcwd(), "cuga_workspace")
+            from cuga.local_setup import data_directory
+
+            workspace_path = cuga_workspace or (
+                str(data_directory() / "workspace")
+                if os.getenv("CUGA_GUIDED_SETUP", "").lower() == "true"
+                else os.path.join(os.getcwd(), "cuga_workspace")
+            )
             workspace_abs = os.path.abspath(workspace_path)
+            os.environ["CUGA_WORKSPACE_PATH"] = workspace_abs
             os.environ["CUGA_POLICIES_CONTENT"] = _build_workspace_policies(
                 workspace_abs, include_email=app_email
             )
