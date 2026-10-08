@@ -1,14 +1,26 @@
 def run_cli():
-    """Bootstrap local manager storage before settings and provider imports."""
+    """Prepare local configuration before settings and provider imports."""
     import sys
     import os
 
     args = sys.argv[1:]
-    container_preset = bool(os.environ.get("CUGA_DEMO_MODE"))
-    if not container_preset and any(args[i : i + 2] == ["start", "manager"] for i in range(len(args))):
-        from cuga.local_setup import prepare_local_manager
+    commands = [arg for arg in args if arg not in ("-v", "--verbose")]
+    if commands and commands[0] == "setup":
+        from cuga.setup_cli import main
 
-        prepare_local_manager()
+        raise SystemExit(main(commands[1:]))
+    container_preset = bool(os.environ.get("CUGA_DEMO_MODE"))
+    if (
+        not container_preset
+        and commands[:2] == ["start", "manager"]
+        and not any(flag in args for flag in ("--help", "-h"))
+    ):
+        from cuga.local_setup import prepare_local_manager
+        from cuga.setup_cli import ensure_provider
+
+        root = prepare_local_manager()
+        if not ensure_provider(root):
+            raise SystemExit(1)
     from cuga.cli.main import app
 
     app()
