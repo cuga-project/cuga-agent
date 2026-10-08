@@ -306,11 +306,13 @@ class EvolveIntegration:
         limit: int = 50,
         include_content: bool = False,
         namespace_id: Optional[str] = None,
+        exclude_entity_types: Optional[list[str]] = None,
     ) -> Optional[dict]:
         """Return a structured Evolve entity inventory."""
         args: dict[str, Any] = {"limit": limit, "include_content": include_content}
         optional = {
             "entity_types": entity_types,
+            "exclude_entity_types": exclude_entity_types,
             "user_id": normalize_evolve_identifier(user_id),
             "agent_id": normalize_evolve_identifier(agent_id),
             "session_id": normalize_evolve_identifier(session_id),
