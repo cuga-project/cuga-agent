@@ -8,6 +8,7 @@ from dotenv import dotenv_values
 import pytest
 
 from cuga import setup_cli
+from cuga import setup_terminal
 
 pytestmark = pytest.mark.unit
 
@@ -45,6 +46,34 @@ def environment(monkeypatch, tmp_path):
     monkeypatch.setenv("CUGA_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setattr("dotenv.find_dotenv", lambda **kwargs: "")
     return tmp_path / "data"
+
+
+@pytest.fixture
+def scripted_ui():
+    def create(monkeypatch, *, choices, edits):
+        class UI:
+            def __init__(self):
+                self.choices = iter(choices)
+                self.edits = iter(edits)
+                self.screens = []
+                self.fields = []
+
+            def choose(self, title, text, choices, default=None, **kwargs):
+                self.screens.append((title, text, choices, default))
+                return next(self.choices)
+
+            def edit(self, item, step, count):
+                self.fields.append((item.key, item.value))
+                return next(self.edits)
+
+            def test(self, values):
+                return setup_cli.test_connection(values)
+
+        ui = UI()
+        monkeypatch.setattr(setup_terminal, "TerminalUI", lambda: ui)
+        return ui
+
+    return create
 
 
 def test_stored_environment_loads_outside_checkout_and_shell_takes_precedence(environment, monkeypatch):
@@ -123,24 +152,32 @@ def test_env_update_preserves_comments_unknown_keys_and_private_permissions(tmp_
     assert path.stat().st_mode & 0o777 == 0o600
 
 
-def test_failed_test_preserves_original_file_and_never_prints_key(environment, monkeypatch, capsys):
+def test_failed_test_preserves_original_file_and_never_prints_key(
+    environment, monkeypatch, capsys, scripted_ui
+):
     environment.mkdir()
     path = environment / ".env"
     before = b"# Original\nMODEL_NAME=old\n"
     path.write_bytes(before)
-    answers = iter(["2", "selected-model", "https://provider.example/v1"])
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(setup_cli.getpass, "getpass", lambda prompt: "private-value")
+    scripted_ui(
+        monkeypatch,
+        choices=[1, "test", None],
+        edits=["selected-model", "https://provider.example/v1", "private-value"],
+    )
     monkeypatch.setattr(setup_cli, "test_connection", lambda values: False)
     assert not setup_cli.configure(path)
     assert path.read_bytes() == before
     assert "private-value" not in capsys.readouterr().out
 
 
-def test_watsonx_wizard_saves_selected_scope_after_connection_test(environment, monkeypatch, capsys):
-    answers = iter(["3", "selected-model", "https://watsonx.example", "project", "project-id"])
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(setup_cli.getpass, "getpass", lambda prompt: "private-value")
+def test_watsonx_wizard_saves_selected_scope_after_connection_test(
+    environment, monkeypatch, capsys, scripted_ui
+):
+    scripted_ui(
+        monkeypatch,
+        choices=[2, "test"],
+        edits=["selected-model", "https://watsonx.example", "private-value", "project", "project-id"],
+    )
     captured = {}
 
     def validate(values):
@@ -203,11 +240,11 @@ def test_watsonx_recognizes_both_credential_names(environment, monkeypatch, cred
     assert setup_cli.missing_configuration() == []
 
 
-def test_new_key_neutralizes_old_authorization_header(environment, monkeypatch):
+def test_new_key_neutralizes_old_authorization_header(environment, monkeypatch, scripted_ui):
     monkeypatch.setenv("LLM_AUTH_HEADER", "Bearer old-key")
-    answers = iter(["5", "selected-model", "https://provider.example/v1"])
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(setup_cli.getpass, "getpass", lambda prompt: "new-key")
+    scripted_ui(
+        monkeypatch, choices=[4, "test"], edits=["selected-model", "https://provider.example/v1", "new-key"]
+    )
     captured = {}
     monkeypatch.setattr(setup_cli, "test_connection", lambda values: not captured.update(values))
     assert setup_cli.configure(environment / ".env")
@@ -316,3 +353,229 @@ async def test_supervisor_model_config_uses_terminal_profile_not_saved_connectio
     assert "api_key" not in config
     manager.get_model.assert_called_once_with(config)
     assert model is manager.get_model.return_value
+
+
+def test_retry_edits_only_wrong_key_and_keeps_other_answers(environment, monkeypatch, scripted_ui):
+    ui = scripted_ui(
+        monkeypatch,
+        choices=[1, "test", 2, "test"],
+        edits=["chosen-model", "https://provider.example/v1", "wrong-key", "correct-key"],
+    )
+    seen = []
+
+    def check(values):
+        seen.append(dict(values))
+        assert not (environment / ".env").exists()
+        return setup_cli.ConnectionResult(len(seen) == 2, "authentication")
+
+    monkeypatch.setattr(setup_cli, "test_connection", check)
+    assert setup_cli.configure(environment / ".env")
+    assert seen[0]["MODEL_NAME"] == seen[1]["MODEL_NAME"] == "chosen-model"
+    assert seen[0]["OPENROUTER_BASE_URL"] == seen[1]["OPENROUTER_BASE_URL"]
+    assert seen[1]["OPENROUTER_API_KEY"] == "correct-key"
+    assert ui.fields[-1] == ("OPENROUTER_API_KEY", "wrong-key")
+    review = str(ui.screens)
+    assert "Authentication was rejected" in review
+    assert "wrong-key" not in review and "correct-key" not in review
+
+
+def test_retry_without_edits_preserves_entire_candidate(environment, monkeypatch, scripted_ui):
+    scripted_ui(monkeypatch, choices=[3, "test", "test"], edits=["local-model", "http://localhost:11434/v1"])
+    seen = []
+
+    def check(values):
+        seen.append(dict(values))
+        return len(seen) == 2
+
+    monkeypatch.setattr(setup_cli, "test_connection", check)
+    assert setup_cli.configure(environment / ".env")
+    assert seen[0] == seen[1]
+
+
+def test_back_keeps_draft_and_never_tests_before_review(environment, monkeypatch, scripted_ui):
+    ui = scripted_ui(
+        monkeypatch,
+        choices=[0, "test"],
+        edits=[
+            "model-typo",
+            setup_terminal.BACK,
+            "corrected-model",
+            "https://api.openai.com/v1",
+            "private-key",
+        ],
+    )
+    check = Mock(return_value=True)
+    monkeypatch.setattr(setup_cli, "test_connection", check)
+    assert setup_cli.configure(environment / ".env")
+    assert ui.fields[2] == ("MODEL_NAME", "model-typo")
+    check.assert_called_once()
+    assert check.call_args.args[0]["MODEL_NAME"] == "corrected-model"
+
+
+def test_switch_provider_and_return_restores_unsaved_draft(environment, monkeypatch, scripted_ui):
+    ui = scripted_ui(
+        monkeypatch,
+        choices=[0, "provider", 3, "provider", 0, "test"],
+        edits=[
+            "openai-model",
+            "https://api.openai.com/v1",
+            "private-key",
+            "local-model",
+            "http://localhost:11434/v1",
+            "openai-model",
+            "https://api.openai.com/v1",
+            "private-key",
+        ],
+    )
+    monkeypatch.setattr(setup_cli, "test_connection", lambda values: True)
+    assert setup_cli.configure(environment / ".env")
+    assert ui.fields[-3:] == [
+        ("MODEL_NAME", "openai-model"),
+        ("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        ("OPENAI_API_KEY", "private-key"),
+    ]
+    saved = dotenv_values(environment / ".env")
+    assert saved["AGENT_SETTING_CONFIG"] == "settings.openai.toml"
+    assert saved["OPENAI_BASE_URL"] == "https://api.openai.com/v1"
+
+
+def test_current_provider_defaults_to_existing_watsonx(environment, monkeypatch):
+    monkeypatch.setenv("AGENT_SETTING_CONFIG", "settings.watsonx.toml")
+    monkeypatch.setenv("MODEL_NAME", "existing-model")
+    monkeypatch.setenv("WATSONX_APIKEY", "saved-key")
+    monkeypatch.setenv("WATSONX_SPACE_ID", "space-id")
+    assert setup_terminal.current_provider() == 2
+    values = setup_terminal.connection_values(2, setup_terminal.provider_fields(2))
+    assert values["MODEL_NAME"] == "existing-model"
+    assert values["WATSONX_API_KEY"] == values["WATSONX_APIKEY"] == "saved-key"
+    assert values["WATSONX_SPACE_ID"] == "space-id"
+    assert values["WATSONX_PROJECT_ID"] == ""
+
+
+def test_private_endpoint_defaults_to_compatible_provider(environment, monkeypatch):
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://inference.internal:8000/v1")
+    assert setup_terminal.current_provider() == 4
+
+
+@pytest.mark.parametrize("stage", ["provider", "details", "review"])
+def test_cancel_never_tests_or_changes_existing_config(environment, monkeypatch, scripted_ui, stage):
+    environment.mkdir()
+    path = environment / ".env"
+    before = b"# Keep\nMODEL_NAME=old\nTOOL_ENDPOINT=https://tools.example\n"
+    path.write_bytes(before)
+    choices = [None] if stage == "provider" else [0, None]
+    edits = [None] if stage == "details" else ["model", "https://api.openai.com/v1", "private-key"]
+    scripted_ui(monkeypatch, choices=choices, edits=edits)
+    check = Mock()
+    monkeypatch.setattr(setup_cli, "test_connection", check)
+    assert not setup_cli.configure(path)
+    assert path.read_bytes() == before
+    check.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "status,reason",
+    [(401, "authentication"), (403, "authentication"), (404, "not_found"), (429, "quota"), (400, "request")],
+)
+def test_provider_error_status_is_classified_without_response_text(status, reason):
+    error = RuntimeError("private-key and internal provider response")
+    error.status_code = status
+    assert setup_cli.connection_failure_reason(error) == reason
+    assert "private-key" not in setup_cli.ConnectionResult(False, reason).message
+
+
+def test_wrapped_certificate_error_keeps_specific_guidance():
+    import ssl
+
+    class APIConnectionError(Exception):
+        pass
+
+    error = APIConnectionError("private provider response")
+    error.__cause__ = ssl.SSLCertVerificationError("certificate details")
+    assert setup_cli.connection_failure_reason(error) == "tls"
+
+
+def test_unsubmitted_invalid_draft_can_be_corrected_from_review(environment, monkeypatch, scripted_ui):
+    ui = scripted_ui(
+        monkeypatch,
+        choices=[0, 1, "test", 1, "test"],
+        edits=[
+            "model",
+            "https://api.openai.com/v1",
+            "private-key",
+            setup_terminal.BACK,
+            "https://fixed.example/v1",
+        ],
+    )
+    original_edit = ui.edit
+
+    def edit(item, step, count):
+        response = original_edit(item, step, count)
+        if response is setup_terminal.BACK:
+            item.value = "ftp://unfinished"
+        return response
+
+    ui.edit = edit
+    check = Mock(return_value=True)
+    monkeypatch.setattr(setup_cli, "test_connection", check)
+    assert setup_cli.configure(environment / ".env")
+    check.assert_called_once()
+    assert check.call_args.args[0]["OPENAI_BASE_URL"] == "https://fixed.example/v1"
+    assert any("Enter an http:// or https:// URL" in screen[1] for screen in ui.screens)
+
+
+def test_unsubmitted_model_draft_survives_provider_round_trip(environment, monkeypatch, scripted_ui):
+    ui = scripted_ui(
+        monkeypatch,
+        choices=[0, 3, 0, "test"],
+        edits=[
+            setup_terminal.BACK,
+            setup_terminal.BACK,
+            "new-draft",
+            "https://api.openai.com/v1",
+            "private-key",
+        ],
+    )
+    original_edit = ui.edit
+
+    def edit(item, step, count):
+        response = original_edit(item, step, count)
+        if response is setup_terminal.BACK and len(ui.fields) == 1:
+            item.value = "new-draft"
+        return response
+
+    ui.edit = edit
+    monkeypatch.setattr(setup_cli, "test_connection", lambda values: True)
+    assert setup_cli.configure(environment / ".env")
+    assert ui.fields[2] == ("MODEL_NAME", "new-draft")
+
+
+def test_check_does_not_echo_raw_provider_output(environment, monkeypatch, capsys):
+    runner = Mock(
+        return_value=SimpleNamespace(
+            returncode=1,
+            stdout=b'private-key\nCUGA_SETUP_RESULT:{"reason":"authentication"}\n',
+            stderr=b'private-key',
+        )
+    )
+    monkeypatch.setattr(subprocess, "run", runner)
+    result = setup_cli.test_connection({})
+    assert not result and result.reason == "authentication"
+    assert "private-key" not in capsys.readouterr().out
+
+
+def test_check_timeout_is_actionable(environment, monkeypatch):
+    monkeypatch.setattr(subprocess, "run", Mock(side_effect=subprocess.TimeoutExpired("validation", 60)))
+    assert setup_cli.test_connection({}).reason == "timeout"
+
+
+def test_keyboard_interrupt_preserves_previous_config(environment, monkeypatch, scripted_ui):
+    environment.mkdir()
+    path = environment / ".env"
+    before = b"MODEL_NAME=old\n"
+    path.write_bytes(before)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    scripted_ui(monkeypatch, choices=[3, "test"], edits=["model", "http://localhost:11434/v1"])
+    monkeypatch.setattr(setup_cli, "test_connection", Mock(side_effect=KeyboardInterrupt))
+    assert not setup_cli.ensure_provider(environment)
+    assert path.read_bytes() == before
