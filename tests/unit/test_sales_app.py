@@ -14,6 +14,7 @@ if str(_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_APP_DIR))
 
 from app import create_app  # noqa: E402
+from openapi_server import create_openapi_app  # noqa: E402
 from store import SalesStore  # noqa: E402
 from tools import build_tools  # noqa: E402
 
@@ -66,3 +67,15 @@ def test_http_board_and_index(tmp_path: Path) -> None:
     assert client.get("/static/app.js").status_code == 200
     missing = client.get("/api/accounts/Not%20A%20Company")
     assert missing.status_code == 404
+
+
+def test_openapi_negotiation_filter(tmp_path: Path) -> None:
+    client = TestClient(create_openapi_app(tmp_path / "sales.sqlite"))
+    response = client.get("/opportunities", params={"stage": "negotiation"})
+    assert response.status_code == 200
+    names = {row["name"] for row in response.json()}
+    assert "Platform renewal" in names
+    assert "Loyalty rebuild" in names
+    spec = client.get("/openapi.json")
+    assert spec.status_code == 200
+    assert "list_opportunities" in spec.text
