@@ -15,7 +15,8 @@ def manager_environment(monkeypatch, tmp_path):
         "CUGA_SECRET_KEY",
         "CUGA_DBS_DIR",
         "CUGA_LOGGING_DIR",
-        "CUGA_GUIDED_SETUP",
+        "CUGA_LOCAL_MANAGER",
+        "CUGA_WORKSPACE_PATH",
         "DYNACONF_STORAGE__PRESERVE_CONFIGS_ON_STARTUP",
         "DYNACONF_SECRETS__FORCE_ENV",
         "DYNACONF_KNOWLEDGE__PERSIST_DIR",
@@ -36,7 +37,9 @@ def test_repeated_bootstrap_preserves_key_and_explicit_paths(manager_environment
     assert prepare_local_manager() == root
     assert os.environ["CUGA_SECRET_KEY"] == key
     assert os.environ["CUGA_DBS_DIR"] == "/custom/db"
-    assert os.environ["DYNACONF_SECRETS__FORCE_ENV"] == "false"
+    assert "DYNACONF_SECRETS__FORCE_ENV" not in os.environ
+    assert os.environ["CUGA_LOCAL_MANAGER"] == "true"
+    assert os.environ["CUGA_WORKSPACE_PATH"] == str(root / "workspace")
     assert os.environ["DYNACONF_KNOWLEDGE__PERSIST_DIR"] == str(root / "knowledge")
 
 
@@ -65,11 +68,13 @@ def test_cli_bootstrap_keeps_ubi_presets_on_existing_flow(monkeypatch, args, con
     import sys
     from types import SimpleNamespace
     from unittest.mock import Mock
-    from cuga import cli, local_setup
+    from cuga import cli, local_setup, setup_cli
 
     prepare = Mock()
     app = Mock()
+    ensure = Mock(return_value=True)
     monkeypatch.setattr(local_setup, "prepare_local_manager", prepare)
+    monkeypatch.setattr(setup_cli, "ensure_provider", ensure)
     monkeypatch.setitem(sys.modules, "cuga.cli.main", SimpleNamespace(app=app))
     monkeypatch.setattr(sys, "argv", ["cuga", *args])
     monkeypatch.delenv("CUGA_DEMO_MODE", raising=False)
@@ -77,4 +82,5 @@ def test_cli_bootstrap_keeps_ubi_presets_on_existing_flow(monkeypatch, args, con
         monkeypatch.setenv("CUGA_DEMO_MODE", container_preset)
     cli.run_cli()
     assert prepare.call_count == (0 if container_preset else 1)
+    assert ensure.call_count == (0 if container_preset else 1)
     app.assert_called_once()
