@@ -1,4 +1,3 @@
-import os
 from typing import Optional
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -128,10 +127,7 @@ class CugaEntryGraph:
 
     async def _build_model_and_config(self):
         llm_manager = LLMManager()
-        terminal_connection = os.getenv("CUGA_LOCAL_MANAGER", "").lower() == "true" and bool(
-            getattr(getattr(settings, "secrets", None), "force_env", False)
-        )
-        if self.llm_config and not terminal_connection:
+        if self.llm_config:
             try:
                 model = create_llm_from_config(self.llm_config)
             except Exception as err:
