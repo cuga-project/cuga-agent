@@ -128,7 +128,10 @@ def skills_enabled() -> bool:
 
 def local_base_dir() -> Path:
     """Workspace parent: ``<cwd>/cuga_workspace``."""
-    return Path(os.getcwd()) / CUGA_WORKSPACE_DIRNAME
+    configured = os.getenv("CUGA_WORKSPACE_PATH")
+    return (
+        Path(configured).expanduser().resolve() if configured else Path(os.getcwd()) / CUGA_WORKSPACE_DIRNAME
+    )
 
 
 def thread_workspace_root(thread_id: Optional[str]) -> Path:
