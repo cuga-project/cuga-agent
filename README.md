@@ -17,6 +17,25 @@ CUGA turns business requests into actions across your applications, APIs, and do
 
 ---
 
+## Quick install
+
+Use **Python 3.12** and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+
+```bash
+git clone https://github.com/cuga-project/cuga-agent.git
+cd cuga-agent
+uv sync --python 3.12
+test -f .env || cp .env.example .env
+```
+
+Set your provider, model, and credentials in `.env`. See [model configuration](docs/readme/configuration-guide.md#supported-platforms) for supported providers.
+
+```bash
+uv run cuga start manager --crm
+```
+
+Open `/manage` at the local URL printed by the CLI. Try the CRM tools, configure policies, and test a draft before publishing. [More source and demo options](#develop-from-source).
+
 ## Automate enterprise work. Keep control.
 
 | Your priority | What CUGA gives you |
