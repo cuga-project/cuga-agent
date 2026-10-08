@@ -37,7 +37,7 @@ curl -fsSL https://cuga.dev/install.sh | bash
 cuga start manager
 ```
 
-Choose your provider and model in the local manager, test the connection, and try your first task. No cloning, virtual environment setup, or frontend build. [Installation and setup guide](docs/getting-started.md).
+On first launch, choose your provider and model in the terminal, enter credentials privately, and test the connection. Then try your first task in the local manager. No cloning, virtual environment setup, or frontend build. [Installation and setup guide](docs/getting-started.md).
 
 ## See what you can build
 
