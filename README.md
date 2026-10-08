@@ -28,19 +28,6 @@ CUGA turns business requests into actions across your applications, APIs, and do
 | **Recurring automation** | Use the separate events service to run agents on schedules, webhooks, and application events, with run history in Events Studio. |
 | **Reusable experience** | Load task-specific skills and use a configured Evolve integration to retrieve relevant guidance and user preferences. |
 
-## Quick install
-
-*Prepared for v0.4.1; the public installer will become available after the release is published.*
-
-```bash
-curl -fsSL https://cuga.dev/install.sh | bash
-cuga start manager
-```
-
-On first launch, choose your provider and model in the terminal, enter credentials privately, and test the connection. Then try your first task in the local manager. No cloning, virtual environment setup, or frontend build. [Installation and setup guide](docs/getting-started.md).
-
-Prefer the existing `uv` workflow? [Develop from source](#develop-from-source).
-
 ## See what you can build
 
 Configure tools and policies beside a draft chat, then publish a version for users.
