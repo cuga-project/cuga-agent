@@ -1536,7 +1536,7 @@ wheels = [
 
 [[package]]
 name = "cuga"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "." }
 dependencies = [
     { name = "a2a-sdk", extra = ["http-server"] },
@@ -1577,6 +1577,7 @@ dependencies = [
     { name = "openai-harmony" },
     { name = "pgvector" },
     { name = "playwright" },
+    { name = "prompt-toolkit" },
     { name = "psutil" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pyjwt", extra = ["crypto"] },
@@ -1705,10 +1706,12 @@ requires-dist = [
     { name = "opensandbox-code-interpreter", marker = "extra == 'opensandbox'" },
     { name = "pgvector", specifier = ">=0.4.2" },
     { name = "playwright", specifier = ">=1.59.0" },
+    { name = "prompt-toolkit", specifier = ">=3.0.52,<4" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13.0" },
     { name = "python-dotenv" },
+    { name = "python-dotenv", specifier = ">=1.1.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rapidfuzz", marker = "extra == 'evaluation'" },
     { name = "sqlite-vec", specifier = ">=0.1.6" },
