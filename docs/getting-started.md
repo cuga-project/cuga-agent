@@ -25,7 +25,7 @@ Setup uses a dedicated terminal screen so keyboard navigation stays in place. Yo
 1. Choose OpenAI, OpenRouter, watsonx, Ollama, Groq, Azure OpenAI, RITS, MiniMax, or an OpenAI-compatible private endpoint.
 2. Enter a model identifier and endpoint URL. Credentials use hidden terminal input. For watsonx, also choose a project or space ID. Use arrow keys to select, **Enter** to continue, **Tab** to move between controls, and **Esc** or **Back** to revisit a step. Existing values are prefilled.
 3. Review the connection and select **Test connection & save**. CUGA sends a short inference request and saves only after a successful test, in a local `.env` with permissions `0600`. If validation fails, your answers remain in the wizard: edit one field or retry without restarting. **Cancel** or **Ctrl+C** leaves the previous configuration unchanged.
-4. Open the printed URL and go to `/manage`. In **Configure & try it out**, ask **What can you help me automate?** Then connect tools and try a task using them.
+4. When setup was started with `cuga start manager`, the manager starts after saving. When using `cuga setup`, the **Connection ready** screen shows your provider, model, and saved configuration path, with **Start manager** selected. You can also **Edit connection** or **Finish setup**; finishing prints the exact launch command for this installation and saved configuration. Open the printed URL and go to `/manage`. In **Configure & try it out**, ask **What can you help me automate?** Then connect tools and try a task using them.
 5. Select **Publish** when your draft is ready. Published versions are used in **Chat**.
 
 Existing provider configuration is detected and reused without prompts or additional test requests. To change or validate it explicitly:
