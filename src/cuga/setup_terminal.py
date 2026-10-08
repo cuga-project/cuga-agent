@@ -145,7 +145,7 @@ class TerminalUI:
             ),
         )
 
-    def choose(self, title, text, choices, default=None, *, back=False):
+    def choose(self, title, text, choices, default=None, *, back=False, close_label="Cancel"):
         from prompt_toolkit.application import get_app
         from prompt_toolkit.layout import HSplit
         from prompt_toolkit.layout.dimension import Dimension
@@ -163,7 +163,8 @@ class TerminalUI:
         buttons = [Button("Continue", handler=lambda: get_app().exit(result=menu.current_value))]
         if back:
             buttons.append(Button("Back", handler=lambda: get_app().exit(result=BACK)))
-        buttons.append(Button("Cancel", handler=lambda: get_app().exit(result=None)))
+        buttons.append(Button(close_label, handler=lambda: get_app().exit(result=None)))
+        escape_action = "Back" if back else close_label
         dialog = Dialog(
             title=f"CUGA · {title}",
             body=HSplit(
@@ -171,7 +172,7 @@ class TerminalUI:
                     Label(text),
                     menu,
                     Label(
-                        "↑↓ Select · Enter Continue · Tab Buttons · Esc Back · Ctrl+C Cancel",
+                        f"↑↓ Select · Enter Continue · Tab Buttons · Esc {escape_action} · Ctrl+C {close_label}",
                         style="class:help",
                     ),
                 ],
@@ -309,3 +310,20 @@ def run_setup(path, ui=None):
                 if response is not BACK:
                     fields[index].value = response
                 status = "Connection updated. Test again to save."
+
+
+def connection_ready(path, *, verified=True, ui=None):
+    """Offer next actions after a successful save, without exposing credentials."""
+    provider = setup_cli.PROVIDERS[current_provider()][0]
+    model = os.getenv("MODEL_NAME") or setup_cli.read_profile(setup_cli.profile_name()).get("model_name", "")
+    status = "Provider connection verified." if verified else "Existing provider configuration detected."
+    source = str(path) if verified or path.is_file() else "current environment"
+    return (ui or TerminalUI()).choose(
+        "Connection ready" if verified else "Connection configured",
+        f"{status}\nProvider: {provider}\nModel: {model}\nConfiguration: {source}\n"
+        "Credentials stay local and are hidden here.\n"
+        "Start the manager to try your first automation task.",
+        [("start", "Start manager"), ("edit", "Edit connection"), ("finish", "Finish setup")],
+        default="start",
+        close_label="Close",
+    )
