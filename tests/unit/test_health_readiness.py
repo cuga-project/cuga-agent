@@ -10,6 +10,7 @@ Covers issue #928:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Dict
 
@@ -249,10 +250,17 @@ def test_helm_deployment_probe_paths():
     assert deployment_path.exists()
     content = deployment_path.read_text()
 
-    # Verify readiness probe points to /health/readiness
-    assert "readinessProbe:" in content
-    assert "/health/readiness" in content
+    # Verify readiness probe explicitly targets /health/readiness
+    readiness_match = re.search(r"readinessProbe:\s*\n\s*httpGet:\s*\n\s*path:\s*([^\s]+)", content)
+    assert readiness_match is not None, "readinessProbe httpGet path not found"
+    assert readiness_match.group(1) == "/health/readiness"
 
-    # Verify liveness probe points to /health
-    assert "livenessProbe:" in content
-    assert "/health" in content
+    # Verify liveness probe explicitly targets /health
+    liveness_match = re.search(r"livenessProbe:\s*\n\s*httpGet:\s*\n\s*path:\s*([^\s]+)", content)
+    assert liveness_match is not None, "livenessProbe httpGet path not found"
+    assert liveness_match.group(1) == "/health"
+
+    # Verify startup probe explicitly targets /health
+    startup_match = re.search(r"startupProbe:\s*\n\s*httpGet:\s*\n\s*path:\s*([^\s]+)", content)
+    assert startup_match is not None, "startupProbe httpGet path not found"
+    assert startup_match.group(1) == "/health"
