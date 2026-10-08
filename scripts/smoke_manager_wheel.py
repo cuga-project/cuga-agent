@@ -88,6 +88,7 @@ def configure_in_terminal(command, cwd, env, endpoint, *, change=False):
     if not change:
         answers.append((b"API key", b"cuga-wheel-smoke-local-value\r"))  # pragma: allowlist secret
     answers.append((b"Review & test", b"\r"))
+    answers.append((b"Connection ready", b"\x1b[B\x1b[B\r"))
 
     output = b""
     screen_output = b""
