@@ -688,7 +688,10 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                         tp.reset()
                     llm_cfg = (full_draft or {}).get("llm") or {}
                     draft_agent.llm_config = llm_cfg if llm_cfg else None
-                    await draft_agent.build_graph()
+                    from cuga.backend.server.onboarding import guided_llm_context
+
+                    with guided_llm_context(llm_cfg):
+                        await draft_agent.build_graph()
             except Exception as rebuild_err:
                 logger.warning(f"Failed to rebuild draft agent graph after knowledge PATCH: {rebuild_err}")
 
