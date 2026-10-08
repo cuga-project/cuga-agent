@@ -20,6 +20,7 @@ The installer selects matched, hash-pinned CPU PyTorch wheels. On Apple Silicon,
 ## Configure your provider locally
 
 On the first `cuga start manager`, an interactive terminal guides you through provider selection before starting the manager.
+Setup uses a dedicated terminal screen so keyboard navigation stays in place. Your previous terminal output returns when you leave setup.
 
 1. Choose OpenAI, OpenRouter, watsonx, Ollama, Groq, Azure OpenAI, RITS, MiniMax, or an OpenAI-compatible private endpoint.
 2. Enter a model identifier and endpoint URL. Credentials use hidden terminal input. For watsonx, also choose a project or space ID. Use arrow keys to select, **Enter** to continue, **Tab** to move between controls, and **Esc** or **Back** to revisit a step. Existing values are prefilled.
