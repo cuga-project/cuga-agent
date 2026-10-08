@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+import shlex
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -579,3 +581,279 @@ def test_keyboard_interrupt_preserves_previous_config(environment, monkeypatch, 
     monkeypatch.setattr(setup_cli, "test_connection", Mock(side_effect=KeyboardInterrupt))
     assert not setup_cli.ensure_provider(environment)
     assert path.read_bytes() == before
+
+
+@pytest.fixture
+def interactive_setup(environment, monkeypatch):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("cuga.local_setup.prepare_local_manager", lambda: environment)
+    monkeypatch.setattr(setup_cli, "test_connection", lambda values: True)
+    return environment
+
+
+def test_ready_screen_starts_same_installation_with_saved_connection(
+    interactive_setup, monkeypatch, scripted_ui, tmp_path
+):
+    installation = tmp_path / "isolated tools" / "bin"
+    installation.mkdir(parents=True)
+    monkeypatch.setattr(sys, "executable", str(installation / "python"))
+    ui = scripted_ui(
+        monkeypatch,
+        choices=[0, "test", "start"],
+        edits=["selected-model", "https://api.openai.com/v1", "private-key"],
+    )
+    saved = interactive_setup / ".env"
+    captured = {}
+
+    class ManagerStarted(Exception):
+        pass
+
+    def execute(command, args, env):
+        assert dotenv_values(saved)["MODEL_NAME"] == "selected-model"
+        captured.update(command=command, args=args, env=env)
+        raise ManagerStarted
+
+    monkeypatch.setattr(os, "execvpe", execute)
+    with pytest.raises(ManagerStarted):
+        setup_cli.main([])
+    assert captured["args"] == [str(installation / "python"), "-m", "cuga.cli", "start", "manager"]
+    assert "ENV_FILE" not in captured["env"]
+    assert captured["env"]["MODEL_NAME"] == "selected-model"
+    assert captured["env"]["CUGA_DATA_DIR"] == str(interactive_setup)
+    ready = ui.screens[-1]
+    assert ready[0] == "Connection ready" and ready[3] == "start"
+    assert "selected-model" in ready[1] and str(saved) in ready[1]
+    assert "private-key" not in ready[1]
+
+
+@pytest.mark.parametrize("action", ["finish", None])
+def test_finishing_ready_screen_prints_exact_command_without_credentials(
+    interactive_setup, monkeypatch, scripted_ui, capsys, action
+):
+    scripted_ui(
+        monkeypatch,
+        choices=[0, "test", action],
+        edits=["model", "https://api.openai.com/v1", "private-key"],
+    )
+    execute = Mock()
+    monkeypatch.setattr(os, "execvpe", execute)
+    assert setup_cli.main([]) == 0
+    execute.assert_not_called()
+    output = capsys.readouterr().out
+    command_line = output.split("Start the manager later with:\n")[1].splitlines()[0]
+    tokens = shlex.split(command_line)
+    assert tokens[:5] == ["cd", str(Path.cwd()), "&&", "env", f"CUGA_DATA_DIR={interactive_setup}"]
+    assert tokens[5] == f"ENV_FILE={interactive_setup / '.env'}"
+    assert tokens[-2:] == ["start", "manager"]
+    assert "private-key" not in output
+
+
+def test_edit_from_ready_prefills_saved_values_and_returns_after_save(
+    interactive_setup, monkeypatch, scripted_ui
+):
+    ui = scripted_ui(
+        monkeypatch,
+        choices=[0, "test", "edit", 0, "test", "finish"],
+        edits=[
+            "first-model",
+            "https://api.openai.com/v1",
+            "private-key",
+            "updated-model",
+            "https://api.openai.com/v1",
+            "private-key",
+        ],
+    )
+    assert setup_cli.main([]) == 0
+    assert ui.fields[3] == ("MODEL_NAME", "first-model")
+    assert dotenv_values(interactive_setup / ".env")["MODEL_NAME"] == "updated-model"
+    assert [screen[0] for screen in ui.screens].count("Connection ready") == 2
+
+
+def test_cancelling_edit_returns_to_ready_with_saved_connection(interactive_setup, monkeypatch, scripted_ui):
+    ui = scripted_ui(
+        monkeypatch,
+        choices=[0, "test", "edit", None, "finish"],
+        edits=["saved-model", "https://api.openai.com/v1", "private-key"],
+    )
+    assert setup_cli.main([]) == 0
+    assert dotenv_values(interactive_setup / ".env")["MODEL_NAME"] == "saved-model"
+    assert [screen[0] for screen in ui.screens].count("Connection ready") == 2
+
+
+def test_keeping_existing_connection_offers_start_without_retesting(
+    interactive_setup, monkeypatch, scripted_ui
+):
+    monkeypatch.setenv("MODEL_NAME", "existing-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "existing-key")
+    ui = scripted_ui(monkeypatch, choices=["keep", "finish"], edits=[])
+    check = Mock()
+    monkeypatch.setattr(setup_cli, "test_connection", check)
+    assert setup_cli.main([]) == 0
+    check.assert_not_called()
+    assert ui.screens[-1][0] == "Connection configured"
+    assert "verified" not in ui.screens[-1][1]
+
+
+def test_manager_launch_fallback_and_quoted_paths(environment, monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "Python runtime" / "python"))
+    root = tmp_path / "data with spaces"
+    path = root / "chosen connection.env"
+    command, env = setup_cli.manager_launch(path, root)
+    assert command == [sys.executable, "-m", "cuga.cli", "start", "manager"]
+    assert "ENV_FILE" not in env
+    assert shlex.split(setup_cli.manager_launch_hint(path, root)) == [
+        "cd",
+        str(Path.cwd()),
+        "&&",
+        "env",
+        f"CUGA_DATA_DIR={root}",
+        *command,
+    ]
+
+
+def test_failed_manager_start_preserves_saved_file_and_gives_launch_command(
+    interactive_setup, monkeypatch, scripted_ui, capsys
+):
+    scripted_ui(
+        monkeypatch,
+        choices=[0, "test", "start"],
+        edits=["model", "https://api.openai.com/v1", "private-key"],
+    )
+    monkeypatch.setattr(os, "execvpe", Mock(side_effect=OSError("private provider response")))
+    assert setup_cli.main([]) == 1
+    assert dotenv_values(interactive_setup / ".env")["MODEL_NAME"] == "model"
+    error = capsys.readouterr().err
+    assert "Could not start the manager" in error
+    assert "CUGA_DATA_DIR=" in error
+    assert "private provider response" not in error
+    assert "private-key" not in error
+
+
+def test_start_from_existing_connection_preserves_shell_precedence(environment, monkeypatch):
+    environment.mkdir()
+    path = environment / ".env"
+    path.write_text("MODEL_NAME=file-model\nOPENAI_API_KEY=file-key\n")
+    monkeypatch.setenv("MODEL_NAME", "shell-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "shell-key")
+    _, env = setup_cli.manager_launch(path, environment)
+    assert "ENV_FILE" not in env
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import os; "
+            "from cuga.setup_cli import load_environment; "
+            "load_environment(Path(os.environ['CUGA_DATA_DIR'])); "
+            "from cuga.config import settings; "
+            "assert os.environ['MODEL_NAME'] == 'shell-model'; "
+            "assert os.environ['OPENAI_API_KEY'] == 'shell-key'",
+        ],
+        cwd=environment,
+        env=env,
+        capture_output=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+
+
+def test_launch_preserves_explicit_env_file(environment, monkeypatch):
+    path = environment / "selected.env"
+    monkeypatch.setenv("ENV_FILE", "relative-selected.env")
+    _, env = setup_cli.manager_launch(path, environment)
+    assert env["ENV_FILE"] == str(path)
+    assert f"ENV_FILE={path}" in setup_cli.manager_launch_hint(path, environment)
+
+
+def test_interrupting_edit_validation_returns_to_saved_completion(
+    interactive_setup, monkeypatch, scripted_ui
+):
+    ui = scripted_ui(
+        monkeypatch,
+        choices=[0, "test", "edit", 0, "test", "finish"],
+        edits=[
+            "saved-model",
+            "https://api.openai.com/v1",
+            "private-key",
+            "draft-model",
+            "https://api.openai.com/v1",
+            "draft-key",
+        ],
+    )
+    monkeypatch.setattr(setup_cli, "test_connection", Mock(side_effect=[True, KeyboardInterrupt]))
+    assert setup_cli.main([]) == 0
+    assert dotenv_values(interactive_setup / ".env")["MODEL_NAME"] == "saved-model"
+    assert os.environ["MODEL_NAME"] == "saved-model"
+    assert [screen[0] for screen in ui.screens].count("Connection ready") == 2
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Exercises the POSIX launch command; Windows uses PowerShell.")
+def test_printed_module_fallback_bootstraps_storage_in_fresh_shell(environment, monkeypatch, tmp_path):
+    import dotenv
+
+    environment.mkdir()
+    (environment / ".env").write_text("MODEL_NAME=model\nOPENAI_API_KEY=local-test-value\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "executable", str(Path(sys.executable).resolve()))
+    # Stop before services start, then inspect the real module entry point's bootstrap.
+    (tmp_path / "sitecustomize.py").write_text(
+        "import os, sys, types\n"
+        "from pathlib import Path\n"
+        "def app():\n"
+        "    root = Path(os.environ['CUGA_DATA_DIR'])\n"
+        "    assert os.environ['CUGA_LOCAL_MANAGER'] == 'true'\n"
+        "    assert os.environ['CUGA_DBS_DIR'] == str(root / 'dbs')\n"
+        "    assert os.environ['CUGA_WORKSPACE_PATH'] == str(root / 'workspace')\n"
+        "    assert os.environ['DYNACONF_STORAGE__PRESERVE_CONFIGS_ON_STARTUP'] == 'any'\n"
+        "    assert (root / 'secret.key').is_file()\n"
+        "    print('storage bootstrapped')\n"
+        "sys.modules['cuga.cli.main'] = types.SimpleNamespace(app=app)\n"
+    )
+    hint = setup_cli.manager_launch_hint(environment / ".env", environment)
+    assert "-m cuga.cli start manager" in hint
+    _, env = setup_cli.manager_launch(environment / ".env", environment)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(tmp_path), str(Path(setup_cli.__file__).parents[1]), str(Path(dotenv.__file__).parents[1])]
+    )
+    env.pop("CUGA_DEMO_MODE", None)
+    result = subprocess.run(
+        hint, shell=True, executable="/bin/bash", env=env, capture_output=True, timeout=15
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert b"storage bootstrapped" in result.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Exercises the POSIX launch command.")
+def test_finish_after_save_replays_new_connection_over_old_parent_shell(
+    interactive_setup, monkeypatch, scripted_ui, tmp_path, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MODEL_NAME", "old-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "old-key")
+    parent_environment = dict(os.environ)
+    scripted_ui(
+        monkeypatch,
+        choices=["change", 0, "test", "finish"],
+        edits=["saved-model", "https://api.openai.com/v1", "saved-key"],
+    )
+    assert setup_cli.main([]) == 0
+    hint = capsys.readouterr().out.split("Start the manager later with:\n")[1].splitlines()[0]
+    assert f"ENV_FILE={interactive_setup / '.env'}" in hint
+    (tmp_path / "sitecustomize.py").write_text(
+        "import os, sys, types\n"
+        "def app():\n"
+        "    from cuga.config import settings\n"
+        "    assert os.environ['MODEL_NAME'] == 'saved-model'\n"
+        "    assert os.environ['OPENAI_API_KEY'] == 'saved-key'\n"
+        "    assert os.environ['CUGA_LOCAL_MANAGER'] == 'true'\n"
+        "    print('saved connection replayed')\n"
+        "sys.modules['cuga.cli.main'] = types.SimpleNamespace(app=app)\n"
+    )
+    parent_environment["PYTHONPATH"] = os.pathsep.join(
+        [str(tmp_path), str(Path(setup_cli.__file__).parents[1])]
+    )
+    parent_environment.pop("CUGA_DEMO_MODE", None)
+    result = subprocess.run(
+        hint, shell=True, executable="/bin/bash", env=parent_environment, capture_output=True, timeout=15
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert b"saved connection replayed" in result.stdout
