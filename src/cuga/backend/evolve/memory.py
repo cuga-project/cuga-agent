@@ -18,6 +18,7 @@ from cuga.backend.evolve.formatting import (
 )
 from cuga.backend.evolve.integration import EvolveIntegration, normalize_evolve_identifier
 from cuga.backend.evolve.memory_store import record_memory_usage
+from cuga.backend.evolve.preferences import memory_enabled
 from cuga.config import get_service_instance_id, settings
 
 
@@ -33,7 +34,7 @@ async def build_evolve_special_instructions_extension(
     (`get_guidelines`, `retrieve_user_facts`) are bounded by `timeout` and fail
     open. The user-fact write is fire-and-forget.
     """
-    if not EvolveIntegration.is_enabled():
+    if not await memory_enabled(getattr(state, "user_id", None)):
         return ""
 
     if timeout is None:
@@ -41,6 +42,7 @@ async def build_evolve_special_instructions_extension(
 
     extra = ""
     used_entity_ids: list[str] = []
+    used_revisions: dict[str, int] = {}
     attributed_guideline_ids: list[str] = []
     service_scope = getattr(state, "service_scope", {}) or {}
 
@@ -64,6 +66,7 @@ async def build_evolve_special_instructions_extension(
             if attributed_guidelines:
                 evolve_guidelines = attributed_guidelines["text"]
                 attributed_guideline_ids = attributed_guidelines["entity_ids"]
+                used_revisions.update(attributed_guidelines.get("entity_revisions") or {})
             else:
                 evolve_guidelines = await asyncio.wait_for(
                     EvolveIntegration.get_guidelines(
@@ -128,6 +131,11 @@ async def build_evolve_special_instructions_extension(
         categories = (
             retrieved_preferences.get("categories") if isinstance(retrieved_preferences, dict) else None
         )
+        if isinstance(categories, dict):
+            for facts in categories.values():
+                for fact in facts if isinstance(facts, list) else []:
+                    if isinstance(fact, dict) and type(fact.get("revision")) is int:
+                        used_revisions[str(fact.get("id"))] = fact["revision"]
         preference_section, retrieved_fact_ids = build_evolve_user_preference_with_attribution(categories)
         if preference_section:
             extra += preference_section
@@ -146,6 +154,7 @@ async def build_evolve_special_instructions_extension(
                 agent_id=agent_id,
                 user_id=usage_user_id,
                 entity_ids=unique_entity_ids,
+                entity_revisions=used_revisions,
                 thread_id=str(getattr(state, "thread_id", "") or ""),
                 conversation_label=str(getattr(state, "input", "") or memory_query or "")[:120],
             )

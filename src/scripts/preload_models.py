@@ -9,6 +9,19 @@ Set HF_HUB_OFFLINE=1 at runtime to prevent any accidental network access.
 
 import os
 import sys
+from pathlib import Path
+
+
+def strict_preload_enabled() -> bool:
+    """Return whether a missing model should fail the preload process."""
+    return os.environ.get("MODEL_PRELOAD_STRICT", "0") == "1"
+
+
+def handle_preload_error(component: str, error: Exception) -> None:
+    """Report an optional preload failure, or make it fatal in strict mode."""
+    if strict_preload_enabled():
+        raise RuntimeError(f"{component} preload failed") from error
+    print(f"  ! {component} preload skipped: {error}")
 
 
 def docling_transformers_layout_repo_id() -> str:
@@ -61,8 +74,6 @@ def preload_fastembed() -> None:
 
 
 def preload_docling() -> None:
-    from pathlib import Path
-
     print("→ Preloading docling models...")
     from docling.models.utils.hf_model_download import download_hf_model
     from docling.utils.model_downloader import download_models
@@ -103,19 +114,44 @@ def preload_fastembed_tokenizer() -> None:
 
 def preload_evolve() -> None:
     """Cache Evolve's default embedding model and configured alternatives."""
+    from altk_evolve.config.guidelines import guidelines_settings
     from altk_evolve.config.milvus import milvus_other_settings
     from altk_evolve.config.postgres import postgres_db_settings
     from sentence_transformers import SentenceTransformer
 
     models = {
-        "sentence-transformers/all-MiniLM-L6-v2",
-        milvus_other_settings.embedding_model,
-        postgres_db_settings.embedding_model,
+        (milvus_other_settings.embedding_model, False),
+        (postgres_db_settings.embedding_model, False),
+        (
+            guidelines_settings.consistency_embedding_model_small or milvus_other_settings.embedding_model,
+            guidelines_settings.consistency_embedding_trust_remote_code,
+        ),
+        (
+            guidelines_settings.consistency_embedding_model_large or milvus_other_settings.embedding_model,
+            guidelines_settings.consistency_embedding_trust_remote_code,
+        ),
     }
-    for model_name in sorted(models):
+    for model_name, trust_remote_code in sorted(models):
         print(f"→ Preloading Evolve embedding model {model_name}...")
-        model = SentenceTransformer(model_name, device="cpu")
+        model = SentenceTransformer(model_name, device="cpu", trust_remote_code=trust_remote_code)
         model.encode(["airgap warmup"])
+
+
+def preload_readi() -> None:
+    """Warm the installed READI model without invoking runtime model downloads."""
+    import importlib.util
+
+    from altk_evolve.hooks.plugins.readi import build_readi_detector, redact_text
+
+    if importlib.util.find_spec("en_core_web_trf") is None:
+        raise RuntimeError(
+            "READI requires the en_core_web_trf model installed by the evolve-image dependency group"
+        )
+    detector = build_readi_detector(extractor="spacy", model="en_core_web_trf")
+    redacted = redact_text("John Smith lives in London.", detector)
+    if "John Smith" in redacted or "[REDACTED]" not in redacted:
+        raise RuntimeError("READI did not redact the model warmup name")
+    print("READI spaCy model loaded and name redaction verified")
 
 
 def preload_tiktoken() -> None:
@@ -133,6 +169,7 @@ if __name__ == "__main__":
     preload_fastembed_tokenizer()
     preload_docling()
     preload_evolve()
+    preload_readi()
     preload_tiktoken()
     print("\nDone. Set HF_HUB_OFFLINE=1 at runtime to enforce airgap.")
     sys.exit(0)

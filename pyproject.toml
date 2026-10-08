@@ -1,6 +1,6 @@
 [project]
 name = "cuga"
-version = "0.3.2"
+version = "0.4.0"
 description = "CUGA is an open-source generalist agent for the enterprise, supporting complex task execution on web and APIs, OpenAPI/MCP integrations, composable architecture, reasoning modes, and policy-aware features."
 readme = "README.md"
 license = "Apache-2.0"
@@ -110,8 +110,8 @@ e2b = ["e2b-code-interpreter>=2.4.1"]
 knowledge = []  # knowledge is now built-in, no extra dependencies needed
 health = ["cuga-oak-health; python_version>='3.12'"]  # kept for backward compat, now also in core deps
 opensandbox = ["opensandbox", "opensandbox-code-interpreter"]
-# Evolve 1.3 adds source-deletion grace periods, durable retries, and filter display metadata.
-evolve = ["altk-evolve[pii-regex]>=1.3,<2; python_version>='3.12'"]
+# Evolve 1.5.2 lets consistency metrics reuse the configured embedding model.
+evolve = ["altk-evolve[pii-regex]>=1.5.2,<2; python_version>='3.12'", "einops==0.8.1; python_version>='3.12'"]
 # wxO SDK requires Python >=3.11; keep it an extra so 3.10 installs are unaffected.
 wxo = ["ibm-watsonx-orchestrate-sdk>=2.15.0; python_version>='3.11'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
@@ -184,7 +184,15 @@ constraint-dependencies = [
     "virtualenv>=21.7.13",
 ]
 # litellm 1.83.4 pins python-dotenv==1.0.1; fastmcp needs >=1.1.0 — allow newer for sync/lock only.
-override-dependencies = ["python-dotenv>=1.1.0"]
+# READI pins application-wide packages; preserve CUGA's patched versions and
+# the pandas range supported by watsonx. Exercise READI in the offline image check.
+override-dependencies = [
+    "python-dotenv>=1.1.0",
+    "nltk>=3.10.3",
+    "pytz>=2025.1",
+    "pandas>=2.3.3,<2.4",
+    "safetensors>=0.8.0",
+]
 
 [tool.uv.sources]
 torch                 = { index = "pytorch-cpu" }
@@ -282,6 +290,13 @@ digital_sales_openapi = "scripts.commands:run_digital_sales_openapi"
 test_llm = "scripts.commands:test_llm"
 
 [dependency-groups]
+# Image-only dependencies: uv applies the READI compatibility overrides above.
+# Keep these out of the published evolve extra, whose pip consumers do not use uv overrides.
+evolve-image = [
+    "altk-evolve[pii-semantic]>=1.5.2,<2; python_version>='3.12'",
+    "readi-privacy==0.1.7; python_version>='3.12'",
+    "en-core-web-trf @ https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl ; python_version>='3.12'",
+]
 dev = [
     "pytz>=2025.1",
     "ruff>=0.9.4",

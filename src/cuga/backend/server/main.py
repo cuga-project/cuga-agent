@@ -1140,9 +1140,11 @@ async def lifespan(app: FastAPI):
     # never blocks startup on failure.
     await warm_shortlister_catalogue()
 
-    if settings.evolve.enabled:
-        from cuga.backend.evolve.deleted_sources import source_deletion_delivery_loop
+    from cuga.backend.evolve.deleted_sources import source_deletion_delivery_loop
 
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    if await EvolveIntegration.is_configured():
         app_state.background_tasks.append(asyncio.create_task(source_deletion_delivery_loop()))
 
     yield
@@ -1897,7 +1899,7 @@ async def event_stream(
                             }
                             if event.sources:
                                 answer_payload["sources"] = event.sources
-                            if settings.evolve.enabled and memory_turn_id:
+                            if memory_turn_id:
                                 from cuga.backend.evolve.memory_store import get_turn_memory_usage
 
                                 try:
@@ -2226,6 +2228,8 @@ async def auth_config():
 @app.get("/api/ui/config")
 async def ui_config():
     """Return UI configuration flags from settings."""
+    from cuga.backend.evolve.integration import EvolveIntegration
+
     hide_logo = settings.ui.hide_cuga_logo
     brand_name = getattr(settings.ui, "brand_name", "CUGA Agent") or "CUGA Agent"
     # SPLIT TOPOLOGY: this server may serve the UI while the eventing layer runs as its own
@@ -2246,7 +2250,7 @@ async def ui_config():
                 else ""
             ),
             "agent_registry": agent_registry.is_agent_registry_enabled(),
-            "evolve_memory_enabled": bool(settings.evolve.enabled),
+            "evolve_memory_enabled": await EvolveIntegration.is_configured(),
         }
     )
 
