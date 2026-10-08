@@ -1,0 +1,14 @@
+{
+  "Darwin-arm64": {
+    "torch": "torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.13.0-cp312-cp312-macosx_14_0_arm64.whl#sha256=2fe228aba290d14b9f31b049be550dbd469c3fd3013d7a19705b30454da97027",
+    "torchvision": "torchvision @ https://download-r2.pytorch.org/whl/cpu/torchvision-0.28.0-cp312-cp312-macosx_14_0_arm64.whl#sha256=e9f54c30cd52e3ef7fd034cc69b7bb7e0964e1c8f8743e018ab92e95b40f9eee"
+  },
+  "Linux-aarch64": {
+    "torch": "torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_aarch64.whl#sha256=6f307c2c32d764ffc6ff6893b801fad6d4752f3e67966cb8abf1843427c02604",
+    "torchvision": "torchvision @ https://download-r2.pytorch.org/whl/cpu/torchvision-0.28.0%2Bcpu-cp312-cp312-manylinux_2_28_aarch64.whl#sha256=2f768c4f6d5adf6d5535061fd69ec44827608bac0e96e12114942a6fdfce1107"
+  },
+  "Linux-x86_64": {
+    "torch": "torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2",
+    "torchvision": "torchvision @ https://download-r2.pytorch.org/whl/cpu/torchvision-0.28.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=b545d46f4d2f9d30381281cf22874bfe1d32a8a7b0ee8396fccde89f30c6a9d9"
+  }
+}
