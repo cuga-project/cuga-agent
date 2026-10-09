@@ -32,6 +32,26 @@ env:
   PYTHONUNBUFFERED: "1"
 
 jobs:
+  # Feeds only the Windows smoke job. The Linux stability jobs stay on the configured model
+  # (gpt-oss-120b): no other watsonx model passes the multi-step CRM tests (#812).
+  model-probe:
+    name: watsonx model probe
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      model: ${{ steps.probe.outputs.model }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+      # gpt-oss-120b on watsonx truncates replies at times (#784). Empty output keeps
+      # secrets.MODEL_NAME / the TOML model.
+      - id: probe
+        continue-on-error: true
+        run: python3 scripts/ci/watsonx_model_probe.py
+
   stability-tests:
     name: Stability Tests (Python ${{ matrix.python-version }})
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -69,10 +89,14 @@ jobs:
 
   stability-tests-windows:
     name: Stability Tests Windows Smoke (Python 3.12)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # !cancelled(): still run, on the configured model, if the probe job itself fails.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: windows-latest
     timeout-minutes: 10
+    # One test (test_list_my_accounts_fast), which Llama 4 Maverick passes; no one-flake margin.
+    needs: model-probe
     env:
+      MODEL_NAME: ${{ needs.model-probe.outputs.model || secrets.MODEL_NAME }}
       UV_NO_PROGRESS: 1
       UV_QUIET: 1
     steps:
