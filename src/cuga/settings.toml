@@ -28,6 +28,7 @@ cuga_lite_enable_few_shots = true  # MCP few-shots: prompt block + few-shot chat
 enable_todos = false  # Enable todos feature for complex multi-step task management
 reflection_enabled = false
 pre_execute_verify_enabled = false  # Independent of reflection; eval can hold VERIFY without dropping PLAN reflection
+# pre_execute_verify_timeout = 60  # Seconds for the VERIFY model call before the block runs unverified (default 60). Env: DYNACONF_ADVANCED_FEATURES__PRE_EXECUTE_VERIFY_TIMEOUT
 enable_filesystem_tools = false  # Enable workspace filesystem tools (read_file, write_file, etc.)
 e2b_sandbox = false           # use E2B cloud sandbox for code execution
 opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; requires Docker + opensandbox SDK
@@ -238,6 +239,7 @@ demo = 7860
 # CLI `cuga start` waits for the demo Uvicorn process: max ≈ this × 0.5s between polls (default 360 → ~3 min).
 demo_server_startup_max_retries = 420
 apis_url = 9000
+# apis_host = "http://localhost:9000"  # Optional: Full AppWorld APIs URL. Falls back to "http://localhost:{apis_url}"
 crm_api = 8007
 saved_flows = 8003
 environment_url = 8000

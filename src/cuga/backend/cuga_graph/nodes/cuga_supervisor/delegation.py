@@ -91,6 +91,7 @@ def create_agent_delegation_func(
     agent_name: str,
     agent_or_config: Any,
     agent_card: Any = None,
+    permission_handler: Any = None,
 ) -> Callable:
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol import (
         A2AProtocol,
@@ -146,7 +147,101 @@ def create_agent_delegation_func(
             return answer
 
         if isinstance(agent_or_config, dict) and agent_or_config.get("type") == "external":
-            a2a_config = agent_or_config.get("config", {}).get("a2a_protocol", {})
+            external_config = agent_or_config.get("config", {})
+            from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
+                validate_external_protocol_config,
+            )
+
+            try:
+                acp_mapping, a2a_mapping = validate_external_protocol_config(
+                    external_config, require_enabled=True
+                )
+            except ValueError:
+                result = {
+                    "result": "ACP agent configuration is invalid.",
+                    "status": "failed",
+                    "variables": {},
+                }
+                answer = result["result"]
+                _record_delegation(adapter, agent_name, result=result, answer=answer, variables={})
+                return answer
+            if acp_mapping is not None and acp_mapping["enabled"]:
+                from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.config import (
+                    acp_process_config_from_mapping,
+                )
+                from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
+                    delegate_task_via_acp,
+                )
+
+                permission_bridge = None
+                try:
+                    acp_config = acp_process_config_from_mapping(
+                        acp_mapping,
+                        name=external_config.get("name", agent_name),
+                        description=external_config.get("description"),
+                    )
+                except ValueError:
+                    result = {
+                        "result": "ACP agent configuration is invalid.",
+                        "status": "failed",
+                        "variables": {},
+                    }
+                else:
+                    exec_ctx = resolve_supervisor_execution_context()
+                    if (
+                        exec_ctx is not None
+                        and exec_ctx.pending_acp_registry is not None
+                        and isinstance(exec_ctx.thread_id, str)
+                        and exec_ctx.thread_id.strip()
+                    ):
+                        from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
+                            ACPPermissionRuntimeBridge,
+                        )
+
+                        def finalize_pending(outcome: str) -> None:
+                            result = {
+                                "result": f"ACP pending delegation ended without a valid resume ({outcome}).",
+                                "status": "failed",
+                                "variables": {},
+                            }
+                            adapter.record_delegation(
+                                exec_ctx.state,
+                                agent_name,
+                                result=result,
+                                answer=result["result"],
+                                variables={},
+                            )
+
+                        permission_bridge = ACPPermissionRuntimeBridge(
+                            registry=exec_ctx.pending_acp_registry,
+                            thread_id=exec_ctx.thread_id,
+                            agent_name=agent_name,
+                            interactive=exec_ctx.interactive,
+                            finalizer=finalize_pending,
+                        )
+                    result = await delegate_task_via_acp(
+                        config=acp_config,
+                        task=task,
+                        permission_handler=permission_handler,
+                        permission_bridge=permission_bridge,
+                    )
+                answer = result.get("result", "")
+                result_vars = result.get("variables") or {}
+                if permission_bridge is None or not permission_bridge.was_parked:
+                    _record_delegation(
+                        adapter,
+                        agent_name,
+                        result=result,
+                        answer=answer,
+                        variables=result_vars,
+                    )
+                return answer
+
+            a2a_config = a2a_mapping
+            if a2a_config is None:
+                error_answer = f"Error: Unknown agent type for {agent_name}"
+                _record_delegation(adapter, agent_name, answer=error_answer)
+                return error_answer
             endpoint = a2a_config.get("endpoint")
             transport = a2a_config.get("transport", "http")
 

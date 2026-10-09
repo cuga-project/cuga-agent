@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from cuga.backend.server.auth import require_auth
 from cuga.backend.server.config_store import reset_config_db
-from cuga.backend.server.manage_routes import router
+from cuga.backend.server.manage_routes import config_routes, router
 
 pytestmark = pytest.mark.unit
 
@@ -54,7 +55,81 @@ def _default_runtime():
     )
 
 
-def test_publishing_non_default_agent_does_not_mutate_singleton_runtime():
+@pytest.mark.asyncio
+async def test_publish_rejects_unknown_agent_before_writes(monkeypatch):
+    save_draft = AsyncMock()
+    save_config = AsyncMock()
+    monkeypatch.setattr("cuga.backend.server.agent_registry.is_agent_registry_enabled", lambda: True)
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.list_agents_with_configs",
+        AsyncMock(return_value=[{"agent_id": "registered-agent"}]),
+    )
+    monkeypatch.setattr("cuga.backend.server.config_store.save_draft", save_draft)
+    monkeypatch.setattr("cuga.backend.server.config_store.save_config", save_config)
+    request = SimpleNamespace(json=AsyncMock(), app=SimpleNamespace(state=SimpleNamespace(app_state=None)))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await config_routes.save_manage_config_publish(request, agent_id="unknown-agent")
+
+    assert exc_info.value.status_code == 404
+    request.json.assert_not_awaited()
+    save_draft.assert_not_awaited()
+    save_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_publish_passes_registry_owned_agent_id_to_policy_creation(monkeypatch):
+    registry_agent_id = "".join(["registered", "-agent"])
+    requested_agent_id = registry_agent_id.encode().decode()
+    assert requested_agent_id == registry_agent_id
+    assert requested_agent_id is not registry_agent_id
+
+    captured = {}
+
+    async def _capture_policy_creation(*, agent_id, draft, policies_data):
+        captured["agent_id"] = agent_id
+        captured["draft"] = draft
+        captured["policies_data"] = policies_data
+
+    monkeypatch.setattr("cuga.backend.server.agent_registry.is_agent_registry_enabled", lambda: True)
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.list_agents_with_configs",
+        AsyncMock(return_value=[{"agent_id": registry_agent_id}]),
+    )
+    monkeypatch.setattr("cuga.backend.server.config_store.load_config", AsyncMock(return_value=(None, None)))
+    monkeypatch.setattr("cuga.backend.server.config_store.save_draft", AsyncMock())
+    monkeypatch.setattr("cuga.backend.server.config_store.save_config", AsyncMock(return_value="1"))
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.policy.configurable.create_agent_policy_system",
+        _capture_policy_creation,
+    )
+    monkeypatch.setattr(config_routes, "invalidate_agent_graph_cache", AsyncMock())
+    request = SimpleNamespace(
+        json=AsyncMock(
+            return_value={
+                "config": {
+                    "agent": {"name": "Registered Agent"},
+                    "policies": {"policies": [{"id": "policy-1"}]},
+                }
+            }
+        ),
+        app=SimpleNamespace(state=SimpleNamespace(app_state=_default_runtime())),
+    )
+
+    response = await config_routes.save_manage_config_publish(request, agent_id=requested_agent_id)
+
+    assert response.status_code == 200
+    assert captured["agent_id"] is registry_agent_id
+    assert captured["draft"] is False
+    assert captured["policies_data"] == [{"id": "policy-1"}]
+
+
+def test_publishing_non_default_agent_does_not_mutate_singleton_runtime(monkeypatch):
+    monkeypatch.setattr("cuga.backend.server.agent_registry.is_agent_registry_enabled", lambda: True)
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.list_agents_with_configs",
+        AsyncMock(return_value=[{"agent_id": "sales-east"}]),
+    )
     state = _default_runtime()
     default_agent = state.agent
     cached_published = state.agent_graphs_cache[("sales-east", False)]
