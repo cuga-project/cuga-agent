@@ -165,11 +165,17 @@ def preload_tiktoken() -> None:
 
 if __name__ == "__main__":
     print("Preloading models for airgapped operation...\n")
-    preload_fastembed()
-    preload_fastembed_tokenizer()
-    preload_docling()
-    preload_evolve()
-    preload_readi()
-    preload_tiktoken()
+    for component, fn in (
+        ("fastembed", preload_fastembed),
+        ("fastembed tokenizer", preload_fastembed_tokenizer),
+        ("docling", preload_docling),
+        ("evolve", preload_evolve),
+        ("readi", preload_readi),
+        ("tiktoken", preload_tiktoken),
+    ):
+        try:
+            fn()
+        except Exception as e:
+            handle_preload_error(component, e)
     print("\nDone. Set HF_HUB_OFFLINE=1 at runtime to enforce airgap.")
     sys.exit(0)
