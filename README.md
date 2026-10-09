@@ -1364,7 +1364,7 @@ uv run pytest -m "not stability and not pgvector and not manual and not e2e and 
 uv run pytest src/system_tests/load/load_test_with_mocked_llm.py -m load --load-test-users 5
 ```
 
-Stability CI equivalent (scoped to e2e so collection stays small):
+Stability tests, the CI equivalent (87% pass-rate gate; use `-n0` so the threshold aggregates correctly):
 
 ```bash
 uv run pytest src/system_tests/e2e -m stability --stability-threshold 87 -n0
@@ -1374,12 +1374,6 @@ Run a faster local loop:
 
 ```bash
 uv run pytest -m "not stability and not slow and not pgvector and not manual and not e2e and not load"
-```
-
-Run stability tests only (87% pass-rate gate; use `-n0` so threshold aggregation works):
-
-```bash
-uv run pytest src/system_tests/e2e -m stability --stability-threshold 87 -n0
 ```
 
 Run pgvector tests (requires a running pgvector container):
