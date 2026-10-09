@@ -1,0 +1,41 @@
+# IBM Bob inference (OpenAI-compatible): https://api.us-east.bob.ibm.com/inference/v1
+# Set OPENAI_BASE_URL to that URL, MODEL_NAME to a Bob model (e.g. "premium", "fast"),
+# and BOB_AUTH_HEADER to the full header value "Apikey <bob api key>".
+# Bob rejects "Bearer" auth and the default OpenAI SDK User-Agent, so both headers are set here.
+# Do not set LLM_AUTH_HEADER: it takes precedence and forces "Bearer".
+
+[agent.planner.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+default_headers = { Authorization = "$BOB_AUTH_HEADER", "User-Agent" = "pi-bob/0.2.2" }
+
+[agent.chat.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+default_headers = { Authorization = "$BOB_AUTH_HEADER", "User-Agent" = "pi-bob/0.2.2" }
+
+[agent.final_answer.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+default_headers = { Authorization = "$BOB_AUTH_HEADER", "User-Agent" = "pi-bob/0.2.2" }
+
+[agent.code.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+default_headers = { Authorization = "$BOB_AUTH_HEADER", "User-Agent" = "pi-bob/0.2.2" }
+
+[agent.qa.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+default_headers = { Authorization = "$BOB_AUTH_HEADER", "User-Agent" = "pi-bob/0.2.2" }
+
+[agent.action.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 400
+default_headers = { Authorization = "$BOB_AUTH_HEADER", "User-Agent" = "pi-bob/0.2.2" }
