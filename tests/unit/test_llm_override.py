@@ -7,6 +7,7 @@ produces an authentication/connection error rather than silently using defaults.
 import os
 from unittest.mock import patch
 
+import openai
 import pytest
 
 from cuga.backend.llm.models import (
@@ -97,14 +98,8 @@ class TestLLMOverrideMechanism:
         mgr = LLMManager()
         model = mgr.get_model(BASE_MODEL_SETTINGS)
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(openai.APIError):
             model.invoke([{"role": "user", "content": "ping"}])
-
-        error_msg = str(exc_info.value).lower()
-        assert any(
-            keyword in error_msg
-            for keyword in ("auth", "api key", "invalid", "401", "403", "incorrect", "connection")
-        ), f"Expected auth/connection error, got: {exc_info.value}"
 
     @pytest.mark.asyncio
     async def test_bad_api_key_raises_on_ainvoke(self):
@@ -120,14 +115,8 @@ class TestLLMOverrideMechanism:
         mgr = LLMManager()
         model = mgr.get_model(BASE_MODEL_SETTINGS)
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(openai.APIError):
             await model.ainvoke([{"role": "user", "content": "ping"}])
-
-        error_msg = str(exc_info.value).lower()
-        assert any(
-            keyword in error_msg
-            for keyword in ("auth", "api key", "invalid", "401", "403", "incorrect", "connection")
-        ), f"Expected auth/connection error, got: {exc_info.value}"
 
     def test_cache_cleared_on_new_override(self):
         """Model cache is empty after clearing it, forcing re-creation on next call."""
