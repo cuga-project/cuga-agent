@@ -169,6 +169,69 @@ class TestFilterNewVariables:
         assert VariableUtils.is_serializable(tuple_keyed) is False
         assert VariableUtils.is_serializable(VariableUtils.sanitize_value(tuple_keyed)) is True
 
+    @staticmethod
+    def _store_and_load(value):
+        """The executor path: filter_new_variables, add_variable's second sanitize, JSON, hydrate."""
+        filtered = VariableUtils.filter_new_variables({"v": value}, set())
+        assert "v" in filtered, "variable was skipped"
+        stored = VariableUtils.sanitize_value(filtered["v"])
+        return VariableUtils.hydrate_value(json.loads(json.dumps(stored)))
+
+    @pytest.mark.unit
+    def test_nested_hashable_keys_keep_their_types(self):
+        original = {
+            frozenset({frozenset({1})}): "nested frozenset",
+            (1, frozenset({2, (3, 4)})): "tuple holding a frozenset",
+            (1, True, None, 2.5, "s"): "scalars",
+            1: "int",
+            "1": "str",
+        }
+        restored = self._store_and_load(original)
+        assert restored == original
+        assert len(restored) == len(original)
+        nested = next(k for k in restored if isinstance(k, frozenset))
+        assert isinstance(next(iter(nested)), frozenset)
+        scalars = next(k for k in restored if isinstance(k, tuple) and len(k) == 5)
+        assert [type(e) for e in scalars] == [int, bool, type(None), float, str]
+
+    @pytest.mark.unit
+    def test_keys_that_would_collide_are_rejected_not_merged(self):
+        """bytes keys would come back as str, so b"x" and "x" would collapse into one entry."""
+        assert VariableUtils.filter_new_variables({"v": {b"x": "bytes", "x": "string"}}, set()) == {}
+        assert VariableUtils.filter_new_variables({"v": {(b"x", 1): "bytes in a tuple"}}, set()) == {}
+
+    @pytest.mark.unit
+    def test_dict_shaped_like_the_envelope_round_trips_unchanged(self):
+        exact = {"__dict_type__": "dict", "items": [["x", 1]], "__cuga_enc__": True}
+        malformed = {"__dict_type__": "dict", "items": [["x"]], "__cuga_enc__": True}
+        assert self._store_and_load(exact) == exact
+        assert self._store_and_load(malformed) == malformed
+        assert self._store_and_load({"rows": [exact]}) == {"rows": [exact]}
+
+    @pytest.mark.unit
+    def test_tuple_keyed_dict_survives_a_second_sanitize(self):
+        original = {(2022, "London"): 42}
+        assert self._store_and_load(original) == original
+
+    @pytest.mark.unit
+    def test_malformed_dict_envelopes_hydrate_without_raising(self):
+        """Stored payloads that aren't valid [key, value] pairs stay the dict they are."""
+        for items in ([["x"]], [["a", 1, 2]], "not a list", [["k", 1], ["k", 2]]):
+            payload = {"__dict_type__": "dict", "items": items, "__cuga_enc__": True}
+            assert VariableUtils.hydrate_value(payload) == payload
+
+        # A key that hydrates to a set can't be a dict key; the pair is kept as data.
+        unhashable_key = {"__set_type__": "set", "items": [], "__cuga_enc__": True}
+        payload = {"__dict_type__": "dict", "items": [[unhashable_key, 1]], "__cuga_enc__": True}
+        assert VariableUtils.hydrate_value(payload)["items"] == [[set(), 1]]
+
+    @pytest.mark.unit
+    def test_variable_summary_reports_tuple_keyed_dict_as_dict(self):
+        from cuga.backend.cuga_graph.state.agent_state import VariableMetadata
+
+        meta = VariableMetadata(VariableUtils.sanitize_value({(1, 2): "a", (3, 4): "b"}))
+        assert (meta.type, meta.count_items) == ("dict", 2)
+
     def test_filter_excludes_internal_variables(self):
         """Test that internal variables (starting with _) are filtered out."""
         original_keys = set()
