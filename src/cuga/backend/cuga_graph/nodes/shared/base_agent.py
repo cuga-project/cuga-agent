@@ -3,6 +3,7 @@ import functools
 import json
 from typing import Literal
 
+import openai
 from loguru import logger
 from abc import ABC
 from pydantic import ValidationError
@@ -77,6 +78,14 @@ def _structured_output_missing_parsed_field(exc: BaseException) -> bool:
     )
 
 
+def _schema_rejected_by_endpoint(exc: BaseException) -> bool:
+    """A 400 from the endpoint whose message is about the response schema."""
+    if not isinstance(exc, openai.BadRequestError):
+        return False
+    msg = str(exc).lower()
+    return any(k in msg for k in ("output_config", "json_schema", "response_format", "schema"))
+
+
 def _json_schema_unusable(exc: BaseException) -> bool:
     """Should a failed ``json_schema`` attempt fall back to the json_mode parser?
 
@@ -90,9 +99,15 @@ def _json_schema_unusable(exc: BaseException) -> bool:
     the identical request cannot help and the json_mode path should be tried
     instead. Anything else (auth, rate limit, connection) is a real error and must
     keep propagating so the caller's retry can do its job (#639).
+
+    A third way: the endpoint rejects the schema itself with a 400, for example
+    Bedrock behind LiteLLM refusing ``minimum`` / ``maximum`` in
+    ``output_config.format.schema``. The json_mode path sends the schema as prompt
+    text, so it does not hit that validation.
     """
     return (
         _structured_output_missing_parsed_field(exc)
+        or _schema_rejected_by_endpoint(exc)
         or isinstance(exc, (ValidationError, OutputParserException))
         or isinstance(exc, json.JSONDecodeError)
     )
