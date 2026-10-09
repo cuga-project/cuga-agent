@@ -19,6 +19,9 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
 )
 
 
+pytestmark = pytest.mark.unit
+
+
 def _make_stub_tool_provider():
     """Return a minimal async tool provider stub that satisfies prepare_tools_and_apps."""
     provider = MagicMock()
@@ -40,7 +43,7 @@ class TestEvolveStoreAndRetrieveCalledDuringPrepare:
     """Verify store/retrieve are called with correct arguments when evolve is enabled."""
 
     @pytest.mark.asyncio
-    @patch("cuga.backend.evolve.integration.EvolveIntegration.is_enabled", return_value=True)
+    @patch("cuga.backend.evolve.memory.memory_enabled", new_callable=AsyncMock, return_value=True)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.get_guidelines", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.store_user_facts", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.retrieve_user_facts", new_callable=AsyncMock)
@@ -65,7 +68,7 @@ class TestEvolveStoreAndRetrieveCalledDuringPrepare:
         assert call_args.args[1] == "I prefer concise answers"
 
     @pytest.mark.asyncio
-    @patch("cuga.backend.evolve.integration.EvolveIntegration.is_enabled", return_value=True)
+    @patch("cuga.backend.evolve.memory.memory_enabled", new_callable=AsyncMock, return_value=True)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.get_guidelines", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.store_user_facts", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.retrieve_user_facts", new_callable=AsyncMock)
@@ -90,7 +93,7 @@ class TestEvolveStoreAndRetrieveCalledDuringPrepare:
         assert call_args.args[1] == "fetch all contacts"
 
     @pytest.mark.asyncio
-    @patch("cuga.backend.evolve.integration.EvolveIntegration.is_enabled", return_value=True)
+    @patch("cuga.backend.evolve.memory.memory_enabled", new_callable=AsyncMock, return_value=True)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.get_guidelines", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.store_user_facts", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.retrieve_user_facts", new_callable=AsyncMock)
@@ -113,7 +116,7 @@ class TestEvolveStoreAndRetrieveCalledDuringPrepare:
         mock_retrieve.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("cuga.backend.evolve.integration.EvolveIntegration.is_enabled", return_value=False)
+    @patch("cuga.backend.evolve.memory.memory_enabled", new_callable=AsyncMock, return_value=False)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.store_user_facts", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.retrieve_user_facts", new_callable=AsyncMock)
     async def test_store_and_retrieve_skipped_when_evolve_disabled(
@@ -135,7 +138,7 @@ class TestEvolvePreferenceInjectedIntoSpecialInstructions:
     """Verify retrieved preferences are injected into prepared_prompt."""
 
     @pytest.mark.asyncio
-    @patch("cuga.backend.evolve.integration.EvolveIntegration.is_enabled", return_value=True)
+    @patch("cuga.backend.evolve.memory.memory_enabled", new_callable=AsyncMock, return_value=True)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.get_guidelines", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.store_user_facts", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.retrieve_user_facts", new_callable=AsyncMock)
@@ -164,7 +167,7 @@ class TestEvolvePreferenceInjectedIntoSpecialInstructions:
         assert "Prefers concise answers" in prepared_prompt
 
     @pytest.mark.asyncio
-    @patch("cuga.backend.evolve.integration.EvolveIntegration.is_enabled", return_value=True)
+    @patch("cuga.backend.evolve.memory.memory_enabled", new_callable=AsyncMock, return_value=True)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.get_guidelines", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.store_user_facts", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.retrieve_user_facts", new_callable=AsyncMock)
@@ -188,7 +191,7 @@ class TestEvolvePreferenceInjectedIntoSpecialInstructions:
         assert "Evolve User Preference" not in prepared_prompt
 
     @pytest.mark.asyncio
-    @patch("cuga.backend.evolve.integration.EvolveIntegration.is_enabled", return_value=True)
+    @patch("cuga.backend.evolve.memory.memory_enabled", new_callable=AsyncMock, return_value=True)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.get_guidelines", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.store_user_facts", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.retrieve_user_facts", new_callable=AsyncMock)
@@ -216,7 +219,7 @@ class TestEvolveStoreFireAndForgetCompatibility:
     """store_user_facts may be awaited or fire-and-forget — both must work."""
 
     @pytest.mark.asyncio
-    @patch("cuga.backend.evolve.integration.EvolveIntegration.is_enabled", return_value=True)
+    @patch("cuga.backend.evolve.memory.memory_enabled", new_callable=AsyncMock, return_value=True)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.get_guidelines", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.store_user_facts", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.EvolveIntegration.retrieve_user_facts", new_callable=AsyncMock)
