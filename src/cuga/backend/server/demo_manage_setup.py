@@ -526,7 +526,7 @@ def setup_demo_manage_config(
     DEMO_KNOWLEDGE_STARTERS = [
         "What is Sovereign Core, and what problem does it solve?",
         "Summarize the main themes from the Sovereign Core overview in my knowledge base.",
-        "What capabilities does the platform highlight on-premises use?",
+        "What are the key capabilities of Sovereign Core, including the Compliance Center and AI Services?",
     ]
 
     preserve_existing = run_sync(resolve_preserve_existing(agent_id))

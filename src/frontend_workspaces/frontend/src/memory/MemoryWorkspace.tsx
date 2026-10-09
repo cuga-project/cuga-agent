@@ -1,0 +1,1572 @@
+import { MemoryPreferences } from "./MemoryPreferences";
+import React, { useMemo, useState } from "react";
+import {
+  Accordion,
+  AccordionItem,
+  Button,
+  Column,
+  Grid,
+  Search,
+  Select,
+  SelectItem,
+  Tabs,
+  TabList,
+  TabsVertical,
+  TabListVertical,
+  Tab,
+  TabPanels,
+  TabPanel,
+  UnorderedList,
+  ListItem,
+  Tag,
+  DataTable, Table, TableHead, TableRow, TableHeader, TableBody, TableCell,
+  TableContainer, TableToolbar, TableToolbarContent, TableToolbarSearch, Pagination,
+} from "@carbon/react";
+import { ArrowRight, Close, Renew } from "@carbon/icons-react";
+import {
+  loadMemoryPreferences,
+  deleteMemory,
+  loadAdminMemoryPage,
+  loadAdminMemoryEntity,
+  loadMemoryEntity,
+  loadMemoryPage,
+  loadProtectionStatus,
+  loadRetentionCapabilities,
+  loadRetentionPolicies,
+  loadRetentionRuns,
+  runRetention,
+  loadRetentionCollection,
+  type RetentionCandidate,
+  type RetentionAuditEvent,
+} from "./api";
+import {
+  type MemoryRecord,
+  type ProtectionStatus,
+  type RetentionCapabilities,
+  type RetentionPolicy,
+  type RetentionReportItem,
+  type RetentionRun,
+} from "./types";
+import "./memory.scss";
+import { RetentionSchedules } from "./RetentionSchedules";
+
+type MemorySort =
+  | "recently-saved"
+  | "recently-used"
+  | "most-used"
+  | "least-used"
+  | "oldest"
+  | "name";
+
+type AdminTab = "settings" | "memory" | "activity";
+type SettingsId = string;
+
+type SettingsItem = {
+  id: SettingsId;
+  title: string;
+  description: string;
+  status: string;
+  detail: string;
+  kind: "protection" | "retention";
+  enabled: boolean;
+  healthy?: boolean;
+  pluginCount?: number;
+  plugins?: ProtectionStatus["plugins"];
+  policy?: RetentionPolicy;
+};
+
+type MemoryWorkspaceProps = {
+  agentId: string;
+  agentName: string;
+  onClose: () => void;
+  canManage?: boolean;
+  focusEntityIds?: string[];
+  focusRelationship?: "used" | "saved";
+  onClearFocus?: () => void;
+  onOpenConversation?: (threadId: string) => void;
+};
+
+function displayType(value: string): string {
+  if (value === "trajectory") return "Conversation memory";
+  if (value === "user_preferences" || value === "preference") return "Preference";
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function statusTone(status: string): "healthy" | "warning" | "neutral" | "error" {
+  if (status === "Needs attention" || status === "Protected") {
+    return "warning";
+  }
+  if (status === "Incomplete" || status === "Failed") return "error";
+  if (status === "Running" || status === "Cancelled") return "neutral";
+  if (status === "Interrupted") return "warning";
+  if (status === "Unavailable" || status === "Status unavailable" || status === "Disabled") return "neutral";
+  return "healthy";
+}
+
+function runStatus(run: RetentionRun): string {
+  if (run.status === "running") return "Running";
+  if (run.status === "interrupted") return "Interrupted";
+  if (run.status === "cancelled") return "Cancelled";
+  if (run.status === "failed") return "Failed";
+  if (run.status !== "completed" || run.errors.length > 0) return "Incomplete";
+  return "Completed";
+}
+
+function formatRule(rule: RetentionCapabilities["rules"][number]): string {
+  if (rule.sourceDeleted && rule.minSourceDeletedDays != null)
+    return `Delete memories ${rule.minSourceDeletedDays} days after their last supporting conversation is deleted.`;
+  if (rule.sourceDeleted && rule.maxAgeDays != null)
+    return `Delete memories that are at least ${rule.maxAgeDays} days old if their original conversation has been deleted.`;
+  if (rule.description) return rule.description;
+  const action =
+    rule.action === "delete"
+      ? "Delete"
+      : rule.action === "flag"
+        ? "Flag"
+        : displayType(rule.action);
+  if (rule.sourceDeleted)
+    return "Delete memories after all their supporting conversations have been deleted.";
+  const days = rule.maxUnusedDays ?? rule.maxAgeDays;
+  const qualifier = rule.maxUnusedDays != null ? " without use" : "";
+  const entityType = rule.entityType === "trajectory"
+    ? "conversation memories"
+    : rule.entityType === "guideline"
+      ? "guidelines"
+      : rule.entityType ? `${displayType(rule.entityType).toLowerCase()} memories` : "all memories";
+  return `${action} ${entityType}${days != null ? ` after ${days} days${qualifier}` : ""}`;
+}
+
+function memoryStatusDetail(
+  memory: MemoryRecord,
+  capabilities: RetentionCapabilities | null,
+): string {
+  if (memory.state !== "Needs attention") return memory.statusDetail;
+  const rule = capabilities?.rules.find((candidate) => candidate.name === memory.retentionRule);
+  if (!rule) return memory.statusDetail;
+  const memoryType = rule.entityType ? displayType(rule.entityType).toLowerCase() : "matching";
+  if (rule.maxUnusedDays != null) {
+    return `Flagged because this ${memoryType} memory has not been used for ${rule.maxUnusedDays} days.`;
+  }
+  if (rule.maxAgeDays != null) {
+    return `Flagged because this ${memoryType} memory is more than ${rule.maxAgeDays} days old.`;
+  }
+  return `Flagged because it matched the ${displayType(rule.name).toLowerCase()} retention rule.`;
+}
+
+function recordDomId(scope: string, id: string): string {
+  return `memory-record-${scope}-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function DefinitionList({
+  items,
+}: {
+  items: Array<{ label: string; value: React.ReactNode }>;
+}) {
+  return (
+    <dl className="memory-workspace__definition-list">
+      {items.map((item) => (
+        <React.Fragment key={item.label}>
+          <dt>{item.label}</dt>
+          <dd>{item.value}</dd>
+        </React.Fragment>
+      ))}
+    </dl>
+  );
+}
+
+function ReferenceLink({
+  children,
+  href,
+  onClick,
+}: {
+  children: React.ReactNode;
+  href: string;
+  onClick: () => void;
+}) {
+  return (
+    <a
+      href={href}
+      onClick={(event) => {
+        event.preventDefault();
+        onClick();
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
+function RecordRow({
+  id,
+  scope,
+  selected,
+  title,
+  meta,
+  status,
+  detail,
+  onSelect,
+  muted = false,
+}: {
+  id: string;
+  scope: string;
+  selected: boolean;
+  title: string;
+  meta: string;
+  status: string;
+  detail: string;
+  onSelect: () => void;
+  muted?: boolean;
+}) {
+  return (
+    <button
+      id={recordDomId(scope, id)}
+      type="button"
+      className="memory-workspace__record"
+      data-selected={selected}
+      aria-pressed={selected}
+      data-muted={muted}
+      onClick={onSelect}
+    >
+      <span className="memory-workspace__record-copy">
+        <strong>{title}</strong>
+        <span>{meta}</span>
+      </span>
+      <span className="memory-workspace__record-state">
+        <strong className={`memory-workspace__status memory-workspace__status--${statusTone(status)}`}>
+          {status}
+        </strong>
+        <span title={detail}>{detail}</span>
+      </span>
+      <ArrowRight size={16} aria-hidden="true" />
+    </button>
+  );
+}
+
+function MasterDetail({
+  listLabel,
+  list,
+  detail,
+  detailLabel,
+  sheetOpen,
+  closeSheet,
+}: {
+  listLabel: string;
+  list: React.ReactNode;
+  detail: React.ReactNode;
+  detailLabel: string;
+  sheetOpen: boolean;
+  closeSheet: () => void;
+}) {
+  return (
+    <Grid className="memory-workspace__master-detail">
+      <Column sm={4} md={8} lg={9} className="memory-workspace__record-list">
+        <section aria-label={listLabel}>{list}</section>
+      </Column>
+      <Column sm={4} md={8} lg={7} className="memory-workspace__detail-column">
+        <aside
+          className="memory-workspace__detail"
+          data-open={sheetOpen}
+          aria-label={detailLabel}
+        >
+          <button
+            type="button"
+            className="memory-workspace__detail-close"
+            aria-label="Close details"
+            title="Close details"
+            onClick={closeSheet}
+          >
+            <Close size={20} />
+          </button>
+          {detail}
+        </aside>
+        <button
+          type="button"
+          className="memory-workspace__scrim"
+          aria-label="Close details"
+          onClick={closeSheet}
+        />
+      </Column>
+    </Grid>
+  );
+}
+
+function DetailHeader({
+  eyebrow,
+  title,
+  status,
+}: {
+  eyebrow?: string;
+  title: string;
+  status?: string;
+}) {
+  return (
+    <div className="memory-workspace__detail-head">
+      {eyebrow && <p className="memory-workspace__eyebrow">{eyebrow}</p>}
+      <h2>{title}</h2>
+      {status && (
+        <span className={`memory-workspace__detail-status memory-workspace__status--${statusTone(status)}`}>
+          {status}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function MemoryDetail({
+  memory,
+  capabilities,
+  deleting,
+  onDelete,
+  onOpenConversation,
+  admin = false,
+}: {
+  memory: MemoryRecord;
+  capabilities: RetentionCapabilities | null;
+  deleting?: boolean;
+  onDelete?: () => void;
+  onOpenConversation?: (threadId: string) => void;
+  admin?: boolean;
+}) {
+  const source = memory.sources?.length ? (
+    <ul className="memory-workspace__source-list">
+      {memory.sources.map((item, index) => (
+        <li key={`${item.threadId ?? "unavailable"}-${index}`}>
+          {item.threadId && onOpenConversation ? (
+            <ReferenceLink href={`/chat?thread_id=${encodeURIComponent(item.threadId)}`} onClick={() => onOpenConversation(item.threadId!)}>
+              Conversation {index + 1}
+            </ReferenceLink>
+          ) : "Source conversation unavailable"}
+          {item.status === "superseded" ? " · Earlier information" : " · Supports this memory"}
+        </li>
+      ))}
+    </ul>
+  ) : memory.sourceConversationId && onOpenConversation ? (
+    <ReferenceLink
+      href={`/chat?thread_id=${encodeURIComponent(memory.sourceConversationId)}`}
+      onClick={() => onOpenConversation(memory.sourceConversationId!)}
+    >
+      {memory.sourceLabel}
+    </ReferenceLink>
+  ) : memory.sourceLabel;
+
+  return (
+    <>
+      <DetailHeader
+        eyebrow={admin ? undefined : "Selected memory"}
+        title={memory.title}
+        status={memory.state === "Retained" ? "Current" : memory.state}
+      />
+      <div className="memory-workspace__detail-body">
+        {!admin && memory.content && (
+          <div className="memory-workspace__notice">
+            <strong>Remembered information</strong>
+            <p>{memory.content}</p>
+          </div>
+        )}
+        <DefinitionList
+          items={[
+            ...(admin && memory.ownerLabel ? [{ label: "Owner", value: memory.ownerLabel }] : []),
+            { label: "Type", value: displayType(memory.entityType) },
+            ...(memory.category ? [{ label: "Category", value: displayType(memory.category) }] : []),
+            { label: "Source", value: source },
+            { label: "Saved", value: memory.createdLabel },
+            {
+              label: "Use frequency",
+              value: memory.usageCount ? `Used ${memory.usageCount} ${memory.usageCount === 1 ? "time" : "times"}` : "Not used yet",
+            },
+            ...(memory.usageCount > 0 ? [{ label: "Last used", value: memory.lastUsedLabel }] : []),
+            { label: "Status", value: memoryStatusDetail(memory, capabilities) },
+            ...(memory.relatedIds.length ? [{
+              label: "Related",
+              value: `${memory.relatedIds.length} related ${memory.relatedIds.length === 1 ? "memory" : "memories"}`,
+            }] : []),
+          ]}
+        />
+        {memory.recentUsage.length > 0 && (
+          <section className="memory-workspace__recent-usage">
+            <h3>Recent use</h3>
+            <ul>
+              {memory.recentUsage.map((usage, index) => (
+                <li key={`${usage.threadId}-${usage.usedAt}-${index}`}>
+                  {usage.threadId && onOpenConversation ? (
+                    <ReferenceLink
+                      href={`/chat?thread_id=${encodeURIComponent(usage.threadId)}`}
+                      onClick={() => onOpenConversation(usage.threadId)}
+                    >
+                      {usage.conversationLabel}
+                    </ReferenceLink>
+                  ) : usage.conversationLabel}
+                  <span>{usage.usedLabel}{usage.revision ? ` · Version ${usage.revision}` : ""}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {memory.legalHold && (
+          <div className="memory-workspace__notice">
+            <strong>Deletion unavailable</strong>
+            <p>This memory is protected by a legal hold.</p>
+          </div>
+        )}
+        {admin ? (
+          <div className="memory-workspace__notice memory-workspace__notice--muted">
+            <strong>Content hidden</strong>
+            <p>Stored content is not available in the administrator view.</p>
+          </div>
+        ) : (
+          <div className="memory-workspace__detail-actions">
+            <Button
+              kind="danger"
+              size="sm"
+              disabled={memory.legalHold || deleting}
+              onClick={onDelete}
+            >
+              {deleting ? "Deleting..." : "Forget"}
+            </Button>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function SettingsDetail({
+  settings,
+  capabilities,
+  latestRun,
+  runningRetention,
+  onRunRetention,
+  readOnly = false,
+}: {
+  settings: SettingsItem;
+  capabilities: RetentionCapabilities | null;
+  latestRun?: RetentionRun;
+  runningRetention: boolean;
+  onRunRetention: () => void;
+  readOnly?: boolean;
+}) {
+  const policy = settings.policy;
+  if (settings.kind === "protection")
+    return (
+      <section className="memory-settings__filter-group">
+        <div className="memory-settings__row">
+          <div>
+            <h2>
+              {settings.id === "save-check"
+                ? "Before saving"
+                : "Before sending"}
+            </h2>
+            <p>{settings.description}</p>
+          </div>
+        </div>
+        {settings.plugins?.length ? (
+          settings.plugins.map((plugin) => (
+            <div className="memory-settings__filter" key={plugin.name}>
+              <div>
+                <strong>{plugin.displayName || plugin.name}</strong>
+                {plugin.description && <p>{plugin.description}</p>}
+              </div>
+              <span>
+                {plugin.enabled ? "Enabled" : "Disabled"}
+                {plugin.enabled && !plugin.healthy && " · Status unavailable"}
+              </span>
+            </div>
+          ))
+        ) : (
+          <p>No protection plugins reported.</p>
+        )}
+      </section>
+    );
+  return (
+    <>
+      <div className="memory-settings__intro memory-settings__row">
+        <p>Manage memory retention for everyone using this service.</p>
+        <Button
+          kind="tertiary"
+          size="md"
+          disabled={
+            readOnly || runningRetention || !capabilities?.available || !policy?.enabled
+          }
+          onClick={onRunRetention}
+        >
+          {runningRetention ? "Running retention…" : "Run retention now"}
+        </Button>
+      </div>
+      {policy && (
+        <>
+          <section className="memory-schedules__rules">
+            <h2>Policy rules</h2>
+            {policy.rules.length ? <UnorderedList>
+              {policy.rules.map((rule) => (
+                <ListItem key={rule.name}>{formatRule(rule)}</ListItem>
+              ))}
+            </UnorderedList> : <p>No rules are configured for this policy.</p>}
+          </section>
+          {capabilities?.available ? (
+            <RetentionSchedules
+              key={policy.policyId}
+              readOnly={readOnly}
+              policyId={policy.policyId}
+              enabled={policy.enabled}
+            />
+          ) : (
+            <p>Retention is unavailable.</p>
+          )}
+          <section className="memory-schedules__footer">
+            <h2>Latest run</h2>
+            <p>
+              {latestRun
+                ? new Date(latestRun.createdAt).toLocaleString()
+                : "None recorded"}
+            </p>
+            <p>View marked memories and completed outcomes in Activity.</p>
+          </section>
+        </>
+      )}
+    </>
+  );
+}
+
+function ReportItems({
+  title,
+  items,
+  memories,
+  capabilities,
+  onOpenMemory,
+}: {
+  title: string;
+  items: RetentionReportItem[];
+  memories: MemoryRecord[];
+  capabilities: RetentionCapabilities | null;
+  onOpenMemory: (memoryId: string) => void;
+}) {
+  if (!items.length) return null;
+  return (
+    <section className="memory-workspace__report-items">
+      <h3>{title}</h3>
+      <p>View memories that are still available.</p>
+      {!items.some((item) => memories.some((memory) => memory.entityId === item.entityId)) && (
+        <p>These memories are not available to view. See audit details for recorded outcomes.</p>
+      )}
+      <ul>
+        {items.map((item, index) => {
+          const memory = memories.find((candidate) => candidate.entityId === item.entityId);
+          if (!memory) return null;
+          const outcome = item.outcome ? displayType(item.outcome) : undefined;
+          const itemType = item.entityType ? displayType(item.entityType) : undefined;
+          const reason = item.reason?.trim();
+          return (
+            <li key={`${item.entityId ?? "unknown"}-${index}`}>
+              <ReferenceLink
+                href={`/chat?memory_id=${encodeURIComponent(memory.entityId)}`}
+                onClick={() => onOpenMemory(memory.id)}
+              >
+                <strong>{memory.title}</strong>
+              </ReferenceLink>
+              <span>
+                {reason || (memory && memory.state === "Needs attention"
+                  ? memoryStatusDetail(memory, capabilities)
+                  : [itemType, outcome].filter(Boolean).join(" / ") ||
+                    (item.entityId ? `Memory ${item.entityId}` : "Unknown memory"))}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function RetentionRunDetail({
+  run,
+  memories,
+  capabilities,
+  onOpenMemory,
+}: {
+  run: RetentionRun;
+  memories: MemoryRecord[];
+  capabilities: RetentionCapabilities | null;
+  onOpenMemory: (memoryId: string) => void;
+}) {
+  const status = runStatus(run);
+  return (
+    <>
+      <DetailHeader
+        eyebrow={new Date(run.createdAt).toLocaleString()}
+        title="Retention audit"
+        status={status}
+      />
+      <div className="memory-workspace__detail-body">
+        <section className="memory-workspace__notice" aria-label="Recorded retention outcome">
+          <strong>{run.deleted.length ? "Memory deletion recorded" : "Retention activity recorded"}</strong>
+          <p>{run.summary}</p>
+          {run.deleted.length > 0 && <p>Deleted memory titles and contents are not displayed in this history.</p>}
+          {run.status !== "completed" && <p>The audit shows the outcomes recorded so far.</p>}
+        </section>
+        {run.warnings.map((warning) => (
+          <div className="memory-workspace__notice" key={warning}>
+            <strong>Warning</strong>
+            <p>{warning}</p>
+          </div>
+        ))}
+        {run.errors.map((error) => (
+          <div className="memory-workspace__notice memory-workspace__notice--error" key={error}>
+            <strong>Error</strong>
+            <p>{error}</p>
+          </div>
+        ))}
+        <DefinitionList
+          items={[
+            { label: "Policy", value: run.policyName ?? run.policyId ?? "Unavailable" },
+            { label: "Requested by", value: run.initiatedBy || "Not recorded" },
+            { label: "Started", value: new Date(run.startedAt ?? run.createdAt).toLocaleString() },
+            { label: "Finished", value: run.completedAt ? new Date(run.completedAt).toLocaleString() : "Not recorded" },
+            { label: "Result", value: status },
+          ]}
+        />
+        <ReportItems title="Flagged for review" items={run.flagged} memories={memories} capabilities={capabilities} onOpenMemory={onOpenMemory} />
+        <ReportItems title="Skipped" items={run.skipped} memories={memories} capabilities={capabilities} onOpenMemory={onOpenMemory} />
+        <Accordion className="memory-workspace__audit-details">
+          <AccordionItem title="Administrative audit details">
+            <p>Technical references connect recorded actions. They do not retrieve deleted memory content.</p>
+            <DefinitionList items={[{ label: "Run ID", value: run.runId }, { label: "Policy ID", value: run.policyId ?? "Not recorded" }]} />
+            <div className="memory-workspace__audit-table">
+              <table>
+                <caption>Recorded actions for this run</caption>
+                <thead><tr><th scope="col">Outcome</th><th scope="col">Entity reference</th><th scope="col">Reason</th></tr></thead>
+                <tbody>
+                  {([
+                    ["Flagged", run.flagged], ["Deleted", run.deleted], ["Skipped", run.skipped],
+                  ] as const).flatMap(([outcome, items]) => items.map((item, index) => (
+                    <tr key={`${outcome}-${item.entityId ?? index}`}>
+                      <td>{outcome}</td>
+                      <td><code>{item.entityId ?? "Not recorded"}</code></td>
+                      <td>{item.reason || "Not recorded"}</td>
+                    </tr>
+                  )))}
+                </tbody>
+              </table>
+            </div>
+          </AccordionItem>
+        </Accordion>
+      </div>
+    </>
+  );
+}
+
+function CollectionActivity({agentId, policies, refreshKey, onOpen, history, onRefresh, refreshing}: {
+  agentId: string; policies: RetentionPolicy[]; refreshKey: RetentionRun[]; onOpen: (memory: MemoryRecord) => void;
+  history: React.ReactNode; onRefresh: () => void; refreshing: boolean;
+}) {
+  const [candidates, setCandidates] = useState<RetentionCandidate[]>([]);
+  const [candidateMemories, setCandidateMemories] = useState<Record<string, MemoryRecord>>({});
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(5);
+  const [events, setEvents] = useState<RetentionAuditEvent[]>([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  React.useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setCandidates([]);
+    setCandidateMemories({});
+    setEvents([]);
+    setPage(1);
+    loadRetentionCollection().then(async (data) => {
+      const pendingIds = [...new Set(data.candidates.filter((item) => ["pending", "held", "review"].includes(item.status)).map((item) => item.entity_id))];
+      const records: Record<string, MemoryRecord> = {};
+      // Bound requests independently of the Memory tab's inventory pagination.
+      for (let offset = 0; offset < pendingIds.length && active; offset += 6) {
+        const batch = await Promise.allSettled(pendingIds.slice(offset, offset + 6).map((id) => loadAdminMemoryEntity(agentId, id)));
+        for (const result of batch) if (result.status === "fulfilled") records[result.value.entityId] = result.value;
+      }
+      if (active) {setCandidates(data.candidates); setCandidateMemories(records); setEvents(data.audit); setError("");}
+    }).catch(() => {if (active) setError("Retention activity could not be loaded.");})
+      .finally(() => {if (active) setLoading(false);});
+    return () => {active = false;};
+  }, [refreshKey, agentId]);
+  const statusLabel = (status: string) => status === "held" ? "Legal hold" : status === "review" ? "Needs review" : "Awaiting deletion";
+  const pending = candidates.filter((item) => ["pending", "held", "review"].includes(item.status));
+  const policyName = (id: string) => policies.find((policy) => policy.policyId === id)?.name ?? "Unavailable policy";
+  const filtered = pending.filter((item) => [candidateMemories[item.entity_id]?.title, item.entity_id, item.policy_id, statusLabel(item.status)].join(" ").toLowerCase().includes(query.trim().toLowerCase()));
+  const currentPage = Math.min(page, Math.max(1, Math.ceil(filtered.length / pageSize)));
+  const tableRows = filtered.map((item) => ({id: JSON.stringify([item.policy_id, item.entity_id]), memory: candidateMemories[item.entity_id]?.title ?? `Memory ${item.entity_id}`, status: statusLabel(item.status), policy: policyName(item.policy_id)}));
+  const headers = [{key: "memory", header: "Memory"}, {key: "status", header: "Status"}, {key: "policy", header: "Policy"}];
+  const groups = Array.from(events.reduce((groups, event) => {
+    const key = `${event.occurred_at.slice(0, 10)}:${event.policy_id}:${event.outcome}`;
+    const existing = groups.get(key);
+    if (existing) existing.count++;
+    else groups.set(key, {event, count: 1});
+    return groups;
+  }, new Map<string, {event: RetentionAuditEvent; count: number}>()).values());
+  const outcomeLabel = (outcome: string) => ({
+    deleted: "Deleted", held: "On legal hold", flagged: "Flagged for review", marked: "Marked for deletion",
+  }[outcome] ?? displayType(outcome));
+  return <section className="memory-activity" aria-label="Retention activity">
+    {error && <p className="memory-activity__notice" role="alert">{error}</p>}
+    {loading && <p className="memory-activity__notice" role="status">Loading retention activity…</p>}
+    <Tabs>
+      <div className="memory-activity__navigation">
+        <TabList aria-label="Retention activity views">
+          <Tab>Awaiting action</Tab>
+          <Tab>History</Tab>
+        </TabList>
+        <Button kind="ghost" size="sm" renderIcon={Renew} disabled={refreshing || loading} onClick={onRefresh}>Refresh</Button>
+      </div>
+      <TabPanels>
+        <TabPanel className="memory-activity__panel">
+          <div className="memory-activity__intro">
+            <p>Memories kept for review or waiting for deletion.</p>
+            {!loading && !error && <span>{pending.length} {pending.length === 1 ? "memory" : "memories"}</span>}
+          </div>
+          <DataTable rows={tableRows} headers={headers} size="lg">
+            {({rows, headers: tableHeaders, getTableProps, getHeaderProps, getRowProps}) => (
+              <TableContainer className="memory-activity__table-container">
+                <TableToolbar aria-label="Pending memory controls">
+                  <TableToolbarContent>
+                    <TableToolbarSearch persistent placeholder="Search pending memories" labelText="Search pending memories" value={query}
+                      onChange={(event) => {setQuery(event ? event.target.value : ""); setPage(1);}} />
+                  </TableToolbarContent>
+                </TableToolbar>
+                <div className="memory-activity__table-scroll" role="region" aria-label="Pending memories table" tabIndex={0}>
+                  <Table {...getTableProps()} aria-label="Memories awaiting action">
+                    <TableHead><TableRow>{tableHeaders.map((header) => <TableHeader {...getHeaderProps({header})}>{header.header}</TableHeader>)}</TableRow></TableHead>
+                    <TableBody>
+                      {rows.slice((currentPage - 1) * pageSize, currentPage * pageSize).map((row) => {
+                        const item = pending.find((item) => JSON.stringify([item.policy_id, item.entity_id]) === row.id);
+                        if (!item) return null;
+                        const memory = candidateMemories[item.entity_id];
+                        return <TableRow {...getRowProps({row})}>
+                          <TableCell>{memory
+                            ? <Button className="memory-activity__memory-link" kind="ghost" size="sm" onClick={() => onOpen(memory)}>{memory.title}</Button>
+                            : <span>Memory {item.entity_id}<span className="memory-activity__unavailable">Details unavailable</span></span>}</TableCell>
+                          <TableCell><Tag size="sm" type={item.status === "held" ? "purple" : item.status === "review" ? "blue" : "gray"}>{statusLabel(item.status)}</Tag></TableCell>
+                          <TableCell>{policyName(item.policy_id)}</TableCell>
+                        </TableRow>;
+                      })}
+                      {!rows.length && <TableRow><TableCell colSpan={3}>
+                        {loading ? "Loading pending memories…" : error ? "Pending memories could not be loaded." : query ? "No memories match your search." : "No memories are awaiting action."}
+                      </TableCell></TableRow>}
+                    </TableBody>
+                  </Table>
+                </div>
+                <Pagination page={currentPage} pageSize={pageSize} pageSizes={[5, 10, 20]} totalItems={filtered.length} size="sm"
+                  itemsPerPageText="Rows per page:" onChange={({page, pageSize}) => {setPage(page); setPageSize(pageSize);}} />
+              </TableContainer>
+            )}
+          </DataTable>
+        </TabPanel>
+        <TabPanel className="memory-activity__panel">
+          <section aria-labelledby="memory-recent-outcomes">
+            <div className="memory-activity__heading"><h2 id="memory-recent-outcomes">Recent outcomes</h2></div>
+            <p className="memory-activity__description">Recent retention actions.</p>
+            {!loading && !error && !groups.length && <p className="memory-activity__empty">No retention actions recorded yet.</p>}
+            <ul className="memory-activity__entries">
+              {groups.map(({event, count}) => <li className="memory-activity__entry" key={event.event_id}>
+                <div className="memory-activity__entry-main">
+                  <span className="memory-activity__outcome">{outcomeLabel(event.outcome)}</span>
+                  <span className="memory-activity__policy">{count} {count === 1 ? "memory" : "memories"} · {policyName(event.policy_id)}</span>
+                </div>
+                <time className="memory-activity__date" dateTime={event.occurred_at}>{new Date(event.occurred_at).toLocaleDateString(undefined, {month: "short", day: "numeric", year: "numeric"})}</time>
+              </li>)}
+            </ul>
+          </section>
+          <section className="memory-activity__runs" aria-label="Retention runs">
+            <div className="memory-activity__heading"><h2>Runs</h2></div>
+            <p className="memory-activity__description">Open a run to see its results.</p>
+            {history}
+          </section>
+          <Accordion className="memory-activity__audit"><AccordionItem title="Audit details">
+            <p>Showing up to 1,000 recent candidates and actions for this service.</p>
+            <div className="memory-workspace__audit-table"><table>
+              <caption>Current marks</caption><thead><tr><th scope="col">Reference</th><th scope="col">Status</th><th scope="col">Policy</th></tr></thead>
+              <tbody>{pending.map((item) => <tr key={`${item.policy_id}:${item.entity_id}`}><td><code>{item.entity_id}</code></td><td>{item.status === "held" ? "Deletion blocked by legal hold" : displayType(item.status)}</td><td>{item.policy_id}</td></tr>)}</tbody>
+            </table><table>
+              <caption>Committed actions</caption><thead><tr><th scope="col">Reference</th><th scope="col">Outcome</th><th scope="col">Requested by</th><th scope="col">Time</th></tr></thead>
+              <tbody>{events.map((event) => <tr key={event.event_id}><td><code>{event.entity_id}</code></td><td>{displayType(event.outcome)}</td><td>{event.initiated_by ?? "Not recorded"}</td><td>{new Date(event.occurred_at).toLocaleString()}</td></tr>)}</tbody>
+            </table></div>
+          </AccordionItem></Accordion>
+        </TabPanel>
+      </TabPanels>
+    </Tabs>
+  </section>;
+}
+
+export function MemoryWorkspace({
+  agentId,
+  agentName,
+  onClose,
+  canManage = false,
+  focusEntityIds = [],
+  focusRelationship = "used",
+  onClearFocus,
+  onOpenConversation,
+}: MemoryWorkspaceProps) {
+  const rootRef = React.useRef<HTMLElement>(null);
+  const requestGenerationRef = React.useRef(0);
+  const activeAgentRef = React.useRef(agentId);
+  const [view, setView] = useState<"user" | "admin">("user");
+  const [adminTab, setAdminTab] = useState<AdminTab>("settings");
+  const [memories, setMemories] = useState<MemoryRecord[]>([]);
+  const [memoryTotal, setMemoryTotal] = useState(0);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [memoryPage, setMemoryPage] = useState(1);
+  const [memoryPageSize, setMemoryPageSize] = useState(20);
+  const memoryCursors = React.useRef<Array<string | undefined>>([undefined]);
+  const memoryPageRequest = React.useRef(0);
+  const [capabilities, setCapabilities] = useState<RetentionCapabilities | null>(null);
+  const [retentionPolicies, setRetentionPolicies] = useState<RetentionPolicy[]>([]);
+  const [protections, setProtections] = useState<ProtectionStatus[]>([]);
+  const [adminMemories, setAdminMemories] = useState<MemoryRecord[]>([]);
+  const [adminMemoryTotal, setAdminMemoryTotal] = useState(0);
+  const [adminNextCursor, setAdminNextCursor] = useState<string | null>(null);
+  const [runs, setRuns] = useState<RetentionRun[]>([]);
+  const [selectedMemoryId, setSelectedMemoryId] = useState("");
+  const [selectedAdminMemoryId, setSelectedAdminMemoryId] = useState("");
+  const [selectedSettingsId, setSelectedSettingsId] = useState<SettingsId>("");
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [entityType, setEntityType] = useState("all");
+  const [adminOwner, setAdminOwner] = useState("all");
+  const [adminState, setAdminState] = useState("all");
+  const [sort, setSort] = useState<MemorySort>("recently-saved");
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [runningRetention, setRunningRetention] = useState(false);
+  const [message, setMessage] = useState("");
+  const [serviceEnabled, setServiceEnabled] = useState(true);
+  React.useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const preferences = await loadMemoryPreferences();
+        if (!active) return;
+        setServiceEnabled(preferences.instance_enabled);
+
+      } catch { /* Settings controls display their own loading error. */ }
+    };
+    void refresh();
+    window.addEventListener("memory-preferences-changed", refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      active = false;
+      window.removeEventListener("memory-preferences-changed", refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, []);
+  const focusEntityKey = Array.from(new Set(focusEntityIds.filter(Boolean))).join("\0");
+
+  React.useLayoutEffect(() => {
+    if (activeAgentRef.current === agentId) return;
+    activeAgentRef.current = agentId;
+    requestGenerationRef.current += 1;
+    setMemories([]);
+    setMemoryTotal(0);
+    setNextCursor(null);
+    setCapabilities(null);
+    setRetentionPolicies([]);
+    setProtections([]);
+    setAdminMemories([]);
+    setAdminMemoryTotal(0);
+    setAdminNextCursor(null);
+    setRuns([]);
+    setSelectedMemoryId("");
+    setSelectedAdminMemoryId("");
+    setDetailOpen(false);
+    setLoadingMore(false);
+    setDeleting(false);
+    setRunningRetention(false);
+  }, [agentId]);
+
+  const refreshData = React.useCallback(async () => {
+    const generation = ++requestGenerationRef.current;
+    memoryPageRequest.current += 1;
+    const scopeChanged = activeAgentRef.current !== agentId;
+    activeAgentRef.current = agentId;
+    setLoading(true);
+    setLoadingMore(false);
+    if (scopeChanged) {
+      setMemories([]);
+      setMemoryTotal(0);
+      setNextCursor(null);
+      setCapabilities(null);
+      setRetentionPolicies([]);
+      setProtections([]);
+      setAdminMemories([]);
+      setAdminMemoryTotal(0);
+      setAdminNextCursor(null);
+      setRuns([]);
+      setSelectedMemoryId("");
+      setSelectedAdminMemoryId("");
+      setDetailOpen(false);
+      setLoadingMore(false);
+      setDeleting(false);
+      setRunningRetention(false);
+    }
+    const focusedEntityIds = focusEntityKey ? focusEntityKey.split("\0") : [];
+    const results = await Promise.allSettled([
+        loadMemoryPage(agentId, undefined, memoryPageSize),
+        loadRetentionCapabilities(),
+        canManage ? loadRetentionPolicies() : Promise.resolve([]),
+        canManage ? loadRetentionRuns() : Promise.resolve([]),
+        canManage ? loadAdminMemoryPage(agentId) : Promise.resolve(null),
+        canManage ? loadProtectionStatus() : Promise.resolve([]),
+        Promise.allSettled(focusedEntityIds.map((entityId) => loadMemoryEntity(agentId, entityId))),
+      ] as const);
+    if (generation !== requestGenerationRef.current) return;
+
+    const [page, retention, policies, history, adminPage, protectionStatus, focused] = results;
+    const errors: string[] = [];
+    const focusedMemories = focused.status === "fulfilled"
+      ? focused.value
+        .filter((result): result is PromiseFulfilledResult<MemoryRecord> => result.status === "fulfilled")
+        .map((result) => result.value)
+      : [];
+    const unavailableFocusedCount = focused.status === "fulfilled"
+      ? focused.value.filter((result) => result.status === "rejected").length
+      : focusedEntityIds.length;
+
+    if (page.status === "fulfilled" || focusedMemories.length > 0) {
+      const byId = new Map<string, MemoryRecord>();
+      if (page.status === "fulfilled") page.value.items.forEach((memory) => byId.set(memory.id, memory));
+      focusedMemories.forEach((memory) => byId.set(memory.id, memory));
+      const items = Array.from(byId.values());
+      setMemories(items);
+      setMemoryTotal(page.status === "fulfilled" ? Math.max(page.value.total, items.length) : items.length);
+      setNextCursor(page.status === "fulfilled" ? page.value.nextCursor : null);
+      setMemoryPage(1);
+      memoryCursors.current = [undefined];
+      setSelectedMemoryId((current) =>
+        items.some((memory) => memory.id === current) ? current : items[0]?.id ?? "",
+      );
+    } else {
+      errors.push("Memory inventory is unavailable");
+    }
+    if (unavailableFocusedCount > 0) {
+      errors.push(`${unavailableFocusedCount} referenced ${unavailableFocusedCount === 1 ? "memory is" : "memories are"} no longer available`);
+    }
+
+    if (retention.status === "fulfilled") {
+      const policyRules = policies.status === "fulfilled" ? policies.value.flatMap((policy) => policy.rules) : [];
+      const rulesByName = new Map(retention.value.rules.map((rule) => [rule.name, rule]));
+      policyRules.forEach((rule) => rulesByName.set(rule.name, rule));
+      setCapabilities({ ...retention.value, rules: Array.from(rulesByName.values()) });
+    } else {
+      errors.push("Retention status is unavailable");
+    }
+    if (policies.status === "fulfilled") {
+      setRetentionPolicies(policies.value);
+    } else {
+      errors.push("Retention policies are unavailable");
+    }
+    if (history.status === "fulfilled") {
+      setRuns(history.value);
+    } else {
+      errors.push("Retention history is unavailable");
+    }
+    if (protectionStatus.status === "fulfilled") {
+      setProtections(protectionStatus.value);
+    } else {
+      errors.push("Protection status is unavailable");
+    }
+    if (adminPage.status === "fulfilled" && adminPage.value) {
+      const loadedAdminPage = adminPage.value;
+      setAdminMemories(loadedAdminPage.items);
+      setAdminMemoryTotal(loadedAdminPage.total);
+      setAdminNextCursor(loadedAdminPage.nextCursor);
+      setSelectedAdminMemoryId((current) =>
+        loadedAdminPage.items.some((memory) => memory.id === current) ? current : loadedAdminPage.items[0]?.id ?? "",
+      );
+    } else if (adminPage.status === "rejected") {
+      errors.push("Administrator memory inventory is unavailable");
+    }
+    setMessage(errors.join(". "));
+    setLoading(false);
+  }, [agentId, canManage, focusEntityKey, memoryPageSize]);
+
+  React.useEffect(() => {
+    void refreshData();
+  }, [refreshData]);
+
+  React.useEffect(() => {
+    rootRef.current?.scrollTo({ top: 0, behavior: "instant" });
+    setDetailOpen(false);
+  }, [view]);
+
+  const entityTypes = useMemo(
+    () => Array.from(new Set(memories.map((memory) => memory.entityType))).sort(),
+    [memories],
+  );
+
+  const adminOwners = useMemo(
+    () => Array.from(new Set(adminMemories.map((memory) => memory.ownerLabel).filter((owner): owner is string => Boolean(owner)))).sort(),
+    [adminMemories],
+  );
+
+  const visibleAdminMemories = useMemo(
+    () => adminMemories.filter((memory) =>
+      (adminOwner === "all" || memory.ownerLabel === adminOwner) &&
+      (adminState === "all" || memory.state === adminState),
+    ),
+    [adminMemories, adminOwner, adminState],
+  );
+
+  React.useEffect(() => {
+    if (!visibleAdminMemories.some((memory) => memory.id === selectedAdminMemoryId)) {
+      setSelectedAdminMemoryId(visibleAdminMemories[0]?.id ?? "");
+    }
+  }, [selectedAdminMemoryId, visibleAdminMemories]);
+
+  const settingsItems = useMemo<SettingsItem[]>(() => {
+    const protectionItems: SettingsItem[] = (["save-check", "send-check"] as const).map((id) => {
+      const protection = protections.find((item) => item.id === id);
+      const title = id === "save-check" ? "Sensitive information before saving" : "Sensitive information before sending";
+      const description = id === "save-check"
+        ? "Checks every memory before it is stored and stops saves rejected by configured protection plugins."
+        : "Checks messages and tool inputs before they are sent to the AI model.";
+      return {
+        id,
+        title: protection?.title ?? title,
+        description: protection?.description ?? description,
+        status: protection?.enabled && protection.healthy ? "Enabled and healthy" : protection?.enabled ? "Needs attention" : "Status unavailable",
+        detail: "Continuous",
+        kind: "protection",
+        enabled: protection?.enabled ?? false,
+        healthy: protection?.healthy ?? false,
+        pluginCount: protection?.pluginCount ?? 0,
+        plugins: protection?.plugins ?? [],
+      };
+    });
+    const retentionItems: SettingsItem[] = retentionPolicies.map((policy) => ({
+      id: `retention:${policy.policyId}`,
+      title: policy.name,
+      description: policy.description ?? "Evaluates this published retention policy on demand.",
+      status: !capabilities?.available ? "Unavailable" : policy.enabled ? "Enabled" : "Disabled",
+      detail: `${policy.rules.length} published ${policy.rules.length === 1 ? "rule" : "rules"}`,
+      kind: "retention",
+      enabled: Boolean(capabilities?.available && policy.enabled),
+      policy,
+    }));
+    return [
+      ...protectionItems,
+      ...retentionItems,
+
+    ];
+  }, [capabilities?.available, protections, retentionPolicies]);
+
+  const visibleMemories = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    const filtered = memories.filter((memory) =>
+      (!focusEntityIds.length || focusEntityIds.includes(memory.entityId)) &&
+      (entityType === "all" || memory.entityType === entityType) &&
+      (!query || `${memory.title} ${memory.entityType} ${memory.category ?? ""} ${memory.sourceLabel}`
+        .toLowerCase()
+        .includes(query)),
+    );
+    const time = (value?: string) => value ? Date.parse(value) || 0 : 0;
+    return [...filtered].sort((left, right) => {
+      if (sort === "recently-used") return time(right.lastUsedAt) - time(left.lastUsedAt);
+      if (sort === "most-used") return right.usageCount - left.usageCount;
+      if (sort === "least-used") return left.usageCount - right.usageCount;
+      if (sort === "oldest") return time(left.createdAt) - time(right.createdAt);
+      if (sort === "name") return left.title.localeCompare(right.title);
+      return time(right.createdAt) - time(left.createdAt);
+    });
+  }, [entityType, focusEntityIds, memories, search, sort]);
+
+  React.useEffect(() => {
+    if (!visibleMemories.some((memory) => memory.id === selectedMemoryId)) {
+      setSelectedMemoryId(visibleMemories[0]?.id ?? "");
+    }
+  }, [selectedMemoryId, visibleMemories]);
+
+  const selectedMemory = visibleMemories.find((memory) => memory.id === selectedMemoryId) ?? visibleMemories[0];
+  const selectedAdminMemory = visibleAdminMemories.find((memory) => memory.id === selectedAdminMemoryId) ?? visibleAdminMemories[0];
+  const settingsCategories = [
+    { id: "general", title: "General" },
+      ...settingsItems.filter((item) => item.kind === "retention"),
+      { id: "filters", title: "Filters" },
+  ];
+  const settingsIndex = Math.max(
+    0,
+    settingsCategories.findIndex((item) => item.id === selectedSettingsId),
+  );
+  const selectedSettings = settingsItems.find(
+    (settings) => settings.id === settingsCategories[settingsIndex]?.id,
+  );
+
+  React.useEffect(() => {
+    if (!detailOpen) return;
+    const selectedId = view === "user"
+      ? selectedMemory?.id
+      : adminTab === "settings"
+        ? selectedSettings?.id
+        : adminTab === "memory"
+          ? selectedAdminMemory?.id
+          : undefined;
+    if (!selectedId) return;
+    window.requestAnimationFrame(() => {
+      rootRef.current
+        ?.querySelector<HTMLElement>(`#${recordDomId(view === "user" ? "user" : adminTab, selectedId)}`)
+        ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }, [adminTab, detailOpen, selectedAdminMemory?.id, selectedSettings?.id, selectedMemory?.id, view]);
+
+  const changeMemoryPage = async (pageNumber: number, pageSize: number) => {
+    if (loading || loadingMore) return;
+    if (pageSize !== memoryPageSize) {
+      setMemoryPageSize(pageSize);
+      return;
+    }
+    if (pageNumber === memoryPage) return;
+    const cursor = pageNumber === memoryPage + 1 ? nextCursor : memoryCursors.current[pageNumber - 1];
+    if (pageNumber > 1 && !cursor) return;
+    const generation = requestGenerationRef.current;
+    const request = ++memoryPageRequest.current;
+    setLoadingMore(true);
+    try {
+      const result = await loadMemoryPage(agentId, cursor ?? undefined, pageSize);
+      if (generation !== requestGenerationRef.current || request !== memoryPageRequest.current) return;
+      memoryCursors.current[pageNumber - 1] = cursor ?? undefined;
+      memoryCursors.current.length = pageNumber;
+      setMemories(result.items);
+      setMemoryTotal(result.total);
+      setNextCursor(result.nextCursor);
+      setMemoryPage(pageNumber);
+      setDetailOpen(false);
+      setMessage("");
+      rootRef.current?.querySelector(".memory-workspace__record-list > section")?.scrollTo({top: 0});
+    } catch (error) {
+      if (generation !== requestGenerationRef.current || request !== memoryPageRequest.current) return;
+      setMessage(error instanceof Error ? error.message : "Memories could not be loaded");
+    } finally {
+      if (generation === requestGenerationRef.current && request === memoryPageRequest.current) setLoadingMore(false);
+    }
+  };
+
+  const loadMoreAdminMemories = async () => {
+    if (!adminNextCursor || loadingMore) return;
+    const generation = requestGenerationRef.current;
+    setLoadingMore(true);
+    try {
+      const page = await loadAdminMemoryPage(agentId, adminNextCursor);
+      if (generation !== requestGenerationRef.current) return;
+      setAdminMemories((current) => {
+        const byId = new Map(current.map((memory) => [memory.id, memory]));
+        page.items.forEach((memory) => byId.set(memory.id, memory));
+        return Array.from(byId.values());
+      });
+      setAdminMemoryTotal(page.total);
+      setAdminNextCursor(page.nextCursor);
+    } catch (error) {
+      if (generation !== requestGenerationRef.current) return;
+      setMessage(error instanceof Error ? error.message : "More memories could not be loaded");
+    } finally {
+      if (generation === requestGenerationRef.current) setLoadingMore(false);
+    }
+  };
+
+  const forgetSelectedMemory = async () => {
+    if (!selectedMemory || deleting) return;
+    if (selectedMemory.legalHold) {
+      setMessage("This memory is protected by a legal hold");
+      return;
+    }
+    if (!window.confirm("Forget this memory? Its source conversation will remain available.")) return;
+    const generation = requestGenerationRef.current;
+    setDeleting(true);
+    try {
+      await deleteMemory(selectedMemory.entityId, agentId);
+      if (generation !== requestGenerationRef.current) return;
+      setMessage("Memory deleted");
+      setDetailOpen(false);
+      await refreshData();
+    } catch (error) {
+      if (generation !== requestGenerationRef.current) return;
+      setMessage(error instanceof Error ? error.message : "Memory could not be deleted");
+    } finally {
+      if (activeAgentRef.current === agentId) setDeleting(false);
+    }
+  };
+
+  const executeRetention = async () => {
+    const policy = selectedSettings?.policy;
+    if (runningRetention || !capabilities?.available || !policy?.enabled) return;
+    if (!window.confirm(
+      "Run retention for everyone using this service? Eligible memories will be marked and deleted; current legal holds will be respected.",
+    )) return;
+    const generation = requestGenerationRef.current;
+    setRunningRetention(true);
+    setMessage("Running retention...");
+    try {
+      await runRetention(policy.policyId);
+      if (generation !== requestGenerationRef.current) return;
+      await refreshData();
+      if (activeAgentRef.current !== agentId) return;
+      setMessage("Retention finished. Review marked memories and committed outcomes in Activity.");
+    } catch (error) {
+      if (generation !== requestGenerationRef.current) return;
+      setMessage(error instanceof Error ? error.message : "Retention could not be completed");
+    } finally {
+      if (activeAgentRef.current === agentId) setRunningRetention(false);
+    }
+  };
+
+  const memoryList = (
+    <div>
+      <div className="memory-workspace__list-head">
+        <h2>What the agent remembers</h2>
+        <p>Select a memory to inspect its source and controls.</p>
+        {focusEntityIds.length > 0 && (
+          <Button kind="ghost" size="sm" onClick={onClearFocus}>
+            Showing {focusEntityIds.length} {focusRelationship} in the response. Show all
+          </Button>
+        )}
+      </div>
+      {visibleMemories.length > 0 ? (
+        <ul className="memory-workspace__list">
+          {visibleMemories.map((memory) => (
+            <li key={memory.id}>
+              <RecordRow
+                id={memory.id}
+                scope="user"
+                selected={memory.id === selectedMemory?.id}
+                title={memory.title}
+                meta={`${memory.sourceLabel}${memory.usageCount ? ` / Used ${memory.usageCount} ${memory.usageCount === 1 ? "time" : "times"}` : ""}`}
+                status={memory.state === "Retained" ? "Current" : memory.state}
+                detail={memory.state === "Needs attention"
+                  ? memoryStatusDetail(memory, capabilities)
+                  : displayType(memory.category ?? memory.entityType)}
+                onSelect={() => {
+                  setSelectedMemoryId(memory.id);
+                  setDetailOpen(true);
+                }}
+              />
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="memory-workspace__empty">
+          {loading ? "Loading memories..." : "No memories match these filters."}
+        </p>
+      )}
+      {!focusEntityIds.length && (
+        <Pagination className="memory-workspace__pagination" page={memoryPage} pageSize={memoryPageSize}
+          pageSizes={[10, 20, 50, 100]} totalItems={memoryTotal} pageInputDisabled isLastPage={!nextCursor}
+          disabled={loading || loadingMore} itemsPerPageText="Memories per page:" size="sm"
+          onChange={({page, pageSize}) => void changeMemoryPage(page, pageSize)} />
+      )}
+    </div>
+  );
+
+  return (
+    <main ref={rootRef} className="memory-workspace">
+      {!serviceEnabled && <p className="memory-workspace__message" role="status">Memory is off for this service. You can view existing data and delete your memories. Agents cannot save or use memories.</p>}
+      {message && (
+        <div className="memory-workspace__message" role="status" aria-live="polite">
+          <span>{message}</span>
+          <button type="button" aria-label="Dismiss message" title="Dismiss message" onClick={() => setMessage("")}>
+            <Close size={16} />
+          </button>
+        </div>
+      )}
+
+      {view === "user" ? (
+        <>
+          <div className="memory-workspace__context-bar">
+            <div>
+              <strong>{agentName}</strong>
+              <span>Your view of this agent&apos;s memory</span>
+            </div>
+            <div className="memory-workspace__context-actions">
+              <Button kind="ghost" size="sm" onClick={onClose}>Back to chat</Button>
+              {canManage && (
+                <Button kind="secondary" size="sm" renderIcon={ArrowRight} onClick={() => setView("admin")}>
+                  Administration
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <MemoryPreferences />
+          <Grid className="memory-workspace__toolbar">
+            <Column sm={4} md={8} lg={5}>
+              <Search
+                id="memory-search"
+                size="lg"
+                labelText="Search this page"
+                placeholder="Search this page"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </Column>
+            <Column sm={4} md={4} lg={3}>
+              <Select id="memory-type" labelText="Type" value={entityType} onChange={(event) => setEntityType(event.target.value)}>
+                <SelectItem value="all" text="All types" />
+                {entityTypes.map((type) => <SelectItem key={type} value={type} text={displayType(type)} />)}
+              </Select>
+            </Column>
+            <Column sm={4} md={4} lg={4}>
+              <Select
+                id="memory-sort"
+                labelText="Sort this page"
+                value={sort}
+                onChange={(event) => {
+                  setSort(event.target.value as MemorySort);
+                  setDetailOpen(false);
+                }}
+              >
+                <SelectItem value="recently-saved" text="Recently saved" />
+                <SelectItem value="recently-used" text="Recently used" />
+                <SelectItem value="most-used" text="Most used" />
+                <SelectItem value="least-used" text="Least used" />
+                <SelectItem value="oldest" text="Oldest" />
+                <SelectItem value="name" text="Name" />
+              </Select>
+            </Column>
+            <Column sm={4} md={8} lg={4}>
+              <div className="memory-workspace__toolbar-summary">
+              <span>{focusEntityIds.length ? `${visibleMemories.length} referenced memories` : `${visibleMemories.length} on this page · ${memoryTotal} total`}</span>
+              <Button kind="ghost" size="sm" renderIcon={Renew} disabled={loading} onClick={() => void refreshData()}>
+                Refresh
+              </Button>
+              </div>
+            </Column>
+          </Grid>
+
+          <MasterDetail
+            listLabel="Your memories"
+            list={memoryList}
+            detail={selectedMemory ? (
+              <MemoryDetail
+                memory={selectedMemory}
+                capabilities={capabilities}
+                deleting={deleting}
+                onDelete={() => void forgetSelectedMemory()}
+                onOpenConversation={onOpenConversation}
+              />
+            ) : <p className="memory-workspace__empty">Select a memory to view its details.</p>}
+            detailLabel="Memory details"
+            sheetOpen={detailOpen}
+            closeSheet={() => setDetailOpen(false)}
+          />
+        </>
+      ) : (
+        <>
+          <div className="memory-workspace__context-bar">
+            <div>
+              <strong>Memory administration</strong>
+              <span>Administrator controls</span>
+            </div>
+            <div className="memory-workspace__context-actions">
+              <Button kind="ghost" size="sm" onClick={onClose}>Back to chat</Button>
+              <Button kind="secondary" size="sm" onClick={() => setView("user")}>Your memory</Button>
+            </div>
+          </div>
+
+          <div className="memory-workspace__tabs" role="tablist" aria-label="Memory administration">
+            {(["settings", "memory", "activity"] as AdminTab[]).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                aria-selected={adminTab === tab}
+                onClick={() => {
+                  setAdminTab(tab);
+                  setDetailOpen(false);
+                }}
+              >
+                {tab[0].toUpperCase() + tab.slice(1)}
+              </button>
+            ))}
+          </div>
+
+          {adminTab === "settings" && (
+            <div
+              role="tabpanel"
+              aria-label="Settings"
+              className="memory-workspace__settings"
+            >
+              <Grid fullWidth>
+                <Column sm={4} md={8} lg={16}>
+                  <TabsVertical
+                    selectedIndex={settingsIndex}
+                    onChange={({ selectedIndex }) =>
+                      setSelectedSettingsId(
+                        settingsCategories[selectedIndex].id,
+                      )
+                    }
+                  >
+                    <TabListVertical aria-label="Settings categories">
+                      {settingsCategories.map((item) => (
+                        <Tab key={item.id}>{item.title}</Tab>
+                      ))}
+                    </TabListVertical>
+                    <TabPanels>
+                      {settingsCategories.map((category) => (
+                        <TabPanel
+                          key={category.id}
+                          className="memory-settings__panel"
+                        >
+                          {category.id === "general" ? (
+                            <MemoryPreferences admin />
+                          ) : category.id === "filters" ? (
+                            <>
+                              <p className="memory-settings__intro">
+                                Control what enters memory and what reaches the
+                                AI model.
+                              </p>
+                              <p className="memory-settings__note">
+                                Everyone using this service · Managed by
+                                the service operator
+                              </p>
+                              {settingsItems
+                                .filter((item) => item.kind === "protection")
+                                .map((item) => (
+                                  <SettingsDetail
+                                    readOnly={!serviceEnabled}
+                                    key={item.id}
+                                    settings={item}
+                                    capabilities={capabilities}
+                                    runningRetention={runningRetention}
+                                    onRunRetention={() => {}}
+                                  />
+                                ))}
+                              <p className="memory-settings__note">
+                                This page reports the active configuration.
+                                Filter changes are managed by your service
+                                operator.
+                              </p>
+                            </>
+                          ) : (
+                            <SettingsDetail
+                                    readOnly={!serviceEnabled}
+                              settings={
+                                settingsItems.find(
+                                  (item) => item.id === category.id,
+                                )!
+                              }
+                              capabilities={capabilities}
+                              latestRun={runs.find(
+                                (run) =>
+                                  run.policyId ===
+                                  settingsItems.find(
+                                    (item) => item.id === category.id,
+                                  )?.policy?.policyId,
+                              )}
+                              runningRetention={runningRetention}
+                              onRunRetention={() => void executeRetention()}
+                            />
+                          )}
+                        </TabPanel>
+                      ))}
+                    </TabPanels>
+                  </TabsVertical>
+                </Column>
+              </Grid>
+            </div>
+          )}
+
+          {adminTab === "memory" && (
+            <div role="tabpanel" aria-label="Memory">
+              <Grid className="memory-workspace__toolbar">
+                <Column sm={4} md={4} lg={5}>
+                  <Select id="admin-memory-owner" labelText="Memory about" value={adminOwner} onChange={(event) => setAdminOwner(event.target.value)}>
+                    <SelectItem value="all" text="All owners" />
+                    {adminOwners.map((owner) => <SelectItem key={owner} value={owner} text={owner} />)}
+                  </Select>
+                </Column>
+                <Column sm={4} md={4} lg={5}>
+                  <Select id="admin-memory-state" labelText="Status" value={adminState} onChange={(event) => setAdminState(event.target.value)}>
+                    <SelectItem value="all" text="All states" />
+                    <SelectItem value="Needs attention" text="Needs attention" />
+                    <SelectItem value="Retained" text="Retained" />
+                    <SelectItem value="Protected" text="Protected" />
+                  </Select>
+                </Column>
+                <Column sm={4} md={8} lg={6}>
+                  <div className="memory-workspace__toolbar-summary">
+                  <span>Showing {visibleAdminMemories.length} of {adminMemoryTotal}</span>
+                  <Button kind="ghost" size="sm" renderIcon={Renew} disabled={loading} onClick={() => void refreshData()}>Refresh</Button>
+                  </div>
+                </Column>
+              </Grid>
+              <MasterDetail
+                listLabel="Admin memory list"
+                list={(
+                  <div>
+                    {visibleAdminMemories.length ? (
+                      <ul className="memory-workspace__list">
+                        {visibleAdminMemories.map((memory) => (
+                          <li key={memory.id}>
+                            <RecordRow
+                              id={memory.id}
+                              scope="memory"
+                              selected={memory.id === selectedAdminMemory?.id}
+                              title={memory.title}
+                              meta={`${memory.ownerLabel ?? "Owner unavailable"} / ${memory.sourceLabel}`}
+                              status={memory.state}
+                              detail={memory.state === "Needs attention"
+                                ? memoryStatusDetail(memory, capabilities)
+                                : displayType(memory.category ?? memory.entityType)}
+                              onSelect={() => {
+                                setSelectedAdminMemoryId(memory.id);
+                                setDetailOpen(true);
+                              }}
+                            />
+                          </li>
+                        ))}
+                      </ul>
+                    ) : <p className="memory-workspace__empty">{loading ? "Loading memories..." : "No memories match these filters."}</p>}
+                    {adminNextCursor && adminOwner === "all" && adminState === "all" && (
+                      <div className="memory-workspace__load-more">
+                        <Button kind="ghost" size="sm" disabled={loadingMore} onClick={() => void loadMoreAdminMemories()}>
+                          {loadingMore ? "Loading..." : "Load more"}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                detail={selectedAdminMemory
+                  ? <MemoryDetail memory={selectedAdminMemory} capabilities={capabilities} admin onOpenConversation={onOpenConversation} />
+                  : <p className="memory-workspace__empty">Select a memory to view its details.</p>}
+                detailLabel="Admin memory details"
+                sheetOpen={detailOpen}
+                closeSheet={() => setDetailOpen(false)}
+              />
+            </div>
+          )}
+
+          {adminTab === "activity" && (
+            <div role="tabpanel" aria-label="Activity" className="memory-activity-panel">
+              <CollectionActivity policies={retentionPolicies} agentId={agentId} refreshKey={runs} refreshing={loading} onRefresh={() => void refreshData()} onOpen={(memory) => {
+                setAdminMemories((items) => items.some((item) => item.id === memory.id) ? items.map((item) => item.id === memory.id ? memory : item) : [...items, memory]);
+                setAdminOwner("all"); setAdminState("all");
+                setSelectedAdminMemoryId(memory.id); setAdminTab("memory"); setDetailOpen(true);
+              }} history={runs.length ? (
+                <Accordion>
+                  {runs.map((run) => <AccordionItem key={run.runId} title={
+                    <span className="memory-activity__run-title">
+                      <time dateTime={run.createdAt}>{new Date(run.createdAt).toLocaleString()}</time>
+                      <span>{runStatus(run)}</span>
+                    </span>
+                  }>
+                    <RetentionRunDetail run={run} memories={adminMemories} capabilities={capabilities}
+                      onOpenMemory={(memoryId) => {
+                        setAdminOwner("all"); setAdminState("all");
+                        setSelectedAdminMemoryId(memoryId); setAdminTab("memory"); setDetailOpen(true);
+                      }} />
+                  </AccordionItem>)}
+                </Accordion>
+              ) : <p className="memory-activity__empty">{loading ? "Loading runs…" : "No retention runs recorded yet."}</p>} />
+            </div>
+          )}
+        </>
+      )}
+    </main>
+  );
+}
