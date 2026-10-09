@@ -1,0 +1,58 @@
+# DCO check: every non-merge commit in a pull request must carry a
+# "Signed-off-by: Name <email>" line that matches the commit author.
+# Make the "DCO" check required on main in branch protection.
+name: DCO
+
+on:
+  pull_request:
+
+concurrency:
+  group: dco-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dco:
+    name: DCO
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check Signed-off-by on every commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMIT_COUNT: ${{ github.event.pull_request.commits }}
+        run: |
+          set -euo pipefail
+          # The pull request commits API returns at most 250 commits.
+          if [ "$COMMIT_COUNT" -gt 250 ]; then
+            echo "::error::This PR has $COMMIT_COUNT commits; the DCO check reads at most 250. Squash the commits and push again."
+            exit 1
+          fi
+          # Merge commits and GitHub App bots (author email *[bot]@users.noreply.github.com) are skipped.
+          missing=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/commits?per_page=100" --jq '
+            .[]
+            | select((.parents | length) < 2)
+            | select(.commit.author.email | test("\\[bot\\]@users\\.noreply\\.github\\.com$") | not)
+            | . as $c
+            | ($c.commit.author.name | ascii_downcase) as $name
+            | ($c.commit.author.email | ascii_downcase) as $email
+            | [ $c.commit.message | split("\n")[] | sub("\r$"; "")
+                | capture("^Signed-off-by:\\s*(?<n>.*?)\\s*<(?<e>[^>]*)>\\s*$"; "i")
+                | select((.n | ascii_downcase) == $name and (.e | ascii_downcase) == $email) ]
+            | select(length == 0)
+            | "\($c.sha[0:12]) by \($c.commit.author.name) <\($c.commit.author.email)>"')
+          if [ -n "$missing" ]; then
+            while IFS= read -r line; do
+              echo "::error::Commit $line has no Signed-off-by line that matches its author."
+            done <<< "$missing"
+            echo "Sign off every commit with your author name and email (see the DCO section in CONTRIBUTING.md):"
+            echo "  git rebase --signoff origin/main"
+            echo "  git push --force-with-lease"
+            exit 1
+          fi
+          echo "All commits have a Signed-off-by line that matches the author."

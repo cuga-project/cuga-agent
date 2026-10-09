@@ -1,10 +1,24 @@
 # CUGA defaults for the bundled Evolve service.
 # Override EVOLVE_HOOKS_CONFIG with a mounted configuration to customize hooks.
-# Regex PII detection is local and requires no model downloads or remote service.
+# READI and regex detection run locally. The image includes the spaCy model.
 plugins:
+  - name: readi_pii
+    display_name: Personal information
+    description: Redacts names, locations and other personal information.
+    show_in_ui: true
+    kind: altk_evolve.hooks.plugins.readi.ReadiSemanticPIIPlugin
+    hooks: [memory_pre_write, llm_pre_call]
+    mode: sequential
+    priority: 5
+    on_error: fail
+    config:
+      readi_extractor: spacy
+      readi_model: en_core_web_trf
+      redaction_text: "[REDACTED]"
+
   - name: pii_filter_memory
     display_name: Personal identifiers
-    description: Masks detected email addresses, phone numbers and other structured personal identifiers.
+    description: Masks email addresses, phone numbers and other personal identifiers.
     show_in_ui: true
     kind: altk_evolve.hooks.plugins.pii.PIIFilterMemoryPlugin
     hooks: [memory_pre_write, llm_pre_call]

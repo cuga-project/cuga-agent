@@ -151,7 +151,9 @@ def test_sigterm_stops_both_services(tmp_path):
     "mode,url",
     [("registry", ""), ("direct", "https://external.example/sse"), ("auto", "https://external.example/sse")],
 )
-def test_external_evolve_is_preserved(monkeypatch, mode, url):
+@pytest.mark.parametrize("embedded", ["false", "true"])
+def test_external_evolve_is_preserved(monkeypatch, mode, url, embedded):
+    monkeypatch.setenv("CUGA_EMBEDDED_EVOLVE", embedded)
     monkeypatch.setattr(
         services,
         "evolve_endpoint",
@@ -222,3 +224,87 @@ m.main()
     observed = json.loads(result.stdout.strip().splitlines()[-1])
     assert observed == {"url": endpoint, "command": ["cuga", "start", "manager"]}
     assert not (tmp_path / "must-not-exist").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "mode,subcommand",
+    [
+        ("default", "manager"),
+        ("crm", "demo_crm"),
+        ("digital_sales", "demo"),
+        ("health", "demo_health"),
+        ("docs", "demo_docs"),
+        ("knowledge", "demo_knowledge"),
+    ],
+)
+def test_embedded_entrypoint_uses_one_authenticated_worker(tmp_path, mode, subcommand):
+    """Execute the real shell dispatch and Python startup, replacing only child launch."""
+    launcher = tmp_path / "launcher.py"
+    launcher.write_text('''
+import importlib.util, json, os, sys
+path, *command = sys.argv[1:]
+assert path.endswith("/container_services.py"), f"Unexpected second supervisor: {path}"
+spec = importlib.util.spec_from_file_location("container_services", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+sys.argv = [path, *command]
+module.shutil.which = lambda _: "/app/.venv/bin/evolve-mcp"
+def supervise(cuga, evolve):
+    print(json.dumps({"cuga": cuga, "evolve": evolve,
+        "namespace": os.environ.get("EVOLVE_NAMESPACE_ID"),
+        "token_present": bool(os.environ.get("CUGA_EVOLVE_API_TOKEN")),
+        "enabled": os.environ.get("DYNACONF_EVOLVE__ENABLED")}))
+    return 0
+module.supervise = supervise
+raise SystemExit(module.main())
+''')
+    entrypoint = (SUPERVISOR.parent / "docker-entrypoint.sh").read_text()
+    entrypoint = entrypoint.replace("/app/.venv/bin/python", f'"{sys.executable}" "{launcher}"')
+    entrypoint = entrypoint.replace("/app/scripts/", str(SUPERVISOR.parent) + "/")
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("DYNACONF_EVOLVE") and key not in {"ENV_FILE", "SETTINGS_TOML_PATH"}
+    }
+    env.update(
+        {
+            "PYTHONPATH": str(SUPERVISOR.parent.parent / "src"),
+            "CUGA_EMBEDDED_EVOLVE": "true",
+            "CUGA_DEMO_MODE": mode,
+            "DYNACONF_SERVICE__INSTANCE_ID": "service-instance-1",
+            "DYNACONF_EVOLVE__ENABLED": "false",
+            "EVOLVE_NAMESPACE_ID": "stale",
+            "EVOLVE_DATA_DIR": str(tmp_path / "evolve"),
+        }
+    )
+    result = subprocess.run(
+        ["/bin/sh", "-c", entrypoint], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    observed = json.loads(result.stdout.strip().splitlines()[-1])
+    assert observed["cuga"][:3] == ["/app/.venv/bin/cuga", "start", subcommand]
+    assert observed["evolve"] == [sys.executable, "-m", "cuga.backend.evolve.http_worker"]
+    assert observed["namespace"] == "service-instance-1"
+    assert observed["token_present"]
+    assert observed["enabled"] == "false"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "installed,instance,error",
+    [
+        (False, "service-instance-1", "requires the Evolve extra"),
+        (True, "", "DYNACONF_SERVICE__INSTANCE_ID is required"),
+    ],
+)
+def test_embedded_configuration_errors_before_launch(monkeypatch, installed, instance, error):
+    import cuga.config
+
+    monkeypatch.setattr(services, "evolve_endpoint", lambda: ("direct", "http://127.0.0.1:8201/sse"))
+    monkeypatch.setattr(sys, "argv", [str(SUPERVISOR), "cuga", "start", "manager"])
+    monkeypatch.setattr(services.shutil, "which", lambda _: "/bin/evolve-mcp" if installed else None)
+    monkeypatch.setattr(cuga.config, "get_service_instance_id", lambda: instance)
+    monkeypatch.setenv("CUGA_EMBEDDED_EVOLVE", "true")
+    with pytest.raises(RuntimeError, match=error):
+        services.main()
