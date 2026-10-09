@@ -352,7 +352,7 @@ jobs:
           git add -A
           git reset .bob/ || true
           git reset .venv/ || true
-          git commit -m "fix: address review comments from @${REVIEWER}
+          git commit --signoff -m "fix: address review comments from @${REVIEWER}
 
           Review ID: ${REVIEW_ID}
 
