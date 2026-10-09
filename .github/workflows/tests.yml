@@ -17,16 +17,14 @@ permissions:
   contents: read
 
 env:
-  # LLM tests run against IBM Bob inference (settings.bob.toml).
-  AGENT_SETTING_CONFIG: settings.bob.toml
-  BOB_AUTH_HEADER: ${{ secrets.BOB_AUTH_HEADER }}
+  AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
   WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
   WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
   WATSONX_URL: ${{ vars.WATSONX_URL }}
-  MODEL_NAME: ${{ vars.BOB_MODEL_NAME }}
+  MODEL_NAME: ${{ secrets.MODEL_NAME }}
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-  OPENAI_BASE_URL: ${{ vars.BOB_BASE_URL }}
+  OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
   PYTHONUNBUFFERED: "1"
   CUGA_THREAD_WORKSPACE_SEED: crm
 
