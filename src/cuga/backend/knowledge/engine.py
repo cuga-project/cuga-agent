@@ -28,7 +28,6 @@ from pydantic import ConfigDict
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.indexing import InMemoryRecordManager
-from langchain_docling import DoclingLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from cuga.backend.knowledge.config import (
@@ -164,6 +163,15 @@ def _iter_exception_messages(exc: BaseException) -> list[str]:
             stack.append(current.__context__)
 
     return messages
+
+
+def _docling_not_installed_error(file_path: Path) -> ImportError:
+    """Document parsing requires the optional docling stack, absent in the slim image."""
+    return ImportError(
+        f"Cannot parse {file_path.name}: optional document-processing dependencies "
+        '(docling, easyocr, torch) are not installed. Install with pip install "cuga[docling]", '
+        "or use the full CUGA image instead of the slim one."
+    )
 
 
 def _translate_document_load_error(file_path: Path, exc: BaseException) -> Exception:
@@ -5319,6 +5327,7 @@ class KnowledgeEngine:
 
         if suffix in self._DOCLING_FORMATS:
             try:
+                from langchain_docling import DoclingLoader
                 from langchain_docling.loader import ExportType
 
                 chunker = self._build_docling_chunker(chunk_size)
@@ -5331,6 +5340,8 @@ class KnowledgeEngine:
                     loader_kwargs["chunker"] = chunker
                 loader = DoclingLoader(**loader_kwargs)
                 docs = loader.load()
+            except (ImportError, ModuleNotFoundError) as e:
+                raise _docling_not_installed_error(file_path) from e
             except Exception as e:
                 translated = _translate_document_load_error(file_path, e)
                 logger.error(
@@ -5360,6 +5371,7 @@ class KnowledgeEngine:
             docs = [Document(page_content=chunk, metadata={"page": i + 1}) for i, chunk in enumerate(chunks)]
         else:
             try:
+                from langchain_docling import DoclingLoader
                 from langchain_docling.loader import ExportType
 
                 chunker = self._build_docling_chunker(chunk_size)
@@ -5372,6 +5384,8 @@ class KnowledgeEngine:
                     loader_kwargs["chunker"] = chunker
                 loader = DoclingLoader(**loader_kwargs)
                 docs = loader.load()
+            except (ImportError, ModuleNotFoundError) as e:
+                raise _docling_not_installed_error(file_path) from e
             except Exception:
                 raise ValueError(f"Unsupported file format: {suffix}")
 

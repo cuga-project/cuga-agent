@@ -1,4 +1,11 @@
 # Multi-stage: builder installs deps, runtime keeps only what's needed
+#
+# Slim variant of Dockerfile.ubi: omits the `docling` extra (langchain-docling, easyocr, torch,
+# torchvision, and transitively transformers — ~1GB). The core web/API agent, action
+# shortlisting, and policy similarity (all fastembed/ONNX-based, not torch) work normally.
+# `demo_docs`/`demo_knowledge` CMD modes still boot, but PDF/DOCX document ingestion fails with a
+# clear "install cuga[docling] or use the full image" error instead of crashing the server —
+# plain text/markdown knowledge ingestion is unaffected since that path never touches docling.
 ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312-minimal:latest
 FROM ${BASE_IMAGE} AS builder
 
@@ -15,13 +22,9 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 COPY docs/ ./docs/
 
-# Default deps omit openlit (optional `observability` extra; keeps pip/uvx core resolvable with litellm 1.83.x).
-RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + && uv sync --no-editable --no-dev --extra observability --extra docling
-
-# Slim down torch: remove test suite and C++ headers (not needed at runtime) ~143MB
-# NOTE: torch/bin must be kept — contains torch_shm_manager required at import time
-RUN rm -rf /app/.venv/lib/python3.12/site-packages/torch/test \
-           /app/.venv/lib/python3.12/site-packages/torch/include
+# Default deps omit openlit (optional `observability` extra; keeps pip/uvx core resolvable with litellm 1.83.x)
+# and omit the `docling` extra (document-processing stack — this is the slim image).
+RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + && uv sync --no-editable --no-dev --extra observability
 
 # Strip debug symbols from native .so files (saves 100-300MB, pure size optimization)
 RUN find /app/.venv -type f \( -name "*.so" -o -name "*.so.*" \) -exec strip --strip-unneeded {} \; 2>/dev/null || true
@@ -32,7 +35,6 @@ RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright uv run playwright install --only-s
 # Bake ML model weights into the image for airgapped operation.
 # Pinned to /app/.cache so paths survive the multi-stage copy and match runtime ENV below.
 ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
-    DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
     HF_HOME=/app/.cache/huggingface
 RUN uv run --no-sync python src/scripts/preload_models.py
 
@@ -119,7 +121,6 @@ ENV CUGA_DBS_DIR=/data/dbs
 ENV DYNACONF_CRM_DB_PATH=/tmp/crm_tmp/crm_db_default
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
 ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
-    DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
     HF_HOME=/app/.cache/huggingface \
     HF_HUB_OFFLINE=1
 

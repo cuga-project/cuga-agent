@@ -73,19 +73,6 @@ dependencies = [
     "cryptography>=50.0.0",
     "hvac>=2.0.0",
     "boto3>=1.34.0",
-    # Knowledge engine (replaces OpenRAG)
-    "langchain-docling>=2.0,<3.0",
-    # EasyOCR is the cross-platform safety net so OCR Just Works on a
-    # fresh ``uv sync`` even when tesseract isn't on PATH. Tesseract
-    # (system binary) is preferred when available — see
-    # ``engine._select_ocr_engine_options``. Test
-    # ``test_no_tesseract_falls_back_to_easyocr`` documents that this
-    # fallback path must remain importable.
-    "easyocr",
-    # explicit: forces pytorch-cpu index via [tool.uv.sources], avoids 3.5GB nvidia-cuda wheels.
-    # 2.13.0 fixes GHSA-rrmf-rvhw-rf47 (memory corruption in torch.jit.script, <=2.12.1).
-    "torch>=2.13.0",
-    "torchvision", # explicit: must match torch variant (cpu) to avoid operator registration errors
     "langchain-ollama>=0.2.0",
     "langchain-text-splitters>=1.0,<2.0",
     "beautifulsoup4>=4.12",
@@ -97,6 +84,12 @@ dependencies = [
 
 [project.optional-dependencies]
 evaluation = ["rapidfuzz"]
+docling = [
+    "langchain-docling>=2.0,<3.0",
+    "easyocr",
+    "torch>=2.13.0",
+    "torchvision",
+]
 e2b = ["e2b-code-interpreter>=2.4.1"]
 knowledge = []  # knowledge is now built-in, no extra dependencies needed
 health = ["cuga-oak-health; python_version>='3.12'"]  # kept for backward compat, now also in core deps
