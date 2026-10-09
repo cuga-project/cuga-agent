@@ -3,7 +3,7 @@
 One assertion per control plane — settings.toml, validators, ``configurable``,
 the per-model runtime profile, the SDK constructor / ``invoke`` / ``stream`` —
 so a knob wired into only some surfaces cannot ship (the usual "my config does
-nothing" bug). Plus the graph wiring: the ``tool_exec`` node is present on the
+nothing" bug). Plus the graph wiring: no mode-specific node exists on the
 CugaLite graph regardless of mode, and absent when a graph does not opt in.
 """
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import inspect
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -242,48 +242,30 @@ def _dummy_nodes():
     async def execute(state, config=None):
         return {}
 
-    async def tool_exec(state, config=None):
-        return {}
-
-    return prepare, call_model, execute, tool_exec
+    return prepare, call_model, execute
 
 
-def test_build_agent_graph_adds_tool_exec_only_when_given():
+def test_build_agent_graph_has_exactly_the_three_shared_nodes():
+    """Function-calling adds no node: a native turn is a block the execute node runs."""
     from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_graph import build_agent_graph
     from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import CugaLiteState
 
-    prepare, call_model, execute, tool_exec = _dummy_nodes()
+    prepare, call_model, execute = _dummy_nodes()
     adapter = SimpleNamespace(execute_node_name="sandbox")
-
-    without = build_agent_graph(
+    graph = build_agent_graph(
         adapter=adapter,
         state_class=CugaLiteState,
         prepare_node=prepare,
         call_model_node=call_model,
         execute_node=execute,
     )
-    assert "tool_exec" not in without.nodes, "a graph that does not opt in must be unchanged"
-
-    with_node = build_agent_graph(
-        adapter=adapter,
-        state_class=CugaLiteState,
-        prepare_node=prepare,
-        call_model_node=call_model,
-        execute_node=execute,
-        tool_exec_node=tool_exec,
-    )
-    assert "tool_exec" in with_node.nodes
-    assert ("tool_exec", "call_model") not in with_node.edges, "it routes with a Command, no static edge"
+    assert set(graph.nodes) - {"__start__"} == {"prepare", "call_model", "sandbox"}
+    assert ("sandbox", "call_model") in graph.edges
 
 
-def test_cuga_lite_graph_always_wires_tool_exec_so_mode_can_switch_per_invoke():
+def test_cuga_lite_graph_has_no_mode_specific_node():
+
     from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import create_cuga_lite_graph
 
-    provider = MagicMock()
-    provider.get_all_tools = AsyncMock(return_value=[])
-    provider.get_apps = AsyncMock(return_value=[])
-    provider.get_tools = AsyncMock(return_value=[])
-    graph = create_cuga_lite_graph(model=MagicMock(), tool_provider=provider, apps_list=[])
-
-    assert {"prepare", "call_model", "sandbox", "tool_exec"} <= set(graph.nodes)
-    assert ("tool_exec", "call_model") not in graph.edges
+    graph = create_cuga_lite_graph(model=MagicMock(), tool_provider=None, apps_list=[], thread_id="t")
+    assert set(graph.nodes) - {"__start__"} == {"prepare", "call_model", "sandbox"}

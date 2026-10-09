@@ -37,8 +37,10 @@ def _native_tool_calls(messages: Any) -> list:
     return list(calls or [])
 
 
-def _tool_exec_step_output(messages: Any) -> str:
-    """Render the trailing run of tool results (one per native call) as execution output."""
+def _tool_results_step_output(messages: Any) -> str:
+    """Render the trailing run of tool results (one per native call) as execution output.
+
+    Empty when the step did not end on tool results, e.g. a CodeAct block."""
     lines: list = []
     for msg in reversed(messages or []):
         role = msg.get("type") if isinstance(msg, dict) else getattr(msg, "type", None)
@@ -477,14 +479,9 @@ class AgentLoop:
                             f"Returning sandbox output with execution_output length: {len(execution_output)}"
                         )
                         return StreamEvent(name="CodeAgent", data=json.dumps(output))
-                    else:
-                        # Skip empty sandbox events
-                        logger.debug("Skipping empty sandbox event")
-                        return StreamEvent(name="", data="")
-
-                # Function-calling mode: the step appended one ToolMessage per native call.
-                elif node_name == "tool_exec":
-                    tool_output = _tool_exec_step_output(subgraph_messages or [])
+                    # Function-calling turn through the sandbox: the step appended one
+                    # ToolMessage per native call instead of an "Execution output:" message.
+                    tool_output = _tool_results_step_output(subgraph_messages or [])
                     if tool_output.strip():
                         output = {
                             "code": "",
@@ -494,7 +491,8 @@ class AgentLoop:
                             "variables": state_data.get("variables_storage", {}),
                         }
                         return StreamEvent(name="CodeAgent", data=json.dumps(output))
-                    logger.debug("Skipping empty tool_exec event")
+                    # Skip empty sandbox events
+                    logger.debug("Skipping empty sandbox event")
                     return StreamEvent(name="", data="")
 
                 # Default handling for other subgraph nodes

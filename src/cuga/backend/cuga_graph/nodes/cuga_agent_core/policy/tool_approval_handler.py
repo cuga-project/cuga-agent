@@ -119,8 +119,15 @@ class ToolApprovalHandler:
         code: str,
         content: str,
         config: dict = None,
+        *,
+        ai_message: Optional[AIMessage] = None,
     ) -> Optional[Command]:
-        """Check if code requires approval and create an interrupt if needed."""
+        """Check if code requires approval and create an interrupt if needed.
+
+        ``ai_message`` is the assistant turn to persist with the interrupt; the
+        default is a text message carrying ``content``. A function-calling turn
+        passes its own ``AIMessage`` so the ``tool_calls`` survive the pause.
+        """
         from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 
         try:
@@ -173,7 +180,7 @@ class ToolApprovalHandler:
             adapter.set_metadata(state, approval_metadata)
 
             return ToolApprovalHandler._create_approval_interrupt(
-                adapter, state, code, content, preview_lines
+                adapter, state, code, content, preview_lines, ai_message=ai_message
             )
 
         except Exception as e:
@@ -187,6 +194,8 @@ class ToolApprovalHandler:
         code: str,
         content: str,
         preview_lines: List[str],
+        *,
+        ai_message: Optional[AIMessage] = None,
     ) -> Command:
         """Create an interrupt Command for tool approval."""
         from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import create_tool_approval_action
@@ -223,7 +232,7 @@ class ToolApprovalHandler:
         )
 
         updated_messages, error_message = _core_append_with_step_limit(
-            adapter, state, [AIMessage(content=content)]
+            adapter, state, [ai_message if ai_message is not None else AIMessage(content=content)]
         )
         if error_message:
             return _core_create_error_command(adapter, updated_messages, error_message, state.step_count)

@@ -20,6 +20,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
     format_current_plan_section,
     format_task_todos_system_block,
 )
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     EMPTY_RESPONSE_CORRECTION,
     EMPTY_RESPONSE_CORRECTION_KEY,
@@ -29,20 +30,26 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     enforce_step_limit,
 )
 from cuga.backend.cuga_graph.utils.harmony import contains_harmony_tokens, strip_harmony_tokens
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.fc_actions import (
+    FC_PENDING_KEY,
+    plan_tool_calls,
+    replies_without_execution,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import create_prepare_tools_and_apps_node
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import (
     clean_empty_response_retry_meta,
     extract_code_from_response_tool_calls,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
-from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.tool_exec_node import create_tool_exec_node
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import (
     _bind_tools_mode_from_settings,
     resolve_model_with_bind_tools,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
     EXECUTION_MODE_FUNCTION_CALLING,
+    STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
     resolve_execution_mode,
+    resolve_step_discipline,
     resolved_runtime_model_name,
     runtime_defaults_for_model,
 )
@@ -65,22 +72,17 @@ FC_MODE_VIOLATION_CORRECTION = (
     "Code is never run here. Issue the tool call natively instead, or give the final answer as plain text."
 )
 
-FC_TOOL_APPROVAL_UNSUPPORTED = (
-    "Function-calling mode does not support tool-approval policies yet. An enabled tool-approval "
-    "policy exists, so this run was stopped before any tool ran. Use cuga_lite_execution_mode = "
-    '"codeact" for this agent, or disable the policy.'
-)
-
-FC_TOOL_APPROVAL_UNVERIFIED = (
-    "Function-calling mode could not verify whether a tool-approval policy exists ({error}). "
-    "It fails closed: no tool ran. Fix policy storage, or use cuga_lite_execution_mode = \"codeact\"."
-)
-
 FC_BIND_FAILED = (
     "Function-calling mode could not advertise any tool natively (bind_tools failed or is unsupported "
     "by this model, or there is no executable tool to bind), so no native tool call is possible. "
     'It fails closed: no model call was made. Use cuga_lite_execution_mode = "codeact" for this model.'
 )
+
+FC_VARIABLES_NOTE = (
+    "These are results of earlier tool calls in this conversation. Call a tool again only if you "
+    "need more than the preview shows."
+)
+_CODEACT_VARIABLES_NOTE = "You can use these variables directly by their names."
 
 FC_STEP_LIMIT_CALL_REPLY = "Not executed: the step limit was reached before this call could run."
 FC_BUDGET_CALL_REPLY = (
@@ -380,7 +382,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
                     )
                 else:
                     # Nothing executable was recorded: advertising the full catalogue
-                    # would offer tools tool_exec cannot run. Bind nothing; the turn
+                    # would offer tools the sandbox cannot run. Bind nothing; the turn
                     # then fails closed in execute_call_model_fc.
                     logger.error("[fc] no executable tools recorded by prepare; binding nothing")
                     return None
@@ -489,25 +491,6 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 return str(candidate).strip().lower()
         return _bind_tools_mode_from_settings()
 
-    async def _tool_approval_policies_exist(self, config: Any) -> bool:
-        """True when an enabled tool-approval policy is stored.
-
-        Function-calling has no approval interrupt yet — CodeAct's runs on the
-        generated code string, after the seam — so the mode refuses to start
-        rather than run a guarded tool unprompted. Raises when the answer
-        cannot be established (policy system not initialised, storage backend
-        down): ``strict=True`` keeps the storage layer from turning a backend
-        failure into an empty list, and the caller fails closed on any error.
-        """
-        from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
-        from cuga.backend.cuga_graph.policy.models import PolicyType
-
-        policy_system = PolicyConfigurable.from_config(config or {})
-        policies = await policy_system.agent.storage.list_policies(
-            policy_type=PolicyType.TOOL_APPROVAL, enabled_only=True, limit=1, strict=True
-        )
-        return bool(policies)
-
     async def execute_call_model_fc(
         self,
         *,
@@ -531,15 +514,17 @@ class AgentGraphAdapter(CoreGraphAdapter):
         history normalised into a provider-valid transcript — hands them straight
         to ``bound.ainvoke`` so the shared dict serializer is never involved — then:
 
-        - ``tool_calls`` present  -> ``Command(goto="tool_exec")``, assistant turn kept verbatim
+        - ``tool_calls`` present  -> translated into a block (``fc_actions``) and routed
+          to the sandbox like CodeAct code, assistant turn kept verbatim; the sandbox
+          answers every id with a ``ToolMessage``
         - otherwise               -> final answer, ``END``
         - an empty reply gets one corrective turn, like the CodeAct path
         - a fenced code block with no ``tool_calls`` is a mode violation: it is
           never executed; the model gets one corrective turn instead.
 
-        Refuses to start when an enabled tool-approval policy exists — or when
-        that cannot be verified: there is no approval interrupt on this path
-        yet, and silently running a guarded tool is worse than not running.
+        Tool approval is the CodeAct check run on the translated block: the real
+        tool names are in its text, so a matching policy interrupts before the
+        sandbox, and the approved block resumes into it.
         """
         if self._execution_mode(configurable) != EXECUTION_MODE_FUNCTION_CALLING:
             return None
@@ -550,22 +535,6 @@ class AgentGraphAdapter(CoreGraphAdapter):
 
         cfg = configurable or {}
         history: list = list(modified_messages)
-
-        if settings.policy.enabled:
-            # Fail closed, stricter than CodeAct's own check: a refusal here is
-            # cheap and explicit, a guarded tool running unprompted is not.
-            try:
-                blocked_reason = (
-                    FC_TOOL_APPROVAL_UNSUPPORTED if await self._tool_approval_policies_exist(config) else None
-                )
-            except Exception as exc:
-                logger.error("[fc] could not verify tool-approval policies ({}); refusing to start", exc)
-                blocked_reason = FC_TOOL_APPROVAL_UNVERIFIED.format(error=exc)
-            if blocked_reason:
-                logger.error("[fc] refusing to start: {}", blocked_reason)
-                return create_error_command(
-                    self, history, AIMessage(content=blocked_reason), state.step_count
-                )
 
         if not budget_exhausted and bound is active_model:
             # bind_tools failed, is unsupported by the model, or had nothing to bind —
@@ -578,12 +547,13 @@ class AgentGraphAdapter(CoreGraphAdapter):
         msgs.extend(_few_shot_to_messages(self.get_few_shot_messages(state)))
         msgs.extend(_normalize_history_for_replay(history))
         if variables_addendum:
-            # Outbound only, like call_model's CodeAct path (#600): never persisted.
+            # Outbound only, like call_model's CodeAct path (#600): never persisted. The
+            # variables are earlier tool results; the CodeAct closing line would invite
+            # the very code block this mode treats as a violation.
+            fc_addendum = variables_addendum.replace(_CODEACT_VARIABLES_NOTE, FC_VARIABLES_NOTE)
             for i in range(len(msgs) - 1, -1, -1):
                 if isinstance(msgs[i], HumanMessage):
-                    msgs[i] = msgs[i].model_copy(
-                        update={"content": _message_text(msgs[i]) + variables_addendum}
-                    )
+                    msgs[i] = msgs[i].model_copy(update={"content": _message_text(msgs[i]) + fc_addendum})
                     break
         if budget_exhausted:
             # Outbound only as well.
@@ -649,14 +619,59 @@ class AgentGraphAdapter(CoreGraphAdapter):
         base_meta = dict(self.build_metadata_update(state, playbook_fired=playbook_fired) or {})
 
         if has_calls:
-            logger.info("[fc] {} native tool_call(s) -> tool_exec", len(tool_calls) + len(invalid_tool_calls))
+            one_per_step = (
+                resolve_step_discipline(cfg, self._runtime_model_name(cfg))
+                == STEP_DISCIPLINE_ONE_TOOL_PER_STEP
+            )
+            block, plan = plan_tool_calls(
+                tool_calls, invalid_tool_calls, self._tools_context, one_per_step=one_per_step
+            )
+            if block is None:
+                # Every call was answered at planning time (no name, unknown tool, bad
+                # arguments, provider-rejected, deferred): nothing to execute. Charge the
+                # execute step the sandbox would have taken and hand the replies back.
+                replies = replies_without_execution(plan, "")
+                exec_step = new_step_count + 1
+                limit_cmd = enforce_step_limit(
+                    self,
+                    state=state,
+                    messages=final_messages + replies,
+                    new_step_count=exec_step,
+                    limit=max_steps,
+                )
+                if limit_cmd is not None:
+                    return limit_cmd
+                logger.info("[fc] {} native tool_call(s), none executable -> call_model", len(plan))
+                return Command(
+                    goto="call_model",
+                    update={
+                        self.messages_key: final_messages + replies,
+                        "script": None,
+                        "step_count": exec_step,
+                        self.metadata_key: base_meta,
+                    },
+                )
+            if settings.policy.enabled:
+                # The approval check CodeAct runs on its block. The tool names are in
+                # the block text, so a policy on them interrupts here; the approved
+                # block resumes into the sandbox with the plan still in metadata.
+                approval_cmd = await ToolApprovalHandler.check_and_create_approval_interrupt(
+                    self, state, block, content, config, ai_message=response
+                )
+                if approval_cmd is not None:
+                    approval_cmd.update[self.metadata_key] = {
+                        **(approval_cmd.update.get(self.metadata_key) or {}),
+                        FC_PENDING_KEY: plan,
+                    }
+                    return approval_cmd
+            logger.info("[fc] {} native tool_call(s) -> sandbox", len(plan))
             return Command(
-                goto="tool_exec",
+                goto=self.execute_node_name,
                 update={
                     self.messages_key: final_messages,
-                    "script": None,
+                    "script": block,
                     "step_count": new_step_count,
-                    self.metadata_key: base_meta,
+                    self.metadata_key: {**base_meta, FC_PENDING_KEY: plan},
                 },
             )
 
@@ -729,9 +744,6 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 self.metadata_key: base_meta,
             },
         )
-
-    def build_tool_exec_node(self):
-        return create_tool_exec_node(self)
 
     def build_prepare_node(self, lc_bind_tools_meta: dict):
         return create_prepare_tools_and_apps_node(self, lc_bind_tools_meta)

@@ -16,6 +16,8 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import FC_VARIABLES_NOTE
+
 pytestmark = pytest.mark.unit
 
 CALLS: list = []
@@ -117,4 +119,9 @@ async def test_second_turn_replays_a_valid_function_calling_transcript():
     tool_replies = [m for m in outbound if isinstance(m, ToolMessage)]
     dangling = {c["id"] for m in ai_with_calls for c in m.tool_calls} - {t.tool_call_id for t in tool_replies}
     assert not dangling, f"tool_calls without a ToolMessage reply: {dangling} in {shapes}"
-    assert isinstance(outbound[-1], HumanMessage) and outbound[-1].content == "now echo 8"
+    # Turn 1's result survived as a variable, so turn 2 is told about it — in function-calling
+    # words, not the CodeAct invitation to write code.
+    assert isinstance(outbound[-1], HumanMessage) and outbound[-1].content.startswith("now echo 8")
+    assert "tool_result_call_1" in outbound[-1].content and FC_VARIABLES_NOTE in outbound[-1].content
+    assert "directly by their names" not in outbound[-1].content
+    assert turn1.variables.get("tool_result_call_1") == 7, turn1.variables

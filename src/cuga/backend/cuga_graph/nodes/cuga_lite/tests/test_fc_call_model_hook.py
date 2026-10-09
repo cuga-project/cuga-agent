@@ -2,11 +2,12 @@
 
 Codeact: ``None``, nothing invoked. Function-calling: the bound model gets real
 message objects (system prompt, few-shot demos, history normalised into a
-provider-valid transcript), and the response routes on ``tool_calls`` — to
-``tool_exec`` with the assistant turn kept verbatim, or to END as the final
-answer. Every id the model issued is answered before the run can end, an empty
-reply gets one retry, a fenced code block is a mode violation (never executed),
-and the mode refuses to start while a tool-approval policy is configured.
+provider-valid transcript), and the response routes on ``tool_calls`` — to the
+sandbox as a translated block with the assistant turn kept verbatim, or to END
+as the final answer. Every id the model issued is answered before the run can
+end, an empty reply gets one retry, a fenced code block is a mode violation
+(never executed), and a matching tool-approval policy interrupts on the block
+exactly as it does for CodeAct code.
 """
 
 from __future__ import annotations
@@ -25,13 +26,12 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import TOOL_BUDGET_EXHAUSTED_INSTRUCTION
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter import graph_adapter as ga
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.fc_actions import FC_PENDING_KEY
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import (
     FC_BIND_FAILED,
     FC_BUDGET_CALL_REPLY,
     FC_MODE_VIOLATION_CORRECTION,
     FC_STEP_LIMIT_CALL_REPLY,
-    FC_TOOL_APPROVAL_UNSUPPORTED,
-    FC_TOOL_APPROVAL_UNVERIFIED,
     FC_UNANSWERED_CALL_REPLY,
     AgentGraphAdapter,
     _looks_like_python_block,
@@ -57,14 +57,20 @@ class _Model:
         return self.response
 
 
-def _adapter(tools_context_ref=None) -> AgentGraphAdapter:
-    return AgentGraphAdapter(
+async def _add(a: int, b: int) -> int:
+    return a + b
+
+
+def _adapter(tools_context_ref=None, tools=None) -> AgentGraphAdapter:
+    adapter = AgentGraphAdapter(
         tracker=MagicMock(),
         base_callbacks=[],
         task_todos_ref=[],
         tools_context_ref=tools_context_ref if tools_context_ref is not None else {},
         base_tool_provider=None,
     )
+    adapter._tools_context.update(tools if tools is not None else {"add": _add})
+    return adapter
 
 
 def _state(messages=None, few_shots=None, step_count=0, max_steps=None, metadata=None):
@@ -114,22 +120,38 @@ async def test_codeact_returns_none_and_invokes_nothing():
 
 
 @pytest.mark.asyncio
-async def test_tool_calls_route_to_tool_exec_with_the_assistant_turn_verbatim():
+async def test_tool_calls_route_to_the_sandbox_as_a_block_with_the_assistant_turn_verbatim():
     response = AIMessage(content="", tool_calls=[_CALL])
     model = _Model(response)
     state = _state()
 
     cmd = await _turn(_adapter(), model, state, FC)
 
-    assert cmd.goto == "tool_exec"
+    assert cmd.goto == "sandbox"
     persisted = cmd.update["chat_messages"]
     assert persisted[:-1] == state.chat_messages
-    assert persisted[-1] is response, "tool_calls must reach tool_exec untouched, ids included"
-    assert cmd.update["script"] is None and cmd.update["step_count"] == 1
+    assert persisted[-1] is response, "the assistant turn is persisted untouched, ids included"
+    assert 'await add(**{"a": 1, "b": 2})' in cmd.update["script"], cmd.update["script"]
+    assert cmd.update["step_count"] == 1
+    (entry,) = cmd.update["cuga_lite_metadata"][FC_PENDING_KEY]
+    assert entry["id"] == "c1" and entry["var"] == "tool_result_c1" and entry["reply"] is None
 
     (outbound,) = model.seen
     assert isinstance(outbound[0], SystemMessage) and outbound[0].content == "SYS"
     assert outbound[1:] == state.chat_messages, "history goes out as message objects, not the CodeAct dicts"
+
+
+@pytest.mark.asyncio
+async def test_calls_nothing_can_execute_are_answered_without_the_sandbox():
+    """Unknown tool, bad arguments, provider-rejected: every id is answered here, and the
+    execute step the sandbox would have taken is still charged."""
+    unknown = {"name": "nope", "args": {}, "id": "c9", "type": "tool_call"}
+    cmd = await _turn(_adapter(), _Model(AIMessage(content="", tool_calls=[unknown])), _state(), FC)
+
+    assert cmd.goto == "call_model" and cmd.update["script"] is None and cmd.update["step_count"] == 2
+    reply = cmd.update["chat_messages"][-1]
+    assert isinstance(reply, ToolMessage) and reply.tool_call_id == "c9" and reply.status == "error"
+    assert reply.content == "Unknown tool 'nope'. Choose one of the provided tools: add."
 
 
 @pytest.mark.asyncio
@@ -302,22 +324,76 @@ def test_replay_rebuilds_bare_shells_and_closes_dangling_calls():
 # ── guards and binding ───────────────────────────────────────────────────────
 
 
+def _policy_system(match):
+    return SimpleNamespace(agent=SimpleNamespace(check_tool_approval_for_code=AsyncMock(return_value=match)))
+
+
+def _approval_match():
+    policy = SimpleNamespace(
+        id="p1",
+        name="Approve add",
+        required_tools=["add"],
+        required_apps=[],
+        approval_message="Adding needs approval.",
+        show_code_preview=True,
+    )
+    return SimpleNamespace(
+        matched=True, policy=policy, confidence=1.0, reasoning="r", trigger_details={"matched_tools": ["add"]}
+    )
+
+
 @pytest.mark.asyncio
-async def test_refuses_to_start_when_a_tool_approval_policy_exists(monkeypatch):
-    """No approval interrupt exists on this path yet: fail closed, before any model call."""
+async def test_a_matching_tool_approval_policy_interrupts_before_the_sandbox(monkeypatch):
+    """The CodeAct approval check runs on the translated block, so a policy on the tool
+    name interrupts; the assistant turn is persisted with its tool_calls and the plan
+    rides the metadata, so the approved block resumes into the sandbox."""
     from cuga.config import settings
 
     monkeypatch.setattr(settings.policy, "enabled", True, raising=False)
-    model = _Model(AIMessage(content="", tool_calls=[_CALL]))
+    response = AIMessage(content="", tool_calls=[_CALL])
+    model = _Model(response)
+    system = _policy_system(_approval_match())
 
-    with patch.object(AgentGraphAdapter, "_tool_approval_policies_exist", new=AsyncMock(return_value=True)):
+    with (
+        patch(
+            "cuga.backend.cuga_graph.policy.configurable.PolicyConfigurable.from_config", return_value=system
+        ),
+        patch(
+            "cuga.backend.cuga_graph.policy.configurable.PolicyConfigurable.create_context_from_state",
+            return_value=SimpleNamespace(user_input="q"),
+        ),
+    ):
         cmd = await _turn(_adapter(), model, _state(), FC)
-    assert cmd.goto == END and cmd.update["error"] == FC_TOOL_APPROVAL_UNSUPPORTED
-    assert model.seen == [], "refused before the model was invoked"
 
-    with patch.object(AgentGraphAdapter, "_tool_approval_policies_exist", new=AsyncMock(return_value=False)):
-        cmd = await _turn(_adapter(), model, _state(), FC)
-    assert cmd.goto == "tool_exec" and len(model.seen) == 1, "policies without approval rules do not block"
+    assert cmd.goto == END and cmd.update["hitl_action"] is not None
+    assert "Adding needs approval." in cmd.update["final_answer"]
+    assert 'await add(**{"a": 1, "b": 2})' in cmd.update["script"], "the approved block is what resumes"
+    assert cmd.update["chat_messages"][-1] is response, "tool_calls survive the pause"
+    meta = cmd.update["cuga_lite_metadata"]
+    assert meta["approval_required"] is True and meta[FC_PENDING_KEY][0]["id"] == "c1"
+    (code, _context), _ = system.agent.check_tool_approval_for_code.call_args
+    assert "add(" in code
+
+
+@pytest.mark.asyncio
+async def test_no_matching_policy_routes_to_the_sandbox(monkeypatch):
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.policy, "enabled", True, raising=False)
+    system = _policy_system(SimpleNamespace(matched=False))
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.policy.configurable.PolicyConfigurable.from_config", return_value=system
+        ),
+        patch(
+            "cuga.backend.cuga_graph.policy.configurable.PolicyConfigurable.create_context_from_state",
+            return_value=SimpleNamespace(user_input="q"),
+        ),
+    ):
+        cmd = await _turn(_adapter(), _Model(AIMessage(content="", tool_calls=[_CALL])), _state(), FC)
+
+    assert cmd.goto == "sandbox" and FC_PENDING_KEY in cmd.update["cuga_lite_metadata"]
 
 
 @pytest.mark.asyncio
@@ -331,7 +407,7 @@ async def test_bind_mode_is_upgraded_from_none_only_in_function_calling_mode():
     with patch.object(ga, "resolve_model_with_bind_tools", new=AsyncMock(side_effect=fake_resolve)):
         adapter = _adapter()
         # No executable set recorded: bind nothing (the turn then fails closed) rather
-        # than open the registry-wide catalogue to tools tool_exec cannot run.
+        # than open the registry-wide catalogue to tools the sandbox cannot run.
         assert await adapter.resolve_bind_tools(_state(), object(), dict(FC), None) is None
         await adapter.resolve_bind_tools(
             _state(), object(), {**FC, "cuga_lite_bind_tools_mode": "find_tools"}, None
@@ -360,44 +436,6 @@ async def test_bind_advertises_the_executable_set_prepare_recorded():
     assert cfg["cuga_lite_bind_tools_tool_names"] == ["echo", "add"], (
         "bind what the sandbox could call, not the catalogue"
     )
-
-
-@pytest.mark.asyncio
-async def test_refuses_when_the_policy_query_fails(monkeypatch):
-    """Fail closed on infrastructure failure too: 'could not verify' is not 'no policies'."""
-    from cuga.config import settings
-
-    monkeypatch.setattr(settings.policy, "enabled", True, raising=False)
-    model = _Model(AIMessage(content="", tool_calls=[_CALL]))
-
-    with patch.object(
-        AgentGraphAdapter,
-        "_tool_approval_policies_exist",
-        new=AsyncMock(side_effect=RuntimeError("backend down")),
-    ):
-        cmd = await _turn(_adapter(), model, _state(), FC)
-
-    assert cmd.goto == END and model.seen == []
-    assert cmd.update["error"] == FC_TOOL_APPROVAL_UNVERIFIED.format(error="backend down")
-
-
-@pytest.mark.asyncio
-async def test_guard_asks_storage_strictly_so_a_backend_failure_is_not_an_empty_list():
-    """PolicyStorage.list_policies swallows backend errors by default; the guard must not."""
-    from types import SimpleNamespace
-
-    calls = []
-
-    async def list_policies(**kwargs):
-        calls.append(kwargs)
-        return []
-
-    fake_system = SimpleNamespace(agent=SimpleNamespace(storage=SimpleNamespace(list_policies=list_policies)))
-    with patch(
-        "cuga.backend.cuga_graph.policy.configurable.PolicyConfigurable.from_config", return_value=fake_system
-    ):
-        assert await _adapter()._tool_approval_policies_exist({}) is False
-    assert calls and calls[0]["strict"] is True
 
 
 @pytest.mark.asyncio

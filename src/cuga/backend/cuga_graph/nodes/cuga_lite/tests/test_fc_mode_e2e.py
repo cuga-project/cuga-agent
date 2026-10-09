@@ -2,13 +2,12 @@
 
 Node tests pin what each node returns; only a real run proves the loop —
 prepare selects the FC prompt, call_model routes native ``tool_calls`` to
-``tool_exec``, the ``ToolMessage`` replies are replayed to the model with their
+the sandbox as a translated block, the ``ToolMessage`` replies are replayed to the model with their
 ids, and a text reply ends the run. The scripted model asserts on what it is
 sent, so a broken replay fails loudly instead of the test passing by accident.
 
 The last test is the feature-off golden: with no mode configured the graph
-behaves exactly as before — dict-serialised CodeAct turns, the sandbox, and a
-``tool_exec`` node that is present but never entered.
+behaves exactly as before — dict-serialised CodeAct turns and the sandbox.
 """
 
 from __future__ import annotations
@@ -22,9 +21,8 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import (
     FC_MODE_VIOLATION_CORRECTION,
-    AgentGraphAdapter,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.tool_exec_node import DEFERRED_CALL_MESSAGE
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.fc_actions import DEFERRED_CALL_MESSAGE
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import CugaLiteState, create_cuga_lite_graph
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking import tracker as tracker_module
 
@@ -244,11 +242,7 @@ async def test_code_block_in_fc_mode_is_corrected_not_executed():
 
 
 @pytest.mark.asyncio
-async def test_feature_off_is_the_old_codeact_run_and_tool_exec_is_never_entered(monkeypatch):
-    async def forbidden(state, config=None):
-        raise AssertionError("tool_exec entered on a CodeAct run")
-
-    monkeypatch.setattr(AgentGraphAdapter, "build_tool_exec_node", lambda self: forbidden)
+async def test_feature_off_is_the_old_codeact_run(monkeypatch):
     model = _ScriptedModel(
         [
             AIMessage(content="```python\nr = await echo(value=3)\nprint(r)\n```"),
@@ -259,7 +253,9 @@ async def test_feature_off_is_the_old_codeact_run_and_tool_exec_is_never_entered
     graph = create_cuga_lite_graph(
         model=model, tool_provider=_provider(_echo_tool()), apps_list=[], thread_id="t"
     )
-    assert "tool_exec" in graph.nodes, "the node is wired (dormant) so the mode can switch per invoke"
+    assert set(graph.nodes) - {"__start__"} == {"prepare", "call_model", "sandbox"}, (
+        "no extra node for the mode"
+    )
     result = await graph.compile(checkpointer=MemorySaver()).ainvoke(
         CugaLiteState(chat_messages=[HumanMessage(content="use the tools")]), config=_config("codeact-golden")
     )
@@ -320,3 +316,110 @@ async def test_static_prompt_is_ignored_in_fc_mode():
     )
     assert "native function-calling" in result["prepared_prompt"]
     assert "Always answer with a ```python block" not in result["prepared_prompt"]
+
+
+# ── what routing through the sandbox gives a native call ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_verify_revise_answers_every_call_without_running_it(monkeypatch):
+    """The pre-execute VERIFY gate decides on the translated block like on CodeAct code;
+    a revise verdict reaches the model as an error reply per call id, nothing runs."""
+    from unittest.mock import AsyncMock
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter import sandbox_node
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import verify_blocked_message
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import VerifyDecision
+
+    monkeypatch.setattr(
+        sandbox_node,
+        "decide_pre_execute_verify",
+        AsyncMock(return_value=VerifyDecision(gate="revise", alert="echoing 9 looks wrong")),
+    )
+
+    def after_revise(messages):
+        reply = _last_tool_message(messages)
+        assert reply.tool_call_id == "c1" and reply.status == "error"
+        assert reply.content == verify_blocked_message("echoing 9 looks wrong")
+        return AIMessage(content="Understood, not echoing.")
+
+    model = _ScriptedModel(
+        [AIMessage(content="", tool_calls=[_tc("echo", {"value": 9}, "c1")]), after_revise]
+    )
+    config = _config(
+        "fc-verify", cuga_lite_execution_mode="function_calling", pre_execute_verify_enabled=True
+    )
+
+    result = await _run(model, config, _echo_tool())
+
+    assert CALLS == [] and result["final_answer"] == "Understood, not echoing."
+    assert result["verify_revise_streak"] == 1
+
+
+@pytest.mark.asyncio
+async def test_e2b_python_backend_still_runs_a_native_call_locally(monkeypatch):
+    """The translated block calls in-process callables, so it never goes to a remote sandbox."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.advanced_features, "e2b_sandbox", True, raising=False)
+
+    def forbidden():
+        raise AssertionError("a function-calling block reached the E2B executor")
+
+    monkeypatch.setattr(CodeExecutor, "_get_e2b_executor", classmethod(lambda cls: forbidden()))
+    model = _ScriptedModel(
+        [AIMessage(content="", tool_calls=[_tc("echo", {"value": 7}, "c1")]), AIMessage(content="7.")]
+    )
+
+    result = await _run(model, _config("fc-e2b", cuga_lite_execution_mode="function_calling"), _echo_tool())
+
+    assert CALLS == [("echo", 7)] and result["final_answer"] == "7."
+
+
+@pytest.mark.asyncio
+async def test_a_large_result_is_truncated_in_the_reply_but_kept_whole_as_a_variable():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.fc_actions import TRUNCATION_MARKER
+    from cuga.config import settings
+
+    limit = int(settings.advanced_features.execution_output_max_length)
+    big = "x" * (limit + 100)
+
+    async def dump() -> str:
+        """A large payload."""
+        return big
+
+    tool = StructuredTool.from_function(coroutine=dump, name="dump", description="A large payload.")
+
+    def after(messages):
+        reply = _last_tool_message(messages)
+        assert reply.content == "x" * limit + TRUNCATION_MARKER.format(limit=limit)
+        return AIMessage(content="Got it.")
+
+    model = _ScriptedModel([AIMessage(content="", tool_calls=[_tc("dump", {}, "c1")]), after])
+
+    result = await _run(model, _config("fc-big", cuga_lite_execution_mode="function_calling"), tool)
+
+    assert result["final_answer"] == "Got it."
+    assert len(result["variables_storage"]["tool_result_c1"]["value"]) == limit + 100, (
+        "the whole result survives as a variable for later turns"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_tool_whose_name_is_not_an_identifier_round_trips():
+    async def dashed(q: str) -> str:
+        """Dashed."""
+        CALLS.append(("my-tool", q))
+        return "ok:" + q
+
+    tool = StructuredTool.from_function(coroutine=dashed, name="my-tool", description="Dashed.")
+    model = _ScriptedModel(
+        [AIMessage(content="", tool_calls=[_tc("my-tool", {"q": "hi"}, "c1")]), AIMessage(content="done")]
+    )
+
+    result = await _run(model, _config("fc-dash", cuga_lite_execution_mode="function_calling"), tool)
+
+    assert CALLS == [("my-tool", "hi")]
+    reply = [m for m in result["chat_messages"] if isinstance(m, ToolMessage)][0]
+    assert (reply.tool_call_id, reply.name, reply.content) == ("c1", "my-tool", "ok:hi")

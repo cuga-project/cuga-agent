@@ -55,7 +55,7 @@ cuga_lite_bind_tools_max_count = 128
 # Pad shortlister output to fill the cap. Off by default for code-execution mode.
 cuga_lite_bind_tools_pad_to_cap = false
 # Execution mode: codeact (write Python, run it in the sandbox — default) | function_calling (the model
-# issues native tool_calls, a tool_exec node runs them and replies with ToolMessages). Alias: fc.
+# issues native tool_calls, the sandbox runs them and replies with ToolMessages). Alias: fc.
 # Per-invoke: config["configurable"]["cuga_lite_execution_mode"]. Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_EXECUTION_MODE
 cuga_lite_execution_mode = "codeact"
 # Step discipline, both modes: off (default) | one_tool_per_step — observe one result before the next call.

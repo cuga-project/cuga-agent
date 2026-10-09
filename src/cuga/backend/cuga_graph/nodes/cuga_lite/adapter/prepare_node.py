@@ -55,6 +55,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     render_fc_prompt,
     resolve_cuga_lite_few_shots_enabled,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.fc_actions import FC_PENDING_KEY
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.app_auth import call_authenticate_apps
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
 from cuga.backend.skills import (
@@ -843,6 +844,11 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # drop the counter here — prepare runs exactly once per turn on both paths.
         _turn_metadata = dict(state.cuga_lite_metadata or {})
         _turn_metadata.pop("fc_mode_violations", None)
+        if not _turn_metadata.get("user_approved"):
+            # A plan left by a turn that never reached the sandbox (a denied approval, a
+            # crash). On an approval resume the subgraph is re-entered through prepare and
+            # the plan is what the approved block answers, so it stays.
+            _turn_metadata.pop(FC_PENDING_KEY, None)
         update_payload: dict[str, Any] = {
             "tools_prepared": True,
             "prepared_prompt": dynamic_prompt,
