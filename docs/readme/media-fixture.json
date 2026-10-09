@@ -1,0 +1,472 @@
+{
+  "note": "Illustrative data for README screenshots and product tour. Internal endpoints, scheduled flows, run statuses, outputs, memory records, usage counts, and retention settings are examples. No inference, flow execution, delivery, retention operation, or business-tool connection was performed.",
+  "config": {
+    "agent": {
+      "name": "Revenue Operations",
+      "description": "Reconcile CRM contacts, analyze account revenue, and prepare reports with human approval for account updates.",
+      "kind": "single"
+    },
+    "llm": {
+      "provider": "openai",
+      "base_url": "http://inference.internal:8000/v1",
+      "model": "gpt-oss-120b",
+      "temperature": 0.1,
+      "max_tokens": 16000,
+      "api_key": ""
+    },
+    "tools": [
+      {
+        "name": "CRM",
+        "type": "openapi",
+        "url": "http://crm.internal/openapi.json",
+        "description": "Customer accounts, contacts, and revenue",
+        "auth": {
+          "type": "none"
+        }
+      },
+      {
+        "name": "Workspace",
+        "type": "mcp",
+        "url": "http://workspace.internal:8001/mcp",
+        "description": "Read source files and save reports",
+        "transport": "http",
+        "auth": {
+          "type": "none"
+        }
+      }
+    ],
+    "feature_flags": {
+      "enable_todos": true,
+      "reflection": false,
+      "enable_filesystem_tools": true,
+      "max_steps": 50,
+      "shortlisting_tool_threshold": 10
+    },
+    "policies": {
+      "enablePolicies": true,
+      "policies": [
+        {
+          "id": "block_delete",
+          "name": "Protect customer records",
+          "description": "Block requests to delete CRM records.",
+          "policy_type": "intent_guard",
+          "enabled": true,
+          "triggers": [
+            {
+              "type": "keyword",
+              "value": [
+                "delete",
+                "erase"
+              ],
+              "target": "intent",
+              "operator": "or",
+              "case_sensitive": false
+            }
+          ],
+          "response": {
+            "response_type": "natural_language",
+            "content": "Customer record deletion is outside the scope of this agent."
+          },
+          "allow_override": false,
+          "priority": 100
+        },
+        {
+          "id": "approve_updates",
+          "name": "Approve CRM updates",
+          "description": "Require human approval before updating customer accounts.",
+          "policy_type": "tool_approval",
+          "enabled": true,
+          "triggers": [
+            {
+              "type": "always"
+            }
+          ],
+          "required_tools": [
+            "crm_update_account"
+          ],
+          "required_apps": [],
+          "approval_message": "Review the proposed account update before execution.",
+          "show_code_preview": true,
+          "priority": 90
+        },
+        {
+          "id": "weekly_report",
+          "name": "Revenue operations report",
+          "description": "Use the approved process to reconcile contacts and account revenue.",
+          "policy_type": "playbook",
+          "enabled": true,
+          "triggers": [
+            {
+              "type": "natural_language",
+              "value": [
+                "Prepare a revenue operations report"
+              ],
+              "threshold": 0.8
+            }
+          ],
+          "markdown_content": "# Revenue operations report\n1. Read the contact list.\n2. Match contacts against CRM.\n3. Calculate account revenue percentiles.\n4. Save a report with sources.",
+          "steps": [],
+          "priority": 50
+        }
+      ]
+    },
+    "knowledge": {
+      "enabled": false
+    },
+    "homescreen": {
+      "isOn": true,
+      "greeting": "What would you like to automate?",
+      "starters": [
+        "Match contacts.txt against CRM and prepare an account revenue report.",
+        "Find the top accounts by revenue and explain the results.",
+        "Draft an account update for review before applying it."
+      ]
+    },
+    "special_instructions": "Use configured tools and source files. Ask for approval before account updates. Include sources in reports."
+  },
+  "agents": [
+    {
+      "id": "revenue-ops",
+      "name": "Revenue Operations",
+      "description": "Reconcile CRM contacts, analyze account revenue, and prepare reports with human approval for account updates.",
+      "kind": "single",
+      "tools_count": 5,
+      "latest_version": 3,
+      "latest_version_created_at": "2026-10-08T07:00:00Z"
+    },
+    {
+      "id": "knowledge-assistant",
+      "name": "Knowledge Assistant",
+      "description": "Answer questions from company documents with cited sources.",
+      "kind": "single",
+      "tools_count": 3,
+      "latest_version": 2,
+      "latest_version_created_at": "2026-10-07T08:00:00Z"
+    },
+    {
+      "id": "operations-supervisor",
+      "name": "Operations Supervisor",
+      "description": "Coordinate specialized agents across enterprise workflows.",
+      "kind": "supervisor",
+      "tools_count": 2,
+      "latest_version": 1,
+      "latest_version_created_at": "2026-10-06T08:00:00Z"
+    }
+  ],
+  "tools": [
+    {
+      "name": "crm_get_accounts",
+      "app": "CRM",
+      "description": "Retrieve accounts and revenue"
+    },
+    {
+      "name": "crm_get_contacts",
+      "app": "CRM",
+      "description": "Find contacts and account relationships"
+    },
+    {
+      "name": "crm_update_account",
+      "app": "CRM",
+      "description": "Update an account after approval"
+    },
+    {
+      "name": "read_file",
+      "app": "Workspace",
+      "description": "Read files from the agent workspace"
+    },
+    {
+      "name": "write_file",
+      "app": "Workspace",
+      "description": "Save a report to the agent workspace"
+    }
+  ],
+  "events": {
+    "status": {
+      "ok": true,
+      "enabled": true,
+      "scope": "sample workspace",
+      "backends": [
+        "native"
+      ],
+      "worker_backend": "cuga",
+      "concierge_backend": "react",
+      "ap_configured": false,
+      "project_grain": "tenant",
+      "features": {
+        "cron": true,
+        "poll": true,
+        "push": true
+      }
+    },
+    "subscriptions": {
+      "subscriptions": [
+        {
+          "id": "sample-revenue-brief",
+          "target_agent": "revenue-ops",
+          "flow_name": "Weekday revenue brief",
+          "mode": "CRON",
+          "source_type": "schedule",
+          "source_connector": "cron",
+          "cron_expr": "30 8 * * 1-5",
+          "backend": "native",
+          "status": "enabled",
+          "created_at": 1791356400,
+          "prompt": "Prepare a weekday account revenue brief with sources and send it to the operations team.",
+          "deliver_to": [
+            "slack"
+          ]
+        },
+        {
+          "id": "sample-document-review",
+          "target_agent": "knowledge-assistant",
+          "flow_name": "New document review",
+          "mode": "PUSH",
+          "source_type": "event",
+          "source_connector": "box",
+          "event": "new_file",
+          "backend": "native",
+          "status": "enabled",
+          "created_at": 1791360000,
+          "prompt": "Summarize new documents in the shared reference folder and highlight action items.",
+          "deliver_to": [
+            "web"
+          ]
+        }
+      ],
+      "summary": {
+        "total": 2,
+        "by_mode": {
+          "CRON": 1,
+          "POLL": 0,
+          "PUSH": 1
+        },
+        "native_no_ap": 2,
+        "ap_flows": 0,
+        "paused": 0
+      }
+    },
+    "runs": [
+      {
+        "id": "sample-run-brief",
+        "agent": "revenue-ops",
+        "utterance": "Prepare a weekday account revenue brief with sources and send it to the operations team.",
+        "mode": "CRON",
+        "backend": "native",
+        "integration": "cron",
+        "channel": "slack",
+        "started_at": "2026-10-08T08:30:00Z",
+        "status": "ok",
+        "tools": [
+          "crm_get_accounts",
+          "read_file",
+          "write_file"
+        ],
+        "flow_id": "sample-revenue-brief",
+        "flow_name": "Weekday revenue brief",
+        "answer": "Sample revenue brief prepared from CRM account data and workspace source files. Report saved as account-revenue-brief.md. This is illustrative UI data; no workflow was executed."
+      },
+      {
+        "id": "sample-run-document",
+        "agent": "knowledge-assistant",
+        "utterance": "Summarize new documents in the shared reference folder and highlight action items.",
+        "mode": "PUSH",
+        "backend": "native",
+        "integration": "box",
+        "channel": "web",
+        "started_at": "2026-10-08T08:10:00Z",
+        "status": "ok",
+        "tools": [
+          "search_documents"
+        ],
+        "flow_id": "sample-document-review",
+        "flow_name": "New document review",
+        "answer": "Sample document summary with source references and action items. Illustrative UI data only."
+      }
+    ]
+  },
+  "memory": {
+    "entities": [
+      {
+        "id": "sample-memory-1",
+        "type": "guideline",
+        "content": "Match contacts to their CRM accounts before aggregating revenue. Include source references in the report.",
+        "created_at": "2026-10-07T09:00:00Z",
+        "metadata": {
+          "title": "Reconcile accounts before calculating revenue",
+          "category": "Revenue operations",
+          "user_name": "Sample operator",
+          "owner_id": "sample-operator"
+        },
+        "revision": 1,
+        "source_thread_id": "sample-revenue-conversation",
+        "source_available": true,
+        "sources": [
+          {
+            "thread_id": "sample-revenue-conversation",
+            "available": true,
+            "status": "supporting"
+          }
+        ],
+        "related_ids": [],
+        "usage": {
+          "count": 6,
+          "last_used_at": "2026-10-08T08:30:00Z",
+          "recent": [
+            {
+              "thread_id": "sample-report-conversation",
+              "conversation_label": "Prepare an account revenue brief",
+              "used_at": "2026-10-08T08:30:00Z",
+              "revision": 1
+            }
+          ]
+        }
+      },
+      {
+        "id": "sample-memory-2",
+        "type": "user_preferences",
+        "content": "Prefer concise account reports with a source reference for every material figure.",
+        "created_at": "2026-10-06T09:00:00Z",
+        "metadata": {
+          "title": "Reports should include source references",
+          "category": "Reporting preferences",
+          "user_name": "Sample operator",
+          "owner_id": "sample-operator"
+        },
+        "revision": 1,
+        "source_thread_id": "sample-revenue-conversation",
+        "source_available": true,
+        "sources": [
+          {
+            "thread_id": "sample-revenue-conversation",
+            "available": true,
+            "status": "supporting"
+          }
+        ],
+        "related_ids": [],
+        "usage": {
+          "count": 4,
+          "last_used_at": "2026-10-08T08:30:00Z",
+          "recent": [
+            {
+              "thread_id": "sample-report-conversation",
+              "conversation_label": "Prepare an account revenue brief",
+              "used_at": "2026-10-08T08:30:00Z",
+              "revision": 1
+            }
+          ]
+        }
+      },
+      {
+        "id": "sample-memory-3",
+        "type": "trajectory",
+        "content": "Sample conversation memory for matching a contact list against CRM and preparing a revenue report.",
+        "created_at": "2026-10-05T09:00:00Z",
+        "metadata": {
+          "title": "Account revenue analysis",
+          "category": "Previous workflow",
+          "user_name": "Sample operator",
+          "owner_id": "sample-operator"
+        },
+        "revision": 1,
+        "source_thread_id": "sample-revenue-conversation",
+        "source_available": true,
+        "sources": [
+          {
+            "thread_id": "sample-revenue-conversation",
+            "available": true,
+            "status": "supporting"
+          }
+        ],
+        "related_ids": [],
+        "usage": {
+          "count": 2,
+          "last_used_at": "2026-10-08T08:30:00Z",
+          "recent": [
+            {
+              "thread_id": "sample-report-conversation",
+              "conversation_label": "Prepare an account revenue brief",
+              "used_at": "2026-10-08T08:30:00Z",
+              "revision": 1
+            }
+          ]
+        }
+      }
+    ],
+    "settings": {
+      "operator_default": true,
+      "instance_override": true,
+      "instance_enabled": true,
+      "episodic_enabled": true,
+      "user_enabled": true,
+      "effective_enabled": true
+    },
+    "retention": {
+      "retention_available": true,
+      "scheduling_supported": true,
+      "schedule": {
+        "state": "managed_by_evolve",
+        "label": "Schedules are stored and executed by Evolve."
+      },
+      "rules": [
+        {
+          "name": "Review unused guidance",
+          "entity_type": "guideline",
+          "action": "flag",
+          "description": "Flag guidance unused for 90 days for review.",
+          "max_unused_days": 90
+        },
+        {
+          "name": "Remove old conversation memories",
+          "entity_type": "trajectory",
+          "action": "delete",
+          "description": "Remove conversation memory after 180 days.",
+          "max_age_days": 180
+        }
+      ]
+    },
+    "policies": {
+      "items": [
+        {
+          "policy_id": "sample-lifecycle",
+          "name": "Memory lifecycle",
+          "description": "Review unused guidance and remove old conversation memories.",
+          "enabled": true,
+          "policy": {
+            "rules": [
+              {
+                "name": "Review unused guidance",
+                "entity_type": "guideline",
+                "action": "flag",
+                "description": "Flag guidance unused for 90 days for review.",
+                "max_unused_days": 90
+              },
+              {
+                "name": "Remove old conversation memories",
+                "entity_type": "trajectory",
+                "action": "delete",
+                "description": "Remove conversation memory after 180 days.",
+                "max_age_days": 180
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "compliance": {
+      "plugins": [
+        {
+          "name": "sample-pii-regex",
+          "display_name": "PII protection",
+          "description": "Illustrative enabled plugin configuration.",
+          "show_in_ui": true,
+          "hooks": [
+            "memory_pre_write",
+            "llm_pre_call"
+          ],
+          "enabled": true,
+          "healthy": true
+        }
+      ]
+    }
+  }
+}
