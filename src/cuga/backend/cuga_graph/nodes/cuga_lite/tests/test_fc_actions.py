@@ -379,19 +379,6 @@ async def test_a_non_json_result_is_kept_as_the_reply_text():
     assert kept == {"tool_result_c1": '"{1}"'}, "kept as the text the reply carries, never dropped"
 
 
-@pytest.mark.asyncio
-async def test_a_find_tools_listing_reaches_the_reply():
-    listing = "# Found 1 Matching Tool(s)\n**Query:** q\n## 1. `x`"
-
-    async def find_tools(query: str, app_name: str) -> str:
-        return listing
-
-    replies, _, _ = await _run_batch(
-        _tools(find_tools), [_call("find_tools", {"query": "q", "app_name": "a"}, "c1")]
-    )
-    assert replies[0].content == listing
-
-
 # ── equivalence with the direct-call contract ───────────────────────────────
 
 
@@ -489,3 +476,81 @@ async def test_random_calls_get_the_same_replies_as_a_direct_call():
         expected = await _reference(tools, calls)
         replies, _, _ = await _run_batch(tools, calls)
         assert _shape(replies) == expected, f"case {case}: {calls}"
+
+
+# ── provider-safe aliases ────────────────────────────────────────────────────
+
+LONG_NAME = "public_review_platform_get_reviews_with_user_details_and_metadata_v2"  # 68 chars, over the 64 limit
+
+
+@pytest.mark.asyncio
+async def test_an_alias_is_called_by_its_real_name_and_answered_under_the_alias():
+    """What the model was shown is the provider-safe alias; the block, and so the approval
+    scan and VERIFY, call the real tool; the reply keeps the alias the provider knows."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.tool_names import (
+        provider_safe_tool_name,
+        resolve_tool_names,
+    )
+
+    async def long_tool(n: int) -> int:
+        RAN.append(("long", n))
+        return n * 2
+
+    tools = _tools(**{LONG_NAME: long_tool})
+    alias = provider_safe_tool_name(LONG_NAME)
+    assert alias != LONG_NAME and len(alias) == 64
+
+    block, plan = plan_tool_calls(
+        [_call(alias, {"n": 5}, "c1")],
+        [],
+        tools,
+        one_per_step=False,
+        resolve_name=lambda issued: resolve_tool_names(issued, tools),
+    )
+    assert f"await {LONG_NAME}(**" in block and alias not in block, block
+    assert plan[0]["name"] == alias and plan[0]["target"] == LONG_NAME
+
+    context = {**tools, **fc_context_overlay(tools, plan)}
+    ToolCallTracker.start_tracking(enabled=False, timings_only=False)
+    ToolCallTracker.seed_call_budget(0, 0)
+    try:
+        output, new_vars = await CodeExecutor.eval_with_tools_async(
+            code=block,
+            _locals=context,
+            state=CugaLiteState(chat_messages=[]),
+            mode="local",
+            keep_listing_vars=True,
+        )
+    finally:
+        ToolCallTracker.stop_tracking()
+    replies, kept, _ = replies_from_execution(plan, new_vars, output, output_limit=0, timeout=30)
+
+    assert _shape(replies) == [("c1", alias, "success", "10")]
+    assert RAN == [("long", 5)] and kept == {"tool_result_c1": 10}
+
+
+def test_a_name_the_resolver_cannot_place_is_answered_not_raised():
+    def ambiguous(_: str) -> str:
+        raise RuntimeError("Tool name 'x' is ambiguous")
+
+    block, plan = plan_tool_calls(
+        [_call("x_deadbeef", {}, "c1")], [], _tools(add), one_per_step=False, resolve_name=ambiguous
+    )
+    assert block is None
+    assert (
+        plan[0]["reply"]["content"]
+        == "Tool name 'x_deadbeef' could not be resolved: Tool name 'x' is ambiguous"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_find_tools_listing_is_replied_but_not_kept_as_a_variable():
+    listing = "# Found 1 Matching Tool(s)\n**Query:** q\n## 1. `x`"
+
+    async def find_tools(query: str, app_name: str) -> str:
+        return listing
+
+    replies, kept, _ = await _run_batch(
+        _tools(find_tools), [_call("find_tools", {"query": "q", "app_name": "a"}, "c1")]
+    )
+    assert replies[0].content == listing and kept == {}

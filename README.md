@@ -1201,7 +1201,9 @@ result = await agent.invoke("...", execution_mode="codeact")   # per-call overri
 ## Gotchas
 
 - **Tool-approval policies** apply exactly as in CodeAct: the approval check runs on the translated block, so a policy on a tool name pauses the run before the call and the approved call resumes into the sandbox.
-- Bind mode `none` (the default) is upgraded in function-calling mode to advertise exactly the tools the sandbox could call. Past `cuga_lite_bind_tools_max_count` (128) the bind-cap shortlister runs every turn; `[shortlister.bind_cap] strategy = "embedding"` avoids the extra LLM call.
+- Bind mode `none` (the default) is upgraded in function-calling mode to advertise exactly the tools the sandbox could call, plus `find_tools` whenever the prompt advertises it (set `configurable["cuga_lite_bind_tools_include_find_tools"] = False` to opt out). Past `cuga_lite_bind_tools_max_count` (128) the bind-cap shortlister runs every turn; `[shortlister.bind_cap] strategy = "embedding"` avoids the extra LLM call.
+- Tool names providers reject (over 64 characters, or with characters outside `[A-Za-z0-9_-]`) are bound under a provider-safe alias; the model calls the alias, the real tool runs, and the reply keeps the alias.
+- A provider that rejects a malformed native call but returns the attempt (Groq `tool_use_failed`) gets it back as a real call; a retryable rejection is retried once, then the turn ends with a clear error.
 - The bundled CodeAct few-shot demos are not sent in function-calling mode; pass your own through `configurable["mcp_few_shot_examples"]`.
 - Tools run in-process and sequentially, on the local executor even when `e2b_sandbox` is on. One turn's calls are one block, bounded by `sandbox_execution_timeout` as a whole; results computed before a timeout are kept. The pre-execute VERIFY gate applies in both modes; reflection is CodeAct-only for now.
 - Each result is kept as a variable (`tool_result_<call id>`): a large result is truncated in the reply to `execution_output_max_length` but survives whole for later turns, and a later CodeAct turn on the same thread can use it by name.

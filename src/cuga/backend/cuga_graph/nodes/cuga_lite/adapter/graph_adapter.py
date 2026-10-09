@@ -62,7 +62,12 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import 
     normalize_assistant_text,
 )
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
-from cuga.backend.llm.errors import extract_code_from_tool_use_failed
+from cuga.backend.llm.errors import (
+    extract_code_from_tool_use_failed,
+    is_ollama_tool_call_parse_error,
+    is_tool_choice_none_tool_use_failed,
+    parse_tool_use_failed_generation,
+)
 from cuga.config import settings
 
 
@@ -84,6 +89,11 @@ FC_VARIABLES_NOTE = (
     "need more than the preview shows."
 )
 _CODEACT_VARIABLES_NOTE = "You can use these variables directly by their names."
+
+FC_PROVIDER_REJECTED = (
+    "The model provider rejected the request twice in a row ({error}). No tool ran. "
+    'If this persists, use cuga_lite_execution_mode = "codeact" for this model.'
+)
 
 FC_STEP_LIMIT_CALL_REPLY = "Not executed: the step limit was reached before this call could run."
 FC_BUDGET_CALL_REPLY = (
@@ -378,6 +388,13 @@ class AgentGraphAdapter(CoreGraphAdapter):
                         "cuga_lite_bind_tools_mode": "tools",
                         "cuga_lite_bind_tools_tool_names": names,
                     }
+                    # The FC prompt tells the model to call find_tools whenever prepare
+                    # enabled it, so it has to be bound too; the cap merge strips it
+                    # otherwise. An explicit per-invoke choice is respected.
+                    if (self._tools_context_ref or {}).get(
+                        "_lc_bind_tools_find_tools"
+                    ) is not None and "cuga_lite_bind_tools_include_find_tools" not in configurable:
+                        configurable["cuga_lite_bind_tools_include_find_tools"] = True
                     logger.info(
                         "[fc] bind_tools mode was 'none'; advertising the {} executable tool(s)", len(names)
                     )
@@ -494,6 +511,69 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 return str(candidate).strip().lower()
         return _bind_tools_mode_from_settings()
 
+    async def _invoke_fc_model(
+        self, bound: Any, msgs: list, invoke_config: dict
+    ) -> Tuple[Any, Optional[str]]:
+        """``bound.ainvoke`` with the recovery the CodeAct path has, in native terms.
+
+        - a provider that rejects a malformed native call but returns the attempt
+          (Groq ``tool_use_failed`` + ``failed_generation``) gets it back as a real
+          tool call (or an invalid one when the arguments do not parse), so the
+          loop answers it instead of dying; a ``python`` attempt is handed to the
+          mode-violation correction;
+        - a retryable rejection (``tool_choice`` none, Ollama's tool-call parser) is
+          retried once; a second failure ends the turn with a clear error, returned
+          as ``(None, text)``;
+        - anything else propagates, exactly as on the CodeAct path.
+        """
+        clamp_watsonx_completion_for_messages(bound, msgs)
+        try:
+            return await bound.ainvoke(msgs, config=invoke_config), None
+        except Exception as exc:
+            failed = parse_tool_use_failed_generation(exc)
+            name = str(failed.get("name") or "") if isinstance(failed, dict) else ""
+            if name == "python":
+                logger.warning(
+                    "[fc] provider rejected a code attempt sent as a tool call; one corrective turn"
+                )
+                return AIMessage(content=f"```python\n{failed.get('arguments') or ''}\n```"), None
+            if name:
+                args = failed.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        pass
+                logger.warning(
+                    "[fc] provider rejected a malformed tool call; recovering it from failed_generation"
+                )
+                if isinstance(args, dict) or args is None:
+                    return AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": name, "args": args or {}, "id": "call_recovered_1", "type": "tool_call"}
+                        ],
+                    ), None
+                return AIMessage(
+                    content="",
+                    invalid_tool_calls=[
+                        {
+                            "name": name,
+                            "args": str(args),
+                            "id": "call_recovered_1",
+                            "error": "arguments are not a JSON object",
+                            "type": "invalid_tool_call",
+                        }
+                    ],
+                ), None
+            if is_tool_choice_none_tool_use_failed(exc) or is_ollama_tool_call_parse_error(exc):
+                logger.warning("[fc] retrying once after a retryable provider tool-call error: {}", exc)
+                try:
+                    return await bound.ainvoke(msgs, config=invoke_config), None
+                except Exception as again:
+                    return None, str(again)
+            raise
+
     async def execute_call_model_fc(
         self,
         *,
@@ -562,8 +642,15 @@ class AgentGraphAdapter(CoreGraphAdapter):
             # Outbound only as well.
             msgs.append(HumanMessage(content=TOOL_BUDGET_EXHAUSTED_INSTRUCTION))
 
-        clamp_watsonx_completion_for_messages(bound, msgs)
-        response = await bound.ainvoke(msgs, config=invoke_config)
+        response, provider_error = await self._invoke_fc_model(bound, msgs, invoke_config)
+        if response is None:
+            logger.error("[fc] provider rejected the request twice; ending the turn: {}", provider_error)
+            return create_error_command(
+                self,
+                history,
+                AIMessage(content=FC_PROVIDER_REJECTED.format(error=provider_error)),
+                state.step_count,
+            )
 
         tool_calls = list(getattr(response, "tool_calls", None) or [])
         invalid_tool_calls = list(getattr(response, "invalid_tool_calls", None) or [])
@@ -626,8 +713,15 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 resolve_step_discipline(cfg, self._runtime_model_name(cfg))
                 == STEP_DISCIPLINE_ONE_TOOL_PER_STEP
             )
+            tools = self._tools_context
             block, plan = plan_tool_calls(
-                tool_calls, invalid_tool_calls, self._tools_context, one_per_step=one_per_step
+                tool_calls,
+                invalid_tool_calls,
+                tools,
+                one_per_step=one_per_step,
+                # A provider-safe alias is what the model was shown; the block, and so
+                # the approval scan and VERIFY, call the real tool. The reply keeps the alias.
+                resolve_name=lambda issued: resolve_tool_names(issued, tools),
             )
             if block is None:
                 # Every call was answered at planning time (no name, unknown tool, bad

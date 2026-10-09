@@ -516,3 +516,124 @@ async def test_watsonx_reasoning_key_is_read_like_the_codeact_path():
     cmd = await _turn(_adapter(), _Model(response), state, FC)
 
     assert cmd.goto == END and cmd.update["final_answer"] == "The total is 42."
+
+
+# ── find_tools is advertised when prepare enabled it ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_bind_advertises_find_tools_when_prepare_enabled_it():
+    """The FC prompt tells the model to call find_tools whenever prepare enabled it, so
+    the bind upgrade includes it; the cap merge would strip it otherwise. An explicit
+    per-invoke choice wins."""
+    captured = []
+
+    async def fake_resolve(active_model, **kwargs):
+        captured.append(kwargs["configurable"])
+        return "BOUND"
+
+    with patch.object(ga, "resolve_model_with_bind_tools", new=AsyncMock(side_effect=fake_resolve)):
+        with_find = _adapter(
+            tools_context_ref={
+                "_lc_bind_tools_executable_names": ["echo", "find_tools"],
+                "_lc_bind_tools_find_tools": object(),
+            }
+        )
+        await with_find.resolve_bind_tools(_state(), object(), dict(FC), None)
+        await with_find.resolve_bind_tools(
+            _state(), object(), {**FC, "cuga_lite_bind_tools_include_find_tools": False}, None
+        )
+        without = _adapter(tools_context_ref={"_lc_bind_tools_executable_names": ["echo"]})
+        await without.resolve_bind_tools(_state(), object(), dict(FC), None)
+
+    enabled, explicit_off, not_enabled = captured
+    assert enabled["cuga_lite_bind_tools_include_find_tools"] is True
+    assert explicit_off["cuga_lite_bind_tools_include_find_tools"] is False, "an explicit choice is respected"
+    assert "cuga_lite_bind_tools_include_find_tools" not in not_enabled
+
+
+# ── provider-side tool-call failures ─────────────────────────────────────────
+
+
+class _Flaky:
+    """Scripted model: an Exception entry is raised, anything else is returned."""
+
+    def __init__(self, script: list):
+        self.script = list(script)
+        self.seen: List[list] = []
+
+    async def ainvoke(self, messages, config=None, **kwargs):
+        self.seen.append(list(messages))
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+class _GroqToolUseFailed(Exception):
+    def __init__(self, failed_generation: str):
+        super().__init__("Error code: 400 - tool_use_failed")
+        self.body = {"error": {"code": "tool_use_failed", "failed_generation": failed_generation}}
+
+
+_TOOL_CHOICE_NONE = Exception(
+    "Error code: 400 - {'error': {'message': 'Failed to call a function. Tool choice is none.', 'code': 'tool_use_failed'}}"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_malformed_tool_call_is_recovered_as_a_native_call():
+    model = _Flaky([_GroqToolUseFailed('{"name": "add", "arguments": {"a": 1, "b": 2}}')])
+    cmd = await _turn(_adapter(), model, _state(), FC)
+
+    assert cmd.goto == "sandbox" and 'await add(**{"a": 1, "b": 2})' in cmd.update["script"]
+    (entry,) = cmd.update["cuga_lite_metadata"][FC_PENDING_KEY]
+    assert entry["id"] == "call_recovered_1"
+    assert cmd.update["chat_messages"][-1].tool_calls[0]["id"] == "call_recovered_1"
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_call_with_unparsable_arguments_is_answered_as_invalid():
+    model = _Flaky([_GroqToolUseFailed('{"name": "add", "arguments": "{not json"}')])
+    cmd = await _turn(_adapter(), model, _state(), FC)
+
+    assert cmd.goto == "call_model", "nothing executable: answered without the sandbox"
+    reply = cmd.update["chat_messages"][-1]
+    assert (
+        isinstance(reply, ToolMessage)
+        and reply.tool_call_id == "call_recovered_1"
+        and reply.status == "error"
+    )
+    assert reply.content.startswith("The provider could not parse this tool call")
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_code_attempt_gets_the_mode_violation_correction():
+    model = _Flaky([_GroqToolUseFailed('{"name": "python", "arguments": "print(await add(a=1, b=2))"}')])
+    cmd = await _turn(_adapter(), model, _state(), FC)
+
+    assert cmd.goto == "call_model"
+    assert cmd.update["chat_messages"][-1] == HumanMessage(content=FC_MODE_VIOLATION_CORRECTION)
+
+
+@pytest.mark.asyncio
+async def test_a_retryable_provider_rejection_is_retried_once():
+    model = _Flaky([_TOOL_CHOICE_NONE, AIMessage(content="It is 3.")])
+    cmd = await _turn(_adapter(), model, _state(), FC)
+
+    assert cmd.goto == END and cmd.update["final_answer"] == "It is 3." and len(model.seen) == 2
+
+
+@pytest.mark.asyncio
+async def test_two_provider_rejections_end_the_turn_with_a_clear_error():
+    model = _Flaky([_TOOL_CHOICE_NONE, _TOOL_CHOICE_NONE])
+    cmd = await _turn(_adapter(), model, _state(), FC)
+
+    assert cmd.goto == END and len(model.seen) == 2
+    assert cmd.update["error"].startswith("The model provider rejected the request twice in a row")
+
+
+@pytest.mark.asyncio
+async def test_other_provider_errors_still_propagate():
+    with pytest.raises(RuntimeError, match="boom"):
+        await _turn(_adapter(), _Flaky([RuntimeError("boom")]), _state(), FC)

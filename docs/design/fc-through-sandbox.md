@@ -42,11 +42,21 @@ variables, no observed shapes, no todos). One pipeline closes them at once.
 - Approval follows CodeAct's check (text match on the block), including its
   fail-open on infrastructure errors; the former refuse-to-start guard is gone.
 
+## Also in this round (Vakra readiness)
+
+- Provider-safe aliases (#882, merged into this branch): the translator resolves an
+  alias to the real name before planning, so the block, approval and VERIFY see the
+  real tool while the reply keeps the alias the provider knows. 6 of 10 Vakra test
+  domains have a tool name over 64 characters.
+- `find_tools` is bound in function-calling mode whenever prepare enabled it, since the
+  FC prompt advertises it; its listing is replied, never kept as a variable.
+- The FC model call has the recovery CodeAct has, in native terms: a Groq
+  `failed_generation` becomes a real call, a retryable rejection is retried once, a
+  second failure ends the turn with a clear error, anything else propagates.
+
 ## Follow-ups
 
-1. Bind `find_tools` in function-calling mode (it is stripped unless
-   `cuga_lite_bind_tools_include_find_tools` is set, while the prompt advertises it).
-2. A `run_python` tool backed by the same sandbox for data-heavy steps.
-3. Per-thread dynamic binding: remember the shortlist and discovered tools, query on
+1. A `run_python` tool backed by the same sandbox for data-heavy steps.
+2. Per-thread dynamic binding: remember the shortlist and discovered tools, query on
    the current task rather than the first message.
-4. Function-calling wording for VERIFY, reflection and the empty-reply nudge.
+3. Function-calling wording for VERIFY, reflection and the empty-reply nudge.

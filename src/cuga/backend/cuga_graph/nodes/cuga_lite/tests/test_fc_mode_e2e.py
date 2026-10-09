@@ -423,3 +423,61 @@ async def test_a_tool_whose_name_is_not_an_identifier_round_trips():
     assert CALLS == [("my-tool", "hi")]
     reply = [m for m in result["chat_messages"] if isinstance(m, ToolMessage)][0]
     assert (reply.tool_call_id, reply.name, reply.content) == ("c1", "my-tool", "ok:hi")
+
+
+@pytest.mark.asyncio
+async def test_a_tool_name_providers_reject_is_bound_under_an_alias_and_still_runs():
+    """A registry name over 64 characters is bound under a provider-safe alias; the model calls
+    the alias, the real tool runs, and the reply carries the alias the provider knows."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.tool_names import provider_safe_tool_name
+
+    long_name = "public_review_platform_get_reviews_with_user_details_and_metadata_v2"
+    assert len(long_name) > 64
+    alias = provider_safe_tool_name(long_name)
+
+    async def reviews(limit: int) -> str:
+        """Reviews."""
+        CALLS.append(("reviews", limit))
+        return f"{limit} reviews"
+
+    tool = StructuredTool.from_function(coroutine=reviews, name=long_name, description="Reviews.")
+
+    def first(messages):
+        assert alias in model.bound_tool_names and long_name not in model.bound_tool_names
+        return AIMessage(content="", tool_calls=[_tc(alias, {"limit": 3}, "c1")])
+
+    model = _ScriptedModel([first, AIMessage(content="Three reviews.")])
+
+    result = await _run(model, _config("fc-alias", cuga_lite_execution_mode="function_calling"), tool)
+
+    assert CALLS == [("reviews", 3)] and result["final_answer"] == "Three reviews."
+    reply = [m for m in result["chat_messages"] if isinstance(m, ToolMessage)][0]
+    assert (reply.tool_call_id, reply.name, reply.content) == ("c1", alias, "3 reviews")
+
+
+@pytest.mark.asyncio
+async def test_find_tools_is_bound_in_fc_mode_when_prepare_enabled_it():
+    """Above the shortlisting threshold the FC prompt advertises find_tools, so it is
+    bound; calling it works and its listing is not kept as a variable."""
+
+    def first(messages):
+        assert "find_tools" in model.bound_tool_names, model.bound_tool_names
+        return AIMessage(
+            content="", tool_calls=[_tc("find_tools", {"query": "echo", "app_name": "test_app"}, "c1")]
+        )
+
+    def second(messages):
+        reply = _last_tool_message(messages)
+        assert reply.tool_call_id == "c1" and reply.content.strip()
+        return AIMessage(content="Looked it up.")
+
+    model = _ScriptedModel([first, second])
+    config = _config("fc-find", cuga_lite_execution_mode="function_calling", shortlisting_tool_threshold=0)
+
+    result = await _run(model, config, _echo_tool())
+
+    assert result["final_answer"] == "Looked it up."
+    assert not any(
+        isinstance(v.get("value"), str) and "Matching Tool(s)" in v["value"]
+        for v in result["variables_storage"].values()
+    ), "a find_tools listing is replied, never kept as a variable"

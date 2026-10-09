@@ -13,9 +13,12 @@ history, never sent to a provider.
 
 What keeps the tool side identical to a direct call:
 
-- a tool whose name is a Python identifier is called by that name, so the
-  approval text scan and VERIFY see the real tool name; any other name goes
-  through the injected ``_fc_tools`` lookup, budget-counted like the rest;
+- a provider-safe alias (``bind_tools/tool_names.py``) is resolved to the real
+  tool name before anything else, so the block, the approval text scan and
+  VERIFY see the real name while the reply keeps the alias the provider knows;
+- a tool whose name is a Python identifier is called by that name; any other
+  name goes through the injected ``_fc_tools`` lookup, budget-counted like the
+  rest;
 - arguments are always passed as ``**{...}`` so keys like ``from`` work, and
   only JSON values are encoded — providers deliver JSON, so nothing is lost;
 - each call sits in its own ``try``: one failing call never aborts its siblings,
@@ -33,7 +36,7 @@ import json
 import keyword
 import math
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from langchain_core.messages import ToolMessage
 
@@ -193,14 +196,17 @@ def plan_tool_calls(
     tools_context: Dict[str, Any],
     *,
     one_per_step: bool,
+    resolve_name: Optional[Callable[[str], str]] = None,
 ) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     """Translate one turn's calls into ``(block, plan)``.
 
     ``plan`` has one JSON-serialisable entry per issued id, in order:
-    ``{"id", "name", "var", "lookup", "reply"}``. ``var`` names the block
-    variable that will hold the call's result; ``reply`` is set instead when
-    the call was answered here and emits no code. ``block`` is ``None`` when
-    nothing is left to execute.
+    ``{"id", "name", "target", "var", "lookup", "reply"}``. ``name`` is the
+    name as the model issued it (an alias stays an alias, so the reply matches
+    the provider's tool list); ``target`` is the real tool the block calls, as
+    ``resolve_name`` maps it. ``var`` names the block variable that will hold
+    the call's result; ``reply`` is set instead when the call was answered here
+    and emits no code. ``block`` is ``None`` when nothing is left to execute.
     """
     plan: List[Dict[str, Any]] = []
     lines: List[str] = []
@@ -209,7 +215,14 @@ def plan_tool_calls(
     for index, call in enumerate(calls):
         call_id, name, raw_args = _tool_call_parts(call)
         call_id = call_id or f"call_{index}"
-        entry: Dict[str, Any] = {"id": call_id, "name": name, "var": None, "lookup": False, "reply": None}
+        entry: Dict[str, Any] = {
+            "id": call_id,
+            "name": name,
+            "target": name,
+            "var": None,
+            "lookup": False,
+            "reply": None,
+        }
         plan.append(entry)
 
         if not name:
@@ -220,7 +233,15 @@ def plan_tool_calls(
             # the model must read before it decides the next one.
             entry["reply"] = _pre_decided(DEFERRED_CALL_MESSAGE)
             continue
-        fn = tools_context.get(name)
+        target = name
+        if resolve_name is not None:
+            try:
+                target = resolve_name(name) or name
+            except Exception as exc:  # an ambiguous alias: answer it, never crash the turn
+                entry["reply"] = _pre_decided(f"Tool name {name!r} could not be resolved: {exc}")
+                continue
+        entry["target"] = target
+        fn = tools_context.get(target)
         if fn is None or not callable(fn):
             known = ", ".join(sorted(k for k in tools_context if not k.startswith("_")))
             entry["reply"] = _pre_decided(
@@ -241,14 +262,14 @@ def plan_tool_calls(
 
         var = _result_var(call_id, taken)
         entry["var"] = var
-        if name.isidentifier() and not keyword.iskeyword(name):
-            target = name
+        if target.isidentifier() and not keyword.iskeyword(target):
+            callee = target
         else:
             entry["lookup"] = True
-            target = f"{FC_TOOLS_KEY}[{json.dumps(name, ensure_ascii=False)}]"
+            callee = f"{FC_TOOLS_KEY}[{json.dumps(target, ensure_ascii=False)}]"
         lines += [
             "try:",
-            f"    {var} = {FC_KEEP_KEY}(await {target}(**{args_src}))",
+            f"    {var} = {FC_KEEP_KEY}(await {callee}(**{args_src}))",
             "except Exception as _fc_e:",
             f"    {var} = {_ERROR_MARKER_SRC}",
         ]
@@ -260,6 +281,7 @@ def plan_tool_calls(
             {
                 "id": call_id or f"invalid_{index}",
                 "name": name,
+                "target": name,
                 "var": None,
                 "lookup": False,
                 "reply": _pre_decided(
@@ -300,9 +322,9 @@ def fc_context_overlay(tools_context: Dict[str, Any], plan: List[Dict[str, Any]]
 
     overlay: Dict[str, Any] = {FC_KEEP_KEY: fc_keep, FC_BUDGET_EXC_KEY: ToolCallBudgetExceeded}
     lookup = {
-        e["name"]: counted_tool_call(tools_context[e["name"]])
+        e["target"]: counted_tool_call(tools_context[e["target"]])
         for e in plan
-        if e.get("lookup") and e.get("name") in tools_context
+        if e.get("lookup") and e.get("target") in tools_context
     }
     if lookup:
         overlay[FC_TOOLS_KEY] = lookup
@@ -339,8 +361,11 @@ def replies_from_execution(
     """One ``ToolMessage`` per issued id, read back from the block's variables.
 
     Returns ``(replies, variables_to_keep, variables_to_drop)``: error markers
-    are formatted into their reply and dropped from the variables.
+    are formatted into their reply and dropped from the variables, and so is a
+    find_tools listing — the reply carries it, CodeAct never keeps it either.
     """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import is_find_tools_listing_markdown
+
     budget = _BatchOutputBudget(output_limit)
     keep = dict(new_vars)
     drop: List[str] = []
@@ -360,6 +385,9 @@ def replies_from_execution(
                 drop.append(var)
                 replies.append(_error_message(_format_error(name, value), call_id=call_id, name=name))
             else:
+                if is_find_tools_listing_markdown(value):
+                    keep.pop(var, None)
+                    drop.append(var)
                 replies.append(
                     ToolMessage(content=budget.take(_stringify(value)), tool_call_id=call_id, name=name)
                 )
