@@ -358,3 +358,21 @@ class TestCreateLlmInstanceProviderParams:
                 )
 
         assert "top_p" not in mock_openai.call_args.kwargs
+
+    def test_requesty_omits_default_top_p_when_unset(self, monkeypatch):
+        monkeypatch.setenv("REQUESTY_API_KEY", _TEST_CRED)
+        with _openai_ctor() as mock_factory:
+            mock_openai = mock_factory.return_value
+            mock_openai.return_value = object()
+            with patch("cuga.backend.llm.models.resolve_secret", return_value=None):
+                mgr = LLMManager()
+                mgr._create_llm_instance(
+                    {
+                        "platform": "requesty",
+                        "model": "anthropic/claude-sonnet-4-5",
+                        "max_tokens": 128,
+                        "temperature": 0.1,
+                    }
+                )
+
+        assert "top_p" not in mock_openai.call_args.kwargs

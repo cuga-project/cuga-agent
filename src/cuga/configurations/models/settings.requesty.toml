@@ -1,0 +1,35 @@
+[agent.planner.model]
+platform = "requesty"
+model_name = "openai/gpt-4.1"
+temperature = 0.1
+max_tokens = 5000
+
+[agent.chat.model]
+platform = "requesty"
+model_name = "openai/gpt-4.1"
+temperature = 0.1
+max_tokens = 5000
+
+[agent.final_answer.model]
+platform = "requesty"
+model_name = "openai/gpt-4.1"
+temperature = 0.1
+max_tokens = 15000
+
+[agent.code.model]
+platform = "requesty"
+model_name = "openai/gpt-4.1"
+temperature = 0.1
+max_tokens = 3000
+
+[agent.qa.model]
+platform = "requesty"
+model_name = "openai/gpt-4.1"
+temperature = 0.1
+max_tokens = 4000
+
+[agent.action.model]
+platform = "requesty"
+model_name = "openai/gpt-4.1"
+temperature = 0.1
+max_tokens = 400
