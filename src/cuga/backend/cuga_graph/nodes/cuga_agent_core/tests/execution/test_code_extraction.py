@@ -47,6 +47,26 @@ def test_model_response_empty_content_uses_reasoning() -> None:
     assert extract_code_from_model_response(None, "```python\nx = compute()\n```") == "x = compute()"
 
 
+def test_reasoning_drafts_do_not_concatenate() -> None:
+    """#626: reasoning fences are a blind plan — only the first can run.
+
+    Shape taken from AppWorld trajectories: fence 1 discovers tools, the rest
+    call what it has not bound yet.
+    """
+    reasoning = (
+        "discover first\n```python\nprint(await find_tools('spotify'))\n```\n"
+        "then list\n```python\nprint(await spotify_list_playlists())\n```\n"
+        "then rate\n```python\nprint(await spotify_rate(5))\n```"
+    )
+    assert extract_code_from_model_response("prose only", reasoning) == "print(await find_tools('spotify'))"
+
+
+def test_content_blocks_still_combine() -> None:
+    """Only the reasoning fallback de-drafts; content stays a single program."""
+    content = "```python\na = 1\n```\ntext\n```python\nprint(a)\n```"
+    assert extract_code_from_model_response(content, None) == "a = 1\n\nprint(a)"
+
+
 def test_model_response_no_code_anywhere_returns_empty() -> None:
     assert extract_code_from_model_response("prose only", None) == ""
     assert extract_code_from_model_response("prose only", "also prose") == ""
