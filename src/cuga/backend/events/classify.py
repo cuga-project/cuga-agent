@@ -208,10 +208,18 @@ def cadence_of(text: str) -> dict:
         return {"interval_seconds": _num(m.group(1)) * _UNIT_SECS.get(m.group(2).lower(), 60)}
     at = _AT_TIME.search(text or "")
     if at:
-        hour = int(at.group(1)) % 12
-        if (at.group(3) or "").lower() == "pm":
-            hour += 12
+        hour = int(at.group(1))
         minute = int(at.group(2) or 0)
+        ampm = (at.group(3) or "").lower()
+        if ampm:  # 12-hour clock: 12am → 0, 12pm → 12, 9pm → 21
+            valid = 1 <= hour <= 12
+            hour = hour % 12 + (12 if ampm == "pm" else 0)
+        else:
+            valid = hour <= 23
+        # an impossible time ("at 25:00", "at 13pm", "at 9:75") gets no cadence at all, rather
+        # than falling back to the unit-only interval and running at a time nobody asked for
+        if not valid or minute > 59:
+            return {}
         dow = "1-5" if _WEEKDAY.search(text or "") else "*"
         return {"cron": f"{minute} {hour} * * {dow}"}
     if m:
