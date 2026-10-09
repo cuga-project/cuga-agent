@@ -1178,7 +1178,7 @@ See `docs/design/pluggable-shortlister.md` for the full design.
 
 ## What it is
 
-By default CUGA Lite works in **CodeAct**: the model writes a Python block and the sandbox runs it. `cuga_lite_execution_mode = "function_calling"` switches to native tool calls: the model emits `tool_calls`, a `tool_exec` node runs them under the same budgets, tracker and timeout as the sandbox and replies with `ToolMessage`s, and the model reads the results before it calls again or answers. Tools are advertised through `bind_tools`; a short dedicated prompt replaces the CodeAct prompt.
+By default CUGA Lite works in **CodeAct**: the model writes a Python block and the sandbox runs it. `cuga_lite_execution_mode = "function_calling"` switches to native tool calls: the model emits `tool_calls`, CUGA translates them into a short internal block that the same sandbox runs (same approval check, VERIFY gate, budgets, tracker, timeout and variables), and replies with one `ToolMessage` per call id, so the model reads the results before it calls again or answers. The block is never shown to the model or persisted; its transcript stays native. Tools are advertised through `bind_tools`; a short dedicated prompt replaces the CodeAct prompt.
 
 **Step discipline** (`cuga_lite_step_discipline = "one_tool_per_step"`) works in both modes: only the first tool call of a step is attempted — success or error, that is the result the model reads before it decides the next call. CodeAct keeps the block's variables (including that first result); function-calling answers the extra calls with a "deferred" reply.
 
@@ -1200,12 +1200,13 @@ result = await agent.invoke("...", execution_mode="codeact")   # per-call overri
 
 ## Gotchas
 
-- **Tool-approval policies**: function-calling mode has no approval interrupt yet. If an enabled tool-approval policy exists — or policy storage cannot be checked — the run stops with a clear error before any tool runs (fail closed); use `codeact` for that agent or disable the policy.
+- **Tool-approval policies** apply exactly as in CodeAct: the approval check runs on the translated block, so a policy on a tool name pauses the run before the call and the approved call resumes into the sandbox.
 - Bind mode `none` (the default) is upgraded in function-calling mode to advertise exactly the tools the sandbox could call. Past `cuga_lite_bind_tools_max_count` (128) the bind-cap shortlister runs every turn; `[shortlister.bind_cap] strategy = "embedding"` avoids the extra LLM call.
 - The bundled CodeAct few-shot demos are not sent in function-calling mode; pass your own through `configurable["mcp_few_shot_examples"]`.
-- Tools run in-process and sequentially. Each call is bounded by `sandbox_execution_timeout` (the timeout is per call, so a turn with N calls can take up to N × that). The pre-execute VERIFY gate, reflection and the E2B / OpenSandbox executors are CodeAct-only; step discipline caps local-executor blocks only.
+- Tools run in-process and sequentially, on the local executor even when `e2b_sandbox` is on. One turn's calls are one block, bounded by `sandbox_execution_timeout` as a whole; results computed before a timeout are kept. The pre-execute VERIFY gate applies in both modes; reflection is CodeAct-only for now.
+- Each result is kept as a variable (`tool_result_<call id>`): a large result is truncated in the reply to `execution_output_max_length` but survives whole for later turns, and a later CodeAct turn on the same thread can use it by name.
 - Function-calling needs tools bound natively: if `bind_tools` fails or the model does not support it, or the agent has no executable tools, the run stops with a clear error (fail closed) instead of silently answering without tools. A static prompt is ignored in this mode.
-- A thread can switch modes between turns: results from function-calling turns are shown to a later CodeAct turn as text.
+- A thread can switch modes between turns: results from function-calling turns are shown to a later CodeAct turn as text and as variables.
 
 </details>
 
