@@ -52,7 +52,7 @@ class _TestAdapter(CoreGraphAdapter):
         self.bind_tools_calls += 1
         return model
 
-    async def classify_auto_continue(self, state, model, content, reasoning):
+    async def classify_auto_continue(self, state, model, content, reasoning, *, autonomous: bool = False):
         self.auto_continue_calls += 1
         return True  # would loop forever if consulted while exhausted
 

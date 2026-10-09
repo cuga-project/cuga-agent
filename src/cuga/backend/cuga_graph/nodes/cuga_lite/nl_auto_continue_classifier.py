@@ -47,6 +47,182 @@ Examples (visible content → decision):
 - "Which account should I use?" → {"auto_continue": false} — clarifying question.
 - "Done. All 15 artists are followed on Spotify." → {"auto_continue": false} — completed result with no next agent phase."""
 
+# ── Autonomous mode (#445): structured verdict, policy in code ───────────────
+#
+# ``CLASSIFIER_SYSTEM_PROMPT`` above is the interactive prompt, unchanged from
+# before #445, and it is what every interactive call still sends. In autonomous
+# mode (no user present) the classifier is not asked for a verdict at all: it
+# answers five factual yes/no questions about the turn, and the continue-vs-
+# finalize policy is ``decide_autonomous`` below. The mode logic is therefore
+# unit-testable, and a new failure class becomes a new field or example rather
+# than another prose rule.
+#
+# Why not an addendum of extra rules on the shared prompt (the earlier shape of
+# #732): on the 343-case gpt-oss-120b regression set a "deferral → continue"
+# rule fixed the 12 #445 deferral cases but regressed 77 completed final
+# answers ("… let me know if you need anything else!") and 8 hard stops. The
+# structured form below, fed the harness evidence in ``build_classifier_user_
+# block``, held every final answer and 11/12 hard stops on the 59-case decision
+# subset while fixing 11/12 deferrals (PR #732 comments, 3 runs each).
+
+AUTONOMOUS_CLASSIFIER_SYSTEM_PROMPT = """You classify a single turn from an API automation coding agent.
+
+The agent must normally respond with a fenced Python script that calls tools. Sometimes it replies with only natural language (status, narration, a short plan, a question, or a result) and no code. The harness must decide whether to send the agent a synthetic "continue" or to treat the text as the agent's final answer.
+
+You receive one transcript that concatenates:
+1) Harness evidence — facts the harness knows about this run (task, session mode, what has executed)
+2) Assistant content — user-visible reply (may be empty)
+3) Reasoning — internal chain-of-thought when the platform provides it (may be empty)
+
+Read the FULL transcript end-to-end. When the visible content is empty or a vague one-liner, the reasoning IS the turn: answer the questions from it.
+
+Do NOT decide continue-vs-finalize yourself. Answer five factual yes/no questions about the turn and return ONLY JSON, no markdown, no prose:
+{"outcome_achieved": bool, "defers_to_user": bool, "agent_can_proceed": bool, "announces_pending_action": bool, "hard_stop": bool}
+
+Definitions:
+- outcome_achieved: the turn reports the task's requested END result as done, judged against the task in the harness evidence. A completed sub-step, phase, search, or discovery is NOT the end result.
+- defers_to_user: continuing depends on the user answering, choosing, confirming, or supplying something (a clarifying question, a request for missing input, "would you like me to…", "shall I…", "let me know how to proceed"). A courtesy closer after a completed result ("let me know if you need anything else!") is NOT deferral.
+- agent_can_proceed: the agent could make further progress on the task by itself. True when the question it asks is one it could answer on its own — relax a threshold slightly, try different search terms or another page, choose the best available alternative, use another option already on file. False ONLY when the only way forward needs something the agent cannot obtain (card details, credentials, a file or record that does not exist) or the turn states that every option has already been tried and exhausted.
+- announces_pending_action: the turn is interim — it announces or implies agent-owned work that has not happened yet in this turn. Includes an explicit plan ("I'll search…", "we need to discover…", "next I will…", "I will transfer you to an agent"), a completed sub-step followed by the next phase, and reasoning that plans a tool call while the visible content is empty or a bare status line.
+- hard_stop: the agent states it cannot / is unable to continue (tools unavailable, environment blocked, fatal error), or the text is only a quoted or drafted message addressed to a third party (e.g. the body of an email the agent already sent).
+
+Examples (visible content → JSON):
+- "We need to search student_loan app." → {"outcome_achieved": false, "defers_to_user": false, "agent_can_proceed": true, "announces_pending_action": true, "hard_stop": false}
+- (visible content empty) Reasoning: "We have the tool amazon_show_orders_orders_get. We need the last 2 orders, so we will call it with page_limit=2." → {"outcome_achieved": false, "defers_to_user": false, "agent_can_proceed": true, "announces_pending_action": true, "hard_stop": false}
+- "The export is complete: 12 saved tracks. I’ll mark that phase complete and proceed to account setup discovery." → {"outcome_achieved": false, "defers_to_user": false, "agent_can_proceed": true, "announces_pending_action": true, "hard_stop": false}
+- "Done. All 15 artists are followed on Spotify. Let me know if you need anything else!" → {"outcome_achieved": true, "defers_to_user": false, "agent_can_proceed": false, "announces_pending_action": false, "hard_stop": false}
+- "Your order has been placed (Order ID 3146). Let me know if you’d like the receipt saved to a file!" → {"outcome_achieved": true, "defers_to_user": false, "agent_can_proceed": false, "announces_pending_action": false, "hard_stop": false}
+- "No microwaves were found that fit your countertop and have a rating ≥ 4.2. Would you like me to relax the rating requirement or search with different keywords?" → {"outcome_achieved": false, "defers_to_user": true, "agent_can_proceed": true, "announces_pending_action": false, "hard_stop": false} — the agent can relax the threshold or change keywords itself.
+- "After searching 40 threads from your manager, none contain a meeting schedule. Would you like me to check other senders or attachments?" → {"outcome_achieved": false, "defers_to_user": true, "agent_can_proceed": true, "announces_pending_action": false, "hard_stop": false} — more searching is possible.
+- "A new, valid payment card is required to proceed. Please provide the card number, expiry and CVV." → {"outcome_achieved": false, "defers_to_user": true, "agent_can_proceed": false, "announces_pending_action": false, "hard_stop": false} — only the user has card details.
+- "All available threads from your manager have been exhausted (the last page was empty). None contain a meeting schedule, so no alarms can be set." → {"outcome_achieved": false, "defers_to_user": false, "agent_can_proceed": false, "announces_pending_action": false, "hard_stop": false} — search space exhausted.
+- "I’m unable to continue because the connected application tool functions are not available in the current execution environment." → {"outcome_achieved": false, "defers_to_user": false, "agent_can_proceed": false, "announces_pending_action": false, "hard_stop": true}
+- "Ok I will fetch the information, but first I require your ID" → {"outcome_achieved": false, "defers_to_user": true, "agent_can_proceed": false, "announces_pending_action": true, "hard_stop": false}
+- "…Let me know if it looks good. I can place the order once you confirm. Best, Stephen Mccoy" (the body of an email the agent sent) → {"outcome_achieved": true, "defers_to_user": false, "agent_can_proceed": false, "announces_pending_action": false, "hard_stop": true}"""
+
+AUTONOMOUS_FIELDS = (
+    "outcome_achieved",
+    "defers_to_user",
+    "agent_can_proceed",
+    "announces_pending_action",
+    "hard_stop",
+)
+
+_USER_BLOCK_PREAMBLE = "Classify this assistant output (content + reasoning below).\n\n"
+_USER_BLOCK_SUFFIX = 'Respond with JSON only: {"auto_continue": true} or {"auto_continue": false}'
+_USER_BLOCK_AUTONOMOUS_SUFFIX = (
+    'Respond with JSON only: {"outcome_achieved": bool, "defers_to_user": bool, '
+    '"agent_can_proceed": bool, "announces_pending_action": bool, "hard_stop": bool}'
+)
+
+
+@dataclass(frozen=True)
+class BlockedClaimEvidence:
+    """What the harness knows about this turn.
+
+    ``tools_available`` / ``code_executed`` / ``retry_used`` drive the
+    unverified-blocker override (issue #610): at least one callable tool is
+    bound; any sandbox execution has already run this task; the one-shot
+    corrective retry has been spent.
+
+    ``task`` and ``nl_streak`` (#445) are rendered into the autonomous-mode
+    user block so the classifier judges "outcome achieved" against the actual
+    task and knows how many natural-language turns it has already continued.
+    """
+
+    tools_available: bool
+    code_executed: bool
+    retry_used: bool
+    task: str = ""
+    nl_streak: int = 0
+
+
+def build_harness_evidence_block(evidence: Optional[BlockedClaimEvidence]) -> str:
+    """The autonomous-mode evidence header. Unknown facts are said to be unknown
+    rather than guessed — the classifier was tuned with that wording."""
+    ev = evidence or BlockedClaimEvidence(tools_available=False, code_executed=False, retry_used=False)
+    task = (ev.task or "").strip()
+    streak = int(ev.nl_streak or 0)
+    # The streak resets on every code turn, so a non-zero streak means no code
+    # has run since the previous natural-language turn.
+    if streak > 0:
+        since_last_nl = "no"
+    elif ev.code_executed:
+        since_last_nl = "yes"
+    else:
+        since_last_nl = "no"
+    return "\n".join(
+        [
+            "## Harness evidence",
+            f"- Task given to the agent: {json.dumps(task) if task else 'unknown'}",
+            "- Session mode: autonomous — no user is present to answer",
+            f"- Code has executed earlier in this run: {'yes' if ev.code_executed else 'no'}",
+            f"- Code executed since the previous natural-language turn: {since_last_nl}",
+            f"- Natural-language turns already auto-continued in a row without code: {streak}",
+        ]
+    )
+
+
+def build_classifier_system_prompt(autonomous: bool) -> str:
+    """Interactive: the pre-#445 prompt verbatim. Autonomous: the structured-verdict prompt."""
+    return AUTONOMOUS_CLASSIFIER_SYSTEM_PROMPT if autonomous else CLASSIFIER_SYSTEM_PROMPT
+
+
+def build_classifier_user_block(
+    combined: str, autonomous: bool, evidence: Optional[BlockedClaimEvidence] = None
+) -> str:
+    """Interactive: the pre-#445 user message verbatim. Autonomous: evidence header,
+    transcript, and the five-field answer format."""
+    if not autonomous:
+        return f"{_USER_BLOCK_PREAMBLE}{combined}\n\n{_USER_BLOCK_SUFFIX}"
+    return f"{_USER_BLOCK_PREAMBLE}{build_harness_evidence_block(evidence)}\n\n{combined}\n\n{_USER_BLOCK_AUTONOMOUS_SUFFIX}"
+
+
+def parse_autonomous_verdict(raw: str) -> Optional[dict]:
+    """The five booleans, or None when any is missing or not a boolean."""
+    t = (raw or "").strip()
+    if t.startswith("```"):
+        t = t.strip("`").strip()
+        if t.lower().startswith("json"):
+            t = t[4:]
+    start, end = t.find("{"), t.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        obj = json.loads(t[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    out: dict = {}
+    for k in AUTONOMOUS_FIELDS:
+        v = obj.get(k)
+        if isinstance(v, str) and v.lower() in ("true", "false"):
+            v = v.lower() == "true"
+        if not isinstance(v, bool):
+            return None
+        out[k] = v
+    return out
+
+
+def decide_autonomous(fields: dict) -> bool:
+    """Continue-vs-finalize policy for autonomous runs, from the five answers.
+
+    A hard stop or an achieved outcome always finalizes. Otherwise the turn
+    continues when it defers a question the agent could answer itself, or when
+    it announces its own next action and is not blocked on the absent user. A
+    deferral the agent cannot resolve ("please provide the card details, then I
+    will add it") therefore finalizes even though it also announces an action —
+    on the decision subset that rule alone took hard stops from 9/12 to 11/12
+    with no other change.
+    """
+    if fields["hard_stop"] or fields["outcome_achieved"]:
+        return False
+    if fields["defers_to_user"]:
+        return fields["agent_can_proceed"]
+    return fields["announces_pending_action"]
+
+
 _VISIBLE_MAX = 12000
 _REASONING_MAX = 8000
 _COMBINED_MAX = 20000
@@ -139,22 +315,6 @@ BLOCKED_CLAIM_CORRECTION = (
     "relevant tools and continue the task. If a call genuinely fails, report "
     "the observed error instead."
 )
-
-
-@dataclass(frozen=True)
-class BlockedClaimEvidence:
-    """What the harness knows about this turn, for the unverified-blocker override.
-
-    ``tools_available``: at least one callable tool is bound for this turn.
-    ``code_executed``: any sandbox execution has already run this task (a refusal
-    after real attempts may be legitimate — the override only targets turn-1
-    claims with nothing behind them).
-    ``retry_used``: the one-shot corrective retry has already been spent.
-    """
-
-    tools_available: bool
-    code_executed: bool
-    retry_used: bool
 
 
 @dataclass(frozen=True)
@@ -271,11 +431,18 @@ async def classify_nl_auto_continue_decision(
     reasoning_excerpt: Optional[Any],
     *,
     evidence: Optional[BlockedClaimEvidence] = None,
+    autonomous: bool = False,
 ) -> AutoContinueDecision:
     """Full decision: whether to auto-continue, and whether the blocked-claim override fired.
 
     ``evidence`` is what the harness knows about the turn; without it the
     unverified-blocker override never fires and behavior is unchanged.
+
+    ``autonomous`` (#445) tells the classifier whether a real user is present.
+    Interactive (the default) sends exactly the pre-#445 prompt and user
+    message and reads a bool verdict. Autonomous sends
+    ``AUTONOMOUS_CLASSIFIER_SYSTEM_PROMPT`` plus the harness evidence, reads
+    five factual answers, and applies ``decide_autonomous``.
     """
     if not getattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True):
         return AutoContinueDecision(auto_continue=False)
@@ -287,28 +454,36 @@ async def classify_nl_auto_continue_decision(
     combined = build_combined_content_and_reasoning(visible, reasoning)
     if not combined.strip():
         return AutoContinueDecision(auto_continue=False)
-    user_block = (
-        "Classify this assistant output (content + reasoning below).\n\n"
-        f"{combined}\n\n"
-        'Respond with JSON only: {"auto_continue": true} or {"auto_continue": false}'
-    )
+    user_block = build_classifier_user_block(combined, autonomous, evidence)
     finalize = AutoContinueDecision(auto_continue=False)
     try:
         from cuga.backend.cuga_graph.utils.langfuse_tracing import get_langfuse_invoke_config
 
         resp = await llm.ainvoke(
             [
-                {"role": "system", "content": CLASSIFIER_SYSTEM_PROMPT},
+                {"role": "system", "content": build_classifier_system_prompt(autonomous)},
                 {"role": "user", "content": user_block},
             ],
             config=get_langfuse_invoke_config(),
         )
-        parsed = parse_auto_continue_json(getattr(resp, "content", "") or "")
-        if parsed is None:
-            logger.warning("NL auto-continue classifier returned unparsable output; treating as finalize")
-            return finalize
-        if parsed:
-            return AutoContinueDecision(auto_continue=True)
+        raw = getattr(resp, "content", "") or ""
+        if autonomous:
+            fields = parse_autonomous_verdict(raw)
+            if fields is None:
+                logger.warning(
+                    "NL auto-continue classifier (autonomous) returned unparsable output; treating as finalize"
+                )
+                return finalize
+            logger.info(f"NL auto-continue (autonomous) fields={fields}")
+            if decide_autonomous(fields):
+                return AutoContinueDecision(auto_continue=True)
+        else:
+            parsed = parse_auto_continue_json(raw)
+            if parsed is None:
+                logger.warning("NL auto-continue classifier returned unparsable output; treating as finalize")
+                return finalize
+            if parsed:
+                return AutoContinueDecision(auto_continue=True)
     except Exception as e:
         logger.warning(f"NL auto-continue classifier failed: {e}")
         return finalize
@@ -333,7 +508,11 @@ async def classify_nl_auto_continue(
     llm: BaseChatModel,
     assistant_visible: Any,
     reasoning_excerpt: Optional[Any],
+    *,
+    autonomous: bool = False,
 ) -> bool:
     """Return True if the graph should append a user ``continue`` message and re-invoke the coder model."""
-    decision = await classify_nl_auto_continue_decision(llm, assistant_visible, reasoning_excerpt)
+    decision = await classify_nl_auto_continue_decision(
+        llm, assistant_visible, reasoning_excerpt, autonomous=autonomous
+    )
     return decision.auto_continue
