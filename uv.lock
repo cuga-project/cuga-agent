@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'darwin'",
@@ -348,7 +348,7 @@ wheels = [
 
 [[package]]
 name = "altk-evolve"
-version = "1.5.2"
+version = "1.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio", marker = "python_full_version >= '3.12'" },
@@ -370,12 +370,15 @@ dependencies = [
     { name = "tzdata", marker = "python_full_version >= '3.12'" },
     { name = "uvicorn", version = "0.35.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0a/e4/1bb32ab84cc8943650552b2c8b835baee3f6f986458ed7a49721d37ce218/altk_evolve-1.5.2.tar.gz", hash = "sha256:ef0df65c8b0431dfb1138679a156942a8507e37d10910af06ce6fb947373b317", size = 451017, upload-time = "2026-10-06T12:37:31.881Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/18/cc/bcd53dd2410207c9d129789ae67aa45099daa74a8850dbbfed8ad034e28c/altk_evolve-1.6.1.tar.gz", hash = "sha256:e4defd28344f7d6a6221e0ebd9b0de5762595ba240db0302572d0d322b407780", size = 457297, upload-time = "2026-10-08T08:33:50.412Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4e/68/05a5293e7f09c9c2884f516ab7532a9373ca341b5868d8ef4094a6a95d21/altk_evolve-1.5.2-py3-none-any.whl", hash = "sha256:eab8501dda06b857f044ac23670c98aaa11450934f2e80d4187ff2f667173b2c", size = 488715, upload-time = "2026-10-06T12:37:30.3Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/90/06aec74338ff465872ef3186679d5a449b0e7b598c47784039de3af742fd/altk_evolve-1.6.1-py3-none-any.whl", hash = "sha256:af41c4bc3acc378830bc734925f7b2fd4ebac8cbe1daa2f2f49f5694298f570e", size = 496439, upload-time = "2026-10-08T08:33:48.719Z" },
 ]
 
 [package.optional-dependencies]
+fastembed = [
+    { name = "fastembed", marker = "python_full_version >= '3.12'" },
+]
 pii-regex = [
     { name = "cpex", marker = "python_full_version >= '3.12'" },
     { name = "cpex-pii-filter", marker = "python_full_version >= '3.12'" },
@@ -1606,7 +1609,7 @@ evaluation = [
     { name = "rapidfuzz" },
 ]
 evolve = [
-    { name = "altk-evolve", extra = ["pii-regex"], marker = "python_full_version >= '3.12'" },
+    { name = "altk-evolve", extra = ["fastembed", "pii-regex"], marker = "python_full_version >= '3.12'" },
     { name = "einops", marker = "python_full_version >= '3.12'" },
 ]
 health = [
@@ -1645,7 +1648,7 @@ dev = [
     { name = "termcolor" },
 ]
 evolve-image = [
-    { name = "altk-evolve", extra = ["pii-semantic"], marker = "python_full_version >= '3.12'" },
+    { name = "altk-evolve", extra = ["fastembed", "pii-semantic"], marker = "python_full_version >= '3.12'" },
     { name = "en-core-web-trf", marker = "python_full_version >= '3.12'" },
     { name = "readi-privacy", marker = "python_full_version >= '3.12'" },
 ]
@@ -1662,7 +1665,7 @@ requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.12.1,<0.13" },
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "aiosmtpd" },
-    { name = "altk-evolve", extras = ["pii-regex"], marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = ">=1.5.2,<2" },
+    { name = "altk-evolve", extras = ["fastembed", "pii-regex"], marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = ">=1.6.1,<2" },
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "boto3", specifier = ">=1.34.0" },
@@ -1741,7 +1744,7 @@ dev = [
     { name = "termcolor" },
 ]
 evolve-image = [
-    { name = "altk-evolve", extras = ["pii-semantic"], marker = "python_full_version >= '3.12'", specifier = ">=1.5.2,<2" },
+    { name = "altk-evolve", extras = ["fastembed", "pii-semantic"], marker = "python_full_version >= '3.12'", specifier = ">=1.6.1,<2" },
     { name = "en-core-web-trf", marker = "python_full_version >= '3.12'", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl" },
     { name = "readi-privacy", marker = "python_full_version >= '3.12'", specifier = "==0.1.7" },
 ]

@@ -149,6 +149,7 @@ class EvolveIntegration:
         message: str,
         metadata: dict | None = None,
         namespace_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
     ) -> None:
         """Store durable user facts/preferences without interrupting lite execution."""
         if not user_id or not message:
@@ -170,6 +171,15 @@ class EvolveIntegration:
             except Exception:
                 payload["enable_conflict_resolution"] = False
             result = await cls._call_tool("store_user_facts", payload)
+            if turn_id:
+                from cuga.backend.evolve.saved_memory_tracking import record_saved_memories
+
+                await record_saved_memories(
+                    result,
+                    turn_id=turn_id,
+                    agent_id=(metadata or {}).get("agent_id"),
+                    user_id=user_id,
+                )
             if isinstance(result, dict):
                 logger.info(
                     "Evolve: Stored user facts (stored_count=%s)",
@@ -296,11 +306,13 @@ class EvolveIntegration:
         limit: int = 50,
         include_content: bool = False,
         namespace_id: Optional[str] = None,
+        exclude_entity_types: Optional[list[str]] = None,
     ) -> Optional[dict]:
         """Return a structured Evolve entity inventory."""
         args: dict[str, Any] = {"limit": limit, "include_content": include_content}
         optional = {
             "entity_types": entity_types,
+            "exclude_entity_types": exclude_entity_types,
             "user_id": normalize_evolve_identifier(user_id),
             "agent_id": normalize_evolve_identifier(agent_id),
             "session_id": normalize_evolve_identifier(session_id),

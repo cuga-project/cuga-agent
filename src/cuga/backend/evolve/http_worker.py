@@ -64,7 +64,14 @@ def create_app():
 
 
 def main():
+    import asyncio
+
     import uvicorn
+
+    from cuga.backend.evolve.llm_config import configure_bundled_llm
+
+    # Configure before importing Evolve: its settings are instantiated at import.
+    asyncio.run(configure_bundled_llm())
 
     uvicorn.run(create_app(), host="127.0.0.1", port=8201, lifespan="on", timeout_graceful_shutdown=3)
 

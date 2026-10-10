@@ -271,6 +271,7 @@ async def list_user_memory_entities(
     result = _memory_result(
         await EvolveIntegration.list_entities(
             entity_types=entity_type,
+            exclude_entity_types=["trajectory"],
             user_id=user_id,
             agent_id=agent_id,
             session_id=session_id,
@@ -429,6 +430,7 @@ async def list_admin_memory_entities(
     result = _memory_result(
         await EvolveIntegration.list_entities(
             entity_types=entity_type,
+            exclude_entity_types=["trajectory"],
             user_id=user_id,
             agent_id=agent_id,
             session_id=session_id,
