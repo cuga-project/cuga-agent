@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
+from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.schema import model_tool_schema
 from cuga.backend.tools_env.registry.utils.schema_utils import json_schema_type
 
 _WEAK_SCHEMA_PROBE_DIRECTIVE = (
@@ -401,10 +402,7 @@ class PromptUtils:
         """
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:
-                if hasattr(tool.args_schema, 'model_json_schema'):
-                    schema = tool.args_schema.model_json_schema()
-                else:
-                    schema = tool.args_schema.schema()
+                schema = model_tool_schema(tool)
                 properties = schema.get('properties', {})
                 required = schema.get('required', [])
 
@@ -495,10 +493,7 @@ class PromptUtils:
 
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:
-                if hasattr(tool.args_schema, 'model_json_schema'):
-                    schema = tool.args_schema.model_json_schema()
-                else:
-                    schema = tool.args_schema.schema()
+                schema = model_tool_schema(tool)
                 properties = schema.get('properties', {})
                 required = schema.get('required', [])
 
@@ -549,12 +544,7 @@ class PromptUtils:
             tool_dict = tool.model_dump()
             if hasattr(tool, 'args_schema') and tool.args_schema:
                 try:
-                    if hasattr(tool.args_schema, 'schema'):
-                        tool_dict['args_schema'] = tool.args_schema.schema()
-                    elif hasattr(tool.args_schema, 'model_json_schema'):
-                        tool_dict['args_schema'] = tool.args_schema.model_json_schema()
-                    else:
-                        tool_dict['args_schema'] = {}
+                    tool_dict['args_schema'] = model_tool_schema(tool)
                 except (AttributeError, TypeError, ValueError) as e:
                     # Narrow to expected serialization failures so unexpected bugs propagate
                     # instead of silently stripping schema (coderabbit on #203).

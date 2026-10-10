@@ -7,7 +7,9 @@ Endorsed usage: agent.knowledge.search("query", scope="session")
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Annotated, Any
+
+from langchain_core.tools import InjectedToolArg
 
 from cuga.backend.knowledge.engine import KnowledgeEngine
 from cuga.backend.knowledge.sources import annotate_envelope_with_citations, citations_enabled_for
@@ -445,14 +447,13 @@ class KnowledgeClient:
             )
         )
 
-        # NOTE: **_ absorbs extra kwargs (e.g. `thread_id`) injected by the
-        # cuga_lite runner's knowledge-tool wrapper. StructuredTool.from_function
-        # ignores **kwargs when building the JSON schema, so the LLM cannot set
-        # these fields — they are only available to internal callers.
+        # Runtime context must be explicit in the validation schema so ToolGuard
+        # accepts it and StructuredTool.ainvoke forwards it to the coroutine.
+        # InjectedToolArg keeps it out of the model-facing tool_call_schema.
         async def knowledge_search_knowledge(
             query: str,
             scope: str = search_default_scope,
-            **_: Any,
+            thread_id: Annotated[str | None, InjectedToolArg] = None,
         ) -> dict:
             # Use the full envelope so the tool surfaces the new
             # ``retrieval`` block (per-scope candidates / filtered /
@@ -467,36 +468,43 @@ class KnowledgeClient:
                 _default_threshold,
                 # Runtime-injected thread_id (cuga_lite wrapper) wins over the
                 # construction-time capture — SDK-built tools have no capture.
-                thread_id=_.get("thread_id") or _thread_id,
+                thread_id=thread_id or _thread_id,
             )
 
         async def knowledge_ingest_knowledge(
             file_path: str,
             scope: str = single_default_scope,
             replace_duplicates: bool = True,
-            **_: Any,
+            thread_id: Annotated[str | None, InjectedToolArg] = None,
         ) -> dict:
             return await client.ingest(
-                file_path, scope, replace_duplicates, thread_id=_.get("thread_id") or _thread_id
+                file_path, scope, replace_duplicates, thread_id=thread_id or _thread_id
             )
 
         async def knowledge_ingest_knowledge_url(
-            url: str, scope: str = single_default_scope, **_: Any
+            url: str,
+            scope: str = single_default_scope,
+            thread_id: Annotated[str | None, InjectedToolArg] = None,
         ) -> dict:
-            return await client.ingest_url(url, scope, thread_id=_.get("thread_id") or _thread_id)
+            return await client.ingest_url(url, scope, thread_id=thread_id or _thread_id)
 
-        async def knowledge_list_knowledge_documents(scope: str = single_default_scope, **_: Any) -> dict:
-            docs = await client.list_documents(scope, thread_id=_.get("thread_id") or _thread_id)
+        async def knowledge_list_knowledge_documents(
+            scope: str = single_default_scope,
+            thread_id: Annotated[str | None, InjectedToolArg] = None,
+        ) -> dict:
+            docs = await client.list_documents(scope, thread_id=thread_id or _thread_id)
             return {"documents": docs}
 
         async def knowledge_delete_knowledge_document(
             filename: str,
             scope: str = single_default_scope,
-            **_: Any,
+            thread_id: Annotated[str | None, InjectedToolArg] = None,
         ) -> dict:
-            return await client.delete_document(filename, scope, thread_id=_.get("thread_id") or _thread_id)
+            return await client.delete_document(filename, scope, thread_id=thread_id or _thread_id)
 
-        async def knowledge_get_ingestion_status(task_id: str, **_: Any) -> dict:
+        async def knowledge_get_ingestion_status(
+            task_id: str, thread_id: Annotated[str | None, InjectedToolArg] = None
+        ) -> dict:
             """Check the status of a document ingestion task.
 
             Returns progress information including per-file status.
@@ -504,7 +512,9 @@ class KnowledgeClient:
             task = await client._engine.get_task(task_id)
             return task or {"error": "task not found"}
 
-        async def knowledge_get_knowledge_status(**_: Any) -> dict:
+        async def knowledge_get_knowledge_status(
+            thread_id: Annotated[str | None, InjectedToolArg] = None,
+        ) -> dict:
             """Check if the knowledge service is healthy and get current settings.
 
             Returns health status and configuration details.
