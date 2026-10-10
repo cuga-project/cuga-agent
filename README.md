@@ -144,42 +144,63 @@ Experience CUGA's hybrid capabilities by combining API calls with web interactio
 
 ## Quick Start
 
-<details>
-<summary><em style="color: #666;"> Prerequisites (click to expand)</em></summary>
-
-- **Python 3.12+** - [Download here](https://www.python.org/downloads/)
-- **uv package manager** - [Installation guide](https://docs.astral.sh/uv/getting-started/installation/)
-
-</details>
+### 1. Clone and run setup
 
 ```bash
-# In terminal, clone the repository and navigate into it
-git clone https://github.com/cuga-project/cuga-agent.git
+git clone -b feat/cross-platform-setup-cli https://github.com/cuga-project/cuga-agent.git
 cd cuga-agent
-
-# 1. Create and activate virtual environment
-uv venv --python=3.12 && source .venv/bin/activate
-
-# 2. Install dependencies
-uv sync
-
-# 3. Set up environment variables
-# Create .env file with your API keys
-echo "OPENAI_API_KEY=your-openai-api-key-here" > .env
-
-# 4. Start the demo
-cuga start demo_crm --read-only
-
-# Chrome will open automatically at https://localhost:7860
-# then try sending your task to CUGA: 'from contacts.txt show me which users belong to the crm system'
-
-# 5. View agent trajectories (optional)
-cuga viz
-
-# This launches a web-based dashboard for visualizing and analyzing
-# agent execution trajectories, decision-making, and tool usage
-
+source scripts/setup.sh
 ```
+
+The setup script auto-detects your OS and chip (macOS Intel/Apple Silicon M1–M5+, Linux, Windows via Git Bash), installs any missing dependencies (git, Python 3.10–3.12, uv), creates a virtual environment, runs `uv sync`, smoke-tests `cuga --help`, and — because it is **sourced** — activates the environment directly in your shell.
+
+### 2. Activate the environment
+
+The environment is activated automatically when you use `source scripts/setup.sh`. If you ever open a new terminal, re-activate with:
+
+```bash
+source .venv/bin/activate    # macOS / Linux
+# Windows (Git Bash): source .venv/Scripts/activate
+```
+
+### 3. Add your API key
+
+```bash
+echo "OPENAI_API_KEY=sk-..." > .env
+```
+
+> See [LLM Configuration](#llm-configuration) below for other providers (IBM watsonx, Groq, Ollama, etc.).
+
+### 4. Start CUGA
+
+```bash
+cuga start demo_crm --read-only
+```
+
+Then open **https://localhost:7860** in your browser and try:
+> *"From contacts.txt show me which users belong to the CRM system"*
+
+### 5. View agent trajectories *(optional)*
+
+```bash
+cuga viz
+```
+
+Launches a web dashboard for visualising agent execution, decision-making, and tool usage.
+
+<details>
+<summary><em>Manual setup (without the script)</em></summary>
+
+**Prerequisites:** Python 3.10–3.12 · [uv](https://docs.astral.sh/uv/getting-started/installation/)
+
+```bash
+uv venv --python=3.12 && source .venv/bin/activate
+uv sync
+echo "OPENAI_API_KEY=your-key" > .env
+cuga start demo_crm --read-only
+```
+
+</details>
 
 
 <a id="llm-configuration---advanced-options"></a>
