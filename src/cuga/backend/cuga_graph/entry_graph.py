@@ -57,6 +57,7 @@ class CugaEntryGraph:
         supervisor_enabled: Optional[bool] = None,
         supervisor_plan_approval: bool = False,
         supervisor_interactive: bool = True,
+        supervisor_id: Optional[str] = None,
     ):
         self.final_answer_agent = FinalAnswerNode(FinalAnswerAgent.create())
         self.followup = SuggestHumanActions()
@@ -89,6 +90,7 @@ class CugaEntryGraph:
         self.supervisor_agents: Optional[dict] = supervisor_agents
         self.supervisor_enabled: Optional[bool] = supervisor_enabled
         self.supervisor_plan_approval = supervisor_plan_approval
+        self.supervisor_id = supervisor_id
         self.supervisor_interactive = supervisor_interactive
         self._pending_acp_registry = None
         self.graph = None
@@ -244,6 +246,7 @@ class CugaEntryGraph:
                 agents=agents,
                 special_instructions=supervisor_special_instructions,
                 plan_approval=self.supervisor_plan_approval,
+                supervisor_id=self.supervisor_id,
                 pending_acp_registry=self._pending_acp_registry,
                 interactive=self.supervisor_interactive,
             )
