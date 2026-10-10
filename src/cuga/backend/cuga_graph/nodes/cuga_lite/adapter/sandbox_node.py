@@ -18,10 +18,23 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionRouter
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.fc_actions import (
+    NOT_EXECUTED_REPLY,
+    fc_context_overlay,
+    fc_pending_plan,
+    metadata_without_plan,
+    replies_from_execution,
+    replies_without_execution,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import reflection_current_task
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import (
     CodeExecutor,
     is_find_tools_listing_markdown,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
+    STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
+    resolve_step_discipline,
+    resolved_runtime_model_name,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
     decide_pre_execute_verify,
@@ -143,6 +156,15 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         # Add tools to context
         context = {**existing_vars, **adapter._tools_context}
 
+        # A function-calling turn left its call plan: the block is the translated
+        # native calls, and every exit below answers each id with a ToolMessage
+        # instead of an "Execution output:" message (see fc_actions). Empty for a
+        # CodeAct block, where nothing below changes.
+        fc_plan = fc_pending_plan(adapter, state)
+        if fc_plan:
+            context.update(fc_context_overlay(adapter._tools_context, fc_plan))
+        fc_meta = {adapter.metadata_key: metadata_without_plan(adapter, state)} if fc_plan else {}
+
         # Start tool call tracking (enabled via invoke parameter, or internally
         # whenever a weak-schema tool's output shape hasn't been observed yet).
         # "timings_only" (set when tracking is forced for the run receipt) records
@@ -206,11 +228,14 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 if decision.gate == "revise":
                     ToolCallTracker.stop_tracking()
                     msg = verify_blocked_message(decision.alert)
-                    new_message = HumanMessage(content=msg)
+                    new_messages = (
+                        replies_without_execution(fc_plan, msg) if fc_plan else [HumanMessage(content=msg)]
+                    )
                     updated_messages, error_message = core_append_with_step_limit(
-                        adapter, state, [new_message], max_steps
+                        adapter, state, new_messages, max_steps
                     )
                     skip_updates = {
+                        **fc_meta,
                         "variables_storage": state.variables_storage,
                         "variable_counter_state": state.variable_counter_state,
                         "variable_creation_order": state.variable_creation_order,
@@ -243,14 +268,38 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     _exec_plan.filesystem_backend,
                 )
             logger.debug(f"\n\n------\n\n📝 Generated code:\n\n{state.script}\n\n------\n\n")
-            output, new_vars = await CodeExecutor.eval_with_tools_async(
-                code=state.script,
-                _locals=context,
-                state=state,  # Pass CugaLiteState - it has variables_manager property
-                thread_id=current_thread_id,
-                apps_list=current_apps_list,
-                plan=_exec_plan,
+            # Step discipline: cap this block at one tool call. The cap rides the
+            # existing per-block budget, so the second call is refused by
+            # enforce_call_budget with the one-tool message and the executor
+            # keeps the block's variables (see LocalExecutor).
+            one_tool_per_step = (
+                resolve_step_discipline(
+                    configurable,
+                    resolved_runtime_model_name(
+                        configurable_llm=configurable.get("llm"),
+                        graph_default_model=getattr(adapter, "_model", None),
+                    ),
+                )
+                == STEP_DISCIPLINE_ONE_TOOL_PER_STEP
             )
+            cap_token = ToolCallTracker.set_block_cap_override(1) if one_tool_per_step else None
+            try:
+                output, new_vars = await CodeExecutor.eval_with_tools_async(
+                    code=state.script,
+                    _locals=context,
+                    state=state,  # Pass CugaLiteState - it has variables_manager property
+                    thread_id=current_thread_id,
+                    apps_list=current_apps_list,
+                    plan=_exec_plan,
+                    # A function-calling block calls in-process callables, so it runs on
+                    # the local executor whatever the Python backend; a find_tools result
+                    # must stay among its variables to be read back as the reply.
+                    mode="local" if fc_plan else None,
+                    keep_listing_vars=bool(fc_plan),
+                )
+            finally:
+                if cap_token is not None:
+                    ToolCallTracker.reset_block_cap_override(cap_token)
 
             adapter._tracker.collect_step(step=Step(name="User_output", data=output))
             adapter._tracker.collect_step(
@@ -266,6 +315,20 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             # Output is already formatted and trimmed by code_executor
             logger.debug(f"\n\n------\n\n📝 Execution output:\n\n{output}\n\n------\n\n")
 
+            fc_replies: list = []
+            if fc_plan:
+                fc_replies, new_vars, dropped = replies_from_execution(
+                    fc_plan,
+                    new_vars,
+                    output,
+                    output_limit=settings.advanced_features.execution_output_max_length,
+                    timeout=settings.advanced_features.sandbox_execution_timeout,
+                )
+                # Error markers: the reply carries them, the variables do not.
+                for name in dropped:
+                    if name in state.variables_manager.get_variable_names():
+                        state.variables_manager.remove_variable(name)
+
             # Update variables using CugaLiteState's variables_manager
             # This automatically updates state.variables_storage
             for name, value in new_vars.items():
@@ -276,7 +339,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 )
 
             reflection_output = ""
-            if reflection_enabled:
+            if reflection_enabled and not fc_plan:
                 try:
                     active_model = configurable.get("llm") or _llm_manager.get_model(
                         settings.agent.planner.model
@@ -338,16 +401,36 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     f"{execution_message_content}\n\n---\n\nSummary:\n{reflection_output}"
                 )
 
-            adapter._tracker.collect_step(
-                step=Step(
-                    name="User_return",
-                    data=execution_message_content,
+            if fc_plan:
+                adapter._tracker.collect_step(
+                    step=Step(
+                        name="Tool_results",
+                        data=json.dumps(
+                            [
+                                {
+                                    "tool_call_id": m.tool_call_id,
+                                    "name": m.name,
+                                    "status": m.status,
+                                    "content": m.content,
+                                }
+                                for m in fc_replies
+                            ],
+                            ensure_ascii=False,
+                            default=str,
+                        ),
+                    )
                 )
-            )
-
-            new_message = HumanMessage(content=execution_message_content)
+                new_messages = fc_replies
+            else:
+                adapter._tracker.collect_step(
+                    step=Step(
+                        name="User_return",
+                        data=execution_message_content,
+                    )
+                )
+                new_messages = [HumanMessage(content=execution_message_content)]
             updated_messages, error_message = core_append_with_step_limit(
-                adapter, state, [new_message], max_steps
+                adapter, state, new_messages, max_steps
             )
 
             # Collect tool calls from this execution
@@ -364,6 +447,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     error_message,
                     state.step_count,
                     additional_updates={
+                        **fc_meta,
                         "variables_storage": state.variables_storage,
                         "variable_counter_state": state.variable_counter_state,
                         "variable_creation_order": state.variable_creation_order,
@@ -380,6 +464,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
 
             todo_state_update = extract_task_todos_from_new_vars(new_vars)
             base_update = {
+                **fc_meta,
                 "chat_messages": updated_messages,
                 "variables_storage": state.variables_storage,
                 "variable_counter_state": state.variable_counter_state,
@@ -404,9 +489,13 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
 
             error_msg = f"Error during execution: {str(e)}"
             logger.error(error_msg)
-            new_message = HumanMessage(content=error_msg)
+            new_messages = (
+                replies_without_execution(fc_plan, NOT_EXECUTED_REPLY.format(reason=e))
+                if fc_plan
+                else [HumanMessage(content=error_msg)]
+            )
             updated_messages, limit_error_message = core_append_with_step_limit(
-                adapter, state, [new_message], max_steps
+                adapter, state, new_messages, max_steps
             )
 
             if limit_error_message:
@@ -415,10 +504,11 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     updated_messages,
                     limit_error_message,
                     state.step_count,
-                    additional_updates=_budget_updates(),
+                    additional_updates={**fc_meta, **_budget_updates()},
                 )
 
             return {
+                **fc_meta,
                 "chat_messages": updated_messages,
                 "error": error_msg,
                 "final_answer": error_msg,

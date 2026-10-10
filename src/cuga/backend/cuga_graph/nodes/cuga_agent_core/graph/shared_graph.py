@@ -4,6 +4,9 @@
 
     START → prepare --Command--> call_model ↔ execute (loop) → END
 
+CugaLite's function-calling mode uses the same three nodes: a native tool-call
+turn is translated into a block the execute node runs.
+
 Both CugaLite and CugaSupervisor share this structure.  The nodes themselves
 are provided by the caller (produced by adapter factories), so the graph
 builder stays graph-agnostic.

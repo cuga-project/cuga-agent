@@ -67,6 +67,7 @@ def _make_adapter(captured_outbound: List[List[dict]]) -> MagicMock:
     a.on_response_processed.return_value = None
     a.classify_auto_continue = AsyncMock(return_value=False)
     a.resolve_bind_tools = AsyncMock(return_value=None)
+    a.execute_call_model_fc = AsyncMock(return_value=None)  # base seam: no-op in CodeAct
 
     var_manager = MagicMock()
     var_manager.get_variable_names.return_value = ["my_var"]

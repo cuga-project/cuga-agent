@@ -1,0 +1,483 @@
+"""Function-calling mode end to end: the real CugaLite graph, a scripted model.
+
+Node tests pin what each node returns; only a real run proves the loop —
+prepare selects the FC prompt, call_model routes native ``tool_calls`` to
+the sandbox as a translated block, the ``ToolMessage`` replies are replayed to the model with their
+ids, and a text reply ends the run. The scripted model asserts on what it is
+sent, so a broken replay fails loudly instead of the test passing by accident.
+
+The last test is the feature-off golden: with no mode configured the graph
+behaves exactly as before — dict-serialised CodeAct turns and the sandbox.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import StructuredTool
+from langgraph.checkpoint.memory import MemorySaver
+
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import (
+    FC_MODE_VIOLATION_CORRECTION,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.fc_actions import DEFERRED_CALL_MESSAGE
+from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import CugaLiteState, create_cuga_lite_graph
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking import tracker as tracker_module
+
+pytestmark = pytest.mark.unit
+
+CALLS: list = []
+
+
+class _Bound:
+    def __init__(self, model):
+        self._model = model
+
+    async def ainvoke(self, messages, config=None, **kwargs):
+        return await self._model.ainvoke(messages, config=config, **kwargs)
+
+
+class _ScriptedModel:
+    """Queued responses; an entry may be a callable that receives the outbound messages."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.invocations = 0
+        self.seen: list = []
+        self.bound_tool_names: list = []
+
+    def bind_tools(self, tools, **kwargs):
+        self.bound_tool_names = [getattr(t, "name", str(t)) for t in tools]
+        return _Bound(self)  # a real bind returns a new runnable, never the model itself
+
+    async def ainvoke(self, messages, config=None, **kwargs):
+        self.invocations += 1
+        self.seen.append(list(messages))
+        if not self._responses:
+            raise AssertionError(
+                f"model asked for response #{self.invocations} — the run did not end when it should"
+            )
+        nxt = self._responses.pop(0)
+        return nxt(messages) if callable(nxt) else nxt
+
+
+def _provider(*tools):
+    provider = MagicMock()
+    provider.get_all_tools = AsyncMock(return_value=list(tools))
+    provider.get_apps = AsyncMock(return_value=[])
+    provider.get_tools = AsyncMock(return_value=[])
+    provider.app_name = "test_app"
+    return provider
+
+
+def _echo_tool():
+    async def echo(value: int) -> int:
+        """Echo a value."""
+        CALLS.append(("echo", value))
+        return value
+
+    return StructuredTool.from_function(coroutine=echo, name="echo", description="Echo a value.")
+
+
+def _tc(name, args, call_id):
+    return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+
+
+def _config(thread_id, **extra):
+    return {"configurable": {"thread_id": thread_id, "enable_todos": False, **extra}}
+
+
+def _last_tool_message(messages):
+    assert isinstance(messages[-1], ToolMessage), (
+        f"expected a ToolMessage last, got {type(messages[-1]).__name__}"
+    )
+    return messages[-1]
+
+
+@pytest.fixture(autouse=True)
+def _quiet(monkeypatch):
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.policy, "enabled", False, raising=False)
+    CALLS.clear()
+    yield
+    CALLS.clear()
+    tracker_module._tool_call_budget_context.set(None)
+    tracker_module._thread_tool_call_budget_context.set(None)
+    tracker_module._block_tool_call_budget_context.set(None)
+    tracker_module._block_tool_call_cap_override_context.set(None)
+
+
+def _run(model, config, *tools):
+    graph = create_cuga_lite_graph(
+        model=model, tool_provider=_provider(*tools), apps_list=[], thread_id="t"
+    ).compile(checkpointer=MemorySaver())
+    return graph.ainvoke(CugaLiteState(chat_messages=[HumanMessage(content="use the tools")]), config=config)
+
+
+@pytest.mark.asyncio
+async def test_single_hop_tool_call_round_trip():
+    model = _ScriptedModel(
+        [
+            AIMessage(content="", tool_calls=[_tc("echo", {"value": 7}, "call_1")]),
+            AIMessage(content="The value is 7."),
+        ]
+    )
+
+    result = await _run(model, _config("fc-1", cuga_lite_execution_mode="function_calling"), _echo_tool())
+
+    assert CALLS == [("echo", 7)]
+    assert result["final_answer"] == "The value is 7."
+    assert result["script"] is None and model.invocations == 2
+    assert "echo" in model.bound_tool_names, (
+        "FC mode must advertise the tools natively (bind mode none -> all)"
+    )
+
+    kinds = [type(m).__name__ for m in result["chat_messages"]]
+    assert kinds == ["HumanMessage", "AIMessage", "ToolMessage", "AIMessage"], kinds
+    assert result["chat_messages"][2].tool_call_id == "call_1" and result["chat_messages"][2].content == "7"
+
+    first, second = model.seen
+    assert isinstance(first[0], SystemMessage) and "native function-calling" in first[0].content
+    assert _last_tool_message(second).tool_call_id == "call_1", "the ToolMessage must be replayed with its id"
+    assert "native function-calling" in result["prepared_prompt"]
+    assert "```python" not in result["prepared_prompt"], "the CodeAct prompt must not be rendered in FC mode"
+
+
+@pytest.mark.asyncio
+async def test_three_hop_chain_each_hop_depends_on_the_previous_result():
+    async def lookup_id(name: str) -> int:
+        """Employee id by name."""
+        CALLS.append(("lookup_id", name))
+        return 42
+
+    async def lookup_manager(employee_id: int) -> str:
+        """Manager id for an employee."""
+        CALLS.append(("lookup_manager", employee_id))
+        return "M-42"
+
+    async def lookup_email(manager: str) -> str:
+        """Email for a manager id."""
+        CALLS.append(("lookup_email", manager))
+        return "m42@example.com"
+
+    tools = [
+        StructuredTool.from_function(coroutine=lookup_id, name="lookup_id", description="id by name"),
+        StructuredTool.from_function(coroutine=lookup_manager, name="lookup_manager", description="manager"),
+        StructuredTool.from_function(coroutine=lookup_email, name="lookup_email", description="email"),
+    ]
+
+    def hop2(messages):
+        assert _last_tool_message(messages).content == "42"
+        return AIMessage(content="", tool_calls=[_tc("lookup_manager", {"employee_id": 42}, "c2")])
+
+    def hop3(messages):
+        assert _last_tool_message(messages).content == "M-42"
+        return AIMessage(content="", tool_calls=[_tc("lookup_email", {"manager": "M-42"}, "c3")])
+
+    def final(messages):
+        assert _last_tool_message(messages).content == "m42@example.com"
+        return AIMessage(content="Alice's manager can be reached at m42@example.com.")
+
+    model = _ScriptedModel(
+        [AIMessage(content="", tool_calls=[_tc("lookup_id", {"name": "alice"}, "c1")]), hop2, hop3, final]
+    )
+
+    result = await _run(model, _config("fc-3", cuga_lite_execution_mode="function_calling"), *tools)
+
+    assert CALLS == [("lookup_id", "alice"), ("lookup_manager", 42), ("lookup_email", "M-42")]
+    assert result["final_answer"].endswith("m42@example.com.")
+    assert [m.tool_call_id for m in result["chat_messages"] if isinstance(m, ToolMessage)] == [
+        "c1",
+        "c2",
+        "c3",
+    ]
+    assert model.invocations == 4
+
+
+@pytest.mark.asyncio
+async def test_step_discipline_in_fc_mode_runs_one_call_per_turn():
+    model = _ScriptedModel(
+        [
+            AIMessage(
+                content="", tool_calls=[_tc("echo", {"value": 1}, "c1"), _tc("echo", {"value": 2}, "c2")]
+            ),
+            AIMessage(content="", tool_calls=[_tc("echo", {"value": 2}, "c3")]),
+            AIMessage(content="1 and 2."),
+        ]
+    )
+    config = _config(
+        "fc-sd", cuga_lite_execution_mode="function_calling", cuga_lite_step_discipline="one_tool_per_step"
+    )
+
+    result = await _run(model, config, _echo_tool())
+
+    assert CALLS == [("echo", 1), ("echo", 2)], "the second call of turn 1 is deferred, then re-issued"
+    tool_msgs = [m for m in result["chat_messages"] if isinstance(m, ToolMessage)]
+    assert [(m.tool_call_id, m.content) for m in tool_msgs][:2] == [
+        ("c1", "1"),
+        ("c2", DEFERRED_CALL_MESSAGE),
+    ]
+    assert tool_msgs[2].tool_call_id == "c3" and tool_msgs[2].content == "2"
+    assert "exactly ONE tool call" in result["prepared_prompt"]
+    assert result["final_answer"] == "1 and 2."
+
+
+@pytest.mark.asyncio
+async def test_code_block_in_fc_mode_is_corrected_not_executed():
+    model = _ScriptedModel(
+        [AIMessage(content="```python\nawait echo(value=9)\n```"), AIMessage(content="Understood: done.")]
+    )
+
+    result = await _run(model, _config("fc-v", cuga_lite_execution_mode="function_calling"), _echo_tool())
+
+    assert CALLS == [], "code must never run in function-calling mode"
+    assert any(
+        isinstance(m, HumanMessage) and m.content == FC_MODE_VIOLATION_CORRECTION
+        for m in result["chat_messages"]
+    )
+    assert result["final_answer"] == "Understood: done." and model.invocations == 2
+
+
+@pytest.mark.asyncio
+async def test_feature_off_is_the_old_codeact_run(monkeypatch):
+    model = _ScriptedModel(
+        [
+            AIMessage(content="```python\nr = await echo(value=3)\nprint(r)\n```"),
+            AIMessage(content="It printed 3."),
+        ]
+    )
+
+    graph = create_cuga_lite_graph(
+        model=model, tool_provider=_provider(_echo_tool()), apps_list=[], thread_id="t"
+    )
+    assert set(graph.nodes) - {"__start__"} == {"prepare", "call_model", "sandbox"}, (
+        "no extra node for the mode"
+    )
+    result = await graph.compile(checkpointer=MemorySaver()).ainvoke(
+        CugaLiteState(chat_messages=[HumanMessage(content="use the tools")]), config=_config("codeact-golden")
+    )
+
+    assert CALLS == [("echo", 3)]
+    assert result["final_answer"] == "It printed 3."
+    kinds = [type(m).__name__ for m in result["chat_messages"]]
+    assert kinds == ["HumanMessage", "AIMessage", "HumanMessage", "AIMessage"], kinds
+    assert all(isinstance(m, dict) for m in model.seen[0]), (
+        "CodeAct still serialises turns through the dict path"
+    )
+    assert "```python" in result["prepared_prompt"], "the CodeAct prompt is unchanged"
+
+
+@pytest.mark.asyncio
+async def test_bundled_codeact_few_shots_are_withheld_in_fc_mode():
+    """With find_tools active the CodeAct path replays bundled ```python demos; in
+    function-calling mode they would contradict the prompt, so only demos passed
+    explicitly are sent."""
+    codeact = _ScriptedModel([AIMessage(content="done")])
+    await _run(codeact, _config("fs-codeact", shortlisting_tool_threshold=0), _echo_tool())
+    assert any("```python" in (m.get("content") or "") for m in codeact.seen[0] if isinstance(m, dict)), (
+        "precondition: the bundled CodeAct demos are in play"
+    )
+
+    fc = _ScriptedModel([AIMessage(content="done")])
+    await _run(
+        fc,
+        _config("fs-fc", cuga_lite_execution_mode="function_calling", shortlisting_tool_threshold=0),
+        _echo_tool(),
+    )
+    assert not any("```python" in getattr(m, "content", "") for m in fc.seen[0]), "CodeAct demos withheld"
+
+    explicit = _ScriptedModel([AIMessage(content="done")])
+    demos = [{"role": "user", "content": "demo q"}, {"role": "assistant", "content": "demo a"}]
+    await _run(
+        explicit,
+        _config("fs-explicit", cuga_lite_execution_mode="function_calling", mcp_few_shot_examples=demos),
+        _echo_tool(),
+    )
+    assert [m.content for m in explicit.seen[0][1:3]] == ["demo q", "demo a"], "explicit demos still replayed"
+
+
+@pytest.mark.asyncio
+async def test_static_prompt_is_ignored_in_fc_mode():
+    """A static prompt is CodeAct-shaped; used verbatim it would ask for the fences FC treats as violations."""
+    model = _ScriptedModel([AIMessage(content="done")])
+    graph = create_cuga_lite_graph(
+        model=model,
+        prompt="You are a coder. Always answer with a ```python block.",
+        tool_provider=_provider(_echo_tool()),
+        apps_list=[],
+        thread_id="t",
+    ).compile(checkpointer=MemorySaver())
+    result = await graph.ainvoke(
+        CugaLiteState(chat_messages=[HumanMessage(content="hi")]),
+        config=_config("fc-static", cuga_lite_execution_mode="function_calling"),
+    )
+    assert "native function-calling" in result["prepared_prompt"]
+    assert "Always answer with a ```python block" not in result["prepared_prompt"]
+
+
+# ── what routing through the sandbox gives a native call ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_verify_revise_answers_every_call_without_running_it(monkeypatch):
+    """The pre-execute VERIFY gate decides on the translated block like on CodeAct code;
+    a revise verdict reaches the model as an error reply per call id, nothing runs."""
+    from unittest.mock import AsyncMock
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter import sandbox_node
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import verify_blocked_message
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import VerifyDecision
+
+    monkeypatch.setattr(
+        sandbox_node,
+        "decide_pre_execute_verify",
+        AsyncMock(return_value=VerifyDecision(gate="revise", alert="echoing 9 looks wrong")),
+    )
+
+    def after_revise(messages):
+        reply = _last_tool_message(messages)
+        assert reply.tool_call_id == "c1" and reply.status == "error"
+        assert reply.content == verify_blocked_message("echoing 9 looks wrong")
+        return AIMessage(content="Understood, not echoing.")
+
+    model = _ScriptedModel(
+        [AIMessage(content="", tool_calls=[_tc("echo", {"value": 9}, "c1")]), after_revise]
+    )
+    config = _config(
+        "fc-verify", cuga_lite_execution_mode="function_calling", pre_execute_verify_enabled=True
+    )
+
+    result = await _run(model, config, _echo_tool())
+
+    assert CALLS == [] and result["final_answer"] == "Understood, not echoing."
+    assert result["verify_revise_streak"] == 1
+
+
+@pytest.mark.asyncio
+async def test_e2b_python_backend_still_runs_a_native_call_locally(monkeypatch):
+    """The translated block calls in-process callables, so it never goes to a remote sandbox."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.advanced_features, "e2b_sandbox", True, raising=False)
+
+    def forbidden():
+        raise AssertionError("a function-calling block reached the E2B executor")
+
+    monkeypatch.setattr(CodeExecutor, "_get_e2b_executor", classmethod(lambda cls: forbidden()))
+    model = _ScriptedModel(
+        [AIMessage(content="", tool_calls=[_tc("echo", {"value": 7}, "c1")]), AIMessage(content="7.")]
+    )
+
+    result = await _run(model, _config("fc-e2b", cuga_lite_execution_mode="function_calling"), _echo_tool())
+
+    assert CALLS == [("echo", 7)] and result["final_answer"] == "7."
+
+
+@pytest.mark.asyncio
+async def test_a_large_result_is_truncated_in_the_reply_but_kept_whole_as_a_variable():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.fc_actions import TRUNCATION_MARKER
+    from cuga.config import settings
+
+    limit = int(settings.advanced_features.execution_output_max_length)
+    big = "x" * (limit + 100)
+
+    async def dump() -> str:
+        """A large payload."""
+        return big
+
+    tool = StructuredTool.from_function(coroutine=dump, name="dump", description="A large payload.")
+
+    def after(messages):
+        reply = _last_tool_message(messages)
+        assert reply.content == "x" * limit + TRUNCATION_MARKER.format(limit=limit)
+        return AIMessage(content="Got it.")
+
+    model = _ScriptedModel([AIMessage(content="", tool_calls=[_tc("dump", {}, "c1")]), after])
+
+    result = await _run(model, _config("fc-big", cuga_lite_execution_mode="function_calling"), tool)
+
+    assert result["final_answer"] == "Got it."
+    assert len(result["variables_storage"]["tool_result_c1"]["value"]) == limit + 100, (
+        "the whole result survives as a variable for later turns"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_tool_whose_name_is_not_an_identifier_round_trips():
+    async def dashed(q: str) -> str:
+        """Dashed."""
+        CALLS.append(("my-tool", q))
+        return "ok:" + q
+
+    tool = StructuredTool.from_function(coroutine=dashed, name="my-tool", description="Dashed.")
+    model = _ScriptedModel(
+        [AIMessage(content="", tool_calls=[_tc("my-tool", {"q": "hi"}, "c1")]), AIMessage(content="done")]
+    )
+
+    result = await _run(model, _config("fc-dash", cuga_lite_execution_mode="function_calling"), tool)
+
+    assert CALLS == [("my-tool", "hi")]
+    reply = [m for m in result["chat_messages"] if isinstance(m, ToolMessage)][0]
+    assert (reply.tool_call_id, reply.name, reply.content) == ("c1", "my-tool", "ok:hi")
+
+
+@pytest.mark.asyncio
+async def test_a_tool_name_providers_reject_is_bound_under_an_alias_and_still_runs():
+    """A registry name over 64 characters is bound under a provider-safe alias; the model calls
+    the alias, the real tool runs, and the reply carries the alias the provider knows."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.tool_names import provider_safe_tool_name
+
+    long_name = "public_review_platform_get_reviews_with_user_details_and_metadata_v2"
+    assert len(long_name) > 64
+    alias = provider_safe_tool_name(long_name)
+
+    async def reviews(limit: int) -> str:
+        """Reviews."""
+        CALLS.append(("reviews", limit))
+        return f"{limit} reviews"
+
+    tool = StructuredTool.from_function(coroutine=reviews, name=long_name, description="Reviews.")
+
+    def first(messages):
+        assert alias in model.bound_tool_names and long_name not in model.bound_tool_names
+        return AIMessage(content="", tool_calls=[_tc(alias, {"limit": 3}, "c1")])
+
+    model = _ScriptedModel([first, AIMessage(content="Three reviews.")])
+
+    result = await _run(model, _config("fc-alias", cuga_lite_execution_mode="function_calling"), tool)
+
+    assert CALLS == [("reviews", 3)] and result["final_answer"] == "Three reviews."
+    reply = [m for m in result["chat_messages"] if isinstance(m, ToolMessage)][0]
+    assert (reply.tool_call_id, reply.name, reply.content) == ("c1", alias, "3 reviews")
+
+
+@pytest.mark.asyncio
+async def test_find_tools_is_bound_in_fc_mode_when_prepare_enabled_it():
+    """Above the shortlisting threshold the FC prompt advertises find_tools, so it is
+    bound; calling it works and its listing is not kept as a variable."""
+
+    def first(messages):
+        assert "find_tools" in model.bound_tool_names, model.bound_tool_names
+        return AIMessage(
+            content="", tool_calls=[_tc("find_tools", {"query": "echo", "app_name": "test_app"}, "c1")]
+        )
+
+    def second(messages):
+        reply = _last_tool_message(messages)
+        assert reply.tool_call_id == "c1" and reply.content.strip()
+        return AIMessage(content="Looked it up.")
+
+    model = _ScriptedModel([first, second])
+    config = _config("fc-find", cuga_lite_execution_mode="function_calling", shortlisting_tool_threshold=0)
+
+    result = await _run(model, config, _echo_tool())
+
+    assert result["final_answer"] == "Looked it up."
+    assert not any(
+        isinstance(v.get("value"), str) and "Matching Tool(s)" in v["value"]
+        for v in result["variables_storage"].values()
+    ), "a find_tools listing is replied, never kept as a variable"

@@ -1855,6 +1855,8 @@ class CugaAgent:
         skills_folder: Optional[str] = None,
         shortlister: Optional["Shortlister"] = None,
         final_answer: "Optional[Union[str, Callable[[str], str], FinalAnswerConfig]]" = None,
+        execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -1877,6 +1879,13 @@ class CugaAgent:
             shortlister: How to shrink a large tool set before the model sees it, e.g.
                 `Shortlister(strategy="hybrid")`. None = use `[shortlister]` settings
                 (default `"llm"`, i.e. unchanged behavior). Overridable per invoke()/stream().
+            execution_mode: How the model drives tools — `"codeact"` (default: the model writes
+                Python that calls tools in the sandbox) or `"function_calling"` (the model emits
+                native tool calls, executed one round-trip at a time). None = use
+                `advanced_features.cuga_lite_execution_mode`. Overridable per invoke()/stream().
+            step_discipline: `"one_tool_per_step"` lets the model run only one tool per step
+                (in both execution modes); `"off"` (default) allows any number. None = use
+                `advanced_features.cuga_lite_step_discipline`. Overridable per invoke()/stream().
             final_answer: How the final answer is shaped. A `str` adds guidance for the
                 answer-composing LLM; a callable `(str) -> str` deterministically
                 post-processes the composed answer before delivery (must be pure;
@@ -1983,6 +1992,11 @@ class CugaAgent:
         # Tool shortlisting. None => [shortlister] settings, whose default ("llm")
         # is the pre-feature behavior.
         self._shortlister = shortlister
+
+        # Execution mode / step discipline. None => settings.toml (defaults:
+        # "codeact" / "off", i.e. the pre-feature behavior).
+        self._execution_mode = execution_mode
+        self._step_discipline = step_discipline
 
         # Setup tool provider. ToolGuard is installed immediately as a transparent
         # provider-level decorator so create-agent-first, add-guard-later flows work.
@@ -2124,6 +2138,27 @@ class CugaAgent:
                 configurable.setdefault(key, value)
         except Exception as e:
             logger.warning(f"Applying Shortlister config failed; using default shortlisting: {e}")
+
+    def _apply_execution_mode(
+        self,
+        run_config: dict,
+        execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
+    ) -> None:
+        """Merge execution mode / step discipline into ``run_config['configurable']``.
+
+        Per-invoke values override the constructor defaults. Raw
+        ``cuga_lite_execution_mode`` / ``cuga_lite_step_discipline`` keys already
+        set by the caller win over both — we ``setdefault`` rather than overwrite.
+        No-op when nothing is configured, so settings.toml decides.
+        """
+        configurable = run_config["configurable"]
+        mode = execution_mode if execution_mode is not None else self._execution_mode
+        if mode is not None:
+            configurable.setdefault("cuga_lite_execution_mode", mode)
+        discipline = step_discipline if step_discipline is not None else self._step_discipline
+        if discipline is not None:
+            configurable.setdefault("cuga_lite_step_discipline", discipline)
 
     def _apply_callbacks(
         self, run_config: dict, extra_callbacks: Optional[List[BaseCallbackHandler]] = None
@@ -2583,6 +2618,8 @@ class CugaAgent:
         track_tool_calls: bool = False,
         variables: Optional[Dict[str, Any]] = None,
         shortlister: Optional["Shortlister"] = None,
+        execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
     ) -> InvokeResult:
         """
         Invoke the agent with a message and get the response.
@@ -2601,6 +2638,10 @@ class CugaAgent:
                 Used when delegating from a supervisor to pass context to sub-agents.
             shortlister: Overrides the agent's shortlister for this call only, e.g.
                 `Shortlister(strategy="hybrid")`. None = use the agent default.
+            execution_mode: `"codeact"` or `"function_calling"` for this call only.
+                None = use the agent default.
+            step_discipline: `"off"` or `"one_tool_per_step"` for this call only.
+                None = use the agent default.
 
         Returns:
             InvokeResult containing:
@@ -2676,6 +2717,7 @@ class CugaAgent:
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
         self._apply_shortlister(run_config, shortlister)
+        self._apply_execution_mode(run_config, execution_mode, step_discipline)
 
         # Pass track_tool_calls flag via configurable
         run_config["configurable"]["track_tool_calls"] = track_tool_calls
@@ -3105,6 +3147,8 @@ class CugaAgent:
         config: Optional[Dict[str, Any]] = None,
         action_response: Optional[Any] = None,  # ActionResponse for resuming after HITL
         shortlister: Optional["Shortlister"] = None,
+        execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
     ):
         """
         Stream the agent's execution step by step.
@@ -3120,6 +3164,10 @@ class CugaAgent:
             action_response: Optional ActionResponse for resuming after approval/interruption
             shortlister: Overrides the agent's shortlister for this call only, e.g.
                 `Shortlister(strategy="hybrid")`. None = use the agent default.
+            execution_mode: `"codeact"` or `"function_calling"` for this call only.
+                None = use the agent default.
+            step_discipline: `"off"` or `"one_tool_per_step"` for this call only.
+                None = use the agent default.
 
         Yields:
             State updates as the agent executes
@@ -3152,6 +3200,7 @@ class CugaAgent:
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
         self._apply_shortlister(run_config, shortlister)
+        self._apply_execution_mode(run_config, execution_mode, step_discipline)
 
         # Pass skills configuration via configurable (overrides settings when set)
         if self._enable_skills is not None:
