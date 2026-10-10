@@ -64,6 +64,8 @@ class VariableMetadata:
 
         if VariableUtils._is_set_tag(value):
             return value["__set_type__"]
+        if VariableUtils._is_dict_tag(value):
+            return "dict"
         return None
 
     @classmethod

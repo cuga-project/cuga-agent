@@ -7,8 +7,25 @@ from loguru import logger
 _TODO_CONFIRMATION_VALUES = frozenset({"Todos updated", "Todos have been updated"})
 _SET_TYPE_KEY = "__set_type__"
 _TUPLE_TYPE_KEY = "__tuple_type__"
+_DICT_TYPE_KEY = "__dict_type__"
+# Key types json.dumps accepts; any other key (e.g. a tuple) needs the dict envelope.
+_JSON_KEY_TYPES = (str, int, float, bool, type(None))
 # Marks envelopes we created so ordinary user dicts with the same keys stay dicts.
 _ENC_KEY = "__cuga_enc__"
+
+
+class _DictEnvelope(dict):
+    """A dict envelope built by sanitize_value, as opposed to user data of the same shape.
+
+    Values are sanitized twice on the executor path (filter_new_variables, then
+    add_variable), so the second pass must leave our envelopes alone while still
+    escaping a user dict that only looks like one. After a JSON round trip this is
+    a plain dict again, which hydrate_value reads by shape.
+    """
+
+
+class _UnsupportedKeyError(Exception):
+    """A dict key that can't be encoded so it hydrates back to an equal key."""
 
 
 class VariableUtils:
@@ -16,6 +33,7 @@ class VariableUtils:
 
     @staticmethod
     def _is_set_tag(value: Any) -> bool:
+        """True for a set/frozenset envelope."""
         return (
             isinstance(value, dict)
             and value.get(_ENC_KEY) is True
@@ -25,11 +43,22 @@ class VariableUtils:
 
     @staticmethod
     def _is_tuple_tag(value: Any) -> bool:
+        """True for a tuple envelope."""
         return (
             isinstance(value, dict)
             and value.get(_ENC_KEY) is True
             and value.get(_TUPLE_TYPE_KEY) == "tuple"
             and set(value.keys()) == {_TUPLE_TYPE_KEY, "items", _ENC_KEY}
+        )
+
+    @staticmethod
+    def _is_dict_tag(value: Any) -> bool:
+        """True for anything shaped like a dict envelope, ours or a user's."""
+        return (
+            isinstance(value, dict)
+            and value.get(_ENC_KEY) is True
+            and value.get(_DICT_TYPE_KEY) == "dict"
+            and set(value.keys()) == {_DICT_TYPE_KEY, "items", _ENC_KEY}
         )
 
     @staticmethod
@@ -63,6 +92,10 @@ class VariableUtils:
         - bytes: UTF-8 string if decodable, else base64-encoded ASCII string
         - complex: {"real": float, "imag": float}
         - dict / list: recursive traversal
+        - dicts with tuple/frozenset keys: tagged [key, value] pairs; a dict with
+          any other non-JSON key (e.g. bytes) is left as it was, so is_serializable
+          rejects it instead of storing a key that would come back different
+        - user dicts shaped like that envelope: wrapped in one, so they stay dicts
         - set / frozenset: tagged JSON-safe dicts (see hydrate_value)
         - tuples inside sets: tagged so nested hashables round-trip
 
@@ -133,8 +166,26 @@ class VariableUtils:
         # --- containers ---
         if isinstance(obj, dict):
             # Already-encoded envelopes from a prior sanitize — leave intact.
-            if VariableUtils._is_set_tag(obj) or VariableUtils._is_tuple_tag(obj):
+            if (
+                isinstance(obj, _DictEnvelope)
+                or VariableUtils._is_set_tag(obj)
+                or VariableUtils._is_tuple_tag(obj)
+            ):
                 return obj
+            # A user dict shaped like our envelope is wrapped too, or it would hydrate
+            # into the dict its items describe.
+            if VariableUtils._is_dict_tag(obj) or not all(isinstance(k, _JSON_KEY_TYPES) for k in obj):
+                try:
+                    # json.dumps can't write tuple keys, and turning them into strings would
+                    # lose their type and could make two keys collide, so store [key, value] pairs.
+                    items = [
+                        [VariableUtils._sanitize_key(k), VariableUtils._sanitize_recursive(v)]
+                        for k, v in obj.items()
+                    ]
+                except _UnsupportedKeyError:
+                    pass
+                else:
+                    return _DictEnvelope({_DICT_TYPE_KEY: "dict", "items": items, _ENC_KEY: True})
             return {k: VariableUtils._sanitize_recursive(v) for k, v in obj.items()}
         if isinstance(obj, list):
             return [VariableUtils._sanitize_recursive(v) for v in obj]
@@ -173,6 +224,51 @@ class VariableUtils:
         return sanitized
 
     @staticmethod
+    def _sanitize_key(obj: Any) -> Any:
+        """Encode a dict key so it hydrates back to an equal key of the same type.
+
+        Supports JSON scalars and tuples/frozensets of supported keys, at any depth.
+        Raises _UnsupportedKeyError for anything else (e.g. bytes, which would come
+        back as a str and could collide with an existing str key).
+        """
+        if isinstance(obj, _JSON_KEY_TYPES):
+            return obj
+        if isinstance(obj, tuple):
+            return {
+                _TUPLE_TYPE_KEY: "tuple",
+                "items": [VariableUtils._sanitize_key(v) for v in obj],
+                _ENC_KEY: True,
+            }
+        if isinstance(obj, frozenset):
+            return {
+                _SET_TYPE_KEY: "frozenset",
+                "items": [VariableUtils._sanitize_key(v) for v in obj],
+                _ENC_KEY: True,
+            }
+        raise _UnsupportedKeyError(type(obj).__name__)
+
+    @staticmethod
+    def _hydrate_dict_tag(value: dict) -> Optional[dict]:
+        """Rebuild the dict a dict envelope describes, or None if the payload is malformed.
+
+        Every item must be a [key, value] pair whose key hydrates to a distinct,
+        hashable key; otherwise the value is not an envelope we wrote.
+        """
+        items = value["items"]
+        if not isinstance(items, list) or not all(isinstance(p, list) and len(p) == 2 for p in items):
+            return None
+        out = {}
+        for k, v in items:
+            key = VariableUtils.hydrate_value(k)
+            try:
+                if key in out:
+                    return None
+            except TypeError:
+                return None
+            out[key] = VariableUtils.hydrate_value(v)
+        return out
+
+    @staticmethod
     def _hydrate_mapping(value: dict) -> Any:
         """Hydrate dict values; preserve identity when nothing changes."""
         out = {}
@@ -198,13 +294,17 @@ class VariableUtils:
 
     @staticmethod
     def hydrate_value(value: Any) -> Any:
-        """Restore set/frozenset/tuple tags produced by sanitize_value."""
+        """Restore set/frozenset/tuple/dict tags produced by sanitize_value."""
         if isinstance(value, dict):
             if VariableUtils._is_set_tag(value):
                 items = [VariableUtils.hydrate_value(v) for v in value["items"]]
                 return set(items) if value[_SET_TYPE_KEY] == "set" else frozenset(items)
             if VariableUtils._is_tuple_tag(value):
                 return tuple(VariableUtils.hydrate_value(v) for v in value["items"])
+            if VariableUtils._is_dict_tag(value):
+                hydrated = VariableUtils._hydrate_dict_tag(value)
+                if hydrated is not None:
+                    return hydrated
             return VariableUtils._hydrate_mapping(value)
         if isinstance(value, list):
             return VariableUtils._hydrate_sequence(value)
@@ -260,9 +360,10 @@ class VariableUtils:
             return all(VariableUtils.is_serializable(item) for item in value)
 
         if isinstance(value, dict):
+            # json.dumps only accepts these key types; anything else (e.g. a tuple key) must go
+            # through sanitize_value first, which wraps the dict in a tagged envelope.
             return all(
-                VariableUtils.is_serializable(k) and VariableUtils.is_serializable(v)
-                for k, v in value.items()
+                isinstance(k, _JSON_KEY_TYPES) and VariableUtils.is_serializable(v) for k, v in value.items()
             )
 
         if isinstance(
