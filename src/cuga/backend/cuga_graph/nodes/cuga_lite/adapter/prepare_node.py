@@ -459,7 +459,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             # Spawn may set workspace_thread_id to the parent thread while keeping a
             # fresh conversation thread_id for checkpointer/chat isolation.
             runtime_thread_id = cfg.get("workspace_thread_id") or (
-                cfg["thread_id"] if "thread_id" in cfg else (state.thread_id or adapter._thread_id)
+                cfg.get("logical_thread_id") or cfg.get("thread_id") or state.thread_id or adapter._thread_id
             )
         else:
             runtime_thread_id = None
@@ -487,7 +487,8 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             )
 
             _spawn_thread_id = (
-                (config or {}).get("configurable", {}).get("thread_id")
+                (config or {}).get("configurable", {}).get("logical_thread_id")
+                or (config or {}).get("configurable", {}).get("thread_id")
                 or getattr(state, "thread_id", None)
                 or adapter._thread_id
                 or ""
@@ -526,7 +527,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             special_instructions_final = (special_instructions_final or "") + evolve_extension
 
         cfg = config.get("configurable", {}) if config else {}
-        _thread_id = cfg.get("thread_id") or ""
+        _thread_id = cfg.get("logical_thread_id") or cfg.get("thread_id") or ""
         _knowledge_engine = cfg.get("knowledge_engine")
         if _knowledge_engine is None:
             try:
@@ -653,7 +654,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                         pass
                 if not agent_id:
                     agent_id = "cuga-default"
-                awareness_thread_id = cfg.get("thread_id")
+                awareness_thread_id = cfg.get("logical_thread_id") or cfg.get("thread_id")
 
                 # Use draft knowledge config for search-time params when
                 # running in draft mode (Try-It-Out). Published agent always

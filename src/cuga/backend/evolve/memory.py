@@ -92,7 +92,10 @@ async def build_evolve_special_instructions_extension(
     if current_user_id and memory_query:
         current_agent_id = str(service_scope.get("agent_id") or "").strip()
         thread_id_for_memory = str(
-            configurable.get("thread_id") or getattr(state, "thread_id", "") or ""
+            configurable.get("logical_thread_id")
+            or configurable.get("thread_id")
+            or getattr(state, "thread_id", "")
+            or ""
         ).strip()
 
         try:

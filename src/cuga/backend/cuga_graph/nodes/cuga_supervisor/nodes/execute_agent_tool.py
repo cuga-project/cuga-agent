@@ -91,7 +91,7 @@ def _delegation_state_update(state: CugaSupervisorState) -> dict:
 
 def _resolve_thread_id(state: CugaSupervisorState, config: Optional[RunnableConfig]) -> Optional[str]:
     cfg = config.get("configurable", {}) if config else {}
-    return cfg.get("thread_id") or state.thread_id
+    return cfg.get("logical_thread_id") or cfg.get("thread_id") or state.thread_id
 
 
 def _budget_updates() -> dict:

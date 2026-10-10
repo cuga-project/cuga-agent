@@ -193,7 +193,8 @@ class SpawnAgentRuntime:
         return f"sub_cuga_{uuid4().hex[:8]}"
 
     def _parent_thread_id(self) -> str:
-        return self._parent_config.get("configurable", {}).get("thread_id", "") or ""
+        cfg = self._parent_config.get("configurable", {})
+        return cfg.get("logical_thread_id") or cfg.get("thread_id") or ""
 
     def _resolve_thread_ids(self, share_workspace: bool) -> tuple[str, str]:
         """Return (conversation_thread_id, workspace_thread_id).

@@ -614,6 +614,11 @@ async def run_sync(request: Request):
             body.get("user_id"),
             _auth_uid,
         )
+    from cuga.backend.server.main import _assert_thread_access, _checkpoint_thread_id, app_state
+
+    runtime_agent_id = app_state.agent_id
+    await _assert_thread_access(thread_id, user_id, runtime_agent_id)
+    checkpoint_id = _checkpoint_thread_id(thread_id, user_id, runtime_agent_id)
     disable_history = bool(body.get("disable_history", False))
     attachments = body.get("attachments") or None
 
@@ -687,7 +692,7 @@ async def run_sync(request: Request):
             )
         try:
             try:
-                res = await supervisor.invoke(query, thread_id=thread_id)
+                res = await supervisor.invoke(query, thread_id=thread_id, checkpoint_thread_id=checkpoint_id)
                 answer = (getattr(res, "answer", None) or getattr(res, "result", None) or "") if res else ""
                 return {
                     "ok": bool(answer),
