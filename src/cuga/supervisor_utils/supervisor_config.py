@@ -446,6 +446,7 @@ def _get_model_from_config(model_config: Optional[Dict[str, Any]]):
     # Create model config dict with defaults and overrides
     model_settings = {
         "provider": provider,
+        "platform": provider,  # LLMManager selects the backend by "platform"
         "model_name": model_name,
         "max_tokens": model_config.get("max_tokens", default_config.get("max_tokens", 16000)),
         **{k: v for k, v in model_config.items() if k not in ["provider", "model_name"]},
