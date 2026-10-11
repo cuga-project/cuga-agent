@@ -35,6 +35,30 @@ from cuga.backend.tools_env.registry.mcp_manager.response_schema import extract_
 from cuga.backend.tools_env.registry.utils.schema_utils import json_schema_type
 import yaml
 from cuga.backend.utils.consts import ServiceType, LOCAL_ORCHESTRATE_URL, LOCAL_TRM_URL
+from cuga.backend.tools_env.registry.mcp_gateway import AUTH_TYPE as GATEWAY_AUTH_TYPE
+
+
+def _gateway_transport(name: str, config: ServiceConfig):
+    """Streamable HTTP transport to an MCP gateway instance, authenticated with a token
+    exchanged from the instance API key (renewed before expiry and after a 401)."""
+    from cuga.backend.secrets import resolve_secret
+    from cuga.backend.tools_env.registry import mcp_gateway
+
+    api_key = resolve_secret(config.auth.value) if config.auth.value else None
+    if not api_key:
+        raise Exception(f"MCP gateway entry '{name}' has no instance API key")
+    gateway = config.gateway or {}
+    if not gateway.get("instance_id"):
+        raise Exception(f"MCP gateway entry '{name}' has no instance id")
+    instance = mcp_gateway.GatewayInstance(
+        instance_url=gateway.get("instance_url", ""),
+        instance_id=gateway["instance_id"],
+        base_url=config.url.rsplit("/mcp", 1)[0],
+    )
+    verify = mcp_gateway.gateway_settings()["gateway_verify"]
+    return StreamableHttpTransport(
+        url=config.url, auth=mcp_gateway.auth_for(instance, api_key), verify=verify
+    )
 
 
 def _merge_auth_query_params(base_url: str, auth_params: dict[str, str]) -> str:
@@ -1015,6 +1039,9 @@ class MCPManager:
                 raise Exception(f"HTTP transport requires 'url' for {name}")
 
             print(f"Connecting to MCP server '{name}' via HTTP at {config.url}")
+
+            if config.auth and str(config.auth.type).lower() == GATEWAY_AUTH_TYPE:
+                return _gateway_transport(name, config)
 
             # Build headers from auth config if available
             headers = {}

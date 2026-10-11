@@ -673,6 +673,10 @@ export function ManagePage() {
           );
         }
         entry.transport = (t.transport as ToolEntry["transport"]) || "stdio";
+      } else if (type === "mcp" && t.gateway != null && typeof t.gateway === "object") {
+        const gw = t.gateway as Record<string, unknown>;
+        entry.gateway = { instance_url: String(gw.instance_url ?? entry.url ?? ""), run_as: "service" };
+        entry.transport = "http";
       } else if (type === "mcp" && entry.url) {
         entry.transport = (t.transport as ToolEntry["transport"]) || "sse";
       }

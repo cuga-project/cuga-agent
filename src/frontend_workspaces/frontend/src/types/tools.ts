@@ -6,7 +6,9 @@ export type AuthType =
   | "bearer"
   | "api-key"
   | "basic"
-  | "query";
+  | "query"
+  /** MCP gateway instance API key, exchanged by the registry for an instance token. */
+  | "account_iam_apikey";
 
 export interface ToolAuth {
   type: AuthType;
@@ -15,6 +17,35 @@ export interface ToolAuth {
 }
 
 export type McpTransport = "sse" | "stdio" | "http";
+
+/** Who the gateway sees on a tool call: the instance API key's service ID. */
+export type GatewayRunAs = "service";
+
+/** MCP gateway instance entry. `url` holds the instance URL (https://<gateway>/?instance=<id>). */
+export interface ToolGateway {
+  instance_url: string;
+  run_as: GatewayRunAs;
+}
+
+/** A tool the gateway instance exposes, grouped by the gateway's MCP server. */
+export interface GatewayServer {
+  name: string;
+  tools: { name: string; description: string }[];
+}
+
+const GATEWAY_INSTANCE_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/;
+
+/** The instance ID of a gateway instance URL, or null when the URL is not one. */
+export function parseGatewayInstanceUrl(url: string): string | null {
+  try {
+    const u = new URL(url.trim());
+    if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+    const id = (u.searchParams.get("instance") ?? "").trim();
+    return GATEWAY_INSTANCE_RE.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
 
 export interface ToolEntry {
   name: string;
@@ -30,6 +61,8 @@ export interface ToolEntry {
   /** Environment variables for command-based MCP servers. Values may be literal strings or secret refs. */
   env?: Record<string, string>;
   transport?: McpTransport;
+  /** Set for an MCP gateway instance; `include` then lists the selected gateway tools. */
+  gateway?: ToolGateway;
   /** Environment variables passed to STDIO transport subprocess. */
   env?: Record<string, string>;
 }

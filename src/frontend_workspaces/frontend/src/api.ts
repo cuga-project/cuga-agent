@@ -398,6 +398,19 @@ export function triggerKnowledgeReindexForConfig(agentId?: string): Promise<Resp
   });
 }
 
+/** List an MCP gateway instance's servers and tools with its API key (plain value or saved secret ref). */
+export async function discoverGateway(
+  url: string,
+  key: { apiKey?: string; apiKeyRef?: string },
+  agentId?: string
+): Promise<Response> {
+  return apiFetch("/api/manage/gateway/discover", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, api_key: key.apiKey, api_key_ref: key.apiKeyRef, agent_id: agentId }), // pragma: allowlist secret
+  });
+}
+
 export async function getToolsList(draft?: boolean): Promise<Response> {
   const q = draft ? "?draft=1" : "";
   return apiFetch(`/api/tools/list${q}`);

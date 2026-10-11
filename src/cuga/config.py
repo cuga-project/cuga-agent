@@ -208,6 +208,8 @@ validators = [
     Validator("auth.iam_proxy_skip_verify", default=False),
     Validator("auth.iam_proxy_ca_bundle", default=""),
     Validator("auth.role_token_source", default="auto"),
+    Validator("mcp_gateway.skip_verify", default=False),
+    Validator("mcp_gateway.ca_bundle", default=""),
     Validator("skills.enabled", default=False),
     Validator("skills.root", default="cuga", is_in=["cuga", "agents", "global_agents", "global_cuga"]),
     # Phase 6: explicit execution axes — override advanced_features when set.

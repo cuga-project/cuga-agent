@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { Add, Edit, TrashCan, Filter, Key } from "@carbon/icons-react";
+import { Add, Edit, TrashCan, Filter, Key, Launch } from "@carbon/icons-react";
 import {
   ComposedModal,
   ModalHeader,
@@ -171,8 +171,8 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
                 <div className="tools-config-tile-main">
                   <div className="tools-config-tile-info">
                     <span className="tools-config-tile-name">{t.name || (t.type === "mcp" ? "MCP" : "OpenAPI")}</span>
-                    <Tag type={t.type === "mcp" ? "blue" : "green"} size="sm">
-                      {t.type === "mcp" ? "MCP" : "OpenAPI"}
+                    <Tag type={t.gateway ? "teal" : t.type === "mcp" ? "blue" : "green"} size="sm">
+                      {t.gateway ? "MCP Gateway" : t.type === "mcp" ? "MCP" : "OpenAPI"}
                     </Tag>
                     {isBuiltIn && <Tag type="purple" size="sm">Built-in</Tag>}
                     {isConnected && <span className="tools-config-tile-badge">Connected</span>}
@@ -183,14 +183,27 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
                     )}
                   </div>
                   <HStack gap={1}>
-                    {isConnected && (
+                    {(isConnected || t.gateway) && (
                       <Button
                         kind="ghost"
                         size="sm"
                         hasIconOnly
                         iconDescription="Select tools"
                         renderIcon={Filter}
-                        onClick={() => setToolsModalIndex(i)}
+                        // A gateway's picker lists the instance's tools, also the unselected ones.
+                        onClick={() => (t.gateway ? setEditingIndex(i) : setToolsModalIndex(i))}
+                      />
+                    )}
+                    {t.gateway && (
+                      <Button
+                        kind="ghost"
+                        size="sm"
+                        hasIconOnly
+                        iconDescription="Open gateway console"
+                        renderIcon={Launch}
+                        href={t.gateway.instance_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
                       />
                     )}
                     <Button

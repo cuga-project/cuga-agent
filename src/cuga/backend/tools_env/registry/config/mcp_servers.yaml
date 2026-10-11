@@ -63,6 +63,20 @@ services:
 #     transport: sse
 #     description: Local Digital Sales API
 
+# MCP gateway instance (Streamable HTTP). Paste the instance URL from the workspace instance
+# page; the registry calls <gateway>/mcp/ with a token exchanged from the instance API key at
+# auth.iam_proxy_url, renewed before it expires. Only the tools in `include` are used.
+# mcpServers:
+#   team_tools:
+#     url: https://<gateway>/?instance=<instance id>
+#     gateway:
+#       run_as: service
+#     auth:
+#       type: account_iam_apikey
+#       value: db://team-tools-apikey  # a saved secret, never the key itself
+#     include: [demo-time-get-time]
+#     description: Team tools from the MCP gateway
+
 # Knowledge service (LangChain + Milvus Lite)
 # Auto-initializes on startup — no external services needed.
 mcpServers:
