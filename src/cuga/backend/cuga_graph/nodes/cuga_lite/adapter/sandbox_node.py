@@ -161,8 +161,10 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         # instead of an "Execution output:" message (see fc_actions). Empty for a
         # CodeAct block, where nothing below changes.
         fc_plan = fc_pending_plan(adapter, state)
+        fc_outcomes: dict = {}
         if fc_plan:
-            context.update(fc_context_overlay(adapter._tools_context, fc_plan))
+            fc_overlay, fc_outcomes = fc_context_overlay(adapter._tools_context, fc_plan)
+            context.update(fc_overlay)
         fc_meta = {adapter.metadata_key: metadata_without_plan(adapter, state)} if fc_plan else {}
 
         # Start tool call tracking (enabled via invoke parameter, or internally
@@ -320,11 +322,12 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 fc_replies, new_vars, dropped = replies_from_execution(
                     fc_plan,
                     new_vars,
+                    fc_outcomes,
                     output,
                     output_limit=settings.advanced_features.execution_output_max_length,
                     timeout=settings.advanced_features.sandbox_execution_timeout,
                 )
-                # Error markers: the reply carries them, the variables do not.
+                # A find_tools listing: the reply carries it, the variables do not.
                 for name in dropped:
                     if name in state.variables_manager.get_variable_names():
                         state.variables_manager.remove_variable(name)
@@ -490,7 +493,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             error_msg = f"Error during execution: {str(e)}"
             logger.error(error_msg)
             new_messages = (
-                replies_without_execution(fc_plan, NOT_EXECUTED_REPLY.format(reason=e))
+                replies_without_execution(fc_plan, NOT_EXECUTED_REPLY.format(reason=e), fc_outcomes)
                 if fc_plan
                 else [HumanMessage(content=error_msg)]
             )

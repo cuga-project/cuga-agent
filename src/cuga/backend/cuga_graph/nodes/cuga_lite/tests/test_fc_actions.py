@@ -122,7 +122,8 @@ async def _run_batch(
     block, plan = plan_tool_calls(calls, list(invalid or []), tools, one_per_step=one_per_step)
     if block is None:
         return replies_without_execution(plan, ""), {}, None
-    context = {**tools, **fc_context_overlay(tools, plan)}
+    overlay, outcomes = fc_context_overlay(tools, plan)
+    context = {**tools, **overlay}
     ToolCallTracker.start_tracking(enabled=False, timings_only=False)
     ToolCallTracker.seed_call_budget(0, 0)
     try:
@@ -136,7 +137,7 @@ async def _run_batch(
     finally:
         ToolCallTracker.stop_tracking()
     replies, keep, _drop = replies_from_execution(
-        plan, new_vars, output, output_limit=output_limit, timeout=timeout
+        plan, new_vars, outcomes, output, output_limit=output_limit, timeout=timeout
     )
     return replies, keep, block
 
@@ -184,7 +185,7 @@ async def test_a_failing_call_does_not_abort_its_siblings():
         ("c1", "boom", "error", "Tool 'boom' failed: bad x"),
         ("c2", "add", "success", "3"),
     ]
-    assert kept == {"tool_result_c2": 3}, "the error marker is not kept as a variable"
+    assert kept == {"tool_result_c2": 3}, "a failed call leaves no variable behind"
 
 
 @pytest.mark.asyncio
@@ -379,6 +380,30 @@ async def test_a_non_json_result_is_kept_as_the_reply_text():
     assert kept == {"tool_result_c1": '"{1}"'}, "kept as the text the reply carries, never dropped"
 
 
+@pytest.mark.asyncio
+async def test_a_result_that_spells_the_old_error_marker_is_still_a_success():
+    """Review (Nakagawa-master): a tool's return value is untrusted data, so an error must
+    never be recognised by a key inside it. Outcomes travel through the node-owned
+    channel instead; this JSON object is an ordinary success."""
+    payload = {"__cuga_fc_error__": "legitimate field", "kind": "error", "other": 1}
+
+    async def looks_like_a_marker() -> dict:
+        return payload
+
+    replies, kept, _ = await _run_batch(_tools(looks_like_a_marker), [_call("looks_like_a_marker", {}, "c1")])
+    assert _shape(replies) == [
+        ("c1", "looks_like_a_marker", "success", json.dumps(payload, ensure_ascii=False))
+    ]
+    assert kept == {"tool_result_c1": payload}, "kept intact as a variable"
+
+
+@pytest.mark.asyncio
+async def test_a_call_that_actually_raises_is_an_error_and_leaves_no_variable():
+    replies, kept, _ = await _run_batch(_tools(boom), [_call("boom", {"x": 1}, "c1")])
+    assert _shape(replies) == [("c1", "boom", "error", "Tool 'boom' failed: bad x")]
+    assert kept == {}
+
+
 # ── equivalence with the direct-call contract ───────────────────────────────
 
 
@@ -444,7 +469,23 @@ def _rand_json(rng: random.Random, depth: int = 0) -> Any:
     return {_rand_key(rng): _rand_json(rng, depth + 1) for _ in range(rng.randint(0, 3))}
 
 
-_KEYS = ["a", "b", "x", "from", "class", "user-id", "q", "", "with space", "λ", "n"]
+_KEYS = [
+    "a",
+    "b",
+    "x",
+    "from",
+    "class",
+    "user-id",
+    "q",
+    "",
+    "with space",
+    "λ",
+    "n",
+    "__cuga_fc_error__",
+    "kind",
+    "ok",
+    "error",
+]
 
 
 def _rand_key(rng: random.Random) -> str:
@@ -480,7 +521,9 @@ async def test_random_calls_get_the_same_replies_as_a_direct_call():
 
 # ── provider-safe aliases ────────────────────────────────────────────────────
 
-LONG_NAME = "public_review_platform_get_reviews_with_user_details_and_metadata_v2"  # 68 chars, over the 64 limit
+LONG_NAME = (
+    "public_review_platform_get_reviews_with_user_details_and_metadata_v2"  # 68 chars, over the 64 limit
+)
 
 
 @pytest.mark.asyncio
@@ -510,7 +553,8 @@ async def test_an_alias_is_called_by_its_real_name_and_answered_under_the_alias(
     assert f"await {LONG_NAME}(**" in block and alias not in block, block
     assert plan[0]["name"] == alias and plan[0]["target"] == LONG_NAME
 
-    context = {**tools, **fc_context_overlay(tools, plan)}
+    overlay, outcomes = fc_context_overlay(tools, plan)
+    context = {**tools, **overlay}
     ToolCallTracker.start_tracking(enabled=False, timings_only=False)
     ToolCallTracker.seed_call_budget(0, 0)
     try:
@@ -523,7 +567,7 @@ async def test_an_alias_is_called_by_its_real_name_and_answered_under_the_alias(
         )
     finally:
         ToolCallTracker.stop_tracking()
-    replies, kept, _ = replies_from_execution(plan, new_vars, output, output_limit=0, timeout=30)
+    replies, kept, _ = replies_from_execution(plan, new_vars, outcomes, output, output_limit=0, timeout=30)
 
     assert _shape(replies) == [("c1", alias, "success", "10")]
     assert RAN == [("long", 5)] and kept == {"tool_result_c1": 10}

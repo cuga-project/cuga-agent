@@ -22,7 +22,9 @@ What keeps the tool side identical to a direct call:
 - arguments are always passed as ``**{...}`` so keys like ``from`` work, and
   only JSON values are encoded — providers deliver JSON, so nothing is lost;
 - each call sits in its own ``try``: one failing call never aborts its siblings,
-  and the exception is kept as a marker the reply builder formats;
+  and every call records its outcome through ``_fc_ok`` / ``_fc_failed`` into a
+  dict the sandbox node owns — a trusted channel, never a spelling inside the
+  tool's own return value, which is untrusted data;
 - the result is kept through ``_fc_keep`` so a non-JSON value survives as the
   very text the reply carries instead of being dropped from the variables;
 - calls that cannot run (no name, unknown tool, unparsable arguments,
@@ -44,10 +46,10 @@ FC_PENDING_KEY = "fc_pending"
 """Metadata key: the turn's call plan while the sandbox runs the block; cleared on every sandbox exit."""
 
 FC_KEEP_KEY = "_fc_keep"
+FC_OK_KEY = "_fc_ok"
+FC_FAILED_KEY = "_fc_failed"
 FC_TOOLS_KEY = "_fc_tools"
-FC_BUDGET_EXC_KEY = "_fc_budget_exc"
 RESULT_VAR_PREFIX = "tool_result_"
-_ERROR_KEY = "__cuga_fc_error__"
 _TIMEOUT_PREFIX = "Error during execution: Execution timed out"
 
 DEFERRED_CALL_MESSAGE = (
@@ -184,12 +186,6 @@ def _pre_decided(content: str) -> Dict[str, str]:
     return {"content": content, "status": "error"}
 
 
-_ERROR_MARKER_SRC = (
-    "{" + json.dumps(_ERROR_KEY) + ': str(_fc_e), "kind": "TypeError" if isinstance(_fc_e, TypeError) '
-    'else ("budget" if isinstance(_fc_e, ' + FC_BUDGET_EXC_KEY + ') else "error")}'
-)
-
-
 def plan_tool_calls(
     calls: List[Any],
     invalid: List[Any],
@@ -267,11 +263,13 @@ def plan_tool_calls(
         else:
             entry["lookup"] = True
             callee = f"{FC_TOOLS_KEY}[{json.dumps(target, ensure_ascii=False)}]"
+        id_src = json.dumps(call_id, ensure_ascii=False)
         lines += [
             "try:",
             f"    {var} = {FC_KEEP_KEY}(await {callee}(**{args_src}))",
+            f"    {FC_OK_KEY}({id_src}, {var})",
             "except Exception as _fc_e:",
-            f"    {var} = {_ERROR_MARKER_SRC}",
+            f"    {FC_FAILED_KEY}({id_src}, _fc_e)",
         ]
 
     for index, bad in enumerate(invalid):
@@ -308,19 +306,39 @@ def metadata_without_plan(adapter: Any, state: Any) -> Dict[str, Any]:
     return {k: v for k, v in (adapter.get_metadata(state) or {}).items() if k != FC_PENDING_KEY}
 
 
-def fc_context_overlay(tools_context: Dict[str, Any], plan: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Names the block needs beyond the tools: the keeper, the budget exception and the lookup table.
+def fc_context_overlay(
+    tools_context: Dict[str, Any], plan: List[Dict[str, Any]]
+) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
+    """Names the block needs beyond the tools, and the outcome channel they write to.
 
-    All ``_``-prefixed, so the executor neither counts them as tools nor keeps
-    them as variables. Lookup entries are budget-counted here because the
-    executor only wraps top-level callables.
+    Returns ``(overlay, outcomes)``. ``overlay`` holds the keeper, the two outcome
+    recorders and the lookup table for non-identifier names, all ``_``-prefixed so
+    the executor neither counts them as tools nor keeps them as variables. The
+    recorders close over ``outcomes``, the node's own dict: the block is generated
+    code, so what lands there is decided by its structure, not by anything a tool
+    returns. Lookup entries are budget-counted here because the executor only
+    wraps top-level callables.
     """
     from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
         ToolCallBudgetExceeded,
         counted_tool_call,
     )
 
-    overlay: Dict[str, Any] = {FC_KEEP_KEY: fc_keep, FC_BUDGET_EXC_KEY: ToolCallBudgetExceeded}
+    outcomes: Dict[str, Dict[str, Any]] = {}
+
+    def _ok(call_id: str, value: Any) -> None:
+        outcomes[call_id] = {"ok": True, "value": value}
+
+    def _failed(call_id: str, exc: BaseException) -> None:
+        if isinstance(exc, ToolCallBudgetExceeded):
+            kind = "budget"
+        elif isinstance(exc, TypeError):
+            kind = "TypeError"
+        else:
+            kind = "error"
+        outcomes[call_id] = {"ok": False, "kind": kind, "error": str(exc)}
+
+    overlay: Dict[str, Any] = {FC_KEEP_KEY: fc_keep, FC_OK_KEY: _ok, FC_FAILED_KEY: _failed}
     lookup = {
         e["target"]: counted_tool_call(tools_context[e["target"]])
         for e in plan
@@ -328,12 +346,12 @@ def fc_context_overlay(tools_context: Dict[str, Any], plan: List[Dict[str, Any]]
     }
     if lookup:
         overlay[FC_TOOLS_KEY] = lookup
-    return overlay
+    return overlay, outcomes
 
 
-def _format_error(name: str, marker: Dict[str, Any]) -> str:
-    text = str(marker.get(_ERROR_KEY, ""))
-    kind = marker.get("kind")
+def _format_error(name: str, outcome: Dict[str, Any]) -> str:
+    text = str(outcome.get("error", ""))
+    kind = outcome.get("kind")
     if kind == "TypeError":
         return f"Tool '{name}' rejected these arguments: {text}. Check the parameter names and types."
     if kind == "budget":
@@ -350,61 +368,69 @@ def _unreached_reason(output: str, timeout: Any) -> str:
     return NOT_EXECUTED_REPLY.format(reason=first_line.replace("{", "{{").replace("}", "}}"))
 
 
+def _reply_for(
+    entry: Dict[str, Any],
+    outcome: Optional[Dict[str, Any]],
+    value_lookup: Dict[str, Any],
+    unreached: str,
+    budget: _BatchOutputBudget,
+    drop: List[str],
+) -> ToolMessage:
+    call_id, name = entry["id"], entry.get("name") or ""
+    pre = entry.get("reply")
+    if pre:
+        return _error_message(pre["content"], call_id=call_id, name=name)
+    if outcome is None:
+        return _error_message(unreached.format(name=name), call_id=call_id, name=name)
+    if not outcome.get("ok"):
+        return _error_message(_format_error(name, outcome), call_id=call_id, name=name)
+    var = entry.get("var")
+    value = value_lookup[var] if var is not None and var in value_lookup else outcome.get("value")
+    if var is not None and _is_listing(value):
+        drop.append(var)
+    return ToolMessage(content=budget.take(_stringify(value)), tool_call_id=call_id, name=name)
+
+
+def _is_listing(value: Any) -> bool:
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import is_find_tools_listing_markdown
+
+    return is_find_tools_listing_markdown(value)
+
+
 def replies_from_execution(
     plan: List[Dict[str, Any]],
     new_vars: Dict[str, Any],
+    outcomes: Dict[str, Dict[str, Any]],
     output: str,
     *,
     output_limit: Any,
     timeout: Any,
 ) -> Tuple[List[ToolMessage], Dict[str, Any], List[str]]:
-    """One ``ToolMessage`` per issued id, read back from the block's variables.
+    """One ``ToolMessage`` per issued id, from the outcome channel and the block's variables.
 
-    Returns ``(replies, variables_to_keep, variables_to_drop)``: error markers
-    are formatted into their reply and dropped from the variables, and so is a
-    find_tools listing — the reply carries it, CodeAct never keeps it either.
+    Returns ``(replies, variables_to_keep, variables_to_drop)``. A call with no
+    outcome never ran — the block timed out before it, or failed outside the
+    per-call guard — and is answered with why. A find_tools listing is replied but
+    dropped from the variables, as CodeAct never keeps it either.
     """
-    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import is_find_tools_listing_markdown
-
     budget = _BatchOutputBudget(output_limit)
-    keep = dict(new_vars)
     drop: List[str] = []
     unreached = _unreached_reason(output, timeout)
-    replies: List[ToolMessage] = []
-    for entry in plan:
-        call_id, name = entry["id"], entry.get("name") or ""
-        pre = entry.get("reply")
-        if pre:
-            replies.append(_error_message(pre["content"], call_id=call_id, name=name))
-            continue
-        var = entry.get("var")
-        if var is not None and var in new_vars:
-            value = new_vars[var]
-            if isinstance(value, dict) and _ERROR_KEY in value:
-                keep.pop(var, None)
-                drop.append(var)
-                replies.append(_error_message(_format_error(name, value), call_id=call_id, name=name))
-            else:
-                if is_find_tools_listing_markdown(value):
-                    keep.pop(var, None)
-                    drop.append(var)
-                replies.append(
-                    ToolMessage(content=budget.take(_stringify(value)), tool_call_id=call_id, name=name)
-                )
-            continue
-        replies.append(_error_message(unreached.format(name=name), call_id=call_id, name=name))
+    replies = [_reply_for(e, outcomes.get(e["id"]), new_vars, unreached, budget, drop) for e in plan]
+    keep = {k: v for k, v in new_vars.items() if k not in drop}
     return replies, keep, drop
 
 
-def replies_without_execution(plan: List[Dict[str, Any]], reason: str) -> List[ToolMessage]:
-    """Every id answered when the block did not run (VERIFY revise, a failure outside the block).
+def replies_without_execution(
+    plan: List[Dict[str, Any]],
+    reason: str,
+    outcomes: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> List[ToolMessage]:
+    """Every id answered when the block did not complete (VERIFY revise, a failure outside it).
 
-    Pre-decided replies are delivered as they are; every call that would have
-    run gets ``reason``.
+    Pre-decided replies are delivered as they are; calls whose outcome was
+    recorded before the failure keep it; every other call gets ``reason``.
     """
-    out: List[ToolMessage] = []
-    for entry in plan:
-        pre = entry.get("reply")
-        text = pre["content"] if pre else reason
-        out.append(_error_message(text, call_id=entry["id"], name=entry.get("name") or ""))
-    return out
+    budget = _BatchOutputBudget(0)
+    drop: List[str] = []
+    return [_reply_for(e, (outcomes or {}).get(e["id"]), {}, reason, budget, drop) for e in plan]
