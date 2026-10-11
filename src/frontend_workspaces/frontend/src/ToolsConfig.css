@@ -162,3 +162,10 @@
   font-size: 0.875rem;
   display: block;
 }
+
+/* The tools panel can be narrow (side panel): let the action buttons wrap. */
+.tools-config-actions {
+  flex-wrap: wrap;
+  row-gap: 0.5rem;
+  max-width: 100%;
+}

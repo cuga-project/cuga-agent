@@ -15,6 +15,7 @@ import json
 import re
 import threading
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Generator
 from urllib.parse import parse_qs, urlsplit, urlunsplit
@@ -24,6 +25,14 @@ from loguru import logger
 
 AUTH_TYPE = "account_iam_apikey"
 RUN_AS_SERVICE = "service"
+RUN_AS_USER = "user"
+
+# A user-mode call carries the user's instance token in this header (agent -> registry only).
+USER_TOKEN_HEADER = "X-Cuga-Gateway-Token"
+# The registry's 401 body when a user-mode call has no token; it names the instance.
+ERROR_USER_TOKEN_REQUIRED = "gateway_user_token_required"
+# The user's instance token for the tool call being served (registry, task-local).
+CALL_USER_TOKEN: ContextVar[str | None] = ContextVar("cuga_gateway_call_user_token", default=None)
 
 # A token is renewed this long before it expires.
 RENEW_BEFORE_SECONDS = 300
@@ -59,6 +68,22 @@ def parse_instance_url(url: str) -> GatewayInstance:
         )
     base_url = urlunsplit((parts.scheme, parts.netloc, "", "", "")).rstrip("/")
     return GatewayInstance(instance_url=raw, instance_id=instance_id, base_url=base_url)
+
+
+def user_mode_instance(config: Any) -> str | None:
+    """The instance ID when tool calls of this service config run as the signed-in user."""
+    gateway = getattr(config, "gateway", None) or {}
+    if gateway.get("run_as") == RUN_AS_USER and gateway.get("instance_id"):
+        return str(gateway["instance_id"])
+    return None
+
+
+def user_token_required_body(instance_id: str) -> dict[str, str]:
+    return {
+        "error": ERROR_USER_TOKEN_REQUIRED,
+        "instance_id": instance_id,
+        "message": "This gateway tool runs as the signed-in user, and the call had no user token.",
+    }
 
 
 def gateway_settings() -> dict[str, Any]:

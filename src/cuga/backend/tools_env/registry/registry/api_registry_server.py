@@ -2,7 +2,7 @@ import json
 import os
 from contextlib import asynccontextmanager
 from json import JSONDecodeError
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from pathlib import Path
 from mcp.types import TextContent
 from pydantic import BaseModel  # Import BaseModel for request body
@@ -14,6 +14,7 @@ from cuga.backend.tools_env.registry.config.config_loader import (
     load_service_configs,
     load_service_configs_from_db,
 )
+from cuga.backend.tools_env.registry import mcp_gateway
 from cuga.backend.tools_env.registry.mcp_manager.mcp_manager import MCPManager
 from cuga.backend.tools_env.registry.registry.api_registry import ApiRegistry
 from cuga.backend.tools_env.registry.registry.appworld_path_normalizer import (
@@ -308,6 +309,7 @@ async def call_mcp_function(
     request: FunctionCallRequest,
     trajectory_path: Optional[str] = None,
     agent_id: Optional[str] = Query(None, description="Agent ID (database mode only)"),
+    http_request: Request = None,
 ):
     global registry, mcp_manager, database_mode
 
@@ -369,12 +371,30 @@ async def call_mcp_function(
             if served_as_http_error:
                 return JSONResponse(status_code=short_circuit.get("status_code", 422), content=short_circuit)
             return JSONResponse(status_code=200, content=short_circuit)
-        result: TextContent = await reg.call_function(
-            app_name=request.app_name,
-            function_name=request.function_name,
-            arguments=request.args,
-            auth_config=mcp_mgr.auth_config.get(request.app_name) if is_secure else None,
+        # MCP gateway servers whose calls run as the signed-in user need the user's instance
+        # token; without it the agent gets a 401 naming the instance and retries with one.
+        gateway_instance = mcp_gateway.user_mode_instance(
+            (getattr(mcp_mgr, "schema_urls", None) or {}).get(request.app_name)
         )
+        user_token = (
+            http_request.headers.get(mcp_gateway.USER_TOKEN_HEADER)
+            if gateway_instance and http_request is not None
+            else None
+        )
+        if gateway_instance and not user_token:
+            return JSONResponse(
+                status_code=401, content=mcp_gateway.user_token_required_body(gateway_instance)
+            )
+        token_reset = mcp_gateway.CALL_USER_TOKEN.set(user_token)
+        try:
+            result: TextContent = await reg.call_function(
+                app_name=request.app_name,
+                function_name=request.function_name,
+                arguments=request.args,
+                auth_config=mcp_mgr.auth_config.get(request.app_name) if is_secure else None,
+            )
+        finally:
+            mcp_gateway.CALL_USER_TOKEN.reset(token_reset)
 
         # Check if this is an /auth/token endpoint call and update stored token
         # Only do this when benchmark is "appworld"

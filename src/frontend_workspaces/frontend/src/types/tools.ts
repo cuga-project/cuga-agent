@@ -18,8 +18,8 @@ export interface ToolAuth {
 
 export type McpTransport = "sse" | "stdio" | "http";
 
-/** Who the gateway sees on a tool call: the instance API key's service ID. */
-export type GatewayRunAs = "service";
+/** Who the gateway sees on a tool call: the signed-in user, or the instance API key's service ID. */
+export type GatewayRunAs = "user" | "service";
 
 /** MCP gateway instance entry. `url` holds the instance URL (https://<gateway>/?instance=<id>). */
 export interface ToolGateway {

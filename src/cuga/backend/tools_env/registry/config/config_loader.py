@@ -188,7 +188,7 @@ def _gateway_block(service_name: str, config: dict) -> Optional[Dict[str, Any]]:
     block = config.get('gateway')
     if not isinstance(block, dict):
         return None
-    from cuga.backend.tools_env.registry.mcp_gateway import RUN_AS_SERVICE, parse_instance_url
+    from cuga.backend.tools_env.registry.mcp_gateway import RUN_AS_SERVICE, RUN_AS_USER, parse_instance_url
 
     instance_url = block.get('instance_url') or config.get('url') or ''
     try:
@@ -198,7 +198,7 @@ def _gateway_block(service_name: str, config: dict) -> Optional[Dict[str, Any]]:
     return {
         'instance_url': instance.instance_url,
         'instance_id': instance.instance_id,
-        'run_as': block.get('run_as') or RUN_AS_SERVICE,
+        'run_as': RUN_AS_USER if block.get('run_as') == RUN_AS_USER else RUN_AS_SERVICE,
         '_mcp_url': instance.mcp_url,
     }
 

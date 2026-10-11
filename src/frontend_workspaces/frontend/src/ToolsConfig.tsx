@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { Add, Edit, TrashCan, Filter, Key, Launch } from "@carbon/icons-react";
+import { Add, Edit, TrashCan, Filter, Key, Launch, Connect } from "@carbon/icons-react";
 import {
   ComposedModal,
   ModalHeader,
@@ -48,6 +48,7 @@ const DEFAULT_BUILTIN_TOOLS = ["knowledge"];
 function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools = [], agentId = "cuga-default", builtinTools = DEFAULT_BUILTIN_TOOLS, onError, onOpenSecrets }: ToolsConfigProps) {
   const builtinSet = useMemo(() => new Set(builtinTools.map(n => n.toLowerCase())), [builtinTools]);
   const [modalOpen, setModalOpen] = useState(false);
+  const [gatewayModalOpen, setGatewayModalOpen] = useState(false);
   const [secretsOpen, setSecretsOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [toolsModalIndex, setToolsModalIndex] = useState<number | null>(null);
@@ -174,6 +175,15 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
                     <Tag type={t.gateway ? "teal" : t.type === "mcp" ? "blue" : "green"} size="sm">
                       {t.gateway ? "MCP Gateway" : t.type === "mcp" ? "MCP" : "OpenAPI"}
                     </Tag>
+                    {t.gateway && (
+                      <Tag
+                        type="gray"
+                        size="sm"
+                        title={t.gateway.run_as === "user" ? "Tool calls run as each signed-in user" : "Tool calls run as the instance API key's service ID"}
+                      >
+                        {t.gateway.run_as === "user" ? "as user" : "as service ID"}
+                      </Tag>
+                    )}
                     {isBuiltIn && <Tag type="purple" size="sm">Built-in</Tag>}
                     {isConnected && <span className="tools-config-tile-badge">Connected</span>}
                     {hasSubset && (
@@ -261,10 +271,13 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
         </Stack>
       )}
 
-      <HStack gap={3}>
+      <HStack gap={3} className="tools-config-actions">
         <Button kind="ghost" size="sm" hasIconOnly iconDescription="Manage secrets" renderIcon={Key} onClick={() => (onOpenSecrets ? onOpenSecrets() : setSecretsOpen(true))} />
         <Button kind="secondary" size="sm" renderIcon={Add} onClick={() => setModalOpen(true)}>
           Add tool
+        </Button>
+        <Button kind="tertiary" size="sm" renderIcon={Connect} onClick={() => setGatewayModalOpen(true)}>
+          MCP Gateway
         </Button>
         {tools.length > TOOLS_PREVIEW_COUNT && !showAllTools && (
           <Button kind="ghost" size="sm" onClick={() => setShowAllTools(true)}>
@@ -285,6 +298,15 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
           onSave={handleAdd}
           initial={null}
           agentId={agentId}
+        />
+      )}
+      {gatewayModalOpen && (
+        <AddToolModal
+          onClose={() => setGatewayModalOpen(false)}
+          onSave={handleAdd}
+          initial={null}
+          agentId={agentId}
+          gatewayOnly
         />
       )}
       {editingIndex !== null && editingTool !== null && (

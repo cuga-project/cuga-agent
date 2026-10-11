@@ -15,8 +15,8 @@ import {
   Checkbox,
   InlineNotification,
 } from "@carbon/react";
-import { Template, Folder } from "@carbon/icons-react";
-import type { ToolEntry, ToolAuth, AuthType, GatewayServer } from "./types/tools";
+import { Template, Folder, Connect } from "@carbon/icons-react";
+import type { ToolEntry, ToolAuth, AuthType, GatewayServer, GatewayRunAs } from "./types/tools";
 import { AUTH_TYPE_OPTIONS, parseGatewayInstanceUrl } from "./types/tools";
 import * as api from "./api";
 import "./AddToolModal.css";
@@ -26,6 +26,8 @@ interface AddToolModalProps {
   onSave: (tool: ToolEntry) => void;
   initial?: ToolEntry | null;
   agentId?: string;
+  /** Open as the dedicated MCP gateway form (no templates, type or connection choice). */
+  gatewayOnly?: boolean;
 }
 
 const emptyAuth: ToolAuth = { type: "none" };
@@ -45,6 +47,19 @@ interface ToolTemplate {
 }
 
 const TOOL_TEMPLATES: ToolTemplate[] = [
+  {
+    id: "mcp_gateway",
+    name: "MCP Gateway instance",
+    description: "Tools of a gateway instance in your workspace, with its API key",
+    icon: Connect,
+    config: {
+      name: "",
+      type: "mcp",
+      mcpMode: "gateway",
+      description: "Tools from the MCP gateway",
+      transport: "http",
+    },
+  },
   {
     id: "filesystem",
     name: "Filesystem",
@@ -112,8 +127,13 @@ function initFromTool(initial: ToolEntry | null | undefined) {
   };
 }
 
-export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModalProps) {
+export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }: AddToolModalProps) {
   const init = initFromTool(initial);
+  const gatewayForm = !!gatewayOnly || !!initial?.gateway;
+  if (gatewayOnly && !initial) {
+    init.mcpMode = "gateway";
+    init.description = "Tools from the MCP gateway";
+  }
   const [name, setName] = useState(init.name);
   const [type, setType] = useState<"mcp" | "openapi">(init.type);
   const [mcpMode, setMcpMode] = useState<McpConnectionMode>(init.mcpMode);
@@ -134,12 +154,13 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
   const [inlineCreateOpen, setInlineCreateOpen] = useState(false);
   const [inlineCreateValue, setInlineCreateValue] = useState("");
   const [inlineCreateKey, setInlineCreateKey] = useState("");
-  const [showTemplates, setShowTemplates] = useState(!initial);
+  const [showTemplates, setShowTemplates] = useState(!initial && !gatewayForm);
   // MCP gateway instance: the instance's servers and tools (after Connect) and the selection.
   const [gatewayServers, setGatewayServers] = useState<GatewayServer[] | null>(null);
   const [gatewaySelected, setGatewaySelected] = useState<Set<string>>(
     () => new Set(initial?.gateway ? initial.include ?? [] : [])
   );
+  const [gatewayRunAs, setGatewayRunAs] = useState<GatewayRunAs>(initial?.gateway?.run_as ?? "user");
   const [gatewayConnecting, setGatewayConnecting] = useState(false);
   const [gatewayError, setGatewayError] = useState("");
   const [submitError, setSubmitError] = useState("");
@@ -264,7 +285,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
         url: url.trim(),
         transport: "http",
         description: description.trim() || undefined,
-        gateway: { instance_url: url.trim(), run_as: "service" },
+        gateway: { instance_url: url.trim(), run_as: gatewayRunAs },
         auth: { type: GATEWAY_AUTH_TYPE, value: ref },
         include: [...gatewaySelected].sort(),
       });
@@ -502,7 +523,10 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
 
   return (
     <ComposedModal open onClose={onClose} size="lg" isFullWidth preventCloseOnClickOutside>
-      <ModalHeader title={initial ? "Edit tool" : "Add tool"} buttonOnClick={onClose} />
+      <ModalHeader
+        title={gatewayForm ? (initial ? "Edit MCP Gateway" : "Add MCP Gateway") : initial ? "Edit tool" : "Add tool"}
+        buttonOnClick={onClose}
+      />
       <form onSubmit={handleSubmit}>
         <ModalBody hasScrollingContent className="add-tool-modal-body">
           {!initial && showTemplates && (
@@ -546,7 +570,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
               </div>
             </div>
           )}
-          {!initial && !showTemplates && (
+          {!initial && !showTemplates && !gatewayForm && (
             <div style={{ marginBottom: "1rem" }}>
               <Button
                 kind="ghost"
@@ -570,6 +594,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
               helperText={!nameError || name.trim() === "" ? "Lowercase letters, digits, underscores (e.g. my_tool)" : undefined}
             />
           </FormGroup>
+          {!gatewayForm && (
           <FormGroup legendText="">
             <Select
               id="tool-type"
@@ -581,7 +606,8 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
               <SelectItem value="openapi" text="OpenAPI service" />
             </Select>
           </FormGroup>
-          {type === "mcp" && (
+          )}
+          {type === "mcp" && !gatewayForm && (
             <FormGroup legendText="">
               <Select
                 id="tool-mcp-mode"
@@ -686,8 +712,23 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
           </FormGroup>
           {isGateway ? (
             <FormGroup legendText="Instance API key">
-              <p className="cds--type-helper-text-01" style={{ marginBottom: "0.5rem" }}>
-                An API key created on the instance page. It is stored as a secret; tool calls run as its service ID.
+              <Select
+                id="tool-gateway-run-as"
+                labelText="Tool calls run as"
+                value={gatewayRunAs}
+                onChange={(e) => setGatewayRunAs(e.target.value as GatewayRunAs)}
+                helperText={
+                  gatewayRunAs === "user"
+                    ? "Each chat user's own identity and role on the instance (token exchange at sign-in). Runs without a signed-in user cannot use these tools."
+                    : "The API key's service ID, for every user and for scheduled runs. The gateway sees one identity."
+                }
+              >
+                <SelectItem value="user" text="Signed-in user" />
+                <SelectItem value="service" text="Service ID (instance API key)" />
+              </Select>
+              <p className="cds--type-helper-text-01" style={{ margin: "0.75rem 0 0.5rem" }}>
+                An API key created on the instance page, stored as a secret. It lists the instance's tools
+                {gatewayRunAs === "service" ? " and makes the tool calls." : "; the calls use each user's token."}
               </p>
               {secretFields}
               <Button
@@ -775,7 +816,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
             Cancel
           </Button>
           <Button kind="primary" type="submit" disabled={!valid}>
-            {initial ? "Save" : "Add tool"}
+            {initial ? "Save" : gatewayForm ? "Add gateway" : "Add tool"}
           </Button>
         </ModalFooter>
       </form>

@@ -1152,6 +1152,24 @@ class MCPManager:
 
         return flattened
 
+    def _call_transport(self, server_name: str):
+        """The stored transport, or for a user-mode gateway server a transport for this call
+        with the user's instance token (listing keeps using the instance API key)."""
+        from cuga.backend.tools_env.registry import mcp_gateway
+
+        config = self.schema_urls.get(server_name)
+        instance_id = mcp_gateway.user_mode_instance(config)
+        if not instance_id:
+            return self.mcp_transports[server_name]
+        token = mcp_gateway.CALL_USER_TOKEN.get()
+        if not token:
+            raise Exception(mcp_gateway.user_token_required_body(instance_id)["message"])
+        return StreamableHttpTransport(
+            url=config.url,
+            headers={"Authorization": f"Bearer {token}"},
+            verify=mcp_gateway.gateway_settings()["gateway_verify"],
+        )
+
     async def _call_mcp_server_tool(self, server_name: str, tool_name: str, args: dict):
         """Call a tool on an external MCP server using FastMCP client with SSE transport"""
         try:
@@ -1169,7 +1187,7 @@ class MCPManager:
                 # that the MCP server registered under.
                 original_tool_name = self.original_tool_name_by_sanitized[tool_name]
 
-                transport = self.mcp_transports[server_name]
+                transport = self._call_transport(server_name)
                 client = FastMCPClient(transport)
 
                 async with client:

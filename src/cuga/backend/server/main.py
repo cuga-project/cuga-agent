@@ -1565,8 +1565,13 @@ async def event_stream(
     user_attachments: Optional[List[Dict[str, Any]]] = None,
     agent_id: Optional[str] = None,
     current_llm: Any = _RUNTIME_LLM_UNSET,
+    gateway_tokens: Any = None,
 ):
     """Handles the main agent event stream. If agent is None, uses app_state.agent (published)."""
+    from cuga.backend.server.auth.gateway_tokens import set_provider
+
+    # The signed-in user's MCP gateway tokens for tool calls of this run (task-local).
+    set_provider(gateway_tokens)
     from cuga.backend.activity_tracker.tracker import ActivityTracker
     from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
     from cuga.backend.cuga_graph.utils.agent_loop import AgentLoop, AgentLoopAnswer, StreamEvent
@@ -2426,6 +2431,20 @@ async def auth_callback(request: Request):
         samesite="lax",
         secure=secure,
     )
+    # Keep the IdP token (encrypted, bound to this session) for MCP gateway tools that run as
+    # the signed-in user. Skipped when no encryption key is configured.
+    from cuga.backend.server.auth import gateway_tokens
+
+    idp_cookie = gateway_tokens.encode_idp_cookie(token_response.access_token or "", token)
+    if idp_cookie:
+        response.set_cookie(
+            key=gateway_tokens.IDP_COOKIE_NAME,
+            value=idp_cookie,
+            max_age=session_max_age,
+            httponly=True,
+            samesite="lax",
+            secure=secure,
+        )
     state_samesite = "none" if secure else "lax"
     response.delete_cookie("cuga_auth_state", secure=secure, samesite=state_samesite)
     return response
@@ -2454,6 +2473,9 @@ async def auth_logout():
         httponly=True,
         samesite="lax",
     )
+    from cuga.backend.server.auth.gateway_tokens import IDP_COOKIE_NAME
+
+    response.delete_cookie(key=IDP_COOKIE_NAME, path="/", httponly=True, samesite="lax")
     return response
 
 
@@ -2729,6 +2751,7 @@ async def stream(
 ):
     """Endpoint to start the agent stream. Use draft agent when X-Use-Draft is set."""
     from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+    from cuga.backend.server.auth.gateway_tokens import provider_from_request
 
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     query = await get_query(request)
@@ -2807,6 +2830,7 @@ async def stream(
             user_attachments=user_attachments,
             agent_id=agent_id_header,
             current_llm=runtime_llm,
+            gateway_tokens=provider_from_request(request, current_user),
         ),
         media_type="text/event-stream",
     )
