@@ -281,3 +281,19 @@ async def test_discover_route_accepts_only_saved_secret_refs():
             )
         )
     assert e.value.status_code == 400
+
+
+def test_agent_include_filter_accepts_raw_mcp_tool_names():
+    """Manage stores the gateway's raw names ("demo-time-add"); the agent's tools carry the
+    sanitized, prefixed names ("team_tools_demo_time_add"). Both filters must keep the tool."""
+    from types import SimpleNamespace
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
+
+    tools = [SimpleNamespace(name=n) for n in ("team_tools_demo_time_add", "team_tools_demo_time_echo")]
+    kept = CombinedToolProvider._filter_tools_by_include(None, tools, "team_tools", ["demo-time-add"])
+    assert [t.name for t in kept] == ["team_tools_demo_time_add"]
+    kept = CombinedToolProvider._filter_tools_by_include(
+        None, tools, "team_tools", ["team_tools_demo_time_echo"]
+    )
+    assert [t.name for t in kept] == ["team_tools_demo_time_echo"]

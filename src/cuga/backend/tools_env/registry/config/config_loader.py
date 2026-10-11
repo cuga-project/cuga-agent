@@ -170,6 +170,9 @@ async def load_service_configs_from_db(agent_id: str = "cuga-default") -> Dict[s
             service_config = _create_service_config(
                 name, tool, is_mcp_server=tool.get("type", "mcp").lower() == "mcp"
             )
+            if service_config.gateway is not None:
+                # Manage saves the API key as a secret of this agent (draft and published share it).
+                service_config.gateway['secret_agent_id'] = agent_id.removesuffix('--draft')
             services[name] = service_config
 
         logger.info(f"Loaded {len(services)} services from database for agent '{agent_id}'")

@@ -44,10 +44,15 @@ def _gateway_transport(name: str, config: ServiceConfig):
     from cuga.backend.secrets import resolve_secret
     from cuga.backend.tools_env.registry import mcp_gateway
 
-    api_key = resolve_secret(config.auth.value) if config.auth.value else None
-    if not api_key:
-        raise Exception(f"MCP gateway entry '{name}' has no instance API key")
     gateway = config.gateway or {}
+    # A secret saved for the agent is found only with its agent ID; global secrets either way.
+    api_key = (
+        resolve_secret(config.auth.value, agent_id=gateway.get("secret_agent_id"))
+        if config.auth.value
+        else None
+    )
+    if not api_key:
+        raise Exception(f"MCP gateway entry '{name}' has no instance API key (secret not found)")
     if not gateway.get("instance_id"):
         raise Exception(f"MCP gateway entry '{name}' has no instance id")
     instance = mcp_gateway.GatewayInstance(
