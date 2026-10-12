@@ -9,8 +9,6 @@ async def deliver_source_deletions():
     from cuga.backend.evolve.retention import supports_durable_retention
     from cuga.backend.server.conversation_history import get_conversation_db
 
-    if not EvolveIntegration.is_enabled():
-        return
     db = get_conversation_db()
     events = await db.pending_source_deletions()
     if not events:

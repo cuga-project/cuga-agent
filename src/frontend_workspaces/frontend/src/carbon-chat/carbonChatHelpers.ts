@@ -176,6 +176,26 @@ export interface ParsedAnswerResult {
    * (`{data, variables, active_policies, sources?}`). Shape matches the
    * `MessageSource` type exported by `agentic_chat/Citations`. */
   sources: any[];
+  memoryUsage: MemoryUsageDisclosure | null;
+  memorySaved: MemoryUsageDisclosure | null;
+}
+
+export interface MemoryUsageDisclosure {
+  count: number;
+  entityIds: string[];
+}
+
+export function parseMemoryUsage(value: unknown): MemoryUsageDisclosure | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { count?: unknown; entity_ids?: unknown };
+  const entityIds = Array.isArray(candidate.entity_ids)
+    ? Array.from(new Set(candidate.entity_ids.filter((item): item is string => typeof item === "string" && item.length > 0)))
+    : [];
+  const count = typeof candidate.count === "number" && Number.isFinite(candidate.count)
+    ? Math.max(0, Math.floor(candidate.count))
+    : entityIds.length;
+  if (count === 0 || entityIds.length === 0) return null;
+  return { count, entityIds };
 }
 
 export function parseAnswerEventData(
@@ -188,6 +208,8 @@ export function parseAnswerEventData(
     isToolApproval: false,
     policyData: null,
     sources: [],
+    memoryUsage: null,
+    memorySaved: null,
   };
 
   try {
@@ -197,6 +219,8 @@ export function parseAnswerEventData(
     if (Array.isArray(parsed.sources)) {
       result.sources = parsed.sources;
     }
+    result.memoryUsage = parseMemoryUsage(parsed.memory_usage);
+    result.memorySaved = parseMemoryUsage(parsed.memory_saved);
 
     if (typeof innerData === "string") {
       try {
