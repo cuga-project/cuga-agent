@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
 
+from cuga.backend.cuga_graph.utils.thread_ids import logical_thread_id
 from cuga.backend.activity_tracker.tracker import Step
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import extract_task_todos_from_new_vars
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
@@ -115,7 +116,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         sync_langfuse_callbacks_from_config(config)
         max_steps = configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
         if "thread_id" in configurable:
-            current_thread_id = configurable.get("logical_thread_id") or configurable["thread_id"]
+            current_thread_id = logical_thread_id(configurable)
         else:
             current_thread_id = state.thread_id or base_thread_id
         current_apps_list = configurable.get("apps_list", base_apps_list)
