@@ -192,7 +192,7 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
                       </span>
                     )}
                   </div>
-                  <HStack gap={1}>
+                  <HStack gap={1} className="tools-config-tile-actions">
                     {(isConnected || t.gateway) && (
                       <Button
                         kind="ghost"
