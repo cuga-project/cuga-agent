@@ -32,6 +32,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import (
     _get_knowledge_tool_scope_context,
     _knowledge_scope_instruction,
+    _wrap_knowledge_tool,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import resolved_runtime_model_name
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
@@ -561,34 +562,6 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         elif knowledge_tool_names:
             if _thread_id:
                 logger.debug("Knowledge tools: thread context available for session scope injection")
-
-            def _wrap_knowledge_tool(fn, tid, allowed_scopes, default_scope):
-                async def _wrapped(*args, **kwargs):
-                    scope = kwargs.get("scope")
-                    if scope is None and default_scope:
-                        kwargs["scope"] = default_scope
-                        scope = default_scope
-                    if scope is not None and scope not in allowed_scopes:
-                        allowed_text = ", ".join(allowed_scopes)
-                        return {
-                            "error": (
-                                f"Knowledge scope '{scope}' is unavailable in this context. "
-                                f"Allowed scopes: {allowed_text}"
-                            )
-                        }
-                    # Forward the conversation id whenever we have one — the knowledge
-                    # layer needs it for the citations ledger even on agent-scope
-                    # searches. Session-collection access is still gated by scope checks
-                    # server-side; this only adds correlation, not access.
-                    if tid:
-                        kwargs.setdefault("thread_id", tid)
-                    return await fn(*args, **kwargs)
-
-                _wrapped.__doc__ = getattr(fn, "__doc__", None)
-                _wrapped._knowledge_allowed_scopes = allowed_scopes
-                _wrapped._knowledge_default_scope = default_scope
-                _wrapped._knowledge_thread_id = tid
-                return _wrapped
 
             for tool_name in knowledge_tool_names:
                 original_fn = adapter._tools_context.get(tool_name)
