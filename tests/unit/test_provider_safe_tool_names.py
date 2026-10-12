@@ -1,10 +1,10 @@
 """Provider-safe tool names for native tool binding (#879).
 
 OpenAI-compatible providers reject a request whose tools array has a name
-outside ``^[A-Za-z0-9_-]{1,64}$``. ``_safe_bind`` binds such tools under an
-alias that lives only in the request; the decode boundary (``normalize_response``)
-maps every alias in a reply back to the real name, so code, the approval check
-and the sandbox only see real names.
+outside ``^[A-Za-z0-9_-]{1,64}$`` (Gemini also wants a letter or ``_`` first).
+``_safe_bind`` binds such tools under an alias that lives only in the request;
+the decode boundary (``normalize_response``) maps each alias the reply calls back
+to the real name, so code, the approval check and the sandbox only see real names.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import MemorySaver
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import (
     extract_code_from_model_response,
@@ -117,7 +117,7 @@ def _pin_bind_tools_cap():
 # ── The alias ──────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("name", ["a", "x" * 64, "get-weather", "A1_b-2"])
+@pytest.mark.parametrize("name", ["a", "x" * 64, "get-weather", "A1_b-2", "_private"])
 def test_legal_names_are_unchanged(name):
     assert provider_safe_tool_name(name) == name
 
@@ -149,7 +149,15 @@ def test_illegal_characters_get_an_alias_of_the_original_name():
     assert provider_safe_tool_name("a.b") != "a_b"
 
 
-@pytest.mark.parametrize("name", [LONG, "my.tool:v2", "", "x" * 64])
+@pytest.mark.parametrize("name", ["3d_render", "-x"])
+def test_names_starting_with_a_digit_or_hyphen_get_an_alias_every_provider_accepts(name):
+    # OpenAI accepts these, but Gemini wants a letter or "_" first.
+    alias = provider_safe_tool_name(name)
+    assert alias.startswith("_") and PROVIDER_TOOL_NAME_RE.fullmatch(alias)
+    assert resolve_tool_names(alias, {name: _reconcile}) == name
+
+
+@pytest.mark.parametrize("name", [LONG, "my.tool:v2", "", "x" * 64, "3d_render"])
 def test_alias_is_idempotent(name):
     alias = provider_safe_tool_name(name)
     assert provider_safe_tool_name(alias) == alias
@@ -246,9 +254,16 @@ def test_resolve_tool_names_maps_every_alias_back_and_nothing_else():
     assert resolve_tool_names("get_weather", ctx) == "get_weather"
     assert resolve_tool_names("", ctx) == ""
 
-    # Only whole alias tokens change: not a longer token, the real name, or an unknown alias shape.
+    # Only names the code calls change: not a longer token, the real name, an unknown alias
+    # shape, a comment, a string value or an attribute.
     text = f"r = await {ALIAS}(value=7)  # not {ALIAS}x, {LONG} or deadbeef_0123abcd"
     assert resolve_tool_names(text, ctx) == text.replace(f"await {ALIAS}(", f"await {LONG}(")
+    data = f"await write_file(content='{{\"provider_function\": \"{ALIAS}\"}}')\nx = obj.{ALIAS}"
+    assert resolve_tool_names(data, ctx) == data
+    # Text that is not Python never runs and is left as written: an unclosed quote, or a lone
+    # surrogate (on which Python 3.12+'s tokenizer raises UnicodeEncodeError, not TokenError).
+    for not_python in (f"I'll call {ALIAS}", f'x = "\ud800 {ALIAS}"'):
+        assert resolve_tool_names(not_python, ctx) == not_python
 
 
 def test_resolve_tool_names_refuses_ambiguous_aliases(monkeypatch):
@@ -282,6 +297,20 @@ def test_reply_naming_the_alias_decodes_to_the_real_tool(reply):
     content, _ = _adapter({LONG: _reconcile}).normalize_response(reply)
     assert f"await {LONG}(value=7)" in content
     assert ALIAS not in content
+
+
+def test_alias_inside_a_tool_argument_reaches_the_tool_unchanged():
+    """An argument can carry an alias as data; only the name the code calls maps back."""
+    adapter = _adapter({LONG: _reconcile, "write_file": _reconcile})
+
+    native = AIMessage(content="", tool_calls=[{"name": ALIAS, "args": {"note": f"see {ALIAS}"}, "id": "c1"}])
+    content, _ = adapter.normalize_response(native)
+    assert f"await {LONG}(note=" in content and f"see {ALIAS}" in content
+
+    data = f'{{"provider_function": "{ALIAS}"}}'
+    written = AIMessage(content=f"```python\nawait write_file(content={data!r})\n```")
+    content, _ = adapter.normalize_response(written)
+    assert ALIAS in content and LONG not in content
 
 
 def test_reasoning_naming_the_alias_decodes_to_the_real_tool():
@@ -353,32 +382,49 @@ async def test_approval_policy_on_the_real_name_stops_a_call_made_under_the_alia
 # ── End to end ─────────────────────────────────────────────────────────────
 
 
-class _ProviderLikeModel:
-    """Scripted model that, like a provider, only knows the names it was bound with.
+class _ProviderLikeModel(BaseChatModel):
+    """Scripted chat model that, like a provider, only knows the names it was bound with.
 
     It calls the tool for a request and answers once it sees the tool's output,
     so an extra model call cannot put it out of step.
     """
 
-    def __init__(self, reply_with: str):
-        self.reply_with = reply_with
-        self.bound_names: list[list[str]] = []
+    reply_with: str = "tool_call"
+    bound_names: List[List[str]] = Field(default_factory=list)
 
-    def bind_tools(self, tools, **kwargs):
+    @property
+    def _llm_type(self) -> str:
+        return "provider-like"
+
+    def bind_tools(self, tools: Any, **kwargs: Any):
         self.bound_names.append([tool.name for tool in tools])
         return self
 
-    async def ainvoke(self, messages, config=None, **kwargs):
-        last = messages[-1]
-        text = last.get("content") if isinstance(last, dict) else getattr(last, "content", "")
-        if str(text).startswith(EXECUTION_OUTPUT_PREFIX):
-            return AIMessage(content="Reconciled.")
-        name = self.bound_names[-1][0]
-        return AIMessage(content=_code(name)) if self.reply_with == "code" else _tool_call(name)
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        if str(messages[-1].content).startswith(EXECUTION_OUTPUT_PREFIX):
+            reply = AIMessage(content="Reconciled.")
+        else:
+            name = self.bound_names[-1][0]
+            reply = AIMessage(content=_code(name)) if self.reply_with == "code" else _tool_call(name)
+        return ChatResult(generations=[ChatGeneration(message=reply)])
+
+
+# Bind only the long-named tool, and keep extra model calls (reflection, VERIFY) out of the runs.
+_CONFIGURABLE = {
+    "enable_todos": False,
+    "reflection_enabled": False,
+    "pre_execute_verify_enabled": False,
+    "cuga_lite_bind_tools_mode": "tools",
+    "cuga_lite_bind_tools_tool_names": [LONG],
+}
 
 
 @pytest.fixture
-def _reset_budgets():
+def _graph_run(monkeypatch):
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.policy, "enabled", False, raising=False)
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", False, raising=False)
     yield
     tracker_module._tool_call_budget_context.set(None)
     tracker_module._thread_tool_call_budget_context.set(None)
@@ -387,11 +433,7 @@ def _reset_budgets():
 
 @pytest.mark.parametrize("reply_with", ["tool_call", "code"])
 @pytest.mark.asyncio
-async def test_call_under_the_alias_runs_the_real_tool_on_every_run(monkeypatch, _reset_budgets, reply_with):
-    from cuga.config import settings
-
-    monkeypatch.setattr(settings.policy, "enabled", False, raising=False)
-    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", False, raising=False)
+async def test_call_under_the_alias_runs_the_real_tool_on_every_run(monkeypatch, _graph_run, reply_with):
     adapters: list[AgentGraphAdapter] = []
 
     class _RecordingAdapter(cuga_lite_graph.AgentGraphAdapter):
@@ -410,24 +452,14 @@ async def test_call_under_the_alias_runs_the_real_tool_on_every_run(monkeypatch,
     tool = StructuredTool(
         name=LONG, description="Reconcile stock levels.", args_schema=_Args, coroutine=reconcile
     )
-    model = _ProviderLikeModel(reply_with)
+    model = _ProviderLikeModel(reply_with=reply_with)
     graph = cuga_lite_graph.create_cuga_lite_graph(
         model=model,
         tool_provider=DirectLangChainToolsProvider(tools=[tool], app_name="acme"),
         apps_list=[],
         thread_id="alias-e2e",
     ).compile(checkpointer=MemorySaver())
-    config = {
-        "configurable": {
-            "thread_id": "alias-e2e",
-            "enable_todos": False,
-            "track_tool_calls": True,
-            "reflection_enabled": False,
-            "pre_execute_verify_enabled": False,
-            "cuga_lite_bind_tools_mode": "tools",
-            "cuga_lite_bind_tools_tool_names": [LONG],
-        }
-    }
+    config = {"configurable": {**_CONFIGURABLE, "thread_id": "alias-e2e", "track_tool_calls": True}}
 
     # The execution context outlives a run, so run the same graph twice.
     for run in (1, 2):
@@ -444,3 +476,32 @@ async def test_call_under_the_alias_runs_the_real_tool_on_every_run(monkeypatch,
     # The alias reached the provider and nothing else.
     assert model.bound_names and all(names == [ALIAS] for names in model.bound_names)
     assert LONG in adapters[0]._tools_context and ALIAS not in adapters[0]._tools_context
+
+
+@pytest.mark.asyncio
+async def test_sdk_invoke_runs_the_real_tool_for_a_call_under_the_alias(monkeypatch, _graph_run):
+    """The same contract at the entry point users call: CugaAgent.invoke()."""
+    import cuga
+    from cuga.backend.llm.models import LLMManager
+
+    model = _ProviderLikeModel()
+    # Start-up also builds agents CugaLite never calls; the fake model keeps them free of provider keys.
+    monkeypatch.setattr(LLMManager(), "_pre_instantiated_model", model)
+    executed: list[int] = []
+
+    async def reconcile(value: int) -> dict:
+        executed.append(value)
+        return {"reconciled": value}
+
+    tool = StructuredTool(
+        name=LONG, description="Reconcile stock levels.", args_schema=_Args, coroutine=reconcile
+    )
+    agent = cuga.CugaAgent(tools=[tool], model=model, auto_load_policies=False)
+    result = await agent.invoke(
+        "Reconcile the stock.", config={"configurable": dict(_CONFIGURABLE)}, track_tool_calls=True
+    )
+
+    assert result.error is None and result.answer == "Reconciled."
+    assert executed == [7]
+    assert [call["name"] for call in result.tool_calls] == [LONG]
+    assert model.bound_names and all(names == [ALIAS] for names in model.bound_names)
