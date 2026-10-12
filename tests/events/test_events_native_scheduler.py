@@ -372,3 +372,13 @@ def _free_port() -> int:
     port = s.getsockname()[1]
     s.close()
     return port
+
+
+@pytest.mark.unit
+def test_cron_dow_range_ending_in_7_includes_sunday():
+    # In cron, 7 is another name for Sunday, so "1-7" means every day.
+    sun_8am = time.mktime((2026, 1, 4, 8, 0, 0, 0, 0, -1))  # 2026-01-04 is a Sunday
+    nxt = time.localtime(ns.next_cron("0 9 * * 1-7", sun_8am))
+    assert nxt.tm_wday == 6 and nxt.tm_hour == 9  # same Sunday, 09:00
+    nxt = time.localtime(ns.next_cron("0 9 * * */7", sun_8am))
+    assert nxt.tm_wday == 6
