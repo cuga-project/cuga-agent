@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
-from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.schema import model_tool_schema
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_schema import model_tool_schema
 from cuga.backend.tools_env.registry.utils.schema_utils import json_schema_type
 
 _WEAK_SCHEMA_PROBE_DIRECTIVE = (
