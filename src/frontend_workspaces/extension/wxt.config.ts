@@ -51,6 +51,8 @@ export default defineConfig({
                         {
                             src: normalizePath("../node_modules/.pnpm/@ibm+plex@6.4.1/node_modules/@ibm/plex/IBM-Plex-Sans"),
                             dest: normalizePath("fonts"),
+                            // Keep IBM-Plex-Sans/ and its relative font paths in static-copy v4.
+                            rename: { stripBase: 6 },
                         },
                     ],
                 }),
