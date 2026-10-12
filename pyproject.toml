@@ -4,7 +4,7 @@ version = "0.4.0"
 description = "CUGA is an open-source generalist agent for the enterprise, supporting complex task execution on web and APIs, OpenAPI/MCP integrations, composable architecture, reasoning modes, and policy-aware features."
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.10, <3.15"
+requires-python = ">=3.10, <3.13"
 dependencies = [
     # >=1.3.9 fixes GHSA-gr75-jv2w-4656 (path traversal / sandbox escape in the file-search
     # middleware, <=1.3.8).
@@ -84,8 +84,14 @@ dependencies = [
     "easyocr",
     # explicit: forces pytorch-cpu index via [tool.uv.sources], avoids 3.5GB nvidia-cuda wheels.
     # 2.13.0 fixes GHSA-rrmf-rvhw-rf47 (memory corruption in torch.jit.script, <=2.12.1).
-    "torch>=2.13.0",
-    "torchvision", # explicit: must match torch variant (cpu) to avoid operator registration errors
+    # macOS x86_64: pytorch-cpu index only publishes up to 2.2.2 for this platform; no wheels
+    # exist for >=2.13.0. Excluded here to allow uv sync; install manually if OCR is needed.
+    "torch>=2.13.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torchvision; sys_platform != 'darwin' or platform_machine != 'x86_64'", # explicit: must match torch variant (cpu) to avoid operator registration errors
+    # Intel Macs: 2.2.2 / 0.17.2 are the last releases with macOS x86_64 wheels.
+    "torch==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torchvision==0.17.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "numpy<2; sys_platform == 'darwin' and platform_machine == 'x86_64'",  # torch 2.2.2 was built against numpy 1.x
     "langchain-ollama>=0.2.0",
     "langchain-text-splitters>=1.0,<2.0",
     "beautifulsoup4>=4.12",
@@ -120,6 +126,16 @@ Repository = "https://github.com/cuga-project/cuga-agent"
 
 [tool.uv]
 package = true
+# Make the universal lock carry wheels for Intel Macs too. torch dropped macOS x86_64 after
+# 2.2.2, so without this uv locks torch 2.14 (pulled in by easyocr/docling) and `uv sync`
+# fails there.
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
 constraint-dependencies = [
     "pillow>=12.3.0",  # GHSA-62p4-gmf7-7g93 and related Pillow OOB/DoS CVEs in <=12.2.x
     "urllib3>=2.7.0",  # GHSA-qccp-gfcp-xxvc, GHSA-mf9v-mfxr-j63j (<=2.6.x); prior CVEs fixed in 2.6.3+
