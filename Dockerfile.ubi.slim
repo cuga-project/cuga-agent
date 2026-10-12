@@ -15,8 +15,8 @@
 # What still works: the core web/API agent, action shortlisting, policy similarity, and
 # knowledge/RAG embedding (all fastembed/ONNX-based, not torch). Plain text and Markdown
 # knowledge ingestion both work (Markdown degrades to plain-text chunking when docling is
-# absent). PDF/DOCX/PPTX/XLSX/HTML/image document ingestion fails with a clear "install
-# cuga[docling]... or use the full image" error instead of crashing the server. Evolve
+# absent). PDF/DOCX/PPTX/XLSX/HTML/image document ingestion fails with a clear
+# "Use the full CUGA image instead of the slim one" error instead of crashing the server. Evolve
 # (memory, PII redaction, READI) is unavailable — `container_services.py` already no-ops it
 # cleanly when the `evolve` extra isn't installed, unless CUGA_EMBEDDED_EVOLVE is forced true.
 ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312-minimal:latest
