@@ -3374,6 +3374,7 @@ class CugaSupervisor:
         reset_policy_storage: bool = False,
         filesystem_sync: Optional[bool] = None,
         interactive: bool = True,
+        name: Optional[str] = None,
     ):
         """
         Initialize supervisor.
@@ -3396,6 +3397,7 @@ class CugaSupervisor:
             auto_load_policies: If True, automatically loads policies from cuga_folder on first invoke
             reset_policy_storage: If True, clears all existing policies from storage on init
             filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
+            name: Optional supervisor identity mixed into child sub-agent checkpoint keys
         """
         from cuga.config import settings
 
@@ -3425,6 +3427,9 @@ class CugaSupervisor:
             filesystem_sync if filesystem_sync is not None else settings.policy.filesystem_sync
         )
         self._reset_policy_storage = reset_policy_storage
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import supervisor_instance_id
+
+        self._name = supervisor_instance_id(name)
 
         if tool_provider is not None:
             from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ensure_toolguard_provider
@@ -3471,6 +3476,7 @@ class CugaSupervisor:
             agents=config.agents,
             model=None,
             special_instructions=config.supervisor.get("special_instructions"),
+            name=config.supervisor.get("name"),
         )
 
     @property
@@ -3516,6 +3522,7 @@ class CugaSupervisor:
             special_instructions=self._special_instructions,
             tool_provider=self.tool_provider,
             callbacks=self._callbacks,
+            supervisor_id=self._name,
             pending_acp_registry=self._pending_acp_registry,
             interactive=self._interactive,
         )
@@ -3650,6 +3657,8 @@ class CugaSupervisor:
         message: Optional[str],
         thread_id: Optional[str] = None,
         action_response: Optional[Any] = None,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> InvokeResult:
         """
         Invoke the supervisor with a message.
@@ -3658,6 +3667,8 @@ class CugaSupervisor:
             message: User message (string) or None to resume execution
             thread_id: Thread ID (required for resume, auto-generated for new conversations)
             action_response: Optional ActionResponse for resuming after approval/interruption
+            user_id: Caller identity mixed into child sub-agent checkpoint keys
+            tenant_id: Optional tenant override; defaults to the process service tenant
 
         Returns:
             InvokeResult containing answer and metadata
@@ -3722,9 +3733,16 @@ class CugaSupervisor:
                 supervisor_chat_messages=[HumanMessage(content=message)],
                 input=message,
                 thread_id=thread_id,
+                user_id=user_id if user_id else "default",
                 url="",  # Required by AgentState
                 cuga_lite_max_steps=self._cuga_lite_max_steps,
             )
+            from cuga.config import get_service_instance_id, get_tenant_id
+
+            initial_state.service_scope = {
+                "tenant_id": tenant_id if tenant_id is not None else get_tenant_id(),
+                "instance_id": get_service_instance_id(),
+            }
 
             result = await self.graph.ainvoke(initial_state, config=config)
 

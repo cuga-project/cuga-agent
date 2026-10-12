@@ -67,6 +67,7 @@ def create_cuga_supervisor_graph(
     plan_approval: bool = False,
     pending_acp_registry: Any = None,
     interactive: bool = True,
+    supervisor_id: Optional[str] = None,
 ) -> StateGraph:
     """
     Create supervisor subgraph that orchestrates multiple CugaAgent instances.
@@ -80,6 +81,7 @@ def create_cuga_supervisor_graph(
         callbacks: Optional LangChain callback handlers for supervisor model calls
         plan_approval: When True, pause for human approval (via the existing AGENT_APPROVAL
             HITL interrupt) before delegating to any sub-agent each turn.
+        supervisor_id: Registry or SDK identity mixed into child checkpoint keys.
 
     Returns:
         StateGraph implementing the CugaSupervisor architecture
@@ -91,6 +93,7 @@ def create_cuga_supervisor_graph(
         base_callbacks=callbacks or [],
         static_prompt=prompt,
         plan_approval=plan_approval,
+        supervisor_id=supervisor_id,
         pending_acp_registry=pending_acp_registry,
         interactive=interactive,
     )

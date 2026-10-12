@@ -267,12 +267,12 @@ def test_wait_pending_spawns_default_timeout_is_five_seconds():
 
 
 def test_agent_loop_waits_pending_spawns_with_short_timeout():
-    src = Path("src/cuga/backend/cuga_graph/utils/agent_loop.py").read_text()
+    src = Path("src/cuga/backend/cuga_graph/utils/agent_loop.py").read_text(encoding="utf-8")
     assert "wait_pending_spawns(self.thread_id, timeout=5.0)" in src
 
 
 def test_stop_and_reset_clear_spawn_caches():
-    src = Path("src/cuga/backend/server/main.py").read_text()
+    src = Path("src/cuga/backend/server/main.py").read_text(encoding="utf-8")
     assert "clear_runtime_caches(thread_id)" in src
     assert "Failed to clear spawn caches on stop" in src
     assert "Failed to clear spawn caches on reset" in src
