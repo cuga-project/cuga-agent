@@ -15,12 +15,13 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 ---
 
 [![🦉🤗 Try CUGA Live on Hugging Face Spaces](https://img.shields.io/badge/🦉🤗_Try_CUGA_Live_on_Hugging_Face_Spaces-FFD21E?style=for-the-badge)](https://huggingface.co/spaces/ibm-research/cuga-agent)
+[![Open in Colab](https://img.shields.io/badge/Open_in_Colab-F9AB00?style=for-the-badge&logo=googlecolab&logoColor=white)](https://colab.research.google.com/github/cuga-project/cuga-agent/blob/main/docs/examples/colab/try_cuga.ipynb)
 
 [![Python](https://shields.io/badge/Python-3.12-blue?logo=python&style=for-the-badge)](https://www.python.org/)
 [![CugaAgent SDK](https://shields.io/badge/CugaAgent_SDK-Documentation-blue?logo=python&style=for-the-badge)](https://docs.cuga.dev/docs/sdk/cuga_agent/)
 [![Status](https://shields.io/badge/Status-Active-success?logo=checkmarx&style=for-the-badge)]()
 [![Documentation](https://shields.io/badge/Documentation-Available-blue?logo=gitbook&style=for-the-badge)](https://docs.cuga.dev)
-[![Discord](https://shields.io/badge/Discord-Join-blue?logo=discord&style=for-the-badge)](https://discord.gg/aH6rAEEW)
+[![Discussions](https://shields.io/badge/Discussions-Join-blue?logo=github&style=for-the-badge)](https://github.com/cuga-project/cuga-agent/discussions)
 
 [![AppWorld](https://img.shields.io/badge/%F0%9F%A5%87%20%231%20(07%2F25-02%2F26)%20on-AppWorld-gold?style=for-the-badge)](https://appworld.dev/leaderboard)
 [![WebArena](https://img.shields.io/badge/%F0%9F%A5%87%20%231%20(02%2F25-09%2F25)%20on-WebArena-gold?style=for-the-badge)](https://docs.google.com/spreadsheets/d/1M801lEpBbKSNwP-vDBkC_pF7LdyGU1f_ufZb_NWNBZQ/edit?gid=0#gid=0)
@@ -55,7 +56,7 @@ async def main():
 asyncio.run(main())
 ```
 
-Want the full web UI with demo apps? Jump to the [Quick Start](#quick-start).
+Prefer the browser? [Open the notebook in Colab](https://colab.research.google.com/github/cuga-project/cuga-agent/blob/main/docs/examples/colab/try_cuga.ipynb). Want the full web UI with demo apps? Jump to the [Quick Start](#quick-start).
 
 ---
 
