@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from langchain_core.tools import StructuredTool
 from loguru import logger
+from cuga.backend.cuga_graph.utils.thread_ids import logical_thread_id
 from cuga.backend.cuga_graph.utils.langfuse_tracing import (
     get_langfuse_invoke_config,
     sync_langfuse_callbacks_from_config,
@@ -194,7 +195,7 @@ class SpawnAgentRuntime:
 
     def _parent_thread_id(self) -> str:
         cfg = self._parent_config.get("configurable", {})
-        return cfg.get("logical_thread_id") or cfg.get("thread_id") or ""
+        return logical_thread_id(cfg, "")
 
     def _resolve_thread_ids(self, share_workspace: bool) -> tuple[str, str]:
         """Return (conversation_thread_id, workspace_thread_id).
