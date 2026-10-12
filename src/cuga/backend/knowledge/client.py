@@ -466,9 +466,9 @@ class KnowledgeClient:
                 scope,
                 _default_limit,
                 _default_threshold,
-                # Runtime-injected thread_id (cuga_lite wrapper) wins over the
-                # construction-time capture — SDK-built tools have no capture.
-                thread_id=thread_id or _thread_id,
+                # A captured conversation is authoritative. SDK-built tools have
+                # no capture and receive context from the runtime wrapper.
+                thread_id=_thread_id or thread_id,
             )
 
         async def knowledge_ingest_knowledge(
@@ -478,7 +478,7 @@ class KnowledgeClient:
             thread_id: Annotated[str | None, InjectedToolArg] = None,
         ) -> dict:
             return await client.ingest(
-                file_path, scope, replace_duplicates, thread_id=thread_id or _thread_id
+                file_path, scope, replace_duplicates, thread_id=_thread_id or thread_id
             )
 
         async def knowledge_ingest_knowledge_url(
@@ -486,13 +486,13 @@ class KnowledgeClient:
             scope: str = single_default_scope,
             thread_id: Annotated[str | None, InjectedToolArg] = None,
         ) -> dict:
-            return await client.ingest_url(url, scope, thread_id=thread_id or _thread_id)
+            return await client.ingest_url(url, scope, thread_id=_thread_id or thread_id)
 
         async def knowledge_list_knowledge_documents(
             scope: str = single_default_scope,
             thread_id: Annotated[str | None, InjectedToolArg] = None,
         ) -> dict:
-            docs = await client.list_documents(scope, thread_id=thread_id or _thread_id)
+            docs = await client.list_documents(scope, thread_id=_thread_id or thread_id)
             return {"documents": docs}
 
         async def knowledge_delete_knowledge_document(
@@ -500,7 +500,7 @@ class KnowledgeClient:
             scope: str = single_default_scope,
             thread_id: Annotated[str | None, InjectedToolArg] = None,
         ) -> dict:
-            return await client.delete_document(filename, scope, thread_id=thread_id or _thread_id)
+            return await client.delete_document(filename, scope, thread_id=_thread_id or thread_id)
 
         async def knowledge_get_ingestion_status(
             task_id: str, thread_id: Annotated[str | None, InjectedToolArg] = None
