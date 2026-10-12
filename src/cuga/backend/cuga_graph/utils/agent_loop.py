@@ -329,9 +329,11 @@ class AgentLoop:
         knowledge_context: Optional[dict[str, Any]] = None,
         upload_context: Optional[str] = None,
         special_instructions: Optional[str] = None,
+        checkpoint_thread_id: Optional[str] = None,
     ):
         self.env_pointer = env_pointer
         self.thread_id = thread_id
+        self.checkpoint_thread_id = checkpoint_thread_id or thread_id
         self.langfuse_handler = langfuse_handler
         self.graph = graph
         self.tracker = tracker
@@ -533,7 +535,9 @@ class AgentLoop:
             "recursion_limit": 135,
             "callbacks": callbacks,
             "configurable": {
-                "thread_id": self.thread_id,
+                "thread_id": self.checkpoint_thread_id,
+                "logical_thread_id": self.thread_id,
+                "workspace_thread_id": self.thread_id,
             },
         }
 
@@ -578,7 +582,7 @@ class AgentLoop:
         logger.debug(f"get_output called with event type: {type(event)}")
 
         state: AgentState = AgentState(
-            **self.graph.get_state({"configurable": {"thread_id": self.thread_id}}).values
+            **self.graph.get_state({"configurable": {"thread_id": self.checkpoint_thread_id}}).values
         )
         msg: AIMessage = state.messages[-1] if len(state.messages) > 0 else None
 

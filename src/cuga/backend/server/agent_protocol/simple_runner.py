@@ -123,6 +123,11 @@ class SimpleAgentRunner:
         resume: Optional[ActionResponse] = None
 
         try:
+            from cuga.backend.server.conversation_history import get_conversation_db
+
+            await get_conversation_db().claim_thread(
+                thread_id, self._caller_user_id, getattr(self._app_state, "agent_id", "cuga-default")
+            )
             # If the thread is already parked on a HITL interrupt, this inbound
             # message is the approval response — resume the graph rather than
             # starting a fresh query (the auto_approve=False round-trip).
@@ -290,7 +295,12 @@ class SimpleAgentRunner:
         if graph is None:
             return None
         try:
-            snapshot = graph.get_state({"configurable": {"thread_id": thread_id}})
+            from cuga.backend.server.thread_scope import checkpoint_thread_id
+
+            scoped_id = checkpoint_thread_id(
+                thread_id, self._caller_user_id, getattr(self._app_state, "agent_id", "cuga-default")
+            )
+            snapshot = graph.get_state({"configurable": {"thread_id": scoped_id}})
         except Exception:
             logger.debug(f"Could not read graph state for thread {thread_id}", exc_info=True)
             return None

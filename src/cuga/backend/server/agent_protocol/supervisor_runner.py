@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from typing import Any, AsyncIterator, Optional
 
 from cuga.backend.server.agent_protocol.events import AgentStreamEvent
@@ -38,6 +39,7 @@ class SupervisorAgentRunner:
         supervisor_config_path: str,
         protocol_name: str = "agent_protocol",
         cache_attr: str = "agent_protocol_supervisor",
+        caller_user_id: str = "agent_protocol_user",
     ):
         """Stash the app_state and YAML path; no I/O until ``run()``.
 
@@ -56,6 +58,7 @@ class SupervisorAgentRunner:
         self._yaml_path = supervisor_config_path
         self._protocol_name = protocol_name
         self._cache_attr = cache_attr
+        self._caller_user_id = caller_user_id
         self._lock = asyncio.Lock()
 
     async def _ensure_supervisor(self) -> Any:
@@ -86,8 +89,15 @@ class SupervisorAgentRunner:
         debug without leaking config to the caller.
         """
         try:
+            from cuga.backend.server.conversation_history import get_conversation_db
+            from cuga.backend.server.thread_scope import checkpoint_thread_id
+
+            thread_id = context_id or uuid.uuid4().hex
+            agent_id = getattr(self._app_state, "agent_id", "cuga-default")
+            await get_conversation_db().claim_thread(thread_id, self._caller_user_id, agent_id)
+            scoped_id = checkpoint_thread_id(thread_id, self._caller_user_id, agent_id)
             supervisor = await self._ensure_supervisor()
-            result = await supervisor.invoke(message, thread_id=context_id)
+            result = await supervisor.invoke(message, thread_id=thread_id, checkpoint_thread_id=scoped_id)
             answer = getattr(result, "answer", None) or str(result)
             error = getattr(result, "error", None)
             if error:

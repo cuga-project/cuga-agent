@@ -59,17 +59,22 @@ def _tenant_id() -> str:
     return get_tenant_id()
 
 
+class ThreadOwnershipError(PermissionError):
+    """A logical thread is already bound to another authenticated identity."""
+
+
 class ConversationHistoryDB:
     def __init__(self, db_path: Optional[str] = None):
         self._schema_ensured = False
+        self._schema_store = None
 
     def _get_store(self):
         return get_storage().get_relational_store("conversation")
 
     async def _ensure_schema(self):
-        if self._schema_ensured:
-            return
         store = self._get_store()
+        if self._schema_ensured and self._schema_store is store:
+            return
         await store.execute("""
             CREATE TABLE IF NOT EXISTS conversation_history (
                 tenant_id TEXT NOT NULL DEFAULT '',
@@ -100,6 +105,10 @@ class ConversationHistoryDB:
         await store.execute("""CREATE TABLE IF NOT EXISTS conversation_deletion_outbox (
             event_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, instance_id TEXT NOT NULL,
             agent_id TEXT NOT NULL, thread_id TEXT NOT NULL, user_id TEXT NOT NULL, deleted_at TEXT NOT NULL)""")
+        await store.execute("""CREATE TABLE IF NOT EXISTS runtime_thread_owners (
+            tenant_id TEXT NOT NULL, instance_id TEXT NOT NULL, thread_id TEXT NOT NULL,
+            user_id TEXT NOT NULL, agent_id TEXT NOT NULL, created_at TEXT NOT NULL,
+            PRIMARY KEY (tenant_id, instance_id, thread_id))""")
         for idx_sql in [
             "CREATE INDEX IF NOT EXISTS idx_thread_id ON conversation_history(thread_id)",
             "CREATE INDEX IF NOT EXISTS idx_user_id ON conversation_history(user_id)",
@@ -111,6 +120,74 @@ class ConversationHistoryDB:
             await store.execute(idx_sql)
         await store.commit()
         self._schema_ensured = True
+        self._schema_store = store
+
+    async def claim_thread(self, thread_id: str, user_id: str, agent_id: Optional[str] = None) -> str:
+        """Atomically reserve a logical thread, including runs with history disabled.
+
+        Resource access can reserve only the user; the first run binds the agent.
+        Ownership survives history deletion because checkpoints may still exist.
+        Storage errors propagate: callers must fail closed.
+        """
+        await self._ensure_schema()
+        store = self._get_store()
+        scope = (_tenant_id(), _instance_id(), thread_id)
+        owner_sql = """SELECT user_id, agent_id FROM runtime_thread_owners
+            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?"""
+        owner = await store.fetchone(owner_sql, scope)
+        if owner:
+            if owner["user_id"] != user_id:
+                raise ThreadOwnershipError("Access denied: thread belongs to another user")
+            if agent_id and owner["agent_id"] and owner["agent_id"] != agent_id:
+                raise ThreadOwnershipError("Access denied: thread belongs to another agent")
+            if not agent_id or owner["agent_id"]:
+                return owner["agent_id"]
+        legacy = await store.fetchall(
+            """SELECT user_id, agent_id FROM conversation_history
+            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
+            UNION SELECT user_id, agent_id FROM stream_events
+            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?""",
+            scope + scope,
+        )
+        if any(row["user_id"] != user_id for row in legacy):
+            raise ThreadOwnershipError("Access denied: thread belongs to another user")
+        legacy_agents = {row["agent_id"] for row in legacy}
+        if agent_id and legacy_agents - {agent_id}:
+            raise ThreadOwnershipError("Access denied: thread belongs to another agent")
+        claimed_agent = agent_id or (next(iter(legacy_agents)) if len(legacy_agents) == 1 else "")
+        await store.execute_batch(
+            [
+                (
+                    """INSERT INTO runtime_thread_owners
+                    (tenant_id, instance_id, thread_id, user_id, agent_id, created_at)
+                    SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (
+                        SELECT 1 FROM conversation_history
+                        WHERE tenant_id = ? AND instance_id = ? AND thread_id = ? AND user_id <> ?
+                    ) AND NOT EXISTS (
+                        SELECT 1 FROM stream_events
+                        WHERE tenant_id = ? AND instance_id = ? AND thread_id = ? AND user_id <> ?
+                    ) ON CONFLICT (tenant_id, instance_id, thread_id) DO NOTHING""",
+                    scope
+                    + (user_id, claimed_agent, datetime.now(timezone.utc).isoformat())
+                    + scope
+                    + (user_id,)
+                    + scope
+                    + (user_id,),
+                ),
+                (
+                    """UPDATE runtime_thread_owners SET agent_id = ?
+                    WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
+                    AND user_id = ? AND agent_id = ''""",
+                    (claimed_agent,) + scope + (user_id,),
+                ),
+            ]
+        )
+        owner = await store.fetchone(owner_sql, scope)
+        if not owner or owner["user_id"] != user_id:
+            raise ThreadOwnershipError("Access denied: thread belongs to another user")
+        if agent_id and owner["agent_id"] != agent_id:
+            raise ThreadOwnershipError("Access denied: thread belongs to another agent")
+        return owner["agent_id"]
 
     async def save_conversation(
         self, agent_id: str, thread_id: str, version: int, user_id: str, messages: List[Dict[str, Any]]
