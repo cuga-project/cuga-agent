@@ -122,13 +122,18 @@ class ConversationHistoryDB:
         self._schema_ensured = True
         self._schema_store = store
 
-    async def claim_thread(self, thread_id: str, user_id: str, agent_id: Optional[str] = None) -> str:
+    async def claim_thread(
+        self, thread_id: str, user_id: str, agent_id: Optional[str] = None, *, create: bool = True
+    ) -> Optional[str]:
         """Atomically reserve a logical thread, including runs with history disabled.
 
         Resource access can reserve only the user; the first run binds the agent.
         Ownership survives history deletion because checkpoints may still exist.
+        With create=False, check existing ownership without inserting or binding;
+        None means no owner or legacy records, while "" is an existing unbound owner.
         Storage errors propagate: callers must fail closed.
         """
+        thread_id = thread_id.strip()
         await self._ensure_schema()
         store = self._get_store()
         scope = (_tenant_id(), _instance_id(), thread_id)
@@ -140,7 +145,7 @@ class ConversationHistoryDB:
                 raise ThreadOwnershipError("Access denied: thread belongs to another user")
             if agent_id and owner["agent_id"] and owner["agent_id"] != agent_id:
                 raise ThreadOwnershipError("Access denied: thread belongs to another agent")
-            if not agent_id or owner["agent_id"]:
+            if not create or not agent_id or owner["agent_id"]:
                 return owner["agent_id"]
         legacy = await store.fetchall(
             """SELECT user_id, agent_id FROM conversation_history
@@ -154,6 +159,11 @@ class ConversationHistoryDB:
         legacy_agents = {row["agent_id"] for row in legacy}
         if agent_id and legacy_agents - {agent_id}:
             raise ThreadOwnershipError("Access denied: thread belongs to another agent")
+        if not create:
+            # Reads and controls must not reserve an unused ID or bind an agent.
+            if not legacy:
+                return None
+            return next(iter(legacy_agents)) if len(legacy_agents) == 1 else ""
         claimed_agent = agent_id or (next(iter(legacy_agents)) if len(legacy_agents) == 1 else "")
         await store.execute_batch(
             [
