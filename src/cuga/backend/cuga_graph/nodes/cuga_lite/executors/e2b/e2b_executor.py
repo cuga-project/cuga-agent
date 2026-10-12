@@ -278,7 +278,7 @@ if __name__ == "__main__":
         # rather than being pasted into a quoted string.
         thread_id_block = (
             f'    kwargs["thread_id"] = {thread_id!r}\n'
-            if thread_id and "session" in allowed_scopes and tool_has_thread_id
+            if thread_id and tool_has_thread_id
             else ""
         )
 
