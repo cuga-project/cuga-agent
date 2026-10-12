@@ -227,7 +227,7 @@ def test_agent_config():
             }
         ],
         "llm": {
-            "model": "openai/gpt-oss-120b",
+            "model": os.environ.get("MODEL_NAME") or "openai/gpt-oss-120b",
             "temperature": 0.1,
         },
     }
@@ -259,7 +259,7 @@ def test_agent_config_with_partial_tools():
             },
         ],
         "llm": {
-            "model": "openai/gpt-oss-120b",
+            "model": os.environ.get("MODEL_NAME") or "openai/gpt-oss-120b",
             "temperature": 0.1,
         },
     }

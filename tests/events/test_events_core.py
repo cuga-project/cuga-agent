@@ -266,6 +266,14 @@ def test_classify_cadence_and_source():
     assert classify.cadence_of("every hour check the feed")["interval_seconds"] == 3600
     # the unit-only 'every day' must NOT eat an anchored time
     assert classify.cadence_of("every day at 9am send the brief")["cron"] == "0 9 * * *"
+    # 24-hour times have no am/pm and must be kept as-is
+    assert classify.cadence_of("every day at 14:30")["cron"] == "30 14 * * *"
+    assert classify.cadence_of("every day at 12:00")["cron"] == "0 12 * * *"
+    assert classify.cadence_of("every day at 12pm")["cron"] == "0 12 * * *"
+    assert classify.cadence_of("every day at 12am")["cron"] == "0 0 * * *"
+    # impossible times get no cadence at all
+    for text in ("every day at 25:00", "every day at 13pm", "every day at 9:75"):
+        assert classify.cadence_of(text) == {}
 
 
 def test_classify_ttl_bounded_runs():
