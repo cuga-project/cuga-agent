@@ -248,15 +248,12 @@ if __name__ == "__main__":
             if tool_has_scope and allowed_scopes
             else ""
         )
-        # Thread-id injection: also at function level. Whitespace-safe —
-        # ``setdefault`` would leave an explicit ``""`` in place, which is
-        # exactly what produced the post-publish 400s in the live trace.
+        # Bind both session access and agent-scope citations to this run.
+        # Always discard a model-supplied id, including when no runtime id exists.
         thread_id_block = (
-            f"""    _existing_tid = kwargs.get("thread_id")
-    if _existing_tid is None or (isinstance(_existing_tid, str) and not _existing_tid.strip()):
-        kwargs["thread_id"] = "{thread_id}"
-"""
-            if thread_id and "session" in allowed_scopes and tool_has_thread_id
+            '    kwargs.pop("thread_id", None)\n'
+            + (f'    kwargs["thread_id"] = {thread_id!r}\n' if thread_id else "")
+            if tool_has_thread_id
             else ""
         )
 
