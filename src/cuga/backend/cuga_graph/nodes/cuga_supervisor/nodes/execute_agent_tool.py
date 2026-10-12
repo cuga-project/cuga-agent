@@ -12,6 +12,7 @@ from langgraph.graph import END
 from langgraph.types import Command
 from loguru import logger
 
+from cuga.backend.cuga_graph.utils.thread_ids import logical_thread_id
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import extract_task_todos_from_new_vars
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     append_chat_messages_with_step_limit as core_append,
@@ -91,7 +92,7 @@ def _delegation_state_update(state: CugaSupervisorState) -> dict:
 
 def _resolve_thread_id(state: CugaSupervisorState, config: Optional[RunnableConfig]) -> Optional[str]:
     cfg = config.get("configurable", {}) if config else {}
-    return cfg.get("logical_thread_id") or cfg.get("thread_id") or state.thread_id
+    return logical_thread_id(cfg, state.thread_id)
 
 
 def _budget_updates() -> dict:
