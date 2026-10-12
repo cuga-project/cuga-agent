@@ -1,20 +1,21 @@
 """Runtime knowledge context must survive ToolGuard and stay out of prompts."""
 
 from types import SimpleNamespace
-from typing import Annotated, Literal
+from typing import Annotated, Callable, Literal
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from langchain_core.tools import InjectedToolArg, StructuredTool
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PydanticInvalidForJsonSchema
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import _wrap_knowledge_tool
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ToolGuardingToolProvider
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.base import ShortlistCandidate
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.doc import tool_document
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.render import render_tools_markdown
-from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.schema import model_tool_schema
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_schema import model_tool_schema
 from cuga.backend.knowledge.client import KnowledgeClient
 from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge.engine import SearchResult, _JunkFilterStats
@@ -63,7 +64,7 @@ def _guard(client, tool_name, *, captured_thread="construction-thread", blocked=
 )
 async def test_guarded_knowledge_tools_accept_runtime_context(tool_name, arguments, method):
     client = _client()
-    tool, runtime = _guard(client, tool_name)
+    tool, runtime = _guard(client, tool_name, captured_thread=None)
     # The local adapter calls the guarded coroutine directly with injected kwargs.
     result = await tool.coroutine(**arguments, thread_id="runtime-thread")
     assert "error" not in result
@@ -80,6 +81,61 @@ async def test_guarded_knowledge_tools_accept_runtime_context(tool_name, argumen
     markdown = render_tools_markdown([ShortlistCandidate(name=tool_name)], [tool], "knowledge")
     assert "thread_id" not in markdown
     assert "thread id" not in tool_document(tool)
+
+
+_SCOPED_TOOL_CALLS = [
+    ("knowledge_search_knowledge", {"query": "q"}, "search_envelope"),
+    ("knowledge_ingest_knowledge", {"file_path": "report.txt"}, "ingest"),
+    ("knowledge_ingest_knowledge_url", {"url": "https://example.com"}, "ingest_url"),
+    ("knowledge_list_knowledge_documents", {}, "list_documents"),
+    ("knowledge_delete_knowledge_document", {"filename": "report.txt"}, "delete_document"),
+]
+
+
+@pytest.mark.parametrize(("tool_name", "arguments", "method"), _SCOPED_TOOL_CALLS)
+@pytest.mark.parametrize("supplied_thread", ["victim", "", None])
+async def test_runtime_wrapper_overrides_model_thread(tool_name, arguments, method, supplied_thread):
+    client = _client()
+    tool, runtime = _guard(client, tool_name, captured_thread=None)
+    wrapped = _wrap_knowledge_tool(tool.coroutine, "mine", ("agent", "session"), "session")
+    result = await wrapped(**arguments, thread_id=supplied_thread)
+    assert "error" not in result
+    assert runtime.guard_tool_call.await_args.kwargs["arguments"]["thread_id"] == "mine"
+    assert getattr(client, method).await_args.kwargs["thread_id"] == "mine"
+
+
+@pytest.mark.parametrize(("tool_name", "arguments", "method"), _SCOPED_TOOL_CALLS)
+async def test_captured_thread_overrides_model_thread(tool_name, arguments, method):
+    client = _client()
+    tool, _ = _guard(client, tool_name, captured_thread="mine")
+    result = await tool.ainvoke({**arguments, "scope": "session", "thread_id": "victim"})
+    assert "error" not in result
+    assert getattr(client, method).await_args.kwargs["thread_id"] == "mine"
+
+
+@pytest.mark.parametrize("positional", [False, True])
+async def test_runtime_wrapper_discards_model_thread_without_runtime_context(positional):
+    client = _client()
+    tool, runtime = _guard(client, "knowledge_search_knowledge", captured_thread=None)
+    wrapped = _wrap_knowledge_tool(tool.coroutine, None, ("agent",), "agent")
+    if positional:
+        await wrapped("q", "agent", "victim")
+    else:
+        await wrapped(query="q", thread_id="victim")
+    assert runtime.guard_tool_call.await_args.kwargs["arguments"]["thread_id"] == ""
+    assert client.search_envelope.await_args.kwargs["thread_id"] == ""
+
+
+async def test_runtime_wrapper_without_thread_accepts_registry_string_context():
+    async def registry_search(query: str, scope: str = "agent", thread_id: str = ""):
+        """Registry tools use a non-nullable string for conversation context."""
+        return {"thread_id": thread_id}
+
+    raw = StructuredTool.from_function(coroutine=registry_search)
+    provider = ToolGuardingToolProvider(DirectLangChainToolsProvider([raw]), policy_storage=None)
+    guarded = provider._wrap_tool(raw, "knowledge")
+    wrapped = _wrap_knowledge_tool(guarded.coroutine, None, ("agent",), "agent")
+    assert await wrapped(query="q", thread_id="victim") == {"thread_id": ""}
 
 
 async def test_guarded_search_uses_construction_context_without_runtime_override():
@@ -117,7 +173,8 @@ async def test_guarded_search_registers_citations_in_runtime_thread(scope):
         hit = SearchResult(text="Q4 revenue was 42 million", filename="report.txt", page=1, score=0.9)
         client._engine.search_with_stats = AsyncMock(return_value=([hit], _JunkFilterStats(candidates=1)))
         tool, _ = _guard(client, "knowledge_search_knowledge", captured_thread=None)
-        result = await tool.coroutine(query="Q4 revenue", scope=scope, thread_id="runtime-thread")
+        wrapped = _wrap_knowledge_tool(tool.coroutine, "runtime-thread", ("agent", "session"), scope)
+        result = await wrapped(query="Q4 revenue", scope=scope, thread_id="other-thread")
         assert result["results"][0]["cite_id"] == "s1"
         assert len(get_ledger("runtime-thread")) == 1
         assert len(get_ledger("other-thread")) == 0
@@ -160,3 +217,28 @@ async def test_model_schema_preserves_field_and_model_metadata():
     assert schema["required"] == ["amount"]
     assert "context_id" not in schema["properties"]
     assert "thread_id" not in schema["properties"]
+
+
+async def test_model_schema_falls_back_for_unserializable_injected_context():
+    class Args(BaseModel):
+        value: int = Field(ge=1)
+        callback: Annotated[Callable, InjectedToolArg]
+
+    async def context_tool(value, callback):
+        """Tool with an injected callback that has no JSON schema."""
+
+    tool = StructuredTool.from_function(coroutine=context_tool, args_schema=Args)
+    with pytest.raises(PydanticInvalidForJsonSchema):
+        Args.model_json_schema()
+    schema = model_tool_schema(tool)
+    assert schema["required"] == ["value"]
+    assert schema["properties"]["value"]["minimum"] == 1
+    assert "callback" not in schema["properties"]
+
+
+async def test_model_schema_does_not_hide_unserializable_non_langchain_schema():
+    class Args(BaseModel):
+        callback: Callable
+
+    with pytest.raises(PydanticInvalidForJsonSchema):
+        model_tool_schema(SimpleNamespace(args_schema=Args))
