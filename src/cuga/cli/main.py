@@ -596,6 +596,12 @@ def run_direct_service(
 
 def wait_for_direct_processes():
     """Wait for all direct processes to complete or be interrupted."""
+    # Every service path prints its ready panel and then blocks here, so this is the one
+    # place a footer under that panel reaches all of them. Skipped when output isn't a TTY.
+    if console.is_terminal:
+        console.print(
+            "[dim]⭐ Enjoying CUGA? Star it on GitHub: https://github.com/cuga-project/cuga-agent[/dim]"
+        )
     try:
         while direct_processes and not shutdown_event.is_set():
             # Check if any process has terminated

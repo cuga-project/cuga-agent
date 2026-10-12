@@ -9,7 +9,7 @@ import {
   HeaderGlobalAction,
   HeaderPanel,
 } from "@carbon/react";
-import { Logout, Password, User } from "@carbon/icons-react";
+import { LogoGithub, Logout, Password, User } from "@carbon/icons-react";
 import { useAuth } from "./AuthContext";
 import * as api from "./api";
 import * as auth from "./auth";
@@ -147,6 +147,20 @@ export function CugaHeader({
               {navItems.map((item) => renderNavItem(item))}
             </HeaderNavigation>
             <HeaderGlobalBar>
+              {/* White-labeled deployments hide the CUGA logo; hide the GitHub link with it. */}
+              {!hideLogo && (
+                <a
+                  href="https://github.com/cuga-project/cuga-agent"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="cds--header__global-action"
+                  aria-label="Star CUGA on GitHub"
+                  title="Star CUGA on GitHub"
+                  style={{ display: "flex", alignItems: "center", padding: "0 1rem", color: "inherit", textDecoration: "none" }}
+                >
+                  <LogoGithub size={20} />
+                </a>
+              )}
               {actions.map((action) => {
                 if (action.href && !action.onClick) {
                   return (
