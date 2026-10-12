@@ -26,6 +26,7 @@ export default defineConfig(({ mode }) => {
       // tests. DOM-needing tests can opt in per-file via @vitest-environment.
       environment: 'node',
       include: [
+        'src/*.test.{js,jsx,ts,tsx}',
         'src/components/**/*.test.{js,jsx,ts,tsx}',
         'src/snapshot-tests/*.test.tsx',
         'src/pages/**/*.test.{js,jsx,ts,tsx}',
