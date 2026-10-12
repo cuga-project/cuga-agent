@@ -119,7 +119,7 @@ class SimpleAgentRunner:
         Yields:
             AgentStreamEvent instances representing the agent's response.
         """
-        thread_id = context_id or uuid.uuid4().hex
+        thread_id = (context_id or "").strip() or uuid.uuid4().hex
         resume: Optional[ActionResponse] = None
 
         try:
