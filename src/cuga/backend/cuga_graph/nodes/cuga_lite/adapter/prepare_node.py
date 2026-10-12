@@ -32,6 +32,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import (
     _get_knowledge_tool_scope_context,
     _knowledge_scope_instruction,
+    _wrap_knowledge_tool,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
     EXECUTION_MODE_FUNCTION_CALLING,
@@ -613,8 +614,6 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         elif knowledge_tool_names:
             from cuga.backend.knowledge.run_context import (
                 KnowledgeRunContext,
-                current_run_token,
-                issue_run_token,
             )
 
             knowledge_run = KnowledgeRunContext(
@@ -626,40 +625,6 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             if _thread_id:
                 logger.debug("Knowledge tools: thread context available for session scope injection")
 
-            def _wrap_knowledge_tool(fn, tid, allowed_scopes, default_scope, *, is_status):
-                async def _wrapped(*args, **kwargs):
-                    scope = kwargs.get("scope")
-                    if scope is None and default_scope and not is_status:
-                        kwargs["scope"] = default_scope
-                        scope = default_scope
-                    if scope is not None and scope not in allowed_scopes:
-                        allowed_text = ", ".join(allowed_scopes)
-                        return {
-                            "error": (
-                                f"Knowledge scope '{scope}' is unavailable in this context. "
-                                f"Allowed scopes: {allowed_text}"
-                            )
-                        }
-                    # Replace model-supplied identity for direct tool compatibility
-                    # and citation tracking. Registry-backed knowledge requests are
-                    # authorized by the signed run credential, not these kwargs.
-                    kwargs.pop("agent_id", None)
-                    kwargs.pop("thread_id", None)
-                    if tid and not is_status:
-                        kwargs["thread_id"] = tid
-                    token = current_run_token.set(issue_run_token(knowledge_run))
-                    try:
-                        return await fn(*args, **kwargs)
-                    finally:
-                        current_run_token.reset(token)
-
-                _wrapped.__doc__ = getattr(fn, "__doc__", None)
-                _wrapped._knowledge_allowed_scopes = allowed_scopes
-                _wrapped._knowledge_default_scope = default_scope
-                _wrapped._knowledge_thread_id = tid
-                _wrapped._knowledge_run_context = knowledge_run
-                return _wrapped
-
             for tool_name in knowledge_tool_names:
                 original_fn = adapter._tools_context.get(tool_name)
                 if original_fn:
@@ -668,6 +633,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                         _thread_id,
                         allowed_knowledge_scopes,
                         default_knowledge_scope,
+                        knowledge_run=knowledge_run,
                         is_status=tool_name
                         in ("knowledge_get_ingestion_status", "knowledge_get_knowledge_status"),
                     )
