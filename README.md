@@ -29,6 +29,36 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 
 ---
 
+### Try it in 60 seconds
+
+```bash
+pip install cuga
+export OPENAI_API_KEY=sk-...   # other providers: see .env.example
+```
+
+```python
+import asyncio
+from cuga import CugaAgent
+from langchain_core.tools import tool
+
+@tool
+def get_weather(city: str) -> str:
+    """Return the current weather for a city."""
+    return f"Sunny and 24°C in {city}"
+
+agent = CugaAgent(tools=[get_weather])
+
+async def main():
+    result = await agent.invoke("What's the weather in Tel Aviv?")
+    print(result.answer)
+
+asyncio.run(main())
+```
+
+Want the full web UI with demo apps? Jump to the [Quick Start](#quick-start).
+
+---
+
 > **Why CUGA?** — A generalist agent harness for the enterprise: wire your APIs and MCP servers, tune reasoning and task modes, and govern behavior with policies—without rebuilding orchestration from scratch.
 >
 > | Feature | How |
