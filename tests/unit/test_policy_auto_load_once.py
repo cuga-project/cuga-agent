@@ -352,3 +352,103 @@ async def test_auto_load_disabled_never_loads(cuga_folder, load_calls):
             response="blocked",
         )
     assert load_calls["count"] == 0
+
+
+def _intent_guard(policy_id):
+    return IntentGuard(
+        id=policy_id,
+        name=f"Guard {policy_id}",
+        description=f"Guard {policy_id}",
+        triggers=[KeywordTrigger(value=["kw"])],
+        response=IntentGuardResponse(response_type="natural_language", content="blocked"),
+    )
+
+
+@pytest.mark.parametrize("bad_id", ["../escaped", "../../escaped", "nested/escaped"])
+def test_save_policy_rejects_ids_outside_subfolder(tmp_path, bad_id):
+    """Policy IDs come from caller-supplied JSON; they must not write outside .cuga/<subfolder>."""
+    folder = tmp_path / ".cuga"
+    sync = PolicyFilesystemSync(cuga_folder=str(folder))
+
+    with pytest.raises(ValueError, match="resolves outside"):
+        sync.save_policy_to_file(_intent_guard(bad_id))
+
+    written = [p for p in tmp_path.rglob("*.md")]
+    assert written == []
+
+
+def test_delete_policy_file_matches_exact_id_only(tmp_path):
+    folder = tmp_path / ".cuga"
+    PolicyFilesystemSync(cuga_folder=str(folder)).save_policy_to_file(_intent_guard("foo_bar"))
+
+    # Fresh instance -> no cached path, so the lookup falls back to scanning the folder.
+    assert PolicyFilesystemSync(cuga_folder=str(folder)).delete_policy_file("foo") is False
+    assert (folder / "intent_guards" / "foo_bar.md").exists()
+
+
+def _write_json(path, policy_ids):
+    import json
+
+    path.write_text(
+        json.dumps(
+            {
+                "policies": [
+                    {
+                        "id": pid,
+                        "policy_type": "intent_guard",
+                        "name": f"Guard {pid}",
+                        "description": f"Guard {pid}",
+                        "triggers": [{"type": "keyword", "value": ["kw"]}],
+                        "response": {"response_type": "natural_language", "content": "blocked"},
+                        "enabled": True,
+                    }
+                    for pid in policy_ids
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_load_from_json_clear_existing_prunes_stale_files_across_restart(cuga_folder, tmp_path):
+    """A replacement import must not be undone by the next start's folder auto-load."""
+    json_path = tmp_path / "replace.json"
+    # "seed_1" is kept, "seed_2" is dropped, "seed_10" shares a prefix with "seed_1".
+    _write_json(json_path, ["seed_1", "seed_10"])
+
+    agent = _make_agent(cuga_folder)
+    result = await agent.policies.load_from_json(str(json_path), clear_existing=True)
+    assert result["errors"] == []
+
+    guards_dir = os.path.join(cuga_folder, "intent_guards")
+    assert sorted(os.listdir(guards_dir)) == ["seed_1.md", "seed_10.md"]
+
+    restarted = _make_agent(cuga_folder)
+    await restarted.policies._ensure_policy_system()
+    assert sorted(restarted._policy_system.storage._policies) == ["seed_1", "seed_10"]
+
+
+@pytest.mark.asyncio
+async def test_load_from_json_without_clear_keeps_existing_files(cuga_folder, tmp_path):
+    json_path = tmp_path / "add.json"
+    _write_json(json_path, ["extra"])
+
+    agent = _make_agent(cuga_folder)
+    await agent.policies.load_from_json(str(json_path))
+
+    guards_dir = os.path.join(cuga_folder, "intent_guards")
+    assert sorted(os.listdir(guards_dir)) == ["extra.md", "seed_1.md", "seed_2.md"]
+
+
+@pytest.mark.asyncio
+async def test_server_style_apply_does_not_prune_by_default(cuga_folder):
+    """Server callers (shared draft/live .cuga) keep the old behaviour unless they opt in."""
+    from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+    storage = _FakeStorage()
+    sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+    await apply_policies_data_to_storage(storage, [], clear_existing=True, filesystem_sync=sync)
+
+    guards_dir = os.path.join(cuga_folder, "intent_guards")
+    assert sorted(os.listdir(guards_dir)) == ["seed_1.md", "seed_2.md"]

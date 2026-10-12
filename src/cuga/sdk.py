@@ -1198,11 +1198,14 @@ class PoliciesManager:
         # Persist imported policies to .cuga (like add_*). Since the implicit auto-load
         # runs only once (#804), nothing else writes them to disk during the session,
         # and the next start's filesystem validation would drop storage-only policies.
+        # With clear_existing, stale .cuga files are pruned too so a replacement import
+        # is not undone by the next start's folder load.
         result = await load_policies_from_json(
             file_path=file_path,
             storage=policy_system.storage,
             clear_existing=clear_existing,
             filesystem_sync=self._fs_sync,
+            prune_filesystem=True,
         )
 
         # Reload policies in the system
@@ -1263,12 +1266,13 @@ class PoliciesManager:
 
         from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
 
-        # Persist imported policies to .cuga (see load_from_json).
+        # Persist imported policies to .cuga and prune stale files (see load_from_json).
         apply_result = await apply_policies_data_to_storage(
             policy_system.storage,
             extracted["policies"],
             clear_existing=clear_existing,
             filesystem_sync=self._fs_sync,
+            prune_filesystem=True,
         )
         import_result = {
             "count": apply_result["count"],
