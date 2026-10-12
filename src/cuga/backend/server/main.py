@@ -102,12 +102,26 @@ def _workspace_thread_id(request: Request, query_thread_id: Optional[str]) -> Op
     return tid or None
 
 
-async def _assert_thread_access(thread_id: str, user_id: str, agent_id: Optional[str] = None) -> str:
-    """Persist ownership before any thread read, run, or control operation."""
+def _canonical_thread_id(thread_id: str) -> str:
     if not isinstance(thread_id, str) or not thread_id.strip():
         raise HTTPException(status_code=400, detail="thread_id is required")
+    return thread_id.strip()
+
+
+def _runtime_agent_id(request: Request) -> Optional[str]:
+    """Normalize explicit agent IDs while allowing controls to use the bound agent."""
+    if not agent_registry.is_agent_registry_enabled():
+        return "cuga-default"
+    return request.headers.get("X-Agent-ID") or None
+
+
+async def _assert_thread_access(
+    thread_id: str, user_id: str, agent_id: Optional[str] = None, *, create: bool = True
+) -> Optional[str]:
+    """Check ownership; only mutations reserve unused thread IDs."""
+    thread_id = _canonical_thread_id(thread_id)
     try:
-        return await get_conversation_db().claim_thread(thread_id, user_id, agent_id)
+        return await get_conversation_db().claim_thread(thread_id, user_id, agent_id, create=create)
     except ThreadOwnershipError as exc:
         raise HTTPException(
             status_code=403, detail="Access denied: thread belongs to another user or agent"
@@ -134,7 +148,9 @@ async def _require_workspace_thread_access(
 ) -> Optional[str]:
     tid = _workspace_thread_id(request, thread_id)
     if tid:
-        await _assert_thread_access(tid, _workspace_user_id(current_user))
+        owner_agent = await _assert_thread_access(tid, _workspace_user_id(current_user), create=False)
+        if owner_agent is None:
+            raise HTTPException(status_code=404, detail="Thread not found")
     return tid
 
 
@@ -1589,8 +1605,19 @@ async def event_stream(
     memory_turn_id = str(uuid.uuid4()) if not resume else ""
     run_agent = agent if agent is not None else app_state.agent
     runtime_agent_id = agent_id or app_state.agent_id
-    thread_id = thread_id or str(uuid.uuid4())
-    await _assert_thread_access(thread_id, user_id, runtime_agent_id)
+    thread_id = _canonical_thread_id(thread_id or str(uuid.uuid4()))
+    try:
+        await _assert_thread_access(thread_id, user_id, runtime_agent_id)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            yield StreamEvent(
+                name="Error", data="Access denied: thread belongs to another user or agent"
+            ).format(app_state.output_format, thread_id=thread_id)
+        else:
+            yield StreamEvent(name="Error", data="Thread ownership unavailable").format(
+                app_state.output_format, thread_id=thread_id
+            )
+        return
     checkpoint_thread_id = _checkpoint_thread_id(thread_id, user_id, runtime_agent_id)
     if current_llm is _RUNTIME_LLM_UNSET:
         runtime_llm = (
@@ -2523,70 +2550,78 @@ if getattr(settings.advanced_features, "use_extension", False):
         comm.resolve_request(req_id, data)
         return JSONResponse({"status": "ok"})
 
-    @app.post("/extension/agent_query")
-    async def extension_agent_query(request: Request):
-        from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
 
-        body = await request.json()
-        query = body.get("query", "")
-        request_id = body.get("request_id", None)
-        if not query:
-            return JSONResponse({"type": "agent_error", "message": "Missing query"}, status_code=400)
+async def extension_agent_query(
+    request: Request, current_user: Optional[UserInfo] = Depends(require_chat_access)
+):
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
 
+    body = await request.json()
+    query = body.get("query", "")
+    request_id = _canonical_thread_id(body.get("request_id") or str(uuid.uuid4()))
+    user_id = _workspace_user_id(current_user)
+    if not query:
+        return JSONResponse({"type": "agent_error", "message": "Missing query"}, status_code=400)
+
+    try:
+        validate_input_length(query)
+    except HTTPException as e:
+        return JSONResponse({"type": "agent_error", "message": e.detail}, status_code=e.status_code)
+
+    await _assert_thread_access(request_id, user_id, app_state.agent_id)
+
+    async def event_gen():
+        # Initial processing message
+        yield (
+            json.dumps(
+                {
+                    "type": "agent_response",
+                    "content": f"Processing query: {query}\n\n",
+                    "request_id": request_id,
+                }
+            )
+            + "\n"
+        )
         try:
-            validate_input_length(query)
-        except HTTPException as e:
-            return JSONResponse({"type": "agent_error", "message": e.detail}, status_code=e.status_code)
-
-        async def event_gen():
-            # Initial processing message
+            async for chunk in event_stream(
+                query,
+                api_mode=settings.advanced_features.mode == "api",
+                resume=query if isinstance(query, ActionResponse) else None,
+                thread_id=request_id,
+                user_id=user_id,
+            ):
+                if chunk.strip():
+                    # Remove 'data: ' prefix if present
+                    if chunk.startswith("data: "):
+                        chunk = chunk[6:]
+                    try:
+                        chunk_data = json.loads(chunk)
+                        content = chunk_data.get("data", chunk)
+                    except Exception:
+                        content = chunk
+                    yield (
+                        json.dumps({"type": "agent_response", "content": content, "request_id": request_id})
+                        + "\n"
+                    )
+            # Completion message
+            yield json.dumps({"type": "agent_complete", "request_id": request_id}) + "\n"
+        except Exception as e:
             yield (
                 json.dumps(
                     {
-                        "type": "agent_response",
-                        "content": f"Processing query: {query}\n\n",
+                        **safe_error_payload(e, message="Agent request failed"),
+                        "type": "agent_error",
                         "request_id": request_id,
                     }
                 )
                 + "\n"
             )
-            try:
-                async for chunk in event_stream(
-                    query,
-                    api_mode=settings.advanced_features.mode == "api",
-                    resume=query if isinstance(query, ActionResponse) else None,
-                    thread_id=request_id or str(uuid.uuid4()),  # Use request_id as thread_id if available
-                ):
-                    if chunk.strip():
-                        # Remove 'data: ' prefix if present
-                        if chunk.startswith("data: "):
-                            chunk = chunk[6:]
-                        try:
-                            chunk_data = json.loads(chunk)
-                            content = chunk_data.get("data", chunk)
-                        except Exception:
-                            content = chunk
-                        yield (
-                            json.dumps(
-                                {"type": "agent_response", "content": content, "request_id": request_id}
-                            )
-                            + "\n"
-                        )
-                # Completion message
-                yield json.dumps({"type": "agent_complete", "request_id": request_id}) + "\n"
-            except Exception as e:
-                yield (
-                    json.dumps(
-                        {
-                            **safe_error_payload(e, message="Agent request failed"),
-                            "type": "agent_error",
-                            "request_id": request_id,
-                        }
-                    )
-                    + "\n"
-                )
 
-        return StreamingResponse(event_gen(), media_type="application/jsonlines")
+    return StreamingResponse(event_gen(), media_type="application/jsonlines")
+
+
+if getattr(settings.advanced_features, "use_extension", False):
+    app.add_api_route("/extension/agent_query", extension_agent_query, methods=["POST"])
 
 
 async def _resolve_stream_agent(
@@ -2758,9 +2793,8 @@ async def stream(
     else:
         logger.info(f"Using provided thread_id: {thread_id}")
 
-    agent_id_header = request.headers.get("X-Agent-ID") or "cuga-default"
-    if not agent_registry.is_agent_registry_enabled():
-        agent_id_header = "cuga-default"
+    thread_id = _canonical_thread_id(thread_id)
+    agent_id_header = _runtime_agent_id(request) or "cuga-default"
     await _assert_thread_access(thread_id, user_id, agent_id_header)
     user_attachments = await get_attachment_snapshot(request)
 
@@ -2845,7 +2879,14 @@ async def stream(
 from cuga.backend.server.run_routes import build_run_router, run_api_enabled  # noqa: E402
 
 if run_api_enabled():
-    app.include_router(build_run_router(event_stream=event_stream, default_user_id=DEFAULT_USER_ID))
+    app.include_router(
+        build_run_router(
+            event_stream=event_stream,
+            default_user_id=DEFAULT_USER_ID,
+            assert_thread_access=_assert_thread_access,
+            runtime_agent_id=lambda: app_state.agent_id,
+        )
+    )
     logger.info("/run and /run/agents mounted (machine seam)")
 
 
@@ -2861,9 +2902,12 @@ async def stop(request: Request, current_user: Optional[UserInfo] = Depends(requ
         except Exception:
             pass
 
-    await _assert_thread_access(
-        thread_id, _workspace_user_id(current_user), request.headers.get("X-Agent-ID")
+    thread_id = _canonical_thread_id(thread_id)
+    owner_agent = await _assert_thread_access(
+        thread_id, _workspace_user_id(current_user), _runtime_agent_id(request), create=False
     )
+    if owner_agent is None:
+        return {"status": "success", "message": f"Stop request received for thread_id: {thread_id}"}
     if thread_id:
         logger.info(f"Received stop request for thread_id: {thread_id}")
         # Create event if it doesn't exist, then set it
@@ -2898,9 +2942,12 @@ async def reset_agent_state(
             except Exception:
                 pass
 
-        await _assert_thread_access(
-            thread_id, _workspace_user_id(current_user), request.headers.get("X-Agent-ID")
+        thread_id = _canonical_thread_id(thread_id)
+        owner_agent = await _assert_thread_access(
+            thread_id, _workspace_user_id(current_user), _runtime_agent_id(request), create=False
         )
+        if owner_agent is None:
+            return {"status": "success", "message": "Agent state reset successfully"}
         if thread_id:
             logger.info(f"Resetting state for thread_id: {thread_id}")
             # Clear stop event for this thread
@@ -3871,7 +3918,8 @@ async def get_agent_state(
             )
 
         user_id = _workspace_user_id(current_user)
-        agent_id = await _assert_thread_access(thread_id, user_id, request.headers.get("X-Agent-ID"))
+        thread_id = _canonical_thread_id(thread_id)
+        agent_id = await _assert_thread_access(thread_id, user_id, _runtime_agent_id(request), create=False)
         agent_id = agent_id or "cuga-default"
         use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
         run_agent = app_state.agent
@@ -4221,7 +4269,12 @@ async def get_workspace_tree(
 ):
     """Endpoint to retrieve the workspace folder tree."""
     try:
-        tid = await _require_workspace_thread_access(request, thread_id, current_user)
+        try:
+            tid = await _require_workspace_thread_access(request, thread_id, current_user)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return JSONResponse({"tree": []})
+            raise
         if workspace_tree_is_native_backed():
             tree = fetch_native_workspace_tree(tid)
             return JSONResponse({"tree": tree})
