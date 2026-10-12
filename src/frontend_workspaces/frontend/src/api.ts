@@ -398,16 +398,16 @@ export function triggerKnowledgeReindexForConfig(agentId?: string): Promise<Resp
   });
 }
 
-/** List an MCP gateway instance's servers and tools with its API key (plain value or saved secret ref). */
+/** List an MCP gateway instance's servers and tools: with the API key (plain value or saved secret ref), or in signed-in user mode with the caller's own sign-in. */
 export async function discoverGateway(
   url: string,
-  key: { apiKey?: string; apiKeyRef?: string },
+  key: { apiKey?: string; apiKeyRef?: string; runAs?: "user" | "service" },
   agentId?: string
 ): Promise<Response> {
   return apiFetch("/api/manage/gateway/discover", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url, api_key: key.apiKey, api_key_ref: key.apiKeyRef, agent_id: agentId }), // pragma: allowlist secret
+    body: JSON.stringify({ url, api_key: key.apiKey, api_key_ref: key.apiKeyRef, run_as: key.runAs, agent_id: agentId }), // pragma: allowlist secret
   });
 }
 

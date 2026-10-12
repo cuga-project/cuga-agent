@@ -16,7 +16,7 @@ import {
   InlineNotification,
 } from "@carbon/react";
 import { Template, Folder, Connect } from "@carbon/icons-react";
-import type { ToolEntry, ToolAuth, AuthType, GatewayServer, GatewayRunAs } from "./types/tools";
+import type { ToolEntry, ToolAuth, AuthType, GatewayServer, GatewayRunAs, GatewayToolDef } from "./types/tools";
 import { AUTH_TYPE_OPTIONS, parseGatewayInstanceUrl } from "./types/tools";
 import * as api from "./api";
 import "./AddToolModal.css";
@@ -212,6 +212,14 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
   const authOption = AUTH_TYPE_OPTIONS.find((o) => o.value === authType);
   const needsKey = !isGateway && (authOption?.needsKey ?? false);
   const gatewayInstanceId = isGateway ? parseGatewayInstanceUrl(url) : null;
+  const gatewayUserMode = isGateway && gatewayRunAs === "user";
+  // Definitions of the selected tools: from the last Connect, else as saved on the edited entry.
+  const selectedToolDefs: GatewayToolDef[] = (() => {
+    const known = new Map<string, GatewayToolDef>();
+    (initial?.gateway?.tools ?? []).forEach((t) => known.set(t.name, t));
+    (gatewayServers ?? []).forEach((sv) => sv.tools.forEach((t) => known.set(t.name, t)));
+    return [...gatewaySelected].sort().map((n) => known.get(n)).filter((t): t is GatewayToolDef => !!t);
+  })();
   // A key typed now, else the saved secret ref (also the one stored on the edited entry).
   const gatewayKeyRef = (() => {
     const v = authValue.trim();
@@ -230,7 +238,11 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
     try {
       const res = await api.discoverGateway(
         url.trim(),
-        gatewayPlainKey ? { apiKey: gatewayPlainKey } : { apiKeyRef: gatewayKeyRef }, // pragma: allowlist secret
+        gatewayUserMode
+          ? { runAs: "user" }
+          : gatewayPlainKey
+            ? { apiKey: gatewayPlainKey } // pragma: allowlist secret
+            : { apiKeyRef: gatewayKeyRef }, // pragma: allowlist secret
         agentId
       );
       const data = await res.json().catch(() => ({}));
@@ -262,6 +274,20 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitError("");
+    if (isGateway && gatewayUserMode) {
+      // No API key: the selected tools' definitions are saved, and calls carry each user's token.
+      onSave({
+        name: name.trim(),
+        type: "mcp",
+        url: url.trim(),
+        transport: "http",
+        description: description.trim() || undefined,
+        gateway: { instance_url: url.trim(), run_as: "user", tools: selectedToolDefs },
+        include: [...gatewaySelected].sort(),
+      });
+      onClose();
+      return;
+    }
     if (isGateway) {
       // The API key is stored only as a secret; a typed key becomes a new secret first.
       let ref = gatewayKeyRef;
@@ -285,7 +311,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
         url: url.trim(),
         transport: "http",
         description: description.trim() || undefined,
-        gateway: { instance_url: url.trim(), run_as: gatewayRunAs },
+        gateway: { instance_url: url.trim(), run_as: "service" },
         auth: { type: GATEWAY_AUTH_TYPE, value: ref },
         include: [...gatewaySelected].sort(),
       });
@@ -373,7 +399,10 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
     ? `Invalid env line${badEnvLines.length > 1 ? "s" : ""}: ${badEnvLines.map((l) => `"${l}"`).join(", ")}. Use KEY=VALUE format.`
     : "";
 
-  const gatewayValid = !!gatewayInstanceId && !!(gatewayPlainKey || gatewayKeyRef) && gatewaySelected.size > 0;
+  const gatewayValid =
+    !!gatewayInstanceId &&
+    gatewaySelected.size > 0 &&
+    (gatewayUserMode ? selectedToolDefs.length === gatewaySelected.size : !!(gatewayPlainKey || gatewayKeyRef));
   const valid = !nameError && !envError && description.trim().length > 0 && (
     type === "openapi"
       ? url.trim().length > 0
@@ -711,7 +740,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
             />
           </FormGroup>
           {isGateway ? (
-            <FormGroup legendText="Instance API key">
+            <FormGroup legendText="Gateway access">
               <Select
                 id="tool-gateway-run-as"
                 labelText="Tool calls run as"
@@ -726,16 +755,23 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
                 <SelectItem value="user" text="Signed-in user" />
                 <SelectItem value="service" text="Service ID (instance API key)" />
               </Select>
-              <p className="cds--type-helper-text-01" style={{ margin: "0.75rem 0 0.5rem" }}>
-                An API key created on the instance page, stored as a secret. It lists the instance's tools
-                {gatewayRunAs === "service" ? " and makes the tool calls." : "; the calls use each user's token."}
-              </p>
-              {secretFields}
+              {gatewayUserMode ? (
+                <p className="cds--type-helper-text-01" style={{ margin: "0.75rem 0 0.5rem" }}>
+                  No API key: Connect lists the instance's tools with your own sign-in, and the selected tools are saved with this entry.
+                </p>
+              ) : (
+                <>
+                  <p className="cds--type-helper-text-01" style={{ margin: "0.75rem 0 0.5rem" }}>
+                    An API key created on the instance page, stored as a secret. It lists the instance's tools and makes the tool calls.
+                  </p>
+                  {secretFields}
+                </>
+              )}
               <Button
                 kind="tertiary"
                 size="sm"
                 style={{ marginTop: "0.75rem" }}
-                disabled={!gatewayInstanceId || !(gatewayPlainKey || gatewayKeyRef) || gatewayConnecting}
+                disabled={!gatewayInstanceId || (!gatewayUserMode && !(gatewayPlainKey || gatewayKeyRef)) || gatewayConnecting}
                 onClick={connectGateway}
               >
                 {gatewayConnecting ? "Connecting…" : gatewayServers ? "Refresh tools" : "Connect"}

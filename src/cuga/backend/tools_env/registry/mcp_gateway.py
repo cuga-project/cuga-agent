@@ -78,6 +78,27 @@ def user_mode_instance(config: Any) -> str | None:
     return None
 
 
+def stored_tools(config: Any) -> list[dict[str, Any]] | None:
+    """Tool definitions saved with a user-mode entry (Connect lists them with the admin's token).
+
+    The registry serves these instead of listing the instance, so user mode needs no API key.
+    """
+    gateway = getattr(config, "gateway", None) or {}
+    tools = gateway.get("tools")
+    if gateway.get("run_as") != RUN_AS_USER or not isinstance(tools, list):
+        return None
+    return [
+        {
+            "name": t["name"],
+            "description": t.get("description") or "",
+            "inputSchema": t.get("inputSchema") or {"type": "object", "properties": {}},
+            "outputSchema": {},
+        }
+        for t in tools
+        if isinstance(t, dict) and t.get("name")
+    ]
+
+
 def user_token_required_body(instance_id: str) -> dict[str, str]:
     return {
         "error": ERROR_USER_TOKEN_REQUIRED,
@@ -199,15 +220,29 @@ def _field(item: dict[str, Any], *names: str) -> Any:
     return None
 
 
-async def discover(instance_url: str, api_key: str) -> dict[str, Any]:
-    """The instance's MCP servers and their tools, as the instance API key sees them.
+class _Bearer(httpx.Auth):
+    def __init__(self, token: str):
+        self._token = token
 
-    Tool names are the names the gateway exposes on ``/mcp`` (the registry ``include`` list).
+    def auth_flow(self, request: httpx.Request):
+        request.headers["Authorization"] = f"Bearer {self._token}"
+        yield request
+
+
+async def discover(instance_url: str, api_key: str = "", bearer_token: str = "") -> dict[str, Any]:
+    """The instance's MCP servers and their tools, with their input schemas.
+
+    Listed with the instance API key (service ID mode) or with a token the caller already has
+    for the instance (the signed-in admin, user mode). Tool names are the names the gateway
+    exposes on ``/mcp`` (the registry ``include`` list).
     """
     instance = parse_instance_url(instance_url)
-    if not api_key:
+    if bearer_token:
+        auth: httpx.Auth = _Bearer(bearer_token)
+    elif api_key:
+        auth = auth_for(instance, api_key)
+    else:
         raise GatewayError("Enter the instance API key.")
-    auth = auth_for(instance, api_key)
     s = gateway_settings()
     async with httpx.AsyncClient(verify=s["gateway_verify"], timeout=20.0, auth=auth) as client:
         try:
@@ -217,8 +252,9 @@ async def discover(instance_url: str, api_key: str) -> dict[str, Any]:
                 f"The gateway at {instance.base_url} cannot be reached: {type(e).__name__}"
             ) from e
     if resp.status_code in (401, 403):
+        who = "You need" if bearer_token else "The key's service ID needs"
         raise GatewayError(
-            f"The gateway refused the token ({resp.status_code}). The key's service ID needs a role on this instance."
+            f"The gateway refused the token ({resp.status_code}). {who} a role on this instance."
         )
     if resp.status_code != 200:
         raise GatewayError(f"The gateway answered {resp.status_code} when listing tools.")
@@ -233,7 +269,12 @@ async def discover(instance_url: str, api_key: str) -> dict[str, Any]:
             continue
         server = _field(item, "gatewaySlug", "gateway_slug") or "other"
         servers.setdefault(server, []).append(
-            {"name": name, "description": _field(item, "description") or ""}
+            {
+                "name": name,
+                "description": _field(item, "description") or "",
+                "inputSchema": _field(item, "inputSchema", "input_schema")
+                or {"type": "object", "properties": {}},
+            }
         )
     logger.info(
         "Gateway instance {} lists {} tools on {} servers", instance.instance_id, len(items), len(servers)

@@ -678,6 +678,7 @@ export function ManagePage() {
         entry.gateway = {
           instance_url: String(gw.instance_url ?? entry.url ?? ""),
           run_as: gw.run_as === "user" ? "user" : "service",
+          ...(Array.isArray(gw.tools) ? { tools: gw.tools as NonNullable<ToolEntry["gateway"]>["tools"] } : {}),
         };
         entry.transport = "http";
       } else if (type === "mcp" && entry.url) {

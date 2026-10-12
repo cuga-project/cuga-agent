@@ -250,11 +250,28 @@ async def test_discover_groups_tools_by_server(platform):
         {
             "name": "demo-time",
             "tools": [
-                {"name": "demo-time-add", "description": "Add"},
-                {"name": "demo-time-get-time", "description": "Time"},
+                {
+                    "name": "demo-time-add",
+                    "description": "Add",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+                {
+                    "name": "demo-time-get-time",
+                    "description": "Time",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
             ],
         },
-        {"name": "notes", "tools": [{"name": "notes-search", "description": "Search"}]},
+        {
+            "name": "notes",
+            "tools": [
+                {
+                    "name": "notes-search",
+                    "description": "Search",
+                    "inputSchema": {"type": "object", "properties": {}},
+                }
+            ],
+        },
     ]
 
 

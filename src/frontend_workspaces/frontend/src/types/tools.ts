@@ -21,16 +21,25 @@ export type McpTransport = "sse" | "stdio" | "http";
 /** Who the gateway sees on a tool call: the signed-in user, or the instance API key's service ID. */
 export type GatewayRunAs = "user" | "service";
 
+/** A tool definition as the gateway lists it (saved with signed-in user entries). */
+export interface GatewayToolDef {
+  name: string;
+  description: string;
+  inputSchema?: Record<string, unknown>;
+}
+
 /** MCP gateway instance entry. `url` holds the instance URL (https://<gateway>/?instance=<id>). */
 export interface ToolGateway {
   instance_url: string;
   run_as: GatewayRunAs;
+  /** Signed-in user mode: the selected tools' definitions, so the registry needs no API key. */
+  tools?: GatewayToolDef[];
 }
 
 /** A tool the gateway instance exposes, grouped by the gateway's MCP server. */
 export interface GatewayServer {
   name: string;
-  tools: { name: string; description: string }[];
+  tools: GatewayToolDef[];
 }
 
 const GATEWAY_INSTANCE_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/;

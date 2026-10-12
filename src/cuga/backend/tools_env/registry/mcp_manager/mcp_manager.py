@@ -35,7 +35,9 @@ from cuga.backend.tools_env.registry.mcp_manager.response_schema import extract_
 from cuga.backend.tools_env.registry.utils.schema_utils import json_schema_type
 import yaml
 from cuga.backend.utils.consts import ServiceType, LOCAL_ORCHESTRATE_URL, LOCAL_TRM_URL
+from cuga.backend.tools_env.registry import mcp_gateway
 from cuga.backend.tools_env.registry.mcp_gateway import AUTH_TYPE as GATEWAY_AUTH_TYPE
+from types import SimpleNamespace
 
 
 def _gateway_transport(name: str, config: ServiceConfig):
@@ -776,24 +778,31 @@ class MCPManager:
         self._clear_mcp_server_registration(name)
 
         try:
-            transport = self._create_transport(name, config)
-            if not transport:
-                self._set_service_status(name, "failed", "Transport creation returned no transport")
-                return False
+            stored = mcp_gateway.stored_tools(config)
+            if stored is not None:
+                # MCP gateway, signed-in user mode: no credential at start; calls carry each
+                # user's instance token (see _call_transport).
+                tools = [SimpleNamespace(**t) for t in stored]
+                logger.info(f"Using {len(tools)} saved tool definitions for gateway entry {name}")
+            else:
+                transport = self._create_transport(name, config)
+                if not transport:
+                    self._set_service_status(name, "failed", "Transport creation returned no transport")
+                    return False
 
-            client = FastMCPClient(transport)
-            logger.info(f"Fetching tools from {name}...")
+                client = FastMCPClient(transport)
+                logger.info(f"Fetching tools from {name}...")
 
-            async def fetch_tools():
-                async with client:
-                    return await client.list_tools()
+                async def fetch_tools():
+                    async with client:
+                        return await client.list_tools()
 
-            try:
-                tools = await asyncio.wait_for(fetch_tools(), timeout=15.0)
-                logger.info(f"Retrieved {len(tools)} tools from {name}: {[tool.name for tool in tools]}")
-            except asyncio.TimeoutError:
-                print(f"Timeout fetching tools from {name} after 15 seconds")
-                raise
+                try:
+                    tools = await asyncio.wait_for(fetch_tools(), timeout=15.0)
+                    logger.info(f"Retrieved {len(tools)} tools from {name}: {[tool.name for tool in tools]}")
+                except asyncio.TimeoutError:
+                    print(f"Timeout fetching tools from {name} after 15 seconds")
+                    raise
 
             include_set = set(config.include) if config.include else None
 

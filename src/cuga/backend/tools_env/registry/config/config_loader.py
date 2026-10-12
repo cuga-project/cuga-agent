@@ -198,12 +198,16 @@ def _gateway_block(service_name: str, config: dict) -> Optional[Dict[str, Any]]:
         instance = parse_instance_url(instance_url)
     except ValueError as e:
         raise ValueError(f"MCP gateway entry '{service_name}': {e}") from e
-    return {
+    normalized = {
         'instance_url': instance.instance_url,
         'instance_id': instance.instance_id,
         'run_as': RUN_AS_USER if block.get('run_as') == RUN_AS_USER else RUN_AS_SERVICE,
         '_mcp_url': instance.mcp_url,
     }
+    if isinstance(block.get('tools'), list):
+        # User mode: tool definitions saved by Manage, served without listing the instance.
+        normalized['tools'] = block['tools']
+    return normalized
 
 
 def _create_service_config(service_name: str, config: dict, is_mcp_server: bool = False) -> ServiceConfig:

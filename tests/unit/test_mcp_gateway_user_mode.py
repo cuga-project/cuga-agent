@@ -225,3 +225,86 @@ def test_service_mode_call_transport_is_the_stored_one():
     mgr = MCPManager({"team_tools": _config("service")})
     mgr.mcp_transports["team_tools"] = stored = object()
     assert mgr._call_transport("team_tools") is stored
+
+
+# --- user mode without an API key --------------------------------------------------------
+
+
+async def test_user_mode_entry_serves_saved_tool_definitions_without_a_credential():
+    """No auth, no listing: the registry registers the saved tools and calls carry the user's token."""
+    config = _create_service_config(
+        "team_tools",
+        {
+            "url": URL,
+            "gateway": {
+                "run_as": "user",
+                "tools": [
+                    {
+                        "name": "demo-time-add",
+                        "description": "Add two numbers.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"a": {"type": "number"}, "b": {"type": "number"}},
+                        },
+                    }
+                ],
+            },
+            "include": ["demo-time-add"],
+        },
+        is_mcp_server=True,
+    )
+    assert config.auth is None
+    mgr = MCPManager({"team_tools": config})
+    assert await mgr._initialize_single_fastmcp_server("team_tools", config)
+    assert mgr.server_by_tool == {"team_tools_demo_time_add": "team_tools"}
+    assert mgr.original_tool_name_by_sanitized["team_tools_demo_time_add"] == "demo-time-add"
+    params = mgr.tools_by_server["team_tools"][0]["function"]["parameters"]
+    assert set(params.get("properties", {})) == {"a", "b"}
+    assert mgr.mcp_transports["team_tools"] is None  # never used: each call builds its own
+
+
+def test_saved_tools_are_ignored_in_service_mode():
+    assert mcp_gateway.stored_tools(_config("service")) is None
+
+
+async def test_discover_with_the_callers_own_token(fake, monkeypatch):
+    seen = {}
+
+    import httpx as _httpx
+
+    def handler(request):
+        seen["auth"] = request.headers.get("Authorization")
+        return _httpx.Response(
+            200,
+            json=[{"name": "demo-time-add", "gatewaySlug": "demo-time", "inputSchema": {"type": "object"}}],
+        )
+
+    real = _httpx.AsyncClient
+
+    class Client(real):
+        def __init__(self, *a, **kw):
+            kw["transport"] = _httpx.MockTransport(handler)
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(mcp_gateway.httpx, "AsyncClient", Client)
+    result = await mcp_gateway.discover(URL, bearer_token="admin-instance-token")
+    assert seen["auth"] == "Bearer admin-instance-token"
+    assert result["servers"][0]["tools"][0] == {
+        "name": "demo-time-add",
+        "description": "",
+        "inputSchema": {"type": "object"},
+    }
+    assert fake.exchanges == 0  # no API key exchange
+
+
+async def test_discover_route_in_user_mode_needs_a_sign_in():
+    from fastapi import HTTPException
+
+    from cuga.backend.server.manage_routes.gateway_routes import GatewayDiscoverRequest, discover_gateway
+
+    class Req:
+        cookies = {}
+
+    with pytest.raises(HTTPException) as e:
+        await discover_gateway(GatewayDiscoverRequest(url=URL, run_as="user"), request=Req(), user=None)
+    assert e.value.status_code == 400 and "Sign in" in e.value.detail
