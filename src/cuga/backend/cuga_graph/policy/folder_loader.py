@@ -363,6 +363,7 @@ async def load_policies_from_folder(
         logger.info(f"Cleared {len(policies)} existing policies")
 
     errors = []
+    storage_errors = []
     loaded_count = 0
     processed_files = []
 
@@ -391,34 +392,36 @@ async def load_policies_from_folder(
             file_path = os.path.join(subfolder_path, filename)
             processed_files.append(file_path)
 
+            # --- parse phase (permanent failures: bad frontmatter, unknown type) ---
             try:
-                # Parse markdown with frontmatter
                 frontmatter, content = parse_markdown_with_frontmatter(file_path)
-
-                # Override type from frontmatter if specified, otherwise use folder type
                 detected_type = frontmatter.get('type', policy_type)
-
-                # Get creator function
                 creator_func = POLICY_CREATORS.get(detected_type)
                 if not creator_func:
                     raise ValueError(f"Unknown policy type: {detected_type}")
-
-                # Create policy object
                 policy = creator_func(file_path, frontmatter, content)
-
-                # Add to storage
-                await storage.add_policy(policy)
-
-                loaded_count += 1
-                logger.info(f"✅ Loaded {detected_type} '{policy.name}' from {filename}")
-
             except Exception as e:
                 error_msg = f"Failed to load {file_path}: {str(e)}"
                 errors.append(error_msg)
                 logger.error(error_msg)
+                continue
+
+            # --- storage phase (transient failures: embedding/DB outage) ---
+            try:
+                await storage.add_policy(policy)
+            except Exception as e:
+                error_msg = f"Failed to store {file_path}: {str(e)}"
+                errors.append(error_msg)
+                storage_errors.append(error_msg)
+                logger.error(error_msg)
+                continue
+
+            loaded_count += 1
+            logger.info(f"✅ Loaded {detected_type} '{policy.name}' from {filename}")
 
     return {
         "count": loaded_count,
         "errors": errors,
+        "storage_errors": storage_errors,
         "files": processed_files,
     }

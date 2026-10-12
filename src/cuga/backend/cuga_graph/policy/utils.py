@@ -365,6 +365,7 @@ async def load_policies_from_json(
     file_path: str,
     storage: PolicyStorage,
     clear_existing: bool = False,
+    filesystem_sync: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Load policies from a JSON file into storage.
@@ -378,6 +379,8 @@ async def load_policies_from_json(
         file_path: Path to JSON file containing policies
         storage: PolicyStorage instance
         clear_existing: If True, clear all existing policies before loading
+        filesystem_sync: Optional PolicyFilesystemSync; when given, each imported
+            policy is also written to the .cuga folder
 
     Returns:
         Dictionary with:
@@ -391,7 +394,7 @@ async def load_policies_from_json(
             storage,
             extracted["policies"],
             clear_existing=clear_existing,
-            filesystem_sync=None,
+            filesystem_sync=filesystem_sync,
         )
         count = result["count"]
         errors = [*extracted["errors"], *result["errors"]]
