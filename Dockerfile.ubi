@@ -1,5 +1,6 @@
 # Multi-stage: builder installs deps, runtime keeps only what's needed
 ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312-minimal:latest
+
 FROM ${BASE_IMAGE} AS builder
 
 # Use official uv image to avoid curl+tar dance
@@ -19,8 +20,9 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 COPY docs/ ./docs/
 
-# Include observability and Evolve memory support in the published image.
-RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + && uv sync --no-editable --no-dev --extra observability --extra evolve
+# Include observability, Evolve and READI with its pinned spaCy model.
+RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + \
+    && uv sync --frozen --no-editable --no-dev --extra observability --extra evolve --group evolve-image
 
 # Slim down torch: remove test suite and C++ headers (not needed at runtime) ~143MB
 # NOTE: torch/bin must be kept — contains torch_shm_manager required at import time
@@ -34,12 +36,14 @@ RUN find /app/.venv -type f \( -name "*.so" -o -name "*.so.*" \) -exec strip --s
 RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright uv run --no-sync playwright install --only-shell chromium
 
 # Bake ML model weights into the image for airgapped operation.
-# Pinned to /app/.cache so paths survive the multi-stage copy and match runtime ENV below.
+# Keep cache paths aligned with the runtime environment below.
 ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
     DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
     HF_HOME=/app/.cache/huggingface \
+    SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers \
     TIKTOKEN_CACHE_DIR=/app/.cache/tiktoken \
-    LITELLM_LOCAL_MODEL_COST_MAP=True
+    LITELLM_LOCAL_MODEL_COST_MAP=True \
+    MODEL_PRELOAD_STRICT=1
 RUN uv run --no-sync python src/scripts/preload_models.py
 
 # Remove Python bytecode cache — regenerated on first run, adds nothing at build time
@@ -90,7 +94,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 
 # 1001:0 matches USER 1001; g+rwX lets OpenShift's arbitrary UID run with GID 0 (typical restricted SCC).
-RUN mkdir -p /app/cuga_workspace /app/crm_tmp /app/.cuga/knowledge /data/dbs && \
+RUN mkdir -p /app/cuga_workspace /app/crm_tmp /app/.cuga/knowledge /data/dbs /data/evolve && \
     chown -R 1001:0 /data /app/.cuga && \
     chmod -R g+rwX /app/.cuga
 
@@ -118,6 +122,7 @@ ENV LOGNAME=cuga
 ENV CUGA_HOST=0.0.0.0
 ENV DYNACONF_SERVER_PORTS__DEMO=7860
 ENV CUGA_DEMO_MODE=default
+ENV CUGA_EMBEDDED_EVOLVE=false
 ENV HOME=/tmp
 ENV UV_CACHE_DIR=/tmp/uv-cache
 ENV UV_TOOL_DIR=/tmp/uv-tools
@@ -130,6 +135,9 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
 ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
     DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
     HF_HOME=/app/.cache/huggingface \
+    SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers \
+    HF_DATASETS_OFFLINE=1 \
+    PIP_NO_INDEX=1 \
     TIKTOKEN_CACHE_DIR=/app/.cache/tiktoken \
     CUSTOM_TIKTOKEN_CACHE_DIR=/app/.cache/tiktoken \
     LITELLM_LOCAL_MODEL_COST_MAP=True \

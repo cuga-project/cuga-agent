@@ -27,6 +27,11 @@ async def _ensure_schema() -> None:
         "purpose TEXT NOT NULL, used_at TEXT NOT NULL, "
         "PRIMARY KEY (tenant_id, instance_id, usage_id))"
     )
+    await _store().execute(
+        "CREATE TABLE IF NOT EXISTS evolve_memory_usage_revisions ("
+        "tenant_id TEXT NOT NULL, instance_id TEXT NOT NULL, usage_id TEXT NOT NULL, "
+        "entity_revision INTEGER NOT NULL, PRIMARY KEY (tenant_id, instance_id, usage_id))"
+    )
     await _store().commit()
 
 
@@ -36,6 +41,7 @@ async def record_memory_usage(
     agent_id: str,
     user_id: str,
     entity_ids: list[str],
+    entity_revisions: dict[str, int] | None = None,
     thread_id: str,
     conversation_label: str,
     purpose: str = "prompt_context",
@@ -66,6 +72,13 @@ async def record_memory_usage(
                 moment,
             ),
         )
+        revision = (entity_revisions or {}).get(entity_id)
+        if type(revision) is int and revision > 0:
+            await store.execute(
+                "INSERT INTO evolve_memory_usage_revisions VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (tenant_id, instance_id, usage_id) DO NOTHING",
+                (tenant_id, instance_id, usage_id, revision),
+            )
     await store.commit()
     return {
         "turn_id": turn_id,
@@ -90,10 +103,17 @@ async def get_turn_memory_usage(
         "AND agent_id = ? AND user_id = ? ORDER BY entity_id",
         (tenant_id, instance_id, turn_id, agent_id, user_id),
     )
+    revisions = await _store().fetchall(
+        "SELECT u.entity_id, r.entity_revision FROM evolve_memory_usage u "
+        "JOIN evolve_memory_usage_revisions r ON u.tenant_id=r.tenant_id AND u.instance_id=r.instance_id AND u.usage_id=r.usage_id "
+        "WHERE u.tenant_id=? AND u.instance_id=? AND u.turn_id=? AND u.agent_id=? AND u.user_id=?",
+        (tenant_id, instance_id, turn_id, agent_id, user_id),
+    )
     entity_ids = [str(row["entity_id"]) for row in rows]
     return {
         "turn_id": turn_id,
         "count": len(entity_ids),
+        "entity_revisions": {str(row["entity_id"]): row["entity_revision"] for row in revisions},
         "entity_ids": entity_ids,
         "used_at": rows[-1]["used_at"] if rows else None,
     }
@@ -130,8 +150,10 @@ async def get_memory_usage_summaries(
         user_clause = " AND user_id = ?"
         params += (user_id,)
     rows = await store.fetchall(
-        "SELECT entity_id, thread_id, conversation_label, used_at "
-        "FROM evolve_memory_usage WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? "
+        "SELECT entity_id, thread_id, conversation_label, used_at, "
+        "(SELECT entity_revision FROM evolve_memory_usage_revisions r WHERE r.tenant_id=u.tenant_id "
+        "AND r.instance_id=u.instance_id AND r.usage_id=u.usage_id) AS entity_revision "
+        "FROM evolve_memory_usage u WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? "
         f"AND entity_id IN ({placeholders})"
         f"{user_clause} ORDER BY used_at DESC",
         params,
@@ -167,6 +189,7 @@ async def get_memory_usage_summaries(
                     "thread_id": row["thread_id"],
                     "conversation_label": row["conversation_label"],
                     "used_at": row["used_at"],
+                    "revision": row["entity_revision"],
                 }
             )
     return summaries
