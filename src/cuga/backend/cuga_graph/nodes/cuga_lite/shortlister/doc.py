@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import StructuredTool
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.schema import model_tool_schema
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_schema import model_tool_schema
 
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _NON_WORD = re.compile(r"[^0-9a-zA-Z]+")
