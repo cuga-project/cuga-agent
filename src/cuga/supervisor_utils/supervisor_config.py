@@ -55,7 +55,13 @@ async def build_agents_from_list(
     feed :func:`cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph.create_cuga_supervisor_graph`
     the exact same agent shapes.
     """
-    agents = {}
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
+        AgentMap,
+        attach_agent_memory_scopes,
+    )
+
+    agents = AgentMap()
+    memory_scopes: Dict[str, str] = {}
 
     for agent_config in agents_list:
         agent_name = agent_config["name"]
@@ -122,6 +128,9 @@ async def build_agents_from_list(
                         f"CugaAgent instance (got {type(agent).__name__})"
                     )
 
+                memory_scope = agent_config.get("memory_scope")
+                if memory_scope:
+                    memory_scopes[agent_name] = str(memory_scope)
                 agents[agent_name] = agent
                 logger.info(f"✅ Imported agent '{agent_name}' from {import_path}")
             except Exception as e:
@@ -172,11 +181,29 @@ async def build_agents_from_list(
             )
             feature_overrides = agent_config.get("feature_overrides") or {}
             agent._feature_overrides = {k: v for k, v in feature_overrides.items() if v is not None}
+            memory_scope = agent_config.get("memory_scope")
+            if memory_scope:
+                memory_scopes[agent_name] = str(memory_scope)
+                agent._memory_scope = str(memory_scope)
 
             agents[agent_name] = agent
             logger.info(f"Created internal CugaAgent: {agent_name}")
 
+    attach_agent_memory_scopes(agents, memory_scopes)
     return agents
+
+
+def retain_agent_memory_scopes(built: dict, stored: dict) -> dict:
+    """Re-attach YAML memory scopes after Pydantic copies AgentMap into a plain dict."""
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
+        AgentMap,
+        agent_map_memory_scopes,
+        attach_agent_memory_scopes,
+    )
+
+    mapped = stored if isinstance(stored, AgentMap) else AgentMap(stored)
+    attach_agent_memory_scopes(mapped, agent_map_memory_scopes(built))
+    return mapped
 
 
 async def load_supervisor_config(
@@ -198,12 +225,13 @@ async def load_supervisor_config(
         config = yaml.safe_load(f)
 
     agents = await build_agents_from_list(config.get("agents", []), auto_load_policies=auto_load_policies)
-
-    return SupervisorConfig(
+    loaded = SupervisorConfig(
         supervisor=config.get("supervisor", {}),
         agents=agents,
         a2a=config.get("a2a", {}),
     )
+    loaded.agents = retain_agent_memory_scopes(agents, loaded.agents)
+    return loaded
 
 
 async def build_agents_from_stored_subagents(
@@ -288,6 +316,8 @@ async def build_agents_from_stored_subagents(
                     or agent_meta.get("description"),
                     "model": _model_config_from_stored_llm(ref_config.get("llm")),
                     "feature_overrides": extract_agent_feature_overrides(ref_config),
+                    "memory_scope": (ref_config.get("feature_flags") or {}).get("sub_agent_memory_scope")
+                    or (ref_config.get("advanced_features") or {}).get("sub_agent_memory_scope"),
                     "policy_system": sub_policy_system,
                 }
             )

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 
+import httpx
+import openai
 import pytest
 from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import AIMessage
@@ -36,11 +38,22 @@ def _validation_error() -> ValidationError:
     raise AssertionError("expected a ValidationError")
 
 
+def _bad_request(message: str) -> openai.BadRequestError:
+    response = httpx.Response(400, request=httpx.Request("POST", "http://llm.test/chat/completions"))
+    return openai.BadRequestError(message, response=response, body=None)
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "exc",
     [
         pytest.param(_validation_error(), id="validation_error"),
+        pytest.param(
+            _bad_request(
+                "output_config.format.schema: For 'number' type, properties maximum, minimum are not supported"
+            ),
+            id="bedrock_schema_400",
+        ),
         pytest.param(OutputParserException("Failed to parse Shortlist"), id="parser_exception"),
         pytest.param(json.JSONDecodeError("Expecting value", "", 0), id="json_decode_error"),
         pytest.param(
@@ -61,6 +74,7 @@ def test_schema_ignored_by_endpoint_triggers_fallback(exc):
         pytest.param(TimeoutError("request timed out"), id="timeout"),
         pytest.param(PermissionError("invalid api key"), id="auth"),
         pytest.param(RuntimeError("rate limit exceeded"), id="rate_limit"),
+        pytest.param(_bad_request("maximum context length is 8192 tokens"), id="bad_request_not_schema"),
     ],
 )
 def test_transport_errors_still_propagate(exc):

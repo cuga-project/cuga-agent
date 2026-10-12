@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import openai
 import pytest
 
 from cuga.backend.llm.models import (
@@ -217,13 +218,8 @@ class TestBadApiKeyRaisesOnInvoke:
         mgr = LLMManager()
         model = mgr.get_model(base_model_settings)
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(openai.APIError):
             model.invoke([{"role": "user", "content": "ping"}])
-
-        error_msg = str(exc_info.value).lower()
-        assert any(
-            kw in error_msg for kw in ("auth", "api key", "invalid", "401", "403", "incorrect", "connection")
-        ), f"Expected auth/connection error, got: {exc_info.value}"
 
     @pytest.mark.asyncio
     async def test_openai_bad_key_override_raises_auth_error_async(self):
@@ -249,13 +245,8 @@ class TestBadApiKeyRaisesOnInvoke:
         mgr = LLMManager()
         model = mgr.get_model(base_model_settings)
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(openai.APIError):
             await model.ainvoke([{"role": "user", "content": "ping"}])
-
-        error_msg = str(exc_info.value).lower()
-        assert any(
-            kw in error_msg for kw in ("auth", "api key", "invalid", "401", "403", "incorrect", "connection")
-        ), f"Expected auth/connection error, got: {exc_info.value}"
 
     def test_groq_bad_key_override_raises_auth_error(self):
         """Groq provider with bad key in vault mode raises auth error."""

@@ -1667,6 +1667,7 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         api_key = None
     platform = llm_cfg.get("provider") or "openai"
     model = llm_cfg.get("model") or None
+    toml_default_headers = None
     if use_env:
         try:
             code_model = settings.agent.code.model
@@ -1685,6 +1686,14 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
                     platform = toml_platform
                 if toml_model:
                     model = toml_model
+                # Auth and User-Agent headers are set in the TOML, not in llm_cfg
+                toml_headers = (
+                    code_model.get("default_headers")
+                    if hasattr(code_model, "get")
+                    else getattr(code_model, "default_headers", None)
+                )
+                if toml_platform and isinstance(toml_headers, dict):
+                    toml_default_headers = dict(toml_headers)
                 logger.debug(
                     f"create_llm_from_config: using agent.code from TOML (local mode) — provider={platform} model={model}"
                 )
@@ -1720,6 +1729,8 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         "max_tokens": max_tokens,
         "streaming": False,
     }
+    if toml_default_headers:
+        settings_dict["default_headers"] = toml_default_headers
     for key in _OPTIONAL_SAMPLING_KEYS:
         if key in llm_cfg and llm_cfg[key] is not None:
             settings_dict[key] = llm_cfg[key]

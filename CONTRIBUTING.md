@@ -14,6 +14,7 @@ By default, all issues are **team only**. External contributors may work on issu
 Notes:
 - All PRs are merged using "Squash and merge". The PR title will become the final commit message — write it carefully using the Conventional Commits format.
 - Prefer one topic per PR. If your changes touch many areas, split into multiple PRs.
+- Contributors without write access can have at most 3 open pull requests at a time, drafts included. GitHub blocks new pull requests above this limit; get one merged or close it before you open another.
 
 ## DCO
 
@@ -22,6 +23,8 @@ This repository requires a Developer's Certificate of Origin 1.1 signoff on ever
 ```bash
 git commit -s -m 'This is my commit message'
 ```
+
+The required **DCO** check runs on every pull request. It fails if a commit has no `Signed-off-by:` line that matches the commit author's name and email (`git log --format='%an <%ae>'`), so set `git config user.name` and `git config user.email` to the identity you sign with. Merge commits and GitHub App bots (`*[bot]`) are not checked.
 
 If you are using the web interface, this should happen automatically. If you've already made a commit, you can fix it by amending the commit and force-pushing the change:
 

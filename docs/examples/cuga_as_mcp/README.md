@@ -38,7 +38,7 @@ cd docs/examples/cuga_as_mcp
 ```
 
 1. **Configure LLM Access:**
-   - Follow the [main README LLM configuration section](../../README.md#llm-configuration---advanced-options) for setup instructions
+   - Follow the [main README LLM configuration section](../../../README.md#llm-configuration---advanced-options) for setup instructions
    - Copy the environment file: `cp .env.example .env`
    - Add your API key to the `.env` file
 
