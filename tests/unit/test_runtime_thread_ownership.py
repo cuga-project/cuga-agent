@@ -29,7 +29,10 @@ RESUME = {
 @pytest.fixture
 async def runtime(monkeypatch):
     from cuga.backend.cuga_graph.state.agent_state import AgentState
-    from cuga.backend.server import main
+    from cuga.backend.server import main, run_routes
+
+    for attr in ["_EVENT_STREAM", "_DEFAULT_USER_ID", "_ASSERT_THREAD_ACCESS", "_RUNTIME_AGENT_ID"]:
+        monkeypatch.setattr(run_routes, attr, getattr(run_routes, attr))
     from cuga.backend.server.auth import dependencies as auth
     from cuga.backend.server.auth.jwt_validator import JWTValidator
     from cuga.backend.server.conversation_history import ConversationHistoryDB
@@ -339,6 +342,12 @@ async def test_run_dispatch_rejects_foreign_owner_before_side_effects(runtime, m
     monkeypatch.setattr(run_routes.events_bridge, "forward_slash_to_events", forward)
     monkeypatch.setattr(run_routes, "_get_supervisor", get_supervisor)
     monkeypatch.setattr(run_routes, "_release_supervisor", AsyncMock())
+    run_routes.build_run_router(
+        event_stream=runtime.main.event_stream,
+        default_user_id="default_user",
+        assert_thread_access=runtime.main._assert_thread_access,
+        runtime_agent_id=lambda: runtime.main.app_state.agent_id,
+    )
     runtime.app.add_api_route("/run", run_routes.run_sync, methods=["POST"])
     denied = await runtime.client.post(
         "/run", headers=runtime.headers("user-b"), json={"query": "hello", "thread_id": "owned"}
@@ -509,7 +518,10 @@ async def test_supervisor_sdk_keeps_logical_resources_when_checkpoint_is_scoped(
     assert observed == [("logical", "logical", "logical")]
 
 
-async def test_supervisor_protocol_claims_before_construction_and_scopes_owner_run(runtime, monkeypatch):
+@pytest.mark.parametrize("context_id", ["owned", " owned "])
+async def test_supervisor_protocol_claims_before_construction_and_scopes_owner_run(
+    runtime, monkeypatch, context_id
+):
     from cuga.backend.server.agent_protocol.supervisor_runner import SupervisorAgentRunner
     from cuga.backend.server import conversation_history
 
@@ -529,10 +541,267 @@ async def test_supervisor_protocol_claims_before_construction_and_scopes_owner_r
         SimpleNamespace(agent_id="cuga-default"), "unused.yaml", caller_user_id="user-a"
     )
     monkeypatch.setattr(owner, "_ensure_supervisor", construct)
-    events = [event async for event in owner.run("hello", "owned")]
+    events = [event async for event in owner.run("hello", context_id)]
     assert events[-1].data == {"text": "done"}
     supervisor.invoke.assert_awaited_once_with(
         "hello",
         thread_id="owned",
         checkpoint_thread_id=runtime.main._checkpoint_thread_id("owned", "user-a", "cuga-default"),
     )
+
+
+@pytest.mark.parametrize("path,method", [("/stop", "POST"), ("/reset", "POST"), ("/api/agent/state", "GET")])
+async def test_read_and_controls_do_not_claim_unused_id(runtime, path, method):
+    response = await runtime.client.request(method, path, headers=runtime.headers("user-b"), json={})
+    assert response.status_code == 200, response.text
+    await runtime.db._ensure_schema()
+    assert await runtime.db._get_store().fetchall("SELECT * FROM runtime_thread_owners") == []
+    response = await runtime.client.post("/stream", headers=runtime.headers(), json={"query": "hello"})
+    assert response.status_code == 200, response.text
+    assert runtime.seen[-1][0] == "user-a"
+
+
+@pytest.mark.parametrize("first", ["stream", "state", "reset"])
+async def test_disabled_registry_normalizes_agent_on_all_routes(runtime, monkeypatch, first):
+    monkeypatch.setattr(runtime.main.agent_registry, "is_agent_registry_enabled", lambda: False)
+    headers = runtime.headers(agent="sales")
+    if first == "state":
+        assert (await runtime.client.get("/api/agent/state", headers=headers)).status_code == 200
+    elif first == "reset":
+        assert (await runtime.client.post("/reset", headers=headers)).status_code == 200
+    response = await runtime.client.post("/stream", headers=headers, json={"query": "hello"})
+    assert response.status_code == 200, response.text
+    assert "Error" not in response.text
+    assert runtime.seen[-1][2]["agent_id"] == "cuga-default"
+    state = await runtime.client.get("/api/agent/state", headers=headers)
+    assert state.status_code == 200, state.text
+    assert state.json()["state"]["input"] == "hello"
+    for path in ["/stop", "/reset"]:
+        response = await runtime.client.post(path, headers=headers)
+        assert response.status_code == 200, response.text
+
+
+async def test_whitespace_thread_uses_same_owner_checkpoint_and_stop_event(runtime):
+    response = await runtime.client.post(
+        "/stream", headers=runtime.headers(thread=" owned "), json={"query": "hello"}
+    )
+    assert response.status_code == 200, response.text
+    response = await runtime.client.post(
+        "/stop", headers=runtime.headers("user-b", thread=None), json={"thread_id": " owned "}
+    )
+    assert response.status_code == 403, response.text
+    response = await runtime.client.post(
+        "/stop", headers=runtime.headers(thread=None), json={"thread_id": " owned "}
+    )
+    assert response.status_code == 200, response.text
+    assert runtime.main.app_state.stop_events["owned"].is_set()
+    assert " owned " not in runtime.main.app_state.stop_events
+    state = await runtime.client.get("/api/agent/state", headers=runtime.headers())
+    assert state.json()["state"]["input"] == "hello"
+    rows = await runtime.db._get_store().fetchall("SELECT thread_id FROM runtime_thread_owners")
+    assert [row["thread_id"] for row in rows] == ["owned"]
+
+
+async def test_generator_storage_failure_yields_error_event(runtime, monkeypatch):
+    claim = runtime.db.claim_thread
+    attempts = 0
+
+    async def fail_second(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 2:
+            raise RuntimeError("database down")
+        return await claim(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.db, "claim_thread", fail_second)
+    response = await runtime.client.post("/stream", headers=runtime.headers(), json={"query": "hello"})
+    assert response.status_code == 200, response.text
+    assert "event: Error" in response.text
+    assert "Thread ownership unavailable" in response.text
+    assert not runtime.seen
+
+
+async def test_workspace_reads_do_not_create_owner_rows(runtime, monkeypatch):
+    main = runtime.main
+    runtime.app.add_api_route("/api/workspace/tree", main.get_workspace_tree, methods=["GET"])
+    monkeypatch.setattr(main, "workspace_tree_is_native_backed", lambda: False)
+    monkeypatch.setattr(main, "workspace_tree_is_sandbox_backed", lambda: False)
+    tree = Mock(return_value=[])
+    monkeypatch.setattr(main, "fetch_host_workspace_tree", tree)
+    for thread in ["fresh-1", "fresh-2"]:
+        response = await runtime.client.get(
+            "/api/workspace/tree", params={"thread_id": thread}, headers=runtime.headers()
+        )
+        assert response.status_code == 200, response.text
+    assert await runtime.db._get_store().fetchall("SELECT * FROM runtime_thread_owners") == []
+    await runtime.db.claim_thread("owned", "user-a", "cuga-default")
+    response = await runtime.client.get(
+        "/api/workspace/tree", params={"thread_id": "owned"}, headers=runtime.headers("user-b")
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_check_only_enforces_existing_ownership_without_binding_agent(runtime, legacy):
+    if legacy:
+        await runtime.db.save_conversation("sales", "legacy", 1, "user-a", [])
+        thread = "legacy"
+    else:
+        await runtime.db.claim_thread("unbound", "user-a")
+        thread = "unbound"
+    with pytest.raises(PermissionError):
+        await runtime.db.claim_thread(thread, "user-b", create=False)
+    await runtime.db.claim_thread(thread, "user-a", "sales", create=False)
+    rows = await runtime.db._get_store().fetchall("SELECT agent_id FROM runtime_thread_owners")
+    assert rows == [] if legacy else rows[0]["agent_id"] == ""
+
+
+@pytest.mark.parametrize(
+    "cfg,logical,workspace",
+    [
+        ({"thread_id": "legacy"}, "legacy", "legacy"),
+        ({"thread_id": "hash", "logical_thread_id": "chat"}, "chat", "chat"),
+        (
+            {"thread_id": "hash", "logical_thread_id": "child", "workspace_thread_id": "parent"},
+            "child",
+            "parent",
+        ),
+        ({}, "fallback", "fallback"),
+    ],
+)
+def test_logical_and_workspace_thread_helpers(cfg, logical, workspace):
+    from cuga.backend.cuga_graph.utils.thread_ids import logical_thread_id, workspace_thread_id
+
+    assert logical_thread_id(cfg, "fallback") == logical
+    assert workspace_thread_id(cfg, "fallback") == workspace
+
+
+async def test_extension_auth_and_validation_precede_ownership(runtime):
+    runtime.app.add_api_route("/extension/agent_query", runtime.main.extension_agent_query, methods=["POST"])
+    unauthenticated = await runtime.client.post(
+        "/extension/agent_query", json={"query": "hello", "request_id": "owned"}
+    )
+    assert unauthenticated.status_code == 401
+    invalid = await runtime.client.post(
+        "/extension/agent_query", headers=runtime.headers(), json={"request_id": "owned"}
+    )
+    assert invalid.status_code == 400
+    await runtime.db._ensure_schema()
+    assert await runtime.db._get_store().fetchall("SELECT * FROM runtime_thread_owners") == []
+    response = await runtime.client.post(
+        "/extension/agent_query", headers=runtime.headers(), json={"query": "hello", "request_id": " owned "}
+    )
+    assert response.status_code == 200, response.text
+    assert runtime.seen[-1][0] == "user-a"
+    denied = await runtime.client.post(
+        "/extension/agent_query",
+        headers=runtime.headers("user-b"),
+        json={"query": "attack", "request_id": "owned"},
+    )
+    assert denied.status_code == 403
+
+
+async def test_unknown_workspace_read_does_not_touch_new_foreign_resources(runtime, monkeypatch):
+    main = runtime.main
+    runtime.app.add_api_route("/api/workspace/file", main.get_workspace_file, methods=["GET"])
+    original = runtime.db.claim_thread
+
+    async def concurrent_claim(thread, user, *args, **kwargs):
+        result = await original(thread, user, *args, **kwargs)
+        if kwargs.get("create") is False and result is None:
+            # The upload wins after the access check's database snapshot.
+            await original(thread, "user-b")
+        return result
+
+    monkeypatch.setattr(runtime.db, "claim_thread", concurrent_claim)
+    native = Mock(return_value=True)
+    monkeypatch.setattr(main, "workspace_tree_is_native_backed", native)
+    read = Mock(return_value="USER_B_PRIVATE")
+    monkeypatch.setattr(main, "native_workspace_text_preview", read)
+    response = await runtime.client.get(
+        "/api/workspace/file", params={"thread_id": "fresh", "path": "secret.txt"}, headers=runtime.headers()
+    )
+    assert response.status_code == 404, response.text
+    assert "USER_B_PRIVATE" not in response.text
+    native.assert_not_called()
+    read.assert_not_called()
+
+
+async def test_unbound_upload_owner_can_read_workspace(runtime, monkeypatch):
+    main = runtime.main
+    await runtime.db.claim_thread("owned", "user-a")
+    runtime.app.add_api_route("/api/workspace/file", main.get_workspace_file, methods=["GET"])
+    monkeypatch.setattr(main, "workspace_tree_is_native_backed", lambda: True)
+    monkeypatch.setattr(main, "native_workspace_text_preview", lambda *_: "my upload")
+    response = await runtime.client.get(
+        "/api/workspace/file", params={"thread_id": "owned", "path": "file.txt"}, headers=runtime.headers()
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["content"] == "my upload"
+
+
+async def test_simple_protocol_resumes_canonical_context(runtime, monkeypatch):
+    from cuga.backend.server import conversation_history
+    from cuga.backend.server.agent_protocol.simple_runner import SimpleAgentRunner
+
+    await runtime.db.claim_thread("owned", "user-a", "cuga-default")
+    graph = Mock()
+    graph.get_state.return_value = SimpleNamespace(
+        next=("WaitForResponse",),
+        values={"hitl_action": {"action_id": "approve", "type": "confirmation", "description": "Approve?"}},
+    )
+    captured = []
+
+    async def stream(**kwargs):
+        captured.append(kwargs)
+        yield 'event: Answer\ndata: {"data":"done"}\n\n'
+
+    runner = SimpleAgentRunner(
+        SimpleNamespace(agent=SimpleNamespace(graph=graph), agent_id="cuga-default"),
+        stream,
+        caller_user_id="user-a",
+    )
+    monkeypatch.setattr(conversation_history, "get_conversation_db", lambda: runtime.db)
+    events = [event async for event in runner.run("yes", context_id=" owned ")]
+    assert events[-1].name == "final_answer"
+    assert captured[0]["thread_id"] == "owned"
+    assert captured[0]["resume"].action_id == "approve"
+    assert captured[0]["resume"].confirmed
+    graph.get_state.assert_called_once_with(
+        {"configurable": {"thread_id": runtime.main._checkpoint_thread_id("owned", "user-a", "cuga-default")}}
+    )
+
+
+async def test_run_injected_dependencies_do_not_import_main(runtime, monkeypatch):
+    import builtins
+    from cuga.backend.server import run_routes
+
+    claim = AsyncMock(return_value="cuga-default")
+
+    async def stream(*args, **kwargs):
+        yield 'event: Answer\ndata: {"data":"done"}\n\n'
+
+    run_routes.build_run_router(
+        event_stream=stream,
+        default_user_id="default_user",
+        assert_thread_access=claim,
+        runtime_agent_id=lambda: "sales",
+    )
+    monkeypatch.setattr(run_routes, "_run_auth_failure", AsyncMock(return_value=None))
+    monkeypatch.setattr(run_routes, "_get_supervisor", AsyncMock(return_value=None))
+    runtime.app.add_api_route("/run", run_routes.run_sync, methods=["POST"])
+    original_import = builtins.__import__
+
+    def no_main_import(name, *args, **kwargs):
+        if name == "cuga.backend.server.main":
+            raise AssertionError("run_routes must work without importing main")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_main_import)
+    response = await runtime.client.post(
+        "/run", headers=runtime.headers(), json={"query": "hello", "thread_id": " owned "}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["answer"] == "done"
+    assert response.json()["thread_id"] == "owned"
+    claim.assert_awaited_once_with("owned", "user-a", "sales")
