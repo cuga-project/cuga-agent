@@ -9,6 +9,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnableConfig, ensure_config
 from loguru import logger
 
+from cuga.backend.cuga_graph.utils.thread_ids import logical_thread_id
 from cuga.backend.cuga_graph.policy.agent import PolicyAgent, PolicyContext
 from cuga.backend.cuga_graph.policy.models import PolicyMatch, PolicyType
 from cuga.backend.cuga_graph.policy.storage import PolicyStorage
@@ -101,7 +102,7 @@ class PolicyConfigurable:
             policy_system = PolicyConfigurable.from_config(config)
             context = PolicyContext(
                 user_input=state.intent,
-                thread_id=config.get("configurable", {}).get("thread_id"),
+                thread_id=logical_thread_id(config.get("configurable", {})),
                 available_tools=[tool.name for tool in state.tools],
                 ...
             )
@@ -415,7 +416,7 @@ class PolicyConfigurable:
 
         return PolicyContext(
             user_input=user_input,
-            thread_id=configurable.get("logical_thread_id") or configurable.get("thread_id"),
+            thread_id=logical_thread_id(configurable),
             chat_messages=chat_messages,
             current_agent=current_agent,
             current_node=current_node,
