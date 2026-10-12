@@ -6,9 +6,16 @@ conversation history remains accessible through its existing scoped APIs.
 Keep tenant and service instance IDs stable across replicas and restarts, or
 ownership records and checkpoints will resolve to a different deployment scope.
 
-The conversation database creates runtime_thread_owners on first access. Do not
+The conversation database creates runtime_thread_owners on the first run or upload. Do not
 remove owner rows during history cleanup: checkpoints and resources can outlive
-history. Roll out to all workers together; old workers do not enforce this table.
+history. Read and control requests never reserve unused IDs. Event fires retain
+owners deliberately: disable_history still saves stream events and does not disable
+checkpointing. A TTL on owner rows alone would allow another caller to claim retained
+resources. Full resource purge (including checkpoints, workspace, knowledge and history)
+must precede owner deletion. Thread routes do not currently provide a full purge.
+Service-instance cleanup is database-scoped and does not implement a coordinated
+resource purge; surviving workspace resources must be deleted or isolated before reuse.
+Roll out to all workers together; old workers do not enforce this table.
 """
 
 import hashlib
