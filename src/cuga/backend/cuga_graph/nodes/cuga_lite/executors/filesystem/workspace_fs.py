@@ -203,9 +203,11 @@ class WorkspaceFilesystem:
         except Exception as exc:
             return f"[edit_file error] {exc}"
 
-    async def list_files(self, path: str = ".", pattern: str = "*") -> str:
+    async def list_files(
+        self, path: str = ".", pattern: str = "*", excludePatterns: Optional[List[str]] = None
+    ) -> str:
         try:
-            result = await self.backend.list_dir(path, pattern)
+            result = await self.backend.list_dir(path, pattern, excludePatterns or [])
             return result.model_dump_json()
         except Exception as exc:
             return f"[list_files error] {exc}"
@@ -298,7 +300,9 @@ class WorkspaceFilesystem:
                 name="list_files",
                 description=(
                     "List files and directories in the workspace as JSON. Pass a relative "
-                    "path (default `.` = workspace root) and an optional glob pattern."
+                    "path (default `.` = workspace root) and an optional glob pattern. "
+                    "excludePatterns (optional) filters out entries matching any of the "
+                    "given glob patterns, same as search_files."
                 ),
             ),
             StructuredTool.from_function(

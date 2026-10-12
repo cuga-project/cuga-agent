@@ -22,6 +22,8 @@ import shutil
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
+from loguru import logger
+
 VIRTUAL_WORKSPACE_ROOT = "/workspace"
 CUGA_WORKSPACE_DIRNAME = "cuga_workspace"
 # CRM demo + manager CI fixtures at the shared workspace root, copied into empty per-thread workspaces.
@@ -177,20 +179,31 @@ def ensure_thread_workspace_seeded(thread_id: Optional[str]) -> None:
         _seeded_threads.add(cache_key)
         return
 
-    dest.mkdir(parents=True, exist_ok=True)
-    if not shared.is_dir():
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        if not shared.is_dir():
+            return
+        for item in shared.iterdir():
+            if item.name == safe_tid:
+                continue
+            if item.is_file() and "crm" in modes and item.name in _SHARED_SEED_FILES:
+                shutil.copy2(item, child_path_under(dest, item.name))
+            elif item.is_dir() and "ci" in modes and item.name in _SHARED_SEED_DIRS:
+                shutil.copytree(item, child_path_under(dest, item.name), dirs_exist_ok=True)
+    except OSError as exc:
+        # Seeding is a best-effort optimization (pre-populate per-thread fixture
+        # copies), not a hard requirement — a deployment with a misconfigured
+        # workspace mount (wrong ownership/permissions) must not turn this into
+        # a confusing "[read_file error] Permission denied: <thread-dir>" on the
+        # NEXT tool call, where the path looks like a file but is actually the
+        # workspace root failing to initialize. Log for operators and move on;
+        # later calls just see a plain missing-file/dir, which is actionable.
+        logger.warning(
+            f"ensure_thread_workspace_seeded: skipping seed for thread {safe_tid!r} "
+            f"— {dest} is not writable ({exc})"
+        )
+    finally:
         _seeded_threads.add(cache_key)
-        return
-
-    for item in shared.iterdir():
-        if item.name == safe_tid:
-            continue
-        if item.is_file() and "crm" in modes and item.name in _SHARED_SEED_FILES:
-            shutil.copy2(item, child_path_under(dest, item.name))
-        elif item.is_dir() and "ci" in modes and item.name in _SHARED_SEED_DIRS:
-            shutil.copytree(item, child_path_under(dest, item.name), dirs_exist_ok=True)
-
-    _seeded_threads.add(cache_key)
 
 
 def _reject_traversal(raw: str) -> None:

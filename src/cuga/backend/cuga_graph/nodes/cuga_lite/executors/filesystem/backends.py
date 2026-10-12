@@ -55,7 +55,9 @@ class FilesystemBackend(ABC):
         """Move source→destination; raise ValueError if destination exists."""
 
     @abstractmethod
-    async def list_dir(self, path: str, pattern: str) -> ListFilesResult: ...
+    async def list_dir(
+        self, path: str, pattern: str, exclude: Optional[List[str]] = None
+    ) -> ListFilesResult: ...
 
     @abstractmethod
     async def search(self, path: str, pattern: str, exclude: List[str]) -> List[str]: ...
@@ -113,14 +115,18 @@ class HostWorkspaceBackend(FilesystemBackend):
         os.rename(src, dst)
         return self._public(src), self._public(dst)
 
-    async def list_dir(self, path: str, pattern: str) -> ListFilesResult:
+    async def list_dir(self, path: str, pattern: str, exclude: Optional[List[str]] = None) -> ListFilesResult:
         p = self._resolve(path, operation="list_files")
         if p == thread_workspace_root(self.thread_id).resolve():
             p.mkdir(parents=True, exist_ok=True)
         if not p.exists():
             raise FileNotFoundError(f"Path not found: {path}")
+        exclude = exclude or []
         entries: list[FileEntry] = []
         for child in sorted(p.glob(pattern)):
+            rel = child.name
+            if any(fnmatch.fnmatch(rel, ex) for ex in exclude):
+                continue
             entries.append(
                 FileEntry(
                     name=child.name,
@@ -252,12 +258,13 @@ class RemoteSandboxBackend(FilesystemBackend):
         await interp.sandbox.commands.run(f"mkdir -p {str(Path(dst).parent)} && mv {src} {dst}")
         return src, dst
 
-    async def list_dir(self, path: str, pattern: str) -> ListFilesResult:
+    async def list_dir(self, path: str, pattern: str, exclude: Optional[List[str]] = None) -> ListFilesResult:
         from opensandbox.models.filesystem import SearchEntry  # type: ignore[import]
 
         sp = self._norm(path)
         interp = await self._interp()
         entries_raw = await interp.sandbox.files.search(SearchEntry(path=sp, pattern=pattern))
+        exclude = exclude or []
         entries = [
             FileEntry(
                 name=Path(e.path).name,
@@ -266,11 +273,12 @@ class RemoteSandboxBackend(FilesystemBackend):
                 size_bytes=e.size,
             )
             for e in entries_raw
+            if not any(fnmatch.fnmatch(Path(e.path).name, ex) for ex in exclude)
         ]
         return ListFilesResult(sandbox_path=sp, entries=entries)
 
     async def search(self, path: str, pattern: str, exclude: List[str]) -> List[str]:
-        result = await self.list_dir(path, pattern if pattern else "*")
+        result = await self.list_dir(path, pattern if pattern else "*", exclude)
         return [e.path for e in result.entries]
 
     async def stat(self, path: str) -> dict:
