@@ -134,6 +134,8 @@ def _resolve_names(code: str, owners: Dict[str, List[str]], tool_names: Collecti
         tokens = [t for t in tokenize.generate_tokens(io.StringIO(code).readline) if t.type not in skip]
     except Exception:  # not Python, so nothing here runs (3.12+ can raise more than TokenError)
         return code
+    if any(t.type == tokenize.ERRORTOKEN and t.string in ("'", '"') for t in tokens):
+        return code  # an unclosed quote: 3.12+ raise above, 3.10/3.11 yield an error token
     line_starts = [0]
     for line in code.split("\n"):
         line_starts.append(line_starts[-1] + len(line) + 1)
