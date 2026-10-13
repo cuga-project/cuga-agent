@@ -68,6 +68,11 @@ async def call_api(
     result = None
     error_msg = None
 
+    if app_name == "knowledge":
+        from cuga.backend.knowledge.run_context import current_run_token
+
+        payload["knowledge_run_token"] = current_run_token.get()
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
