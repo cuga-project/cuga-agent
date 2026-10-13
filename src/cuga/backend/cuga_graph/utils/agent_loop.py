@@ -406,23 +406,14 @@ class AgentLoop:
                 # Handle call_model node (shared by CugaLite and CugaSupervisor subgraphs)
                 if node_name == "call_model":
                     logger.debug("Detected call_model node")
-                    # Check if it generated code or text
-                    if "script" in state_data and state_data["script"] and state_data["script"].strip():
-                        # Code generated - show as CodeAgent with JSON
-                        logger.info(f"call_model generated script of length {len(state_data['script'])}")
-                        output = {
-                            "code": state_data["script"],
-                            "execution_output": "",
-                            "steps_summary": [],
-                            "summary": "Code generated, preparing to execute",
-                            "variables": state_data.get("variables_storage", {}),
-                        }
-                        return StreamEvent(name="CodeAgent", data=json.dumps(output))
-                    elif _native_tool_calls(subgraph_messages):
-                        # Function-calling mode: show the native calls the way a code block is shown.
+                    # Check if it generated native tool calls, code, or text. Native calls come
+                    # first: a function-calling turn also carries the translated block in
+                    # ``script``, and that block is internal — the UI shows the calls, never it.
+                    native_calls = _native_tool_calls(subgraph_messages)
+                    if native_calls:
                         calls_text = "\n".join(
                             f"{c.get('name')}({json.dumps(c.get('args') or {}, ensure_ascii=False, default=str)})"
-                            for c in _native_tool_calls(subgraph_messages)
+                            for c in native_calls
                             if isinstance(c, dict)
                         )
                         output = {
@@ -430,6 +421,17 @@ class AgentLoop:
                             "execution_output": "",
                             "steps_summary": [],
                             "summary": "Tool calls issued, preparing to execute",
+                            "variables": state_data.get("variables_storage", {}),
+                        }
+                        return StreamEvent(name="CodeAgent", data=json.dumps(output))
+                    elif "script" in state_data and state_data["script"] and state_data["script"].strip():
+                        # Code generated - show as CodeAgent with JSON
+                        logger.info(f"call_model generated script of length {len(state_data['script'])}")
+                        output = {
+                            "code": state_data["script"],
+                            "execution_output": "",
+                            "steps_summary": [],
+                            "summary": "Code generated, preparing to execute",
                             "variables": state_data.get("variables_storage", {}),
                         }
                         return StreamEvent(name="CodeAgent", data=json.dumps(output))

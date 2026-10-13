@@ -319,6 +319,15 @@ def test_calls_the_block_never_reached_are_all_answered():
     ], "pre-decided replies are delivered as they are"
 
 
+def test_a_reason_with_braces_is_delivered_verbatim():
+    """CodeRabbit: a VERIFY alert or an exception text often quotes JSON; it is literal text,
+    never a template, so braces must survive on every id."""
+    _, plan = plan_tool_calls([_call("add", {"a": 1, "b": 2}, "c1")], [], _tools(add), one_per_step=False)
+    reason = 'VERIFY blocked this code block before execution. Alert: write with {"value": 9}'
+    replies = replies_without_execution(plan, reason)
+    assert _shape(replies) == [("c1", "add", "error", reason)]
+
+
 # ── what only the block form has to get right ───────────────────────────────
 
 

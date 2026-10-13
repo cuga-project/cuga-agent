@@ -334,13 +334,13 @@ async def test_verify_revise_answers_every_call_without_running_it(monkeypatch):
     monkeypatch.setattr(
         sandbox_node,
         "decide_pre_execute_verify",
-        AsyncMock(return_value=VerifyDecision(gate="revise", alert="echoing 9 looks wrong")),
+        AsyncMock(return_value=VerifyDecision(gate="revise", alert='echoing {"value": 9} looks wrong')),
     )
 
     def after_revise(messages):
         reply = _last_tool_message(messages)
         assert reply.tool_call_id == "c1" and reply.status == "error"
-        assert reply.content == verify_blocked_message("echoing 9 looks wrong")
+        assert reply.content == verify_blocked_message('echoing {"value": 9} looks wrong')
         return AIMessage(content="Understood, not echoing.")
 
     model = _ScriptedModel(
@@ -481,3 +481,46 @@ async def test_find_tools_is_bound_in_fc_mode_when_prepare_enabled_it():
         isinstance(v.get("value"), str) and "Matching Tool(s)" in v["value"]
         for v in result["variables_storage"].values()
     ), "a find_tools listing is replied, never kept as a variable"
+
+
+@pytest.mark.asyncio
+async def test_a_scope_gated_knowledge_app_is_not_advertised_to_find_tools(monkeypatch):
+    """CodeRabbit: when the knowledge gate removes the knowledge app and its tools, the
+    function-calling prompt's find_tools catalogue must drop it too."""
+    from types import SimpleNamespace
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter import prepare_node
+
+    monkeypatch.setattr(
+        prepare_node, "_get_knowledge_tool_scope_context", lambda engine, thread: (set(), None)
+    )
+
+    async def knowledge_search(query: str) -> str:
+        """Search the knowledge base."""
+        return "nothing"
+
+    knowledge_tool = StructuredTool.from_function(
+        coroutine=knowledge_search, name="knowledge_search", description="Search the knowledge base."
+    )
+    provider = _provider(_echo_tool(), knowledge_tool)
+    provider.get_apps = AsyncMock(
+        return_value=[
+            SimpleNamespace(name="knowledge", type="api", description="Knowledge base"),
+            SimpleNamespace(name="test_app", type="api", description="Echo app"),
+        ]
+    )
+    model = _ScriptedModel([AIMessage(content="done")])
+    graph = create_cuga_lite_graph(model=model, tool_provider=provider, apps_list=[], thread_id="t").compile(
+        checkpointer=MemorySaver()
+    )
+
+    result = await graph.ainvoke(
+        CugaLiteState(chat_messages=[HumanMessage(content="hi")]),
+        config=_config(
+            "fc-knowledge", cuga_lite_execution_mode="function_calling", shortlisting_tool_threshold=0
+        ),
+    )
+
+    prompt = result["prepared_prompt"]
+    assert "# AVAILABLE APPS" in prompt and "- test_app (api): Echo app" in prompt
+    assert "- knowledge (" not in prompt, prompt

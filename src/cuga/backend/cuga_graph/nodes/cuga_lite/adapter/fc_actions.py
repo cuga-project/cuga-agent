@@ -433,4 +433,7 @@ def replies_without_execution(
     """
     budget = _BatchOutputBudget(0)
     drop: List[str] = []
-    return [_reply_for(e, (outcomes or {}).get(e["id"]), {}, reason, budget, drop) for e in plan]
+    # ``reason`` is literal text (a VERIFY alert, an exception message), not a template:
+    # escape it, since ``_reply_for`` formats the unreached text with the tool name.
+    literal = (reason or "").replace("{", "{{").replace("}", "}}")
+    return [_reply_for(e, (outcomes or {}).get(e["id"]), {}, literal, budget, drop) for e in plan]

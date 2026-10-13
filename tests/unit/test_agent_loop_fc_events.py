@@ -21,18 +21,33 @@ pytestmark = pytest.mark.unit
 _CALL = {"name": "echo", "args": {"value": 7}, "id": "c1", "type": "tool_call"}
 
 
-def _event(node, messages):
+_BLOCK = 'try:\n    tool_result_c1 = _fc_keep(await echo(**{"value": 7}))\n'
+
+
+def _event(node, messages, script=None):
     return (
         ("CugaLiteSubgraph",),
-        {node: {"chat_messages": messages, "script": None, "variables_storage": {}}},
+        {node: {"chat_messages": messages, "script": script, "variables_storage": {}}},
     )
 
 
-def test_native_tool_calls_stream_as_a_code_step():
+def test_native_tool_calls_stream_as_a_code_step_never_the_internal_block():
+    """A function-calling turn carries the translated block in ``script``; the UI shows the calls."""
     messages = [HumanMessage(content="q"), AIMessage(content="", tool_calls=[_CALL])]
-    ev = AgentLoop.get_event_message(MagicMock(), _event("call_model", messages))
+    ev = AgentLoop.get_event_message(MagicMock(), _event("call_model", messages, script=_BLOCK))
     assert ev.name == "CodeAgent"
-    assert json.loads(ev.data)["code"] == 'echo({"value": 7})'
+    data = json.loads(ev.data)
+    assert (
+        data["code"] == 'echo({"value": 7})' and data["summary"] == "Tool calls issued, preparing to execute"
+    )
+    assert "_fc_keep" not in ev.data
+
+
+def test_a_codeact_script_still_streams_as_generated_code():
+    messages = [HumanMessage(content="q"), AIMessage(content="```python\nprint(1)\n```")]
+    ev = AgentLoop.get_event_message(MagicMock(), _event("call_model", messages, script="print(1)"))
+    data = json.loads(ev.data)
+    assert data["code"] == "print(1)" and data["summary"] == "Code generated, preparing to execute"
 
 
 def test_tool_results_from_the_sandbox_stream_as_execution_output():

@@ -582,6 +582,11 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             apps_for_prompt = [
                 app for app in (apps_for_prompt or []) if getattr(app, "name", "") != "knowledge"
             ]
+            if _find_tools_apps is not None:
+                # The function-calling prompt's find_tools catalogue was captured above.
+                _find_tools_apps = [
+                    app for app in _find_tools_apps if getattr(app, "name", "") != "knowledge"
+                ]
             for tool_name in knowledge_tool_names:
                 adapter._tools_context.pop(tool_name, None)
         elif knowledge_tool_names:
