@@ -28,6 +28,8 @@ uv sync --python 3.12
 test -f .env || cp .env.example .env
 ```
 
+<a id="llm-configuration---advanced-options"></a>
+
 Set your provider, model, and credentials in `.env`. See [model configuration](docs/readme/configuration-guide.md#supported-platforms) for supported providers.
 
 ```bash

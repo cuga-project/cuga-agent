@@ -100,6 +100,8 @@ jobs:
       WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
       WATSONX_URL: ${{ vars.WATSONX_URL }}
       MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
     steps:
       - name: Authorize actor and resolve PR head
@@ -296,6 +298,8 @@ jobs:
           WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
           WATSONX_URL: ${{ vars.WATSONX_URL }}
           MODEL_NAME: ${{ secrets.MODEL_NAME }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
         with:
           timeout_minutes: 20
           max_attempts: 3

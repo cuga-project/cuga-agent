@@ -163,13 +163,30 @@ def preload_tiktoken() -> None:
         tiktoken.get_encoding(name).encode("airgap warmup")
 
 
+def run_preloads() -> None:
+    """Run every preload step, routing failures through ``handle_preload_error``.
+
+    Non-strict (default): a missing optional dependency (docling absent in
+    the slim image, Evolve/READI absent, a flaky model download) prints a
+    skip message and the build continues. Strict (``MODEL_PRELOAD_STRICT=1``,
+    the full image): the same failure raises and fails the build.
+    """
+    for component, fn in (
+        ("fastembed", preload_fastembed),
+        ("fastembed tokenizer", preload_fastembed_tokenizer),
+        ("docling", preload_docling),
+        ("evolve", preload_evolve),
+        ("readi", preload_readi),
+        ("tiktoken", preload_tiktoken),
+    ):
+        try:
+            fn()
+        except Exception as e:
+            handle_preload_error(component, e)
+
+
 if __name__ == "__main__":
     print("Preloading models for airgapped operation...\n")
-    preload_fastembed()
-    preload_fastembed_tokenizer()
-    preload_docling()
-    preload_evolve()
-    preload_readi()
-    preload_tiktoken()
+    run_preloads()
     print("\nDone. Set HF_HUB_OFFLINE=1 at runtime to enforce airgap.")
     sys.exit(0)

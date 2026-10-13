@@ -385,10 +385,7 @@ def format_knowledge_context(
 
     Returns dict with agent_collection and session_collection names.
     """
-    import re
-
-    def _sanitize(v: str) -> str:
-        return re.sub(r"[^a-zA-Z0-9_]", "_", v)
+    from cuga.backend.knowledge.session_provider import session_collection_name
 
     config = getattr(engine, "_config", None) if engine else None
     agent_enabled = getattr(config, "agent_level_enabled", True) if config else True
@@ -398,7 +395,7 @@ def format_knowledge_context(
         "agent_collection": (
             _agent_collection_name(agent_id, agent_config_hash) if agent_id and agent_enabled else None
         ),
-        "session_collection": f"kb_sess_{_sanitize(thread_id)}" if thread_id and session_enabled else None,
+        "session_collection": session_collection_name(thread_id) if thread_id and session_enabled else None,
     }
 
 
