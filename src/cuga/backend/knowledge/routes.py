@@ -16,6 +16,7 @@ from cuga.backend.knowledge.auth import (
     KnowledgeIdentity,
     ensure_agent_knowledge_manage_access,
     ensure_agent_scope_manage_if_needed,
+    ensure_session_access,
     require_internal_or_auth,
     require_knowledge_agent_manage_identity,
     resolve_agent_collection,
@@ -43,6 +44,17 @@ knowledge_router = APIRouter(prefix=KNOWLEDGE_HTTP_PREFIX, tags=["knowledge"])
 knowledge_agent_manage_router = APIRouter(
     dependencies=[Depends(require_knowledge_agent_manage_identity)],
 )
+
+
+@knowledge_router.get("/run-context")
+async def get_run_context(request: Request, identity: KnowledgeIdentity = Depends(require_internal_or_auth)):
+    """Let the MCP upload tool resolve its workspace from verified run identity."""
+    thread_id = identity.thread_id
+    if identity.user_id or thread_id:
+        app_state = getattr(request.app.state, "app_state", None)
+        provider = getattr(app_state, "knowledge_provider", None)
+        thread_id = ensure_session_access(thread_id, identity.user_id, provider, identity.tenant_id)
+    return {"agent_id": identity.agent_id, "thread_id": thread_id}
 
 
 def _get_engine(request: Request) -> KnowledgeEngine:
@@ -841,7 +853,7 @@ async def delete_session_collection(
     app_state = getattr(request.app.state, "app_state", None)
     provider = getattr(app_state, "knowledge_provider", None) if app_state else None
     if provider and identity.thread_id:
-        provider.delete_session(identity.thread_id)
+        provider.clear_session(identity.thread_id)
 
     return {"status": "ok"}
 
@@ -861,16 +873,16 @@ def _resolve_session_provider(request: Request, identity: KnowledgeIdentity):
     """Resolve the knowledge provider and enforce session ownership.
 
     Raises 503 if the provider is not initialized, and 403 if the caller
-    (when user_id/tenant_id are present) does not own the session. Same
-    ownership pattern as resolve_collection for scope=session.
+    (when user_id is present) does not own the session. Same ownership
+    pattern as resolve_collection for scope=session.
     """
     app_state = getattr(request.app.state, "app_state", None)
     provider = getattr(app_state, "knowledge_provider", None) if app_state else None
     if provider is None:
         raise HTTPException(status_code=503, detail="knowledge not initialized")
-    if provider and identity.user_id and identity.tenant_id:
-        if not provider.check_session_access(identity.thread_id, identity.user_id, identity.tenant_id):
-            raise HTTPException(status_code=403, detail="access denied to session")
+    identity.thread_id = ensure_session_access(
+        identity.thread_id, identity.user_id, provider, identity.tenant_id
+    )
     return provider
 
 

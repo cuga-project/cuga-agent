@@ -504,7 +504,9 @@ class MCPManager:
                     "binding": tool['binding'],
                 }
 
-    async def call_tool(self, tool_name: str, args: dict, headers: dict = None):
+    async def call_tool(
+        self, tool_name: str, args: dict, headers: dict = None, *, knowledge_run_token: str | None = None
+    ):
         if not headers:
             headers = {}
         trm_tool = next((item for item in list(self.trm_tools.keys())), None)
@@ -538,7 +540,12 @@ class MCPManager:
         if isinstance(server, str):
             # External MCP server - use client-based call
             if server in self.mcp_clients:
-                return await self._call_mcp_server_tool(server, tool_name, args)
+                return await self._call_mcp_server_tool(
+                    server,
+                    tool_name,
+                    args,
+                    **({"knowledge_run_token": knowledge_run_token} if knowledge_run_token else {}),
+                )
             else:
                 raise Exception(f"[MCP server {server} not found in mcp_clients]")
         else:
@@ -1125,7 +1132,9 @@ class MCPManager:
 
         return flattened
 
-    async def _call_mcp_server_tool(self, server_name: str, tool_name: str, args: dict):
+    async def _call_mcp_server_tool(
+        self, server_name: str, tool_name: str, args: dict, *, knowledge_run_token: str | None = None
+    ):
         """Call a tool on an external MCP server using FastMCP client with SSE transport"""
         try:
             # Build headers from auth config if available
@@ -1146,7 +1155,12 @@ class MCPManager:
                 client = FastMCPClient(transport)
 
                 async with client:
-                    result = await client.call_tool(original_tool_name, args)
+                    call_options = {}
+                    if knowledge_run_token:
+                        from cuga.backend.knowledge.run_context import RUN_TOKEN_META
+
+                        call_options["meta"] = {RUN_TOKEN_META: knowledge_run_token}
+                    result = await client.call_tool(original_tool_name, args, **call_options)
                     ##TODO add result.structured output if exists and retutn instead of text key  return [TextContent(text=result_text, type='text')]
                     structured_content = (
                         result.structured_content if hasattr(result, 'structured_content') else None
@@ -1160,6 +1174,8 @@ class MCPManager:
                         result_text = json.dumps(result_text)
                     return [TextContent(text=result_text, type='text')]
             else:
+                if knowledge_run_token:
+                    raise ValueError("Knowledge calls require an MCP transport supporting request metadata")
                 url = self.mcp_clients[server_name]
                 base_url = url.replace('/sse', '')
                 original_tool_name = self.original_tool_name_by_sanitized[tool_name]

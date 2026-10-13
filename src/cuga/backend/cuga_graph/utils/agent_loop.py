@@ -329,6 +329,8 @@ class AgentLoop:
         knowledge_context: Optional[dict[str, Any]] = None,
         upload_context: Optional[str] = None,
         special_instructions: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        knowledge_user_id: Optional[str] = None,
     ):
         self.env_pointer = env_pointer
         self.thread_id = thread_id
@@ -346,6 +348,8 @@ class AgentLoop:
         self.knowledge_context = knowledge_context
         self.upload_context = upload_context
         self.special_instructions = special_instructions
+        self.agent_id = agent_id
+        self.knowledge_user_id = knowledge_user_id
 
     async def stream_event(self, event: StreamEvent) -> Generator[str, None, None]:
         yield event.format()
@@ -537,6 +541,10 @@ class AgentLoop:
             },
         }
 
+        if self.agent_id:
+            config["configurable"]["knowledge_agent_id"] = self.agent_id
+        if self.knowledge_user_id:
+            config["configurable"]["knowledge_user_id"] = self.knowledge_user_id
         if self.policy_system:
             config["configurable"]["policy_system"] = self.policy_system
         if self.enable_todos is not None:
