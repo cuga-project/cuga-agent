@@ -124,8 +124,17 @@ class HostWorkspaceBackend(FilesystemBackend):
         exclude = exclude or []
         entries: list[FileEntry] = []
         for child in sorted(p.glob(pattern)):
-            rel = child.name
-            if any(fnmatch.fnmatch(rel, ex) for ex in exclude):
+            # POSIX-relative to the listed dir (not just the basename), matching
+            # search()'s matcher below — pattern can recurse (e.g. "**/*"), so an
+            # exclude pattern needs to filter nested entries too, not just
+            # top-level ones.
+            rel = os.path.relpath(child, p)
+            if any(
+                fnmatch.fnmatch(rel, ex)
+                or fnmatch.fnmatch(rel, f"**/{ex}")
+                or fnmatch.fnmatch(rel, f"**/{ex}/**")
+                for ex in exclude
+            ):
                 continue
             entries.append(
                 FileEntry(
@@ -265,6 +274,16 @@ class RemoteSandboxBackend(FilesystemBackend):
         interp = await self._interp()
         entries_raw = await interp.sandbox.files.search(SearchEntry(path=sp, pattern=pattern))
         exclude = exclude or []
+
+        def _excluded(entry_path: str) -> bool:
+            rel = os.path.relpath(entry_path, sp)
+            return any(
+                fnmatch.fnmatch(rel, ex)
+                or fnmatch.fnmatch(rel, f"**/{ex}")
+                or fnmatch.fnmatch(rel, f"**/{ex}/**")
+                for ex in exclude
+            )
+
         entries = [
             FileEntry(
                 name=Path(e.path).name,
@@ -273,7 +292,7 @@ class RemoteSandboxBackend(FilesystemBackend):
                 size_bytes=e.size,
             )
             for e in entries_raw
-            if not any(fnmatch.fnmatch(Path(e.path).name, ex) for ex in exclude)
+            if not _excluded(e.path)
         ]
         return ListFilesResult(sandbox_path=sp, entries=entries)
 

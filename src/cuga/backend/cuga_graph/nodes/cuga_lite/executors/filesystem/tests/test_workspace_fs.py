@@ -223,6 +223,24 @@ def test_list_files_excludePatterns_filters_entries(tmp_path: Path, monkeypatch:
     assert "drop_me.txt" not in names
 
 
+def test_list_files_excludePatterns_matches_nested_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """excludePatterns must match the POSIX-relative path, not just the
+    basename, so it still filters correctly when pattern recurses (e.g.
+    "**/*") and entries are nested — same matcher search_files already uses."""
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+    fs = _fs("thread-A")
+    asyncio.run(fs.write_file("pkg/keep.py", "a"))
+    asyncio.run(fs.write_file("pkg/__pycache__/drop.pyc", "b"))
+
+    listing = asyncio.run(fs.list_files(".", "**/*", excludePatterns=["**/__pycache__/**"]))
+    names = {e["name"] for e in json.loads(listing)["entries"]}
+    assert "keep.py" in names
+    assert "drop.pyc" not in names
+
+
 # ─── edit / move / search / info ────────────────────────────────────────────
 
 

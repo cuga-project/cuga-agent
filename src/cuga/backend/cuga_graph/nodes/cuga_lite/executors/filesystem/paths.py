@@ -175,11 +175,10 @@ def ensure_thread_workspace_seeded(thread_id: Optional[str]) -> None:
 
     shared = local_base_dir()
     dest = child_path_under(shared, safe_tid)
-    if dest.exists() and any(dest.iterdir()):
-        _seeded_threads.add(cache_key)
-        return
 
     try:
+        if dest.exists() and any(dest.iterdir()):
+            return
         dest.mkdir(parents=True, exist_ok=True)
         if not shared.is_dir():
             return
