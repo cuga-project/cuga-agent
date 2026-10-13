@@ -563,10 +563,31 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             except Exception:
                 _knowledge_engine = None
 
+        if cfg.get("knowledge_user_id") and getattr(
+            getattr(_knowledge_engine, "_config", None), "enabled", False
+        ):
+            from cuga.backend.knowledge.auth import ensure_session_access
+
+            provider = cfg.get("knowledge_provider")
+            if provider is None:
+                from cuga.backend.server.main import app as _app
+
+                provider = getattr(getattr(_app.state, "app_state", None), "knowledge_provider", None)
+            # Do this before issuing capabilities or assembling previews, and
+            # outside the best-effort awareness block: authorization must not
+            # be swallowed as an optional prompt-enrichment failure.
+            _thread_id = ensure_session_access(_thread_id, cfg["knowledge_user_id"], provider)
+
         allowed_knowledge_scopes, default_knowledge_scope = _get_knowledge_tool_scope_context(
             _knowledge_engine,
             _thread_id or None,
         )
+
+        selected_agent = (
+            cfg.get("knowledge_agent_id") or cfg.get("agent_id") or getattr(_provider, "agent_id", None)
+        )
+        if not isinstance(selected_agent, str) or not selected_agent:
+            selected_agent = "cuga-default"
 
         knowledge_tool_names = {
             tool.name for tool in tools_for_execution if getattr(tool, "name", "").startswith("knowledge_")
@@ -590,13 +611,25 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             for tool_name in knowledge_tool_names:
                 adapter._tools_context.pop(tool_name, None)
         elif knowledge_tool_names:
+            from cuga.backend.knowledge.run_context import (
+                KnowledgeRunContext,
+                current_run_token,
+                issue_run_token,
+            )
+
+            knowledge_run = KnowledgeRunContext(
+                selected_agent,
+                _thread_id or None,
+                allowed_knowledge_scopes,
+                cfg.get("knowledge_user_id") or None,
+            )
             if _thread_id:
                 logger.debug("Knowledge tools: thread context available for session scope injection")
 
-            def _wrap_knowledge_tool(fn, tid, allowed_scopes, default_scope):
+            def _wrap_knowledge_tool(fn, tid, allowed_scopes, default_scope, *, is_status):
                 async def _wrapped(*args, **kwargs):
                     scope = kwargs.get("scope")
-                    if scope is None and default_scope:
+                    if scope is None and default_scope and not is_status:
                         kwargs["scope"] = default_scope
                         scope = default_scope
                     if scope is not None and scope not in allowed_scopes:
@@ -607,18 +640,24 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                                 f"Allowed scopes: {allowed_text}"
                             )
                         }
-                    # Forward the conversation id whenever we have one — the knowledge
-                    # layer needs it for the citations ledger even on agent-scope
-                    # searches. Session-collection access is still gated by scope checks
-                    # server-side; this only adds correlation, not access.
-                    if tid:
-                        kwargs.setdefault("thread_id", tid)
-                    return await fn(*args, **kwargs)
+                    # Replace model-supplied identity for direct tool compatibility
+                    # and citation tracking. Registry-backed knowledge requests are
+                    # authorized by the signed run credential, not these kwargs.
+                    kwargs.pop("agent_id", None)
+                    kwargs.pop("thread_id", None)
+                    if tid and not is_status:
+                        kwargs["thread_id"] = tid
+                    token = current_run_token.set(issue_run_token(knowledge_run))
+                    try:
+                        return await fn(*args, **kwargs)
+                    finally:
+                        current_run_token.reset(token)
 
                 _wrapped.__doc__ = getattr(fn, "__doc__", None)
                 _wrapped._knowledge_allowed_scopes = allowed_scopes
                 _wrapped._knowledge_default_scope = default_scope
                 _wrapped._knowledge_thread_id = tid
+                _wrapped._knowledge_run_context = knowledge_run
                 return _wrapped
 
             for tool_name in knowledge_tool_names:
@@ -629,6 +668,8 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                         _thread_id,
                         allowed_knowledge_scopes,
                         default_knowledge_scope,
+                        is_status=tool_name
+                        in ("knowledge_get_ingestion_status", "knowledge_get_knowledge_status"),
                     )
 
             # Note: scope rules are injected once via effective_instructions.
@@ -667,24 +708,18 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
                 cfg = config.get("configurable", {})
                 engine = cfg.get("knowledge_engine") or get_engine_from_app_state()
-                # Get agent_id: configurable > app_state > fallback
-                agent_id = cfg.get("agent_id")
+                # Prompt previews and tool calls must use the same run identity.
+                agent_id = selected_agent
                 knowledge_config_hash = cfg.get("knowledge_config_hash")
-                if not agent_id:
+                if knowledge_config_hash is None:
                     try:
                         from cuga.backend.server.main import app as _app
 
                         _as = getattr(_app.state, "app_state", None)
-                        agent_id = getattr(_as, "agent_id", None) if _as else None
-                        if knowledge_config_hash is None:
-                            knowledge_config_hash = (
-                                getattr(_as, "knowledge_config_hash", None) if _as else None
-                            )
+                        knowledge_config_hash = getattr(_as, "knowledge_config_hash", None) if _as else None
                     except Exception:
                         pass
-                if not agent_id:
-                    agent_id = "cuga-default"
-                awareness_thread_id = cfg.get("thread_id")
+                awareness_thread_id = _thread_id or None
 
                 # Use draft knowledge config for search-time params when
                 # running in draft mode (Try-It-Out). Published agent always

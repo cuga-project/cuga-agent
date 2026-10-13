@@ -1,0 +1,97 @@
+CUGA
+Copyright 2025 CUGA
+
+CUGA is licensed under the Apache License, Version 2.0 (see LICENSE).
+All original code and modifications are licensed under the Apache License,
+Version 2.0.
+
+This product includes code from the following open source projects.
+
+--------------------------------------------------------------------------------
+BrowserGym
+Copyright 2024 ServiceNow
+Licensed under the Apache License, Version 2.0
+Source: https://github.com/ServiceNow/BrowserGym
+
+Files derived from BrowserGym:
+- src/cuga/backend/browser_env/browser/chat_async.py
+- src/cuga/backend/browser_env/page_understanding/tranformer_utils/transform_utils.py
+- src/cuga/backend/browser_env/page_understanding/tranformer_utils/dom_transform_utils.py
+- src/cuga/backend/browser_env/browser/gym_env_async.py
+- src/cuga/backend/browser_env/browser/gym_obs/obs_async.py
+- src/cuga/backend/browser_env/browser/gym_obs/extract_chrome_extension.py
+- src/cuga/backend/browser_env/browser/extension_env_async.py
+- src/cuga/backend/browser_env/browser/open_ended_async.py
+- src/cuga/backend/browser_env/browser/gym_obs/javascript/frame_unmark_elements.js
+- src/cuga/backend/browser_env/browser/gym_obs/javascript/frame_mark_elements.js
+- src/cuga/backend/browser_env/browser/utils_async.py
+
+--------------------------------------------------------------------------------
+browser-use
+Licensed under the MIT License (full text below)
+Source: https://github.com/browser-use/browser-use
+
+Files derived from browser-use:
+- src/frontend_workspaces/extension/src/content/page_analysis/CachedXPathBuilder.ts
+- src/frontend_workspaces/extension/src/content/page_analysis/constants.ts
+- src/frontend_workspaces/extension/src/content/page_analysis/dom_tree_module.ts
+- src/frontend_workspaces/extension/src/content/page_analysis/DomCache.ts
+- src/frontend_workspaces/extension/src/content/page_analysis/DomTree.ts
+- src/frontend_workspaces/extension/src/content/page_analysis/ElementHighlighter.ts
+- src/frontend_workspaces/extension/src/content/page_analysis/NodeElementCollector.ts
+- src/frontend_workspaces/extension/src/content/page_analysis/NodeHelper.ts
+- src/frontend_workspaces/extension/src/content/page_analysis/PageHighlighter.ts
+- src/frontend_workspaces/extension/src/content/page_analysis/types.d.ts
+
+MIT License
+
+Copyright (c) 2024 Gregor Zunic
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------
+LangGraph CodeAct
+Licensed under the MIT License (full text below)
+Source: https://github.com/langchain-ai/langgraph-codeact
+
+Code derived from LangGraph CodeAct:
+- src/cuga/backend/cuga_graph/nodes/cuga_agent_core/execution/code_extraction.py
+  (extract_and_combine_codeblocks)
+
+MIT License
+
+Copyright (c) 2025 LangChain
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

@@ -36,6 +36,7 @@ async def test_prompt_context_records_exact_attributed_memory_ids(monkeypatch):
                 return_value={
                     "text": "Use the customer's preferred account name.",
                     "entity_ids": ["guideline-a"],
+                    "entity_revisions": {"guideline-a": 3},
                 }
             ),
         ),
@@ -85,6 +86,7 @@ async def test_prompt_context_records_exact_attributed_memory_ids(monkeypatch):
         agent_id="agent-a",
         user_id="user-a",
         entity_ids=["guideline-a", "fact-a"],
+        entity_revisions={"guideline-a": 3},
         thread_id="thread-a",
         conversation_label="Prepare a concise renewal summary",
     )

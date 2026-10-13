@@ -1,18 +1,22 @@
 """Provider-safe tool names for native ``bind_tools``.
 
 OpenAI-compatible APIs reject a request when any tool name is outside
-``^[A-Za-z0-9_-]{1,64}$``, so one long registry name (``<app>_<tool>``) makes
-every bound tool unusable. Such tools are bound under an alias that exists only
-in the request: ``_safe_bind`` binds :func:`provider_safe_tools`, and
-``AgentGraphAdapter.normalize_response`` maps aliases in a reply back with
-:func:`resolve_tool_names`, so code, approval checks and the sandbox see real names.
+``^[A-Za-z0-9_-]{1,64}$`` (Gemini also wants a letter or ``_`` first), so one
+long registry name (``<app>_<tool>``) makes every bound tool unusable. Such
+tools are bound under an alias that exists only in the request: ``_safe_bind``
+binds :func:`provider_safe_tools`, and ``AgentGraphAdapter.normalize_response``
+maps aliases in a reply back with :func:`resolve_tool_names`, so code, approval
+checks and the sandbox see real names.
 """
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import io
 import re
-from typing import Any, Collection, Dict, List, Sequence, Set, Tuple
+import tokenize
+from typing import Any, Collection, Dict, List, Optional, Sequence, Set, Tuple
 
 from langchain_core.tools import BaseTool
 from loguru import logger
@@ -24,31 +28,39 @@ __all__ = [
     "resolve_tool_names",
 ]
 
-PROVIDER_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+PROVIDER_TOOL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 _INVALID = re.compile(r"[^A-Za-z0-9_-]")
 _MAX_LEN = 64
 _DIGEST_LEN = 8
-# A whole token shaped like an alias: up to 55 legal characters, "_", 8 hex digits.
-_ALIAS = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{1,55}_[0-9a-f]{8}(?![A-Za-z0-9_-])")
+# Every alias ends with "_" and 8 hex digits, so text without them holds no alias.
+_ALIAS_TAIL = re.compile(r"_[0-9a-f]{8}")
+# A ```python block, closed or not: the code CugaLite runs from a reply.
+_PYTHON_FENCE = re.compile(r"(```python)(.*?)(```|\Z)", re.DOTALL)
+# The line breaks compile() accepts; tokenize reads lines the same way (newline=None).
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
 
 # ``_safe_bind`` runs on every model call: log each (real, alias) pair once per process.
 _logged_aliases: Set[Tuple[str, str]] = set()
 
 
+@functools.lru_cache(maxsize=None)  # keys are tool names; resolve_tool_names maps them all per reply
 def provider_safe_tool_name(name: str) -> str:
     """Return ``name`` if providers accept it, else a deterministic legal alias.
 
-    The alias is the name with illegal characters replaced by ``_``, cut to 55
-    characters, plus ``_`` and 8 hex digits of the SHA-1 of the original name.
-    Truncation alone would merge long names that share a prefix, and the model
-    would call the wrong tool.
+    The alias is the name with illegal characters replaced by ``_`` (and a ``_``
+    in front if it would start with a digit or ``-``), cut to 55 characters, plus
+    ``_`` and 8 hex digits of the SHA-1 of the original name. Truncation alone
+    would merge long names that share a prefix, and the model would call the
+    wrong tool.
     """
     if PROVIDER_TOOL_NAME_RE.fullmatch(name):
         return name
     raw = name.encode("utf-8", "surrogatepass")  # a lone surrogate must not raise here
     digest = hashlib.sha1(raw, usedforsecurity=False).hexdigest()[:_DIGEST_LEN]
-    stem = _INVALID.sub("_", name)[: _MAX_LEN - 1 - _DIGEST_LEN] or "tool"
-    return f"{stem}_{digest}"
+    stem = _INVALID.sub("_", name) or "tool"
+    if not (stem[0].isalpha() or stem[0] == "_"):
+        stem = "_" + stem
+    return f"{stem[: _MAX_LEN - 1 - _DIGEST_LEN]}_{digest}"
 
 
 def provider_safe_tools(tools: Sequence[Any]) -> Sequence[Any]:
@@ -88,26 +100,77 @@ def provider_safe_tools(tools: Sequence[Any]) -> Sequence[Any]:
 
 
 def resolve_tool_names(text: str, tool_names: Collection[str]) -> str:
-    """Replace each alias in ``text`` with the real name in ``tool_names`` it stands for.
+    """Replace each alias that the code in ``text`` uses as a name with the real tool name.
 
-    ``text`` can be a reply, code or a single tool name; everything else in it,
-    real names included, is left as it is. Raises ``RuntimeError`` when an alias
+    ``text`` can be a model reply, code or a single tool name; ``tool_names`` are
+    the real names that can run. Only Python names change — in each
+    ```` ```python ```` block (in the valid lines CugaLite still runs if it is
+    unclosed), or in the whole text when it has none — so strings, comments and
+    attributes keep their exact values. Raises ``RuntimeError`` when an alias
     could mean more than one tool.
     """
-    if not text or not _ALIAS.search(text):
+    if not text or not _ALIAS_TAIL.search(text):
         return text
     owners: Dict[str, List[str]] = {}
     for real in tool_names:
         alias = provider_safe_tool_name(real)
         if alias != real:
             owners.setdefault(alias, []).append(real)
+    if not owners:  # no tool is aliased, so nothing can map back
+        return text
+    if text in owners:  # a single tool name, which can hold a "-" no Python name has
+        return _real_name(text, owners, tool_names)
+    if "```python" not in text:
+        return _resolve_names(text, owners, tool_names)
+    return _PYTHON_FENCE.sub(
+        lambda m: m.group(1) + _resolve_names(m.group(2), owners, tool_names, not m.group(3)) + m.group(3),
+        text,
+    )
 
-    def _real(match: re.Match) -> str:
-        alias = match.group(0)
-        reals = owners.get(alias, [])
-        clash = [*reals, alias] if reals and alias in tool_names else reals
-        if len(clash) > 1:
-            raise RuntimeError(f"Tool name {alias!r} is ambiguous: it matches tools {sorted(clash)!r}.")
-        return reals[0] if reals else alias
 
-    return _ALIAS.sub(_real, text)
+def _real_name(alias: str, owners: Dict[str, List[str]], tool_names: Collection[str]) -> str:
+    reals = owners[alias]
+    clash = [*reals, alias] if alias in tool_names else reals
+    if len(clash) > 1:
+        raise RuntimeError(f"Tool name {alias!r} is ambiguous: it matches tools {sorted(clash)!r}.")
+    return reals[0]
+
+
+def _python_tokens(code: str) -> Optional[List[tokenize.TokenInfo]]:
+    try:
+        skip = (tokenize.NL, tokenize.COMMENT)
+        lines = io.StringIO(code, newline=None).readline
+        tokens = [t for t in tokenize.generate_tokens(lines) if t.type not in skip]
+    except Exception:  # not Python (3.12+ can raise more than TokenError)
+        return None
+    if any(t.type == tokenize.ERRORTOKEN and t.string in ("'", '"') for t in tokens):
+        return None  # an unclosed quote: 3.12+ raise above, 3.10/3.11 yield an error token
+    return tokens
+
+
+def _resolve_names(
+    code: str, owners: Dict[str, List[str]], tool_names: Collection[str], unclosed_fence: bool = False
+) -> str:
+    # CugaLite runs code stripped (code_extraction), so read exactly that part.
+    lead, body = len(code) - len(code.lstrip()), code.strip()
+    tokens = _python_tokens(body)
+    if tokens is None:
+        if unclosed_fence:
+            # CugaLite still runs the longest line prefix of an unclosed fence that compiles
+            # (code_extraction._recover_non_closing_python_fence), so map names there.
+            lines = body.split("\n")
+            for end in range(len(lines) - 1, 0, -1):
+                head = "\n".join(lines[:end])
+                if _python_tokens(head.rstrip()) is not None:
+                    return code[:lead] + _resolve_names(head, owners, tool_names) + code[lead + len(head) :]
+        return code  # not Python, so nothing here runs
+    line_starts = [0] + [match.end() for match in _LINE_BREAK.finditer(body)]
+    edits = []
+    for previous, token in zip([None, *tokens], tokens):
+        if token.type != tokenize.NAME or token.string not in owners or (previous and previous.string == "."):
+            continue
+        start = lead + line_starts[token.start[0] - 1] + token.start[1]
+        edits.append((start, start + len(token.string), _real_name(token.string, owners, tool_names)))
+    for start, end, real in reversed(edits):
+        code = code[:start] + real + code[end:]
+    return code
