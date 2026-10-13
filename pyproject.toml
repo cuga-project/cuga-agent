@@ -192,6 +192,7 @@ override-dependencies = [
     "pytz>=2025.1",
     "pandas>=2.3.3,<2.4",
     "safetensors>=0.8.0",
+    "urllib3>=2.8.0",  # READI 0.1.7 pins urllib3==2.7.0; keep the 2.8.0 security floor
 ]
 
 [tool.uv.sources]
