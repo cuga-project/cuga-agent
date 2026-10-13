@@ -96,6 +96,23 @@ async def test_runner_initializes_once_before_concurrent_distinct_context_invoca
 
 
 @pytest.mark.unit
+async def test_ensure_ready_initializes_once_and_is_shared_with_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    import cuga.sdk
+    from cuga.backend.server.acp.runner import StdioCugaRunner
+
+    monkeypatch.setattr(cuga.sdk, "CugaAgent", _FakeAgent)
+    runner = StdioCugaRunner()
+
+    await runner.ensure_ready()
+    await runner.ensure_ready()
+    events = [event async for event in runner.run("work", context_id="ctx")]
+
+    assert len(_FakeAgent.instances) == 1
+    assert _FakeAgent.instances[0].initialize_calls == 1
+    assert events[0].name == "final_answer"
+
+
+@pytest.mark.unit
 async def test_runner_maps_pending_hitl_and_structured_resume(monkeypatch: pytest.MonkeyPatch) -> None:
     import cuga.sdk
     from cuga.backend.server.acp.runner import StdioCugaRunner
