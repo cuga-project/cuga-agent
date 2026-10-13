@@ -93,9 +93,16 @@ def test_stub_replaces_whitespace_thread_id(executor):
     assert forwarded["thread_id"] == "thread-abc-123"
 
 
-def test_stub_preserves_explicit_non_empty_thread_id(executor):
-    """If the caller (or another wrapper) supplied a real thread_id,
-    don't second-guess it."""
+def test_stub_replaces_caller_supplied_thread_id(executor):
+    """A thread_id arriving in kwargs is overwritten, not preserved.
+
+    This test used to assert the opposite — "if the caller supplied a real
+    thread_id, don't second-guess it". That deference was the vulnerability
+    (GHSA-ffh4-qv86-xfxv): the code calling these stubs is model-written, so
+    "the caller" is the model, and honouring its thread_id let one run read and
+    overwrite another session's collection. The stub now scrubs identity out of
+    kwargs and states the run's own thread.
+    """
     stub = _stub(executor, "knowledge_search_knowledge")
     forwarded = _exec_stub(
         stub,
@@ -103,7 +110,7 @@ def test_stub_preserves_explicit_non_empty_thread_id(executor):
         args=(),
         kwargs={"query": "test", "scope": "session", "thread_id": "caller-supplied"},
     )
-    assert forwarded["thread_id"] == "caller-supplied"
+    assert forwarded["thread_id"] == "thread-abc-123"
 
 
 def test_stub_injects_when_thread_id_missing_entirely(executor):
@@ -152,7 +159,10 @@ def test_stub_for_tool_without_scope_does_not_emit_scope_block(executor):
     TypeError from injecting a scope kwarg the function doesn't accept."""
     stub = _stub(executor, "knowledge_get_knowledge_status")
     assert "scope" not in stub
-    assert "thread_id" not in stub
+    # "thread_id" now appears as ``kwargs.pop("thread_id", None)`` — the identity
+    # scrub runs for every knowledge tool. What must stay absent is an
+    # *assignment*, which is what would forward an argument this tool cannot take.
+    assert 'kwargs["thread_id"] =' not in stub
 
 
 def test_stub_invalid_scope_returns_error(executor):

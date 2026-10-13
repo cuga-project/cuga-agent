@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +27,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SESSION_PREFIX_ID_LEN = 16  # 64-bit hex space for collision resistance
+
+
+def session_collection_name(thread_id: str) -> str:
+    """Existing storage identity, shared by collection and ownership checks."""
+    return "kb_sess_" + re.sub(r"[^a-zA-Z0-9_]", "_", thread_id.strip())
 
 
 def session_prefix(thread_id: str) -> str:
@@ -116,6 +124,40 @@ class SessionProvider:
     def __init__(self) -> None:
         self._sessions: dict[str, SessionKnowledgeState] = {}
         self._agents: dict[str, AgentKnowledgeState] = {}
+        # Collection name -> thread_ids stored under it. Lookalike thread_ids
+        # ("a-b", "a_b") share a collection, so ownership checks must see every
+        # record for that collection. The index makes that a lookup instead of
+        # a scan of every session on every request.
+        self._threads_by_collection: dict[str, set[str]] = {}
+        self._indexed_count = 0
+
+    # -- collection index ----------------------------------------------------
+
+    def _index_add(self, thread_id: str) -> None:
+        threads = self._threads_by_collection.setdefault(session_collection_name(thread_id), set())
+        if thread_id not in threads:
+            threads.add(thread_id)
+            self._indexed_count += 1
+
+    def _index_remove(self, thread_id: str) -> None:
+        collection = session_collection_name(thread_id)
+        threads = self._threads_by_collection.get(collection)
+        if threads and thread_id in threads:
+            threads.discard(thread_id)
+            self._indexed_count -= 1
+            if not threads:
+                del self._threads_by_collection[collection]
+
+    def _aliases(self, thread_id: str) -> list[str]:
+        """Every stored thread_id that maps to the same collection as *thread_id*."""
+        if self._indexed_count != len(self._sessions):
+            # Something wrote ``_sessions`` without going through the methods
+            # below; rebuild rather than trust a stale index.
+            self._threads_by_collection = {}
+            self._indexed_count = 0
+            for existing_thread in self._sessions:
+                self._index_add(existing_thread)
+        return list(self._threads_by_collection.get(session_collection_name(thread_id), ()))
 
     # -- session operations --------------------------------------------------
 
@@ -135,6 +177,7 @@ class SessionProvider:
                 tenant_id=tenant_id,
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
+            self._index_add(thread_id)
         return self._sessions[thread_id]
 
     def check_session_access(
@@ -144,21 +187,69 @@ class SessionProvider:
         tenant_id: str = "",
     ) -> bool:
         """Check if user/tenant owns the session. Returns True if accessible."""
-        state = self._sessions.get(thread_id)
-        if state is None:
-            return True  # Session doesn't exist yet — will be created
-        # If session has owner info, enforce it
-        if state.user_id and user_id and state.user_id != user_id:
-            return False
-        if state.tenant_id and tenant_id and state.tenant_id != tenant_id:
-            return False
+        # Legacy collection names are lossy: e.g. "a-b" and "a_b" share
+        # storage. Check every alias, including records loaded before this
+        # guard existed. Conflicting legacy owners fail closed for both users.
+        for existing_thread in self._aliases(thread_id):
+            state = self._sessions.get(existing_thread)
+            if state is None:
+                continue
+            if state.user_id and user_id and state.user_id != user_id:
+                return False
+            if state.tenant_id and tenant_id and state.tenant_id != tenant_id:
+                return False
         return True
+
+    def claim_session(self, thread_id: str, user_id: str, tenant_id: str = "") -> bool:
+        """Record *user_id* as owner if the session has none, then check access.
+
+        Sessions created before ownership was enforced carry no owner, and
+        ``check_session_access`` lets anyone through an ownerless session. The
+        first authenticated caller claims it instead, so it cannot stay open to
+        every user forever.
+        """
+        # Reject aliases before creating or changing an ownership record.
+        if not self.check_session_access(thread_id, user_id, tenant_id):
+            return False
+        is_new = thread_id not in self._sessions
+        state = self.get_or_create_session(thread_id, user_id=user_id, tenant_id=tenant_id)
+        if is_new or not state.user_id:
+            state.user_id = state.user_id or user_id
+            state.tenant_id = state.tenant_id or tenant_id
+            self.save_session(thread_id, state)
+        return self.check_session_access(thread_id, user_id, tenant_id)
 
     def save_session(self, thread_id: str, state: SessionKnowledgeState) -> None:
         self._sessions[thread_id] = state
+        self._index_add(thread_id)
 
     def delete_session(self, thread_id: str) -> None:
-        self._sessions.pop(thread_id, None)
+        if self._sessions.pop(thread_id, None) is not None:
+            self._index_remove(thread_id)
+
+    def clear_session(self, thread_id: str) -> None:
+        """Clear knowledge metadata, retaining ownership of remaining thread data.
+
+        Checkpoints and generated workspace files can outlive knowledge or chat
+        deletion. Their thread must never become claimable by another user.
+        All aliases refer to the collection being cleared.
+        """
+        for existing_thread in self._aliases(thread_id):
+            state = self._sessions.get(existing_thread)
+            if state is None:
+                continue
+            if not state.user_id and not state.tenant_id:
+                self.delete_session(existing_thread)
+                continue
+            self.save_session(
+                existing_thread,
+                SessionKnowledgeState(
+                    thread_id=state.thread_id,
+                    user_id=state.user_id,
+                    tenant_id=state.tenant_id,
+                    created_at=state.created_at,
+                ),
+            )
 
     def list_sessions(self) -> dict[str, SessionKnowledgeState]:
         return dict(self._sessions)
@@ -229,34 +320,69 @@ class PersistentSessionProvider(SessionProvider):
         self._load()
 
     def _load(self) -> None:
-        """Load state from disk on startup."""
+        """Load state from disk on startup.
+
+        A file that exists but cannot be read is an error, not an empty store.
+        It holds session ownership, and starting empty would let the first
+        caller claim every existing thread. Raising here makes knowledge
+        startup fail and roll back (see ``run_knowledge_startup``), so the
+        server still starts with knowledge off and nothing exposed.
+        """
         if not self._path.exists():
             return
         try:
             raw = json.loads(self._path.read_text())
-            for thread_id, data in raw.get("sessions", {}).items():
-                self._sessions[thread_id] = SessionKnowledgeState.from_dict(data)
-            for key, data in raw.get("agents", {}).items():
-                self._agents[key] = AgentKnowledgeState.from_dict(data)
-            logger.info(
-                "Loaded knowledge state: %d sessions, %d agents",
-                len(self._sessions),
-                len(self._agents),
-            )
-        except Exception:
-            logger.warning(f"Failed to load knowledge state from {self._path}", exc_info=True)
+            sessions = {
+                thread_id: SessionKnowledgeState.from_dict(data)
+                for thread_id, data in raw.get("sessions", {}).items()
+            }
+            agents = {key: AgentKnowledgeState.from_dict(data) for key, data in raw.get("agents", {}).items()}
+        except Exception as exc:
+            raise RuntimeError(
+                f"Knowledge session state at {self._path} is unreadable; refusing to start with no "
+                "session owners. Restore or remove the file to continue."
+            ) from exc
+        for thread_id, state in sessions.items():
+            self._sessions[thread_id] = state
+            self._index_add(thread_id)
+        self._agents.update(agents)
+        logger.info(
+            "Loaded knowledge state: %d sessions, %d agents",
+            len(self._sessions),
+            len(self._agents),
+        )
 
     def _persist(self) -> None:
-        """Write full state to disk. Called on every mutation."""
+        """Write full state to disk. Called on every mutation.
+
+        Writes to a temporary file in the same directory and renames it over
+        the old one, so a crash mid-write leaves the previous file intact
+        instead of a truncated one that would fail to load.
+        """
+        tmp_path = None
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "sessions": {tid: s.to_dict() for tid, s in self._sessions.items()},
                 "agents": {k: a.to_dict() for k, a in self._agents.items()},
             }
-            self._path.write_text(json.dumps(payload, indent=2))
+            fd, tmp_path = tempfile.mkstemp(
+                dir=self._path.parent, prefix=f".{self._path.name}.", suffix=".tmp"
+            )
+            with os.fdopen(fd, "w") as f:
+                json.dump(payload, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self._path)
+            tmp_path = None
         except Exception:
             logger.warning(f"Failed to persist knowledge state to {self._path}", exc_info=True)
+        finally:
+            if tmp_path is not None:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     # -- override mutating methods to add write-through ----------------------
 
