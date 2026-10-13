@@ -736,7 +736,7 @@ if __name__ == "__main__":
         raise RuntimeError(error_msg) from e
 
 
-@observe(as_type="span")
+@observe(as_type="span", capture_input=False)
 async def execute_code_in_e2b(
     code_content: str,
     thread_id: str = None,
@@ -764,12 +764,8 @@ async def execute_code_in_e2b(
     try:
         logger.debug("Executing code in E2B sandbox")
 
-        # Debug: Print the complete code being sent to E2B
-        logger.info("=" * 80)
-        logger.info("CODE SENT TO E2B SANDBOX:")
-        logger.info("=" * 80)
-        logger.info(code_content)
-        logger.info("=" * 80)
+        # Generated tool stubs can contain run credentials. Never log the program.
+        logger.debug("E2B program size: {} characters", len(code_content))
 
         # Get or create sandbox based on thread_id and e2b_sandbox_mode
         loop = asyncio.get_event_loop()

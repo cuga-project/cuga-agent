@@ -2,7 +2,7 @@
 
 Supports two modes:
 - External (browser/SDK): OIDC auth for user/tenant, headers for agent/thread
-- Internal (MCP subprocess): internal token + all identity from headers
+- Internal (MCP subprocess): internal token + backend-issued run capability
 
 External mode derives user_id/tenant_id from OIDC auth context ONLY.
 X-User-ID/X-Tenant-ID headers are ALWAYS IGNORED in external mode.
@@ -30,6 +30,7 @@ class KnowledgeIdentity:
     thread_id: str | None  # Only required for scope=session
     auth_mode: str  # "external" or "internal"
     roles: frozenset[str] | None = None
+    allowed_scopes: tuple[str, ...] | None = None
 
 
 def _scope_enabled_for_request(scope: str, request: Request | None) -> bool:
@@ -90,7 +91,7 @@ async def require_internal_or_auth(request: Request) -> KnowledgeIdentity:
     """Knowledge-only auth dependency. Applied ONLY to knowledge routes.
 
     Two modes determined by X-Internal-Token header:
-    - Internal: trust identity from headers (MCP subprocess, localhost only)
+    - Internal: resolve the backend-issued run capability (MCP, localhost only)
     - External: derive user/tenant from OIDC, agent/thread from headers
     """
     internal_token = request.headers.get("X-Internal-Token")
@@ -98,21 +99,26 @@ async def require_internal_or_auth(request: Request) -> KnowledgeIdentity:
     app_token = getattr(_app_state, "internal_token", None) if _app_state else None
 
     # --- Internal mode (MCP subprocess) ---
-    if internal_token and app_token:
-        client_host = request.client.host if request.client else ""
-        if client_host in ("127.0.0.1", "::1") and secrets.compare_digest(internal_token, app_token):
-            agent_id = request.headers.get("X-Agent-ID", "")
-            if not agent_id:
-                raise HTTPException(status_code=400, detail="X-Agent-ID required")
+    if internal_token:
+        from cuga.backend.knowledge.run_context import RUN_TOKEN_HEADER, verify_run_token
 
-            return KnowledgeIdentity(
-                user_id=request.headers.get("X-User-ID") or None,
-                tenant_id=request.headers.get("X-Tenant-ID") or None,
-                agent_id=agent_id,
-                thread_id=request.headers.get("X-Thread-ID") or None,
-                auth_mode="internal",
-                roles=None,
-            )
+        client_host = request.client.host if request.client else ""
+        if not app_token or client_host not in ("127.0.0.1", "::1"):
+            raise HTTPException(status_code=401, detail="unauthorized")
+        if not secrets.compare_digest(internal_token, app_token):
+            raise HTTPException(status_code=401, detail="unauthorized")
+        try:
+            context = verify_run_token(request.headers.get(RUN_TOKEN_HEADER, ""))
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Invalid or expired knowledge run capability")
+        return KnowledgeIdentity(
+            user_id=context.user_id,
+            tenant_id=None,
+            agent_id=context.agent_id,
+            thread_id=context.thread_id,
+            auth_mode="internal",
+            allowed_scopes=context.scopes,
+        )
 
     # --- External mode (browser/SDK) ---
     # Check if auth is enabled
@@ -153,45 +159,40 @@ async def require_internal_or_auth(request: Request) -> KnowledgeIdentity:
     )
 
 
+def ensure_session_access(
+    thread_id: str | None, user_id: str | None, provider, tenant_id: str | None = None
+) -> str:
+    """Authorize a thread independently of the destination knowledge scope."""
+    canonical_thread_id = (thread_id or "").strip()
+    if not canonical_thread_id:
+        raise HTTPException(status_code=400, detail="X-Thread-ID required")
+    if user_id:
+        if provider is None:
+            raise HTTPException(status_code=503, detail="knowledge not initialized")
+        if not provider.claim_session(canonical_thread_id, user_id, tenant_id or ""):
+            raise HTTPException(status_code=403, detail="access denied to session")
+    return canonical_thread_id
+
+
 def resolve_collection(identity: KnowledgeIdentity, scope: str, request: Request | None = None) -> str:
     """Resolve collection name from identity and scope.
 
     Enforces session identity requirements and ownership before allowing access.
     """
+    if identity.allowed_scopes is not None and scope not in identity.allowed_scopes:
+        raise HTTPException(status_code=403, detail="Knowledge scope unavailable for this run")
     if not _scope_enabled_for_request(scope, request):
         raise HTTPException(status_code=403, detail=_scope_disabled_detail(scope))
 
     if scope == "session":
-        # Canonicalize the thread_id ONCE up-front so the same identity
-        # value drives the empty-check, the ownership check, and the
-        # collection mapping. Previously the strip was applied only to
-        # the empty-check and to the storage name, while the ownership
-        # check used the raw value — meaning ``" abc"`` and ``"abc"``
-        # would pass *separate* ownership records yet hit the same
-        # ``kb_sess_abc`` physical collection. Closes CodeRabbit C1.
-        canonical_thread_id = (identity.thread_id or "").strip()
-        if not canonical_thread_id:
-            raise HTTPException(status_code=400, detail="X-Thread-ID required")
+        from cuga.backend.knowledge.session_provider import session_collection_name
 
-        # Enforce session ownership if provider is available
-        # Internal mode (MCP subprocess) is already authenticated via localhost + token,
-        # so thread_id alone is sufficient to identify the session.
-        if request:
-            _as = getattr(request.app.state, "app_state", None)
-            provider = getattr(_as, "knowledge_provider", None) if _as else None
-            if provider and identity.user_id and identity.tenant_id:
-                # Ensure session state exists (creates on first access with owner)
-                provider.get_or_create_session(
-                    canonical_thread_id,
-                    user_id=identity.user_id,
-                    tenant_id=identity.tenant_id,
-                )
-                if not provider.check_session_access(
-                    canonical_thread_id, identity.user_id, identity.tenant_id
-                ):
-                    raise HTTPException(status_code=403, detail="access denied to session")
-
-        return f"kb_sess_{_sanitize(canonical_thread_id)}"
+        _as = getattr(request.app.state, "app_state", None) if request else None
+        provider = getattr(_as, "knowledge_provider", None) if _as else None
+        canonical_thread_id = ensure_session_access(
+            identity.thread_id, identity.user_id, provider, identity.tenant_id
+        )
+        return session_collection_name(canonical_thread_id)
     elif scope == "agent":
         _as = getattr(request.app.state, "app_state", None) if request else None
         return resolve_agent_collection(identity.agent_id, _as)
