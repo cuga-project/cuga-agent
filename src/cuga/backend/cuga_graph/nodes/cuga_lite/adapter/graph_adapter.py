@@ -29,6 +29,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import resolve_model_with_bind_tools
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import _first_user_message_text
+from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.tool_names import resolve_tool_names
 from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
     BLOCKED_CLAIM_CORRECTION,
     BlockedClaimEvidence,
@@ -172,6 +173,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
     def normalize_response(self, response: Any) -> Tuple[str, Optional[str]]:
         # Harmony framing is removed here, at the decode boundary, so every
         # downstream surface inherits clean text (see the base implementation).
+        # Provider-safe tool aliases are mapped back to real names for the same reason.
         content = strip_harmony_tokens(normalize_assistant_text(response.content))
         if not content:
             tool_code = extract_code_from_response_tool_calls(response)
@@ -182,7 +184,8 @@ class AgentGraphAdapter(CoreGraphAdapter):
         reasoning = normalize_assistant_text(
             additional_kwargs.get("reasoning_content") or additional_kwargs.get("reasoning")
         )
-        return content, reasoning
+        tools = self._tools_context
+        return resolve_tool_names(content, tools), resolve_tool_names(reasoning, tools)
 
     def on_response_processed(
         self,
