@@ -290,12 +290,15 @@ def test_resolve_tool_names_refuses_ambiguous_aliases(monkeypatch):
             },
         ),
         AIMessage(content=_code(ALIAS)),  # the model wrote the alias into its own code
+        # An unclosed fence still runs its valid lines, whatever follows them.
+        AIMessage(content=_code(ALIAS).removesuffix("```") + "unfinished("),
+        AIMessage(content=_code(ALIAS).removesuffix("```") + "Here's the result"),
     ],
-    ids=["tool_call", "raw_tool_call", "code_in_reply"],
+    ids=["tool_call", "raw_tool_call", "code_in_reply", "unclosed_code_tail", "unclosed_prose_tail"],
 )
 def test_reply_naming_the_alias_decodes_to_the_real_tool(reply):
     content, _ = _adapter({LONG: _reconcile}).normalize_response(reply)
-    assert f"await {LONG}(value=7)" in content
+    assert f"await {LONG}(value=7)" in extract_code_from_model_response(content, None)
     assert ALIAS not in content
 
 

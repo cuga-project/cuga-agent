@@ -16,7 +16,7 @@ import hashlib
 import io
 import re
 import tokenize
-from typing import Any, Collection, Dict, List, Sequence, Set, Tuple
+from typing import Any, Collection, Dict, List, Optional, Sequence, Set, Tuple
 
 from langchain_core.tools import BaseTool
 from loguru import logger
@@ -102,9 +102,10 @@ def resolve_tool_names(text: str, tool_names: Collection[str]) -> str:
 
     ``text`` can be a model reply, code or a single tool name; ``tool_names`` are
     the real names that can run. Only Python names change — in each
-    ```` ```python ```` block, or in the whole text when it has none — so strings,
-    comments and attributes keep their exact values. Raises ``RuntimeError`` when
-    an alias could mean more than one tool.
+    ```` ```python ```` block (in the valid lines CugaLite still runs if it is
+    unclosed), or in the whole text when it has none — so strings, comments and
+    attributes keep their exact values. Raises ``RuntimeError`` when an alias
+    could mean more than one tool.
     """
     if not text or not _ALIAS.search(text):
         return text
@@ -120,7 +121,8 @@ def resolve_tool_names(text: str, tool_names: Collection[str]) -> str:
     if "```python" not in text:
         return _resolve_names(text, owners, tool_names)
     return _PYTHON_FENCE.sub(
-        lambda m: m.group(1) + _resolve_names(m.group(2), owners, tool_names) + m.group(3), text
+        lambda m: m.group(1) + _resolve_names(m.group(2), owners, tool_names, not m.group(3)) + m.group(3),
+        text,
     )
 
 
@@ -132,14 +134,31 @@ def _real_name(alias: str, owners: Dict[str, List[str]], tool_names: Collection[
     return reals[0]
 
 
-def _resolve_names(code: str, owners: Dict[str, List[str]], tool_names: Collection[str]) -> str:
+def _python_tokens(code: str) -> Optional[List[tokenize.TokenInfo]]:
     try:
         skip = (tokenize.NL, tokenize.COMMENT)
         tokens = [t for t in tokenize.generate_tokens(io.StringIO(code).readline) if t.type not in skip]
-    except Exception:  # not Python, so nothing here runs (3.12+ can raise more than TokenError)
-        return code
+    except Exception:  # not Python (3.12+ can raise more than TokenError)
+        return None
     if any(t.type == tokenize.ERRORTOKEN and t.string in ("'", '"') for t in tokens):
-        return code  # an unclosed quote: 3.12+ raise above, 3.10/3.11 yield an error token
+        return None  # an unclosed quote: 3.12+ raise above, 3.10/3.11 yield an error token
+    return tokens
+
+
+def _resolve_names(
+    code: str, owners: Dict[str, List[str]], tool_names: Collection[str], unclosed_fence: bool = False
+) -> str:
+    tokens = _python_tokens(code)
+    if tokens is None:
+        if unclosed_fence:
+            # CugaLite still runs the longest line prefix of an unclosed fence that compiles
+            # (code_extraction._recover_non_closing_python_fence), so map names there.
+            lines = code.split("\n")
+            for end in range(len(lines) - 1, 0, -1):
+                head = "\n".join(lines[:end])
+                if _python_tokens(head) is not None:
+                    return _resolve_names(head, owners, tool_names) + code[len(head) :]
+        return code  # not Python, so nothing here runs
     line_starts = [0]
     for line in code.split("\n"):
         line_starts.append(line_starts[-1] + len(line) + 1)
