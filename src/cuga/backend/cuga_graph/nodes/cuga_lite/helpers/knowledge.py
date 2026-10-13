@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 
 def _get_knowledge_tool_scope_context(
@@ -80,3 +80,38 @@ def _decorate_knowledge_tool(tool: Any, allowed_scopes: tuple[str, ...], thread_
     scopes_str = ", ".join(f'"{s}"' for s in allowed_scopes)
     hint = f"Allowed scopes: {scopes_str}. See knowledge scope rules in instructions above."
     tool.description = f"{base_description}\n\n{hint}".strip()
+
+
+def _wrap_knowledge_tool(
+    fn: Callable[..., Awaitable[Any]],
+    tid: str | None,
+    allowed_scopes: tuple[str, ...],
+    default_scope: str | None,
+) -> Callable[..., Awaitable[Any]]:
+    """Bind knowledge calls to the trusted conversation and allowed scopes."""
+
+    async def _wrapped(*args, **kwargs):
+        scope = kwargs.get("scope")
+        if scope is None and default_scope:
+            kwargs["scope"] = default_scope
+            scope = default_scope
+        if scope is not None and scope not in allowed_scopes:
+            allowed_text = ", ".join(allowed_scopes)
+            return {
+                "error": (
+                    f"Knowledge scope '{scope}' is unavailable in this context. "
+                    f"Allowed scopes: {allowed_text}"
+                )
+            }
+        # The model must not select another conversation's collection or ledger.
+        # Agent-scope searches also need the trusted id for citations.
+        # An explicit empty id also overrides positional ids when ToolGuard
+        # merges arguments without runtime context. Registry tools require str.
+        kwargs["thread_id"] = tid or ""
+        return await fn(*args, **kwargs)
+
+    _wrapped.__doc__ = getattr(fn, "__doc__", None)
+    _wrapped._knowledge_allowed_scopes = allowed_scopes
+    _wrapped._knowledge_default_scope = default_scope
+    _wrapped._knowledge_thread_id = tid
+    return _wrapped
