@@ -53,6 +53,11 @@ class TestScore(BaseModel):
     tool_call_score: float
     response_score: float
     response_scoring_type: ScoringMethod
+    # Populated post-hoc by evaluate_cuga.py when run with --agentic-quality
+    # (needs the tool catalog + judge model, which this module doesn't have).
+    # None means the judge wasn't run for this test case, not that it scored zero.
+    tool_selection_quality: Optional[Dict[str, Any]] = None
+    action_advancement: Optional[Dict[str, Any]] = None
 
 
 class TestScoreDetails(BaseModel):
