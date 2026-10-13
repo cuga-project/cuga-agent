@@ -53,6 +53,7 @@ overrides = [
     { name = "python-dotenv", specifier = ">=1.1.0" },
     { name = "pytz", specifier = ">=2025.1" },
     { name = "safetensors", specifier = ">=0.8.0" },
+    { name = "urllib3", specifier = ">=2.8.0" },
 ]
 
 [[manifest.dependency-metadata]]
