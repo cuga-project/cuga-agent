@@ -133,7 +133,27 @@ def parse_test_cases(json_file_path: str) -> dict[Any, list[Any]]:
     return test_cases
 
 
-async def run_cuga(test_file_path: str, result_file_path: str) -> (List[TestCase], List[ExperimentResult]):
+def _run_test_case_hook(hook_file: Optional[str], test_case_name: Optional[str]) -> None:
+    """Write the about-to-run (or, with None, the just-finished) test case's
+    name to `hook_file`, if set. Lets an external test double (e.g. a mock
+    MCP server replaying recorded fixtures) scope its own per-call lookups to
+    THIS test case instead of falling through to whichever test case's data
+    happens to be recorded first for a given tool -- a plain file rather than
+    an HTTP call, since a mock registered as a real MCP server only serves
+    the MCP/SSE protocol on its port, not arbitrary side-channel routes.
+    Best-effort and non-fatal: a run should proceed even if the path isn't
+    writable, just without test-case-scoped replay."""
+    if not hook_file:
+        return
+    try:
+        Path(hook_file).write_text(test_case_name or "", encoding="utf-8")
+    except OSError as e:
+        print(f"  WARNING: could not write test-case hook file {hook_file!r}: {e}")
+
+
+async def run_cuga(
+    test_file_path: str, result_file_path: str, test_case_hook_file: Optional[str] = None
+) -> (List[TestCase], List[ExperimentResult]):
     test_cases = parse_test_cases(test_file_path)
     print(f"test cases: {len(test_cases)}\napps: {list(test_cases.keys())}")
     agent_runner = AgentRunner(browser_enabled=False)
@@ -143,6 +163,7 @@ async def run_cuga(test_file_path: str, result_file_path: str) -> (List[TestCase
         tracker.start_experiment(task_ids=task_ids, experiment_name=app, description="")
         for i, task in enumerate(test_cases[app]):
             try:
+                _run_test_case_hook(test_case_hook_file, task.name)
                 tracker.reset(intent=task.intent, task_id=f"{app}_{str(i)}")
                 result = await agent_runner.run_task_generic(
                     eval_mode=False, goal=task.intent, current_datetime=tracker.current_date
@@ -193,6 +214,7 @@ async def run_cuga(test_file_path: str, result_file_path: str) -> (List[TestCase
                 )
                 logger.error(traceback.format_exc())
                 logger.error(e)
+    _run_test_case_hook(test_case_hook_file, None)
     return test_cases, results
 
 
@@ -302,6 +324,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run tests and save results.")
     parser.add_argument("-t", "--test-file-path", required=True, help="Path to the test file")
     parser.add_argument("-r", "--result-file-path", required=True, help="Path to the result file")
+    parser.add_argument(
+        "--test-case-hook-file",
+        default=None,
+        help="Path to write the current test case's name to before each task, and clear "
+        "afterward -- lets an external test double (e.g. a mock MCP server) scope its own "
+        "replay to this test case. Omit for no hook.",
+    )
 
     args = parser.parse_args()
-    tasks, results = asyncio.run(run_cuga(args.test_file_path, args.result_file_path))
+    tasks, results = asyncio.run(
+        run_cuga(args.test_file_path, args.result_file_path, test_case_hook_file=args.test_case_hook_file)
+    )
