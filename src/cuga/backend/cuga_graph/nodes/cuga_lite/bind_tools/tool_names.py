@@ -11,6 +11,7 @@ checks and the sandbox see real names.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import io
 import re
@@ -40,6 +41,7 @@ _PYTHON_FENCE = re.compile(r"(```python)(.*?)(```|\Z)", re.DOTALL)
 _logged_aliases: Set[Tuple[str, str]] = set()
 
 
+@functools.lru_cache(maxsize=None)  # keys are tool names; resolve_tool_names maps them all per reply
 def provider_safe_tool_name(name: str) -> str:
     """Return ``name`` if providers accept it, else a deterministic legal alias.
 
@@ -111,6 +113,8 @@ def resolve_tool_names(text: str, tool_names: Collection[str]) -> str:
         alias = provider_safe_tool_name(real)
         if alias != real:
             owners.setdefault(alias, []).append(real)
+    if not owners:  # no tool is aliased, so nothing can map back
+        return text
     if text in owners:  # a single tool name, which can hold a "-" no Python name has
         return _real_name(text, owners, tool_names)
     if "```python" not in text:

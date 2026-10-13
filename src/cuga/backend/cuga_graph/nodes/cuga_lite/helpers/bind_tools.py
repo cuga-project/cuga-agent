@@ -49,6 +49,10 @@ def _safe_bind(model: BaseChatModel, tools: List[StructuredTool]) -> Runnable:
     guard it would be caught by the cap's deliberate ``except RuntimeError:
     raise`` in ``resolve_model_with_bind_tools`` and crash ``call_model``
     instead of degrading to the unbound (code-act) model.
+
+    ``provider_safe_tools`` runs outside that guard on purpose: two tools that
+    would be bound under one name raise ``RuntimeError`` through to ``call_model``
+    rather than let the model call the wrong tool.
     """
     tools = provider_safe_tools(tools)  # alias names providers reject; normalize_response maps them back
     try:
