@@ -69,7 +69,12 @@ def tools_to_registry_yaml(tools: list[dict[str, Any]]) -> dict[str, Any]:
         include = t.get("include")
         if isinstance(include, list) and len(include) > 0:
             entry["include"] = include
-        if typ == "openapi" and t.get("url"):
+        if isinstance(t.get("gateway"), dict):
+            # MCP gateway instance: the loader derives the /mcp/ URL and the transport.
+            entry["url"] = t.get("url") or t["gateway"].get("instance_url") or ""
+            entry["gateway"] = dict(t["gateway"])
+            mcp_servers[name] = entry
+        elif typ == "openapi" and t.get("url"):
             entry["url"] = t["url"]
             services.append({name: entry})
         else:
@@ -112,7 +117,7 @@ def _merge_existing_mcp_servers(new_data: dict[str, Any], path: str) -> None:
         return
     existing_mcp = existing.get("mcpServers") or {}
     for name, entry in (new_data.get("mcpServers") or {}).items():
-        if not entry.get("command") and name in existing_mcp:
+        if not entry.get("command") and not entry.get("gateway") and name in existing_mcp:
             existing_entry = existing_mcp[name]
             if isinstance(existing_entry, dict):
                 for key in ("command", "args", "transport", "env", "cwd", "description"):

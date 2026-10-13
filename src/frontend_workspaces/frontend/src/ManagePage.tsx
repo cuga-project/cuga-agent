@@ -22,6 +22,10 @@ import {
   ClickableTile,
   InlineNotification,
   InlineLoading,
+  AccordionSkeleton,
+  TextInputSkeleton,
+  TextAreaSkeleton,
+  SelectSkeleton,
   Layer,
   Accordion,
   AccordionItem,
@@ -453,6 +457,23 @@ function AddA2AAgentModal({
   );
 }
 
+/** Shown in the config side panel while the agent's config loads (Carbon skeleton states). */
+function ConfigPanelSkeleton() {
+  return (
+    <div className="manage-config-skeleton" aria-busy="true" aria-live="polite">
+      <div style={{ padding: "1rem 1rem 0" }}>
+        <InlineLoading description="Loading agent configuration…" />
+      </div>
+      <VStack gap={5} style={{ padding: "1rem" }}>
+        <TextInputSkeleton />
+        <TextAreaSkeleton />
+        <SelectSkeleton />
+      </VStack>
+      <AccordionSkeleton count={6} open={false} align="start" />
+    </div>
+  );
+}
+
 export function ManagePage() {
   const { agentId } = useParams<{ agentId: string }>();
   const effectiveAgentId = agentId ?? "cuga-default";
@@ -495,6 +516,8 @@ export function ManagePage() {
   const [showPoliciesModal, setShowPoliciesModal] = useState(false);
   const [viewVersion, setViewVersion] = useState<{ version: number; config: AgentConfig } | null>(null);
   const [connectedApps, setConnectedApps] = useState<ConnectedApp[]>([]);
+  // True until the agent's config is loaded: the side panel shows skeletons instead of empty fields.
+  const [configLoading, setConfigLoading] = useState(true);
   const [connectedTools, setConnectedTools] = useState<ConnectedTool[]>([]);
   const [importStatus, setImportStatus] = useState<"idle" | "ok" | "error">("idle");
   const [importError, setImportError] = useState<string | null>(null);
@@ -673,6 +696,14 @@ export function ManagePage() {
           );
         }
         entry.transport = (t.transport as ToolEntry["transport"]) || "stdio";
+      } else if (type === "mcp" && t.gateway != null && typeof t.gateway === "object") {
+        const gw = t.gateway as Record<string, unknown>;
+        entry.gateway = {
+          instance_url: String(gw.instance_url ?? entry.url ?? ""),
+          run_as: gw.run_as === "user" ? "user" : "service",
+          ...(Array.isArray(gw.tools) ? { tools: gw.tools as NonNullable<ToolEntry["gateway"]>["tools"] } : {}),
+        };
+        entry.transport = "http";
       } else if (type === "mcp" && entry.url) {
         entry.transport = (t.transport as ToolEntry["transport"]) || "sse";
       }
@@ -775,6 +806,7 @@ export function ManagePage() {
     const agentId = effectiveAgentId;
     const gen = ++loadLatestGenRef.current;
     const isStale = () => gen !== loadLatestGenRef.current || agentId !== effectiveAgentIdRef.current;
+    setConfigLoading(true);
     try {
       skipDraftSaveRef.current = true;
       const [draftRes, toolsListRes] = await Promise.all([
@@ -935,11 +967,13 @@ export function ManagePage() {
       }
       setCurrentVersion(version);
       setLoadError(null);
+      setConfigLoading(false);
       setTimeout(() => {
         if (!isStale()) skipDraftSaveRef.current = false;
       }, 0);
     } catch (e) {
       if (isStale()) return;
+      setConfigLoading(false);
       const errorMsg = e instanceof Error ? e.message : "Failed to load config";
       setLoadError(errorMsg);
       addToast("error", "Load Error", errorMsg);
@@ -1549,6 +1583,9 @@ export function ManagePage() {
         <div className="manage-config-panel">
           <div className="manage-config-scroll">
             <Layer withBackground>
+            {configLoading ? (
+              <ConfigPanelSkeleton />
+            ) : (
             <Accordion align="start" size="md">
               <AccordionItem title="Agent" open>
                 <VStack gap={5}>
@@ -2504,6 +2541,7 @@ export function ManagePage() {
                   )}
               </AccordionItem>
             </Accordion>
+            )}
             </Layer>
 </div>
               <Layer withBackground className="manage-save-bar">

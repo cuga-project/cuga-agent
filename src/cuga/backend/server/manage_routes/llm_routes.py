@@ -21,6 +21,23 @@ _PROVIDER_API_KEY_REF = {
 }
 
 
+def _provider_error_message(response: httpx.Response) -> str:
+    """The provider's error message, short; never the request's credentials."""
+    try:
+        body = response.json()
+        err = body.get("error") if isinstance(body, dict) else None
+        msg = (
+            (err.get("message") if isinstance(err, dict) else err)
+            or body.get("message")
+            or body.get("detail")
+        )
+        if msg:
+            return str(msg)[:300]
+    except Exception:
+        pass
+    return (response.text or response.reason_phrase or "no message")[:300]
+
+
 @router.get("/llm/models")
 async def list_llm_models(
     request: Request,
@@ -158,16 +175,12 @@ async def list_llm_models(
         headers = {}
         if custom_auth_header:
             headers[auth_header_name] = custom_auth_header
-            # Log with masked auth header
-            masked_auth = custom_auth_header[:10] + "***" if len(custom_auth_header) > 10 else "***"
-            logger.info(f"LiteLLM models request - Provider: {provider_key}, URL: {url}, Auth: {masked_auth}")
+            logger.info(
+                f"LiteLLM models request - Provider: {provider_key}, URL: {url}, Auth: {auth_header_name}"
+            )
         elif api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-            # Log with masked API key
-            masked_key = api_key[:8] + "***" if len(api_key) > 8 else "***"
-            logger.info(
-                f"LiteLLM models request - Provider: {provider_key}, URL: {url}, Auth: Bearer {masked_key}"
-            )
+            logger.info(f"LiteLLM models request - Provider: {provider_key}, URL: {url}, Auth: Bearer")
         else:
             logger.error("LiteLLM models request - No authentication available")
 
@@ -182,10 +195,18 @@ async def list_llm_models(
         logger.info(f"LiteLLM models request successful - Found {len(data)} models")
         return {"models": sorted(m["id"] for m in data)}
     except httpx.HTTPStatusError as e:
-        logger.error(f"LiteLLM models request failed with HTTP {e.response.status_code}: {e.response.text}")
-        raise HTTPException(
-            status_code=e.response.status_code, detail=f"Models fetch failed: {e.response.text}"
+        # The provider's status is not CUGA's: a provider 401 must not look like an expired CUGA
+        # session (the frontend sends any 401 to the login page). Answer 502 with the reason.
+        status = e.response.status_code
+        reason = _provider_error_message(e.response)
+        logger.error(
+            f"LiteLLM models request failed: provider {provider_key} answered HTTP {status}: {reason}"
         )
+        if status in (401, 403):
+            detail = f"The {provider_key} provider rejected the API key (HTTP {status}): {reason}. Check the key or the secret it comes from."
+        else:
+            detail = f"The {provider_key} provider answered HTTP {status}: {reason}"
+        raise HTTPException(status_code=502, detail=detail)
     except Exception as ex:
         logger.exception(f"LiteLLM models request failed: {ex}")
         raise HTTPException(status_code=502, detail=f"Models fetch failed: {str(ex)}")

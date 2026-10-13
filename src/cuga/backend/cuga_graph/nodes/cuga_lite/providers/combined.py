@@ -324,7 +324,11 @@ class CombinedToolProvider(ToolProviderInterface):
     ) -> List[StructuredTool]:
         if not include_ids:
             return tools
-        include_set = set(include_ids)
+        from cuga.backend.tools_env.registry.mcp_manager.adapter import sanitize_tool_name
+
+        # The registry matches `include` against the server's raw tool names (e.g. "get-time");
+        # the tools here carry the sanitized, prefixed names ("app_get_time"). Accept both.
+        include_set = set(include_ids) | {sanitize_tool_name(i) for i in include_ids}
         out = []
         for t in tools:
             if t.name in include_set:
