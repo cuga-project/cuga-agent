@@ -32,10 +32,12 @@ PROVIDER_TOOL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 _INVALID = re.compile(r"[^A-Za-z0-9_-]")
 _MAX_LEN = 64
 _DIGEST_LEN = 8
-# A whole token shaped like an alias: up to 55 legal characters, "_", 8 hex digits.
-_ALIAS = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{1,55}_[0-9a-f]{8}(?![A-Za-z0-9_-])")
+# Every alias ends with "_" and 8 hex digits, so text without them holds no alias.
+_ALIAS_TAIL = re.compile(r"_[0-9a-f]{8}")
 # A ```python block, closed or not: the code CugaLite runs from a reply.
 _PYTHON_FENCE = re.compile(r"(```python)(.*?)(```|\Z)", re.DOTALL)
+# The line breaks compile() accepts; tokenize reads lines the same way (newline=None).
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
 
 # ``_safe_bind`` runs on every model call: log each (real, alias) pair once per process.
 _logged_aliases: Set[Tuple[str, str]] = set()
@@ -107,7 +109,7 @@ def resolve_tool_names(text: str, tool_names: Collection[str]) -> str:
     attributes keep their exact values. Raises ``RuntimeError`` when an alias
     could mean more than one tool.
     """
-    if not text or not _ALIAS.search(text):
+    if not text or not _ALIAS_TAIL.search(text):
         return text
     owners: Dict[str, List[str]] = {}
     for real in tool_names:
@@ -137,7 +139,8 @@ def _real_name(alias: str, owners: Dict[str, List[str]], tool_names: Collection[
 def _python_tokens(code: str) -> Optional[List[tokenize.TokenInfo]]:
     try:
         skip = (tokenize.NL, tokenize.COMMENT)
-        tokens = [t for t in tokenize.generate_tokens(io.StringIO(code).readline) if t.type not in skip]
+        lines = io.StringIO(code, newline=None).readline
+        tokens = [t for t in tokenize.generate_tokens(lines) if t.type not in skip]
     except Exception:  # not Python (3.12+ can raise more than TokenError)
         return None
     if any(t.type == tokenize.ERRORTOKEN and t.string in ("'", '"') for t in tokens):
@@ -148,25 +151,25 @@ def _python_tokens(code: str) -> Optional[List[tokenize.TokenInfo]]:
 def _resolve_names(
     code: str, owners: Dict[str, List[str]], tool_names: Collection[str], unclosed_fence: bool = False
 ) -> str:
-    tokens = _python_tokens(code)
+    # CugaLite runs code stripped (code_extraction), so read exactly that part.
+    lead, body = len(code) - len(code.lstrip()), code.strip()
+    tokens = _python_tokens(body)
     if tokens is None:
         if unclosed_fence:
             # CugaLite still runs the longest line prefix of an unclosed fence that compiles
             # (code_extraction._recover_non_closing_python_fence), so map names there.
-            lines = code.split("\n")
+            lines = body.split("\n")
             for end in range(len(lines) - 1, 0, -1):
                 head = "\n".join(lines[:end])
-                if _python_tokens(head) is not None:
-                    return _resolve_names(head, owners, tool_names) + code[len(head) :]
+                if _python_tokens(head.rstrip()) is not None:
+                    return code[:lead] + _resolve_names(head, owners, tool_names) + code[lead + len(head) :]
         return code  # not Python, so nothing here runs
-    line_starts = [0]
-    for line in code.split("\n"):
-        line_starts.append(line_starts[-1] + len(line) + 1)
+    line_starts = [0] + [match.end() for match in _LINE_BREAK.finditer(body)]
     edits = []
     for previous, token in zip([None, *tokens], tokens):
         if token.type != tokenize.NAME or token.string not in owners or (previous and previous.string == "."):
             continue
-        start = line_starts[token.start[0] - 1] + token.start[1]
+        start = lead + line_starts[token.start[0] - 1] + token.start[1]
         edits.append((start, start + len(token.string), _real_name(token.string, owners, tool_names)))
     for start, end, real in reversed(edits):
         code = code[:start] + real + code[end:]

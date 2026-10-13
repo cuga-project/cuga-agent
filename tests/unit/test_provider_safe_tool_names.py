@@ -258,6 +258,7 @@ def test_resolve_tool_names_maps_every_alias_back_and_nothing_else():
     # shape, a comment, a string value or an attribute.
     text = f"r = await {ALIAS}(value=7)  # not {ALIAS}x, {LONG} or deadbeef_0123abcd"
     assert resolve_tool_names(text, ctx) == text.replace(f"await {ALIAS}(", f"await {LONG}(")
+    assert resolve_tool_names(f"n = {ALIAS}-1", ctx) == f"n = {LONG}-1"  # "-" can't hide an alias
     data = f"await write_file(content='{{\"provider_function\": \"{ALIAS}\"}}')\nx = obj.{ALIAS}"
     assert resolve_tool_names(data, ctx) == data
     # Text that is not Python never runs and is left as written: an unclosed quote, or a lone
@@ -293,8 +294,36 @@ def test_resolve_tool_names_refuses_ambiguous_aliases(monkeypatch):
         # An unclosed fence still runs its valid lines, whatever follows them.
         AIMessage(content=_code(ALIAS).removesuffix("```") + "unfinished("),
         AIMessage(content=_code(ALIAS).removesuffix("```") + "Here's the result"),
+        AIMessage(content=_code(ALIAS)[:-1]),  # cut off inside the closing fence
+        # Other shapes of code CugaLite runs.
+        AIMessage(content=f"```python\nitems = [\n    1,\n]\nresult = await {ALIAS}(value=7)\n```"),
+        AIMessage(content=f"```python result = await {ALIAS}(value=7)```"),
+        AIMessage(content=f"```python\nprint('first')\n```\nThen:\n{_code(ALIAS)}"),
+        AIMessage(content=f'```python\nprint("café ☕"); result = await {ALIAS}(value=7)\n```'),
+        AIMessage(content=_code(ALIAS).replace("\n", "\r\n")),
+        AIMessage(content=_code(ALIAS).replace("\n", "\r\r\n")),
+        # CugaLite strips a block before running it: edge whitespace and first-line indent go.
+        AIMessage(content=f"```python\n    if True:\n  result = await {ALIAS}(value=7)\n```"),
+        AIMessage(content=f"```python\n result = await {ALIAS}(value=7)\x0b\n```"),
+        AIMessage(content=f"result = await {ALIAS}(value=7)\nprint(result)"),  # no fence
     ],
-    ids=["tool_call", "raw_tool_call", "code_in_reply", "unclosed_code_tail", "unclosed_prose_tail"],
+    ids=[
+        "tool_call",
+        "raw_tool_call",
+        "code_in_reply",
+        "unclosed_code_tail",
+        "unclosed_prose_tail",
+        "cut_in_closing_fence",
+        "after_multiline_list",
+        "one_line_fence",
+        "second_block",
+        "non_ascii_before_call",
+        "crlf",
+        "double_cr_line_endings",
+        "indented_first_line",
+        "odd_whitespace_at_edges",
+        "no_fence",
+    ],
 )
 def test_reply_naming_the_alias_decodes_to_the_real_tool(reply):
     content, _ = _adapter({LONG: _reconcile}).normalize_response(reply)
@@ -317,9 +346,15 @@ def test_alias_inside_a_tool_argument_reaches_the_tool_unchanged():
 
 
 def test_reasoning_naming_the_alias_decodes_to_the_real_tool():
+    adapter = _adapter({LONG: _reconcile})
     reply = AIMessage(content="Done.", additional_kwargs={"reasoning_content": f"Call {ALIAS} next."})
-    _, reasoning = _adapter({LONG: _reconcile}).normalize_response(reply)
+    _, reasoning = adapter.normalize_response(reply)
     assert reasoning == f"Call {LONG} next."
+
+    # With no code in the content, CugaLite runs the code in the reasoning.
+    reply = AIMessage(content="", additional_kwargs={"reasoning_content": _code(ALIAS)})
+    content, reasoning = adapter.normalize_response(reply)
+    assert f"await {LONG}(value=7)" in extract_code_from_model_response(content, reasoning)
 
 
 @pytest.mark.asyncio
