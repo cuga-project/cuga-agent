@@ -2402,6 +2402,7 @@ def evaluate(
     Run Cuga on your test cases.
     """
     # start the registry
+    evaluation_process = None
     try:
         run_direct_service(
             "registry",
@@ -2433,7 +2434,7 @@ def evaluate(
             wait_for_registry_server(settings.server_ports.registry)
 
             # Then start demo - using explicit fastapi command
-            run_direct_service(
+            evaluation_process = run_direct_service(
                 "evaluation",
                 [
                     "uv",
@@ -2448,12 +2449,24 @@ def evaluate(
                     output_file_path,
                 ],
             )
-        wait_for_direct_processes()
+        if evaluation_process is None:
+            wait_for_direct_processes()
+        else:
+            # The registry is a server that never exits on its own, so waiting
+            # for every direct process would hang here forever once the
+            # evaluation is done. Wait for the evaluation, then stop the registry.
+            try:
+                evaluation_process.wait()
+            finally:
+                stop_direct_processes()
 
     except Exception as e:
         logger.error(f"Error starting registry service: {e}")
         stop_direct_processes()
         raise typer.Exit(1)
+    if evaluation_process is not None and evaluation_process.returncode:
+        logger.error(f"Evaluation exited with code {evaluation_process.returncode}")
+        raise typer.Exit(evaluation_process.returncode)
     return
 
 
