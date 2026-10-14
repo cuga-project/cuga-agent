@@ -396,7 +396,9 @@ class CugaLiteNode(BaseNode):
         # Save trajectory to Evolve if enabled
         from cuga.backend.evolve.integration import EvolveIntegration, normalize_evolve_identifier
 
-        if EvolveIntegration.is_enabled() and state.chat_messages and state.hybrid_phase != "api":
+        from cuga.backend.evolve.preferences import memory_enabled
+
+        if state.chat_messages and state.hybrid_phase != "api" and await memory_enabled(state.user_id):
             import asyncio as _asyncio
 
             task_id = state.sub_task or tracker.task_id or "unknown"

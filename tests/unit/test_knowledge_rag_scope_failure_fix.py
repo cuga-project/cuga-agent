@@ -21,6 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -34,6 +35,9 @@ from cuga.backend.knowledge.engine import (
 )
 from cuga.backend.knowledge.envelope import build_retrieval_envelope
 from cuga.backend.knowledge.config import KnowledgeConfig
+from cuga.backend.knowledge.session_provider import SessionProvider
+
+pytestmark = pytest.mark.unit
 
 
 # ============================================================
@@ -490,7 +494,7 @@ def _route_app_with_fake_engine(
     app.include_router(knowledge_router)
     app.state.app_state = SimpleNamespace(
         knowledge_engine=eng,
-        knowledge_provider=None,
+        knowledge_provider=SessionProvider(),
         knowledge_config_hash="hash",
     )
     app.dependency_overrides[require_internal_or_auth] = lambda: KnowledgeIdentity(
