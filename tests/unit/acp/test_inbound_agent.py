@@ -141,7 +141,10 @@ async def test_initialize_supports_only_stable_v1_with_truthful_capabilities() -
     assert response.agent_capabilities.mcp_capabilities.acp is False
     assert response.agent_capabilities.session_capabilities.list is None
     assert response.agent_capabilities.session_capabilities.additional_directories is None
-    assert response.auth_methods == []
+    assert [(m.id, m.name) for m in response.auth_methods] == [
+        ("cuga-llm-credentials", "LLM provider credentials")
+    ]
+    assert "OPENAI_API_KEY" in response.auth_methods[0].description
 
     with pytest.raises(RequestError) as exc_info:
         await agent.initialize(protocol_version=2)
@@ -650,7 +653,6 @@ async def test_unsupported_methods_and_extensions_use_method_not_found() -> None
     calls = [
         agent.load_session(cwd="/workspace", session_id=session_id, mcp_servers=[]),
         agent.set_session_mode(session_id=session_id, mode_id="unsafe"),
-        agent.authenticate(method_id="none"),
         agent.ext_method("secret-extension", {"secret": "payload"}),
     ]
     for call in calls:
@@ -658,6 +660,55 @@ async def test_unsupported_methods_and_extensions_use_method_not_found() -> None
             await call
         assert exc_info.value.code == -32601
         assert "payload" not in repr(exc_info.value.data)
+
+
+class _CredentialRunner(_ScriptedRunner):
+    def __init__(self, error: Exception | None = None) -> None:
+        super().__init__()
+        self.error = error
+        self.ready_calls = 0
+
+    async def ensure_ready(self) -> None:
+        self.ready_calls += 1
+        if self.error is not None:
+            raise self.error
+
+
+@pytest.mark.unit
+async def test_authenticate_succeeds_when_runner_credentials_load() -> None:
+    from cuga.backend.server.acp.agent import AUTH_METHOD_ID, CugaAcpAgent
+
+    runner = _CredentialRunner()
+    response = await CugaAcpAgent(runner).authenticate(method_id=AUTH_METHOD_ID)
+
+    assert response.model_dump(exclude_none=True) == {}
+    assert runner.ready_calls == 1
+
+
+@pytest.mark.unit
+async def test_authenticate_maps_credential_failure_to_auth_required_without_leaking() -> None:
+    from cuga.backend.server.acp.agent import AUTH_METHOD_ID, CugaAcpAgent
+
+    runner = _CredentialRunner(RuntimeError("Incorrect API key provided: sk-secret-123"))
+    with pytest.raises(RequestError) as exc_info:
+        await CugaAcpAgent(runner).authenticate(method_id=AUTH_METHOD_ID)
+
+    assert exc_info.value.code == -32000
+    assert "OPENAI_API_KEY" in exc_info.value.data["message"]
+    assert "sk-secret-123" not in repr(exc_info.value.to_error_obj())
+    assert exc_info.value.__cause__ is None
+
+
+@pytest.mark.unit
+async def test_authenticate_rejects_unknown_method_without_touching_runner() -> None:
+    from cuga.backend.server.acp.agent import CugaAcpAgent
+
+    runner = _CredentialRunner()
+    with pytest.raises(RequestError) as exc_info:
+        await CugaAcpAgent(runner).authenticate(method_id="none")
+
+    assert exc_info.value.code == -32602
+    assert runner.ready_calls == 0
 
 
 @pytest.mark.unit

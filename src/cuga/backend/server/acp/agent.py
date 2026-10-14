@@ -15,6 +15,8 @@ from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
     AllowedOutcome,
+    AuthenticateResponse,
+    AuthMethodAgent,
     Implementation,
     McpCapabilities,
     NewSessionResponse,
@@ -33,6 +35,17 @@ MAX_PERMISSION_RESUMES = 12
 _TEXT_SEPARATOR = "\n\n"
 _EMPTY_STREAM_FALLBACK = "Agent completed without a response."
 _SAFE_OUTPUT_EVENTS = frozenset({"agent_message", "message", "output", "response"})
+
+# CUGA has no login of its own: it reads LLM provider credentials from the environment
+# or a .env file. Advertising one agent-handled method lets ACP clients and the ACP
+# Registry see how to authenticate; `authenticate` only checks those credentials load.
+AUTH_METHOD_ID = "cuga-llm-credentials"
+_AUTH_HINT = (
+    "CUGA reads LLM provider credentials from the environment or a .env file. "
+    "Set OPENAI_API_KEY (default provider), or AGENT_SETTING_CONFIG plus that provider's "
+    "variables (e.g. settings.watsonx.toml with WATSONX_APIKEY, WATSONX_PROJECT_ID, WATSONX_URL), "
+    "then restart the agent."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +111,9 @@ class CugaAcpAgent:
                 mcpCapabilities=McpCapabilities(http=False, sse=False, acp=False),
                 sessionCapabilities=SessionCapabilities(),
             ),
-            authMethods=[],
+            authMethods=[
+                AuthMethodAgent(id=AUTH_METHOD_ID, name="LLM provider credentials", description=_AUTH_HINT)
+            ],
             agentInfo=Implementation(name="cuga", title="CUGA", version=cuga_version),
         )
 
@@ -365,9 +380,19 @@ class CugaAcpAgent:
         del kwargs
         raise RequestError.method_not_found("session/set_config_option")
 
-    async def authenticate(self, **kwargs: Any) -> None:
+    async def authenticate(self, method_id: str, **kwargs: Any) -> AuthenticateResponse:
         del kwargs
-        raise RequestError.method_not_found("authenticate")
+        if method_id != AUTH_METHOD_ID:
+            raise RequestError.invalid_params()
+        ensure_ready = getattr(self._runner, "ensure_ready", None)
+        if callable(ensure_ready):
+            try:
+                await ensure_ready()
+            except Exception as exc:
+                # Provider errors can echo key fragments; report only the type.
+                logger.warning("CUGA LLM credential check failed (%s)", type(exc).__name__)
+                raise RequestError.auth_required({"message": _AUTH_HINT}) from None
+        return AuthenticateResponse()
 
     async def fork_session(self, **kwargs: Any) -> None:
         del kwargs
