@@ -24,8 +24,8 @@ Three things bite a brand-new checkout, and only the first one fails loudly.
 **1. Populate `.env` FIRST.** `make_env_ce.sh` builds the Code Engine secret *from your local
 `.env`* — it does not prompt, and it does not warn about keys you never set. A clone with an empty
 `.env` produces a secret missing the LLM credentials and every channel token, and the deploy
-succeeds anyway. Fill it in from the annotated [`.env.events.example`](../../.env.events.example) at
-the repo root (every key the events layer reads, grouped by connector), then run `./make_env_ce.sh`.
+succeeds anyway. Fill it in from the annotated [`events/.env.events.example`](../.env.events.example)
+(every key the events layer reads, grouped by connector), then run `./make_env_ce.sh`.
 
 **2. Run `./4_postgres.sh` BEFORE `./2_deploy.sh` on a new project.** `2_deploy.sh` branches on
 whether `EVENTS_DB` is already in the CE secret: present → managed PostgreSQL; absent → it falls
@@ -418,4 +418,4 @@ triggers once Activepieces is deployed.
 | `2_deploy.sh` | create the CE secret + app; set `EVENTS_PUBLIC_URL` |
 | `3_smoke.py` | capability report + channels + a web-chat probe |
 | `teardown.sh` | delete the app (optionally the secret) |
-| `make_env_ce.sh` | **the** way to build the CE secrets — generates BOTH `.env.ce` (events) and `.env.ce.core` (core) from `../../.env`; both gitignored. There is no hand-edited template: the annotated key list lives in the repo-root `.env.events.example`. |
+| `make_env_ce.sh` | **the** way to build the CE secrets — generates BOTH `.env.ce` (events) and `.env.ce.core` (core) from `../../.env`; both gitignored. There is no hand-edited template: the annotated key list lives in [`events/.env.events.example`](../.env.events.example). |
