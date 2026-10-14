@@ -1176,6 +1176,45 @@ See `docs/design/pluggable-shortlister.md` for the full design.
 </details>
 
 <details>
+<summary>🔁 Execution mode: CodeAct or native function calling</summary>
+
+## What it is
+
+By default CUGA Lite works in **CodeAct**: the model writes a Python block and the sandbox runs it. `cuga_lite_execution_mode = "function_calling"` switches to native tool calls: the model emits `tool_calls`, CUGA translates them into a short internal block that the same sandbox runs (same approval check, VERIFY gate, budgets, tracker, timeout and variables), and replies with one `ToolMessage` per call id, so the model reads the results before it calls again or answers. The block is never shown to the model or persisted; its transcript stays native. Tools are advertised through `bind_tools`; a short dedicated prompt replaces the CodeAct prompt.
+
+**Step discipline** (`cuga_lite_step_discipline = "one_tool_per_step"`) works in both modes: only the first tool call of a step is attempted — success or error, that is the result the model reads before it decides the next call. CodeAct keeps the block's variables (including that first result); function-calling answers the extra calls with a "deferred" reply.
+
+## Configuration
+
+| Key | Default | Values |
+|---|---|---|
+| `cuga_lite_execution_mode` | `"codeact"` | `codeact` \| `function_calling` (alias `fc`) |
+| `cuga_lite_step_discipline` | `"off"` | `off` \| `one_tool_per_step` |
+| `cuga_lite_fc_prompt_fragments` | `[]` | Opt-in prompt lines for function-calling mode. `evidence_first`: call a tool before answering, never answer from prior knowledge |
+
+Precedence, highest first: raw keys in `configurable` → per-invoke `invoke(..., execution_mode=..., step_discipline=...)` → constructor `CugaAgent(execution_mode=..., step_discipline=...)` → per-model runtime profile → `[advanced_features]` in `settings.toml` (also where `DYNACONF_ADVANCED_FEATURES__CUGA_LITE_EXECUTION_MODE` lands). An unknown value falls back to the default with a warning.
+
+```python
+agent = CugaAgent(tools=[...], execution_mode="function_calling", step_discipline="one_tool_per_step")
+result = await agent.invoke("...")                             # native tool calls
+result = await agent.invoke("...", execution_mode="codeact")   # per-call override
+```
+
+## Gotchas
+
+- **Tool-approval policies** apply exactly as in CodeAct: the approval check runs on the translated block, so a policy on a tool name pauses the run before the call and the approved call resumes into the sandbox.
+- Bind mode `none` (the default) is upgraded in function-calling mode to advertise exactly the tools the sandbox could call, plus `find_tools` whenever the prompt advertises it (set `configurable["cuga_lite_bind_tools_include_find_tools"] = False` to opt out). Past `cuga_lite_bind_tools_max_count` (128) the bind-cap shortlister runs every turn; `[shortlister.bind_cap] strategy = "embedding"` avoids the extra LLM call.
+- Tool names providers reject (over 64 characters, or with characters outside `[A-Za-z0-9_-]`) are bound under a provider-safe alias; the model calls the alias, the real tool runs, and the reply keeps the alias.
+- A provider that rejects a malformed native call but returns the attempt (Groq `tool_use_failed`) gets it back as a real call; a retryable rejection is retried once, then the turn ends with a clear error.
+- The bundled CodeAct few-shot demos are not sent in function-calling mode; pass your own through `configurable["mcp_few_shot_examples"]`.
+- Tools run in-process and sequentially, on the local executor even when `e2b_sandbox` is on. One turn's calls are one block, bounded by `sandbox_execution_timeout` as a whole; results computed before a timeout are kept. The pre-execute VERIFY gate applies in both modes; reflection is CodeAct-only for now.
+- Each result is kept as a variable (`tool_result_<call id>`): a large result is truncated in the reply to `execution_output_max_length` but survives whole for later turns, and a later CodeAct turn on the same thread can use it by name.
+- Function-calling needs tools bound natively: if `bind_tools` fails or the model does not support it, or the agent has no executable tools, the run stops with a clear error (fail closed) instead of silently answering without tools. A static prompt is ignored in this mode.
+- A thread can switch modes between turns: results from function-calling turns are shown to a later CodeAct turn as text and as variables.
+
+</details>
+
+<details>
 <summary>📝 Special Instructions Configuration</summary>
 
 ## How It Works
