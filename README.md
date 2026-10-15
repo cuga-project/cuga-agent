@@ -13,6 +13,8 @@ CUGA turns business requests into actions across your applications, APIs, and do
 
 **[Get started](#quick-install)** · **[Documentation](https://docs.cuga.dev)** · **[Python SDK](#build-with-the-python-sdk)** · **[Deploy on Kubernetes](deployment/README.md)**
 
+**[CUGA Apps](https://github.com/cuga-project/cuga-apps)** · **[CUGA Harness Kit](https://github.com/cuga-project/cuga-harness-kit)** · **[Discord](https://discord.gg/PN3Zdq4dEd)**
+
 [Apache 2.0](LICENSE) · Configurable Generalist Agent · Built with IBM SiL
 
 ---
