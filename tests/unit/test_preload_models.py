@@ -40,7 +40,7 @@ def test_supported_image_bakes_evolve_for_offline_runtime() -> None:
 
     project = (REPO_ROOT / "pyproject.toml").read_text()
     assert "altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]" in project
-    assert "altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]>=1.7.0,<2" in project
+    assert "altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]>=1.7.1,<2" in project
     assert "github.com/AgentToolkit/altk-evolve/archive/" not in project
     assert "--frozen --no-editable --no-dev" in dockerfile
     assert "--group evolve-image" in dockerfile
