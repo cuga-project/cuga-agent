@@ -77,6 +77,25 @@ def parse_markdown_to_steps(markdown_content: str) -> List[Dict[str, Any]]:
 VALID_FORMAT_TYPES = {"markdown", "json_schema", "direct"}
 
 
+def _normalize_output_formatter_triggers(triggers: Any) -> List[Any]:
+    """Map "no conditional trigger" to an explicit AlwaysTrigger for output formatters.
+
+    The UI represents "leave keywords empty to always format" as either ``[]`` or a
+    keyword/NL trigger with no values. Drop those empty triggers and, if nothing remains,
+    store ``[{"type": "always"}]`` — matching the SDK and folder loader defaults.
+    """
+    if not isinstance(triggers, list):
+        return triggers
+    kept = [
+        t
+        for t in triggers
+        if not (
+            isinstance(t, dict) and t.get("type") in ("keyword", "natural_language") and not t.get("value")
+        )
+    ]
+    return kept or [{"type": "always"}]
+
+
 def validate_output_formatter(data: Dict[str, Any]) -> List[str]:
     """Validate output formatter policy dict. Returns list of error messages (empty if valid)."""
     errs: List[str] = []
@@ -265,6 +284,7 @@ async def apply_policies_data_to_storage(
                     enabled=policy_data.get("enabled", True),
                 )
             elif policy_type == "output_formatter":
+                policy_data["triggers"] = _normalize_output_formatter_triggers(policy_data.get("triggers"))
                 val_errs = validate_output_formatter(policy_data)
                 if val_errs:
                     for e in val_errs:
