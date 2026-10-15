@@ -14,6 +14,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.unit
+def test_airgap_verification_rejects_stanza(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import verify_airgap
+
+    monkeypatch.setattr(verify_airgap, "find_spec", lambda name: object() if name == "stanza" else None)
+    with pytest.raises(RuntimeError, match="Stanza must not be installed"):
+        verify_airgap.main()
+
+
+@pytest.mark.unit
 def test_supported_image_bakes_evolve_for_offline_runtime() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile.ubi").read_text()
     entrypoint = (REPO_ROOT / "scripts/docker-entrypoint.sh").read_text()
@@ -24,6 +33,7 @@ def test_supported_image_bakes_evolve_for_offline_runtime() -> None:
     assert "github.com/AgentToolkit/altk-evolve/archive/" not in project
     assert "--frozen --no-editable --no-dev" in dockerfile
     assert "--group evolve-image" in dockerfile
+    assert "--no-install-package stanza" in dockerfile
     assert "uv pip install" not in dockerfile
     assert "SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers" in dockerfile
     assert "uv run --no-sync playwright install" in dockerfile
