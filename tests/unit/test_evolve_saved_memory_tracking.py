@@ -18,6 +18,8 @@ def isolated_store(tmp_path, monkeypatch):
     monkeypatch.setattr(facade, "_local_db_path", lambda: str(tmp_path / "saved_memory_tracking.db"))
     monkeypatch.setattr(saved_memory_tracking, "_scope", lambda: ("tenant", "service"))
     get_storage().invalidate_relational_stores()
+    monkeypatch.setattr(saved_memory_tracking, "_schema_store", None)
+    monkeypatch.setattr(saved_memory_tracking, "_schema_lock", asyncio.Lock())
     yield
     get_storage().invalidate_relational_stores()
 
@@ -163,3 +165,32 @@ async def test_write_failure_does_not_record_saved_memory(monkeypatch):
         await saved_memory_tracking.enrich_saved_memories(answer(), agent_id="agent", user_id="alice")
         == answer()
     )
+
+
+@pytest.mark.asyncio
+async def test_schema_initialized_once_for_concurrent_calls_and_replaced_store(monkeypatch):
+    store = saved_memory_tracking._store()
+    execute = AsyncMock(wraps=store.execute)
+    monkeypatch.setattr(store, "execute", execute)
+    await asyncio.gather(*(saved_memory_tracking._schema() for _ in range(10)))
+    execute.assert_awaited_once()
+    get_storage().invalidate_relational_stores()
+    replacement = saved_memory_tracking._store()
+    assert replacement is not store
+    replacement_execute = AsyncMock(wraps=replacement.execute)
+    monkeypatch.setattr(replacement, "execute", replacement_execute)
+    await saved_memory_tracking._schema()
+    replacement_execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_schema_initialization_can_be_retried(monkeypatch):
+    store = saved_memory_tracking._store()
+    execute = AsyncMock(side_effect=[RuntimeError("temporary failure"), None])
+    monkeypatch.setattr(store, "execute", execute)
+    with pytest.raises(RuntimeError, match="temporary failure"):
+        await saved_memory_tracking._schema()
+    assert saved_memory_tracking._schema_store is not store
+    await saved_memory_tracking._schema()
+    assert execute.await_count == 2
+    assert saved_memory_tracking._schema_store is store
