@@ -49,10 +49,13 @@ def extract_and_combine_codeblocks(text: str, tools_needing_probing: frozenset[s
     if "print(" not in stripped_text:
         return ""
 
+    # compile() raises ValueError (incl. UnicodeEncodeError for a lone
+    # surrogate, or a NUL byte on 3.10) for text it cannot encode; treat it
+    # like a SyntaxError — "no code" — here and at the other compile() sites.
     try:
         compile(stripped_text.replace("await ", ""), "<string>", "exec")
         return _truncate_after_first_probing_line(stripped_text, tools_needing_probing)
-    except SyntaxError:
+    except (SyntaxError, ValueError):
         return ""
 
 
@@ -93,7 +96,7 @@ def _truncate_after_first_probing_line(code: str, tools_needing_probing: frozens
                 candidate = "\n".join(lines[:end])
                 try:
                     compile(candidate.replace("await ", ""), "<string>", "exec")
-                except SyntaxError:
+                except (SyntaxError, ValueError):
                     continue
                 return candidate
             return code
@@ -168,6 +171,6 @@ def _recover_non_closing_python_fence(text: str) -> str:
         try:
             compile(attempt.replace("await ", ""), "<string>", "exec")
             return attempt
-        except SyntaxError:
+        except (SyntaxError, ValueError):
             continue
     return ""

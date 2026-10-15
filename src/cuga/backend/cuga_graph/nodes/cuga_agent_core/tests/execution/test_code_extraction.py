@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from pydantic import BaseModel
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import (
@@ -190,3 +191,23 @@ def test_recovery_path_keeps_full_blob_when_probing_tool_absent():
     text = "res = await some_other_tool('x')\nprint(res)"
     code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"file_readfile"}))
     assert code == "res = await some_other_tool('x')\nprint(res)"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text",
+    [
+        "```python\nx = 'caf\ud800'\nprint(x)",  # unclosed fence (#963)
+        "print('caf\ud800')",  # raw-text fallback
+        "```python\nx = 1\x00\nprint(x)",  # NUL byte: ValueError on 3.10
+    ],
+)
+def test_uncompilable_text_counts_as_no_code(text: str) -> None:
+    """Text compile() can't encode is "no code", like a SyntaxError (#963)."""
+    assert extract_code_from_model_response(text, None) == ""
+
+
+@pytest.mark.unit
+def test_lone_surrogate_after_valid_code_keeps_the_valid_prefix() -> None:
+    text = "```python\nprint('ok')\nx = 'caf\ud800'"
+    assert extract_code_from_model_response(text, None) == "print('ok')"
