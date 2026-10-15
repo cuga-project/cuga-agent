@@ -21,8 +21,11 @@ COPY src/ ./src/
 COPY docs/ ./docs/
 
 # Include observability, Evolve and READI with its pinned spaCy model.
+# READI declares Stanza unconditionally, but our spaCy extractor does not use it.
+# Exclude it for image licensing; keep subsequent uv runs on --no-sync.
 RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + \
-    && uv sync --frozen --no-editable --no-dev --extra observability --extra evolve --group evolve-image
+    && uv sync --frozen --no-editable --no-dev --extra observability --extra evolve --group evolve-image \
+        --no-install-package stanza
 
 # Slim down torch: remove test suite and C++ headers (not needed at runtime) ~143MB
 # NOTE: torch/bin must be kept — contains torch_shm_manager required at import time
