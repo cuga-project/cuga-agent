@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any, Callable, Dict, Iterable, Optional
 
@@ -21,6 +22,17 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy impor
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+    PendingACPDelegationRegistryFinalizedCancelled,
+    PendingACPDelegationWinnerCancelled,
+    PendingACPDelegationWinnerError,
+)
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_protocol import (
+    ACPPermissionPause,
+    ACPPermissionRegistryFinalized,
+    ACPPermissionWinnerCancelled,
+    resume_acp_delegation,
+)
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
     SUPERVISOR_EXEC_KEY,
@@ -29,7 +41,10 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.prepare_agents_and_prompt import (
     delegate_tool_names,
 )
-from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import create_agent_approval_action
+from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
+    create_agent_approval_action,
+    create_tool_approval_action,
+)
 from cuga.config import settings
 
 _DELEGATE_CALL_RE = re.compile(r"delegate_to_(\w+)\s*\(([^)]*)\)")
@@ -138,8 +153,180 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
             },
         )
 
+    def _create_acp_permission_command(
+        state: CugaSupervisorState, exc: ACPPermissionPause, metadata: dict
+    ) -> Command:
+        """Turn one ACP operation's permission pause into a standard tool-approval interrupt."""
+        permission = exc.request
+        safe_metadata = {
+            "pending_id": exc.pending_id,
+            "agent_name": exc.agent_name,
+            "title": permission.title,
+            "description": permission.description,
+            "kind": permission.kind,
+            "locations": list(permission.locations),
+        }
+        hitl_action = create_tool_approval_action(
+            policy_name=f"ACP permission: {permission.title}",
+            required_tools=[permission.kind or permission.title],
+            code_preview=list(permission.locations),
+            full_code="",
+            approval_message=permission.description or permission.title,
+            return_to=adapter.sender_name,
+        )
+        hitl_action.additional_data.tool["acp_permission"] = {
+            "pending_id": exc.pending_id,
+            "agent_name": exc.agent_name,
+        }
+        return Command(
+            goto=END,
+            update={
+                adapter.messages_key: state.supervisor_chat_messages,
+                "final_answer": hitl_action.description,
+                "hitl_action": hitl_action,
+                "sender": adapter.sender_name,
+                "step_count": state.step_count + 1,
+                **_budget_updates(),
+                **_delegation_state_update(state),
+                adapter.metadata_key: {
+                    **metadata,
+                    "approval_required": True,
+                    "acp_permission": safe_metadata,
+                },
+            },
+        )
+
     async def execute_agent_tool(state: CugaSupervisorState, config: Optional[RunnableConfig] = None):
         logger.info("Supervisor conversational: executing agent delegation code")
+
+        metadata = dict(adapter.get_metadata(state) or {})
+        resume = metadata.get("acp_permission_resume")
+        if isinstance(resume, dict):
+            pending_id = resume.get("pending_id")
+            agent_name = resume.get("agent_name")
+            approved = resume.get("approved")
+            thread_id = _resolve_thread_id(state, config)
+            record_authorized = False
+            try:
+                if not isinstance(thread_id, str) or not thread_id.strip():
+                    raise ValueError("invalid ACP permission owner")
+                if not isinstance(pending_id, str) or not pending_id.strip():
+                    raise ValueError("invalid ACP pending delegation id")
+                if (
+                    not isinstance(agent_name, str)
+                    or not agent_name.strip()
+                    or not isinstance(approved, bool)
+                ):
+                    trusted = metadata.get("acp_permission")
+                    trusted_agent = (
+                        trusted.get("agent_name")
+                        if isinstance(trusted, dict) and trusted.get("pending_id") == pending_id
+                        else None
+                    )
+                    if not isinstance(trusted_agent, str) or not trusted_agent.strip():
+                        raise ValueError("invalid ACP permission resume")
+                    cancelled = await adapter._pending_acp_registry.cancel_owned(
+                        pending_id,
+                        thread_id=thread_id,
+                        agent_name=trusted_agent,
+                        reason="invalid ACP permission response",
+                    )
+                    agent_name = cancelled.agent_name
+                    record_authorized = True
+                    raise PendingACPDelegationWinnerError("invalid ACP permission resume")
+                result = await resume_acp_delegation(
+                    registry=adapter._pending_acp_registry,
+                    pending_id=pending_id,
+                    thread_id=thread_id,
+                    agent_name=agent_name,
+                    approved=approved,
+                )
+                record_authorized = True
+            except ACPPermissionPause as exc:
+                # The same prompt asked for its next operation: gate it with a fresh pending ID.
+                metadata.pop("acp_permission_resume", None)
+                metadata.pop("acp_permission", None)
+                return _create_acp_permission_command(state, exc, metadata)
+            except PendingACPDelegationWinnerCancelled as exc:
+                agent_name = exc.metadata.agent_name
+                result = {
+                    "result": "ACP pending delegation is stale or could not be resumed.",
+                    "status": "failed",
+                    "variables": {},
+                }
+                adapter.record_delegation(
+                    state,
+                    agent_name,
+                    result=result,
+                    answer=result["result"],
+                    variables={},
+                )
+                metadata.pop("acp_permission_resume", None)
+                metadata.pop("acp_permission", None)
+                state.supervisor_metadata = metadata
+                raise asyncio.CancelledError from None
+            except ACPPermissionWinnerCancelled as exc:
+                result = exc.result
+                adapter.record_delegation(
+                    state,
+                    agent_name if isinstance(agent_name, str) else "unknown",
+                    result=result,
+                    answer=result.get("result", ""),
+                    variables=result.get("variables") or {},
+                )
+                metadata.pop("acp_permission_resume", None)
+                metadata.pop("acp_permission", None)
+                state.supervisor_metadata = metadata
+                raise asyncio.CancelledError from None
+            except PendingACPDelegationRegistryFinalizedCancelled:
+                metadata.pop("acp_permission_resume", None)
+                metadata.pop("acp_permission", None)
+                state.supervisor_metadata = metadata
+                raise asyncio.CancelledError from None
+            except ACPPermissionRegistryFinalized:
+                result = {
+                    "result": "ACP pending delegation is stale or could not be resumed.",
+                    "status": "failed",
+                    "variables": {},
+                }
+            except PendingACPDelegationWinnerError:
+                record_authorized = True
+                logger.warning("ACP permission resume winner failed closed", exc_info=True)
+                result = {
+                    "result": "ACP pending delegation is stale or could not be resumed.",
+                    "status": "failed",
+                    "variables": {},
+                }
+            except Exception:
+                logger.warning("ACP permission resume failed closed", exc_info=True)
+                result = {
+                    "result": "ACP pending delegation is stale or could not be resumed.",
+                    "status": "failed",
+                    "variables": {},
+                }
+            if record_authorized:
+                adapter.record_delegation(
+                    state,
+                    agent_name if isinstance(agent_name, str) else "unknown",
+                    result=result,
+                    answer=result.get("result", ""),
+                    variables=result.get("variables") or {},
+                )
+            answer = result.get("result", "")
+            metadata.pop("acp_permission_resume", None)
+            metadata.pop("acp_permission", None)
+            state.supervisor_metadata = metadata
+            updated_messages, error_message = append(state, [HumanMessage(content=answer)])
+            if error_message:
+                return create_error(updated_messages, error_message, state.step_count)
+            return {
+                adapter.messages_key: updated_messages,
+                "final_answer": answer,
+                "execution_complete": True,
+                "step_count": state.step_count + 1,
+                **_budget_updates(),
+                **_delegation_state_update(state),
+            }
 
         if settings.policy.enabled:
             denial_command = ToolApprovalHandler.handle_denial(adapter, state)
@@ -164,7 +351,13 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
             for var_name in var_manager.get_variable_names():
                 existing_vars[var_name] = var_manager.get_variable(var_name)
 
-        exec_ctx = SupervisorExecutionContext(state=state, variable_manager=var_manager)
+        exec_ctx = SupervisorExecutionContext(
+            state=state,
+            variable_manager=var_manager,
+            thread_id=_resolve_thread_id(state, config),
+            interactive=adapter._interactive,
+            pending_acp_registry=adapter._pending_acp_registry,
+        )
         context = {
             **existing_vars,
             **adapter._agent_tools_context,
@@ -241,6 +434,8 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                 if todo_state_update is not None:
                     base_update["task_todos"] = todo_state_update
             return base_update
+        except ACPPermissionPause as exc:
+            return _create_acp_permission_command(state, exc, adapter.get_metadata(state) or {})
         except Exception as exc:
             error_msg = f"Error during execution: {str(exc)}"
             logger.error(error_msg, exc_info=True)

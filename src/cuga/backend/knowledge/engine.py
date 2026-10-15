@@ -28,7 +28,6 @@ from pydantic import ConfigDict
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.indexing import InMemoryRecordManager
-from langchain_docling import DoclingLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from cuga.backend.knowledge.config import (
@@ -164,6 +163,15 @@ def _iter_exception_messages(exc: BaseException) -> list[str]:
             stack.append(current.__context__)
 
     return messages
+
+
+def _docling_not_installed_error(file_path: Path) -> ImportError:
+    """Document parsing requires the optional docling stack, absent in the slim image."""
+    return ImportError(
+        f"Cannot parse {file_path.name}: optional document-processing dependencies "
+        "(docling, easyocr, torch) are not installed. "
+        "Use the full CUGA image instead of the slim one."
+    )
 
 
 def _translate_document_load_error(file_path: Path, exc: BaseException) -> Exception:
@@ -5308,6 +5316,17 @@ class KnowledgeEngine:
         )
         return converter
 
+    def _load_plain_text(self, file_path: Path, chunk_size: int, chunk_overlap: int) -> list[Document]:
+        """Read a file as plain text and token-aware split it — no Docling involved."""
+        text = file_path.read_text(errors="replace")
+        # Token-aware split when we have an HF tokenizer for the active
+        # embedder — guarantees no chunk exceeds the model's max_seq_length.
+        # Falls back to char-based for providers without an HF tokenizer
+        # (legacy fastembed default, cohere/voyage/gemini under cl100k).
+        splitter = self._build_text_splitter(chunk_size, chunk_overlap)
+        chunks = splitter.split_text(text)
+        return [Document(page_content=chunk, metadata={"page": i + 1}) for i, chunk in enumerate(chunks)]
+
     def _load_document(self, file_path: Path) -> list[Document]:
         """Load a document using Docling for supported formats, fallback for plain text."""
         suffix = file_path.suffix.lower()
@@ -5319,24 +5338,33 @@ class KnowledgeEngine:
 
         if suffix in self._DOCLING_FORMATS:
             try:
+                from langchain_docling import DoclingLoader
                 from langchain_docling.loader import ExportType
-
-                chunker = self._build_docling_chunker(chunk_size)
-                loader_kwargs: dict = {
-                    "file_path": str(file_path),
-                    "export_type": ExportType.DOC_CHUNKS,
-                    "converter": self._get_docling_converter(),
-                }
-                if chunker is not None:
-                    loader_kwargs["chunker"] = chunker
-                loader = DoclingLoader(**loader_kwargs)
-                docs = loader.load()
-            except Exception as e:
-                translated = _translate_document_load_error(file_path, e)
-                logger.error(
-                    f"Docling failed to parse {file_path.name}: {type(translated).__name__}: {translated}"
-                )
-                raise translated from e
+            except ImportError as e:
+                if suffix == ".md":
+                    # Markdown is already plain text. Only fall back when
+                    # importing the document-processing stack fails.
+                    docs = self._load_plain_text(file_path, chunk_size, chunk_overlap)
+                else:
+                    raise _docling_not_installed_error(file_path) from e
+            else:
+                try:
+                    chunker = self._build_docling_chunker(chunk_size)
+                    loader_kwargs: dict = {
+                        "file_path": str(file_path),
+                        "export_type": ExportType.DOC_CHUNKS,
+                        "converter": self._get_docling_converter(),
+                    }
+                    if chunker is not None:
+                        loader_kwargs["chunker"] = chunker
+                    loader = DoclingLoader(**loader_kwargs)
+                    docs = loader.load()
+                except Exception as e:
+                    translated = _translate_document_load_error(file_path, e)
+                    logger.error(
+                        f"Docling failed to parse {file_path.name}: {type(translated).__name__}: {translated}"
+                    )
+                    raise translated from e
         elif suffix in (
             ".txt",
             ".text",
@@ -5350,18 +5378,15 @@ class KnowledgeEngine:
             ".cfg",
             ".conf",
         ):
-            text = file_path.read_text(errors="replace")
-            # Token-aware split when we have an HF tokenizer for the active
-            # embedder — guarantees no chunk exceeds the model's max_seq_length.
-            # Falls back to char-based for providers without an HF tokenizer
-            # (legacy fastembed default, cohere/voyage/gemini under cl100k).
-            splitter = self._build_text_splitter(chunk_size, chunk_overlap)
-            chunks = splitter.split_text(text)
-            docs = [Document(page_content=chunk, metadata={"page": i + 1}) for i, chunk in enumerate(chunks)]
+            docs = self._load_plain_text(file_path, chunk_size, chunk_overlap)
         else:
             try:
+                from langchain_docling import DoclingLoader
                 from langchain_docling.loader import ExportType
+            except ImportError as e:
+                raise _docling_not_installed_error(file_path) from e
 
+            try:
                 chunker = self._build_docling_chunker(chunk_size)
                 loader_kwargs = {
                     "file_path": str(file_path),
@@ -5372,6 +5397,8 @@ class KnowledgeEngine:
                     loader_kwargs["chunker"] = chunker
                 loader = DoclingLoader(**loader_kwargs)
                 docs = loader.load()
+            except ImportError:
+                raise
             except Exception:
                 raise ValueError(f"Unsupported file format: {suffix}")
 

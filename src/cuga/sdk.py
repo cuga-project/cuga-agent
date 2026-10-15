@@ -3373,6 +3373,8 @@ class CugaSupervisor:
         auto_load_policies: Optional[bool] = None,
         reset_policy_storage: bool = False,
         filesystem_sync: Optional[bool] = None,
+        interactive: bool = True,
+        name: Optional[str] = None,
     ):
         """
         Initialize supervisor.
@@ -3395,6 +3397,7 @@ class CugaSupervisor:
             auto_load_policies: If True, automatically loads policies from cuga_folder on first invoke
             reset_policy_storage: If True, clears all existing policies from storage on init
             filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
+            name: Optional supervisor identity mixed into child sub-agent checkpoint keys
         """
         from cuga.config import settings
 
@@ -3407,6 +3410,12 @@ class CugaSupervisor:
         self._graph = None
         self._compiled_graph = None
         self._supervisor_state = None
+        self._interactive = interactive
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+            PendingACPDelegationRegistry,
+        )
+
+        self._pending_acp_registry = PendingACPDelegationRegistry()
         self._policy_system = policy_system
         self._policies_manager = None
 
@@ -3418,6 +3427,9 @@ class CugaSupervisor:
             filesystem_sync if filesystem_sync is not None else settings.policy.filesystem_sync
         )
         self._reset_policy_storage = reset_policy_storage
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import supervisor_instance_id
+
+        self._name = supervisor_instance_id(name)
 
         if tool_provider is not None:
             from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ensure_toolguard_provider
@@ -3464,6 +3476,7 @@ class CugaSupervisor:
             agents=config.agents,
             model=None,
             special_instructions=config.supervisor.get("special_instructions"),
+            name=config.supervisor.get("name"),
         )
 
     @property
@@ -3509,6 +3522,9 @@ class CugaSupervisor:
             special_instructions=self._special_instructions,
             tool_provider=self.tool_provider,
             callbacks=self._callbacks,
+            supervisor_id=self._name,
+            pending_acp_registry=self._pending_acp_registry,
+            interactive=self._interactive,
         )
         compiled_subgraph = supervisor_subgraph.compile()
 
@@ -3518,6 +3534,26 @@ class CugaSupervisor:
         ) -> Command[Literal["SupervisorSubgraph", "SuggestHumanActions", "__end__"]]:
             if state.sender == NodeNames.WAIT_FOR_RESPONSE and state.hitl_response:
                 if state.hitl_response.action_id == ActionIds.TOOL_APPROVAL:
+                    permission = (state.supervisor_metadata or {}).get("acp_permission")
+                    if isinstance(permission, dict):
+                        from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+                            permission_response_decision,
+                        )
+
+                        pending_id = permission.get("pending_id")
+                        md = dict(state.supervisor_metadata or {})
+                        md["acp_permission_resume"] = {
+                            "pending_id": pending_id,
+                            "agent_name": permission.get("agent_name"),
+                            "approved": permission_response_decision(pending_id, state.hitl_response),
+                        }
+                        state.supervisor_metadata = md
+                        state.hitl_action = None
+                        state.hitl_response = None
+                        state.final_answer = ""
+                        state.execution_complete = False
+                        state.sender = callback_name
+                        return Command(update=state.model_dump(), goto="SupervisorSubgraph")
                     if state.hitl_response.confirmed:
                         md = dict(state.supervisor_metadata or {})
                         md.update({"approval_required": False, "user_approved": True})
@@ -3621,6 +3657,8 @@ class CugaSupervisor:
         message: Optional[str],
         thread_id: Optional[str] = None,
         action_response: Optional[Any] = None,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> InvokeResult:
         """
         Invoke the supervisor with a message.
@@ -3629,6 +3667,8 @@ class CugaSupervisor:
             message: User message (string) or None to resume execution
             thread_id: Thread ID (required for resume, auto-generated for new conversations)
             action_response: Optional ActionResponse for resuming after approval/interruption
+            user_id: Caller identity mixed into child sub-agent checkpoint keys
+            tenant_id: Optional tenant override; defaults to the process service tenant
 
         Returns:
             InvokeResult containing answer and metadata
@@ -3693,9 +3733,16 @@ class CugaSupervisor:
                 supervisor_chat_messages=[HumanMessage(content=message)],
                 input=message,
                 thread_id=thread_id,
+                user_id=user_id if user_id else "default",
                 url="",  # Required by AgentState
                 cuga_lite_max_steps=self._cuga_lite_max_steps,
             )
+            from cuga.config import get_service_instance_id, get_tenant_id
+
+            initial_state.service_scope = {
+                "tenant_id": tenant_id if tenant_id is not None else get_tenant_id(),
+                "instance_id": get_service_instance_id(),
+            }
 
             result = await self.graph.ainvoke(initial_state, config=config)
 
@@ -3745,6 +3792,10 @@ class CugaSupervisor:
             error=error_msg,
             policy_decisions=_policy_decisions_from_result(result, "supervisor_metadata"),
         )
+
+    async def aclose(self) -> None:
+        """Reject pending ACP permissions and release resources owned by this supervisor."""
+        await self._pending_acp_registry.aclose()
 
     @property
     def variables_manager(self):

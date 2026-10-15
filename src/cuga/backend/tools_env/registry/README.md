@@ -93,6 +93,34 @@ services:
 - Security scheme detection
 - Parameter filtering and customization
 
+#### AppWorld login modes
+
+AppWorld apps need a bearer token. The service's `auth.type` sets who logs in:
+
+| `auth.type` | Who logs in |
+|---|---|
+| `oauth2` | The registry logs in to each app before the agent starts, using the supervisor's passwords (cuga-eval's default). |
+| `oauth2_agent` | The agent logs in itself. The registry attaches a token only after the agent's own `/auth/token` call for that app; before that, the app returns its own 401. |
+
+```yaml
+services:
+  - spotify:
+      url: "http://appworld:9000/spotify/openapi.json"
+      description: "Music streaming app"
+      auth:
+        type: oauth2_agent
+```
+
+When AppWorld runs in another container or host, point the registry at it with the full
+URL, which replaces `http://localhost:{apis_url}`:
+
+```bash
+export DYNACONF_SERVER_PORTS__APIS_HOST=http://appworld:9000
+```
+
+To run cuga-eval's `mcp_servers_appworld.yaml` this way, set each app's `auth.type` to
+`oauth2_agent` and its `url` to the remote host; the rest of the file stays the same.
+
 ### 2. MCP (Model Context Protocol) Servers
 
 MCP servers provide tools through the Model Context Protocol standard.
@@ -174,7 +202,7 @@ trmServices:
 ### Complete Sample Configuration
 
 ```yaml
-# config/sample_complete.yaml
+# Complete sample configuration
 
 # OpenAPI Services
 services:
@@ -329,12 +357,12 @@ curl -X POST http://localhost:8001/functions/call \
 
 ```bash
 # Run all registry tests
-uv run pytest cuga/backend/tools_env/registry/tests/ -v
+uv run pytest src/cuga/backend/tools_env/registry/tests/ -v
 
 # Run specific test categories
-uv run pytest cuga/backend/tools_env/registry/tests/test_legacy_openapi.py -v
-uv run pytest cuga/backend/tools_env/registry/tests/test_mcp_server.py -v
-uv run pytest cuga/backend/tools_env/registry/tests/test_mixed_configuration.py -v
+uv run pytest src/cuga/backend/tools_env/registry/tests/test_legacy_openapi.py -v
+uv run pytest src/cuga/backend/tools_env/registry/tests/test_mcp_server.py -v
+uv run pytest src/cuga/backend/tools_env/registry/tests/test_mixed_configuration.py -v
 ```
 
 ### Test Configurations
@@ -427,7 +455,7 @@ This approach provides structured output schema information that can be used by 
 
 **Reference Example:**
 
-See `docs/examples/client_package_usage/fast_mcp_example.py` for a complete implementation of this workaround.
+See `docs/examples/cuga_with_runtime_tools/fast_mcp_example.py` for a complete implementation of this workaround.
 
 ## 🔍 Debugging and Troubleshooting
 

@@ -545,6 +545,7 @@ export async function customSendMessage(
                   thread_id: threadId,
                   callback_url: actionData.callback_url,
                   return_to: actionData.return_to,
+                  additional_data: actionData.additional_data,
                 },
               });
             }
@@ -561,6 +562,7 @@ export async function customSendMessage(
                   thread_id: threadId,
                   callback_url: actionData.callback_url,
                   return_to: actionData.return_to,
+                  additional_data: actionData.additional_data,
                 },
               });
             }
@@ -604,11 +606,13 @@ export async function customSendMessage(
           break;
 
         case "Answer":
-        case "FinalAnswer":
+        case "FinalAnswer": {
           console.log("Received Answer event, finalizing message...");
 
           let answerText = accumulatedText || "";
           let answerSources: MessageSource[] = [];
+          let answerMemoryUsage: { count: number; entityIds: string[] } | null = null;
+          let answerMemorySaved: { count: number; entityIds: string[] } | null = null;
           if (typeof event.data === "string") {
             const parsed = parseAnswerEventData(event.data, accumulatedText);
             if (parsed.isToolApproval && parsed.policyInfo && parsed.policyData) {
@@ -628,6 +632,8 @@ export async function customSendMessage(
             }
             answerText = parsed.answerText;
             answerSources = parsed.sources as MessageSource[];
+            answerMemoryUsage = parsed.memoryUsage;
+            answerMemorySaved = parsed.memorySaved;
           } else if (!answerText) {
             answerText = event.data?.answer || JSON.stringify(event.data);
           }
@@ -673,6 +679,25 @@ export async function customSendMessage(
             answerGenericItems.push(sourcesItem);
           }
 
+          for (const [relationship, disclosure] of [["used", answerMemoryUsage], ["saved", answerMemorySaved]] as const) {
+            if (!disclosure) continue;
+            const memoryUsageItem = {
+              response_type: MessageResponseTypes.USER_DEFINED,
+              user_defined: {
+                type: "cuga_memory_usage",
+                relationship,
+                count: disclosure.count,
+                entity_ids: disclosure.entityIds,
+              },
+              streaming_metadata: { id: `cuga-memory-${relationship}` },
+            };
+            instance.messaging.addMessageChunk({
+              complete_item: memoryUsageItem,
+              streaming_metadata: { response_id: responseID },
+            } as StreamChunk);
+            answerGenericItems.push(memoryUsageItem);
+          }
+
           const finalResponse: StreamChunk = {
             final_response: {
               id: responseID,
@@ -690,6 +715,7 @@ export async function customSendMessage(
           
           console.log("Message finalized successfully");
           return; // Exit after finalizing
+        }
 
         case "Error":
           // Handle error

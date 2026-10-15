@@ -19,6 +19,7 @@ from cuga.backend.server.manage_routes.helpers import (
     is_secret_field_name,
     load_and_patch_draft,
     policies_list_from_config,
+    resolve_registered_agent_id,
     save_draft_section_unlocked,
 )
 
@@ -53,16 +54,17 @@ def _preserved_supervisor(stored: Any, incoming: Any) -> Any:
 @router.post("/config/draft")
 async def save_manage_config_draft(request: Request, agent_id: Optional[str] = None):
     """Auto-save current form to draft (version stays 'draft'). Updates draft agent tools and triggers registry reload."""
+    agent_id = await resolve_registered_agent_id(agent_id)
+
     try:
         from cuga.backend.server.config_store import save_draft
         from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
 
-        if agent_id is None:
-            agent_id = "cuga-default"
-
         data = await request.json()
         config = data.get("config", data)
         incoming = dict(config) if isinstance(config, dict) else {}
+        policy_errors = {}
+        apply_shared_draft = is_default_agent(agent_id)
 
         async with agent_draft_lock(agent_id):
             from cuga.backend.server.config_store import load_draft
@@ -73,11 +75,27 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
                     existing.get("supervisor"), incoming.get("supervisor")
                 )
             await save_draft(incoming, agent_id)
+
+            if not apply_shared_draft:
+                # Named agents: replace config and policies under the same lock so a
+                # concurrent policy PATCH cannot interleave with the full draft save.
+                raw_policies = incoming.get("policies")
+                if raw_policies is not None:
+                    try:
+                        from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
+
+                        policies_list = policies_list_from_config(raw_policies)
+                        await create_agent_policy_system(
+                            agent_id=agent_id,
+                            draft=True,
+                            policies_data=policies_list,
+                        )
+                    except Exception as policy_err:
+                        logger.warning(f"Failed to seed draft policy collection for {agent_id}: {policy_err}")
+                        policy_errors = {"policy_errors": [str(policy_err)]}
         config = incoming
 
         state_to_update = getattr(request.app.state, "draft_app_state", None)
-        policy_errors = {}
-        apply_shared_draft = is_default_agent(agent_id)
 
         if apply_shared_draft and state_to_update and config:
             tools_list = (config or {}).get("tools") or []
@@ -188,8 +206,7 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
 @router.patch("/config/draft/llm")
 async def patch_draft_llm(request: Request, agent_id: Optional[str] = None):
     """Update only the LLM section of the draft. No registry reload or agent rebuild."""
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     try:
         from cuga.backend.server.config_store import load_draft
 
@@ -229,8 +246,7 @@ async def patch_draft_llm(request: Request, agent_id: Optional[str] = None):
 @router.patch("/config/draft/tools")
 async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
     """Update only the tools section of the draft. Triggers registry reload and agent rebuild."""
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     try:
         from cuga.backend.server.config_store import _parse_agent_id
         from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
@@ -299,6 +315,8 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
         if tool_errors:
             response_data["tool_errors"] = tool_errors
         return JSONResponse(response_data)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to patch draft tools: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -307,8 +325,7 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
 @router.patch("/config/draft/agent")
 async def patch_draft_agent(request: Request, agent_id: Optional[str] = None):
     """Update only the agent (name, description) section of the draft."""
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     try:
         data = await request.json()
         agent_meta = data.get("agent", data)
@@ -319,6 +336,8 @@ async def patch_draft_agent(request: Request, agent_id: Optional[str] = None):
             await load_and_patch_draft(agent_id, "agent", agent_meta)
             await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to patch draft agent: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -329,8 +348,7 @@ async def patch_draft_supervisor(request: Request, agent_id: Optional[str] = Non
     """Update only the supervisor (subAgents, planApproval) section of the draft."""
     if not agent_registry.is_agent_registry_enabled():
         raise HTTPException(status_code=404, detail="Agent registry is disabled")
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     try:
         data = await request.json()
         supervisor = data.get("supervisor", data)
@@ -370,13 +388,12 @@ async def patch_draft_supervisor(request: Request, agent_id: Optional[str] = Non
 @router.patch("/config/draft/policies")
 async def patch_draft_policies(request: Request, agent_id: Optional[str] = None):
     """Update only the policies section of the draft. No registry reload or agent rebuild."""
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     try:
         data = await request.json()
         policies = data.get("policies", data)
-        full_draft = await load_and_patch_draft(agent_id, "policies", policies)
         if is_default_agent(agent_id):
+            full_draft = await load_and_patch_draft(agent_id, "policies", policies)
             state = getattr(request.app.state, "draft_app_state", None)
             if state and state.policy_system and state.policy_system.storage:
                 raw_policies = full_draft.get("policies")
@@ -405,8 +422,27 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
                 except Exception as policy_err:
                     logger.warning(f"Failed to apply policies from PATCH: {policy_err}")
         else:
+            # Hold the lock across both the config-store write and the policy-collection
+            # replacement so a concurrent save cannot produce a diverged state: the
+            # collection is always populated from the exact draft that was just persisted.
+            async with agent_draft_lock(agent_id):
+                full_draft = await save_draft_section_unlocked(agent_id, "policies", policies)
+                raw_policies = full_draft.get("policies")
+                policies_list = policies_list_from_config(raw_policies)
+                try:
+                    from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
+
+                    await create_agent_policy_system(
+                        agent_id=agent_id,
+                        draft=True,
+                        policies_data=policies_list,
+                    )
+                except Exception as policy_err:
+                    logger.warning(f"Failed to apply non-default agent policies from PATCH: {policy_err}")
             await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to patch draft policies: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -415,8 +451,7 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
 @router.patch("/config/draft/special_instructions")
 async def patch_draft_special_instructions(request: Request, agent_id: Optional[str] = None):
     """Persist special_instructions to draft config."""
-    if agent_id is None:
-        agent_id = "cuga-default"
+    agent_id = await resolve_registered_agent_id(agent_id)
     try:
         body = await request.json()
         value = body.get("special_instructions", "") or ""
@@ -429,6 +464,8 @@ async def patch_draft_special_instructions(request: Request, agent_id: Optional[
         else:
             await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to patch draft special_instructions: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -74,15 +74,23 @@ def test_default_prepare_system_content_returns_base_prompt():
     assert adapter.prepare_system_content(state, {}, "base prompt") == "base prompt"
 
 
-def test_default_normalize_response_extracts_content_and_reasoning():
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("additional_kwargs", "expected"),
+    [
+        ({"reasoning_content": "legacy reasoning"}, "legacy reasoning"),
+        ({"reasoning": "WatsonX reasoning"}, "WatsonX reasoning"),
+        ({"reasoning_content": "legacy reasoning", "reasoning": "other reasoning"}, "legacy reasoning"),
+        ({"reasoning_content": "", "reasoning": "WatsonX reasoning"}, "WatsonX reasoning"),
+        ({"reasoning_content": None, "reasoning": "WatsonX reasoning"}, "WatsonX reasoning"),
+    ],
+)
+def test_default_normalize_response_extracts_content_and_reasoning(additional_kwargs, expected):
     adapter = _MinimalAdapter()
-    response = SimpleNamespace(
-        content="hello",
-        additional_kwargs={"reasoning_content": "thought"},
-    )
+    response = SimpleNamespace(content="hello", additional_kwargs=additional_kwargs)
     content, reasoning = adapter.normalize_response(response)
     assert content == "hello"
-    assert reasoning == "thought"
+    assert reasoning == expected
 
 
 def test_default_normalize_response_none_reasoning():

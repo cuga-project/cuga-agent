@@ -64,7 +64,8 @@ def _matches(expr: str, t: time.struct_time) -> bool:
     # cron day-of-week: 0 and 7 are both Sunday; python tm_wday is Mon=0..Sun=6
     py_dow = t.tm_wday
     cron_dow = 0 if py_dow == 6 else py_dow + 1  # → Sun=0..Sat=6
-    dow_ok = _field_matches(dow.replace("7", "0"), cron_dow, 0, 6)
+    # cron allows 7 as a second name for Sunday, so on a Sunday also try the value 7
+    dow_ok = _field_matches(dow, cron_dow, 0, 7) or (cron_dow == 0 and _field_matches(dow, 7, 0, 7))
     return (
         _field_matches(mn, t.tm_min, 0, 59)
         and _field_matches(hr, t.tm_hour, 0, 23)

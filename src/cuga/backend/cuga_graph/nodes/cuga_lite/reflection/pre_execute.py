@@ -40,6 +40,34 @@ VERIFY_REVISE_TOTAL_CAP = 5
 VERIFY_LLM_TIMEOUT_SECONDS = 60.0
 
 
+def verify_timeout_seconds() -> float:
+    """Time limit for the VERIFY model call.
+
+    ``advanced_features.pre_execute_verify_timeout`` (env
+    ``DYNACONF_ADVANCED_FEATURES__PRE_EXECUTE_VERIFY_TIMEOUT``) overrides the
+    default, e.g. for evaluations whose reasoning model is slow on long write blocks.
+    """
+    import math
+
+    from cuga.config import settings
+
+    value = getattr(settings.advanced_features, "pre_execute_verify_timeout", None)
+    if value is None or value == "":
+        return VERIFY_LLM_TIMEOUT_SECONDS
+    try:
+        seconds = float(value) if not isinstance(value, bool) else math.nan
+    except (TypeError, ValueError):
+        seconds = math.nan
+    if not math.isfinite(seconds) or seconds <= 0:
+        # A bad value must not time VERIFY out at once or raise before the gate;
+        # either would let write blocks run unverified.
+        logger.warning(
+            "Invalid pre_execute_verify_timeout {!r}; using {}s", value, VERIFY_LLM_TIMEOUT_SECONDS
+        )
+        return VERIFY_LLM_TIMEOUT_SECONDS
+    return seconds
+
+
 def log_pre_execute_verify(tracker: Any, decision: VerifyDecision) -> bool:
     if tracker is None:
         return True
@@ -90,6 +118,7 @@ async def decide_pre_execute_verify(
     if total_revises >= VERIFY_REVISE_TOTAL_CAP:
         logger.info("Pre-execute VERIFY disabled for the rest of the run: {} revises", total_revises)
         return VerifyDecision(gate="ok")
+    timeout = verify_timeout_seconds()
     try:
         if not has_write_call(script):
             logger.debug("Pre-execute VERIFY skipped: read-only block")
@@ -133,7 +162,7 @@ async def decide_pre_execute_verify(
                 },
                 config=config or {},
             ),
-            timeout=VERIFY_LLM_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
         decision = parse_verify_output(getattr(result, "content", "") or "")
         logger.debug("Pre-execute VERIFY gate={} alert={!r}", decision.gate, decision.alert)
@@ -142,7 +171,7 @@ async def decide_pre_execute_verify(
         # str(TimeoutError()) is empty; an unnamed failure is undiagnosable.
         logger.warning(
             "Pre-execute VERIFY timed out after {}s -- running the block unverified",
-            VERIFY_LLM_TIMEOUT_SECONDS,
+            timeout,
         )
         return VerifyDecision(gate="unknown", alert="verify timed out")
     except Exception as e:

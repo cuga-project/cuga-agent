@@ -12,97 +12,46 @@ in ``router.py``); none of these classes leak back the other way.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Any, AsyncIterator, Mapping, Optional
+from typing import Any, AsyncIterator, Optional
 
 from fastapi import APIRouter
 
 from cuga.backend.server.a2a.router import build_router
+from cuga.backend.server.agent_protocol.events import AgentStreamEvent
 
 logger = logging.getLogger(__name__)
 
-
-class A2AStreamEvent:
-    """Duck-typed event the A2A task adapter consumes.
-
-    Only three attributes (``name``, ``data``, ``final``) are read by
-    ``stream_events_to_a2a``; this is the smallest type that satisfies
-    that contract without dragging in CUGA's graph state types.
-    """
-
-    __slots__ = ("data", "final", "name")
-
-    def __init__(self, name: str, data: Optional[Mapping[str, Any]] = None, final: bool = False):
-        """Capture an event name + payload + terminal-flag triple."""
-        self.name = name
-        self.data = data
-        self.final = final
+# Compatibility alias: A2AStreamEvent is now AgentStreamEvent.  Code that
+# imports ``A2AStreamEvent`` from this module continues to work unchanged.
+A2AStreamEvent = AgentStreamEvent
 
 
 class SupervisorA2ARunner:
-    """Run inbound A2A messages through a lazily-created CugaSupervisor.
+    """Thin A2A compatibility subclass of ``SupervisorAgentRunner``.
 
-    The supervisor is built on first request rather than during lifespan
-    startup, so deployments that enable A2A but never receive a request
-    pay no init cost. The instance is cached on
-    ``app_state.a2a_supervisor`` afterward; concurrent first-requests
-    are serialized by an ``asyncio.Lock`` (double-checked) so we don't
-    build two supervisors in parallel.
+    Configured with protocol name ``"A2A"`` and cache attribute
+    ``"a2a_supervisor"`` so the A2A adapter's cached supervisor is
+    stored under the same attribute name as before.
     """
 
     def __init__(self, app_state_ref: Any, supervisor_config_path: str):
         """Stash the app_state and YAML path; no I/O until ``run()``."""
-        self._app_state = app_state_ref
-        self._yaml_path = supervisor_config_path
-        self._lock = asyncio.Lock()
+        from cuga.backend.server.agent_protocol.supervisor_runner import SupervisorAgentRunner
 
-    async def _ensure_supervisor(self) -> Any:
-        """Return the cached supervisor or build one under a lock (double-checked)."""
-        existing = getattr(self._app_state, "a2a_supervisor", None)
-        if existing is not None:
-            return existing
-        async with self._lock:
-            existing = getattr(self._app_state, "a2a_supervisor", None)
-            if existing is not None:
-                return existing
-            # Imported lazily so test harnesses that don't go through this
-            # path don't pay the import cost of the SDK supervisor.
-            from cuga.sdk import CugaSupervisor
-
-            supervisor = await CugaSupervisor.from_yaml(self._yaml_path)
-            self._app_state.a2a_supervisor = supervisor
-            return supervisor
+        self._delegate = SupervisorAgentRunner(
+            app_state_ref,
+            supervisor_config_path,
+            protocol_name="A2A",
+            cache_attr="a2a_supervisor",
+        )
 
     async def run(
         self, message: str, context_id: Optional[str] = None, approval: Optional[dict] = None
     ) -> AsyncIterator[A2AStreamEvent]:
-        """Invoke the supervisor and emit one terminal event with its answer.
-
-        Errors during graph execution are caught and surfaced as a
-        terminal ``error`` event with only the exception class name on
-        the wire — the full traceback is logged via ``logger.exception``
-        so operators can debug without leaking config to the caller.
-        """
-        try:
-            supervisor = await self._ensure_supervisor()
-            result = await supervisor.invoke(message, thread_id=context_id)
-            answer = getattr(result, "answer", None) or str(result)
-            error = getattr(result, "error", None)
-            if error:
-                # The supervisor's own `error` field is graph-internal text
-                # already shaped for our UI — safe to relay; it carries no
-                # stack frames or env state.
-                yield A2AStreamEvent("error", {"text": f"Supervisor error: {error}"}, final=True)
-                return
-            yield A2AStreamEvent("final_answer", {"text": answer}, final=True)
-        except Exception as exc:
-            logger.exception("A2A inbound delegation failed")
-            yield A2AStreamEvent(
-                "error",
-                {"text": f"A2A handler error: {type(exc).__name__}"},
-                final=True,
-            )
+        """Invoke the supervisor and emit one terminal event with its answer."""
+        async for event in self._delegate.run(message, context_id=context_id, approval=approval):
+            yield event
 
 
 class PlaceholderA2ARunner:
@@ -149,7 +98,7 @@ def build_a2a_router_for_settings(
     real CUGA supervisor; if ``event_stream_func`` is provided we use the
     simple runner that directly uses CUGA's event stream; otherwise we mount
     a placeholder so the endpoints at least respond with a well-formed Task envelope.
-    Returns a router ready for ``app.include_router(...)``.
+    Returns a router ready for ``app.include_router(...)``
     """
     supervisor_path = getattr(a2a_settings, "supervisor_config_path", "") or ""
 

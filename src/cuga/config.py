@@ -168,6 +168,7 @@ validators = [
     Validator("features.chat", default=True),
     Validator("playwright_args", default=[]),
     Validator("server_ports.registry_host", default=None),
+    Validator("server_ports.apis_host", default=None),
     Validator("server_ports.demo_server_startup_max_retries", default=360),
     Validator("storage.mode", default="local"),
     Validator("storage.local_db_path", default=""),
@@ -255,6 +256,7 @@ validators = [
     ),
     Validator("supervisor.enabled", default=False),
     Validator("supervisor.registry_enabled", default=False),
+    Validator("supervisor.sub_agent_memory_scope", default="conversation"),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")

@@ -52,6 +52,32 @@ class CugaSupervisorNode(BaseNode):
         if (
             state.sender == "WaitForResponse"
             and state.hitl_response is not None
+            and state.hitl_response.action_id == ActionIds.TOOL_APPROVAL
+            and isinstance((state.supervisor_metadata or {}).get("acp_permission"), dict)
+        ):
+            from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
+                permission_response_decision,
+            )
+
+            permission = (state.supervisor_metadata or {})["acp_permission"]
+            pending_id = permission.get("pending_id")
+            agent_name = permission.get("agent_name")
+            approved = permission_response_decision(pending_id, state.hitl_response)
+            state.hitl_response = None
+            state.hitl_action = None
+            metadata = dict(state.supervisor_metadata or {})
+            metadata["acp_permission_resume"] = {
+                "pending_id": pending_id,
+                "agent_name": agent_name,
+                "approved": approved,
+            }
+            state.supervisor_metadata = metadata
+            state.final_answer = ""
+            state.sender = self.name
+
+        if (
+            state.sender == "WaitForResponse"
+            and state.hitl_response is not None
             and state.hitl_response.action_id == ActionIds.AGENT_APPROVAL
         ):
             confirmed = state.hitl_response.confirmed

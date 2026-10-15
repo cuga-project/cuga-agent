@@ -32,7 +32,7 @@ def test_namespace_id_is_the_service_instance_id():
         assert _namespace_id() == "service-instance-1"
 
 
-def test_disabled_feature_returns_not_found_without_calling_evolve(client):
+def test_operator_default_off_keeps_inventory_available(client):
     with (
         patch(
             "cuga.backend.server.memory_routes.EvolveIntegration.is_enabled",
@@ -40,13 +40,13 @@ def test_disabled_feature_returns_not_found_without_calling_evolve(client):
         ),
         patch(
             "cuga.backend.server.memory_routes.EvolveIntegration.list_entities",
-            new=AsyncMock(),
+            new=AsyncMock(return_value={"items": [], "total": 0}),
         ) as list_entities,
     ):
         response = client.get("/api/memory/entities")
 
-    assert response.status_code == 404
-    list_entities.assert_not_awaited()
+    assert response.status_code == 200
+    list_entities.assert_awaited_once()
 
 
 def test_user_inventory_is_scoped_and_projected(client):
@@ -100,6 +100,8 @@ def test_user_inventory_is_scoped_and_projected(client):
                 "usage": {"count": 0, "last_used_at": None, "recent": []},
                 "source_thread_id": "thread-a",
                 "source_available": True,
+                "sources": [],
+                "revision": None,
             }
         ],
         "total": 1,
@@ -249,3 +251,27 @@ def test_metadata_filters_cannot_override_server_scope(client):
         response = client.get('/api/memory/entities?metadata_filters={"user_id":"user-2"}')
 
     assert response.status_code == 422
+
+
+@pytest.mark.unit
+def test_multiple_memory_sources_only_link_available_conversations():
+    from cuga.backend.server.memory_routes import _project_item
+
+    item = {
+        'id': 'fact-1',
+        'type': 'fact',
+        'metadata': {
+            'memory_revision': 2,
+            'sources': [
+                {'conversation_id': 'visible', 'status': 'supporting'},
+                {'conversation_id': 'private', 'status': 'superseded'},
+            ],
+        },
+    }
+    result = _project_item(item, audience='user', include_content=False, available_thread_ids={'visible'})
+    assert result['revision'] == 2
+    assert result['sources'] == [
+        {'thread_id': 'visible', 'available': True, 'status': 'supporting'},
+        {'thread_id': None, 'available': False, 'status': 'superseded'},
+    ]
+    assert 'private' not in str(result)

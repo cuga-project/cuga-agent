@@ -2,10 +2,120 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, call, patch
 
 import pytest
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.unit
+def test_supported_image_bakes_evolve_for_offline_runtime() -> None:
+    dockerfile = (REPO_ROOT / "Dockerfile.ubi").read_text()
+    entrypoint = (REPO_ROOT / "scripts/docker-entrypoint.sh").read_text()
+
+    project = (REPO_ROOT / "pyproject.toml").read_text()
+    assert "altk-evolve[pii-regex]" in project
+    assert "altk-evolve[pii-regex]>=1.5.2,<2" in project
+    assert "github.com/AgentToolkit/altk-evolve/archive/" not in project
+    assert "--frozen --no-editable --no-dev" in dockerfile
+    assert "--group evolve-image" in dockerfile
+    assert "uv pip install" not in dockerfile
+    assert "SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers" in dockerfile
+    assert "uv run --no-sync playwright install" in dockerfile
+    assert "RUN uv run --no-sync python src/scripts/preload_models.py" in dockerfile
+    assert "MODEL_PRELOAD_STRICT=1" in dockerfile
+    assert "RUN --network=none /app/.venv/bin/python /app/src/scripts/verify_airgap.py" in dockerfile
+    assert "TRANSFORMERS_OFFLINE=1" in dockerfile
+    assert "UV_OFFLINE=1" in dockerfile
+    assert "CUGA_EMBEDDED_EVOLVE=false" in dockerfile
+    assert "embedded-evolve-supervisor.py" not in dockerfile
+    assert "container_services.py" in entrypoint
+    assert not (REPO_ROOT / "Dockerfile.memory").exists()
+
+
+@pytest.mark.unit
+def test_slim_image_excludes_docling_and_evolve_stack() -> None:
+    """The slim image must stay torch-free: no docling, no Evolve/READI, and
+    none of the orphaned transitive deps found via `uv tree --invert` when
+    both are excluded. Dockerfile.ubi itself must stay untouched — the full
+    image's dependency set must never depend on Dockerfile.ubi.slim existing.
+    """
+    slim_dockerfile = (REPO_ROOT / "Dockerfile.ubi.slim").read_text()
+    full_dockerfile = (REPO_ROOT / "Dockerfile.ubi").read_text()
+
+    # Full image is untouched by the slim addition.
+    assert "--group evolve-image" in full_dockerfile
+    assert "--extra evolve" in full_dockerfile
+    assert "MODEL_PRELOAD_STRICT=1" in full_dockerfile
+    assert "verify_airgap.py" in full_dockerfile
+
+    # Slim excludes the whole Evolve subsystem and never sets strict mode —
+    # docling/evolve/readi preload failures must degrade, not fail the build.
+    assert "--extra evolve" not in slim_dockerfile
+    assert "--group evolve-image" not in slim_dockerfile
+    assert "MODEL_PRELOAD_STRICT=1" not in slim_dockerfile
+
+    # The document-processing + Evolve stack, and everything only reachable
+    # through it (found via `uv tree --invert`, since `uv sync
+    # --no-install-package` doesn't prune a now-orphaned dependent on its own).
+    excluded_packages = [
+        "torch",
+        "torchvision",
+        "easyocr",
+        "docling",
+        "docling-core",
+        "docling-ibm-models",
+        "docling-parse",
+        "docling-slim",
+        "langchain-docling",
+        "transformers",
+        "opencv-python",
+        "opencv-python-headless",
+        "scikit-image",
+        "scipy",
+        "saxonche",
+        "sympy",
+        "rapidocr",
+        "faker",
+        "networkx",
+        "pypdfium2",
+        "shapely",
+        "tree-sitter",
+        "python-docx",
+        "python-pptx",
+        "accelerate",
+        "rtree",
+        "openpyxl",
+        "pyclipper",
+        "pylatexenc",
+        "latex2mathml",
+        "polyfactory",
+        "marko",
+        "doclang",
+        "mail-parser",
+        "defusedxml",
+    ]
+    for pkg in excluded_packages:
+        assert f"--no-install-package {pkg}" in slim_dockerfile, f"missing exclusion for {pkg!r}"
+
+    # fastembed-backed features (shortlisting, policy similarity, knowledge
+    # embeddings) and playwright are NOT excluded — only docling/Evolve are.
+    assert "--extra observability" in slim_dockerfile
+    assert "uv run --no-sync playwright install --only-shell chromium" in slim_dockerfile
+
+    # Slim gets its own airgap check (no docling/Evolve to verify) and its
+    # own entrypoint dependency — docker-entrypoint.sh always invokes
+    # container_services.py, so slim must ship it too.
+    assert (
+        "RUN --network=none /app/.venv/bin/python /app/src/scripts/verify_airgap_slim.py" in slim_dockerfile
+    )
+    assert "RUN --network=none /app/.venv/bin/python /app/src/scripts/verify_airgap.py" not in slim_dockerfile
+    assert "container_services.py" in slim_dockerfile
 
 
 @pytest.mark.unit
@@ -27,11 +137,21 @@ def test_preload_docling_downloads_onnx_layout_model(tmp_path: Path, monkeypatch
         output_dir=tmp_path,
         with_code_formula=False,
         with_picture_classifier=False,
+        with_easyocr=True,
     )
     mock_download_hf.assert_called_once_with(
         repo_id=onnx_repo,
         local_dir=tmp_path / onnx_repo.replace("/", "--"),
     )
+
+
+@pytest.mark.unit
+def test_preload_docling_fails_build_when_download_fails() -> None:
+    from scripts.preload_models import preload_docling
+
+    with patch("docling.utils.model_downloader.download_models", side_effect=RuntimeError("download failed")):
+        with pytest.raises(RuntimeError, match="download failed"):
+            preload_docling()
 
 
 def _required_layout_repo_ids_for_cuga() -> set[str]:
@@ -82,3 +202,80 @@ def test_airgap_preload_covers_cuga_layout_engine_repos() -> None:
         f"Airgap preload missing layout repos required at runtime: {sorted(missing)}. "
         f"required={sorted(required)} preloaded={sorted(preloaded)}"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("override", [None, "custom-consistency-model"])
+def test_preload_evolve_uses_configured_models_without_extra_defaults(override) -> None:
+    from scripts.preload_models import preload_evolve
+
+    sentence_transformer = MagicMock()
+    modules = {
+        "altk_evolve.config.guidelines": SimpleNamespace(
+            guidelines_settings=SimpleNamespace(
+                consistency_embedding_model_small=None,
+                consistency_embedding_model_large=override,
+                consistency_embedding_trust_remote_code=False,
+            )
+        ),
+        "altk_evolve.config.milvus": SimpleNamespace(
+            milvus_other_settings=SimpleNamespace(embedding_model="BAAI/bge-small-en-v1.5")
+        ),
+        "altk_evolve.config.postgres": SimpleNamespace(
+            postgres_db_settings=SimpleNamespace(embedding_model="BAAI/bge-small-en-v1.5")
+        ),
+        "sentence_transformers": SimpleNamespace(SentenceTransformer=sentence_transformer),
+    }
+    with patch.dict(sys.modules, modules):
+        preload_evolve()
+
+    expected = ["BAAI/bge-small-en-v1.5"] + ([override] if override else [])
+    assert sentence_transformer.call_args_list == [
+        call(model, device="cpu", trust_remote_code=False) for model in expected
+    ]
+    assert sentence_transformer.return_value.encode.call_count == len(expected)
+
+
+@pytest.mark.unit
+def test_strict_preload_turns_optional_failure_into_build_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.preload_models import handle_preload_error
+
+    monkeypatch.setenv("MODEL_PRELOAD_STRICT", "1")
+
+    with pytest.raises(RuntimeError, match="docling preload failed"):
+        handle_preload_error("docling", ValueError("download unavailable"))
+
+
+@pytest.mark.unit
+def test_run_preloads_degrades_gracefully_in_non_strict_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The slim image's whole build depends on this: when docling/evolve/
+    readi aren't installed (non-strict, the default), run_preloads() must
+    swallow every failure and finish normally rather than raising. This is
+    the actual __main__ wiring, not just handle_preload_error in isolation —
+    the __main__ loop used to call every preload_* function unguarded."""
+    import scripts.preload_models as preload_models
+
+    monkeypatch.delenv("MODEL_PRELOAD_STRICT", raising=False)
+    for name in ("preload_docling", "preload_evolve", "preload_readi"):
+        monkeypatch.setattr(preload_models, name, MagicMock(side_effect=ModuleNotFoundError(name)))
+    monkeypatch.setattr(preload_models, "preload_fastembed", MagicMock())
+    monkeypatch.setattr(preload_models, "preload_fastembed_tokenizer", MagicMock())
+    monkeypatch.setattr(preload_models, "preload_tiktoken", MagicMock())
+
+    preload_models.run_preloads()  # must not raise
+
+
+@pytest.mark.unit
+def test_run_preloads_raises_in_strict_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The full image's safety net: with MODEL_PRELOAD_STRICT=1, the same
+    failure must still fail the build, through the real __main__ wiring."""
+    import scripts.preload_models as preload_models
+
+    monkeypatch.setenv("MODEL_PRELOAD_STRICT", "1")
+    monkeypatch.setattr(preload_models, "preload_fastembed", MagicMock())
+    monkeypatch.setattr(
+        preload_models, "preload_fastembed_tokenizer", MagicMock(side_effect=RuntimeError("boom"))
+    )
+
+    with pytest.raises(RuntimeError, match="fastembed tokenizer preload failed"):
+        preload_models.run_preloads()

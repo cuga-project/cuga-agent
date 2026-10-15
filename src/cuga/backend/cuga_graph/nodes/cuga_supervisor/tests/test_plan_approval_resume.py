@@ -45,6 +45,22 @@ def test_prepare_calls_model_when_plan_approval_is_off():
     assert next_node_after_prepare(adapter, state) == "call_model"
 
 
+def test_prepare_skips_call_model_for_acp_permission_resume():
+    adapter = SupervisorGraphAdapter(agents={"crm-agent": object()}, plan_approval=False)
+    state = SimpleNamespace(
+        script=None,
+        supervisor_metadata={
+            "acp_permission_resume": {
+                "pending_id": "pending-1",
+                "agent_name": "crm-agent",
+                "approved": True,
+            }
+        },
+    )
+
+    assert next_node_after_prepare(adapter, state) == "execute_agent_tool"
+
+
 @pytest.mark.asyncio
 async def test_execute_node_pauses_for_plan_approval():
     from langgraph.graph import END

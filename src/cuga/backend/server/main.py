@@ -84,7 +84,7 @@ from cuga.backend.server.workspace_sandbox import (
     workspace_tree_is_sandbox_backed,
 )
 from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
-from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled
+from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled, has_manage_access
 from cuga.backend.server.auth.models import TokenResponse, UserInfo
 from cuga.backend.server.tool_guard_generation import (
     build_tool_guard_generation_agent,
@@ -113,6 +113,21 @@ async def _assert_thread_access(thread_id: str, user_id: str) -> None:
 
 def _workspace_user_id(current_user: Optional[UserInfo]) -> str:
     return current_user.sub if current_user else DEFAULT_USER_ID
+
+
+async def _assert_run_thread_access(thread_id: str, user_id: str) -> None:
+    """Authorize the source thread before loading state or issuing capabilities."""
+    if not user_id or user_id == DEFAULT_USER_ID:
+        return
+    thread_id = thread_id.strip()
+    await _assert_thread_access(thread_id, user_id)
+    provider = getattr(app_state, "knowledge_provider", None)
+    # Disabling knowledge must not release existing ownership: conversation
+    # cleanup still reaches its collections and remaining workspace data.
+    if provider is not None or _knowledge_enabled_for_app_state(app_state):
+        from cuga.backend.knowledge.auth import ensure_session_access
+
+        ensure_session_access(thread_id, user_id, provider)
 
 
 async def _require_workspace_thread_access(
@@ -154,7 +169,9 @@ def _resolve_path_under_cuga_workspace(user_path: str) -> Path:
 
 
 def _session_knowledge_collection(thread_id: str) -> str:
-    return f"kb_sess_{re.sub(r'[^a-zA-Z0-9_]', '_', thread_id)}"
+    from cuga.backend.knowledge.session_provider import session_collection_name
+
+    return session_collection_name(thread_id)
 
 
 async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id: str) -> None:
@@ -171,7 +188,7 @@ async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id:
 
     provider = getattr(app_state, "knowledge_provider", None)
     if provider:
-        provider.delete_session(thread_id)
+        provider.clear_session(thread_id)
 
 
 def _knowledge_config(app_state: "AppState" | None):
@@ -349,6 +366,37 @@ async def _rehydrate_citation_ledger(
 
 def _skills_effective_enabled() -> bool:
     return getattr(settings.skills, "enabled", False)
+
+
+async def _initialize_default_draft_policy_system():
+    from cuga.backend.cuga_graph.policy.configurable import (
+        PolicyConfigurable,
+        get_agent_policy_collection_name,
+    )
+    from cuga.backend.cuga_graph.policy.storage import PolicyStorage
+    from cuga.backend.storage.embedding import get_embedding_config
+
+    draft_collection = get_agent_policy_collection_name(draft=True)
+    emb_cfg = get_embedding_config()
+    draft_storage = PolicyStorage(
+        collection_name=draft_collection,
+        embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
+        or os.getenv("POLICY_EMBEDDING_PROVIDER")
+        or emb_cfg["provider"],
+        embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
+        or os.getenv("POLICY_EMBEDDING_MODEL")
+        or emb_cfg["model"],
+        embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
+        or os.getenv("POLICY_EMBEDDING_BASE_URL")
+        or emb_cfg["base_url"],
+        embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
+        or os.getenv("POLICY_EMBEDDING_API_KEY")
+        or emb_cfg["api_key"],
+    )
+    await draft_storage.initialize_async()
+    policy_system = PolicyConfigurable(storage=draft_storage)
+    await policy_system.initialize()
+    return policy_system, draft_collection
 
 
 try:
@@ -609,46 +657,40 @@ async def lifespan(app: FastAPI):
                 if not filesystem_sync_enabled:
                     logger.info("Filesystem sync disabled in settings")
                     app_state.policy_filesystem_sync = None
-                elif not auto_load_enabled:
-                    logger.info("Auto-load policies disabled in settings")
-                    # Initialize sync but don't load
-                    app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
-                    logger.info(f"✅ Filesystem sync enabled for {cuga_folder} (auto-load disabled)")
-                # Load policies from filesystem if folder exists and auto-load is enabled
-                elif os.path.exists(cuga_folder):
-                    logger.info(f"Loading policies from {cuga_folder}...")
-                    try:
-                        result = await load_policies_from_folder(
-                            folder_path=cuga_folder,
-                            storage=app_state.policy_system.storage,
-                            clear_existing=False,
-                        )
-                        await app_state.policy_system.initialize()  # Reinitialize after loading
-                        logger.info(f"✅ Loaded {result['count']} policies from {cuga_folder}")
-
-                        # Initialize filesystem sync for automatic saving
-                        app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
-                        logger.info(f"✅ Filesystem sync enabled for {cuga_folder}")
-
-                        # Validate and sync: ensure filesystem and storage are in sync
-                        try:
-                            sync_result = await validate_and_sync_policies(
-                                app_state.policy_system.storage, app_state.policy_filesystem_sync
-                            )
-                            if sync_result['removed'] or sync_result['added_to_filesystem']:
-                                logger.info(
-                                    f"📊 Sync validation: "
-                                    f"removed from storage={sync_result['removed']}, "
-                                    f"added to filesystem={sync_result['added_to_filesystem']}"
-                                )
-                        except Exception as e:
-                            logger.warning(f"Failed to validate and sync policies: {e}")
-                    except Exception as e:
-                        logger.error(f"Failed to load policies from {cuga_folder}: {e}")
-                        app_state.policy_filesystem_sync = None
                 else:
-                    logger.info(f"Policy folder {cuga_folder} not found, skipping auto-load")
-                    app_state.policy_filesystem_sync = None
+                    app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+                    logger.info(f"✅ Filesystem sync enabled for {cuga_folder}")
+
+                    if not auto_load_enabled:
+                        logger.info("Auto-load policies disabled in settings")
+                    elif os.path.exists(cuga_folder):
+                        logger.info(f"Loading policies from {cuga_folder}...")
+                        try:
+                            result = await load_policies_from_folder(
+                                folder_path=cuga_folder,
+                                storage=app_state.policy_system.storage,
+                                clear_existing=False,
+                            )
+                            await app_state.policy_system.initialize()  # Reinitialize after loading
+                            logger.info(f"✅ Loaded {result['count']} policies from {cuga_folder}")
+
+                            # Validate and sync: ensure filesystem and storage are in sync
+                            try:
+                                sync_result = await validate_and_sync_policies(
+                                    app_state.policy_system.storage, app_state.policy_filesystem_sync
+                                )
+                                if sync_result['removed'] or sync_result['added_to_filesystem']:
+                                    logger.info(
+                                        f"📊 Sync validation: "
+                                        f"removed from storage={sync_result['removed']}, "
+                                        f"added to filesystem={sync_result['added_to_filesystem']}"
+                                    )
+                            except Exception as e:
+                                logger.warning(f"Failed to validate and sync policies: {e}")
+                        except Exception as e:
+                            logger.error(f"Failed to load policies from {cuga_folder}: {e}")
+                    else:
+                        logger.info(f"Policy folder {cuga_folder} not found, skipping auto-load")
 
                 app_state.set_subsystem_status("policy", "ready", "Policy subsystem ready")
 
@@ -694,7 +736,13 @@ async def lifespan(app: FastAPI):
         from cuga.backend.knowledge.session_provider import PersistentSessionProvider
 
         if not getattr(app_state, "knowledge_provider", None):
-            _kb_state_path = Path.cwd() / ".cuga" / "session_knowledge.json"
+            # Session ownership lives in this file, so it must survive restarts.
+            # Deployments that mount persistent storage set CUGA_DBS_DIR (the
+            # Helm chart points it at the PVC); local runs keep using .cuga/.
+            _kb_state_dir = os.environ.get("CUGA_DBS_DIR")
+            _kb_state_path = (
+                Path(_kb_state_dir) if _kb_state_dir else Path.cwd() / ".cuga"
+            ) / "session_knowledge.json"
             app_state.knowledge_provider = PersistentSessionProvider(_kb_state_path)
 
         # Wire per-session citation overrides into the knowledge sources module
@@ -1011,6 +1059,7 @@ async def lifespan(app: FastAPI):
         cuga_lite_max_steps=_prod_overrides.get("cuga_lite_max_steps"),
         enable_filesystem_tools=_prod_overrides.get("enable_filesystem_tools"),
         special_instructions=(_startup_config or {}).get("special_instructions") or None,
+        supervisor_id=app_state.agent_id,
     )
     await app_state.agent.build_graph()
 
@@ -1042,33 +1091,8 @@ async def lifespan(app: FastAPI):
         )
 
     if settings.policy.enabled and app_state.policy_system:
-        from cuga.backend.cuga_graph.policy.storage import PolicyStorage
-        from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
-
-        policy_config = getattr(settings, "policy", None)
-        base_name = policy_config.collection_name if policy_config else "cuga_policies"
-        draft_collection = f"{base_name}_draft"
-        from cuga.backend.storage.embedding import get_embedding_config
-
-        emb_cfg = get_embedding_config()
-        draft_storage = PolicyStorage(
-            collection_name=draft_collection,
-            embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
-            or os.getenv("POLICY_EMBEDDING_PROVIDER")
-            or emb_cfg["provider"],
-            embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
-            or os.getenv("POLICY_EMBEDDING_MODEL")
-            or emb_cfg["model"],
-            embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
-            or os.getenv("POLICY_EMBEDDING_BASE_URL")
-            or emb_cfg["base_url"],
-            embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
-            or os.getenv("POLICY_EMBEDDING_API_KEY")
-            or emb_cfg["api_key"],
-        )
-        await draft_storage.initialize_async()
-        draft_app_state.policy_system = PolicyConfigurable(storage=draft_storage)
-        await draft_app_state.policy_system.initialize()
+        draft_app_state.policy_system, draft_collection = await _initialize_default_draft_policy_system()
+        draft_app_state.policy_filesystem_sync = app_state.policy_filesystem_sync
         logger.info(f"Draft policy system initialized (collection: {draft_collection})")
 
     draft_tool_provider = CombinedToolProvider(
@@ -1098,6 +1122,7 @@ async def lifespan(app: FastAPI):
         enable_filesystem_tools=draft_overrides.get("enable_filesystem_tools"),
         llm_config=_draft_llm_cfg or None,
         special_instructions=(draft_config or {}).get("special_instructions") or None,
+        supervisor_id=draft_agent_id,
     )
     await draft_app_state.agent.build_graph()
 
@@ -1140,8 +1165,32 @@ async def lifespan(app: FastAPI):
     # never blocks startup on failure.
     await warm_shortlister_catalogue()
 
+    from cuga.backend.evolve.deleted_sources import source_deletion_delivery_loop
+
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    if await EvolveIntegration.is_configured():
+        app_state.background_tasks.append(asyncio.create_task(source_deletion_delivery_loop()))
+
     yield
+
     logger.info("Application is shutting down...")
+
+    from cuga.backend.server.run_routes import close_cached_supervisors, close_graph_owners
+
+    try:
+        await close_cached_supervisors()
+    except Exception:
+        logger.exception("close_cached_supervisors failed during shutdown (non-fatal)")
+    try:
+        await close_graph_owners(
+            app_state.agent,
+            draft_app_state.agent,
+            *app_state.agent_graphs_cache.values(),
+        )
+    except Exception:
+        logger.exception("close_graph_owners failed during shutdown (non-fatal)")
+    app_state.agent_graphs_cache.clear()
 
     for task in app_state.background_tasks:
         task.cancel()
@@ -1550,6 +1599,9 @@ async def event_stream(
     from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
     from langchain_core.messages import AIMessage
 
+    if thread_id:
+        await _assert_run_thread_access(thread_id, user_id)
+
     memory_turn_id = str(uuid.uuid4()) if not resume else ""
     run_agent = agent if agent is not None else app_state.agent
     runtime_agent_id = agent_id or app_state.agent_id
@@ -1705,6 +1757,10 @@ async def event_stream(
         # The trace ID will be available after the first LLM call
         print("Note: Trace ID will be available after the first LLM operation")
 
+    # Authenticated user for knowledge session ownership. DEFAULT_USER_ID is
+    # the placeholder used when auth is disabled, where ownership stays off.
+    _knowledge_user_id = user_id if user_id and user_id != DEFAULT_USER_ID else None
+
     # Build knowledge context for agent prompt injection
     _knowledge_ctx = {}
     if _knowledge_enabled_for_app_state(app_state) and app_state.knowledge_provider and thread_id:
@@ -1725,6 +1781,8 @@ async def event_stream(
             _knowledge_scope_enabled_for_app_state(app_state, "session")
             and _session_kb
             and _session_kb.filenames
+            # Never list another user's session files in this user's prompt.
+            and (not _knowledge_user_id or _session_kb.user_id in ("", _knowledge_user_id))
         ):
             from cuga.backend.knowledge.session_provider import session_prefix as _sess_prefix
 
@@ -1754,6 +1812,8 @@ async def event_stream(
         enable_filesystem_tools=getattr(run_agent, "enable_filesystem_tools", None),
         current_llm=runtime_llm,
         knowledge_context=_knowledge_ctx or None,
+        agent_id=runtime_agent_id,
+        knowledge_user_id=_knowledge_user_id,
         upload_context=_upload_ctx,
         special_instructions=getattr(run_agent, "special_instructions", None),
     )
@@ -1875,7 +1935,7 @@ async def event_stream(
                             }
                             if event.sources:
                                 answer_payload["sources"] = event.sources
-                            if settings.evolve.enabled and memory_turn_id:
+                            if memory_turn_id:
                                 from cuga.backend.evolve.memory_store import get_turn_memory_usage
 
                                 try:
@@ -2204,6 +2264,8 @@ async def auth_config():
 @app.get("/api/ui/config")
 async def ui_config():
     """Return UI configuration flags from settings."""
+    from cuga.backend.evolve.integration import EvolveIntegration
+
     hide_logo = settings.ui.hide_cuga_logo
     brand_name = getattr(settings.ui, "brand_name", "CUGA Agent") or "CUGA Agent"
     # SPLIT TOPOLOGY: this server may serve the UI while the eventing layer runs as its own
@@ -2224,7 +2286,7 @@ async def ui_config():
                 else ""
             ),
             "agent_registry": agent_registry.is_agent_registry_enabled(),
-            "evolve_memory_enabled": bool(settings.evolve.enabled),
+            "evolve_memory_enabled": await EvolveIntegration.is_configured(),
         }
     )
 
@@ -2439,8 +2501,8 @@ async def auth_userinfo(request: Request):
     if _auth_enabled() and user is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     if user is None:
-        return JSONResponse({"sub": DEFAULT_USER_ID})
-    return JSONResponse(user.model_dump())
+        return JSONResponse({"sub": DEFAULT_USER_ID, "can_manage": True})
+    return JSONResponse(user.model_dump() | {"can_manage": has_manage_access(user)})
 
 
 if getattr(settings.advanced_features, "use_extension", False):
@@ -2602,17 +2664,26 @@ async def _resolve_stream_agent(
             from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
             from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
 
+            from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
+
             agent_meta = config.get("agent") or {}
             kind = agent_meta.get("kind") or "single"
-            policy_system = (
-                getattr(draft_state, "policy_system", None) if use_draft else None
-            ) or app_state.policy_system
+
+            # Graph construction is read-only w.r.t. policy storage: do not pass policies_data
+            # here, or the config-snapshot would overwrite any newer save from POST /api/config/policies.
+            policy_system = await create_agent_policy_system(
+                agent_id=agent_id,
+                draft=use_draft,
+            )
 
             if kind == "supervisor":
                 from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
 
                 supervisor_cfg = config.get("supervisor") or {}
-                agents_dict = await build_agents_from_stored_subagents(supervisor_cfg.get("subAgents") or [])
+                agents_dict = await build_agents_from_stored_subagents(
+                    supervisor_cfg.get("subAgents") or [],
+                    use_draft=use_draft,
+                )
 
                 # Supervisors have no LLM UI section (that panel is hidden for kind=supervisor), so a
                 # stored ``llm`` block is only ever the create-agent default (provider=openai, empty
@@ -2635,6 +2706,7 @@ async def _resolve_stream_agent(
                     supervisor_agents=agents_dict,
                     supervisor_enabled=True,
                     supervisor_plan_approval=bool(supervisor_cfg.get("planApproval")),
+                    supervisor_id=agent_id,
                 )
             else:
                 # Single agent with its own tools/LLM/special_instructions — built the same way
@@ -2698,12 +2770,16 @@ async def stream(
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     query = await get_query(request)
     user_attachments = await get_attachment_snapshot(request)
-    thread_id = request.headers.get("X-Thread-ID")
+    thread_id = (request.headers.get("X-Thread-ID") or "").strip()
     if not thread_id:
         thread_id = str(uuid.uuid4())
         logger.info(f"No X-Thread-ID header found, generated new thread_id: {thread_id}")
     else:
         logger.info(f"Using provided thread_id: {thread_id}")
+
+    # Reject before StreamingResponse sends headers; event_stream also guards
+    # other entry points before reading checkpoints, previews or workspace data.
+    await _assert_run_thread_access(thread_id, user_id)
 
     # User message will be saved as part of the event stream buffer
     # No need to save it separately here to avoid race conditions
@@ -3112,6 +3188,10 @@ async def delete_conversation(
 ):
     """Delete a conversation thread and its stream events."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
+    conversation_id = conversation_id.strip()
+    # A user-scoped DB delete can succeed without matching rows. Authorize
+    # before it triggers unscoped knowledge, ownership and upload cleanup.
+    await _assert_run_thread_access(conversation_id, user_id)
     try:
         conversation_db = get_conversation_db()
         success = await conversation_db.delete_thread(agent_id, conversation_id, user_id)
@@ -3257,21 +3337,45 @@ async def _sync_policy_to_config_store(
     return True, None
 
 
+async def _resolve_policy_agent_id(requested_agent_id: Optional[str]) -> str:
+    """Resolve an external policy-route agent ID to a server-owned registry value."""
+    if not agent_registry.is_agent_registry_enabled():
+        return "cuga-default"
+    if not requested_agent_id or requested_agent_id == "cuga-default":
+        return "cuga-default"
+
+    from cuga.backend.server.config_store import list_agents_with_configs
+
+    for row in await list_agents_with_configs():
+        registered_agent_id = row["agent_id"]
+        if registered_agent_id == requested_agent_id:
+            return registered_agent_id
+
+    raise HTTPException(status_code=404, detail=f"Agent '{requested_agent_id}' not found")
+
+
 @app.get("/api/config/policies")
 async def get_policies_config(
     request: Request,
+    agent_id: Optional[str] = None,
     current_user: Optional[UserInfo] = Depends(require_auth),
 ):
     """Endpoint to retrieve policies configuration. Use draft collection when X-Use-Draft header is set."""
     if not settings.policy.enabled:
         return JSONResponse({"enablePolicies": False, "policies": []})
 
+    requested_agent_id = agent_id or request.headers.get("X-Agent-ID")
+    resolved_agent_id = await _resolve_policy_agent_id(requested_agent_id)
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
+
     try:
+        from cuga.backend.cuga_graph.policy.configurable import get_agent_policy_collection_name
         from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 
         need_disconnect = False
-        if use_draft:
+        is_default = not resolved_agent_id or resolved_agent_id == "cuga-default"
+
+        if use_draft and is_default:
             draft_state = getattr(request.app.state, "draft_app_state", None)
             if (
                 draft_state
@@ -3282,21 +3386,19 @@ async def get_policies_config(
                 logger.info("Using draft policy storage for GET")
             else:
                 need_disconnect = True
-                policy_config = getattr(settings, "policy", None)
-                base_name = policy_config.collection_name if policy_config else "cuga_policies"
-                draft_collection = f"{base_name}_draft"
+                draft_collection = get_agent_policy_collection_name(resolved_agent_id, draft=True)
                 storage = PolicyStorage(collection_name=draft_collection)
                 await storage.initialize_async()
                 logger.info(f"Created draft storage for GET (collection: {draft_collection})")
-        elif app_state.policy_system and app_state.policy_system.storage:
+        elif not use_draft and is_default and app_state.policy_system and app_state.policy_system.storage:
             storage = app_state.policy_system.storage
             logger.info("Using existing policy system storage for GET")
         else:
             need_disconnect = True
-            collection_name = settings.policy.collection_name
+            collection_name = get_agent_policy_collection_name(resolved_agent_id, draft=use_draft)
             storage = PolicyStorage(collection_name=collection_name)
             await storage.initialize_async()
-            logger.info(f"Created new storage instance for GET (collection: {collection_name})")
+            logger.info(f"Created storage instance for GET (collection: {collection_name})")
 
         # List all policies (this IS async)
         policies_objs = await storage.list_policies(enabled_only=False)
@@ -3320,6 +3422,7 @@ async def get_policies_config(
 @app.post("/api/config/policies")
 async def save_policies_config(
     request: Request,
+    agent_id: Optional[str] = None,
     current_user: Optional[UserInfo] = Depends(require_auth),
 ):
     """Endpoint to save policies configuration. Use draft collection when X-Use-Draft header is set."""
@@ -3329,16 +3432,24 @@ async def save_policies_config(
             status_code=403,
         )
 
+    requested_agent_id = agent_id or request.headers.get("X-Agent-ID")
+    resolved_agent_id = await _resolve_policy_agent_id(requested_agent_id)
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
+
     try:
+        from cuga.backend.cuga_graph.policy.configurable import get_agent_policy_collection_name
         from cuga.backend.cuga_graph.policy.storage import PolicyStorage
         from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+        from cuga.backend.storage.embedding import get_embedding_config
 
         data = await request.json()
-        logger.info(f"Received policy save request with {len(data.get('policies', []))} policies")
+        logger.info(
+            f"Received policy save request with {len(data.get('policies', []))} policies for {resolved_agent_id}"
+        )
         policies = data.get("policies", [])
+        is_default = not resolved_agent_id or resolved_agent_id == "cuga-default"
 
-        if use_draft:
+        if use_draft and is_default:
             draft_state = getattr(request.app.state, "draft_app_state", None)
             draft_need_disconnect = False
             if (
@@ -3350,11 +3461,7 @@ async def save_policies_config(
                 logger.info("Saving to draft policy storage")
             else:
                 draft_need_disconnect = True
-                policy_config = getattr(settings, "policy", None)
-                base_name = policy_config.collection_name if policy_config else "cuga_policies"
-                draft_collection = f"{base_name}_draft"
-                from cuga.backend.storage.embedding import get_embedding_config
-
+                draft_collection = get_agent_policy_collection_name(resolved_agent_id, draft=True)
                 emb_cfg = get_embedding_config()
                 storage = PolicyStorage(
                     collection_name=draft_collection,
@@ -3377,52 +3484,48 @@ async def save_policies_config(
                 storage,
                 policies,
                 clear_existing=True,
-                filesystem_sync=None,
+                filesystem_sync=getattr(draft_state, "policy_filesystem_sync", None) if draft_state else None,
             )
             if draft_need_disconnect:
                 await storage.disconnect()
-        else:
-            if app_state.policy_system and app_state.policy_system.storage:
-                storage = app_state.policy_system.storage
-                logger.info("Using existing policy system storage")
-            else:
-                collection_name = settings.policy.collection_name
-                from cuga.backend.storage.embedding import get_embedding_config
-
-                emb_cfg = get_embedding_config()
-                storage = PolicyStorage(
-                    collection_name=collection_name,
-                    embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
-                    or os.getenv("POLICY_EMBEDDING_PROVIDER")
-                    or emb_cfg["provider"],
-                    embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
-                    or os.getenv("POLICY_EMBEDDING_MODEL")
-                    or emb_cfg["model"],
-                    embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
-                    or os.getenv("POLICY_EMBEDDING_BASE_URL")
-                    or emb_cfg["base_url"],
-                    embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
-                    or os.getenv("POLICY_EMBEDDING_API_KEY")
-                    or emb_cfg["api_key"],
-                )
-                await storage.initialize_async()
-                logger.info(
-                    f"Created new storage instance from settings (collection: {collection_name}, "
-                    f"embedding: {storage.embedding_provider}, dim: {storage.embedding_dim})"
-                )
-
+        elif not use_draft and is_default and app_state.policy_system and app_state.policy_system.storage:
             await apply_policies_data_to_storage(
-                storage,
+                app_state.policy_system.storage,
                 policies,
                 clear_existing=True,
                 filesystem_sync=app_state.policy_filesystem_sync,
             )
-
-            if not (app_state.policy_system and app_state.policy_system.storage):
-                await storage.disconnect()
-                logger.info("Storage disconnected")
-            else:
-                logger.info("Keeping policy system storage connected")
+        else:
+            collection_name = get_agent_policy_collection_name(resolved_agent_id, draft=use_draft)
+            emb_cfg = get_embedding_config()
+            storage = PolicyStorage(
+                collection_name=collection_name,
+                embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
+                or os.getenv("POLICY_EMBEDDING_PROVIDER")
+                or emb_cfg["provider"],
+                embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
+                or os.getenv("POLICY_EMBEDDING_MODEL")
+                or emb_cfg["model"],
+                embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
+                or os.getenv("POLICY_EMBEDDING_BASE_URL")
+                or emb_cfg["base_url"],
+                embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
+                or os.getenv("POLICY_EMBEDDING_API_KEY")
+                or emb_cfg["api_key"],
+            )
+            await storage.initialize_async()
+            logger.info(
+                f"Created storage instance from settings (collection: {collection_name}, "
+                f"embedding: {storage.embedding_provider}, dim: {storage.embedding_dim})"
+            )
+            await apply_policies_data_to_storage(
+                storage,
+                policies,
+                clear_existing=True,
+                filesystem_sync=None,
+            )
+            await storage.disconnect()
+            logger.info("Storage disconnected")
 
         logger.info(f"Policies configuration saved: {len(policies)} policies")
         return JSONResponse({"status": "success", "message": f"Saved {len(policies)} policies successfully"})
