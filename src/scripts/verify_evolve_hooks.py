@@ -1,6 +1,10 @@
 """Exercise the image's configured Evolve hooks without network or persistent data."""
 
+from datetime import datetime
+import json
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 def verify_evolve_hooks() -> None:
@@ -9,7 +13,8 @@ def verify_evolve_hooks() -> None:
     from altk_evolve.frontend.client.evolve_client import EvolveClient
     from altk_evolve.hooks.manager import MemoryPolicyViolation, dispatch_llm_pre_call, hooks_active
     from altk_evolve.hooks.types import HookType
-    from altk_evolve.schema.core import Entity
+    from altk_evolve.llm.conflict_resolution import conflict_resolution
+    from altk_evolve.schema.core import Entity, RecordedEntity
 
     with TemporaryDirectory(prefix="cuga-hook-check-") as data_dir:
         client = EvolveClient(
@@ -55,6 +60,34 @@ def verify_evolve_hooks() -> None:
                 email not in str(messages) and person not in str(messages) and "[REDACTED]" in str(messages)
             )
 
+            # Exercise the real hooks and prompt assembly without a model server.
+            # Whole-prompt redaction used to replace numeric memory IDs.
+            old = RecordedEntity(
+                id="6", type="guideline", content=f"Contact {person} at {email}", created_at=datetime.now()
+            )
+            new = old.model_copy(update={"id": "7"})
+            decision = {
+                "id": "6",
+                "type": "guideline",
+                "content": "Contact [REDACTED]",
+                "event": "UPDATE",
+                "incoming_ids": ["7"],
+            }
+            response = SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=json.dumps({"entities": [decision]})),
+                        finish_reason="stop",
+                    )
+                ]
+            )
+            with patch.object(conflict_resolution, "completion", return_value=response) as completion:
+                resolved = conflict_resolution.resolve_conflicts([old], [new])
+            prompt = completion.call_args.kwargs["messages"][0]["content"]
+            assert '"id": "6"' in prompt and '"id": "7"' in prompt, "PII filtering corrupted memory IDs"
+            assert email not in prompt and person not in prompt, "Conflict content was not redacted"
+            assert resolved[0].id == "6" and resolved[0].incoming_ids == ["7"]
+
             client.patch_entity_metadata(namespace, entity_id, {"legal_hold": True})
             try:
                 client.delete_entity_by_id(namespace, entity_id)
@@ -65,7 +98,9 @@ def verify_evolve_hooks() -> None:
             assert client.scan_entities(namespace, filters={"id": entity_id}, limit=1)
         finally:
             client.backend.close()
-    print("Evolve READI and regex PII redaction, metadata, access tracking and legal hold verified offline")
+    print(
+        "Evolve READI and regex PII redaction, conflict memory IDs, metadata, access tracking and legal hold verified offline"
+    )
 
 
 if __name__ == "__main__":
