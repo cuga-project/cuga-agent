@@ -1952,6 +1952,12 @@ async def event_stream(
                             final_answer_text = json.dumps(answer_payload)
                         else:
                             final_answer_text = "Done."
+                        # Preserve WXO's raw response while retaining the turn ID for history enrichment.
+                        persisted_answer_text = (
+                            json.dumps({"data": final_answer_text, "memory_turn_id": memory_turn_id})
+                            if settings.advanced_features.wxo_integration and memory_turn_id
+                            else final_answer_text
+                        )
                         logger.info("=" * 80)
                         logger.info("FINAL ANSWER")
                         logger.info("=" * 80)
@@ -1963,7 +1969,7 @@ async def event_stream(
                             stream_events_buffer.append(
                                 {
                                     "event_name": "Answer",
-                                    "event_data": final_answer_text,
+                                    "event_data": persisted_answer_text,
                                     "timestamp": datetime.datetime.utcnow().isoformat(),
                                     "sequence": event_sequence,
                                 }
