@@ -305,3 +305,106 @@ async def test_empty_triggers_output_formatter_normalized_to_always():
         assert [t.type for t in stored.triggers] == ["always"]
     finally:
         await storage.disconnect()
+
+
+def _formatter_payload(policy_id: str, triggers) -> dict:
+    return {
+        "id": policy_id,
+        "name": f"Payload {policy_id}",
+        "description": "Format everything",
+        "policy_type": "output_formatter",
+        "triggers": triggers,
+        "format_type": "direct",
+        "format_config": "FORMATTED",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_blank_keyword_values_normalized_to_always():
+    """Blank strings would substring-match every response; they must be stripped."""
+    storage = PolicyStorage(collection_name="test_always_trigger_blank_kw")
+    await storage.initialize_async()
+    try:
+        result = await apply_policies_data_to_storage(
+            storage,
+            [
+                _formatter_payload(
+                    "of_blank_kw",
+                    [{"type": "keyword", "value": ["", "  "], "target": "agent_response", "operator": "or"}],
+                )
+            ],
+        )
+        assert not result.get("errors"), result
+        stored = await storage.get_policy("of_blank_kw")
+        assert [t.type for t in stored.triggers] == ["always"]
+    finally:
+        await storage.disconnect()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_empty_keyword_with_app_trigger_keeps_app_and_adds_always():
+    """Dropping an empty keyword must not leave an app-only formatter that can never match."""
+    storage = PolicyStorage(collection_name="test_always_trigger_kw_app")
+    await storage.initialize_async()
+    try:
+        result = await apply_policies_data_to_storage(
+            storage,
+            [
+                _formatter_payload(
+                    "of_kw_app",
+                    [
+                        {"type": "keyword", "value": [], "target": "agent_response"},
+                        {"type": "app", "value": "crm"},
+                    ],
+                )
+            ],
+        )
+        assert not result.get("errors"), result
+        stored = await storage.get_policy("of_kw_app")
+        assert sorted(t.type for t in stored.triggers) == ["always", "app"]
+
+        agent = PolicyAgent(storage=storage, llm=MagicMock(), embedding_function=None)
+        miss = await _match_formatter(agent)
+        assert miss.matched is False
+
+        ctx = _context()
+        ctx.active_apps = ["crm"]
+        hit = await agent.match_policy(
+            ctx, target="agent_response", policy_types=[PolicyType.OUTPUT_FORMATTER]
+        )
+        assert hit.matched is True
+        assert hit.policy.id == "of_kw_app"
+    finally:
+        await storage.disconnect()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_blank_nl_value_normalized_to_always_without_llm():
+    """A scalar NL value of "" is wrapped to [""] by the loader; it must still become always."""
+    storage = PolicyStorage(collection_name="test_always_trigger_blank_nl")
+    await storage.initialize_async()
+    try:
+        result = await apply_policies_data_to_storage(
+            storage,
+            [
+                _formatter_payload(
+                    "of_blank_nl",
+                    [{"type": "natural_language", "value": "", "target": "agent_response"}],
+                )
+            ],
+        )
+        assert not result.get("errors"), result
+        stored = await storage.get_policy("of_blank_nl")
+        assert [t.type for t in stored.triggers] == ["always"]
+
+        agent = PolicyAgent(storage=storage, llm=MagicMock(), embedding_function=None)
+        with patch("cuga.backend.cuga_graph.policy.agent.BaseAgent.get_chain") as get_chain:
+            match = await _match_formatter(agent)
+            get_chain.assert_not_called()
+        assert match.matched is True
+        assert match.policy.id == "of_blank_nl"
+    finally:
+        await storage.disconnect()
