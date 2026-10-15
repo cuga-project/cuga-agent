@@ -1,20 +1,33 @@
 """Confirm background fact saves and attach them when conversation history is read."""
 
+import asyncio
 import json
 
 from loguru import logger
 
 from cuga.backend.evolve.memory_store import _scope, _store
 
+_schema_store = None
+_schema_lock = asyncio.Lock()
+
 
 async def _schema() -> None:
-    await _store().execute(
-        "CREATE TABLE IF NOT EXISTS evolve_memory_saved ("
-        "tenant_id TEXT NOT NULL, instance_id TEXT NOT NULL, turn_id TEXT NOT NULL, "
-        "agent_id TEXT NOT NULL, user_id TEXT NOT NULL, entity_id TEXT NOT NULL, "
-        "PRIMARY KEY (tenant_id, instance_id, turn_id, agent_id, user_id, entity_id))"
-    )
-    await _store().commit()
+    """Initialize once per store, including after storage configuration changes."""
+    global _schema_store
+    if _schema_store is _store():
+        return
+    async with _schema_lock:
+        store = _store()
+        if _schema_store is store:
+            return
+        await store.execute(
+            "CREATE TABLE IF NOT EXISTS evolve_memory_saved ("
+            "tenant_id TEXT NOT NULL, instance_id TEXT NOT NULL, turn_id TEXT NOT NULL, "
+            "agent_id TEXT NOT NULL, user_id TEXT NOT NULL, entity_id TEXT NOT NULL, "
+            "PRIMARY KEY (tenant_id, instance_id, turn_id, agent_id, user_id, entity_id))"
+        )
+        await store.commit()
+        _schema_store = store
 
 
 async def record_saved_memories(result, *, turn_id: str, agent_id: str, user_id: str) -> None:
