@@ -23,13 +23,24 @@ def test_airgap_verification_rejects_stanza(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("package", ["altk-evolve", "arize-phoenix", "arize-phoenix-otel", "stanza"])
+def test_airgap_verification_rejects_excluded_distributions(package, monkeypatch) -> None:
+    from scripts import verify_airgap
+
+    monkeypatch.setattr(verify_airgap, "find_spec", lambda name: None)
+    monkeypatch.setattr(verify_airgap, "distributions", lambda: [SimpleNamespace(metadata={"Name": package})])
+    with pytest.raises(RuntimeError, match="Excluded image packages"):
+        verify_airgap.main()
+
+
+@pytest.mark.unit
 def test_supported_image_bakes_evolve_for_offline_runtime() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile.ubi").read_text()
     entrypoint = (REPO_ROOT / "scripts/docker-entrypoint.sh").read_text()
 
     project = (REPO_ROOT / "pyproject.toml").read_text()
-    assert "altk-evolve[fastembed,pii-regex]" in project
-    assert "altk-evolve[fastembed,pii-regex]>=1.6.1,<2" in project
+    assert "altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]" in project
+    assert "altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]>=1.7.0,<2" in project
     assert "github.com/AgentToolkit/altk-evolve/archive/" not in project
     assert "--frozen --no-editable --no-dev" in dockerfile
     assert "--group evolve-image" in dockerfile
