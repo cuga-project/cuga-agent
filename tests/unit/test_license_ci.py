@@ -230,8 +230,11 @@ def descriptors():
 def test_promotion_reuses_scanned_digests_for_full_and_slim():
     commands = promote.promotion_commands("ghcr.io/cuga-project/cuga", "tag", "v1.2.3", "", descriptors())
     assert len(commands) == 2
-    assert "ghcr.io/cuga-project/cuga:1.2.3" in commands[0]
-    assert "ghcr.io/cuga-project/cuga:1.2.3-slim" in commands[1]
+    for command, suffix in zip(commands, ("", "-slim")):
+        actual_tags = {command[index + 1] for index, arg in enumerate(command) if arg == "--tag"}
+        assert actual_tags == {
+            f"ghcr.io/cuga-project/cuga:{tag}{suffix}" for tag in ("1.2.3", "1.2", "1", "latest")
+        }
     assert commands[0][-2:] == [descriptors()[f"full-{arch}"] for arch in ("amd64", "arm64")]
 
 
@@ -289,3 +292,13 @@ def test_unproven_bundled_finding_cannot_be_baselined():
     data["Results"].append({"Licenses": [{"Name": "GPL-3.0-only", "FilePath": "LICENSE"}]})
     with pytest.raises(ValueError, match="Missing file evidence"):
         run_report(data, mode="report")
+
+
+@pytest.mark.parametrize(("requested", "expected"), [("", "latest"), ("audit-test", "audit-test")])
+def test_manual_branch_dispatch_retains_its_explicit_tag_set(requested, expected):
+    commands = promote.promotion_commands(
+        "ghcr.io/cuga-project/cuga", "branch", "main", requested, descriptors()
+    )
+    for command, suffix in zip(commands, ("", "-slim")):
+        actual_tags = {command[index + 1] for index, arg in enumerate(command) if arg == "--tag"}
+        assert actual_tags == {f"ghcr.io/cuga-project/cuga:{expected}{suffix}"}
