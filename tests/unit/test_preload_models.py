@@ -23,7 +23,9 @@ def test_airgap_verification_rejects_stanza(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("package", ["altk-evolve", "arize-phoenix", "arize-phoenix-otel", "stanza"])
+@pytest.mark.parametrize(
+    "package", ["altk-evolve", "arize-phoenix", "arize-phoenix-otel", "stanza", "udtools", "udapi"]
+)
 def test_airgap_verification_rejects_excluded_distributions(package, monkeypatch) -> None:
     from scripts import verify_airgap
 
@@ -44,7 +46,8 @@ def test_supported_image_bakes_evolve_for_offline_runtime() -> None:
     assert "github.com/AgentToolkit/altk-evolve/archive/" not in project
     assert "--frozen --no-editable --no-dev" in dockerfile
     assert "--group evolve-image" in dockerfile
-    assert "--no-install-package stanza" in dockerfile
+    for package in ("stanza", "udtools", "udapi"):
+        assert f"--no-install-package {package}" in dockerfile
     assert "uv pip install" not in dockerfile
     assert "SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers" in dockerfile
     assert "uv run --no-sync playwright install" in dockerfile

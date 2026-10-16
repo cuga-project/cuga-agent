@@ -10,11 +10,15 @@ def main() -> None:
     if find_spec("stanza") is not None:
         raise RuntimeError("Stanza must not be installed in the image; bundled READI uses spaCy")
 
-    forbidden = {"altk-evolve", "stanza"}
+    forbidden = {"altk-evolve", "stanza", "udtools", "udapi"}
     installed = {dist.metadata["Name"].lower().replace("_", "-") for dist in distributions()}
     unwanted = sorted(name for name in installed if name in forbidden or name.startswith("arize-phoenix"))
     if unwanted:
         raise RuntimeError(f"Excluded image packages are installed: {unwanted}")
+
+    from scripts.verify_image_licenses import verify_image_licenses
+
+    verify_image_licenses(Path(__file__).resolve().parents[2])
 
     from scripts.preload_models import preload_evolve, preload_fastembed, preload_tiktoken
 
