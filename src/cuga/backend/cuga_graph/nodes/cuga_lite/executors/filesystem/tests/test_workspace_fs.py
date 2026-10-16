@@ -72,6 +72,45 @@ def test_shared_assets_seed_into_empty_thread_workspace(
     assert not (thread_root / "cuga_knowledge.md").exists()
 
 
+def test_seed_permission_error_is_logged_and_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A workspace mount a deployer forgot to make group-writable (the real
+    bug this guards against — see Dockerfile.ubi[.slim] cuga_workspace
+    ownership) must not surface as a raw PermissionError on the NEXT tool
+    call, on a path that looks like a file but is actually the thread
+    workspace root failing to initialize. ensure_thread_workspace_seeded
+    must log a warning and return normally instead."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CUGA_THREAD_WORKSPACE_SEED", "crm")
+    shared = tmp_path / "cuga_workspace"
+    shared.mkdir(parents=True)
+    (shared / "contacts.txt").write_text("demo")
+
+    real_mkdir = Path.mkdir
+
+    def _blocked_mkdir(self: Path, *args, **kwargs):
+        if self.name == "thread-A":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", _blocked_mkdir)
+
+    warnings: list[str] = []
+    from loguru import logger as _logger
+
+    handler_id = _logger.add(lambda msg: warnings.append(str(msg)), level="WARNING")
+    try:
+        _paths.ensure_thread_workspace_seeded("thread-A")  # must not raise
+    finally:
+        _logger.remove(handler_id)
+
+    assert not (shared / "thread-A").exists()
+    joined = " ".join(warnings)
+    assert "thread-A" in joined
+    assert "Permission denied" in joined
+
+
 def test_per_thread_layout_when_skills_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     _enable_skills(monkeypatch)
@@ -166,6 +205,40 @@ def test_list_files_surfaces_writes_not_siblings(tmp_path: Path, monkeypatch: py
     names = {e["name"] for e in parsed["entries"]}
     assert "agent_output.txt" in names
     assert "sibling.txt" not in names
+
+
+def test_list_files_excludePatterns_filters_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """list_files supports excludePatterns, same as search_files — closes the
+    gap where a model that knows excludePatterns from search_files's
+    signature and tries it on list_files used to get a bare TypeError."""
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+    fs = _fs("thread-A")
+    asyncio.run(fs.write_file("keep.txt", "a"))
+    asyncio.run(fs.write_file("drop_me.txt", "b"))
+
+    listing = asyncio.run(fs.list_files(".", "*", excludePatterns=["drop_me.txt"]))
+    names = {e["name"] for e in json.loads(listing)["entries"]}
+    assert "keep.txt" in names
+    assert "drop_me.txt" not in names
+
+
+def test_list_files_excludePatterns_matches_nested_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """excludePatterns must match the POSIX-relative path, not just the
+    basename, so it still filters correctly when pattern recurses (e.g.
+    "**/*") and entries are nested — same matcher search_files already uses."""
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+    fs = _fs("thread-A")
+    asyncio.run(fs.write_file("pkg/keep.py", "a"))
+    asyncio.run(fs.write_file("pkg/__pycache__/drop.pyc", "b"))
+
+    listing = asyncio.run(fs.list_files(".", "**/*", excludePatterns=["**/__pycache__/**"]))
+    names = {e["name"] for e in json.loads(listing)["entries"]}
+    assert "keep.py" in names
+    assert "drop.pyc" not in names
 
 
 # ─── edit / move / search / info ────────────────────────────────────────────
