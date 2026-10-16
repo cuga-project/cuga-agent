@@ -18,7 +18,7 @@ def promotion_commands(repository, ref_type, ref_name, requested, descriptors):
         if not match:
             raise ValueError("Release requires a stable semantic version tag")
         major, minor, patch = match.groups()
-        tags = [f"{major}.{minor}.{patch}", f"{major}.{minor}", major]
+        tags = [f"{major}.{minor}.{patch}", f"{major}.{minor}", major, "latest"]
     else:
         tags = ["latest"]
     commands = []
