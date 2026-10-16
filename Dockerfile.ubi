@@ -21,8 +21,11 @@ COPY src/ ./src/
 COPY docs/ ./docs/
 
 # Include observability, Evolve and READI with its pinned spaCy model.
+# READI declares Stanza unconditionally, but our spaCy extractor does not use it.
+# Exclude it for image licensing; keep subsequent uv runs on --no-sync.
 RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + \
-    && uv sync --frozen --no-editable --no-dev --extra observability --extra evolve --group evolve-image
+    && uv sync --frozen --no-editable --no-dev --extra observability --extra evolve --group evolve-image \
+        --no-install-package stanza
 
 # Slim down torch: remove test suite and C++ headers (not needed at runtime) ~143MB
 # NOTE: torch/bin must be kept — contains torch_shm_manager required at import time
@@ -37,6 +40,12 @@ RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright uv run --no-sync playwright instal
 
 # Bake ML model weights into the image for airgapped operation.
 # Keep cache paths aligned with the runtime environment below.
+# Reuse CUGA's preloaded FastEmbed ONNX model for Evolve.
+ENV EVOLVE_EMBEDDING_PROVIDER=fastembed \
+    EVOLVE_EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 \
+    EVOLVE_PG_EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 \
+    EVOLVE_CONSISTENCY_EMBEDDING_MODEL_SMALL=BAAI/bge-small-en-v1.5 \
+    EVOLVE_CONSISTENCY_EMBEDDING_MODEL_LARGE=BAAI/bge-small-en-v1.5
 ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
     DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
     HF_HOME=/app/.cache/huggingface \
@@ -132,6 +141,12 @@ ENV CUGA_DBS_DIR=/data/dbs
 ENV EVOLVE_HOOKS_CONFIG=/app/src/cuga/configurations/evolve/hooks.yaml
 ENV DYNACONF_CRM_DB_PATH=/tmp/crm_tmp/crm_db_default
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
+# Reuse CUGA's preloaded FastEmbed ONNX model for Evolve.
+ENV EVOLVE_EMBEDDING_PROVIDER=fastembed \
+    EVOLVE_EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 \
+    EVOLVE_PG_EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 \
+    EVOLVE_CONSISTENCY_EMBEDDING_MODEL_SMALL=BAAI/bge-small-en-v1.5 \
+    EVOLVE_CONSISTENCY_EMBEDDING_MODEL_LARGE=BAAI/bge-small-en-v1.5
 ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
     DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
     HF_HOME=/app/.cache/huggingface \

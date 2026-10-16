@@ -1,10 +1,21 @@
 """Smoke-test bundled assets. Run with Docker's --network=none."""
 
 import os
+from importlib.util import find_spec
+from importlib.metadata import distributions
 from pathlib import Path
 
 
 def main() -> None:
+    if find_spec("stanza") is not None:
+        raise RuntimeError("Stanza must not be installed in the image; bundled READI uses spaCy")
+
+    forbidden = {"altk-evolve", "stanza"}
+    installed = {dist.metadata["Name"].lower().replace("_", "-") for dist in distributions()}
+    unwanted = sorted(name for name in installed if name in forbidden or name.startswith("arize-phoenix"))
+    if unwanted:
+        raise RuntimeError(f"Excluded image packages are installed: {unwanted}")
+
     from scripts.preload_models import preload_evolve, preload_fastembed, preload_tiktoken
 
     from scripts.verify_evolve_hooks import verify_evolve_hooks

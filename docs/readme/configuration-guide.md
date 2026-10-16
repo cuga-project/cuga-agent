@@ -1065,7 +1065,7 @@ CUGA uses this identity to scope Evolve operations. A configured model and Evolv
   - Name: `evolve`
   - Connection type: `Command (stdio)`
   - Command: `uvx`
-  - Args: `--from altk-evolve --with setuptools<70 evolve-mcp`
+  - Args: `--from "altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]==1.7.1" evolve-mcp`
    Important: this command starts Evolve in `stdio` mode through the upstream Evolve package. It is intended to be launched by the CUGA registry, not run manually in a separate terminal.
    Alternative for standalone/manual debugging: run Evolve yourself as an SSE server:
    If you run Evolve from a checked-out `altk-evolve` repo instead of `uvx`, install the Postgres extras first with `uv sync --extra pgvector`.

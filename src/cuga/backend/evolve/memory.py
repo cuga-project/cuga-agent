@@ -30,17 +30,29 @@ async def build_evolve_special_instructions_extension(
 ) -> str:
     """Compose Evolve guidelines + user-preference sections to append to the prompt.
 
-    Returns "" when Evolve is disabled or nothing applies. Both reads
+    Always describes the effective memory setting, even without saved facts. Both reads
     (`get_guidelines`, `retrieve_user_facts`) are bounded by `timeout` and fail
     open. The user-fact write is fire-and-forget.
     """
     if not await memory_enabled(getattr(state, "user_id", None)):
-        return ""
+        return (
+            "\n\n## Memory availability\nPersistent memory is disabled for this conversation. "
+            "You can use information within the current conversation, but cannot save or recall "
+            "personal memories across conversations while it is disabled. "
+            "Do not promise to remember preferences in future conversations."
+        )
 
     if timeout is None:
         timeout = settings.evolve.timeout
 
-    extra = ""
+    extra = (
+        "\n\n## Memory availability\nPersistent memory is enabled for this user. "
+        "The application can save relevant facts and preferences and recall them across conversations. "
+        "Do not claim that your memory is limited to the current conversation. "
+        "An empty memory context means no relevant memories were retrieved, not that memory is disabled. "
+        "Saving happens automatically; do not claim that a particular fact was saved unless confirmed, "
+        "and do not promise permanent or complete retention."
+    )
     used_entity_ids: list[str] = []
     used_revisions: dict[str, int] = {}
     attributed_guideline_ids: list[str] = []
@@ -118,6 +130,7 @@ async def build_evolve_special_instructions_extension(
             EvolveIntegration.store_user_facts(
                 current_user_id,
                 memory_query,
+                turn_id=service_scope.get("memory_turn_id"),
                 namespace_id=get_service_instance_id() or None,
                 metadata={
                     "thread_id": thread_id_for_memory,
