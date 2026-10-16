@@ -6,7 +6,7 @@ Trivy 0.76.0 is pinned and downloaded from the official release with committed a
 
 ## Rollout
 
-1. Merge the image-license packaging changes from PR #977 before this PR, or retain their identical changes included here.
+1. The image-license packaging prerequisites from PR #977 are already merged into main. This PR adds the CI checks on top of those changes.
 2. Merge this workflow with the default `LICENSE_ENFORCEMENT=report`. All findings are visible in job summaries and uploaded JSON artifacts. Scan failures, missing inventory coverage, notice regressions, and reintroduced Stanza/udtools/udapi fail even in report mode.
 3. Inspect the first Linux results for `python-full`, `python-slim` and `frontend-build-and-runtime`, plus manual full/slim image results for both architectures. The local macOS report is not the Linux baseline.
 4. Review each pending finding. Correct metadata errors with evidence rather than declaring whole packages GPL or proprietary. Known cases include Docutils, fastembed, PyGithub/python-bidi LGPL versions, OFL/BlueOak identifiers, and WTFPL license-policy classifications. SaxonC-HE missing licensing/source-availability material remains unresolved; do not approve it merely to silence CI. Verify the remaining LGPL obligations. The user's cuga-oak-health 1.3.0 acceptance is an explicit expiring exception, without inventing a license identifier.
