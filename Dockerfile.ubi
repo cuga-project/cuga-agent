@@ -16,16 +16,19 @@ WORKDIR /app
 # be available in the builder as well as the runtime image.
 RUN microdnf install -y mesa-libGL libxcb glib2 libXext libSM libXrender && microdnf clean all
 
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 COPY src/ ./src/
 COPY docs/ ./docs/
 
 # Include observability, Evolve and READI with its pinned spaCy model.
 # READI declares Stanza unconditionally, but our spaCy extractor does not use it.
-# Exclude it for image licensing; keep subsequent uv runs on --no-sync.
+# Exclude it and its GPL dependencies for image licensing. uv does not prune
+# dependencies of excluded packages; keep subsequent uv runs on --no-sync.
 RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + \
     && uv sync --frozen --no-editable --no-dev --extra observability --extra evolve --group evolve-image \
-        --no-install-package stanza
+        --no-install-package stanza \
+        --no-install-package udtools \
+        --no-install-package udapi
 
 # Slim down torch: remove test suite and C++ headers (not needed at runtime) ~143MB
 # NOTE: torch/bin must be kept — contains torch_shm_manager required at import time
@@ -100,7 +103,7 @@ ENV PATH="/app/.venv/bin:/usr/local/bin:$PATH"
 
 WORKDIR /app
 
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 
 # 1001:0 matches USER 1001; g+rwX lets OpenShift's arbitrary UID run with GID 0 (typical restricted SCC).
 RUN mkdir -p /app/cuga_workspace /app/crm_tmp /app/.cuga/knowledge /data/dbs /data/evolve && \
