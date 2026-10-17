@@ -123,6 +123,7 @@ Your output MUST be one of these two types. **Do not mix them.**
 - You MUST `await` all tool calls (they are async).
 - **CRITICAL: Every Python code block MUST end with a `print()` statement.** This is required to output results for the next step.
 - The print statement must be on a descriptive variable (not generic names like 'result' or 'data') defined before the print that represents the final output.
+- **Begin your reply with a numbered plan of at most 4 short steps, then a code block that implements ONLY step 1.** Later blocks implement later steps, one each.
 - **CRITICAL: You are not allowed to use `open` or `os` modules.**
 - **CRITICAL: You are only allowed to import the following modules: json, re, typing, datetime, asyncio.**
 {% if enable_shell_tool %}
