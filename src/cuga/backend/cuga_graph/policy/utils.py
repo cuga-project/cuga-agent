@@ -116,10 +116,17 @@ async def apply_policies_data_to_storage(
     policies_data: List[Dict[str, Any]],
     clear_existing: bool = True,
     filesystem_sync: Optional[Any] = None,
+    prune_filesystem: bool = False,
 ) -> Dict[str, Any]:
     """
     Apply a list of policy dicts (frontend/manage-config format) to storage.
     Used by load_policies_from_json, POST /api/config/policies, and manager config.
+
+    When *prune_filesystem* is True (together with *clear_existing* and a
+    *filesystem_sync*), policy files in the .cuga folder whose IDs are absent from
+    *policies_data* are deleted too, so a replacement import is not undone by the
+    next folder load. Off by default: server callers share one .cuga folder
+    between draft and live state.
     """
     errors: List[str] = []
     count = 0
@@ -131,6 +138,18 @@ async def apply_policies_data_to_storage(
             except Exception as e:
                 logger.warning(f"Failed to delete existing policy {policy_obj.id}: {e}")
         logger.info(f"Cleared {len(existing_policies)} existing policies")
+
+        if prune_filesystem and filesystem_sync:
+            imported_ids = {
+                str(policy_data["id"])
+                for policy_data in (policies_data or [])
+                if isinstance(policy_data, dict) and policy_data.get("id")
+            }
+            stale_ids = {str(pid) for pid in filesystem_sync.get_filesystem_policy_ids()} - imported_ids
+            for stale_id in sorted(stale_ids):
+                filesystem_sync.delete_policy_file(stale_id)
+            if stale_ids:
+                logger.info(f"Removed {len(stale_ids)} stale policy file(s) from filesystem")
 
     for policy_data in policies_data or []:
         try:
@@ -365,6 +384,8 @@ async def load_policies_from_json(
     file_path: str,
     storage: PolicyStorage,
     clear_existing: bool = False,
+    filesystem_sync: Optional[Any] = None,
+    prune_filesystem: bool = False,
 ) -> Dict[str, Any]:
     """
     Load policies from a JSON file into storage.
@@ -378,6 +399,10 @@ async def load_policies_from_json(
         file_path: Path to JSON file containing policies
         storage: PolicyStorage instance
         clear_existing: If True, clear all existing policies before loading
+        filesystem_sync: Optional PolicyFilesystemSync; when given, each imported
+            policy is also written to the .cuga folder
+        prune_filesystem: With *clear_existing* and *filesystem_sync*, also delete
+            .cuga policy files whose IDs are not in the JSON file
 
     Returns:
         Dictionary with:
@@ -391,7 +416,8 @@ async def load_policies_from_json(
             storage,
             extracted["policies"],
             clear_existing=clear_existing,
-            filesystem_sync=None,
+            filesystem_sync=filesystem_sync,
+            prune_filesystem=prune_filesystem,
         )
         count = result["count"]
         errors = [*extracted["errors"], *result["errors"]]

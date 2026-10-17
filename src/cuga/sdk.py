@@ -69,6 +69,7 @@ Tool Approval Example (with HITL):
 """
 
 from typing import Callable, List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
+import asyncio
 import time
 import uuid
 from loguru import logger
@@ -234,6 +235,8 @@ class PoliciesManager:
         """Initialize policies manager with reference to agent or supervisor."""
         self._agent = agent
         self._fs_sync = None
+        self._auto_load_done = False
+        self._ensure_lock = asyncio.Lock()
 
     def _agent_tool_provider(self) -> "Optional[ToolProviderInterface]":
         """Return tool_provider when the host exposes one (CugaAgent, optional CugaSupervisor)."""
@@ -267,6 +270,12 @@ class PoliciesManager:
     async def _ensure_policy_system(self) -> "Optional[PolicyConfigurable]":
         """Ensure policy system is initialized if enabled.
 
+        The implicit folder auto-load (triggered when *auto_load_policies* is True)
+        runs **at most once** per policy-system instance. Calling this method again
+        after a successful auto-load skips the folder scan entirely.
+        Use :meth:`load_from_folder` or :meth:`sync_from_filesystem` to force a
+        full reload at any time.
+
         Returns:
             PolicyConfigurable if enabled, None if disabled via settings.policy.enabled
         """
@@ -276,82 +285,108 @@ class PoliciesManager:
         if not settings.policy.enabled:
             return None
 
-        if not hasattr(self._agent, '_policy_system') or self._agent._policy_system is None:
-            self._agent._policy_system = PolicyConfigurable()
-            await self._agent._policy_system.initialize()
+        # Not re-entrant: code called from here must not call _ensure_policy_system()
+        # unconditionally (clear() / load_from_folder() only do so when _policy_system is None).
+        async with self._ensure_lock:
+            if not hasattr(self._agent, '_policy_system') or self._agent._policy_system is None:
+                self._agent._policy_system = PolicyConfigurable()
+                await self._agent._policy_system.initialize()
+                self._auto_load_done = False
 
-            # Initialize filesystem sync if enabled and .cuga folder is configured
-            # Initialize filesystem sync if enabled
-            import os
-
-            if self._agent._filesystem_sync and self._agent.cuga_folder:
-                from cuga.backend.cuga_graph.policy.filesystem_sync import PolicyFilesystemSync
-
-                self._fs_sync = PolicyFilesystemSync(cuga_folder=self._agent.cuga_folder)
-                logger.debug(f"Initialized filesystem sync for {self._agent.cuga_folder}")
-
-        # Reset/clear all existing policies if requested (must be outside the init block)
-        # This ensures reset works even when policy system is already initialized
-        # Only reset ONCE during initialization, then clear the flag
-        if self._agent._reset_policy_storage:
-            try:
-                logger.info("Resetting policy storage - clearing all existing policies")
-                await self.clear()
-                logger.info("✅ Policy storage reset complete")
-                # Clear the flag so we don't reset again on subsequent calls
-                self._agent._reset_policy_storage = False
-            except Exception as e:
-                logger.error(f"Failed to reset policy storage: {e}")
-                raise e
-
-        # Auto-load policies from .cuga folder if enabled
-        # BUT skip auto-load if we just reset the storage (to keep it clean)
-        if self._agent._auto_load_policies and not self._agent._reset_policy_storage:
-            try:
-                # Resolve to absolute path for clarity in logs
+                # Initialize filesystem sync if enabled and .cuga folder is configured
+                # Initialize filesystem sync if enabled
                 import os
 
-                folder_path = os.path.abspath(self._agent.cuga_folder)
-                cwd = os.getcwd()
+                if self._agent._filesystem_sync and self._agent.cuga_folder:
+                    from cuga.backend.cuga_graph.policy.filesystem_sync import PolicyFilesystemSync
 
-                logger.debug(f"Checking for policy folder: {self._agent.cuga_folder}")
-                logger.debug(f"  Current working directory: {cwd}")
-                logger.debug(f"  Resolved absolute path: {folder_path}")
+                    self._fs_sync = PolicyFilesystemSync(cuga_folder=self._agent.cuga_folder)
+                    logger.debug(f"Initialized filesystem sync for {self._agent.cuga_folder}")
 
-                if os.path.exists(folder_path):
-                    await self.load_from_folder(self._agent.cuga_folder)
-                    logger.info(
-                        f"Auto-loaded policies from {self._agent.cuga_folder} (resolved: {folder_path})"
-                    )
+            # Reset/clear all existing policies if requested (must be outside the init block)
+            # This ensures reset works even when policy system is already initialized
+            # Only reset ONCE during initialization, then clear the flag
+            if self._agent._reset_policy_storage:
+                try:
+                    logger.info("Resetting policy storage - clearing all existing policies")
+                    await self.clear()
+                    logger.info("✅ Policy storage reset complete")
+                    # Clear the flag so we don't reset again on subsequent calls
+                    self._agent._reset_policy_storage = False
+                except Exception as e:
+                    logger.error(f"Failed to reset policy storage: {e}")
+                    raise e
 
-                    # Validate and sync: ensure filesystem and storage are in sync
-                    if self._fs_sync:
-                        sync_result = await self._validate_and_sync(
-                            self._agent._policy_system.storage, folder_path
-                        )
-                        if (
-                            sync_result['removed']
-                            or sync_result['added_to_storage']
-                            or sync_result['added_to_filesystem']
-                        ):
+            # Auto-load policies from .cuga folder if enabled
+            # BUT skip auto-load if we just reset the storage (to keep it clean)
+            if self._agent._auto_load_policies and not self._agent._reset_policy_storage:
+                if not self._auto_load_done:
+                    try:
+                        # Resolve to absolute path for clarity in logs
+                        import os
+
+                        folder_path = os.path.abspath(self._agent.cuga_folder)
+                        cwd = os.getcwd()
+
+                        logger.debug(f"Checking for policy folder: {self._agent.cuga_folder}")
+                        logger.debug(f"  Current working directory: {cwd}")
+                        logger.debug(f"  Resolved absolute path: {folder_path}")
+
+                        if os.path.exists(folder_path):
+                            load_result = await self.load_from_folder(self._agent.cuga_folder)
                             logger.info(
-                                f"Sync validation complete: "
-                                f"removed={sync_result['removed']}, "
-                                f"added_to_storage={sync_result['added_to_storage']}, "
-                                f"added_to_filesystem={sync_result['added_to_filesystem']}"
+                                f"Auto-loaded policies from {self._agent.cuga_folder} (resolved: {folder_path})"
                             )
-                else:
-                    logger.warning(
-                        f"Policy folder not found: {self._agent.cuga_folder} (resolved: {folder_path})"
-                    )
-                    logger.warning(f"  Current directory: {cwd}")
-                    logger.warning("  Skipping auto-load")
-            except Exception as e:
-                logger.error(f"Failed to auto-load policies from {self._agent.cuga_folder}: {e}")
-                raise e
 
-        self._attach_policy_storage_to_toolguard()
-        return self._agent._policy_system
+                            # Validate and sync: ensure filesystem and storage are in sync
+                            if self._fs_sync:
+                                sync_result = await self._validate_and_sync(
+                                    self._agent._policy_system.storage, folder_path
+                                )
+                                if (
+                                    sync_result['removed']
+                                    or sync_result['added_to_storage']
+                                    or sync_result['added_to_filesystem']
+                                ):
+                                    logger.info(
+                                        f"Sync validation complete: "
+                                        f"removed={sync_result['removed']}, "
+                                        f"added_to_storage={sync_result['added_to_storage']}, "
+                                        f"added_to_filesystem={sync_result['added_to_filesystem']}"
+                                    )
+
+                            # Permanent parse errors (bad frontmatter, unknown type) do not
+                            # block the latch — retrying them recreates #804. Storage errors
+                            # (embedding/DB outage) are transient so the latch stays unset
+                            # and the next call will retry.
+                            if load_result.get("storage_errors"):
+                                logger.warning(
+                                    f"Policy auto-load could not store "
+                                    f"{len(load_result['storage_errors'])} policy(ies); "
+                                    "will retry on next call"
+                                )
+                            else:
+                                self._auto_load_done = True
+                                if load_result.get("errors"):
+                                    logger.warning(
+                                        f"Policy auto-load skipped "
+                                        f"{len(load_result['errors'])} invalid file(s); "
+                                        "fix them and call load_from_folder() to reload"
+                                    )
+                        else:
+                            logger.warning(
+                                f"Policy folder not found: {self._agent.cuga_folder} (resolved: {folder_path})"
+                            )
+                            logger.warning(f"  Current directory: {cwd}")
+                            logger.warning("  Skipping auto-load")
+                    except Exception as e:
+                        logger.error(f"Failed to auto-load policies from {self._agent.cuga_folder}: {e}")
+                        raise e
+                else:
+                    logger.debug("Policy folder auto-load already completed for this agent; skipping")
+
+            self._attach_policy_storage_to_toolguard()
+            return self._agent._policy_system
 
     async def add_intent_guard(
         self,
@@ -1160,10 +1195,17 @@ class PoliciesManager:
             logger.warning("Policy system is disabled - skipping load_from_json")
             return {"count": 0, "enabled": 0, "errors": ["Policy system is disabled"]}
 
+        # Persist imported policies to .cuga (like add_*). Since the implicit auto-load
+        # runs only once (#804), nothing else writes them to disk during the session,
+        # and the next start's filesystem validation would drop storage-only policies.
+        # With clear_existing, stale .cuga files are pruned too so a replacement import
+        # is not undone by the next start's folder load.
         result = await load_policies_from_json(
             file_path=file_path,
             storage=policy_system.storage,
             clear_existing=clear_existing,
+            filesystem_sync=self._fs_sync,
+            prune_filesystem=True,
         )
 
         # Reload policies in the system
@@ -1224,11 +1266,13 @@ class PoliciesManager:
 
         from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
 
+        # Persist imported policies to .cuga and prune stale files (see load_from_json).
         apply_result = await apply_policies_data_to_storage(
             policy_system.storage,
             extracted["policies"],
             clear_existing=clear_existing,
-            filesystem_sync=None,
+            filesystem_sync=self._fs_sync,
+            prune_filesystem=True,
         )
         import_result = {
             "count": apply_result["count"],
@@ -1512,6 +1556,8 @@ class PoliciesManager:
         This will:
         1. Load new policies from .cuga folder
         2. Remove policies from storage that are no longer in filesystem
+
+        Use this to pick up ``.cuga`` files edited on disk while the agent is running.
 
         Returns:
             Dictionary with sync statistics
