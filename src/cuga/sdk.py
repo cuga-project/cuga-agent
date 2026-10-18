@@ -339,10 +339,12 @@ class PoliciesManager:
                             )
 
                             # Validate and sync: ensure filesystem and storage are in sync
+                            sync_errors = []
                             if self._fs_sync:
                                 sync_result = await self._validate_and_sync(
                                     self._agent._policy_system.storage, folder_path
                                 )
+                                sync_errors = sync_result.get("errors", [])
                                 if (
                                     sync_result['removed']
                                     or sync_result['added_to_storage']
@@ -356,13 +358,12 @@ class PoliciesManager:
                                     )
 
                             # Permanent parse errors (bad frontmatter, unknown type) do not
-                            # block the latch — retrying them recreates #804. Storage errors
-                            # (embedding/DB outage) are transient so the latch stays unset
-                            # and the next call will retry.
-                            if load_result.get("storage_errors"):
+                            # block the latch — retrying them recreates #804. Storage or
+                            # reconciliation errors leave it unset so the next call retries.
+                            retry_errors = [*load_result.get("storage_errors", []), *sync_errors]
+                            if retry_errors:
                                 logger.warning(
-                                    f"Policy auto-load could not store "
-                                    f"{len(load_result['storage_errors'])} policy(ies); "
+                                    f"Policy auto-load encountered {len(retry_errors)} storage or sync error(s); "
                                     "will retry on next call"
                                 )
                             else:
