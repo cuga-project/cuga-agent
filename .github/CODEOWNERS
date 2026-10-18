@@ -36,3 +36,9 @@ Dockerfile* @sami-marreed
 /configurations/ @sami-marreed @offerakrabi
 config.py @sami-marreed @offerakrabi
 settings.toml @sami-marreed @offerakrabi
+
+# License policy and enforcement changes require maintainer review.
+/.github/licenses/ @sami-marreed @offerakrabi
+/.github/actions/license-scan/ @sami-marreed @offerakrabi
+/.github/workflows/licenses.yml @sami-marreed @offerakrabi
+/scripts/licenses/ @sami-marreed @offerakrabi

@@ -47,6 +47,33 @@ jobs:
           load: true
           tags: ${{ vars.IBM_REGISTRY_URL }}/${{ vars.IBM_CR_NAMESPACE }}/${{ vars.IMAGE_NAME }}:${{ vars.IMAGE_TAG }}
 
+      - name: Collect the built image Python inventory independently
+        env:
+          LICENSE_IMAGE: ${{ vars.IBM_REGISTRY_URL }}/${{ vars.IBM_CR_NAMESPACE }}/${{ vars.IMAGE_NAME }}:${{ vars.IMAGE_TAG }}
+        run: |
+          mkdir -p license-reports
+          docker run --rm --network none --read-only --user 0 --entrypoint /app/.venv/bin/python \
+            --mount "type=bind,source=$PWD/scripts/licenses/check.py,target=/tmp/check-licenses.py,readonly" \
+            "$LICENSE_IMAGE" /tmp/check-licenses.py inventory python /app/.venv - > license-reports/inventory.json
+
+      - name: Scan the exact image before deployment
+        uses: ./.github/actions/license-scan
+        with:
+          target-type: image
+          target: ${{ vars.IBM_REGISTRY_URL }}/${{ vars.IBM_CR_NAMESPACE }}/${{ vars.IMAGE_NAME }}:${{ vars.IMAGE_TAG }}
+          scope: image-full-amd64
+          inventory: license-reports/inventory.json
+          full: 'true'
+          mode: ${{ vars.LICENSE_ENFORCEMENT || 'report' }}
+
+      - name: Upload license evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: licenses-ibm-image
+          path: license-reports/
+          if-no-files-found: error
+
       - name: Install IBM Cloud CLI
         uses: IBM/actions-ibmcloud-cli@v1
         with:

@@ -32,7 +32,7 @@ ENV PATH="/usr/local/bin:$PATH"
 USER root
 WORKDIR /app
 
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 COPY src/ ./src/
 COPY docs/ ./docs/
 
@@ -141,7 +141,7 @@ ENV PATH="/app/.venv/bin:/usr/local/bin:$PATH"
 
 WORKDIR /app
 
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 
 # 1001:0 matches USER 1001; g+rwX lets OpenShift's arbitrary UID run with GID 0 (typical restricted SCC).
 RUN mkdir -p /app/cuga_workspace /app/crm_tmp /app/.cuga/knowledge /data/dbs && \

@@ -1,0 +1,154 @@
+name: Licenses
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: licenses-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python licenses (${{ matrix.profile }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [full, slim]
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - name: Checkout trusted policy
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: .license-policy-base
+          persist-credentials: false
+      - name: Select policy and rollout mode
+        id: policy
+        env:
+          LICENSE_MODE: ${{ vars.LICENSE_ENFORCEMENT || 'report' }}
+        run: |
+          policy_dir=.license-policy-base/.github/licenses
+          if [ ! -f "$policy_dir/policy.json" ]; then
+            [ "$LICENSE_MODE" = report ] || { echo 'Trusted baseline is missing'; exit 1; }
+            policy_dir=.github/licenses
+          fi
+          echo "directory=$policy_dir" >> "$GITHUB_OUTPUT"
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: '3.12'
+          version: '0.9.5'
+          enable-cache: true
+      - name: Install exact image dependency profile without building an image
+        env:
+          LICENSE_PROFILE: ${{ matrix.profile }}
+        run: |
+          python3 scripts/licenses/check.py prepare-python "$LICENSE_PROFILE" "$RUNNER_TEMP/license-venv"
+          python3 scripts/licenses/check.py inventory python "$RUNNER_TEMP/license-venv" license-reports/inventory.json
+      - uses: ./.github/actions/license-scan
+        with:
+          target-type: rootfs
+          target: ${{ runner.temp }}/license-venv
+          scope: python-${{ matrix.profile }}
+          inventory: license-reports/inventory.json
+          policy-dir: ${{ steps.policy.outputs.directory }}
+          mode: ${{ vars.LICENSE_ENFORCEMENT || 'report' }}
+      - name: Upload reports even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: licenses-python-${{ matrix.profile }}
+          path: license-reports/
+          if-no-files-found: error
+
+  frontend:
+    name: Frontend licenses
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - name: Checkout trusted policy
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: .license-policy-base
+          persist-credentials: false
+      - name: Select policy
+        id: policy
+        env:
+          LICENSE_MODE: ${{ vars.LICENSE_ENFORCEMENT || 'report' }}
+        run: |
+          policy_dir=.license-policy-base/.github/licenses
+          if [ ! -f "$policy_dir/policy.json" ]; then
+            [ "$LICENSE_MODE" = report ] || { echo 'Trusted baseline is missing'; exit 1; }
+            policy_dir=.github/licenses
+          fi
+          echo "directory=$policy_dir" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Install pinned frontend dependencies without lifecycle scripts
+        working-directory: src/frontend_workspaces
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile --ignore-scripts
+      - name: Collect independent installed inventory
+        run: python3 scripts/licenses/check.py inventory node src/frontend_workspaces/node_modules license-reports/inventory.json
+      - uses: ./.github/actions/license-scan
+        with:
+          target-type: fs
+          target: src/frontend_workspaces
+          scope: frontend-build-and-runtime
+          inventory: license-reports/inventory.json
+          policy-dir: ${{ steps.policy.outputs.directory }}
+          mode: ${{ vars.LICENSE_ENFORCEMENT || 'report' }}
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: licenses-frontend
+          path: license-reports/
+          if-no-files-found: error
+
+  package:
+    name: Package license notices
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: '3.12'
+          version: '0.9.5'
+      - run: uv build
+      - run: python3 scripts/licenses/check.py archives dist
+
+  license-check:
+    name: license-check
+    if: always()
+    needs: [python, frontend, package]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every license job to succeed
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          jobs = json.loads(os.environ['JOB_RESULTS'])
+          failures = {name: job['result'] for name, job in jobs.items() if job['result'] != 'success'}
+          if failures:
+              raise SystemExit(f'License jobs failed or did not run: {failures}')
+          PY

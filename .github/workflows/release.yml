@@ -24,5 +24,7 @@ jobs:
         run: uv python install 3.12
       - name: Build
         run: uv build
+      - name: Verify published package license notices
+        run: python3 scripts/licenses/check.py archives dist
       - name: Publish
         run: uv publish

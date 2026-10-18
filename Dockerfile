@@ -17,7 +17,7 @@ ENV PATH="/root/.local/bin/:$PATH"
 WORKDIR /app
 
 # Copy dependency files
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock LICENSE NOTICE ./
 
 # Copy source code
 COPY src/ ./src/
