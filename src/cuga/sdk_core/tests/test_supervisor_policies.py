@@ -344,6 +344,7 @@ class TestSupervisorPolicyE2E:
         assert metadata.get("policy_type") == "intent_guard"
         assert values.get("selected_agents") == []
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_e2e_playbook_orchestrates_sub_agents(self):
         supervisor = _isolated_supervisor(
@@ -373,7 +374,10 @@ class TestSupervisorPolicyE2E:
 
         assert metadata.get("policy_type") == "playbook"
         assert metadata.get("playbook_guidance") or metadata.get("playbook_guidance_added")
-        assert len(selected) >= 1 or delegation_count >= 1
+        assert len(selected) >= 1 or delegation_count >= 1, (
+            f"Supervisor did not delegate: answer={result.answer!r}, error={result.error!r}, "
+            f"messages={values.get('supervisor_chat_messages')!r}"
+        )
         assert result.error is None
 
     @pytest.mark.asyncio
