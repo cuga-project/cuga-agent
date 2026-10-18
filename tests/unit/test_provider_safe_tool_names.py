@@ -411,10 +411,11 @@ async def test_approval_policy_on_the_real_name_stops_a_call_made_under_the_alia
             adapter, state, code, content, {}
         )
 
-    # None means "no policy matched", or any error on the way: the handler fails open (#880).
+    # An error on the way would also pause (the check fails closed, #880), so check the reason.
     assert command is not None
     assert command.update["hitl_action"] is not None
     assert command.update["script"] == code
+    assert command.update[adapter.metadata_key]["policy_id"] == "approve-reconcile"
 
 
 # ── End to end ─────────────────────────────────────────────────────────────
