@@ -358,12 +358,16 @@ class PoliciesManager:
                                     )
 
                             # Permanent parse errors (bad frontmatter, unknown type) do not
-                            # block the latch — retrying them recreates #804. Storage or
-                            # reconciliation errors leave it unset so the next call retries.
-                            retry_errors = [*load_result.get("storage_errors", []), *sync_errors]
+                            # block the latch — retrying them recreates #804. File-access,
+                            # storage or sync errors leave it unset so the next call retries.
+                            retry_errors = [
+                                *load_result.get("storage_errors", []),
+                                *load_result.get("io_errors", []),
+                                *sync_errors,
+                            ]
                             if retry_errors:
                                 logger.warning(
-                                    f"Policy auto-load encountered {len(retry_errors)} storage or sync error(s); "
+                                    f"Policy auto-load encountered {len(retry_errors)} retryable error(s); "
                                     "will retry on next call"
                                 )
                             else:
