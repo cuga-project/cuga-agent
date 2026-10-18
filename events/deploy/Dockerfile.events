@@ -23,7 +23,7 @@ ENV PATH="/root/.local/bin/:$PATH"
 WORKDIR /app
 
 # Dependencies first (layer cache), then source.
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock LICENSE NOTICE ./
 COPY src/ ./src/
 COPY docs/ ./docs/
 

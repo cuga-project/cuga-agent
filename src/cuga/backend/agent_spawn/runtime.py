@@ -222,7 +222,7 @@ class SpawnAgentRuntime:
         cfg = get_langfuse_invoke_config()
         configurable = dict(cfg.get("configurable") or {})
         parent_cfg = dict((self._parent_config or {}).get("configurable") or {})
-        for key in ("skills_enabled", "skills_folder"):
+        for key in ("skills_enabled", "skills_folder", "knowledge_agent_id", "knowledge_user_id"):
             if key in parent_cfg:
                 configurable[key] = parent_cfg[key]
         if workspace_thread_id:

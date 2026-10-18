@@ -2,47 +2,32 @@
 
 Supports both HTTP and stdio transports (configurable via knowledge_settings.toml).
 Forwards requests to the backend via HTTP.
-agent_id is auto-discovered from the backend's /api/agent/context endpoint.
+Run identity is supplied through authenticated MCP request metadata.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import secrets
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     VIRTUAL_WORKSPACE_ROOT,
     resolve_workspace_path,
 )
+from cuga.backend.knowledge.internal_token import read_token_file, resolve_env
 
 logger = logging.getLogger("cuga.knowledge")
 
 # --- Configuration ---
 
 
-def _resolve_env(key: str, default: str) -> str:
-    """Resolve env var, handling the case where the value is itself an env var name.
-
-    When the MCP subprocess receives env like CUGA_INTERNAL_TOKEN_FILE=CUGA_INTERNAL_TOKEN_FILE
-    (literal string instead of a path), detect this circular reference and fall back to default.
-    """
-    val = os.getenv(key, default)
-    # Circular: env var value equals its own key name → unresolved, use default
-    if val == key:
-        return default
-    # If the value looks like an unresolved env var name (no path separators,
-    # all uppercase+underscore), try resolving it from the real environment
-    if val and "/" not in val and "\\" not in val and val == val.upper() and "_" in val:
-        resolved = os.getenv(val)
-        if resolved and resolved != val:
-            return resolved
-        return default
-    return val
+_resolve_env = resolve_env
 
 
 def _default_backend_url() -> str:
@@ -77,16 +62,7 @@ def _reload_token() -> str:
 
 
 def _read_token_file() -> str:
-    import time
-
-    for attempt in range(3):
-        try:
-            with open(CUGA_INTERNAL_TOKEN_FILE) as f:
-                return f.read().strip()
-        except FileNotFoundError:
-            if attempt < 2:
-                time.sleep(1)
-    raise RuntimeError(f"Knowledge backend not ready — token file not found: {CUGA_INTERNAL_TOKEN_FILE}")
+    return read_token_file(CUGA_INTERNAL_TOKEN_FILE)
 
 
 # --- HTTP client ---
@@ -123,28 +99,6 @@ async def _request(method: str, path: str, **kwargs) -> httpx.Response:
     return resp
 
 
-# --- Agent ID discovery ---
-
-
-def _get_agent_id() -> str:
-    """Discover current agent_id from the backend API.
-
-    Called per tool invocation (not cached) so agent switches are reflected immediately.
-    The /api/agent/context endpoint is lightweight — returns a string from memory.
-    """
-    try:
-        resp = httpx.get(
-            f"{CUGA_BACKEND_URL}/api/agent/context",
-            headers={"X-Internal-Token": _get_token()},
-            timeout=5.0,
-        )
-        if resp.status_code == 200:
-            return resp.json().get("agent_id", "cuga-default")
-    except Exception:
-        pass
-    return "cuga-default"
-
-
 _LEGACY_VIRTUAL_ROOTS = ("/tmp", "/private/tmp")
 
 
@@ -179,13 +133,14 @@ def _resolve_ingest_file_path(file_path: str, *, thread_id: str) -> Path:
     return resolved
 
 
-def _identity_headers(agent_id: str = "", thread_id: str = "") -> dict[str, str]:
-    """Build identity headers. Uses explicit agent_id if provided, else auto-discovers."""
-    aid = agent_id if agent_id else _get_agent_id()
-    headers = {"X-Agent-ID": aid}
-    if thread_id:
-        headers["X-Thread-ID"] = thread_id
-    return headers
+def _identity_headers(ctx: Context | None) -> dict[str, str]:
+    """Forward the run credential outside model-controlled tool arguments."""
+    from cuga.backend.knowledge.run_context import RUN_TOKEN_HEADER, RUN_TOKEN_META
+
+    request_context = ctx.request_context if ctx is not None else None
+    meta = getattr(request_context, "meta", None)
+    token = getattr(meta, RUN_TOKEN_META, None)
+    return {RUN_TOKEN_HEADER: token} if isinstance(token, str) else {}
 
 
 # --- MCP Server ---
@@ -200,8 +155,8 @@ mcp = FastMCP(
 async def search_knowledge(
     query: str,
     scope: str = "all",
-    agent_id: str = "",
     thread_id: str = "",
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Search documents in the knowledge base.
 
@@ -216,7 +171,7 @@ async def search_knowledge(
         resp = await _request(
             "POST",
             "/api/knowledge/search",
-            headers=_identity_headers(agent_id, thread_id),
+            headers=_identity_headers(ctx),
             json={"scope": scope, "query": query},
         )
         return resp.json()
@@ -256,8 +211,8 @@ async def ingest_knowledge(
     file_path: str,
     scope: str = "agent",
     replace_duplicates: bool = True,
-    agent_id: str = "",
     thread_id: str = "",
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Upload a document file to the knowledge base.
 
@@ -268,8 +223,12 @@ async def ingest_knowledge(
     ``file_path`` must resolve under the agent workspace (``/workspace/...`` or a
     relative path within it). Host-absolute paths such as ``/etc/passwd`` are rejected.
     """
+    headers = _identity_headers(ctx)
+    # Authenticate before opening a file; the supplied thread_id is untrusted.
+    context_response = await _request("GET", "/api/knowledge/run-context", headers=headers)
+    bound_thread = context_response.json().get("thread_id") or ""
     try:
-        resolved = _resolve_ingest_file_path(file_path, thread_id=thread_id)
+        resolved = _resolve_ingest_file_path(file_path, thread_id=bound_thread)
     except (ValueError, FileNotFoundError) as exc:
         return {"error": str(exc)}
 
@@ -277,7 +236,7 @@ async def ingest_knowledge(
         resp = await _request(
             "POST",
             "/api/knowledge/documents",
-            headers=_identity_headers(agent_id, thread_id),
+            headers=headers,
             files={"files": (resolved.name, f)},
             data={"scope": scope, "replace_duplicates": str(replace_duplicates).lower()},
         )
@@ -288,8 +247,8 @@ async def ingest_knowledge(
 async def ingest_knowledge_url(
     url: str,
     scope: str = "agent",
-    agent_id: str = "",
     thread_id: str = "",
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Ingest a document from a URL into the knowledge base.
 
@@ -299,7 +258,7 @@ async def ingest_knowledge_url(
     resp = await _request(
         "POST",
         "/api/knowledge/documents/url",
-        headers=_identity_headers(agent_id, thread_id),
+        headers=_identity_headers(ctx),
         json={"scope": scope, "url": url},
     )
     return resp.json()
@@ -308,8 +267,8 @@ async def ingest_knowledge_url(
 @mcp.tool()
 async def list_knowledge_documents(
     scope: str = "agent",
-    agent_id: str = "",
     thread_id: str = "",
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """List all documents in the knowledge base.
 
@@ -319,7 +278,7 @@ async def list_knowledge_documents(
     resp = await _request(
         "GET",
         "/api/knowledge/documents",
-        headers=_identity_headers(agent_id, thread_id),
+        headers=_identity_headers(ctx),
         params={"scope": scope},
     )
     return resp.json()
@@ -329,8 +288,8 @@ async def list_knowledge_documents(
 async def delete_knowledge_document(
     filename: str,
     scope: str = "agent",
-    agent_id: str = "",
     thread_id: str = "",
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Delete a document from the knowledge base by filename.
 
@@ -339,7 +298,7 @@ async def delete_knowledge_document(
     resp = await _request(
         "DELETE",
         "/api/knowledge/documents",
-        headers=_identity_headers(agent_id, thread_id),
+        headers=_identity_headers(ctx),
         json={"scope": scope, "filename": filename},
     )
     return resp.json()
@@ -348,7 +307,7 @@ async def delete_knowledge_document(
 @mcp.tool()
 async def get_ingestion_status(
     task_id: str,
-    agent_id: str = "",
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Check the status of a document ingestion task.
 
@@ -357,20 +316,18 @@ async def get_ingestion_status(
     resp = await _request(
         "GET",
         f"/api/knowledge/tasks/{task_id}",
-        headers=_identity_headers(agent_id),
+        headers=_identity_headers(ctx),
     )
     return resp.json()
 
 
 @mcp.tool()
-async def get_knowledge_status(
-    agent_id: str = "",
-) -> dict[str, Any]:
+async def get_knowledge_status(ctx: Context | None = None) -> dict[str, Any]:
     """Check if the knowledge service is healthy and get current settings."""
     resp = await _request(
         "GET",
         "/api/knowledge/health",
-        headers=_identity_headers(agent_id),
+        headers=_identity_headers(ctx),
     )
     return resp.json()
 
@@ -378,9 +335,71 @@ async def get_knowledge_status(
 # --- Entry point ---
 
 
+def _token_matches(provided: str) -> bool:
+    """Constant-time check of a presented token against the backend's."""
+    if not provided:
+        return False
+    try:
+        if secrets.compare_digest(provided, _get_token()):
+            return True
+        # The backend rewrites the token file when it restarts. Re-read once
+        # before rejecting so a rotation does not strand a live client.
+        return secrets.compare_digest(provided, _reload_token())
+    except RuntimeError:
+        # Token file missing — the backend has not finished starting. Fail
+        # closed: "cannot verify" is not "no verification needed".
+        return False
+
+
+class _RequireInternalToken:
+    """Require the internal token on the HTTP transport.
+
+    In HTTP mode this server listens on 127.0.0.1 and holds the internal token,
+    which it presents to the backend on every forwarded call. Without this guard
+    it is an unauthenticated local endpoint that performs authenticated writes
+    for whoever asks — the caller needs no credential of its own, which makes
+    reaching the port equivalent to holding the token (GHSA-ffh4-qv86-xfxv).
+    Requiring the token here means a caller must already have what the port
+    would otherwise have handed them.
+
+    The stdio transport needs no equivalent: its only client is the process that
+    spawned it and owns the pipe.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # ASGI header names arrive lowercased.
+        raw = dict(scope.get("headers") or ()).get(b"x-internal-token", b"")
+        if not _token_matches(raw.decode("latin-1")):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send({"type": "http.response.body", "body": b'{"error":"unauthorized"}'})
+            return
+
+        await self.app(scope, receive, send)
+
+
 def run_http(host: str = "127.0.0.1", port: int = 8113):
     """Start the knowledge MCP server in HTTP mode (called from main process)."""
-    mcp.run(transport="http", host=host, port=port)
+    from starlette.middleware import Middleware
+
+    mcp.run(
+        transport="http",
+        host=host,
+        port=port,
+        middleware=[Middleware(_RequireInternalToken)],
+    )
 
 
 if __name__ == "__main__":
