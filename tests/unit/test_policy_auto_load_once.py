@@ -33,6 +33,12 @@ class _FakeStorage:
     async def delete_policy(self, id):
         self._policies.pop(id, None)
 
+    async def get_policy(self, policy_id):
+        return self._policies.get(policy_id)
+
+    async def update_policy(self, policy):
+        self._policies[policy.id] = policy
+
 
 class _FakePolicyConfigurable:
     instances: list = []
@@ -309,6 +315,67 @@ async def test_json_import_persists_to_filesystem_and_survives_restart(
     restarted = _make_agent(cuga_folder)
     await restarted.policies._ensure_policy_system()
     assert "imported_guide" in restarted._policy_system.storage._policies
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True])
+async def test_generated_guards_survive_reload_and_restart(cuga_folder, tmp_path, monkeypatch, partial):
+    import json
+
+    from cuga.sdk import PoliciesManager
+
+    async def generate_examples(self, policy_id, target_tool):
+        return ["forbidden input"], ["allowed input"]
+
+    async def generate_code(self, policy_id, target_tool):
+        if partial and policy_id == "second_guide":
+            raise RuntimeError("Generation temporarily unavailable")
+        return "def check(input):\n    return True"
+
+    # Exercise the real batch workflow and update_tool_guard; only generation is mocked.
+    monkeypatch.setattr(PoliciesManager, "generate_tool_guard_examples", generate_examples)
+    monkeypatch.setattr(PoliciesManager, "generate_tool_guard_code", generate_code)
+    json_path = tmp_path / "guides.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "policies": [
+                    {
+                        "id": policy_id,
+                        "policy_type": "tool_guide",
+                        "name": policy_id,
+                        "description": "Test guide",
+                        "triggers": [{"type": "always"}],
+                        "target_tools": ["noop_tool"],
+                        "guide_content": "Only allow approved input.",
+                        "enabled": True,
+                    }
+                    for policy_id in ["first_guide", "second_guide"]
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    agent = _make_agent(cuga_folder)
+    result = await agent.policies.generate_tool_guards_from_json(str(json_path))
+    assert result["status"] == ("partial" if partial else "ok")
+    expected = {
+        policy_id: (await agent._policy_system.storage.get_policy(policy_id)).tool_guards
+        for policy_id in ["first_guide", "second_guide"]
+    }
+    assert expected["first_guide"]["noop_tool"].policy_code == "def check(input):\n    return True"
+    for guards in expected.values():
+        assert guards["noop_tool"].violating_examples == ["forbidden input"]
+        assert guards["noop_tool"].compliance_examples == ["allowed input"]
+
+    await agent.policies.load_from_folder(cuga_folder)
+    restarted = _make_agent(cuga_folder)
+    await restarted.policies._ensure_policy_system()
+    for current in [agent, restarted]:
+        for policy_id, guards in expected.items():
+            reloaded = await current._policy_system.storage.get_policy(policy_id)
+            assert reloaded.tool_guards == guards
 
 
 @pytest.mark.asyncio
