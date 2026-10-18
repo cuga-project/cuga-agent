@@ -496,11 +496,40 @@ def test_save_policy_rejects_ids_outside_subfolder(tmp_path, bad_id):
     folder = tmp_path / ".cuga"
     sync = PolicyFilesystemSync(cuga_folder=str(folder))
 
-    with pytest.raises(ValueError, match="resolves outside"):
+    with pytest.raises(ValueError, match="Policy ID"):
         sync.save_policy_to_file(_intent_guard(bad_id))
 
     written = [p for p in tmp_path.rglob("*.md")]
     assert written == []
+
+
+@pytest.mark.parametrize("bad_id", ["unused/../foo", "./foo", r"unused\..\foo", r".\foo", ".", ".."])
+def test_save_policy_rejects_filename_aliases_without_overwriting(tmp_path, bad_id):
+    """Reject path components before they can alias an existing policy filename."""
+    folder = tmp_path / ".cuga"
+    sync = PolicyFilesystemSync(cuga_folder=str(folder))
+    original_path = sync.save_policy_to_file(_intent_guard("foo"))
+    with open(original_path, encoding="utf-8") as original:
+        original_content = original.read()
+
+    with pytest.raises(ValueError, match="Policy ID"):
+        sync.save_policy_to_file(_intent_guard(bad_id))
+
+    assert list(folder.rglob("*.md")) == [folder / "intent_guards" / "foo.md"]
+    assert (folder / "intent_guards" / "foo.md").read_text(encoding="utf-8") == original_content
+    fresh_sync = PolicyFilesystemSync(cuga_folder=str(folder))
+    assert fresh_sync.delete_policy_file(bad_id) is False
+    assert fresh_sync.delete_policy_file("foo") is True
+
+
+@pytest.mark.parametrize("policy_id", ["foo", "foo.bar", "foo-bar_123", "policy..v2"])
+def test_save_policy_preserves_valid_filename_ids(tmp_path, policy_id):
+    """Valid IDs retain their exact filename and remain discoverable after restart."""
+    folder = tmp_path / ".cuga"
+    sync = PolicyFilesystemSync(cuga_folder=str(folder))
+    saved_path = sync.save_policy_to_file(_intent_guard(policy_id))
+    assert os.path.basename(saved_path) == f"{policy_id}.md"
+    assert PolicyFilesystemSync(cuga_folder=str(folder)).delete_policy_file(policy_id) is True
 
 
 def test_delete_policy_file_matches_exact_id_only(tmp_path):
