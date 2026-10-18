@@ -184,6 +184,10 @@ class PolicyFilesystemSync:
             Path to saved file
         """
         try:
+            # Reject path syntax on either platform before normalization can alias IDs.
+            if policy.id in {".", ".."} or "/" in policy.id or "\\" in policy.id:
+                raise ValueError(f"Policy ID '{policy.id}' must not contain path components")
+
             self._ensure_folder_structure()
 
             # Determine subfolder
