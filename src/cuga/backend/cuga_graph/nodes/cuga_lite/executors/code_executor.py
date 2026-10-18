@@ -118,6 +118,7 @@ class CodeExecutor:
         mode: Optional[Literal['local', 'e2b', 'opensandbox']] = None,
         plan: Optional[ExecutionPlan] = None,
         variable_manager: Optional[Any] = None,
+        keep_listing_vars: bool = False,
     ) -> tuple[str, dict[str, Any]]:
         """Execute code with async tools available in the local namespace.
 
@@ -133,6 +134,9 @@ class CodeExecutor:
                 Python execution path unless ``mode`` is given explicitly.
             variable_manager: Variable manager to record new variables into.
                 Defaults to ``state.variables_manager`` (preserves prior behavior).
+            keep_listing_vars: Keep find_tools listing markdown among the block's
+                variables (function-calling reads the reply from there). Default
+                strips it, as before.
 
         Returns:
             Tuple of (execution result, new variables dictionary)
@@ -177,6 +181,7 @@ class CodeExecutor:
                 plan=plan,
                 variable_manager=variable_manager,
                 skills_on=skills_on,
+                keep_listing_vars=keep_listing_vars,
             )
         finally:
             reset_skills_relaxed_execution(skills_token)
@@ -195,6 +200,7 @@ class CodeExecutor:
         plan: Optional[ExecutionPlan] = None,
         variable_manager: Optional[Any] = None,
         skills_on: bool,
+        keep_listing_vars: bool = False,
     ) -> tuple[str, dict[str, Any]]:
         result = ""
 
@@ -304,7 +310,8 @@ class CodeExecutor:
             {k: v for k, v in new_vars.items() if k not in changed_keys}, keep_last_n
         )
         new_vars.update(changed_vars)
-        new_vars = _omit_find_tools_listing_vars(new_vars)
+        if not keep_listing_vars:
+            new_vars = _omit_find_tools_listing_vars(new_vars)
 
         # Format/trim the output before adding variables
         result = format_execution_output(result)

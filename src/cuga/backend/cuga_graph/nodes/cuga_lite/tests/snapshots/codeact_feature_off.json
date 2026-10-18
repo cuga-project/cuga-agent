@@ -1,0 +1,94 @@
+{
+  "calls": [
+    [
+      "echo",
+      3
+    ]
+  ],
+  "outbound": [
+    [
+      {
+        "content": "<system prompt>",
+        "role": "system"
+      },
+      {
+        "content": "use the tools",
+        "role": "user"
+      }
+    ],
+    [
+      {
+        "content": "<system prompt>",
+        "role": "system"
+      },
+      {
+        "content": "use the tools",
+        "role": "user"
+      },
+      {
+        "content": "```python\nr = await echo(value=3)\nprint(r)\n```",
+        "role": "assistant"
+      },
+      {
+        "content": "Execution output:\n3\n\n## New Variables Created:\n# Variables Summary\n\n## r\n- Type: int\n- Items: 1\n- Description: Created during code execution\n- Value Preview: 3\n\n\n## Available Variables\n\n# Variables Summary\n\n## r\n- Type: int\n- Items: 1\n- Description: Created during code execution\n- Value Preview: 3\n\nYou can use these variables directly by their names.",
+        "role": "user"
+      }
+    ]
+  ],
+  "state": {
+    "chat_messages": [
+      {
+        "content": "use the tools",
+        "type": "HumanMessage"
+      },
+      {
+        "content": "```python\nr = await echo(value=3)\nprint(r)\n```",
+        "type": "AIMessage"
+      },
+      {
+        "content": "Execution output:\n3\n\n## New Variables Created:\n# Variables Summary\n\n## r\n- Type: int\n- Items: 1\n- Description: Created during code execution\n- Value Preview: 3\n",
+        "type": "HumanMessage"
+      },
+      {
+        "content": "It printed 3.",
+        "type": "AIMessage"
+      }
+    ],
+    "cuga_lite_metadata": {},
+    "execution_complete": true,
+    "final_answer": "It printed 3.",
+    "mcp_few_shot_messages": [],
+    "metrics": {},
+    "pi": "",
+    "reflection_apps": [],
+    "reflection_enable_find_tools": false,
+    "reflection_skills_enabled": false,
+    "reflection_skills_prompt_section": "",
+    "script": null,
+    "service_scope": {
+      "instance_id": "",
+      "tenant_id": ""
+    },
+    "step_count": 3,
+    "task_todos": null,
+    "tool_budget_exhausted": false,
+    "tool_calls": [],
+    "tool_calls_used_run": 1,
+    "tool_calls_used_thread": 1,
+    "tools_prepared": true,
+    "variable_counter_state": 0,
+    "variable_creation_order": [
+      "r"
+    ],
+    "variables_storage": {
+      "r": {
+        "count_items": 1,
+        "description": "Created during code execution",
+        "type": "int",
+        "value": 3
+      }
+    },
+    "verify_revise_streak": 0,
+    "verify_revise_total": 0
+  }
+}
