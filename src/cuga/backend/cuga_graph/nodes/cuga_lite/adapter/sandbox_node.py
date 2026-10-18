@@ -47,6 +47,10 @@ from cuga.backend.cuga_graph.utils.context_management_utils import (
     prepare_reflection_context,
     truncate_text_for_context,
 )
+from cuga.backend.cuga_graph.utils.surrogates import (
+    repair_messages,
+    repair_surrogates_in,
+)
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 from cuga.backend.llm.models import LLMManager
 from cuga.config import settings
@@ -234,7 +238,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                         replies_without_execution(fc_plan, msg) if fc_plan else [HumanMessage(content=msg)]
                     )
                     updated_messages, error_message = core_append_with_step_limit(
-                        adapter, state, new_messages, max_steps
+                        adapter, state, repair_messages(new_messages), max_steps
                     )
                     skip_updates = {
                         **fc_meta,
@@ -377,21 +381,25 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                             }
                         ],
                     )
+                    # Repaired like the main loop's request: an unencodable request
+                    # would skip reflection with only a warning (#963).
                     reflection_result = await reflection_agent.ainvoke(
-                        {
-                            "instructions": "",
-                            "current_task": current_task,
-                            "agent_history": agent_history,
-                            "coder_agent_output": coder_output,
-                            "apps": state.reflection_apps or [],
-                            "enable_find_tools": state.reflection_enable_find_tools,
-                            "skills_enabled": state.reflection_skills_enabled,
-                            "skills_prompt_section": skills_prompt_section,
-                            "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
-                        },
+                        repair_surrogates_in(
+                            {
+                                "instructions": "",
+                                "current_task": current_task,
+                                "agent_history": agent_history,
+                                "coder_agent_output": coder_output,
+                                "apps": state.reflection_apps or [],
+                                "enable_find_tools": state.reflection_enable_find_tools,
+                                "skills_enabled": state.reflection_skills_enabled,
+                                "skills_prompt_section": skills_prompt_section,
+                                "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
+                            }
+                        ),
                         config=config or {},
                     )
-                    reflection_output = reflection_result.content
+                    reflection_output = repair_surrogates_in(reflection_result.content)
                     logger.debug(f"Reflection output:\n{reflection_output}")
                 except Exception as e:
                     logger.warning(f"Reflection failed: {e}")
@@ -433,7 +441,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 )
                 new_messages = [HumanMessage(content=execution_message_content)]
             updated_messages, error_message = core_append_with_step_limit(
-                adapter, state, new_messages, max_steps
+                adapter, state, repair_messages(new_messages), max_steps
             )
 
             # Collect tool calls from this execution
@@ -498,7 +506,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 else [HumanMessage(content=error_msg)]
             )
             updated_messages, limit_error_message = core_append_with_step_limit(
-                adapter, state, new_messages, max_steps
+                adapter, state, repair_messages(new_messages), max_steps
             )
 
             if limit_error_message:

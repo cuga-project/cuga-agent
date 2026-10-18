@@ -1,3 +1,4 @@
+import functools
 import inspect
 from typing import Any, Dict, List, Literal, Optional
 
@@ -20,6 +21,25 @@ from .native import NativeSandboxExecutor
 from .base_executor import BaseExecutor, RemoteExecutor
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionPlan
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker, counted_tool_call
+from cuga.backend.cuga_graph.utils.surrogates import repair_surrogates, repair_surrogates_in
+
+
+def _surrogate_safe_tool(awaitable_func: Any) -> Any:
+    """Repair lone surrogates in a tool's arguments and result (#963).
+
+    Applied next to ``counted_tool_call``, the one point every tool reaches
+    generated code through. Idempotent, like ``counted_tool_call``.
+    """
+    if getattr(awaitable_func, "_cuga_surrogate_safe", False):
+        return awaitable_func
+
+    @functools.wraps(awaitable_func)
+    async def _safe(*args, **kwargs):
+        result = await awaitable_func(*repair_surrogates_in(args), **repair_surrogates_in(kwargs))
+        return repair_surrogates_in(result)
+
+    _safe._cuga_surrogate_safe = True
+    return _safe
 
 
 def _skills_enabled_for_run(state: AgentState | None) -> bool:
@@ -155,8 +175,12 @@ class CodeExecutor:
         # point (make_tool_awaitable), while plain callables carried in _locals
         # are variables from earlier blocks and must not be counted or made
         # awaitable. Names starting with '_' are internal injections.
+        #
+        # The same point repairs lone surrogates (half an emoji) in each tool's
+        # arguments and result: one would break the next tool's request body and
+        # every later model request (#963).
         _locals = {
-            key: counted_tool_call(value)
+            key: _surrogate_safe_tool(counted_tool_call(value))
             if inspect.iscoroutinefunction(value) and not key.startswith('_')
             else value
             for key, value in _locals.items()
@@ -170,7 +194,7 @@ class CodeExecutor:
         skills_on = _skills_enabled_for_run(state)
         skills_token = set_skills_relaxed_execution(skills_on)
         try:
-            return await cls._eval_with_tools_async_impl(
+            output, new_vars = await cls._eval_with_tools_async_impl(
                 code,
                 _locals,
                 state,
@@ -185,6 +209,9 @@ class CodeExecutor:
             )
         finally:
             reset_skills_relaxed_execution(skills_token)
+        # Code can build lone surrogates itself: print('\ud83d\ude00') prints two
+        # halves. Repair what goes back into the history and the variables.
+        return repair_surrogates(output), repair_surrogates_in(new_vars)
 
     @classmethod
     async def _eval_with_tools_async_impl(

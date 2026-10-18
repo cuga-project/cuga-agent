@@ -49,14 +49,25 @@ def extract_and_combine_codeblocks(text: str, tools_needing_probing: frozenset[s
     if "print(" not in stripped_text:
         return ""
 
-    # compile() raises ValueError (incl. UnicodeEncodeError for a lone
-    # surrogate, or a NUL byte on 3.10) for text it cannot encode; treat it
-    # like a SyntaxError — "no code" — here and at the other compile() sites.
-    try:
-        compile(stripped_text.replace("await ", ""), "<string>", "exec")
+    if _compiles(stripped_text):
         return _truncate_after_first_probing_line(stripped_text, tools_needing_probing)
-    except (SyntaxError, ValueError):
-        return ""
+    return ""
+
+
+def _compiles(code: str) -> bool:
+    """Whether ``code`` (with ``await`` stripped) compiles.
+
+    ``compile()`` raises more than ``SyntaxError`` on model text: ``ValueError``
+    for a NUL byte (3.10) or a lone surrogate (``UnicodeEncodeError``),
+    ``MemoryError`` for a very long run of operators, ``RecursionError`` for a
+    deeply nested expression (3.10/3.11). Any of them means "not code here";
+    none may crash the turn.
+    """
+    try:
+        compile(code.replace("await ", ""), "<string>", "exec")
+    except Exception:
+        return False
+    return True
 
 
 def _probing_call_pattern(tools_needing_probing: frozenset[str]) -> "re.Pattern[str]":
@@ -94,11 +105,8 @@ def _truncate_after_first_probing_line(code: str, tools_needing_probing: frozens
             # upstream, so a complete boundary is guaranteed to exist.
             for end in range(i + 1, len(lines) + 1):
                 candidate = "\n".join(lines[:end])
-                try:
-                    compile(candidate.replace("await ", ""), "<string>", "exec")
-                except (SyntaxError, ValueError):
-                    continue
-                return candidate
+                if _compiles(candidate):
+                    return candidate
             return code
     return code
 
@@ -168,9 +176,6 @@ def _recover_non_closing_python_fence(text: str) -> str:
         attempt = "\n".join(lines[:end]).rstrip()
         if not attempt:
             continue
-        try:
-            compile(attempt.replace("await ", ""), "<string>", "exec")
+        if _compiles(attempt):
             return attempt
-        except (SyntaxError, ValueError):
-            continue
     return ""

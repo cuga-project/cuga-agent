@@ -17,6 +17,7 @@ import pytest
 
 from cuga.backend.cuga_graph.state.agent_state import VariablesManager
 
+
 # ── VariableBridge utility ─────────────────────────────────────────────────
 
 
