@@ -269,6 +269,36 @@ async def test_reconciliation_error_is_retried_on_next_call(cuga_folder, load_ca
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("read_error", [BlockingIOError, PermissionError])
+async def test_file_read_error_is_retried_on_next_call(cuga_folder, load_calls, monkeypatch, read_error):
+    real_open = open
+    read_attempts = 0
+
+    def fail_once(file_path, *args, **kwargs):
+        nonlocal read_attempts
+        if os.path.basename(file_path) == "seed_1.md":
+            read_attempts += 1
+            if read_attempts == 1:
+                raise read_error("File temporarily unavailable")
+        return real_open(file_path, *args, **kwargs)
+
+    monkeypatch.setattr(folder_loader, "open", fail_once, raising=False)
+    agent = _make_agent(cuga_folder)
+
+    await agent.policies._ensure_policy_system()
+    assert agent.policies._auto_load_done is False
+    assert set(agent._policy_system.storage._policies) == {"seed_2"}
+
+    await agent.policies._ensure_policy_system()
+    assert agent.policies._auto_load_done is True
+    assert set(agent._policy_system.storage._policies) == {"seed_1", "seed_2"}
+
+    await agent.policies._ensure_policy_system()
+    assert read_attempts == 2
+    assert load_calls["count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_permanent_file_error_latches_and_does_not_retry(cuga_folder, load_calls):
     """Parse errors (bad frontmatter, unknown type) are permanent. The latch IS set
     after the first load so the reload loop from #804 does not come back."""
