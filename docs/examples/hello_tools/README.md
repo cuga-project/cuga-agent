@@ -27,7 +27,7 @@ cd docs/examples/hello_tools && uv run --project ../../../ python main.py
 With free, local [Ollama](https://ollama.com): run `ollama pull gpt-oss:20b` (a large download), then:
 
 ```bash
-AGENT_SETTING_CONFIG=settings.ollama.toml OPENAI_API_KEY=ollama uv run --project ../../../ python main.py
+cd docs/examples/hello_tools && AGENT_SETTING_CONFIG=settings.ollama.toml OPENAI_API_KEY=ollama uv run --project ../../../ python main.py
 ```
 
 The setting comes from [`settings.ollama.toml`](../../../src/cuga/configurations/models/settings.ollama.toml). The answer should mention about 26.1 miles and 73 days.
