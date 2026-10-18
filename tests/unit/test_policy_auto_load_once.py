@@ -240,6 +240,35 @@ async def test_storage_error_is_retried_on_next_call(cuga_folder, load_calls):
 
 
 @pytest.mark.asyncio
+async def test_reconciliation_error_is_retried_on_next_call(cuga_folder, load_calls, monkeypatch):
+    real_get_ids = PolicyFilesystemSync.get_filesystem_policy_ids
+    sync_calls = 0
+
+    def fail_once(self):
+        nonlocal sync_calls
+        sync_calls += 1
+        if sync_calls == 1:
+            raise OSError("Filesystem temporarily unavailable")
+        return real_get_ids(self)
+
+    monkeypatch.setattr(PolicyFilesystemSync, "get_filesystem_policy_ids", fail_once)
+    agent = _make_agent(cuga_folder)
+
+    await agent.policies._ensure_policy_system()
+    assert sync_calls == 1
+    assert agent.policies._auto_load_done is False
+
+    await agent.policies._ensure_policy_system()
+    assert sync_calls == 2
+    assert agent.policies._auto_load_done is True
+    assert set(agent._policy_system.storage._policies) == {"seed_1", "seed_2"}
+
+    await agent.policies._ensure_policy_system()
+    assert sync_calls == 2
+    assert load_calls["count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_permanent_file_error_latches_and_does_not_retry(cuga_folder, load_calls):
     """Parse errors (bad frontmatter, unknown type) are permanent. The latch IS set
     after the first load so the reload loop from #804 does not come back."""
