@@ -350,7 +350,8 @@ async def load_policies_from_folder(
         clear_existing: If True, clear existing policies before loading
 
     Returns:
-        Dictionary with count, errors, and files processed
+        Dictionary with count, errors, files processed, and separate storage_errors
+        and io_errors lists for failures that can be retried.
     """
     if not os.path.exists(folder_path):
         return {"count": 0, "errors": [f"Folder {folder_path} does not exist"], "files": []}
@@ -364,6 +365,7 @@ async def load_policies_from_folder(
 
     errors = []
     storage_errors = []
+    io_errors = []
     loaded_count = 0
     processed_files = []
 
@@ -392,7 +394,7 @@ async def load_policies_from_folder(
             file_path = os.path.join(subfolder_path, filename)
             processed_files.append(file_path)
 
-            # --- parse phase (permanent failures: bad frontmatter, unknown type) ---
+            # Read errors can recover; invalid frontmatter or policy content cannot.
             try:
                 frontmatter, content = parse_markdown_with_frontmatter(file_path)
                 detected_type = frontmatter.get('type', policy_type)
@@ -400,6 +402,12 @@ async def load_policies_from_folder(
                 if not creator_func:
                     raise ValueError(f"Unknown policy type: {detected_type}")
                 policy = creator_func(file_path, frontmatter, content)
+            except OSError as e:
+                error_msg = f"Failed to read {file_path}: {str(e)}"
+                errors.append(error_msg)
+                io_errors.append(error_msg)
+                logger.error(error_msg)
+                continue
             except Exception as e:
                 error_msg = f"Failed to load {file_path}: {str(e)}"
                 errors.append(error_msg)
@@ -423,5 +431,6 @@ async def load_policies_from_folder(
         "count": loaded_count,
         "errors": errors,
         "storage_errors": storage_errors,
+        "io_errors": io_errors,
         "files": processed_files,
     }
