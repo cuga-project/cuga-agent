@@ -209,5 +209,6 @@ def test_uncompilable_text_counts_as_no_code(text: str) -> None:
 
 @pytest.mark.unit
 def test_lone_surrogate_after_valid_code_keeps_the_valid_prefix() -> None:
+    """An unclosed fence still yields the valid code before a line compile() can't encode."""
     text = "```python\nprint('ok')\nx = 'caf\ud800'"
     assert extract_code_from_model_response(text, None) == "print('ok')"
