@@ -1,0 +1,70 @@
+name: Scan licenses
+description: Run a pinned Trivy release and evaluate installed and bundled licenses
+inputs:
+  target-type:
+    description: Trivy target type (rootfs, fs or image)
+    required: true
+  target:
+    description: Installed environment, node_modules directory or exact local image
+    required: true
+  scope:
+    description: Stable component distribution scope
+    required: true
+  inventory:
+    description: Independently collected installed package inventory
+    default: ''
+  policy-dir:
+    description: Reviewed policy directory
+    default: .github/licenses
+  mode:
+    description: report or enforce (enforce requires a reviewed baseline)
+    default: report
+  full:
+    description: Also scan bundled license files and source headers
+    default: 'false'
+  output:
+    description: Report directory
+    default: license-reports
+runs:
+  using: composite
+  steps:
+    - name: Install checksum-verified Trivy
+      shell: bash
+      run: bash scripts/licenses/install-trivy.sh
+    - name: Scan and evaluate licenses
+      shell: bash
+      env:
+        LICENSE_TARGET_TYPE: ${{ inputs.target-type }}
+        LICENSE_TARGET: ${{ inputs.target }}
+        LICENSE_SCOPE: ${{ inputs.scope }}
+        LICENSE_INVENTORY: ${{ inputs.inventory }}
+        LICENSE_POLICY: ${{ inputs.policy-dir }}
+        LICENSE_MODE: ${{ inputs.mode }}
+        LICENSE_FULL: ${{ inputs.full }}
+        LICENSE_OUTPUT: ${{ inputs.output }}
+      run: |
+        set -euo pipefail
+        case "$LICENSE_TARGET_TYPE" in rootfs|fs|image) ;; *) exit 1 ;; esac
+        mkdir -p "$LICENSE_OUTPUT"
+        scan_args=(--scanners license --list-all-pkgs --format json --timeout 60m --output "$LICENSE_OUTPUT/trivy.json")
+        if [ "$LICENSE_FULL" = true ]; then scan_args+=(--license-full); fi
+        if [ "$LICENSE_TARGET_TYPE" = fs ]; then scan_args+=(--include-dev-deps); fi
+        trivy "$LICENSE_TARGET_TYPE" "${scan_args[@]}" "$LICENSE_TARGET"
+        policy_args=()
+        if [ "$LICENSE_FULL" = true ]; then
+          if [ "$LICENSE_TARGET_TYPE" = image ]; then
+            report_path=$(realpath "$LICENSE_OUTPUT/trivy.json")
+            docker run --rm --network none --read-only --user 0 --entrypoint /app/.venv/bin/python \
+              --mount "type=bind,source=$PWD/scripts/licenses/check.py,target=/tmp/check-licenses.py,readonly" \
+              --mount "type=bind,source=$report_path,target=/tmp/trivy-license-report.json,readonly" \
+              "$LICENSE_TARGET" /tmp/check-licenses.py file-evidence /tmp/trivy-license-report.json / - > "$LICENSE_OUTPUT/file-evidence.json"
+          else
+            python3 scripts/licenses/check.py file-evidence "$LICENSE_OUTPUT/trivy.json" "$LICENSE_TARGET" "$LICENSE_OUTPUT/file-evidence.json"
+          fi
+          policy_args+=(--file-evidence "$LICENSE_OUTPUT/file-evidence.json")
+        fi
+        if [ -n "$LICENSE_INVENTORY" ]; then policy_args+=(--inventory "$LICENSE_INVENTORY"); fi
+        python3 scripts/licenses/check.py evaluate \
+          --report "$LICENSE_OUTPUT/trivy.json" --scope "$LICENSE_SCOPE" \
+          --policy-dir "$LICENSE_POLICY" --mode "$LICENSE_MODE" \
+          --output "$LICENSE_OUTPUT/policy-result.json" "${policy_args[@]}"

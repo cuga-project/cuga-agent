@@ -1,0 +1,5 @@
+{
+  "reviewed": false,
+  "source": "Pending first Linux GitHub Actions scan; the local macOS audit is not a reviewed Linux baseline.",
+  "findings": []
+}

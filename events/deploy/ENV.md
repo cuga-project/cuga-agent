@@ -1,8 +1,7 @@
 # Events layer — environment variables
 
 A scannable reference for every environment variable the CUGA **events layer** reads, grouped by
-purpose. The annotated, copy-paste template is [`.env.events.example`](../../.env.events.example) at
-the repo root; this file is the "what is each one, and do I need it?" companion.
+purpose. The annotated, copy-paste template is [`events/.env.events.example`](../.env.events.example); this file is the "what is each one, and do I need it?" companion.
 
 **Everything AP-free.** The whole top half runs with **no Activepieces** — channels, the native
 cron/poll scheduler, the generic webhook, GitHub-direct, and Box-direct. Activepieces is only for
