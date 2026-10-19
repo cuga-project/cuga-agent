@@ -196,6 +196,16 @@ async def test_split_emoji_does_not_run_the_rejected_reasoning_draft(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_lone_surrogate_in_a_closed_fence_runs_with_the_repaired_text(monkeypatch, _graph_run):
+    """A closed fence skips extraction's compile() check; the reply is repaired before it reaches the sandbox."""
+    reply = AIMessage(content="```python\nr = await lookup(key='caf\ud800')\nprint(r)\n```")
+    result, _, tools = await _invoke(monkeypatch, [reply])
+
+    assert tools.lookups == [f"caf{REPLACED}"]
+    assert result.error is None and result.answer == "Done."
+
+
+@pytest.mark.asyncio
 async def test_valid_code_before_the_bad_line_runs_once_and_the_turn_completes(monkeypatch, _graph_run):
     reply = AIMessage(content="```python\nr = await lookup(key='a')\nprint(r)\nnote = 'caf\ud800'")
     result, _, tools = await _invoke(monkeypatch, [reply])
