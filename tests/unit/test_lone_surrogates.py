@@ -466,7 +466,18 @@ def test_repair_joins_split_pairs_and_replaces_lone_halves() -> None:
 def test_repair_in_containers_keeps_clean_values_identical() -> None:
     clean = {"a": [1, "x", ("y",)]}
     assert repair_surrogates_in(clean) is clean
-    assert repair_surrogates_in({f"k{LONE}": (f"v{LONE}", 2)}) == {f"k{REPLACED}": (f"v{REPLACED}", 2)}
+    assert repair_surrogates_in({f"k{LONE}": (f"v{LONE}", 2)}) == {"k\\ud83d": (f"v{REPLACED}", 2)}
+
+
+def test_distinct_lone_halves_as_keys_stay_distinct_keys() -> None:
+    """U+FFFD would merge these two keys and drop a value; escape text keeps both."""
+    # Built from pairs: ruff's F601 sees the two lone halves as one repeated literal key.
+    original = dict([("\ud800", 1), ("\udc00", 2), (("t", "\ud800"), 3), ("e\ud83d\ude00", 4)])
+    assert len(original) == 4
+    repaired = repair_surrogates_in(original)
+
+    assert repaired == {"\\ud800": 1, "\\udc00": 2, ("t", "\\ud800"): 3, "e😀": 4}
+    _encode_like_httpx({str(k): v for k, v in repaired.items()})
 
 
 def test_repair_message_covers_reasoning_and_tool_arguments() -> None:

@@ -36,13 +36,15 @@ def repair_surrogates(text: str) -> str:
 def repair_surrogates_in(value: Any) -> Any:
     """Repair every string inside ``value``: dict keys and values, list and tuple items.
 
+    Keys are repaired by :func:`_repair_key`, so two keys never merge into one.
+
     Other objects are returned as-is. A container is copied only when something
     inside it changed; otherwise the same object comes back.
     """
     if isinstance(value, str):
         return repair_surrogates(value)
     if isinstance(value, dict):
-        keys = [repair_surrogates_in(k) for k in value]
+        keys = [_repair_key(k) for k in value]
         values = [repair_surrogates_in(v) for v in value.values()]
         if _unchanged(keys, value) and _unchanged(values, value.values()):
             return value
@@ -53,6 +55,22 @@ def repair_surrogates_in(value: Any) -> Any:
             return value
         return items if isinstance(value, list) else tuple(items)
     return value
+
+
+def _repair_key(key: Any) -> Any:
+    """Repair a dict key without merging keys.
+
+    U+FFFD would turn ``"\\ud800"`` and ``"\\udc00"`` into the same key and drop a
+    value. A key keeps a lone half as its escape text instead (``"\\ud800"``), which
+    differs per code point; a split pair is still joined.
+    """
+    if isinstance(key, tuple):
+        repaired = tuple(_repair_key(k) for k in key)
+        return key if _unchanged(repaired, key) else repaired
+    if not isinstance(key, str) or key.isascii() or not _SURROGATE.search(key):
+        return key
+    joined = key.encode("utf-16", "surrogatepass").decode("utf-16", "surrogatepass")
+    return joined.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 def _unchanged(repaired: list, original: Any) -> bool:
