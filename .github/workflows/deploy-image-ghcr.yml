@@ -1,4 +1,4 @@
-# Required vars: IMAGE_NAME
+# Required variable: IMAGE_NAME. LICENSE_ENFORCEMENT defaults to report during rollout.
 name: Deploy Image to GHCR
 
 on:
@@ -12,60 +12,135 @@ on:
         required: false
         default: ''
 
+permissions:
+  contents: read
+
 jobs:
-  deploy:
-    name: Build and push image
-    runs-on: ubuntu-latest
+  build-scan:
+    name: Build and scan ${{ matrix.profile }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {profile: full, arch: amd64, runner: ubuntu-24.04, dockerfile: Dockerfile.ubi}
+          - {profile: full, arch: arm64, runner: ubuntu-24.04-arm, dockerfile: Dockerfile.ubi}
+          - {profile: slim, arch: amd64, runner: ubuntu-24.04, dockerfile: Dockerfile.ubi.slim}
+          - {profile: slim, arch: arm64, runner: ubuntu-24.04-arm, dockerfile: Dockerfile.ubi.slim}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
-          ref: ${{ github.ref }}
-
-      - name: Validate vars
+          persist-credentials: false
+      - name: Validate image name and compute staging reference
+        env:
+          IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          PROFILE: ${{ matrix.profile }}
+          ARCH: ${{ matrix.arch }}
         run: |
-          missing=""
-          [ -z "${{ vars.IMAGE_NAME }}" ] && missing="$missing IMAGE_NAME"
-          if [ -n "$missing" ]; then
-            echo "::error::Missing repository variables:$missing"
-            echo "Set them in: Settings → Secrets and variables → Actions → Variables"
-            exit 1
-          fi
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+          [[ "$IMAGE_NAME" =~ ^[a-z0-9][a-z0-9._/-]*$ ]] || { echo 'Invalid or missing IMAGE_NAME'; exit 1; }
+          image="ghcr.io/${REPOSITORY_OWNER,,}/$IMAGE_NAME:license-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$PROFILE-$ARCH"
+          echo "LICENSE_IMAGE=$image" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: Free space on the ephemeral hosted runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          docker system prune --all --force
+          df -h /
+      - name: Build once and load exact image for scanning
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          push: false
+          tags: ${{ env.LICENSE_IMAGE }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Collect the built image Python inventory independently
+        run: |
+          mkdir -p license-reports
+          docker run --rm --network none --read-only --user 0 --entrypoint /app/.venv/bin/python \
+            --mount "type=bind,source=$PWD/scripts/licenses/check.py,target=/tmp/check-licenses.py,readonly" \
+            "$LICENSE_IMAGE" /tmp/check-licenses.py inventory python /app/.venv - > license-reports/inventory.json
+      - uses: ./.github/actions/license-scan
+        with:
+          target-type: image
+          target: ${{ env.LICENSE_IMAGE }}
+          scope: image-${{ matrix.profile }}-${{ matrix.arch }}
+          inventory: license-reports/inventory.json
+          full: 'true'
+          mode: ${{ vars.LICENSE_ENFORCEMENT || 'report' }}
+      - name: Upload license evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: licenses-image-${{ matrix.profile }}-${{ matrix.arch }}
+          path: license-reports/
+          if-no-files-found: error
+      - name: Log in after successful scan
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
+      - name: Push scanned image and record immutable digest
+        id: pushed
+        env:
+          PROFILE: ${{ matrix.profile }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          docker push "$LICENSE_IMAGE"
+          mkdir -p image-descriptors
+          digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$LICENSE_IMAGE")
+          printf '%s\n' "$digest" > "image-descriptors/$PROFILE-$ARCH.txt"
+          echo "name=${digest%@*}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest#*@}" >> "$GITHUB_OUTPUT"
+      - name: Attest the scanned image digest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ vars.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=${{ inputs.image_tag }},enable=${{ inputs.image_tag != '' }}
-            type=raw,value=latest,enable=${{ inputs.image_tag == '' && github.event_name != 'push' }}
-          labels: |
-            org.opencontainers.image.title=${{ vars.IMAGE_NAME }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-
-      - name: Build and push image to GHCR
-        uses: docker/build-push-action@v6
+          subject-name: ${{ steps.pushed.outputs.name }}
+          subject-digest: ${{ steps.pushed.outputs.digest }}
+          push-to-registry: true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          context: .
-          file: ./Dockerfile.ubi
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          name: image-descriptor-${{ matrix.profile }}-${{ matrix.arch }}
+          path: image-descriptors/
+          if-no-files-found: error
+
+  promote:
+    name: Promote scanned image digests
+    needs: build-scan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: image-descriptor-*
+          merge-multiple: true
+          path: image-descriptors
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish full and slim manifests without rebuilding
+        env:
+          IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          REQUESTED_TAG: ${{ inputs.image_tag }}
+        run: python3 scripts/licenses/promote_images.py

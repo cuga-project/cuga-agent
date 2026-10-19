@@ -362,6 +362,7 @@ async def test_run_dispatch_rejects_foreign_owner_before_side_effects(runtime, m
     if dispatch == "supervisor":
         kwargs = supervisor.invoke.call_args.kwargs
         assert kwargs["thread_id"] == "owned"
+        assert kwargs["user_id"] == "user-a"
         assert kwargs["checkpoint_thread_id"] == runtime.main._checkpoint_thread_id(
             "owned", "user-a", "cuga-default"
         )
@@ -489,6 +490,8 @@ async def test_supervisor_sdk_keeps_logical_resources_when_checkpoint_is_scoped(
         observed.append(
             (
                 state.thread_id,
+                state.user_id,
+                state.service_scope["tenant_id"],
                 config["configurable"]["logical_thread_id"],
                 config["configurable"]["workspace_thread_id"],
             )
@@ -507,7 +510,9 @@ async def test_supervisor_sdk_keeps_logical_resources_when_checkpoint_is_scoped(
     supervisor._callbacks = None
     supervisor._cuga_lite_max_steps = None
     monkeypatch.setattr(sdk, "init_openlit", lambda: None)
-    first = await supervisor.invoke("hello", thread_id="logical", checkpoint_thread_id="scoped")
+    first = await supervisor.invoke(
+        "hello", thread_id="logical", checkpoint_thread_id="scoped", user_id="user-a", tenant_id="tenant-a"
+    )
     assert first.thread_id == "logical"
     assert supervisor.graph.get_state({"configurable": {"thread_id": "scoped"}}).next
     assert not supervisor.graph.get_state({"configurable": {"thread_id": "logical"}}).values
@@ -515,7 +520,7 @@ async def test_supervisor_sdk_keeps_logical_resources_when_checkpoint_is_scoped(
         None, thread_id="logical", checkpoint_thread_id="scoped", action_response=ActionResponse(**RESUME)
     )
     assert resumed.answer == "done"
-    assert observed == [("logical", "logical", "logical")]
+    assert observed == [("logical", "user-a", "tenant-a", "logical", "logical")]
 
 
 @pytest.mark.parametrize("context_id", ["owned", " owned "])

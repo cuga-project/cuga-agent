@@ -715,7 +715,9 @@ async def run_sync(request: Request):
             )
         try:
             try:
-                res = await supervisor.invoke(query, thread_id=thread_id, checkpoint_thread_id=checkpoint_id)
+                res = await supervisor.invoke(
+                    query, thread_id=thread_id, checkpoint_thread_id=checkpoint_id, user_id=user_id
+                )
                 answer = (getattr(res, "answer", None) or getattr(res, "result", None) or "") if res else ""
                 return {
                     "ok": bool(answer),

@@ -141,6 +141,29 @@ def _workspace_user_id(current_user: Optional[UserInfo]) -> str:
     return current_user.sub if current_user else DEFAULT_USER_ID
 
 
+async def _assert_run_thread_access(thread_id: str, user_id: str, agent_id: Optional[str] = None) -> None:
+    """Authorize the source thread before loading state or issuing capabilities."""
+    provider = getattr(app_state, "knowledge_provider", None)
+    if user_id and user_id != DEFAULT_USER_ID and provider is not None:
+        # Do not reserve runtime ownership for a caller denied by existing
+        # knowledge ownership, or the real owner could be locked out.
+        if not provider.check_session_access(thread_id.strip(), user_id):
+            raise HTTPException(status_code=403, detail="access denied to session")
+    if agent_id is not None:
+        await _assert_thread_access(thread_id, user_id, agent_id)
+    if not user_id or user_id == DEFAULT_USER_ID:
+        return
+    thread_id = thread_id.strip()
+    if agent_id is None:
+        await _assert_thread_access(thread_id, user_id)
+    # Disabling knowledge must not release existing ownership: conversation
+    # cleanup still reaches its collections and remaining workspace data.
+    if provider is not None or _knowledge_enabled_for_app_state(app_state):
+        from cuga.backend.knowledge.auth import ensure_session_access
+
+        ensure_session_access(thread_id, user_id, provider)
+
+
 async def _require_workspace_thread_access(
     request: Request,
     thread_id: Optional[str],
@@ -182,7 +205,9 @@ def _resolve_path_under_cuga_workspace(user_path: str) -> Path:
 
 
 def _session_knowledge_collection(thread_id: str) -> str:
-    return f"kb_sess_{re.sub(r'[^a-zA-Z0-9_]', '_', thread_id)}"
+    from cuga.backend.knowledge.session_provider import session_collection_name
+
+    return session_collection_name(thread_id)
 
 
 async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id: str) -> None:
@@ -199,7 +224,7 @@ async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id:
 
     provider = getattr(app_state, "knowledge_provider", None)
     if provider:
-        provider.delete_session(thread_id)
+        provider.clear_session(thread_id)
 
 
 def _knowledge_config(app_state: "AppState" | None):
@@ -747,7 +772,13 @@ async def lifespan(app: FastAPI):
         from cuga.backend.knowledge.session_provider import PersistentSessionProvider
 
         if not getattr(app_state, "knowledge_provider", None):
-            _kb_state_path = Path.cwd() / ".cuga" / "session_knowledge.json"
+            # Session ownership lives in this file, so it must survive restarts.
+            # Deployments that mount persistent storage set CUGA_DBS_DIR (the
+            # Helm chart points it at the PVC); local runs keep using .cuga/.
+            _kb_state_dir = os.environ.get("CUGA_DBS_DIR")
+            _kb_state_path = (
+                Path(_kb_state_dir) if _kb_state_dir else Path.cwd() / ".cuga"
+            ) / "session_knowledge.json"
             app_state.knowledge_provider = PersistentSessionProvider(_kb_state_path)
 
         # Wire per-session citation overrides into the knowledge sources module
@@ -1064,6 +1095,7 @@ async def lifespan(app: FastAPI):
         cuga_lite_max_steps=_prod_overrides.get("cuga_lite_max_steps"),
         enable_filesystem_tools=_prod_overrides.get("enable_filesystem_tools"),
         special_instructions=(_startup_config or {}).get("special_instructions") or None,
+        supervisor_id=app_state.agent_id,
     )
     await app_state.agent.build_graph()
 
@@ -1126,6 +1158,7 @@ async def lifespan(app: FastAPI):
         enable_filesystem_tools=draft_overrides.get("enable_filesystem_tools"),
         llm_config=_draft_llm_cfg or None,
         special_instructions=(draft_config or {}).get("special_instructions") or None,
+        supervisor_id=draft_agent_id,
     )
     await draft_app_state.agent.build_graph()
 
@@ -1607,7 +1640,7 @@ async def event_stream(
     runtime_agent_id = agent_id or app_state.agent_id
     thread_id = _canonical_thread_id(thread_id or str(uuid.uuid4()))
     try:
-        await _assert_thread_access(thread_id, user_id, runtime_agent_id)
+        await _assert_run_thread_access(thread_id, user_id, runtime_agent_id)
     except HTTPException as exc:
         if exc.status_code == 403:
             yield StreamEvent(
@@ -1773,6 +1806,10 @@ async def event_stream(
         # The trace ID will be available after the first LLM call
         print("Note: Trace ID will be available after the first LLM operation")
 
+    # Authenticated user for knowledge session ownership. DEFAULT_USER_ID is
+    # the placeholder used when auth is disabled, where ownership stays off.
+    _knowledge_user_id = user_id if user_id and user_id != DEFAULT_USER_ID else None
+
     # Build knowledge context for agent prompt injection
     _knowledge_ctx = {}
     if _knowledge_enabled_for_app_state(app_state) and app_state.knowledge_provider and thread_id:
@@ -1793,6 +1830,8 @@ async def event_stream(
             _knowledge_scope_enabled_for_app_state(app_state, "session")
             and _session_kb
             and _session_kb.filenames
+            # Never list another user's session files in this user's prompt.
+            and (not _knowledge_user_id or _session_kb.user_id in ("", _knowledge_user_id))
         ):
             from cuga.backend.knowledge.session_provider import session_prefix as _sess_prefix
 
@@ -1823,6 +1862,8 @@ async def event_stream(
         enable_filesystem_tools=getattr(run_agent, "enable_filesystem_tools", None),
         current_llm=runtime_llm,
         knowledge_context=_knowledge_ctx or None,
+        agent_id=runtime_agent_id,
+        knowledge_user_id=_knowledge_user_id,
         upload_context=_upload_ctx,
         special_instructions=getattr(run_agent, "special_instructions", None),
     )
@@ -1945,6 +1986,7 @@ async def event_stream(
                             if event.sources:
                                 answer_payload["sources"] = event.sources
                             if memory_turn_id:
+                                answer_payload["memory_turn_id"] = memory_turn_id
                                 from cuga.backend.evolve.memory_store import get_turn_memory_usage
 
                                 try:
@@ -1960,6 +2002,12 @@ async def event_stream(
                             final_answer_text = json.dumps(answer_payload)
                         else:
                             final_answer_text = "Done."
+                        # Preserve WXO's raw response while retaining the turn ID for history enrichment.
+                        persisted_answer_text = (
+                            json.dumps({"data": final_answer_text, "memory_turn_id": memory_turn_id})
+                            if settings.advanced_features.wxo_integration and memory_turn_id
+                            else final_answer_text
+                        )
                         logger.info("=" * 80)
                         logger.info("FINAL ANSWER")
                         logger.info("=" * 80)
@@ -1971,7 +2019,7 @@ async def event_stream(
                             stream_events_buffer.append(
                                 {
                                     "event_name": "Answer",
-                                    "event_data": final_answer_text,
+                                    "event_data": persisted_answer_text,
                                     "timestamp": datetime.datetime.utcnow().isoformat(),
                                     "sequence": event_sequence,
                                 }
@@ -2724,6 +2772,7 @@ async def _resolve_stream_agent(
                     supervisor_agents=agents_dict,
                     supervisor_enabled=True,
                     supervisor_plan_approval=bool(supervisor_cfg.get("planApproval")),
+                    supervisor_id=agent_id,
                 )
             else:
                 # Single agent with its own tools/LLM/special_instructions — built the same way
@@ -2786,7 +2835,7 @@ async def stream(
 
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     query = await get_query(request)
-    thread_id = request.headers.get("X-Thread-ID")
+    thread_id = (request.headers.get("X-Thread-ID") or "").strip()
     if not thread_id:
         thread_id = str(uuid.uuid4())
         logger.info(f"No X-Thread-ID header found, generated new thread_id: {thread_id}")
@@ -2795,7 +2844,9 @@ async def stream(
 
     thread_id = _canonical_thread_id(thread_id)
     agent_id_header = _runtime_agent_id(request) or "cuga-default"
-    await _assert_thread_access(thread_id, user_id, agent_id_header)
+    # Reject before StreamingResponse sends headers; event_stream also guards
+    # other entry points before reading checkpoints, previews or workspace data.
+    await _assert_run_thread_access(thread_id, user_id, agent_id_header)
     user_attachments = await get_attachment_snapshot(request)
 
     # User message will be saved as part of the event stream buffer
@@ -3050,6 +3101,12 @@ async def get_conversation_stream_events(
             event.model_dump() if hasattr(event, 'model_dump') else dict(event)
             for event in stream_history.events
         ]
+        from cuga.backend.evolve.saved_memory_tracking import enrich_saved_memories
+
+        try:
+            events_dict = await enrich_saved_memories(events_dict, agent_id=agent_id, user_id=user_id)
+        except Exception:
+            logger.warning("Saved-memory tracking unavailable; returning conversation history")
         return JSONResponse({"events": events_dict})
     except Exception as e:
         logger.error(f"Failed to get conversation stream events: {e}")
@@ -3199,6 +3256,10 @@ async def delete_conversation(
 ):
     """Delete a conversation thread and its stream events."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
+    conversation_id = conversation_id.strip()
+    # A user-scoped DB delete can succeed without matching rows. Authorize
+    # before it triggers unscoped knowledge, ownership and upload cleanup.
+    await _assert_run_thread_access(conversation_id, user_id)
     try:
         conversation_db = get_conversation_db()
         success = await conversation_db.delete_thread(agent_id, conversation_id, user_id)
