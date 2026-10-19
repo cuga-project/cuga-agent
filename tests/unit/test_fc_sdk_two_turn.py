@@ -1,0 +1,127 @@
+"""Function-calling mode across two SDK turns on one thread.
+
+The SDK wrapper hands state between the CugaLite subgraph and the outer
+``AgentState`` graph through ``state.model_dump()``. ``AgentState.chat_messages``
+is declared ``List[BaseMessage]``, so pydantic serialises every message by the
+*declared* type: ``AIMessage.tool_calls`` and ``ToolMessage.tool_call_id`` are
+dropped and revalidation yields bare ``BaseMessage`` objects. CodeAct never
+notices (its serializer keys on ``msg.type``); function-calling replays history
+as message objects, so turn 2 must still send the provider a valid transcript.
+"""
+
+from __future__ import annotations
+
+
+import pytest
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import StructuredTool
+
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import FC_VARIABLES_NOTE
+
+pytestmark = pytest.mark.unit
+
+CALLS: list = []
+
+
+class _Bound:
+    """What ``bind_tools`` returns: a runnable wrapping the model."""
+
+    def __init__(self, model):
+        self._model = model
+
+    async def ainvoke(self, messages, config=None, **kwargs):
+        return await self._model.ainvoke(messages, config=config, **kwargs)
+
+
+class _ScriptedModel:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.seen: list = []
+
+    def bind_tools(self, tools, **kwargs):
+        return _Bound(self)  # a real bind returns a new runnable, never the model itself
+
+    async def ainvoke(self, messages, config=None, **kwargs):
+        self.seen.append(list(messages))
+        if not self._responses:
+            raise AssertionError("model asked for more responses than scripted")
+        return self._responses.pop(0)
+
+
+def _echo():
+    async def echo(value: int) -> int:
+        """Echo a value."""
+        CALLS.append(value)
+        return value
+
+    return StructuredTool.from_function(coroutine=echo, name="echo", description="Echo a value.")
+
+
+def _tc(value, call_id):
+    return {"name": "echo", "args": {"value": value}, "id": call_id, "type": "tool_call"}
+
+
+@pytest.fixture(autouse=True)
+def _quiet(monkeypatch):
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.policy, "enabled", False, raising=False)
+    monkeypatch.setattr(settings.evolve, "enabled", False, raising=False)  # no registry round-trips
+    CALLS.clear()
+    yield
+    CALLS.clear()
+
+
+def _describe(m):
+    kind = type(m).__name__
+    extra = ""
+    if getattr(m, "tool_calls", None):
+        extra = f" tool_calls={[c['id'] for c in m.tool_calls]}"
+    if getattr(m, "tool_call_id", None):
+        extra = f" tool_call_id={m.tool_call_id}"
+    return f"{kind}({getattr(m, 'type', '?')}){extra}"
+
+
+@pytest.mark.asyncio
+async def test_second_turn_replays_a_valid_function_calling_transcript():
+    from cuga.sdk import CugaAgent
+
+    model = _ScriptedModel(
+        [
+            AIMessage(content="", tool_calls=[_tc(7, "call_1")]),
+            AIMessage(content="The value is 7."),
+            AIMessage(content="", tool_calls=[_tc(8, "call_2")]),
+            AIMessage(content="And now 8."),
+        ]
+    )
+    agent = CugaAgent(tools=[_echo()], model=model, execution_mode="function_calling")
+
+    turn1 = await agent.invoke("echo 7", thread_id="fc-two-turn")
+    assert turn1.answer == "The value is 7." and CALLS == [7]
+
+    turn2 = await agent.invoke("now echo 8", thread_id="fc-two-turn")
+    assert turn2.answer == "And now 8." and CALLS == [7, 8]
+
+    outbound = model.seen[2]  # first model call of turn 2
+    shapes = [_describe(m) for m in outbound]
+    print("\nTURN 2 outbound:", shapes)
+
+    assert isinstance(outbound[0], SystemMessage)
+    assert all(type(m) is not BaseMessage for m in outbound), (
+        f"bare BaseMessage replayed to the provider: {shapes}"
+    )
+    # Native transcript, not a flattened one: turn 1's call and its reply survive the SDK boundary as-is.
+    ai_turn1 = [m for m in outbound if isinstance(m, AIMessage) and m.tool_calls]
+    assert ai_turn1 and ai_turn1[0].tool_calls[0]["id"] == "call_1", shapes
+    tool_turn1 = [m for m in outbound if isinstance(m, ToolMessage)]
+    assert tool_turn1 and tool_turn1[0].tool_call_id == "call_1" and tool_turn1[0].content == "7", shapes
+    ai_with_calls = [m for m in outbound if isinstance(m, AIMessage) and m.tool_calls]
+    tool_replies = [m for m in outbound if isinstance(m, ToolMessage)]
+    dangling = {c["id"] for m in ai_with_calls for c in m.tool_calls} - {t.tool_call_id for t in tool_replies}
+    assert not dangling, f"tool_calls without a ToolMessage reply: {dangling} in {shapes}"
+    # Turn 1's result survived as a variable, so turn 2 is told about it — in function-calling
+    # words, not the CodeAct invitation to write code.
+    assert isinstance(outbound[-1], HumanMessage) and outbound[-1].content.startswith("now echo 8")
+    assert "tool_result_call_1" in outbound[-1].content and FC_VARIABLES_NOTE in outbound[-1].content
+    assert "directly by their names" not in outbound[-1].content
+    assert turn1.variables.get("tool_result_call_1") == 7, turn1.variables
