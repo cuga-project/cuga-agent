@@ -152,21 +152,19 @@ async def decide_pre_execute_verify(
                 }
             ],
         )
+        # A lone surrogate (#963) would make the request fail, and VERIFY would
+        # fail open to "unknown", running the block unverified.
+        verify_inputs = repair_surrogates_in(
+            {
+                "current_task": current_task or "(no task text)",
+                "agent_history": history,
+                "variables_snapshot": variables,
+                "proposed_code": proposed,
+                "write_arguments": write_arguments,
+            }
+        )
         result = await asyncio.wait_for(
-            # An unencodable request (a lone surrogate, #963) would fail and fail
-            # open to "unknown", running the block unverified.
-            verify_task(llm=active_model).ainvoke(
-                repair_surrogates_in(
-                    {
-                        "current_task": current_task or "(no task text)",
-                        "agent_history": history,
-                        "variables_snapshot": variables,
-                        "proposed_code": proposed,
-                        "write_arguments": write_arguments,
-                    }
-                ),
-                config=config or {},
-            ),
+            verify_task(llm=active_model).ainvoke(verify_inputs, config=config or {}),
             timeout=timeout,
         )
         decision = parse_verify_output(getattr(result, "content", "") or "")

@@ -1766,7 +1766,7 @@ def _empty_answer_is_final(result: dict, formatter_configured: bool) -> bool:
     return formatter_configured and _finalization_ran(result)
 
 
-def _repair_user_text(value: Any) -> Any:
+def _repair_user_input(value: Any) -> Any:
     """Repair lone surrogates (half an emoji) in user input (#963).
 
     One makes the first model request unencodable. Accepts a string, a list of
@@ -2707,9 +2707,9 @@ class CugaAgent:
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
-        message = _repair_user_text(message)
-        user_context = _repair_user_text(user_context)
-        variables = _repair_user_text(variables)
+        message = _repair_user_input(message)
+        user_context = _repair_user_input(user_context)
+        variables = _repair_user_input(variables)
 
         slash_result = None
         if isinstance(message, str):
@@ -3206,7 +3206,7 @@ class CugaAgent:
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
-        message = _repair_user_text(message)
+        message = _repair_user_input(message)
 
         await self._ensure_initialized()
 
@@ -3744,7 +3744,7 @@ class CugaSupervisor:
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
-        message = _repair_user_text(message)
+        message = _repair_user_input(message)
 
         needs_init = self._auto_load_policies and (
             not hasattr(self, "_policy_system") or self._policy_system is None

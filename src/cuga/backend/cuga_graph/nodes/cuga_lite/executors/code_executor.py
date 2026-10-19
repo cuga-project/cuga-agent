@@ -210,8 +210,9 @@ class CodeExecutor:
         finally:
             reset_skills_relaxed_execution(skills_token)
         # Code can build lone surrogates itself: print('\ud83d\ude00') prints two
-        # halves. Repair what goes back into the history and the variables.
-        return repair_surrogates(output), repair_surrogates_in(new_vars)
+        # halves. Repair the output on every path, error messages included; the
+        # variables are repaired in _eval_with_tools_async_impl before they are stored.
+        return repair_surrogates(output), new_vars
 
     @classmethod
     async def _eval_with_tools_async_impl(
@@ -339,6 +340,7 @@ class CodeExecutor:
         new_vars.update(changed_vars)
         if not keep_listing_vars:
             new_vars = _omit_find_tools_listing_vars(new_vars)
+        new_vars = repair_surrogates_in(new_vars)
 
         # Format/trim the output before adding variables
         result = format_execution_output(result)

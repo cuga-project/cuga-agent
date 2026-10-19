@@ -36,21 +36,27 @@ def repair_surrogates(text: str) -> str:
 def repair_surrogates_in(value: Any) -> Any:
     """Repair every string inside ``value``: dict keys and values, list and tuple items.
 
-    Other objects are returned as-is. A container is rebuilt only when something
-    inside it changed, so clean values (and their identity) pass through.
+    Other objects are returned as-is. A container is copied only when something
+    inside it changed; otherwise the same object comes back.
     """
     if isinstance(value, str):
         return repair_surrogates(value)
     if isinstance(value, dict):
-        repaired = {repair_surrogates_in(k): repair_surrogates_in(v) for k, v in value.items()}
-        changed = any(rk is not k or rv is not v for (k, v), (rk, rv) in zip(value.items(), repaired.items()))
-        return repaired if changed or len(repaired) != len(value) else value
+        keys = [repair_surrogates_in(k) for k in value]
+        values = [repair_surrogates_in(v) for v in value.values()]
+        if _unchanged(keys, value) and _unchanged(values, value.values()):
+            return value
+        return dict(zip(keys, values))
     if isinstance(value, (list, tuple)):
         items = [repair_surrogates_in(v) for v in value]
-        if all(new is old for new, old in zip(items, value)):
+        if _unchanged(items, value):
             return value
         return items if isinstance(value, list) else tuple(items)
     return value
+
+
+def _unchanged(repaired: list, original: Any) -> bool:
+    return all(new is old for new, old in zip(repaired, original))
 
 
 _MESSAGE_FIELDS = ("content", "additional_kwargs", "tool_calls", "invalid_tool_calls")
@@ -81,4 +87,4 @@ def repair_message(message: Any) -> Any:
 def repair_messages(messages: list) -> list:
     """Apply :func:`repair_message` to each message; returns the same list if all were clean."""
     repaired = [repair_message(m) for m in messages]
-    return messages if all(new is old for new, old in zip(repaired, messages)) else repaired
+    return messages if _unchanged(repaired, messages) else repaired

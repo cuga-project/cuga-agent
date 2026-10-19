@@ -280,6 +280,28 @@ async def test_code_that_prints_an_escaped_emoji_pair_gets_the_emoji(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_variables_manager_stores_the_repaired_value():
+    """The next block's namespace is rebuilt from the manager, so it must hold the repaired value."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
+    from cuga.backend.cuga_graph.state.agent_state import VariablesManager
+
+    async def lookup(key: str) -> str:
+        return f"value {key}"
+
+    manager = VariablesManager()
+    _, new_vars = await CodeExecutor.eval_with_tools_async(
+        code="r = await lookup(key='a')\nnote = 'Done \\ud83d\\ude00 ' + r\nprint(note)",
+        _locals={"lookup": lookup},
+        state=SimpleNamespace(variables_manager=manager),
+        mode="local",
+        variable_manager=manager,
+    )
+
+    assert manager.get_variable("note") == "Done 😀 value a"
+    assert new_vars["note"] == "Done 😀 value a"
+
+
+@pytest.mark.asyncio
 async def test_reflection_reply_with_a_lone_surrogate(monkeypatch, _graph_run):
     replies = [
         AIMessage(content="```python\nr = await lookup(key='a')\nprint(r)\n```"),
