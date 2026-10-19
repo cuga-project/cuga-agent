@@ -277,9 +277,7 @@ if __name__ == "__main__":
         # stand. Emitted with ``!r`` so the value lands as a Python literal
         # rather than being pasted into a quoted string.
         thread_id_block = (
-            f'    kwargs["thread_id"] = {thread_id!r}\n'
-            if thread_id and tool_has_thread_id
-            else ""
+            f'    kwargs["thread_id"] = {thread_id!r}\n' if thread_id and tool_has_thread_id else ""
         )
 
         return f"""async def {tool_name}(*args, **kwargs):
