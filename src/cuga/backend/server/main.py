@@ -1936,6 +1936,7 @@ async def event_stream(
                             if event.sources:
                                 answer_payload["sources"] = event.sources
                             if memory_turn_id:
+                                answer_payload["memory_turn_id"] = memory_turn_id
                                 from cuga.backend.evolve.memory_store import get_turn_memory_usage
 
                                 try:
@@ -1951,6 +1952,12 @@ async def event_stream(
                             final_answer_text = json.dumps(answer_payload)
                         else:
                             final_answer_text = "Done."
+                        # Preserve WXO's raw response while retaining the turn ID for history enrichment.
+                        persisted_answer_text = (
+                            json.dumps({"data": final_answer_text, "memory_turn_id": memory_turn_id})
+                            if settings.advanced_features.wxo_integration and memory_turn_id
+                            else final_answer_text
+                        )
                         logger.info("=" * 80)
                         logger.info("FINAL ANSWER")
                         logger.info("=" * 80)
@@ -1962,7 +1969,7 @@ async def event_stream(
                             stream_events_buffer.append(
                                 {
                                     "event_name": "Answer",
-                                    "event_data": final_answer_text,
+                                    "event_data": persisted_answer_text,
                                     "timestamp": datetime.datetime.utcnow().isoformat(),
                                     "sequence": event_sequence,
                                 }
@@ -3039,6 +3046,12 @@ async def get_conversation_stream_events(
             event.model_dump() if hasattr(event, 'model_dump') else dict(event)
             for event in stream_history.events
         ]
+        from cuga.backend.evolve.saved_memory_tracking import enrich_saved_memories
+
+        try:
+            events_dict = await enrich_saved_memories(events_dict, agent_id=agent_id, user_id=user_id)
+        except Exception:
+            logger.warning("Saved-memory tracking unavailable; returning conversation history")
         return JSONResponse({"events": events_dict})
     except Exception as e:
         logger.error(f"Failed to get conversation stream events: {e}")

@@ -12,6 +12,7 @@ def test_lite_boundary_sanitizes_content():
     from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import AgentGraphAdapter
 
     adapter = object.__new__(AgentGraphAdapter)
+    adapter._tools_context = {}
     content, _ = AgentGraphAdapter.normalize_response(adapter, AIMessage(content=RAW))
     assert "<|" not in content
     assert "The total is 42" in content
