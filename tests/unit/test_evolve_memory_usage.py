@@ -27,8 +27,8 @@ async def test_prompt_context_records_exact_attributed_memory_ids(monkeypatch):
     )
     with (
         patch(
-            "cuga.backend.evolve.memory.EvolveIntegration.is_enabled",
-            return_value=True,
+            "cuga.backend.evolve.memory.memory_enabled",
+            new=AsyncMock(return_value=True),
         ),
         patch(
             "cuga.backend.evolve.memory.EvolveIntegration.get_guidelines_with_attribution",
@@ -114,7 +114,7 @@ async def test_empty_attributed_guideline_text_is_not_recorded_as_used():
         input="Prepare a renewal summary",
     )
     with (
-        patch("cuga.backend.evolve.memory.EvolveIntegration.is_enabled", return_value=True),
+        patch("cuga.backend.evolve.memory.memory_enabled", new=AsyncMock(return_value=True)),
         patch(
             "cuga.backend.evolve.memory.EvolveIntegration.get_guidelines_with_attribution",
             new=AsyncMock(return_value={"text": "", "entity_ids": ["guideline-a"]}),
@@ -142,7 +142,7 @@ async def test_empty_attributed_guideline_text_is_not_recorded_as_used():
             timeout=1,
         )
 
-    assert result == ""
+    assert "Persistent memory is enabled" in result
     record_usage.assert_not_awaited()
     record_access.assert_not_awaited()
 
@@ -159,3 +159,42 @@ def test_blank_fact_categories_do_not_render_or_contribute_ids():
     )
     assert "style: concise" in text
     assert ids == ["pair"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_memory_capability_is_explicit_even_without_saved_facts(enabled):
+    state = SimpleNamespace(
+        sub_task="Remember that I like pizza",
+        chat_messages=[],
+        user_id="user-a",
+        service_scope={},
+        thread_id="first-thread",
+        input="Remember that I like pizza",
+    )
+    with (
+        patch("cuga.backend.evolve.memory.memory_enabled", new=AsyncMock(return_value=enabled)),
+        patch(
+            "cuga.backend.evolve.memory.EvolveIntegration.get_guidelines_with_attribution",
+            new=AsyncMock(return_value={"text": "", "entity_ids": []}),
+        ) as guidelines,
+        patch(
+            "cuga.backend.evolve.memory.EvolveIntegration.retrieve_user_facts",
+            new=AsyncMock(return_value={"categories": {}}),
+        ) as retrieve,
+        patch(
+            "cuga.backend.evolve.memory.EvolveIntegration.store_user_facts", new=AsyncMock(return_value=None)
+        ) as save,
+    ):
+        result = await build_evolve_special_instructions_extension(state=state, configurable={}, timeout=1)
+        await asyncio.sleep(0)
+    if enabled:
+        assert "Persistent memory is enabled" in result
+        assert "across conversations" in result
+        assert "Do not claim" in result
+    else:
+        assert "Persistent memory is disabled" in result
+        assert "current conversation" in result
+        guidelines.assert_not_awaited()
+        retrieve.assert_not_awaited()
+        save.assert_not_awaited()

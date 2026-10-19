@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -267,18 +268,20 @@ async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resumed_stream_uses_checkpoint_memory_disclosure(monkeypatch):
+@pytest.mark.parametrize("wxo", [False, True])
+@pytest.mark.parametrize("turn_id", ["interrupted-turn", ""])
+async def test_resumed_stream_uses_checkpoint_memory_disclosure(monkeypatch, wxo, turn_id):
     from cuga.backend.cuga_graph.state.agent_state import default_state
     from cuga.backend.evolve import memory_store
 
     checkpoint = default_state(page=None, observation=None, goal="")
-    checkpoint.service_scope["memory_turn_id"] = "interrupted-turn"
+    checkpoint.service_scope["memory_turn_id"] = turn_id
     checkpoint.thread_id = "thread-1"
     saved: dict = {}
     usage = AsyncMock(return_value={"count": 1, "entity_ids": ["fact-a"]})
     monkeypatch.setattr(memory_store, "get_turn_memory_usage", usage)
     monkeypatch.setattr(main_mod.settings.evolve, "enabled", True)
-    monkeypatch.setattr(main_mod.settings.advanced_features, "wxo_integration", False)
+    monkeypatch.setattr(main_mod.settings.advanced_features, "wxo_integration", wxo)
 
     async def fake_save(**kwargs):
         saved.update(kwargs)
@@ -339,5 +342,18 @@ async def test_resumed_stream_uses_checkpoint_memory_disclosure(monkeypatch):
         chunks.append(chunk)
 
     assert saved["agent_id"] == "sales-east"
-    usage.assert_awaited_once_with(turn_id="interrupted-turn", agent_id="sales-east", user_id="alice")
-    assert any("memory_usage" in chunk and "fact-a" in chunk for chunk in chunks)
+    persisted = next(event["event_data"] for event in saved["events"] if event["event_name"] == "Answer")
+    if wxo and not turn_id:
+        assert persisted == "done"
+    else:
+        payload = json.loads(persisted)
+        assert payload["data"] == "done"
+        assert payload.get("memory_turn_id", "") == turn_id
+    if wxo:
+        assert any("done" in chunk for chunk in chunks)
+        assert all("memory_turn_id" not in chunk for chunk in chunks)
+    if not wxo and turn_id:
+        usage.assert_awaited_once_with(turn_id=turn_id, agent_id="sales-east", user_id="alice")
+        assert any("memory_usage" in chunk and "fact-a" in chunk for chunk in chunks)
+    else:
+        usage.assert_not_awaited()

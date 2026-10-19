@@ -5,8 +5,15 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from langchain_core.messages import AIMessage, BaseMessage
-from pydantic import BaseModel, Field
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    FunctionMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
+from pydantic import BaseModel, Field, SerializeAsAny, field_validator
 from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.api_models import ApiDescription
@@ -968,6 +975,15 @@ class AnalyzeTaskAppsOutput(BaseModel):
     type: Literal['api', 'web'] = 'web'
 
 
+_MESSAGE_TYPES = {
+    "human": HumanMessage,
+    "ai": AIMessage,
+    "tool": ToolMessage,
+    "system": SystemMessage,
+    "function": FunctionMessage,
+}
+
+
 class AgentState(BaseModel):
     # pages: Annotated[Sequence[str], operator.add]  # List of pages traversed
     # page: Page  # The Playwright web page lets us interact with the web environment
@@ -996,11 +1012,40 @@ class AgentState(BaseModel):
     current_app_description: Optional[str] = None
     api_last_step: Optional[str] = None
     guidance: Optional[str] = None
-    chat_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
-    chat_agent_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
-    supervisor_chat_messages: Optional[List[BaseMessage]] = Field(
+    # SerializeAsAny: nodes pass state around as ``Command(update=state.model_dump())``,
+    # and pydantic serialises a ``List[BaseMessage]`` by the *declared* type — so an
+    # AIMessage lost its ``tool_calls`` and a ToolMessage its ``tool_call_id`` at every
+    # hop, and the next turn revalidated them into bare BaseMessage shells. Dumping by
+    # the runtime type keeps those fields; ``_revive_message_types`` below turns the
+    # dicts back into the right message class on the way in.
+    chat_messages: Optional[List[SerializeAsAny[BaseMessage]]] = Field(default_factory=list)
+    chat_agent_messages: Optional[List[SerializeAsAny[BaseMessage]]] = Field(default_factory=list)
+    supervisor_chat_messages: Optional[List[SerializeAsAny[BaseMessage]]] = Field(
         default_factory=list
     )  # Supervisor's conversation history
+
+    @field_validator("chat_messages", "chat_agent_messages", "supervisor_chat_messages", mode="before")
+    @classmethod
+    def _revive_message_types(cls, value: Any) -> Any:
+        """Rebuild message subclasses from dumped dicts (``type`` decides the class).
+
+        A dict that cannot be rebuilt — e.g. a ``tool`` shell from a checkpoint
+        written before the fields were preserved, with no ``tool_call_id`` — is
+        left for the default ``BaseMessage`` validation, exactly as before.
+        """
+        if not value:
+            return value
+        revived = []
+        for m in value:
+            if isinstance(m, dict) and m.get("type") in _MESSAGE_TYPES:
+                try:
+                    revived.append(_MESSAGE_TYPES[m["type"]](**{k: v for k, v in m.items() if k != "type"}))
+                    continue
+                except Exception:
+                    pass
+            revived.append(m)
+        return revived
+
     # Mirrors CugaSupervisorState.supervisor_metadata so CugaSupervisorNode can read/set approval
     # flags (e.g. plan_approved) on the outer AgentState across the HITL interrupt boundary — the
     # subgraph's own state does not survive a WaitForResponse pause/resume.
