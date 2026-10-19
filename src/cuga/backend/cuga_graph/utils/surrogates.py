@@ -23,6 +23,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from loguru import logger
+
 _SURROGATE = re.compile("[\ud800-\udfff]")
 
 
@@ -48,7 +50,7 @@ def repair_surrogates_in(value: Any) -> Any:
         values = [repair_surrogates_in(v) for v in value.values()]
         if _unchanged(keys, value) and _unchanged(values, value.values()):
             return value
-        return dict(zip(keys, values))
+        return _rebuild_dict(value, keys, values)
     if isinstance(value, (list, tuple)):
         items = [repair_surrogates_in(v) for v in value]
         if _unchanged(items, value):
@@ -71,6 +73,24 @@ def _repair_key(key: Any) -> Any:
         return key
     joined = key.encode("utf-16", "surrogatepass").decode("utf-16", "surrogatepass")
     return joined.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def _rebuild_dict(original: dict, keys: list, values: list) -> dict:
+    """Rebuild ``original`` with repaired keys; a key that needed no repair wins a collision.
+
+    A repaired key can still equal another key: ``"\\ud83d\\ude00"`` joins to an
+    existing ``"😀"``, or ``"\\ud800"`` becomes an existing literal ``"\\\\ud800"``.
+    The clean key keeps its value and the collision is logged, never silent.
+    """
+    rebuilt: dict = {}
+    for old_key, key, item in zip(original, keys, values):
+        if key in rebuilt:
+            if old_key is key:  # the clean key: replace what a repaired key put there
+                rebuilt[key] = item
+            logger.warning("Repairing lone surrogates merged two dict keys into {!r}; kept one value", key)
+            continue
+        rebuilt[key] = item
+    return rebuilt
 
 
 def _unchanged(repaired: list, original: Any) -> bool:

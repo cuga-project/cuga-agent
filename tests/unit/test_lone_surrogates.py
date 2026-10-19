@@ -480,6 +480,25 @@ def test_distinct_lone_halves_as_keys_stay_distinct_keys() -> None:
     _encode_like_httpx({str(k): v for k, v in repaired.items()})
 
 
+@pytest.mark.parametrize("clean_first", [True, False])
+def test_a_repaired_key_that_equals_a_clean_key_keeps_the_clean_value(clean_first: bool) -> None:
+    """A split pair joins to an existing "😀"; a lone half's escape text equals an existing literal key."""
+    from loguru import logger
+
+    pairs = [("😀", "clean"), ("\ud83d\ude00", "repaired"), ("\\ud800", "clean"), ("\ud800", "repaired")]
+    if not clean_first:
+        pairs = pairs[1::-1] + pairs[3:1:-1]
+    warnings: list[str] = []
+    sink = logger.add(lambda message: warnings.append(str(message)), level="WARNING")
+    try:
+        repaired = repair_surrogates_in(dict(pairs))
+    finally:
+        logger.remove(sink)
+
+    assert repaired == {"😀": "clean", "\\ud800": "clean"}
+    assert len([w for w in warnings if "merged two dict keys" in w]) == 2
+
+
 def test_repair_message_covers_reasoning_and_tool_arguments() -> None:
     message = AIMessage(
         content="ok",
