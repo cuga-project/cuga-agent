@@ -438,6 +438,92 @@ async def test_generated_guards_survive_reload_and_restart(cuga_folder, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_generated_guard_save_failure_is_reported(cuga_folder, tmp_path, monkeypatch):
+    import json
+
+    from cuga.backend.server import tool_guard_generation
+
+    real_save = PolicyFilesystemSync.save_policy_to_file
+    generation_done = False
+
+    def save_fails_after_generation(self, policy):
+        if generation_done:
+            raise OSError("Disk temporarily unavailable")
+        return real_save(self, policy)
+
+    async def fake_generate(*, policy_system, policy_ids, generation_agent):
+        nonlocal generation_done
+        generation_done = True
+        return {
+            "status": "ok",
+            "generated": {pid: {"status": "ok"} for pid in policy_ids},
+            "skipped": [],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(PolicyFilesystemSync, "save_policy_to_file", save_fails_after_generation)
+    monkeypatch.setattr(tool_guard_generation, "generate_tool_guards_for_policies", fake_generate)
+    monkeypatch.setattr(tool_guard_generation, "build_tool_guard_generation_agent", lambda **_: None)
+
+    json_path = tmp_path / "guide.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "policies": [
+                    {
+                        "id": "unsaved_guide",
+                        "policy_type": "tool_guide",
+                        "name": "Unsaved Guide",
+                        "description": "Test guide",
+                        "triggers": [{"type": "always"}],
+                        "target_tools": ["noop_tool"],
+                        "guide_content": "Only allow approved input.",
+                        "enabled": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    agent = _make_agent(cuga_folder)
+    result = await agent.policies.generate_tool_guards_from_json(str(json_path))
+
+    assert result["status"] != "ok"
+    assert any("unsaved_guide" in e and "Disk temporarily unavailable" in e for e in result["errors"])
+
+
+@pytest.mark.asyncio
+async def test_folder_removed_during_load_is_not_latched(cuga_folder, monkeypatch):
+    import shutil
+
+    real_fn = folder_loader.load_policies_from_folder
+    calls = 0
+
+    async def remove_folder_first(folder_path, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # Simulate the folder vanishing after the SDK's existence check.
+            shutil.rmtree(folder_path)
+        return await real_fn(folder_path, *args, **kwargs)
+
+    monkeypatch.setattr(folder_loader, "load_policies_from_folder", remove_folder_first)
+    agent = _make_agent(cuga_folder)
+
+    await agent.policies._ensure_policy_system()
+    assert agent.policies._auto_load_done is False
+
+    os.makedirs(os.path.join(cuga_folder, "intent_guards"), exist_ok=True)
+    PolicyFilesystemSync(cuga_folder=cuga_folder).save_policy_to_file(_intent_guard("seed_recreated"))
+
+    await agent.policies._ensure_policy_system()
+    assert calls == 2
+    assert agent.policies._auto_load_done is True
+    assert "seed_recreated" in agent._policy_system.storage._policies
+
+
+@pytest.mark.asyncio
 async def test_missing_folder_is_not_latched(tmp_path, load_calls):
     missing_folder = str(tmp_path / "does_not_exist")
     agent = _make_agent(missing_folder)

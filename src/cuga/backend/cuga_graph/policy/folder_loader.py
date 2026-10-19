@@ -354,7 +354,15 @@ async def load_policies_from_folder(
         and io_errors lists for failures that can be retried.
     """
     if not os.path.exists(folder_path):
-        return {"count": 0, "errors": [f"Folder {folder_path} does not exist"], "files": []}
+        # Retryable: the folder may be recreated (e.g. removed mid-load after the caller's check).
+        error_msg = f"Folder {folder_path} does not exist"
+        return {
+            "count": 0,
+            "errors": [error_msg],
+            "storage_errors": [],
+            "io_errors": [error_msg],
+            "files": [],
+        }
 
     if clear_existing:
         # Clear all existing policies from storage

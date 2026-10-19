@@ -1323,6 +1323,8 @@ class PoliciesManager:
             generation_agent=generation_agent,
         )
 
+        result_errors = [*import_result.get("errors", []), *batch_result.get("errors", [])]
+
         # The generation agent updates shared storage with filesystem sync disabled.
         # Persist even failed attempts: examples or guards for some tools may exist.
         if self._fs_sync:
@@ -1332,9 +1334,10 @@ class PoliciesManager:
                     if policy is not None:
                         self._fs_sync.save_policy_to_file(policy)
                 except Exception as exc:
-                    logger.warning(f"Failed to save generated ToolGuards for policy '{policy_id}': {exc}")
+                    error_msg = f"Failed to save generated ToolGuards for policy '{policy_id}': {exc}"
+                    logger.warning(error_msg)
+                    result_errors.append(error_msg)
 
-        result_errors = [*import_result.get("errors", []), *batch_result.get("errors", [])]
         status = batch_result.get("status", "error")
         if result_errors and status == "ok":
             status = "partial"
