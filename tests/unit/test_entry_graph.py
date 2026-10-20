@@ -48,11 +48,25 @@ async def _build_entry_graph(**build_kwargs) -> CugaEntryGraph:
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_build_graph_uses_passed_checkpointer():
+    from langgraph.checkpoint.base import empty_checkpoint
+
     saver = MemorySaver()
 
     agent = await _build_entry_graph(checkpointer=saver)
 
-    assert agent.graph.checkpointer is saver
+    # Under LANGGRAPH_STRICT_MSGPACK, compile() swaps in saver.with_allowlist(...),
+    # a shallow clone of the passed saver, so identity only holds in non-strict mode.
+    # Prove the compiled graph writes to the passed saver's backing store instead.
+    graph_saver = agent.graph.checkpointer
+    assert type(graph_saver) is type(saver)
+    config = {"configurable": {"thread_id": "passed-checkpointer", "checkpoint_ns": ""}}
+    written = await graph_saver.aput(
+        config, empty_checkpoint(), {"source": "input", "step": -1, "parents": {}}, {}
+    )
+
+    stored = await saver.aget_tuple(written)
+    assert stored is not None
+    assert stored.checkpoint["id"] == written["configurable"]["checkpoint_id"]
 
 
 @pytest.mark.unit
