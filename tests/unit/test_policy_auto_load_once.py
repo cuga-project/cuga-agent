@@ -265,7 +265,8 @@ async def test_reconciliation_error_is_retried_on_next_call(cuga_folder, load_ca
 
     await agent.policies._ensure_policy_system()
     assert sync_calls == 2
-    assert load_calls["count"] == 2
+    assert load_calls["count"] == 1
+    assert agent._policy_system.storage.embedding_generations == 2
 
 
 @pytest.mark.asyncio
@@ -680,6 +681,131 @@ async def test_load_from_json_without_clear_keeps_existing_files(cuga_folder, tm
 
     guards_dir = os.path.join(cuga_folder, "intent_guards")
     assert sorted(os.listdir(guards_dir)) == ["extra.md", "seed_1.md", "seed_2.md"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["read", "storage", "sync"])
+async def test_persistent_failures_do_not_reload_successful_policies(cuga_folder, monkeypatch, failure):
+    attempts = []
+    real_add = _FakeStorage.add_policy
+    real_open = open
+    failing = True
+
+    async def add_policy(self, policy, embedding=None):
+        attempts.append(policy.id)
+        if failing and failure == "storage" and policy.id == "seed_1":
+            raise OSError("Storage unavailable")
+        await real_add(self, policy, embedding)
+
+    def read_policy(path, *args, **kwargs):
+        if failing and failure == "read" and os.path.basename(path) == "seed_1.md":
+            raise PermissionError("File unavailable")
+        return real_open(path, *args, **kwargs)
+
+    real_get_ids = PolicyFilesystemSync.get_filesystem_policy_ids
+
+    def get_ids(self):
+        if failing and failure == "sync":
+            raise OSError("Reconciliation unavailable")
+        return real_get_ids(self)
+
+    monkeypatch.setattr(_FakeStorage, "add_policy", add_policy)
+    monkeypatch.setattr(folder_loader, "open", read_policy, raising=False)
+    monkeypatch.setattr(PolicyFilesystemSync, "get_filesystem_policy_ids", get_ids)
+    agent = _make_agent(cuga_folder)
+
+    await agent.policies._ensure_policy_system()
+
+    # A successful file must never be read again during implicit retry.
+    def no_rescan(_):
+        raise AssertionError("Implicit retry must not scan directories")
+
+    monkeypatch.setattr(folder_loader.os, "listdir", no_rescan)
+
+    # Reconciliation also lists files, so use its already-known IDs for this test.
+    def known_ids(self):
+        if failing and failure == "sync":
+            raise OSError("Reconciliation unavailable")
+        return {"seed_1", "seed_2", *[f"new_{i}" for i in range(4)]}
+
+    monkeypatch.setattr(PolicyFilesystemSync, "get_filesystem_policy_ids", known_ids)
+    for i in range(4):
+        await agent.policies.add_intent_guard(
+            policy_id=f"new_{i}", name=f"New {i}", keywords=["block"], response="blocked"
+        )
+        assert agent.policies._auto_load_done is False
+
+    assert attempts.count("seed_2") == 1
+    assert all(attempts.count(f"new_{i}") == 1 for i in range(4))
+    if failure == "sync":
+        assert attempts.count("seed_1") == 1
+
+    failing = False
+    await agent.policies._ensure_policy_system()
+    assert agent.policies._auto_load_done is True
+    assert "seed_1" in agent._policy_system.storage._policies
+    assert attempts.count("seed_2") == 1
+
+    # Explicit reload must bypass selective retry state and reprocess every file.
+    monkeypatch.undo()
+    before_reload = agent._policy_system.storage.embedding_generations
+    await agent.policies.load_from_folder(cuga_folder)
+    assert agent._policy_system.storage.embedding_generations == before_reload + 6
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_successful_empty_replacement_prunes_all_files(cuga_folder):
+    from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+    sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+    result = await apply_policies_data_to_storage(
+        _FakeStorage(), [], clear_existing=True, filesystem_sync=sync, prune_filesystem=True
+    )
+    assert result == {"count": 0, "errors": []}
+    assert sync.get_filesystem_policy_ids() == set()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["validation", "storage", "save"])
+async def test_failed_replacement_preserves_recovery_files(cuga_folder, tmp_path, monkeypatch, failure):
+    import json
+
+    from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+    json_path = tmp_path / "replacement.json"
+    _write_json(json_path, ["replacement"])
+    policies = json.loads(json_path.read_text())["policies"]
+    storage = _FakeStorage()
+    sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+    if failure == "validation":
+        policies[0]["policy_type"] = "invalid_type"
+    elif failure == "storage":
+
+        async def fail_add(*args, **kwargs):
+            raise OSError("Storage unavailable")
+
+        monkeypatch.setattr(storage, "add_policy", fail_add)
+    else:
+
+        def fail_save(*args, **kwargs):
+            raise OSError("Disk unavailable")
+
+        monkeypatch.setattr(sync, "save_policy_to_file", fail_save)
+
+    result = await apply_policies_data_to_storage(
+        storage, policies, clear_existing=True, filesystem_sync=sync, prune_filesystem=True
+    )
+    assert result["errors"]
+    if failure == "save":
+        assert any("replacement" in error and "Disk unavailable" in error for error in result["errors"])
+    assert {"seed_1", "seed_2"} <= sync.get_filesystem_policy_ids()
+
+    restarted = _make_agent(cuga_folder)
+    await restarted.policies._ensure_policy_system()
+    assert {"seed_1", "seed_2"} <= set(restarted._policy_system.storage._policies)
 
 
 @pytest.mark.asyncio

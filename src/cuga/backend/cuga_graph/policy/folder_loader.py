@@ -7,7 +7,7 @@ from a folder structure where each policy is defined in a markdown file with fro
 
 import os
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import yaml
 from loguru import logger
 
@@ -341,6 +341,7 @@ async def load_policies_from_folder(
     folder_path: str,
     storage,  # PolicyStorage instance
     clear_existing: bool = False,
+    file_paths: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Load policies from a .cuga folder structure directly to storage.
 
@@ -348,6 +349,7 @@ async def load_policies_from_folder(
         folder_path: Path to .cuga folder
         storage: PolicyStorage instance
         clear_existing: If True, clear existing policies before loading
+        file_paths: Retry only these files; None scans the entire folder.
 
     Returns:
         Dictionary with count, errors, files processed, and separate storage_errors
@@ -362,6 +364,7 @@ async def load_policies_from_folder(
             "storage_errors": [],
             "io_errors": [error_msg],
             "files": [],
+            "retry_files": None,
         }
 
     if clear_existing:
@@ -376,6 +379,7 @@ async def load_policies_from_folder(
     io_errors = []
     loaded_count = 0
     processed_files = []
+    retry_files = []
 
     # Define subfolder structure
     subfolders = {
@@ -390,12 +394,18 @@ async def load_policies_from_folder(
     for subfolder_name, policy_type in subfolders.items():
         subfolder_path = os.path.join(folder_path, subfolder_name)
 
-        if not os.path.exists(subfolder_path):
-            logger.debug(f"Subfolder {subfolder_path} does not exist, skipping")
-            continue
+        if file_paths is None:
+            if not os.path.exists(subfolder_path):
+                logger.debug(f"Subfolder {subfolder_path} does not exist, skipping")
+                continue
+            filenames = os.listdir(subfolder_path)
+        else:
+            # Do not scan the folder again or pick up policies added by later CRUD calls.
+            filenames = [
+                os.path.basename(path) for path in file_paths if os.path.dirname(path) == subfolder_path
+            ]
 
-        # Find all markdown files in subfolder
-        for filename in os.listdir(subfolder_path):
+        for filename in filenames:
             if not filename.endswith('.md'):
                 continue
 
@@ -414,6 +424,7 @@ async def load_policies_from_folder(
                 error_msg = f"Failed to read {file_path}: {str(e)}"
                 errors.append(error_msg)
                 io_errors.append(error_msg)
+                retry_files.append(file_path)
                 logger.error(error_msg)
                 continue
             except Exception as e:
@@ -429,6 +440,7 @@ async def load_policies_from_folder(
                 error_msg = f"Failed to store {file_path}: {str(e)}"
                 errors.append(error_msg)
                 storage_errors.append(error_msg)
+                retry_files.append(file_path)
                 logger.error(error_msg)
                 continue
 
@@ -441,4 +453,5 @@ async def load_policies_from_folder(
         "storage_errors": storage_errors,
         "io_errors": io_errors,
         "files": processed_files,
+        "retry_files": retry_files,
     }

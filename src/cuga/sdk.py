@@ -236,6 +236,8 @@ class PoliciesManager:
         self._agent = agent
         self._fs_sync = None
         self._auto_load_done = False
+        self._auto_load_files_done = False
+        self._auto_load_retry_files = None
         self._ensure_lock = asyncio.Lock()
 
     def _agent_tool_provider(self) -> "Optional[ToolProviderInterface]":
@@ -271,8 +273,9 @@ class PoliciesManager:
         """Ensure policy system is initialized if enabled.
 
         The implicit folder auto-load (triggered when *auto_load_policies* is True)
-        runs **at most once** per policy-system instance. Calling this method again
-        after a successful auto-load skips the folder scan entirely.
+        scans the folder once per policy-system instance. Retryable file/storage
+        failures retry only failed files; reconciliation failures retry reconciliation
+        without reloading successful policies. After success, later calls skip both.
         Use :meth:`load_from_folder` or :meth:`sync_from_filesystem` to force a
         full reload at any time.
 
@@ -292,6 +295,8 @@ class PoliciesManager:
                 self._agent._policy_system = PolicyConfigurable()
                 await self._agent._policy_system.initialize()
                 self._auto_load_done = False
+                self._auto_load_files_done = False
+                self._auto_load_retry_files = None
 
                 # Initialize filesystem sync if enabled and .cuga folder is configured
                 # Initialize filesystem sync if enabled
@@ -333,7 +338,16 @@ class PoliciesManager:
                         logger.debug(f"  Resolved absolute path: {folder_path}")
 
                         if os.path.exists(folder_path):
-                            load_result = await self.load_from_folder(self._agent.cuga_folder)
+                            load_result = {"errors": [], "storage_errors": [], "io_errors": []}
+                            if not self._auto_load_files_done:
+                                load_result = await self.load_from_folder(
+                                    self._agent.cuga_folder,
+                                    _retry_files=self._auto_load_retry_files,
+                                )
+                                self._auto_load_retry_files = load_result.get("retry_files")
+                                self._auto_load_files_done = not (
+                                    load_result.get("storage_errors") or load_result.get("io_errors")
+                                )
                             logger.info(
                                 f"Auto-loaded policies from {self._agent.cuga_folder} (resolved: {folder_path})"
                             )
@@ -1392,6 +1406,8 @@ class PoliciesManager:
         self,
         folder_path: str = ".cuga",
         clear_existing: bool = False,
+        *,
+        _retry_files: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Load policies from a .cuga folder structure containing markdown files.
@@ -1479,6 +1495,7 @@ class PoliciesManager:
             folder_path=folder_path,
             storage=policy_system.storage,  # Pass storage directly
             clear_existing=clear_existing,
+            file_paths=_retry_files,
         )
 
         # Reinitialize policy system after loading

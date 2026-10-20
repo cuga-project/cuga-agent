@@ -139,18 +139,6 @@ async def apply_policies_data_to_storage(
                 logger.warning(f"Failed to delete existing policy {policy_obj.id}: {e}")
         logger.info(f"Cleared {len(existing_policies)} existing policies")
 
-        if prune_filesystem and filesystem_sync:
-            imported_ids = {
-                str(policy_data["id"])
-                for policy_data in (policies_data or [])
-                if isinstance(policy_data, dict) and policy_data.get("id")
-            }
-            stale_ids = {str(pid) for pid in filesystem_sync.get_filesystem_policy_ids()} - imported_ids
-            for stale_id in sorted(stale_ids):
-                filesystem_sync.delete_policy_file(stale_id)
-            if stale_ids:
-                logger.info(f"Removed {len(stale_ids)} stale policy file(s) from filesystem")
-
     for policy_data in policies_data or []:
         try:
             for _list_key in ("triggers", "steps", "target_tools", "required_tools"):
@@ -315,11 +303,27 @@ async def apply_policies_data_to_storage(
                 try:
                     filesystem_sync.save_policy_to_file(policy)
                 except Exception as e:
-                    logger.warning(f"Failed to save policy to filesystem: {e}")
+                    error_msg = f"Failed to save policy '{policy.id}' to filesystem: {e}"
+                    logger.warning(error_msg)
+                    errors.append(error_msg)
         except Exception as e:
             error_msg = f"Failed to load policy '{policy_data.get('name', 'unknown')}': {e}"
             logger.error(error_msg)
             errors.append(error_msg)
+
+    # Preserve recovery files unless every replacement policy was processed and saved.
+    if clear_existing and prune_filesystem and filesystem_sync and not errors:
+        imported_ids = {
+            str(policy_data["id"])
+            for policy_data in (policies_data or [])
+            if isinstance(policy_data, dict) and policy_data.get("id")
+        }
+        stale_ids = {str(pid) for pid in filesystem_sync.get_filesystem_policy_ids()} - imported_ids
+        for stale_id in sorted(stale_ids):
+            filesystem_sync.delete_policy_file(stale_id)
+        if stale_ids:
+            logger.info(f"Removed {len(stale_ids)} stale policy file(s) from filesystem")
+
     return {"count": count, "errors": errors}
 
 
