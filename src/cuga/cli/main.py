@@ -620,6 +620,28 @@ def wait_for_direct_processes():
         stop_direct_processes()
 
 
+def wait_for_direct_process(service_name: str) -> Optional[int]:
+    """Wait for one direct process to exit, then stop the others.
+
+    Returns the exit code of that process, or None if it was not running
+    or the wait was interrupted.
+    """
+    process = direct_processes.get(service_name)
+    return_code = None
+    try:
+        while process is not None and not shutdown_event.is_set():
+            return_code = process.poll()
+            if return_code is not None:
+                logger.info(f"{service_name} has terminated")
+                break
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+    finally:
+        stop_direct_processes()
+    return return_code
+
+
 @app.callback()
 def callback(
     verbose: bool = typer.Option(
@@ -2402,6 +2424,7 @@ def evaluate(
     Run Cuga on your test cases.
     """
     # start the registry
+    evaluation_exit_code = None
     try:
         run_direct_service(
             "registry",
@@ -2448,12 +2471,15 @@ def evaluate(
                     output_file_path,
                 ],
             )
-        wait_for_direct_processes()
+        # The registry never exits on its own, so wait for the evaluation only.
+        evaluation_exit_code = wait_for_direct_process("evaluation")
 
     except Exception as e:
         logger.error(f"Error starting registry service: {e}")
         stop_direct_processes()
         raise typer.Exit(1)
+    if evaluation_exit_code:
+        raise typer.Exit(evaluation_exit_code)
     return
 
 
