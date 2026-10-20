@@ -4669,12 +4669,14 @@ def validate_input_length(text: str) -> None:
 async def get_query(request: Request) -> Union[str, ActionResponse]:
     """Parses the incoming request to extract the user query or action."""
     from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
-    from cuga.backend.cuga_graph.utils.surrogates import repair_surrogates
+    from cuga.backend.cuga_graph.utils.surrogates import repair_surrogates_in
 
     try:
         data = await request.json()
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Request body was not valid JSON.")
+    # JSON can carry half an emoji as a "\udXXX" escape; repair it once for every branch (#963).
+    data = repair_surrogates_in(data)
 
     if (
         isinstance(data, dict)
@@ -4682,8 +4684,7 @@ async def get_query(request: Request) -> Union[str, ActionResponse]:
         and isinstance(data["query"], str)
         and "messages" not in data
     ):
-        # JSON can carry half an emoji as a "\udXXX" escape; repair it (#963).
-        query_text = repair_surrogates(data["query"])
+        query_text = data["query"]
         if not query_text.strip():
             raise HTTPException(status_code=422, detail="`query` may not be empty.")
         validate_input_length(query_text)
@@ -4699,7 +4700,7 @@ async def get_query(request: Request) -> Union[str, ActionResponse]:
             query_text = ""
             for mes in reversed(chat_obj.messages):
                 if mes['role'] == 'user':
-                    query_text = repair_surrogates(mes['content'])
+                    query_text = mes['content']
                     break
             if not query_text.strip():
                 raise HTTPException(status_code=422, detail="No user message found or content is empty.")

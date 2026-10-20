@@ -20,12 +20,15 @@ Text with no surrogate is returned unchanged (the same object), and the
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any
 
 from loguru import logger
 
 _SURROGATE = re.compile("[\ud800-\udfff]")
+# Deeper values are returned as-is, so a deeply nested tool result never hits RecursionError.
+_MAX_DEPTH = 100
 
 
 def repair_surrogates(text: str) -> str:
@@ -35,24 +38,27 @@ def repair_surrogates(text: str) -> str:
     return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
 
 
-def repair_surrogates_in(value: Any) -> Any:
+def repair_surrogates_in(value: Any, _depth: int = 0) -> Any:
     """Repair every string inside ``value``: dict keys and values, list and tuple items.
 
     Keys are repaired by :func:`_repair_key`, so two keys never merge into one.
 
-    Other objects are returned as-is. A container is copied only when something
-    inside it changed; otherwise the same object comes back.
+    Other objects, and anything nested deeper than ``_MAX_DEPTH``, are returned
+    as-is. A container is copied only when something inside it changed;
+    otherwise the same object comes back.
     """
     if isinstance(value, str):
         return repair_surrogates(value)
+    if _depth >= _MAX_DEPTH:
+        return value
     if isinstance(value, dict):
         keys = [_repair_key(k) for k in value]
-        values = [repair_surrogates_in(v) for v in value.values()]
+        values = [repair_surrogates_in(v, _depth + 1) for v in value.values()]
         if _unchanged(keys, value) and _unchanged(values, value.values()):
             return value
         return _rebuild_dict(value, keys, values)
     if isinstance(value, (list, tuple)):
-        items = [repair_surrogates_in(v) for v in value]
+        items = [repair_surrogates_in(v, _depth + 1) for v in value]
         if _unchanged(items, value):
             return value
         return items if isinstance(value, list) else tuple(items)
@@ -105,7 +111,8 @@ def repair_message(message: Any) -> Any:
 
     Covers ``content`` (a string or a list of content blocks), ``additional_kwargs``
     (where ``reasoning_content`` lives) and the tool-call arguments. Returns the
-    same object when nothing needed repair, otherwise a copy.
+    same object when nothing needed repair, otherwise a copy. An object without
+    ``model_copy`` (``_FakeResponse`` in ``ainvoke_model``) gets a shallow copy.
     """
     if isinstance(message, dict):
         return repair_surrogates_in(message)
@@ -117,9 +124,14 @@ def repair_message(message: Any) -> Any:
         repaired = repair_surrogates_in(current)
         if repaired is not current:
             update[field] = repaired
-    if not update or not hasattr(message, "model_copy"):
+    if not update:
         return message
-    return message.model_copy(update=update)
+    if hasattr(message, "model_copy"):
+        return message.model_copy(update=update)
+    repaired = copy.copy(message)
+    for field, value in update.items():
+        setattr(repaired, field, value)
+    return repaired
 
 
 def repair_messages(messages: list) -> list:

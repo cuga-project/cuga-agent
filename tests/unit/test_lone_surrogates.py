@@ -57,9 +57,9 @@ def _request_payload(messages: List[BaseMessage]) -> list:
 
 
 class _ScriptedModel(BaseChatModel):
-    """Returns ``replies`` in order, then "Done.". Every request must encode as UTF-8."""
+    """Returns ``replies`` in order (an exception is raised), then "Done.". Requests must encode as UTF-8."""
 
-    replies: List[AIMessage] = Field(default_factory=list)
+    replies: List[Any] = Field(default_factory=list)
     requests: List[str] = Field(default_factory=list)
 
     @property
@@ -75,6 +75,8 @@ class _ScriptedModel(BaseChatModel):
         body = _encode_like_httpx(_request_payload(messages))
         self.requests.append(body.decode("utf-8"))
         reply = self.replies.pop(0) if self.replies else AIMessage(content="Done.")
+        if isinstance(reply, Exception):
+            raise reply
         return ChatResult(generations=[ChatGeneration(message=reply)])
 
 
@@ -200,6 +202,25 @@ async def test_lone_surrogate_in_a_closed_fence_runs_with_the_repaired_text(monk
     """A closed fence skips extraction's compile() check; the reply is repaired before it reaches the sandbox."""
     reply = AIMessage(content="```python\nr = await lookup(key='caf\ud800')\nprint(r)\n```")
     result, _, tools = await _invoke(monkeypatch, [reply])
+
+    assert tools.lookups == [f"caf{REPLACED}"]
+    assert result.error is None and result.answer == "Done."
+
+
+@pytest.mark.asyncio
+async def test_tool_use_failed_generation_with_a_lone_surrogate_runs_repaired(monkeypatch, _graph_run):
+    """The provider rejects a tool call; ``ainvoke_model`` runs its ``failed_generation`` as code."""
+    error = RuntimeError("tool_use_failed")
+    error.body = {
+        "error": {
+            "code": "tool_use_failed",
+            "failed_generation": {
+                "name": "python",
+                "arguments": "r = await lookup(key='caf\ud800')\nprint(r)",
+            },
+        }
+    }
+    result, _, tools = await _invoke(monkeypatch, [error])
 
     assert tools.lookups == [f"caf{REPLACED}"]
     assert result.error is None and result.answer == "Done."
@@ -368,6 +389,16 @@ async def test_server_query_with_a_lone_surrogate(monkeypatch):
         request = SimpleNamespace(json=lambda body=body: _json(body))
         assert await main.get_query(request) == f"caf{REPLACED}"
 
+    action = {
+        "action_id": "a1",
+        "response_type": "text_input",
+        "timestamp": "2026-10-20T00:00:00Z",
+        "text_response": f"caf{LONE}",
+    }
+    response = await main.get_query(SimpleNamespace(json=lambda: _json(action)))
+    assert response.text_response == f"caf{REPLACED}"
+    response.model_dump_json()
+
 
 # ── Side model calls: VERIFY, summarizer, final answer ─────────────────────
 
@@ -479,6 +510,14 @@ def test_repair_in_containers_keeps_clean_values_identical() -> None:
     assert repair_surrogates_in({f"k{LONE}": (f"v{LONE}", 2)}) == {"k\\ud83d": (f"v{REPLACED}", 2)}
 
 
+def test_deeply_nested_value_is_returned_as_is() -> None:
+    """Past the depth limit the value comes back unchanged; a tool returning it works as on main."""
+    deep: Any = f"caf{LONE}"
+    for _ in range(2000):
+        deep = [deep]
+    assert repair_surrogates_in(deep) is deep
+
+
 def test_distinct_lone_halves_as_keys_stay_distinct_keys() -> None:
     """U+FFFD would merge these two keys and drop a value; escape text keeps both."""
     # Built from pairs: ruff's F601 sees the two lone halves as one repeated literal key.
@@ -522,3 +561,17 @@ def test_repair_message_covers_reasoning_and_tool_arguments() -> None:
     assert message.tool_calls[0]["args"] == {"key": f"a{LONE}"}  # the original is not mutated
     clean = AIMessage(content="ok")
     assert repair_message(clean) is clean
+
+
+def test_repair_message_without_model_copy_returns_a_repaired_copy() -> None:
+    """Like ``_FakeResponse`` in ``ainvoke_model``: plain attributes, no ``model_copy``."""
+
+    class _Plain:
+        content = f"caf{LONE}"
+        additional_kwargs: dict = {}
+
+    original = _Plain()
+    repaired = repair_message(original)
+
+    assert repaired.content == f"caf{REPLACED}"
+    assert original.content == f"caf{LONE}"
