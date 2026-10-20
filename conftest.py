@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
+
+# Strict msgpack checkpoint deserialization for every test (issue #774, W16.1),
+# so a state type missing from CUGA_ALLOWED_MSGPACK_TYPES fails the tests instead
+# of loading as a dict. langgraph reads this once at import time, so it must be
+# set before anything imports langgraph; this root conftest loads before the
+# test modules and the nested conftests.
+os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
 
 _stability_outcomes: dict[str, bool] = {}
 _hard_failure = False
