@@ -54,6 +54,7 @@ from cuga.config import (
     LOGGING_DIR,
     TRACES_DIR,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import connection
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     assert_resolved_path_under,
 )
@@ -208,6 +209,14 @@ def _session_knowledge_collection(thread_id: str) -> str:
     from cuga.backend.knowledge.session_provider import session_collection_name
 
     return session_collection_name(thread_id)
+
+
+async def _release_sandbox_thread(thread_id: str, agent_id: str) -> None:
+    """Free the thread's kernel in sandbox-api when the execd sandbox is on."""
+    if connection.execd_active():
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import ExecdExecutor
+
+        await ExecdExecutor.release_thread(thread_id, agent_id=agent_id)
 
 
 async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id: str) -> None:
@@ -1001,6 +1010,11 @@ async def lifespan(app: FastAPI):
     # This ensures that a previously saved provider/model/api_key is applied from
     # the first request rather than always falling back to .env defaults.
     _startup_config, _ = await load_config(None) or (None, None)
+
+    # Code sandbox choice from the Manage UI; independent of agent config versions.
+    from cuga.backend.server.manage_routes.sandbox_routes import load_sandbox_settings_into_runtime
+
+    await load_sandbox_settings_into_runtime()
     _startup_llm_cfg = (_startup_config or {}).get("llm") or {}
 
     # Apply the published config at startup so the runtime override is set
@@ -3267,6 +3281,7 @@ async def delete_conversation(
         if success:
             await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
             await delete_thread_uploads(conversation_id)
+            await _release_sandbox_thread(conversation_id, agent_id)
             logger.info(f"Deleted conversation and stream events: {conversation_id}")
             return JSONResponse({"status": "success", "message": "Conversation deleted"})
         else:
@@ -4670,6 +4685,31 @@ async def download_workspace_file(
 #         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
 
 
+@app.post("/sandbox/tools/call", tags=["Sandbox"])
+async def sandbox_tool_call(request: Request):
+    """Run a tool on behalf of code executing in the execd sandbox.
+
+    No user auth: the caller is the sandbox, which holds no user credentials.
+    The request carries the HMAC token of the code block it belongs to, and is
+    answered only while that block runs, only with the callables of that block.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import tool_callback
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=400, content={"ok": False, "error": {"type": "ValueError", "message": "invalid JSON"}}
+        )
+    if not isinstance(body, dict):
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": {"type": "ValueError", "message": "expected an object"}},
+        )
+    status, payload = await tool_callback.handle_call(body)
+    return JSONResponse(status_code=status, content=payload)
+
+
 @app.post("/functions/call", tags=["Registry Proxy"])
 async def proxy_function_call(
     request: Request,
@@ -4827,11 +4867,13 @@ async def serve_react(full_path: str, request: Request):
         # Resolved outside the static directory: refuse rather than falling through to
         # the index.html SPA route, so the request gets one unambiguous answer.
         raise HTTPException(status_code=404, detail="Frontend files not found.")
+    # index.html names the hashed bundles; a cached copy keeps loading the old UI after a deploy.
+    no_cache = {"Cache-Control": "no-cache"}
     if file_path.is_file():
-        return FileResponse(str(file_path))
+        return FileResponse(str(file_path), headers=no_cache if file_path.name == "index.html" else None)
 
     index_path = os.path.join(app_state.STATIC_DIR_HTML, "index.html")
     if os.path.exists(index_path):
-        return FileResponse(index_path)
+        return FileResponse(index_path, headers=no_cache)
 
     raise HTTPException(status_code=404, detail="Frontend files not found. Did you run the build process?")
