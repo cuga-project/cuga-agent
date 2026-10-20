@@ -23,6 +23,7 @@ def _dbs_dir() -> Path:
 def resolve_checkpoint_db_path(storage_settings: Any) -> Path:
     """Return the checkpoint SQLite path for ``settings.storage`` and create its parent.
 
+    - A leading ``~`` in ``storage.checkpoint_db_path`` is expanded first.
     - ``storage.checkpoint_db_path`` set and absolute: used as is.
     - ``storage.checkpoint_db_path`` set and relative: resolved against ``DBS_DIR``,
       matching how ``[policy].policy_db_path`` is resolved.
@@ -30,7 +31,7 @@ def resolve_checkpoint_db_path(storage_settings: Any) -> Path:
     """
     configured = (getattr(storage_settings, "checkpoint_db_path", "") or "").strip()
     if configured:
-        path = Path(configured)
+        path = Path(configured).expanduser()
         if not path.is_absolute():
             path = _dbs_dir() / path
     else:
