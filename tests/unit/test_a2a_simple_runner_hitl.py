@@ -27,13 +27,13 @@ class _Snap:
 
 
 class _Graph:
-    """Returns a queued sequence of snapshots, one per get_state() call."""
+    """Returns a queued sequence of snapshots, one per aget_state() call."""
 
     def __init__(self, snaps):
         self._snaps = snaps
         self.calls = 0
 
-    def get_state(self, _config):
+    async def aget_state(self, _config):
         snap = self._snaps[min(self.calls, len(self._snaps) - 1)]
         self.calls += 1
         return snap
@@ -241,6 +241,111 @@ async def test_ambiguous_reply_reasks_without_resuming():
     assert events[-1].name == "input_required"
     assert events[-1].final is True
     assert events[-1].data["action_id"] == "new_flow_approve"
+
+
+# -- durable saver: the pending-action reads must use the async state API ----
+
+
+def _async_only_saver_graph(hitl):
+    """Real graph that parks before ``WaitForResponse`` on a saver whose sync API raises.
+
+    ``AsyncOnlySaver`` follows ``tests/unit/test_agent_loop_async_state.py``. It records
+    each sync call before raising, because ``_pending_action`` swallows a state-read
+    error and would otherwise report the thread as "not parked".
+    """
+    from typing import Optional, TypedDict
+
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.graph import END, START, StateGraph
+
+    class AsyncOnlySaver(MemorySaver):
+        def __init__(self):
+            super().__init__()
+            self.sync_calls = []
+
+        def _reject(self, name):
+            self.sync_calls.append(name)
+            raise AssertionError(f"sync {name} called")
+
+        def get_tuple(self, config):
+            self._reject("get_tuple")
+
+        def list(self, config, **kwargs):
+            self._reject("list")
+
+        def put(self, config, checkpoint, metadata, new_versions):
+            self._reject("put")
+
+        def put_writes(self, config, writes, task_id, task_path=""):
+            self._reject("put_writes")
+
+        async def aget_tuple(self, config):
+            return super().get_tuple(config)
+
+        async def alist(self, config, *, filter=None, before=None, limit=None):
+            for item in super().list(config, filter=filter, before=before, limit=limit):
+                yield item
+
+        async def aput(self, config, checkpoint, metadata, new_versions):
+            return super().put(config, checkpoint, metadata, new_versions)
+
+        async def aput_writes(self, config, writes, task_id, task_path=""):
+            return super().put_writes(config, writes, task_id, task_path)
+
+    # Functional form: this module uses postponed annotations, which LangGraph
+    # cannot resolve for a class defined inside a function.
+    _State = TypedDict("_State", {"hitl_action": Optional[dict], "answer": str}, total=False)
+
+    def produce(_state):
+        return {"hitl_action": dict(hitl)}
+
+    def wait_for_response(_state):
+        return {"hitl_action": None, "answer": "done"}
+
+    g = StateGraph(_State)
+    g.add_node("Produce", produce)
+    g.add_node("WaitForResponse", wait_for_response)
+    g.add_edge(START, "Produce")
+    g.add_edge("Produce", "WaitForResponse")
+    g.add_edge("WaitForResponse", END)
+    saver = AsyncOnlySaver()
+    return g.compile(checkpointer=saver, interrupt_before=["WaitForResponse"]), saver
+
+
+async def test_pending_action_reads_on_async_only_saver():
+    """Entry and post-stream ``_pending_action`` reads both await ``aget_state``."""
+    from cuga.backend.server.thread_scope import checkpoint_thread_id
+
+    graph, saver = _async_only_saver_graph(_HITL)
+    seen = {"resume": []}
+
+    async def event_stream(**kwargs):
+        seen["resume"].append(kwargs.get("resume"))
+        scoped = checkpoint_thread_id(kwargs["thread_id"], kwargs["user_id"], "cuga-default")
+        config = {"configurable": {"thread_id": scoped}}
+        if kwargs.get("resume") is None:
+            await graph.ainvoke({"answer": ""}, config)  # parks before WaitForResponse
+            yield b"event: tool_call\ndata: preparing\n\n"
+        else:
+            final = await graph.ainvoke(None, config)
+            yield _answer_frame(final["answer"])
+
+    runner = _make_runner(_AppState(graph), event_stream, auto_approve=False)
+
+    # Entry read finds nothing; the post-stream read finds the parked action.
+    first = [ev async for ev in runner.run("do it", "ctx-async")]
+    assert first[-1].name == "input_required"
+    assert first[-1].data["action_id"] == "new_flow_approve"
+
+    # Entry read finds the parked action, so the approval resumes the graph.
+    second = [ev async for ev in runner.run("approve", "ctx-async")]
+    assert second[-1].name == "final_answer"
+    assert second[-1].data["text"] == "done"
+    resumes = [r for r in seen["resume"] if r is not None]
+    assert len(resumes) == 1
+    assert resumes[0].action_id == "new_flow_approve"
+    assert resumes[0].confirmed is True
+    assert saver.sync_calls == []
 
 
 # -- router approval extraction --------------------------------------------
