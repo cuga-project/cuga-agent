@@ -75,3 +75,15 @@ def test_existing_parent_dir_is_fine(tmp_path, dbs_dir):
     dbs_dir.mkdir()
 
     assert resolve_checkpoint_db_path(_storage(tmp_path)) == dbs_dir / "checkpoints.db"
+
+
+def test_explicit_path_expands_user_home(tmp_path, dbs_dir, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    path = resolve_checkpoint_db_path(_storage(tmp_path, 'checkpoint_db_path = "~/cuga/cp.db"'))
+
+    assert path == home / "cuga" / "cp.db"
+    assert (home / "cuga").is_dir()
+    assert not dbs_dir.exists()
