@@ -779,7 +779,7 @@ class LLMManager:
                 logger.debug(f"Using model_name from TOML: {toml_model_name}")
                 return toml_model_name
             else:
-                default_model = "MiniMax-M3"
+                default_model = "MiniMax-M3.1-Flash"
                 logger.info(f"No model_name specified for MiniMax, using default: {default_model}")
                 return default_model
         elif platform == "litellm":
