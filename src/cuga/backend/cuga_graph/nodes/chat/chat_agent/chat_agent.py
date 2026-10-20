@@ -310,19 +310,15 @@ class ChatAgent(BaseAgent):
         self.tools = runtime_tools
         return bound_agent, prompt_inputs
 
-    def _is_session_valid(self) -> bool:
-        """Check if the MCP session is still valid"""
-        if not self.session:
+    async def _is_session_valid(self) -> bool:
+        """Check liveness through the public protocol, including MCP 2 sessions."""
+        if self.session is None:
             return False
-
         try:
-            # Check if the session's streams are still open
-            if hasattr(self.session, '_write_stream') and hasattr(self.session._write_stream, '_state'):
-                return self.session._write_stream._state.open_send_channels > 0
+            await asyncio.wait_for(self.session.send_ping(), timeout=5)
+            return True
         except Exception:
-            pass
-
-        return False
+            return False
 
     async def execute_tool(self, tool_call: ToolCall):
         """Execute a tool call with proper session validation"""
@@ -330,7 +326,7 @@ class ChatAgent(BaseAgent):
             raise RuntimeError("Agent not setup. Call setup() first.")
 
         # Check if we need to reconnect for MCP tools
-        if not self.use_regular_chat and not self._is_session_valid():
+        if not self.use_regular_chat and not await self._is_session_valid():
             logger.warning("MCP session is invalid, attempting to reconnect...")
             try:
                 await self.setup()
@@ -371,7 +367,7 @@ class ChatAgent(BaseAgent):
             return await self._run_regular(chat_messages, state)
         else:
             # Validate session before invoking
-            if not self._is_session_valid():
+            if not await self._is_session_valid():
                 logger.warning("MCP session invalid during invoke, reconnecting...")
                 await self.setup()
 
