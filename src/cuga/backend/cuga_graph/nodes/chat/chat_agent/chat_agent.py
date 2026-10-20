@@ -4,13 +4,12 @@ import os
 from typing import Any, List, Literal, Optional
 
 import aiohttp
-from langchain_mcp_adapters.tools import load_mcp_tools
+from langchain.mcp import MCPAdapter
+from fastmcp.client.transports import SSETransport
 from langchain_core.messages import ToolCall, BaseMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models import BaseChatModel
 from cuga.backend.activity_tracker.tracker import ActivityTracker
-from mcp.client.sse import sse_client
-from mcp import ClientSession
 
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
@@ -146,19 +145,25 @@ class ChatAgent(BaseAgent):
             additional_tool = [run_new_flow]
             if self.sse_available:
                 try:
-                    self._connection = sse_client(self.sse_url)
-                    read, write = await self._connection.__aenter__()
-
-                    self.session = ClientSession(read, write)
-                    await self.session.__aenter__()
-                    await self.session.initialize()
-
-                    # Load tools and create agent
-                    self.base_tools = await load_mcp_tools(self.session)
+                    adapter = MCPAdapter(SSETransport(self.sse_url))
+                    await adapter.__aenter__()
+                    self._connection = adapter
+                    # MCPAdapter may clone a supplied client. Its client is the
+                    # actual owner of discovery, calls, and the held SSE session.
+                    self.session = adapter.client
+                    self.base_tools = await adapter.list_tools()
+                    for remote_tool in self.base_tools:
+                        # Keep the previous adapter's exception contract for
+                        # direct execute_tool callers and LangGraph error handling.
+                        remote_tool.handle_tool_error = False
                     self.base_tools.extend(additional_tool)
                     logger.debug("Loaded base tools, {}".format(len(self.base_tools)))
                     logger.info("MCP client mode initialized successfully")
+                except asyncio.CancelledError:
+                    await self.cleanup()
+                    raise
                 except Exception as e:
+                    await self.cleanup()
                     logger.error(f"Failed to initialize MCP client: {e}")
                     # Fallback to tools-only mode
                     self.base_tools = additional_tool
@@ -315,8 +320,7 @@ class ChatAgent(BaseAgent):
         if self.session is None:
             return False
         try:
-            await asyncio.wait_for(self.session.send_ping(), timeout=5)
-            return True
+            return await asyncio.wait_for(self.session.ping(), timeout=5)
         except Exception:
             return False
 
@@ -474,13 +478,8 @@ class ChatAgent(BaseAgent):
         try:
             if not self.use_regular_chat:
                 # Only cleanup MCP client connections
-                if self.session:
-                    try:
-                        await self.session.__aexit__(None, None, None)
-                    except Exception as e:
-                        logger.debug(f"Error during session cleanup: {e}")
-                    finally:
-                        self.session = None
+                # The adapter owns this client; exit it exactly once below.
+                self.session = None
 
                 if self._connection:
                     try:
