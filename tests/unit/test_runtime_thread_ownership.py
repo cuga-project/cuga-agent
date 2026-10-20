@@ -377,6 +377,7 @@ async def test_protocol_runner_checks_owner_before_reading_pending_action(runtim
 
     await runtime.db.claim_thread("owned", "user-a", "cuga-default")
     graph = Mock()
+    graph.aget_state = AsyncMock()
     stream = Mock()
     runner = SimpleAgentRunner(
         SimpleNamespace(agent=SimpleNamespace(graph=graph), agent_id="cuga-default"),
@@ -386,6 +387,7 @@ async def test_protocol_runner_checks_owner_before_reading_pending_action(runtim
     with patch.object(conversation_history, "get_conversation_db", return_value=runtime.db):
         events = [event async for event in runner.run("attack", context_id="owned")]
     assert events[-1].name == "error"
+    graph.aget_state.assert_not_called()
     graph.get_state.assert_not_called()
     stream.assert_not_called()
 
@@ -751,7 +753,8 @@ async def test_simple_protocol_resumes_canonical_context(runtime, monkeypatch):
 
     await runtime.db.claim_thread("owned", "user-a", "cuga-default")
     graph = Mock()
-    graph.get_state.return_value = SimpleNamespace(
+    graph.aget_state = AsyncMock()
+    graph.aget_state.return_value = SimpleNamespace(
         next=("WaitForResponse",),
         values={"hitl_action": {"action_id": "approve", "type": "confirmation", "description": "Approve?"}},
     )
@@ -772,9 +775,10 @@ async def test_simple_protocol_resumes_canonical_context(runtime, monkeypatch):
     assert captured[0]["thread_id"] == "owned"
     assert captured[0]["resume"].action_id == "approve"
     assert captured[0]["resume"].confirmed
-    graph.get_state.assert_called_once_with(
+    graph.aget_state.assert_awaited_once_with(
         {"configurable": {"thread_id": runtime.main._checkpoint_thread_id("owned", "user-a", "cuga-default")}}
     )
+    graph.get_state.assert_not_called()
 
 
 async def test_run_injected_dependencies_do_not_import_main(runtime, monkeypatch):
