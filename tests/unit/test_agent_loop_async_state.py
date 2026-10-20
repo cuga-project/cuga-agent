@@ -21,45 +21,16 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
 from cuga.backend.cuga_graph.utils.agent_loop import AgentLoop, AgentLoopAnswer
+from tests.fixtures.async_only_saver import AsyncOnlySaver
 
 pytestmark = pytest.mark.unit
 
 _TOOL_CALL = {"name": "click", "args": {"bid": "1"}, "id": "t1", "type": "tool_call"}
-
-
-class AsyncOnlySaver(MemorySaver):
-    """MemorySaver whose sync API raises; the async API uses the parent's storage."""
-
-    def get_tuple(self, config):
-        raise AssertionError("sync get_tuple called")
-
-    def list(self, config, **kwargs):
-        raise AssertionError("sync list called")
-
-    def put(self, config, checkpoint, metadata, new_versions):
-        raise AssertionError("sync put called")
-
-    def put_writes(self, config, writes, task_id, task_path=""):
-        raise AssertionError("sync put_writes called")
-
-    async def aget_tuple(self, config):
-        return super().get_tuple(config)
-
-    async def alist(self, config, *, filter=None, before=None, limit=None):
-        for item in super().list(config, filter=filter, before=before, limit=limit):
-            yield item
-
-    async def aput(self, config, checkpoint, metadata, new_versions):
-        return super().put(config, checkpoint, metadata, new_versions)
-
-    async def aput_writes(self, config, writes, task_id, task_path=""):
-        return super().put_writes(config, writes, task_id, task_path)
 
 
 def _answer_graph():
