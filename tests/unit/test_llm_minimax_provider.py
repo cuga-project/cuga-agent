@@ -6,11 +6,17 @@ branch. These tests lock the model-name/base-url resolution and the client
 wiring in ``_create_llm_instance``.
 """
 
+import json
+from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
+from dynaconf import Dynaconf
+from langchain_core.messages import HumanMessage
 
-from cuga.backend.llm.models import LLMManager, set_current_llm_override
+from cuga.backend.cuga_graph.utils.token_counter import TokenCounter
+from cuga.backend.llm.models import LLMManager, create_llm_from_config, set_current_llm_override
 
 pytestmark = pytest.mark.unit
 
@@ -40,7 +46,7 @@ def reset_llm_state(monkeypatch):
 class TestMinimaxModelName:
     def test_default_model_name(self):
         mgr = LLMManager()
-        assert mgr._get_model_name({}, "minimax") == "MiniMax-M3"
+        assert mgr._get_model_name({}, "minimax") == "MiniMax-M3.1-Flash"
 
     def test_toml_model_name_wins_over_default(self):
         mgr = LLMManager()
@@ -88,7 +94,7 @@ class TestMinimaxCreateInstance:
         kwargs = mock_openai.call_args.kwargs
         assert kwargs["openai_api_key"] == "test-key"
         assert kwargs["openai_api_base"] == MINIMAX_DEFAULT_BASE_URL
-        assert kwargs["model_name"] == "MiniMax-M3"
+        assert kwargs["model_name"] == "MiniMax-M3.1-Flash"
         assert kwargs["timeout"] == 200.0
 
     def test_missing_api_key_raises(self, monkeypatch):
@@ -97,3 +103,140 @@ class TestMinimaxCreateInstance:
             mgr = LLMManager()
             with pytest.raises(ValueError, match="MINIMAX_API_KEY"):
                 mgr._create_llm_instance({**BASE_MODEL_SETTINGS})
+
+
+@pytest.fixture
+def captured_requests(monkeypatch):
+    """Exercise the real client and SDK, replacing only the HTTP transport."""
+    requests = []
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+    monkeypatch.setattr("cuga.backend.llm.models.resolve_secret", lambda _: None)
+
+    def respond(request):
+        payload = json.loads(request.content)
+        requests.append((request, payload))
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "created": 0,
+                "model": payload["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": "Hello",
+                            "reasoning_content": "Test reasoning",
+                        },
+                    }
+                ],
+            },
+        )
+
+    async def async_respond(self, request):
+        return respond(request)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", lambda self, request: respond(request))
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", async_respond)
+    return requests
+
+
+@pytest.mark.parametrize("region,host", [("global_en", "api.minimax.io"), ("cn_zh", "api.minimaxi.com")])
+@pytest.mark.parametrize("preset", [None, "planner", "chat", "final_answer", "code", "qa", "action"])
+def test_default_and_shipped_presets_reach_http_boundary(
+    captured_requests, monkeypatch, region, host, preset
+):
+    monkeypatch.setenv("MINIMAX_REGION", region)
+    model_settings = dict(BASE_MODEL_SETTINGS)
+    if preset:
+        path = Path(__file__).parents[2] / "src/cuga/configurations/models/settings.minimax.toml"
+        config = Dynaconf(settings_files=[str(path)], environments=False, load_dotenv=False)
+        model_settings = config.agent[preset].model.to_dict()
+    mgr = LLMManager()
+    llm = mgr.get_model(model_settings)
+    result = llm.invoke("Hello")
+    # Reusing the cached client must retain the selected model and task limits.
+    assert mgr.get_model(model_settings) is llm
+    assert TokenCounter().get_model_context_size(llm) == 1000000
+    llm.invoke("Hello again")
+    assert result.additional_kwargs["reasoning_content"] == "Test reasoning"
+    assert len(captured_requests) == 2
+    for request, payload in captured_requests:
+        assert str(request.url) == f"https://{host}/v1/chat/completions"
+        assert payload["model"] == "MiniMax-M3.1-Flash"
+        assert payload.get("max_completion_tokens", payload.get("max_tokens")) == model_settings["max_tokens"]
+        # Let MiniMax apply adaptive thinking and its default effort.
+        assert not {"thinking", "reasoning_effort", "reasoning_split", "service_tier"} & payload.keys()
+
+
+@pytest.mark.parametrize("model", ["MiniMax-M3", "MiniMax-M2.7", "custom-model"])
+@pytest.mark.parametrize("selection", ["model", "model_name", "environment", "override", "saved"])
+def test_explicit_models_reach_http_boundary(captured_requests, monkeypatch, model, selection):
+    model_settings = dict(BASE_MODEL_SETTINGS)
+    if selection == "environment":
+        monkeypatch.setenv("MODEL_NAME", model)
+    elif selection == "override":
+        set_current_llm_override({"model": model})
+    elif selection != "saved":
+        model_settings[selection] = model
+    if selection == "saved":
+        with patch("cuga.backend.llm.models.settings") as settings:
+            settings.secrets = None
+            settings.agent.code.model = {"max_tokens": 100}
+            llm = create_llm_from_config({"provider": "minimax", "model": model})
+    else:
+        llm = LLMManager().get_model(model_settings)
+    llm.invoke("Hello")
+    assert captured_requests[0][1]["model"] == model
+    if model == "MiniMax-M3" and selection != "saved":
+        assert TokenCounter().get_model_context_size(llm) == 1000000
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+async def test_flash_effort_and_multimodal_payload_reach_http_boundary(captured_requests, effort):
+    llm = LLMManager().get_model(
+        {
+            **BASE_MODEL_SETTINGS,
+            "extra_params": {"reasoning_effort": effort, "extra_body": {"thinking": {"type": "adaptive"}}},
+        }
+    )
+    content = [
+        {"type": "text", "text": "Describe this image"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,dGVzdA=="}},
+    ]
+    await llm.ainvoke([HumanMessage(content=content)])
+    payload = captured_requests[0][1]
+    assert payload["model"] == "MiniMax-M3.1-Flash"
+    assert payload["reasoning_effort"] == effort
+    assert payload["thinking"] == {"type": "adaptive"}
+    assert payload["messages"][0]["content"] == content
+    assert "service_tier" not in payload
+    assert "reasoning_split" not in payload
+
+
+def test_m3_disabled_thinking_reaches_http_boundary(captured_requests):
+    llm = LLMManager().get_model(
+        {
+            **BASE_MODEL_SETTINGS,
+            "model": "MiniMax-M3",
+            "extra_params": {"extra_body": {"thinking": {"type": "disabled"}}},
+        }
+    )
+    llm.invoke("Hello")
+    assert captured_requests[0][1]["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.parametrize("source", ["url", "environment"])
+def test_custom_endpoint_reaches_http_boundary(captured_requests, monkeypatch, source):
+    model_settings = dict(BASE_MODEL_SETTINGS)
+    url = "https://proxy.example.test/v1"
+    if source == "environment":
+        monkeypatch.setenv("MINIMAX_BASE_URL", url)
+        monkeypatch.setenv("MINIMAX_REGION", "cn_zh")
+    else:
+        model_settings["url"] = url
+    LLMManager().get_model(model_settings).invoke("Hello")
+    assert str(captured_requests[0][0].url) == f"{url}/chat/completions"
