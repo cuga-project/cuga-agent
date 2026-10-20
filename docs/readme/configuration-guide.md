@@ -1059,6 +1059,28 @@ instruction_set = "default"  # or any instruction set above
 
 </details>
 
+<details>
+<summary>💾 Conversation checkpointer settings</summary>
+
+## Configuration
+
+These `[storage]` keys in `settings.toml` control how published agent graphs persist execution state between turns. `checkpointer` defaults to `"memory"`, which keeps the current in-process behavior. Set any key with `DYNACONF_STORAGE__<KEY>`, for example `DYNACONF_STORAGE__CHECKPOINTER=durable`.
+
+| Key | Default | Description |
+|---|---|---|
+| `checkpointer` | `"memory"` | `memory` (in-process, lost on restart) \| `durable` (SQLite when `storage.mode = "local"`, Postgres when `"prod"`) |
+| `checkpoint_db_path` | `""` | Local mode only. SQLite file for checkpoints; empty means `DBS_DIR/checkpoints.db` |
+| `checkpoint_pool_min_size` | `1` | Prod mode only. Minimum Postgres connection pool size |
+| `checkpoint_pool_max_size` | `10` | Prod mode only. Maximum Postgres connection pool size |
+| `checkpoint_retention_days` | `90` | Prod mode only. Checkpoints older than this are pruned; `0` disables time-based pruning |
+| `checkpoint_prune_interval_minutes` | `60` | How often the prune job runs |
+| `thread_lease_ttl_seconds` | `60` | How long a conversation thread lease is held before it expires |
+| `thread_lease_renew_seconds` | `20` | How often an active run renews its thread lease |
+
+Integer keys must be `0` or greater. These keys are part of the durable session continuity work ([#774](https://github.com/cuga-project/cuga-agent/issues/774)) and have no effect until the checkpointer factory reads them.
+
+</details>
+
 ## Authentication and access control
 
 Configure OIDC sign-in with the provider values shown in the [environment example](../../.env.example): `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_DISCOVERY_URL`, and `OIDC_REDIRECT_URI`. Set the redirect URI to the externally accessible callback URL for your deployment.
