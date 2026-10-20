@@ -184,7 +184,7 @@ class _Graph:
         self._snaps = snaps
         self.calls = 0
 
-    def get_state(self, _config):
+    async def aget_state(self, _config):
         snap = self._snaps[min(self.calls, len(self._snaps) - 1)]
         self.calls += 1
         return snap
