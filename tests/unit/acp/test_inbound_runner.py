@@ -8,6 +8,8 @@ from typing import Any
 
 import pytest
 
+from tests.fixtures.async_only_saver import parked_hitl_graph
+
 pytestmark = [pytest.mark.unit, pytest.mark.anyio]
 
 
@@ -240,80 +242,19 @@ async def test_runner_shutdown_closes_once_and_is_idempotent(monkeypatch: pytest
 # -- durable saver: the pending-action reads must use the async state API ----------
 
 
-def _async_only_saver_graph() -> tuple[Any, Any]:
-    """Real graph that parks before ``WaitForResponse`` on a saver whose sync API raises.
-
-    ``AsyncOnlySaver`` follows ``tests/unit/test_agent_loop_async_state.py``: an async
-    durable saver (``AsyncSqliteSaver`` / ``AsyncPostgresSaver``) rejects sync calls
-    from the event loop. It also records each sync call before raising, so the test
-    does not depend on how the runner reports a failed state read.
-    """
-    from typing import Optional, TypedDict
-
-    from langgraph.checkpoint.memory import MemorySaver
-    from langgraph.graph import END, START, StateGraph
-
-    class AsyncOnlySaver(MemorySaver):
-        def __init__(self) -> None:
-            super().__init__()
-            self.sync_calls: list[str] = []
-
-        def _reject(self, name: str) -> None:
-            self.sync_calls.append(name)
-            raise AssertionError(f"sync {name} called")
-
-        def get_tuple(self, config):
-            self._reject("get_tuple")
-
-        def list(self, config, **kwargs):
-            self._reject("list")
-
-        def put(self, config, checkpoint, metadata, new_versions):
-            self._reject("put")
-
-        def put_writes(self, config, writes, task_id, task_path=""):
-            self._reject("put_writes")
-
-        async def aget_tuple(self, config):
-            return super().get_tuple(config)
-
-        async def alist(self, config, *, filter=None, before=None, limit=None):
-            for item in super().list(config, filter=filter, before=before, limit=limit):
-                yield item
-
-        async def aput(self, config, checkpoint, metadata, new_versions):
-            return super().put(config, checkpoint, metadata, new_versions)
-
-        async def aput_writes(self, config, writes, task_id, task_path=""):
-            return super().put_writes(config, writes, task_id, task_path)
-
-    # Functional form: this module uses postponed annotations, which LangGraph
-    # cannot resolve for a class defined inside a function.
-    _State = TypedDict("_State", {"hitl_action": Optional[dict], "answer": str}, total=False)
-
-    def produce(_state: _State) -> dict[str, Any]:
-        return {"hitl_action": {"action_id": "action-1", "description": "Approve operation"}}
-
-    def wait_for_response(_state: _State) -> dict[str, Any]:
-        return {"hitl_action": None, "answer": "done"}
-
-    g = StateGraph(_State)
-    g.add_node("Produce", produce)
-    g.add_node("WaitForResponse", wait_for_response)
-    g.add_edge(START, "Produce")
-    g.add_edge("Produce", "WaitForResponse")
-    g.add_edge("WaitForResponse", END)
-    saver = AsyncOnlySaver()
-    return g.compile(checkpointer=saver, interrupt_before=["WaitForResponse"]), saver
-
-
 @pytest.mark.unit
 async def test_runner_reads_pending_action_on_async_only_saver(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Both ``_pending_action`` reads (approval lookup and post-invoke) await ``aget_state``."""
+    """Both ``_pending_action`` reads (approval lookup and post-invoke) await ``aget_state``.
+
+    The graph runs on ``AsyncOnlySaver``, which simulates an async durable saver
+    (``AsyncSqliteSaver`` / ``AsyncPostgresSaver``) rejecting sync calls from the event
+    loop. It records each sync call before raising, so the test does not depend on how
+    the runner reports a failed state read.
+    """
     import cuga.sdk
     from cuga.backend.server.acp.runner import StdioCugaRunner
 
-    graph, saver = _async_only_saver_graph()
+    graph, saver = parked_hitl_graph({"action_id": "action-1", "description": "Approve operation"})
 
     class _GraphAgent(_FakeAgent):
         def __init__(self) -> None:
