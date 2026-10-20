@@ -87,7 +87,7 @@ def migrate_legacy_names(names: list) -> list:
 
 
 def to_client_config(name, transport: str = "streamable_http") -> dict | None:
-    """A MultiServerMCPClient-style config entry for a server, else None.
+    """A Named MCP transport config entry for a server, else None.
 
     {"cuga_finance": {"url": "...", "transport": "streamable_http"}}
 
@@ -98,7 +98,7 @@ def to_client_config(name, transport: str = "streamable_http") -> dict | None:
     """
     if isinstance(name, dict):
         # A dict entry is only usable if it names itself: `resolve` uses that name as the
-        # MultiServerMCPClient config KEY, and a missing one put a literal None key in the config.
+        # MCP config KEY, and a missing one put a literal None key in the config.
         if not str(name.get("name") or "").strip():
             return None
         url = (name.get("url") or "").strip()
@@ -125,7 +125,7 @@ def to_client_config(name, transport: str = "streamable_http") -> dict | None:
 
 
 def resolve(names: list) -> dict:
-    """Turn server names into a MultiServerMCPClient config dict.
+    """Turn server names into a MCP config dict.
 
     Anything that cannot be resolved to a URL is SKIPPED AND LOGGED. It used to be skipped
     silently, which is the worst of the options: the agent came up with fewer tools than it
