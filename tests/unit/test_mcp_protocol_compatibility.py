@@ -81,12 +81,8 @@ async def test_evolve_direct_sse_decodes_real_tool_result(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_agent_reuses_live_mcp2_session_and_detects_closed_session():
-    from unittest.mock import AsyncMock
-
-    from langchain_mcp_adapters.tools import load_mcp_tools
-    from mcp import ClientSession
-    from mcp.client.sse import sse_client
+async def test_chat_agent_reuses_live_session_and_cleans_up(monkeypatch):
+    from unittest.mock import AsyncMock, patch
 
     from cuga.backend.cuga_graph.nodes.chat.chat_agent.chat_agent import ChatAgent
 
@@ -97,24 +93,29 @@ async def test_chat_agent_reuses_live_mcp2_session_and_detects_closed_session():
         """Greet a user."""
         return f"hello {name}"
 
-    agent = object.__new__(ChatAgent)
-    agent.session = None
+    monkeypatch.setenv("USE_LEGACY_EXECUTION", "false")
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.chat.chat_agent.chat_agent.check_sse_availability",
+        AsyncMock(return_value=True),
+    )
+    agent = ChatAgent()
     assert not await agent._is_session_valid()
-    agent._is_setup = True
-    agent.use_regular_chat = False
-    agent.tools = None
-    agent.setup = AsyncMock(side_effect=AssertionError("healthy session must not reconnect"))
     async with serve_mcp(server, "sse") as url:
-        async with sse_client(url) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                agent.session = session
-                agent.base_tools = await load_mcp_tools(session)
-                assert await agent._is_session_valid()
+        agent.sse_url = url
+        await agent.setup()
+        client = agent.session
+        try:
+            assert await agent._is_session_valid()
+            with patch.object(agent, "setup", new_callable=AsyncMock) as reconnect:
                 for name in ("alice", "bob"):
                     result = await agent.execute_tool({"name": "greet", "args": {"name": name}})
                     assert f"hello {name}" in str(result)
-                agent.setup.assert_not_awaited()
+                reconnect.assert_not_awaited()
+        finally:
+            await agent.cleanup()
+        assert agent.session is None
+        assert agent._connection is None
+        assert not client.is_connected()
         assert not await agent._is_session_valid()
 
 
@@ -127,17 +128,141 @@ async def test_chat_session_ping_failure_and_cancellation():
 
     agent = object.__new__(ChatAgent)
     for failure in (TimeoutError(), RuntimeError("disconnected")):
-        agent.session = SimpleNamespace(send_ping=AsyncMock(side_effect=failure))
+        agent.session = SimpleNamespace(ping=AsyncMock(side_effect=failure))
         assert not await agent._is_session_valid()
-    agent.session = SimpleNamespace(send_ping=AsyncMock(side_effect=asyncio.CancelledError()))
+    agent.session = SimpleNamespace(ping=AsyncMock(side_effect=asyncio.CancelledError()))
     with pytest.raises(asyncio.CancelledError):
         await agent._is_session_valid()
 
 
-def test_events_mcp_bridge_adapter_imports_with_supported_sdk():
-    # The events bridge imports this lazily when it connects an MCP source.
-    # Keep this unskipped: a metadata-only successful lock cannot prove that
-    # upstream adapters have migrated away from removed mcp.server.fastmcp APIs.
-    from langchain_mcp_adapters.client import MultiServerMCPClient
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["sse", "streamable_http"])
+async def test_events_tools_reconnect_after_discovery_preserve_auth_and_results(monkeypatch, transport):
+    from fastmcp.server.dependencies import get_http_headers
+    from langchain_core.messages import ToolMessage
+    import langchain.mcp
 
-    assert callable(MultiServerMCPClient)
+    from cuga.backend.events.tools_bridge import build_tools
+
+    server = FastMCP("events")
+
+    @server.tool
+    def echo(value: str) -> dict:
+        return {"value": value, "authorization": get_http_headers(include_all=True).get("authorization")}
+
+    adapters = []
+    original_adapter = langchain.mcp.MCPAdapter
+
+    def record_adapter(target):
+        adapter = original_adapter(target)
+        adapters.append(adapter)
+        return adapter
+
+    monkeypatch.setattr(langchain.mcp, "MCPAdapter", record_adapter)
+    async with serve_mcp(server, "sse" if transport == "sse" else "http") as url:
+        tools = await build_tools(
+            ["current_time"],
+            {"events": {"url": url, "transport": transport, "headers": {"Authorization": "Bearer test"}}},
+            tool_filter=["echo"],
+        )
+        # Raw names retain persisted tool filters; no surprise server-name prefix.
+        assert [tool.name for tool in tools] == ["current_time", "echo"]
+        assert not adapters[0].client.is_connected()
+        tool = tools[1]
+        assert tool.args["value"]["type"] == "string"
+        for value in ("first", "second"):
+            result = await tool.ainvoke(
+                {"type": "tool_call", "id": value, "name": "echo", "args": {"value": value}}
+            )
+            assert isinstance(result, ToolMessage)
+            assert result.status == "success"
+            assert result.artifact["structured_content"] == {"value": value, "authorization": "Bearer test"}
+            assert not adapters[0].client.is_connected()
+
+
+@pytest.mark.asyncio
+async def test_events_tool_errors_cancellation_and_transport_failures(monkeypatch):
+    from langchain_core.tools import ToolException
+    import langchain.mcp
+
+    from cuga.backend.events.tools_bridge import load_mcp_tools
+
+    server = FastMCP("events-errors")
+    started = asyncio.Event()
+
+    @server.tool
+    def fail() -> str:
+        raise ValueError("tool rejected input")
+
+    @server.tool
+    async def slow() -> str:
+        started.set()
+        await asyncio.Event().wait()
+        return "unreachable"
+
+    adapters = []
+    original_adapter = langchain.mcp.MCPAdapter
+
+    def record_adapter(target):
+        adapter = original_adapter(target)
+        adapters.append(adapter)
+        return adapter
+
+    monkeypatch.setattr(langchain.mcp, "MCPAdapter", record_adapter)
+    async with serve_mcp(server, "http") as url:
+        tools = {
+            tool.name: tool for tool in await load_mcp_tools({"events": {"url": url, "transport": "http"}})
+        }
+        with pytest.raises(ToolException, match="tool rejected input"):
+            await tools["fail"].ainvoke({})
+        task = asyncio.create_task(tools["slow"].ainvoke({}))
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not adapters[0].client.is_connected()
+    # Transport errors remain exceptions, not successful empty results.
+    with pytest.raises(Exception) as failure:
+        await asyncio.wait_for(tools["fail"].ainvoke({}), timeout=5)
+    assert not isinstance(failure.value, ToolException)
+
+
+@pytest.mark.asyncio
+async def test_chat_setup_cancellation_closes_owned_adapter(monkeypatch):
+    from unittest.mock import AsyncMock
+    from langchain.mcp import MCPAdapter
+
+    from cuga.backend.cuga_graph.nodes.chat.chat_agent.chat_agent import ChatAgent
+
+    started = asyncio.Event()
+
+    async def wait_for_cancellation(self):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setenv("USE_LEGACY_EXECUTION", "false")
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.chat.chat_agent.chat_agent.check_sse_availability",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(MCPAdapter, "list_tools", wait_for_cancellation)
+    agent = ChatAgent()
+    async with serve_mcp(FastMCP("setup-cancel"), "sse") as url:
+        agent.sse_url = url
+        task = asyncio.create_task(agent.setup())
+        await asyncio.wait_for(started.wait(), timeout=5)
+        client = agent.session
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert agent.session is None
+        assert agent._connection is None
+        assert not client.is_connected()
+
+
+@pytest.mark.asyncio
+async def test_events_rejects_unsupported_legacy_options_with_existing_fallback(caplog):
+    from cuga.backend.events.tools_bridge import load_mcp_tools
+
+    assert await load_mcp_tools({"legacy": {"url": "http://127.0.0.1:9", "session_kwargs": {}}}) == []
+    assert "Unsupported MCP options" in caplog.text
