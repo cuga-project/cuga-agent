@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
+from cuga.backend.cuga_graph.utils.thread_ids import logical_thread_id
 from cuga.backend.evolve.formatting import (
     build_evolve_guidelines_section,
     build_evolve_user_preference_with_attribution,
@@ -104,7 +105,7 @@ async def build_evolve_special_instructions_extension(
     if current_user_id and memory_query:
         current_agent_id = str(service_scope.get("agent_id") or "").strip()
         thread_id_for_memory = str(
-            configurable.get("thread_id") or getattr(state, "thread_id", "") or ""
+            logical_thread_id(configurable, getattr(state, "thread_id", "") or "")
         ).strip()
 
         try:

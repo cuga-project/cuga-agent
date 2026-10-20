@@ -3708,6 +3708,7 @@ class CugaSupervisor:
         action_response: Optional[Any] = None,
         user_id: Optional[str] = None,
         tenant_id: Optional[str] = None,
+        checkpoint_thread_id: Optional[str] = None,
     ) -> InvokeResult:
         """
         Invoke the supervisor with a message.
@@ -3718,6 +3719,7 @@ class CugaSupervisor:
             action_response: Optional ActionResponse for resuming after approval/interruption
             user_id: Caller identity mixed into child sub-agent checkpoint keys
             tenant_id: Optional tenant override; defaults to the process service tenant
+            checkpoint_thread_id: Optional scoped storage key; thread_id remains the resource identity
 
         Returns:
             InvokeResult containing answer and metadata
@@ -3749,7 +3751,10 @@ class CugaSupervisor:
 
         # Handle resume case
         if is_resume:
-            config["configurable"]["thread_id"] = thread_id
+            config["configurable"]["thread_id"] = checkpoint_thread_id or thread_id
+            if checkpoint_thread_id:
+                config["configurable"]["logical_thread_id"] = thread_id
+                config["configurable"]["workspace_thread_id"] = thread_id
 
             # Set session.id for OpenLit observability (if enabled)
             set_session_attribute(thread_id)
@@ -3771,7 +3776,10 @@ class CugaSupervisor:
                 thread_id = f"supervisor_{uuid.uuid4().hex[:8]}"
                 logger.debug(f"Auto-generated thread_id: {thread_id}")
 
-            config["configurable"]["thread_id"] = thread_id
+            config["configurable"]["thread_id"] = checkpoint_thread_id or thread_id
+            if checkpoint_thread_id:
+                config["configurable"]["logical_thread_id"] = thread_id
+                config["configurable"]["workspace_thread_id"] = thread_id
 
             # Normal invocation
             from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import (
