@@ -23,6 +23,20 @@ def _registry_on(monkeypatch):
     )
 
 
+def _patch_agent_loop(monkeypatch, fake_loop) -> None:
+    """Make ``event_stream`` build ``fake_loop`` instead of ``AgentLoop``, for this test only.
+
+    ``event_stream`` imports ``AgentLoop`` and then ``controller`` inside its body. If
+    ``controller`` is first imported while ``agent_loop.AgentLoop`` is patched, its
+    module-level ``from ...agent_loop import AgentLoop`` binds the fake for the rest of
+    the process; monkeypatch only restores ``agent_loop.AgentLoop``. Import
+    ``controller`` first so it always binds the real class.
+    """
+    import cuga.backend.cuga_graph.utils.controller  # noqa: F401
+
+    monkeypatch.setattr("cuga.backend.cuga_graph.utils.agent_loop.AgentLoop", fake_loop)
+
+
 def _request():
     request = MagicMock()
     request.app.state.draft_app_state = None
@@ -239,10 +253,7 @@ async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
         chat=None,
     )
 
-    monkeypatch.setattr(
-        "cuga.backend.cuga_graph.utils.agent_loop.AgentLoop",
-        _ImmediateLoop,
-    )
+    _patch_agent_loop(monkeypatch, _ImmediateLoop)
     monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", fake_save)
     monkeypatch.setattr(main_mod, "_knowledge_enabled_for_app_state", lambda _state: False)
     monkeypatch.setattr(main_mod, "_rehydrate_citation_ledger", AsyncMock())
@@ -316,10 +327,7 @@ async def test_resumed_stream_uses_checkpoint_memory_disclosure(monkeypatch, wxo
         chat=None,
     )
 
-    monkeypatch.setattr(
-        "cuga.backend.cuga_graph.utils.agent_loop.AgentLoop",
-        _ImmediateLoop,
-    )
+    _patch_agent_loop(monkeypatch, _ImmediateLoop)
     monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", fake_save)
     monkeypatch.setattr(main_mod, "_knowledge_enabled_for_app_state", lambda _state: False)
     monkeypatch.setattr(main_mod, "_rehydrate_citation_ledger", AsyncMock())
@@ -425,7 +433,7 @@ async def test_event_stream_reloads_and_writes_state_through_async_api(monkeypat
         special_instructions=None,
         chat=None,
     )
-    monkeypatch.setattr("cuga.backend.cuga_graph.utils.agent_loop.AgentLoop", _ScriptedLoop)
+    _patch_agent_loop(monkeypatch, _ScriptedLoop)
     monkeypatch.setattr(AgentRunner, "process_event_async", process)
     monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", fake_save)
     monkeypatch.setattr(main_mod, "_knowledge_enabled_for_app_state", lambda _state: False)
