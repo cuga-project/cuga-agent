@@ -38,17 +38,15 @@ dependencies = [
     "python-dotenv",
     "loguru",
     # 1.28.1+ fixes GHSA-hvrp-rf83-w775, GHSA-jpw9-pfvf-9f58, GHSA-vj7q-gjh5-988w (task/session/WebSocket auth).
-    # No upper bound: mcp 2.x is compatible after moving imports to standalone fastmcp.
-    "mcp[cli]>=1.28.1",
+    # FastMCP 4 and Evolve's CPEX integrations share the MCP 2 protocol models.
+    "mcp[cli]>=2.0.0,<3",
     "psutil>=7.0.0",
     "typer>=0.15.3",
     "typer-slim>=0.15.3", # explicit: docling pulls typer meta-package which needs typer-slim
-    # <4: fastmcp 4.0.0 is currently beta. Lift to >=4.0.0 once a stable release exists.
-    # >=3.3.0 so the fastmcp/ package has exactly one owner. Up to 3.2.x the fastmcp
-    # distribution ships the code itself; from 3.3.0 it is a meta-package that requires
-    # fastmcp-slim[client,server]==<same version>, and fastmcp-slim ships the code.
-    # Avoid overlapping ownership if another dependency also requires fastmcp-slim.
-    "fastmcp>=3.3.0,<4",
+    # 4.1.2 is the stable floor shared with Evolve's server extra. FastMCP 3
+    # requires MCP <2, which cannot coexist with CPEX >=0.1.4 / pii-filter >=0.3.9.
+    # The fastmcp meta-package retains sole code ownership in fastmcp-slim.
+    "fastmcp>=4.1.2,<5",
     # Authoritative harmony special-token vocabulary
     # (see cuga_graph.utils.harmony.harmony_special_tokens); avoids
     # hand-maintaining the list.
@@ -197,6 +195,9 @@ override-dependencies = [
 ]
 
 [tool.uv.sources]
+# Draft-only validation source for AgentToolkit/altk-evolve#455. Replace with a
+# published compatible minimum version and regenerate uv.lock before merging.
+altk-evolve-core = { git = "https://github.com/AgentToolkit/altk-evolve", rev = "22cefa1adbe3d769ffbc407aaefb252731423913" }
 torch                 = { index = "pytorch-cpu" }
 torchvision           = { index = "pytorch-cpu" }
 torchaudio            = { index = "pytorch-cpu" }
