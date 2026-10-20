@@ -28,6 +28,13 @@ dependencies = [
     "httpx",
     "docker",
     "langgraph",
+    # Durable checkpoint savers for session continuity (#774). Both require
+    # langgraph-checkpoint<5; the >=4.1.1 security floor is in constraint-dependencies.
+    # Imported lazily inside the functions that build a checkpointer, never at module top.
+    "langgraph-checkpoint-sqlite>=3.1.1,<4",
+    "langgraph-checkpoint-postgres>=3.1.2,<4",
+    "aiosqlite>=0.20",
+    "psycopg-pool>=3.2",  # explicit: imported directly by the checkpointer factory
     "markdownify",
     "uvicorn",
     "fastapi[standard]",
