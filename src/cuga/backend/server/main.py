@@ -1683,8 +1683,8 @@ async def event_stream(
         # Check if we have existing state for this thread_id (for followup questions)
         if thread_id:
             try:
-                latest_state_values = run_agent.graph.get_state(
-                    {"configurable": {"thread_id": checkpoint_thread_id}}
+                latest_state_values = (
+                    await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
                 ).values
                 if latest_state_values:
                     # Load existing state for followup questions
@@ -1718,8 +1718,8 @@ async def event_stream(
     else:
         # For resume, fetch state from LangGraph
         if thread_id:
-            latest_state_values = run_agent.graph.get_state(
-                {"configurable": {"thread_id": checkpoint_thread_id}}
+            latest_state_values = (
+                await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
             ).values
             if latest_state_values:
                 local_state = AgentState(**latest_state_values)
@@ -1872,6 +1872,12 @@ async def event_stream(
     # Use local_state if available, otherwise None (AgentLoop/LangGraph will handle state retrieval)
     agent_stream_gen = agent_loop_obj.run_stream(state=local_state if not resume else None, resume=resume)
 
+    async def _load_state_values() -> dict:
+        """Reload this thread's checkpointed state values (async: durable savers reject sync reads)."""
+        return (
+            await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
+        ).values
+
     # Print initial trace ID status
     if langfuse_handler and settings.advanced_features.langfuse_tracing:
         initial_trace_id = agent_loop_obj.get_langfuse_trace_id()
@@ -1902,9 +1908,7 @@ async def event_stream(
                     if event.interrupt and not event.has_tools:
                         # Update local state from graph
                         if thread_id:
-                            latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": checkpoint_thread_id}}
-                            ).values
+                            latest_state_values = await _load_state_values()
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
                         return
@@ -1930,9 +1934,7 @@ async def event_stream(
                         variables_metadata = {}
                         active_policies = []
                         if thread_id:
-                            latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": checkpoint_thread_id}}
-                            ).values
+                            latest_state_values = await _load_state_values()
 
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
@@ -2070,9 +2072,7 @@ async def event_stream(
                         ).format(app_state.output_format, thread_id=thread_id)
 
                         if thread_id:
-                            latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": checkpoint_thread_id}}
-                            ).values
+                            latest_state_values = await _load_state_values()
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
                         try:
@@ -2087,9 +2087,7 @@ async def event_stream(
                         return
                     elif event.has_tools:
                         if thread_id:
-                            latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": checkpoint_thread_id}}
-                            ).values
+                            latest_state_values = await _load_state_values()
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
 
@@ -2123,7 +2121,7 @@ async def event_stream(
                             local_state.url = app_state.env.get_url()
 
                         if thread_id and local_state:
-                            run_agent.graph.update_state(
+                            await run_agent.graph.aupdate_state(
                                 {"configurable": {"thread_id": checkpoint_thread_id}},
                                 local_state.model_dump(),
                             )
@@ -2133,9 +2131,7 @@ async def event_stream(
                 else:
                     logger.debug("Yield {}".format(event))
                     if thread_id:
-                        latest_state_values = run_agent.graph.get_state(
-                            {"configurable": {"thread_id": checkpoint_thread_id}}
-                        ).values
+                        latest_state_values = await _load_state_values()
                         if latest_state_values:
                             local_state = AgentState(**latest_state_values)
                     try:
@@ -3991,7 +3987,7 @@ async def get_agent_state(
             raise HTTPException(status_code=503, detail="Agent graph not initialized")
 
         try:
-            state_snapshot = run_agent.graph.get_state(
+            state_snapshot = await run_agent.graph.aget_state(
                 {"configurable": {"thread_id": _checkpoint_thread_id(thread_id, user_id, agent_id)}}
             )
 
