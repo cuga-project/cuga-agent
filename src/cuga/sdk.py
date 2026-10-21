@@ -1951,10 +1951,10 @@ class CugaAgent:
             result = await agent.graph.ainvoke({"input": "Delete all data"}, config)
 
             # Check if interrupted
-            state = agent.graph.get_state(config)
+            state = await agent.graph.aget_state(config)
             if state.next:  # Has pending nodes = interrupted
                 # Handle approval (see docs for full example)
-                agent.graph.update_state(config, {"hitl_response": {...}})
+                await agent.graph.aupdate_state(config, {"hitl_response": {...}})
                 result = await agent.graph.ainvoke(None, config)  # Resume
             ```
         """
@@ -2584,10 +2584,10 @@ class CugaAgent:
             result = await agent.graph.ainvoke({"input": "Run tool"}, config)
 
             # Check if interrupted for approval
-            state = agent.graph.get_state(config)
+            state = await agent.graph.aget_state(config)
             if state.next:  # Interrupted
                 # Handle approval and resume
-                agent.graph.update_state(config, {"hitl_response": approval})
+                await agent.graph.aupdate_state(config, {"hitl_response": approval})
                 result = await agent.graph.ainvoke(None, config)
             ```
         """
@@ -2823,7 +2823,7 @@ class CugaAgent:
             resume_prior_tool_calls = 0
             if receipt_collector is not None:
                 try:
-                    prior_state = self.graph.get_state(run_config)
+                    prior_state = await self.graph.aget_state(run_config)
                     if prior_state and prior_state.values:
                         resume_prior_tool_calls = len(prior_state.values.get("tool_calls") or [])
                 except Exception as e:
@@ -2854,7 +2854,7 @@ class CugaAgent:
             # Check if graph interrupted again
             if not final_answer and not empty_is_final:
                 try:
-                    state = self.graph.get_state(run_config)
+                    state = await self.graph.aget_state(run_config)
                     if state.next:  # Has pending nodes = interrupted again
                         logger.info("Graph interrupted again for human-in-the-loop interaction")
                         final_answer = (
@@ -2926,7 +2926,7 @@ class CugaAgent:
         # Try to get existing state for this thread_id
         existing_state = None
         try:
-            state_snapshot = self.graph.get_state(run_config)
+            state_snapshot = await self.graph.aget_state(run_config)
             if state_snapshot and state_snapshot.values:
                 existing_state = AgentState(**state_snapshot.values)
                 logger.debug(f"Found existing state for thread_id: {thread_id}")
@@ -3074,12 +3074,12 @@ class CugaAgent:
         # Check if graph interrupted for approval
         if not final_answer:
             try:
-                state = self.graph.get_state(run_config)
+                state = await self.graph.aget_state(run_config)
                 if state.next:  # Has pending nodes = interrupted
                     logger.info("Graph interrupted for human-in-the-loop interaction")
                     final_answer = (
                         "⏸️ Execution paused for approval. "
-                        "Use agent.graph.get_state() and agent.graph.update_state() to handle the interrupt."
+                        "Use await agent.graph.aget_state() and await agent.graph.aupdate_state() to handle the interrupt."
                     )
             except Exception as e:
                 logger.debug(f"Could not check interrupt state: {e}")
@@ -3877,7 +3877,7 @@ class CugaSupervisor:
 
         if not final_answer:
             try:
-                state = self.graph.get_state(config)
+                state = await self.graph.aget_state(config)
                 if state.next:
                     logger.info("Supervisor graph interrupted for human-in-the-loop interaction")
                     final_answer = (
