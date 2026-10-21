@@ -1332,6 +1332,7 @@ export function ChatLanding() {
       {/* Keep the chat instance and its active stream alive while viewing memory. */}
         <div className="chat-content-area" hidden={activeView === "memory" && memoryEnabled} style={{ display: activeView === "memory" && memoryEnabled ? "none" : undefined, position: "relative", height: `calc(100vh - ${headerHeight}px)` }}>
           <CarbonChat
+            agentId={effectiveChatAgentId}
             contained={true}
             threadId={effectiveChatThreadId}
             attachmentScope="session"
