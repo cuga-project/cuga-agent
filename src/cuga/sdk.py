@@ -1947,15 +1947,25 @@ class CugaAgent:
             )
 
             # Invoke - will interrupt if approval needed
-            config = {"configurable": {"thread_id": "user-123"}}
-            result = await agent.graph.ainvoke({"input": "Delete all data"}, config)
+            thread_id = "user-123"
+            result = await agent.invoke("Delete all data", thread_id=thread_id)
 
             # Check if interrupted
+            config = {"configurable": {"thread_id": thread_id}}
             state = await agent.graph.aget_state(config)
             if state.next:  # Has pending nodes = interrupted
-                # Handle approval (see docs for full example)
-                await agent.graph.aupdate_state(config, {"hitl_response": {...}})
-                result = await agent.graph.ainvoke(None, config)  # Resume
+                # Resume with the user's answer (message=None means "resume this thread")
+                from datetime import datetime
+                from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
+                    ActionResponse, ActionType
+                )
+                approval = ActionResponse(
+                    action_id="tool_approval",
+                    response_type=ActionType.CONFIRMATION,
+                    confirmed=True,  # or False to deny
+                    timestamp=datetime.now().isoformat(),
+                )
+                result = await agent.invoke(None, thread_id=thread_id, action_response=approval)
             ```
         """
         # Load settings
@@ -2586,9 +2596,24 @@ class CugaAgent:
             # Check if interrupted for approval
             state = await agent.graph.aget_state(config)
             if state.next:  # Interrupted
-                # Handle approval and resume
-                await agent.graph.aupdate_state(config, {"hitl_response": approval})
-                result = await agent.graph.ainvoke(None, config)
+                # Resume on the graph by passing the user's ActionResponse in
+                # Command(resume=...). Updating "hitl_response" with aupdate_state()
+                # and then calling ainvoke(None) does NOT resume.
+                # Outside direct graph use, prefer
+                # agent.invoke(None, thread_id="user-123", action_response=approval).
+                from datetime import datetime
+                from langgraph.types import Command
+                from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
+                    ActionResponse, ActionType
+                )
+
+                approval = ActionResponse(
+                    action_id="tool_approval",
+                    response_type=ActionType.CONFIRMATION,
+                    confirmed=True,  # or False to deny
+                    timestamp=datetime.now().isoformat(),
+                )
+                result = await agent.graph.ainvoke(Command(resume=approval.model_dump()), config)
             ```
         """
         if self._compiled_graph is None:
@@ -3079,7 +3104,7 @@ class CugaAgent:
                     logger.info("Graph interrupted for human-in-the-loop interaction")
                     final_answer = (
                         "⏸️ Execution paused for approval. "
-                        "Use await agent.graph.aget_state() and await agent.graph.aupdate_state() to handle the interrupt."
+                        "Use agent.invoke(None, thread_id=..., action_response=...) to resume."
                     )
             except Exception as e:
                 logger.debug(f"Could not check interrupt state: {e}")
