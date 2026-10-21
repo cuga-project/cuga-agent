@@ -104,6 +104,7 @@ interface CarbonChatProps {
   isReadonly?: boolean;
   homescreen?: HomescreenConfig;
   onThreadChange?: (threadId: string) => void;
+  onRestart?: () => void;
   sessionDocsVersion?: number;
   onSessionDocsChanged?: () => void;
   onOpenKnowledge?: () => void;
@@ -257,6 +258,7 @@ const CarbonChat = ({
   isReadonly = false,
   homescreen,
   onThreadChange,
+  onRestart,
   sessionDocsVersion = 0,
   onSessionDocsChanged,
   onOpenKnowledge,
@@ -268,10 +270,10 @@ const CarbonChat = ({
   const chatInstanceRef = useRef<ChatInstance | null>(null);
   const historyMutationQueueRef = useRef<Promise<void>>(Promise.resolve());
   const historyReplayGenerationRef = useRef(0);
-  const sendContextRef = useRef({ agentId, useDraft, disableHistory });
+  const sendContextRef = useRef({ agentId, useDraft, disableHistory, onRestart });
   useLayoutEffect(() => {
-    sendContextRef.current = { agentId, useDraft, disableHistory };
-  }, [agentId, useDraft, disableHistory]);
+    sendContextRef.current = { agentId, useDraft, disableHistory, onRestart };
+  }, [agentId, useDraft, disableHistory, onRestart]);
   const chatElementRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -802,6 +804,7 @@ const CarbonChat = ({
         setTranscriptScope(null);
         sourcesByMessageKey.current.clear();
         setSourcesPanel(null);
+        sendContextRef.current.onRestart?.();
       },
     });
 
