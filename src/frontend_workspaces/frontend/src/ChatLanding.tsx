@@ -133,6 +133,13 @@ interface AgentConfig {
   workspaceFolders: WorkspaceFolder[];
 }
 
+const emptyAgentConfig = (agentId: string): AgentConfig => ({
+  name: agentId,
+  description: "",
+  apps: [],
+  workspaceFolders: [],
+});
+
 interface HomescreenConfig {
   isOn?: boolean;
   greeting?: string;
@@ -471,7 +478,7 @@ export function ChatLanding() {
   // only when the operator explicitly disabled citations in Manage).
   const [citationsEnabled, setCitationsEnabled] = useState(true);
   const [sessionDocsVersion, setSessionDocsVersion] = useState(0);
-  const [agentConfig, setAgentConfig] = useState<AgentConfig>(MOCK_AGENT_CONFIG);
+  const [agentConfig, setAgentConfig] = useState<AgentConfig>(() => emptyAgentConfig(effectiveChatAgentId));
   const [homescreenConfig, setHomescreenConfig] = useState<HomescreenConfig | undefined>(undefined);
   const [configLoading, setConfigLoading] = useState(true);
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
@@ -620,6 +627,10 @@ export function ChatLanding() {
   const currentChatThreadId = activeThreadId;
   /** Same resolver as `threadId` on `CarbonChat` — stream, sandbox workspace, and session knowledge must match. */
   const effectiveChatThreadId = selectedThreadId ?? currentChatThreadId;
+  const workspaceThreadRef = useRef(effectiveChatThreadId);
+  useLayoutEffect(() => {
+    workspaceThreadRef.current = effectiveChatThreadId;
+  }, [effectiveChatThreadId]);
 
   const refreshKnowledgeDocCount = useCallback(
     async (threadId: string) => {
@@ -751,6 +762,8 @@ export function ChatLanding() {
   // Fetch agent configuration
   useEffect(() => {
     let cancelled = false;
+    setConfigLoading(true);
+    setAgentConfig(emptyAgentConfig(effectiveChatAgentId));
     (async () => {
       try {
         const agentId = effectiveChatAgentId;
@@ -758,7 +771,7 @@ export function ChatLanding() {
 
         const [contextRes, toolsListRes, manageRes] = await Promise.all([
           api.getAgentContext(),
-          api.getToolsList(isDraft),
+          api.getToolsList(isDraft, agentId),
           api.getManageConfig(false, agentId),
         ]);
         if (cancelled) return;
@@ -821,7 +834,7 @@ export function ChatLanding() {
         }
 
         // Get tools from tools/list endpoint and group by app
-        let apps: AppConfig[] = MOCK_AGENT_CONFIG.apps;
+        let apps: AppConfig[] = [];
         if (toolsListRes.ok) {
           const toolsData = await toolsListRes.json();
           const tools = toolsData.tools || [];
@@ -888,7 +901,6 @@ export function ChatLanding() {
         const errorMsg = err instanceof Error ? err.message : "Network error loading agent configuration";
         addToast("error", "Configuration Load Error", errorMsg);
         console.error("Error fetching agent config:", err);
-        // Keep using MOCK_AGENT_CONFIG as fallback
       } finally {
         if (!cancelled) setConfigLoading(false);
       }
@@ -945,22 +957,24 @@ export function ChatLanding() {
   }, []);
 
   const fetchWorkspaceTree = useCallback(async (forceRefresh = false) => {
+    const isCurrent = () => workspaceThreadRef.current === effectiveChatThreadId;
     try {
       if (forceRefresh) setWorkspaceTreeLoading(true);
       const res = await api.getWorkspaceTree(effectiveChatThreadId || undefined, forceRefresh);
       if (res.ok) {
         const data = await res.json();
+        if (!isCurrent()) return;
         setWorkspaceTree(data.tree || []);
-      } else if (forceRefresh) {
+      } else if (forceRefresh && isCurrent()) {
         addToast("warning", "Workspace refresh failed", `${res.status} ${res.statusText}`);
       }
     } catch (err) {
       console.error("Error fetching workspace tree:", err);
-      if (forceRefresh) {
+      if (forceRefresh && isCurrent()) {
         addToast("error", "Workspace refresh failed", err instanceof Error ? err.message : "Unknown error");
       }
     } finally {
-      setWorkspaceTreeLoading(false);
+      if (isCurrent()) setWorkspaceTreeLoading(false);
     }
   }, [addToast, effectiveChatThreadId]);
 
@@ -1256,7 +1270,7 @@ export function ChatLanding() {
   const ActiveSectionIcon = activeSectionMeta.icon;
 
   return (
-    <div className="chat-landing">
+    <div className="chat-landing" style={{ "--chat-header-height": `${headerHeight}px` } as React.CSSProperties}>
         <ConfigHeader
           onToggleLeftSidebar={handleToggleLeft}
           onToggleWorkspace={handleToggleWorkspace}
