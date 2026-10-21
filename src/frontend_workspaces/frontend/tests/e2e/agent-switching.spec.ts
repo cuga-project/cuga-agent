@@ -155,3 +155,129 @@ for (const registry of [true, false]) {
     expect(chat!.y + chat!.height).toBeLessThanOrEqual(page.viewportSize()!.height);
   });
 }
+
+test("a newly answered YKT weather conversation reopens from the recent list", async ({ page }) => {
+  await stubAgents(page);
+  let savedThread = "";
+  const savedEvents = new Map<string, object[]>();
+  await page.route("**/api/conversation-threads?*", (route) => route.fulfill({
+    contentType: "application/json", body: JSON.stringify({ threads: [
+      ...(savedThread ? [{ thread_id: savedThread, first_message: "YKT weather", latest_version: 1, updated_at: "2026-10-22T00:00:00Z" }] : []),
+      { thread_id: "weatherbot-other", first_message: "Another conversation", latest_version: 1, updated_at: "2026-10-22T00:00:00Z" },
+    ] }),
+  }));
+  await page.route("**/api/conversation-stream-events/**", (route) => {
+    const thread = new URL(route.request().url()).pathname.split("/").pop()!;
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ events: savedEvents.get(thread) || (thread === "weatherbot-other" ? [{
+      event_name: "Answer", event_data: "Another saved answer.", timestamp: "2026-10-22T00:00:01Z", sequence: 0,
+    }] : []) }) });
+  });
+  await page.route("**/stream", async (route) => {
+    savedThread = route.request().headers()["x-thread-id"];
+    savedEvents.set(savedThread, [
+      { event_name: "UserMessage", event_data: "YKT weather", timestamp: "2026-10-22T00:00:02Z", sequence: 0 },
+      { event_name: "Answer", event_data: "YKT weather answer.", timestamp: "2026-10-22T00:00:03Z", sequence: 1 },
+    ]);
+    await route.fulfill({ contentType: "text/event-stream", body: "event: Answer\ndata: YKT weather answer.\n\n" });
+  });
+  await page.goto("/chat/weatherbot");
+  await expect(page.getByTestId("header_name").last()).toHaveText("Weather specialist");
+  const composer = page.getByRole("textbox").first();
+  await composer.fill("YKT weather");
+  await composer.press("Enter");
+  await expect(page.getByText("YKT weather answer.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /YKT weather/ })).toBeVisible();
+  for (let visit = 0; visit < 2; visit += 1) {
+    await page.getByRole("button", { name: /Another conversation/ }).click();
+    await expect(page.getByText("Another saved answer.", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: /YKT weather/ }).click();
+    await expect(page.getByText("YKT weather answer.", { exact: true })).toBeVisible();
+    await expect(page.getByText("YKT weather", { exact: true }).first()).toBeVisible();
+  }
+});
+
+test("saved conversations can be revisited without starting a new conversation", async ({ page }) => {
+  await stubAgents(page);
+  await page.goto("/chat/weatherbot");
+  await page.getByRole("button", { name: /weatherbot recent thread/ }).click();
+  await expect(page.getByText("History answer for weatherbot-thread.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /weatherbot recent other/ }).click();
+  await expect(page.getByText("History answer for weatherbot-other.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /weatherbot recent thread/ }).click();
+  await expect(page.getByText("History answer for weatherbot-thread.", { exact: true })).toBeVisible();
+});
+
+test("a slow previous conversation does not block or replace the selected history", async ({ page }) => {
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  await stubAgents(page, { historyDelay: delayed });
+  try {
+    await page.goto("/chat/weatherbot");
+    const requested = page.waitForRequest("**/conversation-stream-events/weatherbot-thread?*");
+    await page.getByRole("button", { name: /weatherbot recent thread/ }).click();
+    await requested;
+    await page.getByRole("button", { name: /weatherbot recent other/ }).click();
+    await expect(page.getByText("History answer for weatherbot-other.", { exact: true })).toBeVisible();
+    const response = page.waitForResponse("**/conversation-stream-events/weatherbot-thread?*");
+    release();
+    await (await response).finished();
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(page.getByText("History answer for weatherbot-thread.", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("History answer for weatherbot-other.", { exact: true })).toBeVisible();
+  } finally { release(); }
+});
+
+test("rapid conversation selection during hydration keeps the last selected transcript", async ({ page }) => {
+  await stubAgents(page);
+  let releaseDraft!: () => void;
+  const draftDelay = new Promise<void>((resolve) => { releaseDraft = resolve; });
+  await page.route("**/api/conversation-stream-events/**", async (route) => {
+    const thread = new URL(route.request().url()).pathname.split("/").pop()!;
+    const saved = ["weatherbot-thread", "weatherbot-other"].includes(thread);
+    if (!saved) await draftDelay;
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ events: saved ? [{
+      event_name: "Answer", event_data: `Saved answer for ${thread}.`, timestamp: "2026-10-22T00:00:00Z", sequence: 0,
+    }] : [] }) });
+  });
+  try {
+    const initialHistory = page.waitForRequest((request) => new URL(request.url()).pathname.startsWith("/api/conversation-stream-events/")
+      && !new URL(request.url()).pathname.endsWith("/weatherbot-thread"));
+    await page.goto("/chat/weatherbot");
+    await initialHistory;
+    await page.getByRole("button", { name: /weatherbot recent thread/ }).click();
+    await page.getByRole("button", { name: /weatherbot recent other/ }).click();
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    releaseDraft();
+    await expect(page.getByText("Saved answer for weatherbot-other.", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Hello, how can I help you today?" })).toHaveCount(0);
+    await expect(page.getByText("Saved answer for weatherbot-thread.", { exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "New conversation", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Hello, how can I help you today?" })).toBeVisible();
+    await expect(page.getByText("Saved answer for weatherbot-other.", { exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: /weatherbot recent other/ }).click();
+    await expect(page.getByText("Saved answer for weatherbot-other.", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Close panel", exact: true }).last().click();
+    await page.getByTestId("main_panel").getByRole("button", { name: "Restart conversation", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Hello, how can I help you today?" })).toBeVisible();
+  } finally { releaseDraft(); }
+});
+
+test("restarting while saved history is pending keeps the conversation empty", async ({ page }) => {
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  await stubAgents(page, { historyDelay: delayed });
+  try {
+    await page.goto("/chat/weatherbot");
+    const requested = page.waitForRequest("**/conversation-stream-events/weatherbot-thread?*");
+    await page.getByRole("button", { name: /weatherbot recent thread/ }).click();
+    await requested;
+    await page.getByRole("button", { name: "Close panel", exact: true }).last().click();
+    await page.getByTestId("main_panel").getByRole("button", { name: "Restart conversation", exact: true }).click();
+    const response = page.waitForResponse("**/conversation-stream-events/weatherbot-thread?*");
+    release();
+    await (await response).finished();
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(page.getByText("History answer for weatherbot-thread.", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Hello, how can I help you today?" })).toBeVisible();
+  } finally { release(); }
+});
