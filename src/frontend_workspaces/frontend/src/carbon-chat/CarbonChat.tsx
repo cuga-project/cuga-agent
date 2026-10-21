@@ -1042,6 +1042,7 @@ const CarbonChat = ({
         }}
 
         messaging={{
+          skipWelcome: true,
           customSendMessage: handleCustomSendMessage,
           customLoadHistory: handleCustomLoadHistory,
         }}
