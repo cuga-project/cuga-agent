@@ -14,6 +14,8 @@ import os
 import sqlite3
 import stat
 import sys
+import threading
+import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -301,6 +303,65 @@ async def test_sqlite_handle_is_an_async_context_manager(tmp_path):
 
     assert handle.closed
     assert conn._connection is None
+
+
+async def test_sqlite_ping_is_ok_quickly_while_the_connection_is_busy(tmp_path):
+    # A query blocked on the connection's single worker thread: a SELECT 1 probe
+    # would queue behind it and time out. The open-connection check does not.
+    handle = await factory_mod._create_sqlite(tmp_path / "cp.db")
+    conn = handle.saver.conn
+    release = threading.Event()
+    await conn.create_function("block", 0, lambda: int(release.wait(5)))
+    busy = asyncio.create_task(conn.execute_fetchall("SELECT block()"))
+    try:
+        await asyncio.sleep(0.02)  # let the worker pick the query up
+        assert not busy.done()
+
+        started = time.monotonic()
+        assert await handle.ping(timeout=1.0) is True
+        assert time.monotonic() - started < 0.1
+        assert not busy.done()
+    finally:
+        release.set()
+        assert await busy == [(1,)]
+        await handle.aclose()
+
+
+async def test_sqlite_ping_is_false_when_the_connection_closed_under_the_handle(tmp_path):
+    handle = await factory_mod._create_sqlite(tmp_path / "cp.db")
+    try:
+        await handle.saver.conn.close()  # closed behind the handle's back
+
+        assert not handle.closed
+        assert await handle.ping() is False
+    finally:
+        await handle.aclose()
+
+
+async def test_sqlite_ping_is_false_when_the_worker_thread_stopped(tmp_path):
+    handle = await factory_mod._create_sqlite(tmp_path / "cp.db")
+    conn = handle.saver.conn
+    try:
+        await conn.stop()  # stops the worker thread
+        conn._thread.join(timeout=2)
+
+        assert await handle.ping() is False
+    finally:
+        await handle.aclose()
+
+
+@pytest.mark.parametrize(
+    "conn",
+    [
+        SimpleNamespace(),
+        SimpleNamespace(_running=True, _connection=object()),
+        SimpleNamespace(_running=False, _connection=object(), _thread=threading.current_thread()),
+        SimpleNamespace(_running=True, _connection=None, _thread=threading.current_thread()),
+    ],
+    ids=["no-attributes", "no-thread", "not-running", "no-connection"],
+)
+def test_sqlite_connection_open_reads_missing_or_stopped_state_as_closed(conn):
+    assert factory_mod._sqlite_connection_open(conn) is False
 
 
 async def test_sqlite_setup_failure_closes_connection(tmp_path, monkeypatch):
