@@ -23,6 +23,7 @@ class _FakeProcess:
         return self._polls.pop(0) if len(self._polls) > 1 else self._polls[0]
 
 
+@pytest.mark.unit
 def test_wait_returns_the_exit_code_and_stops_the_registry(monkeypatch):
     registry = _FakeProcess(1, [None])
     evaluation = _FakeProcess(2, [None, 3])
@@ -38,5 +39,6 @@ def test_wait_returns_the_exit_code_and_stops_the_registry(monkeypatch):
     assert cli_main.direct_processes == {}
 
 
+@pytest.mark.unit
 def test_wait_without_the_process_returns_none():
     assert cli_main.wait_for_direct_process("evaluation") is None

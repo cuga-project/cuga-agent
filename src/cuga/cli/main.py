@@ -2425,6 +2425,7 @@ def evaluate(
     """
     # start the registry
     evaluation_exit_code = None
+    evaluation_process = None
     try:
         run_direct_service(
             "registry",
@@ -2456,7 +2457,7 @@ def evaluate(
             wait_for_registry_server(settings.server_ports.registry)
 
             # Then start demo - using explicit fastapi command
-            run_direct_service(
+            evaluation_process = run_direct_service(
                 "evaluation",
                 [
                     "uv",
@@ -2473,6 +2474,10 @@ def evaluate(
             )
         # The registry never exits on its own, so wait for the evaluation only.
         evaluation_exit_code = wait_for_direct_process("evaluation")
+        if evaluation_process is None:
+            # The evaluation never started, so a None exit code is not success.
+            logger.error("Evaluation process failed to start")
+            evaluation_exit_code = 1
 
     except Exception as e:
         logger.error(f"Error starting registry service: {e}")
