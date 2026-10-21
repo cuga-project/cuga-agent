@@ -43,6 +43,10 @@ IDEMPOTENCE
 version on every container restart. We compare against the published config first and use
 ``update_published_config_at_version`` to rewrite in place, so a restart that changes nothing
 writes nothing.
+
+Drafts are seeded alongside published configs so Manage's test panel can use them immediately.
+Missing drafts from older seeds are backfilled; existing drafts follow the same hash ownership
+rule independently, so an unpublished edit in Manage is never overwritten.
 """
 
 from __future__ import annotations
@@ -197,7 +201,7 @@ def _body_hash(config: Dict[str, Any]) -> str:
 
 
 async def _upsert(config: Dict[str, Any], agent_id: str) -> str:
-    """Write `config` as the published config for `agent_id`, without churning versions.
+    """Seed published and draft configs for `agent_id`, without churning versions.
 
     Returns "created" | "updated" | "unchanged" | "skipped" — the caller logs a summary, and the
     tests assert that a second identical seed is a no-op.
@@ -216,7 +220,9 @@ async def _upsert(config: Dict[str, Any], agent_id: str) -> str:
     """
     from cuga.backend.server.config_store import (
         load_config,
+        load_draft,
         save_config,
+        save_draft,
         update_published_config_at_version,
     )
 
@@ -224,23 +230,28 @@ async def _upsert(config: Dict[str, Any], agent_id: str) -> str:
     existing, version = await load_config(None, agent_id)
     if existing is None or not version:
         await save_config(config, agent_id=agent_id)
-        return "created"
-    prior_mark = (existing or {}).get(_SEED_MARK)
-    if prior_mark is None:
-        return "skipped"  # not roster-managed — a hand-made agent that happens to share the name
-    if prior_mark != _body_hash(existing):
-        return "skipped"  # edited in Manage since we wrote it; the human's version wins
-    if existing == config:
-        return "unchanged"
-    # `load_config(None, ...)` only ever returns a published (numeric) version, but
-    # `update_published_config_at_version` raises on anything else, and that would be a crash at
-    # startup rather than a bad roster. Fall back to a normal save instead.
-    if str(version).isdigit() and await update_published_config_at_version(config, agent_id, version):
-        return "updated"
-    # The published version could not be rewritten in place (deleted underneath us, or a store
-    # that does not support it). A new version is still correct, just noisier.
-    await save_config(config, agent_id=agent_id)
-    return "updated"
+        result = "created"
+    else:
+        prior_mark = existing.get(_SEED_MARK)
+        if prior_mark is None:
+            return "skipped"  # not roster-managed — a hand-made agent that happens to share the name
+        if prior_mark != _body_hash(existing):
+            return "skipped"  # edited in Manage since we wrote it; the human's version wins
+        if existing == config:
+            result = "unchanged"
+        else:
+            # Rewrite numeric published versions in place; fall back to a new version if the
+            # record disappeared underneath us or the store cannot update it.
+            if not (
+                str(version).isdigit() and await update_published_config_at_version(config, agent_id, version)
+            ):
+                await save_config(config, agent_id=agent_id)
+            result = "updated"
+
+    draft = await load_draft(agent_id)
+    if draft != config and (draft is None or draft.get(_SEED_MARK) == _body_hash(draft)):
+        await save_draft(config, agent_id=agent_id)
+    return result
 
 
 async def seed_roster(path: Optional[str] = None) -> Tuple[int, Dict[str, int]]:
