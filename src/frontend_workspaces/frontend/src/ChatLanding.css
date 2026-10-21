@@ -8,6 +8,36 @@
   /* No background set here — inherits from body/theme */
 }
 
+.chat-agent-switcher {
+  width: 22rem;
+  max-width: calc(100vw - 4rem);
+  min-width: 0;
+}
+
+.chat-agent-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.chat-agent-option > svg {
+  flex-shrink: 0;
+}
+
+.chat-agent-option-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-agent-option-supervisor-icon {
+  color: #6929c4;
+}
+
 /* ─── Chat area: always full viewport width below the header ─────────────────
    The two side panels float on top of this via position:fixed in the TSX.
    We intentionally do NOT add left/right padding here — panels are overlaid.
