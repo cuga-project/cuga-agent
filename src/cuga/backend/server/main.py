@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     from cuga.backend.cuga_graph.state.agent_state import AgentState
     from cuga.backend.cuga_graph.utils.agent_loop import OutputFormat
     from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+    from cuga.backend.storage.checkpoint import CheckpointerHandle
+    from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from pathlib import Path
 import traceback
@@ -538,7 +540,18 @@ class AppState:
         self.agent_graphs_cache: Dict[Any, Any] = {}
         self.agent_graph_build_locks: Dict[Any, Any] = {}
         self.agent_graph_generations: Dict[str, int] = {}
+        # LangGraph checkpointer shared by the published graphs (issue #774). Owned by
+        # lifespan(): created before any published graph is built, closed after every
+        # graph owner and background task is gone. Close and probe the handle, never
+        # ``graph.checkpointer`` (a strict-msgpack compile swaps in a clone).
+        self.checkpointer_handle: Optional["CheckpointerHandle"] = None
         self.initialize_sdk()
+
+    @property
+    def checkpointer(self) -> Optional["BaseCheckpointSaver"]:
+        """The shared saver (``checkpointer_handle.saver``), or ``None`` before startup."""
+        handle = self.checkpointer_handle
+        return handle.saver if handle is not None else None
 
     def set_subsystem_status(
         self, name: str, state: str, message: str = "", details: Optional[Dict[str, Any]] = None
@@ -626,8 +639,74 @@ def format_time_custom():
     return f"{now.hour:02d}-{now.minute:02d}-{now.second:02d}"
 
 
+async def _open_checkpointer() -> None:
+    """Create the shared checkpointer handle from ``settings.storage`` (issue #774, W02.3).
+
+    Never falls back to memory: a durable saver that cannot be opened fails startup,
+    because silently running on memory would lose every conversation on restart.
+    """
+    from cuga.backend.storage.checkpoint import create_checkpointer
+
+    storage = settings.storage
+    try:
+        app_state.checkpointer_handle = await create_checkpointer(storage)
+    except Exception as exc:
+        checkpointer = getattr(storage, "checkpointer", None)
+        mode = getattr(storage, "mode", None) or "local"
+        if checkpointer == "durable" and mode == "prod":
+            hint = (
+                "check that storage.postgres_url points at a reachable Postgres whose user has "
+                "DDL rights, or set storage.checkpointer=memory"
+            )
+        elif checkpointer == "durable":
+            hint = "check that storage.checkpoint_db_path is writable, or set storage.checkpointer=memory"
+        else:
+            hint = "check the [storage] settings"
+        # Type name only: driver errors can echo connection details.
+        logger.error(
+            "Startup aborted: could not open the checkpointer (storage.checkpointer={}, storage.mode={}): {}. "
+            "Fix: {}.",
+            checkpointer,
+            mode,
+            type(exc).__name__,
+            hint,
+        )
+        raise
+
+
+async def _close_checkpointer() -> None:
+    """Close the shared checkpointer handle; never raises."""
+    handle = app_state.checkpointer_handle
+    if handle is None:
+        return
+    app_state.checkpointer_handle = None
+    try:
+        await handle.aclose()
+        logger.info("Checkpointer closed (kind={})", handle.kind)
+    except Exception as exc:
+        logger.warning("Closing the checkpointer failed (kind={}): {}", handle.kind, type(exc).__name__)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Application startup and shutdown.
+
+    The checkpointer handle wraps the whole app lifespan: it is opened before any
+    published graph is built (so every startup path and every later rebuild sees
+    it) and closed only after ``_app_lifespan``'s shutdown has closed the graph
+    owners, cancelled the background tasks and closed the stores. It is also closed
+    when startup fails after it was opened (aiosqlite runs a non-daemon thread).
+    """
+    await _open_checkpointer()
+    try:
+        async with _app_lifespan(app):
+            yield
+    finally:
+        await _close_checkpointer()
+
+
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
     """Asynchronous context manager for application startup and shutdown."""
     logger.info("Application is starting up...")
     app_state.set_subsystem_status("policy", "starting", "Initializing policy subsystem")
