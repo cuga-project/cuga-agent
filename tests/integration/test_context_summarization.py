@@ -627,7 +627,7 @@ class TestSupervisorContextSummarization:
             from langchain_core.runnables import RunnableConfig
 
             config: RunnableConfig = {"configurable": {"thread_id": thread_id}}  # type: ignore
-            state_snapshot = supervisor.graph.get_state(config)
+            state_snapshot = await supervisor.graph.aget_state(config)
             state = state_snapshot.values
 
             assert state is not None, "Could not access supervisor state"
