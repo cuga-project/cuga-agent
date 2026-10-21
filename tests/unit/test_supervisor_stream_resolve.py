@@ -140,7 +140,7 @@ async def test_concurrent_first_stream_shares_one_graph():
     builds: list[object] = []
 
     class CountingGraph:
-        async def build_graph(self):
+        async def build_graph(self, **_kwargs):
             builds.append(self)
             await asyncio.sleep(0.05)
 
@@ -151,6 +151,7 @@ async def test_concurrent_first_stream_shares_one_graph():
         agent_graph_build_locks={},
         agent_graph_generations={},
         policy_system=None,
+        checkpointer=None,
     )
     with patch.object(main_mod, "app_state", state):
         with patch(
@@ -178,7 +179,7 @@ async def test_invalidate_during_build_does_not_cache_stale_graph():
     release = asyncio.Event()
 
     class SlowGraph:
-        async def build_graph(self):
+        async def build_graph(self, **_kwargs):
             started.set()
             await release.wait()
 
@@ -189,6 +190,7 @@ async def test_invalidate_during_build_does_not_cache_stale_graph():
         agent_graph_build_locks={},
         agent_graph_generations={},
         policy_system=None,
+        checkpointer=None,
     )
     request.app.state.app_state = state
 
@@ -472,3 +474,115 @@ async def test_event_stream_reloads_and_writes_state_through_async_api(monkeypat
     # aupdate_state wrote the tool feedback back to the checkpoint.
     assert (await graph.aget_state(cfg)).values["feedback"] == feedback
     assert saved["state"].feedback == feedback
+
+
+def _cheap_entry_graph(*_args, **_kwargs):
+    """A real, unbuilt CugaEntryGraph with no tools (same recipe as test_entry_graph)."""
+    from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
+
+    tool_provider = MagicMock(spec=ToolProviderInterface)
+    tool_provider.initialize = AsyncMock()
+    tool_provider.get_apps = AsyncMock(return_value=[])
+    return CugaEntryGraph(None, tool_provider=tool_provider, supervisor_enabled=False)
+
+
+async def _resolve_real_graph(request, state, agent_id: str, use_draft: bool):
+    from cuga.backend.llm.models import LLMManager
+
+    config = {"agent": {"kind": "single"}}
+    with (
+        patch.object(main_mod, "app_state", state),
+        patch(
+            "cuga.backend.server.config_store.load_config",
+            new_callable=AsyncMock,
+            return_value=(config, None),
+        ),
+        patch("cuga.backend.server.config_store.load_draft", new_callable=AsyncMock, return_value=config),
+        patch(
+            "cuga.backend.cuga_graph.policy.configurable.create_agent_policy_system",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch("cuga.backend.cuga_graph.graph.DynamicAgentGraph", side_effect=_cheap_entry_graph),
+        patch.object(LLMManager, "get_model", return_value=MagicMock()),
+    ):
+        return await main_mod._resolve_stream_agent(request, agent_id, use_draft)
+
+
+def _shared_saver_state(saver):
+    return SimpleNamespace(
+        agent=object(),
+        agent_graphs_cache={},
+        agent_graph_build_locks={},
+        agent_graph_generations={},
+        policy_system=None,
+        checkpointer=saver,
+    )
+
+
+@pytest.mark.asyncio
+async def test_published_rebuild_after_invalidation_keeps_thread_state():
+    """A publish invalidation rebuilds the graph; the shared saver keeps the thread (#774 W04.2)."""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from cuga.backend.server.manage_routes.helpers import invalidate_agent_graph_cache
+
+    saver = MemorySaver()
+    state = _shared_saver_state(saver)
+    request = _request()
+    request.app.state.app_state = state
+    cfg = {"configurable": {"thread_id": "published-thread"}}
+
+    first = await _resolve_real_graph(request, state, "sales-east", False)
+    await first.graph.aupdate_state(
+        cfg, {"input": "before publish", "url": "seeded"}, as_node=first.chat.chat_agent.name
+    )
+
+    with patch(
+        "cuga.backend.server.manage_routes.helpers._referrer_ids_for_agent",
+        new_callable=AsyncMock,
+        return_value=[],
+    ):
+        await invalidate_agent_graph_cache(request, "sales-east", draft=False, published=True)
+    assert ("sales-east", False) not in state.agent_graphs_cache
+
+    second = await _resolve_real_graph(request, state, "sales-east", False)
+
+    assert second is not first
+    assert second.graph is not first.graph
+    snapshot = await second.graph.aget_state(cfg)
+    assert snapshot.values["input"] == "before publish"
+    assert snapshot.values["url"] == "seeded"
+
+
+@pytest.mark.asyncio
+async def test_draft_graph_does_not_use_the_shared_saver():
+    """Draft builds keep their own MemorySaver.
+
+    Judged by storage, not identity: a strict-msgpack compile wraps every saver
+    in a ``with_allowlist`` clone, so ``graph.checkpointer is saver`` never holds.
+    """
+    from langgraph.checkpoint.memory import MemorySaver
+
+    saver = MemorySaver()
+    state = _shared_saver_state(saver)
+    request = _request()
+    cfg = {"configurable": {"thread_id": "shared-thread-id"}}
+
+    published = await _resolve_real_graph(request, state, "sales-east", False)
+    await published.graph.aupdate_state(
+        cfg, {"input": "published turn"}, as_node=published.chat.chat_agent.name
+    )
+    assert await saver.aget_tuple(cfg) is not None
+
+    draft = await _resolve_real_graph(request, state, "sales-east", True)
+    assert draft is not published
+
+    # The draft graph cannot see the published thread...
+    assert not (await draft.graph.aget_state(cfg)).values
+    # ...and its own writes never reach the shared saver.
+    draft_cfg = {"configurable": {"thread_id": "draft-only-thread"}}
+    await draft.graph.aupdate_state(draft_cfg, {"input": "draft turn"}, as_node=draft.chat.chat_agent.name)
+    assert (await draft.graph.aget_state(draft_cfg)).values["input"] == "draft turn"
+    assert await saver.aget_tuple(draft_cfg) is None
