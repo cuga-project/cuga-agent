@@ -341,6 +341,7 @@ if __name__ == "__main__":
 - **Simple API**: `CugaAgent(tools=[...])` → `await agent.invoke(message)`
 - **Streaming**: Monitor execution in real-time with `agent.stream()`
 - **State Isolation**: Per-user sessions with `thread_id`
+- **Durable Conversations**: Continue a `thread_id` after a restart with `checkpointer=` (see [SDK: durable conversations](#sdk-durable-conversations))
 - **LangGraph Integration**: Access underlying graph for advanced use cases
 - **Flexible Tools**: Direct tools or custom tool providers
 - **Policy System**: Comprehensive policy framework with 5 types:
@@ -521,6 +522,162 @@ Provider, model, batch size, and concurrency are all set under
 > Switching provider or model invalidates existing vectors (different
 > dim), so the manage UI surfaces a "Re-index recommended" banner
 > automatically.
+
+### SDK: durable conversations
+
+By default `CugaAgent` keeps conversation state in an in-process `MemorySaver`, so a thread is gone when the process exits. Pass a durable saver with the keyword-only `checkpointer=` argument, then call the agent again with the same `thread_id`, from the same process or a new one. The thread's messages, variables, and any pending approval are loaded from the saver.
+
+The SDK only stores and loads state. It does not check who owns a thread, expire old threads, or validate a paused thread against your current code. Those are your application's job, as described below.
+
+#### Pass a durable saver
+
+`cuga.checkpointers` opens a SQLite or Postgres saver with CUGA's serializer. Use it as an async context manager, which closes the connection or pool when the block exits:
+
+```python
+import asyncio
+
+import cuga
+from cuga import CugaAgent
+from langchain_core.tools import tool
+
+
+@tool
+def get_account_revenue(account_id: str) -> dict:
+    """Return account revenue from a sample data source."""
+    return {"account_id": account_id, "revenue": 250000}
+
+
+async def main():
+    async with cuga.checkpointers.sqlite("./agent_state.db") as cp:
+        agent = CugaAgent(tools=[get_account_revenue], checkpointer=cp.saver)
+        await agent.invoke("What is the revenue for account acc_01?", thread_id="t-1")
+        # Later, or in another process with the same file:
+        result = await agent.invoke("And how does that compare to last year?", thread_id="t-1")
+        print(result.answer)
+
+
+asyncio.run(main())
+```
+
+Or await the opener when the saver must outlive one block, and close it yourself:
+
+```python
+cp = await cuga.checkpointers.postgres("postgresql://user:pw@host/db", max_size=10)
+try:
+    agent = CugaAgent(tools=[get_account_revenue], checkpointer=cp.saver)
+    ...
+finally:
+    await cp.aclose()
+```
+
+- `sqlite(path)` creates the parent directory, makes the file owner-only (0o600) where the file system allows it, and enables WAL mode. Pass a real file path. `":memory:"` gives you nothing durable and leaves an empty file named `:memory:` in the working directory; use the default saver instead.
+- `postgres(url, *, min_size=1, max_size=5)` opens a `psycopg_pool` pool and creates or migrates the checkpoint tables when it opens, so the database user needs DDL rights.
+- Bad arguments raise `TypeError` / `ValueError` when you call `sqlite()` / `postgres()`. Connection errors are raised when you enter or await the opener. An opener works only once. To retry, call `sqlite()` / `postgres()` again.
+- Keep the saver open for as long as you use the agent.
+
+You can also pass any LangGraph `BaseCheckpointSaver` that implements the async methods, for example `MemorySaver`, `AsyncSqliteSaver`, or `AsyncPostgresSaver`. These use their own serializer, not CUGA's, and you manage them yourself (for example, `AsyncPostgresSaver` needs one `await saver.setup()` call to create its tables):
+
+```python
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+async with AsyncSqliteSaver.from_conn_string("./agent_state.db") as saver:
+    agent = CugaAgent(tools=[get_account_revenue], checkpointer=saver)
+```
+
+Sync-only savers (`SqliteSaver`, `PostgresSaver`) are rejected with `TypeError` the first time the graph is compiled, which happens on the first `invoke()` / `stream()` or the first use of `agent.graph`. `CugaSupervisor(checkpointer=...)` works the same way for the supervisor graph. The saver is not passed to the supervisor's internal `CugaAgent` sub-agents, which still use their own in-memory savers.
+
+#### Thread IDs are yours to protect
+
+The saver does not isolate threads. Anyone who can pass a `thread_id` to your agent can read and continue that conversation. Generate unguessable IDs, namespace them per end user, and check in your application that the caller owns a thread before you pass its ID to the agent:
+
+```python
+import secrets
+
+thread_id = f"{user_id}:{secrets.token_urlsafe(16)}"  # keep the user -> thread mapping in your app
+```
+
+#### Resume an approval pause in a later process
+
+When a [tool approval](https://docs.cuga.dev/docs/build/policies/) pauses a turn, `invoke()` returns an answer that starts with `⏸️ Execution paused for approval`. The pause is stored in the saver, so another process can resume it. Build the agent with the same tools and policies and the same saver, and pass the user's answer:
+
+```python
+from datetime import datetime
+
+from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse, ActionType
+
+async with cuga.checkpointers.sqlite("./agent_state.db") as cp:
+    agent = CugaAgent(tools=[get_account_revenue], checkpointer=cp.saver)
+    approval = ActionResponse(
+        action_id="tool_approval",
+        response_type=ActionType.CONFIRMATION,
+        confirmed=True,  # False denies the tool call
+        timestamp=datetime.now().isoformat(),
+    )
+    result = await agent.invoke(None, thread_id=thread_id, action_response=approval)
+```
+
+If you drive the compiled graph directly, pass the response as `Command(resume=...)`:
+
+```python
+from langgraph.types import Command
+
+config = {"configurable": {"thread_id": thread_id}}
+result = await agent.graph.ainvoke(Command(resume=approval.model_dump()), config)
+```
+
+Writing `hitl_response` with `aupdate_state()` and then calling `ainvoke(None)` does **not** resume the pause. The pending step is dropped and the turn ends without an answer.
+
+#### Pending pauses after a code or configuration change
+
+The saver stores where a thread paused, not the code that paused it. After you change tools, policies, the model, or the CUGA version, a pending pause can refer to a tool or step that no longer exists or behaves differently. The SDK does not detect this. Inspect the thread before you resume it:
+
+```python
+config = {"configurable": {"thread_id": thread_id}}
+state = await agent.graph.aget_state(config)
+if state.next:  # paused, e.g. ("WaitForResponse",)
+    pending = state.values.get("hitl_action")  # dict: action_id, action_name, description, ...
+    print(pending["action_id"], pending["action_name"])
+```
+
+Then decide: resume it (approve or deny, as above), or discard it by deleting the thread (see retention below) and starting a new `thread_id`.
+
+#### Retention
+
+Nothing expires on its own. Delete a thread's checkpoints when you no longer need them:
+
+```python
+await cp.saver.adelete_thread(thread_id)
+```
+
+#### Stored variables
+
+Plain JSON-like values (dicts, lists, strings, numbers, booleans, `None`) in variables round-trip unchanged. Your own pydantic models, dataclasses, and Enums do not:
+
+- Pydantic models and dataclasses passed in `invoke(variables=...)` are already plain dicts by the time the turn ends, with any saver, including the default.
+- Objects of your own types that reach the checkpoint as objects, such as an Enum in `variables=` or a model a tool stores, come back as plain values (a dict, or an Enum's raw value). LangGraph logs a `Blocked deserialization of ...` warning, and nothing raises.
+
+Registering a type rebuilds only those objects; it cannot undo the dict conversion above. Pass a serializer that registers them, and use the same `serde=` in every process that opens the store:
+
+```python
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+from cuga.backend.storage.checkpoint.serde import CUGA_ALLOWED_MSGPACK_TYPES
+
+serde = JsonPlusSerializer(
+    allowed_msgpack_modules=CUGA_ALLOWED_MSGPACK_TYPES + (("my_app.models", "Color"),)  # an Enum
+)
+async with cuga.checkpointers.sqlite("./agent_state.db", serde=serde) as cp:
+    ...
+```
+
+#### Breaking change: use the async state methods
+
+With the default `MemorySaver`, `agent.graph.get_state()` and `agent.graph.update_state()` work from async code. Async durable savers refuse synchronous calls made on the event loop (`AsyncSqliteSaver` raises `InvalidStateError`). If you pass one, switch to the async methods:
+
+```python
+state = await agent.graph.aget_state(config)  # was: agent.graph.get_state(config)
+await agent.graph.aupdate_state(config, values)  # was: agent.graph.update_state(config, values)
+```
 
 ---
 
