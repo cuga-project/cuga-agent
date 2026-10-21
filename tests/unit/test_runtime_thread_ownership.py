@@ -548,8 +548,8 @@ async def test_supervisor_sdk_keeps_logical_resources_when_checkpoint_is_scoped(
         "hello", thread_id="logical", checkpoint_thread_id="scoped", user_id="user-a", tenant_id="tenant-a"
     )
     assert first.thread_id == "logical"
-    assert supervisor.graph.get_state({"configurable": {"thread_id": "scoped"}}).next
-    assert not supervisor.graph.get_state({"configurable": {"thread_id": "logical"}}).values
+    assert (await supervisor.graph.aget_state({"configurable": {"thread_id": "scoped"}})).next
+    assert not (await supervisor.graph.aget_state({"configurable": {"thread_id": "logical"}})).values
     resumed = await supervisor.invoke(
         None, thread_id="logical", checkpoint_thread_id="scoped", action_response=ActionResponse(**RESUME)
     )
