@@ -45,13 +45,15 @@ Any other pydantic model, dataclass or Enum you store in a free-form field
 (for example a tool result kept in ``variables_storage``) is **not** rebuilt on
 load: it comes back as a plain value (a dict, or an Enum's raw value) and
 langgraph only logs a ``Blocked deserialization of ...`` warning; nothing
-raises. To keep your own types, pass ``serde=`` with an extended allowlist::
+raises. (Pydantic models and dataclasses passed via ``invoke(variables=...)``
+are already plain dicts before they are saved, with any saver.) To keep your own
+types, pass ``serde=`` with an extended allowlist, here for an Enum::
 
     from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
     from cuga.backend.storage.checkpoint.serde import CUGA_ALLOWED_MSGPACK_TYPES
 
     serde = JsonPlusSerializer(
-        allowed_msgpack_modules=CUGA_ALLOWED_MSGPACK_TYPES + (("my_app.models", "Order"),)
+        allowed_msgpack_modules=CUGA_ALLOWED_MSGPACK_TYPES + (("my_app.models", "Color"),)
     )
     async with cuga.checkpointers.sqlite("./agent_state.db", serde=serde) as cp:
         ...
