@@ -687,6 +687,28 @@ async def _close_checkpointer() -> None:
         logger.warning("Closing the checkpointer failed (kind={}): {}", handle.kind, type(exc).__name__)
 
 
+CHECKPOINTER_HEALTH_TIMEOUT_S = 1.0
+
+
+async def _checkpointer_health() -> Dict[str, Any]:
+    """``{"kind", "ok"}`` for the shared checkpointer (issue #774, W02.4); never raises.
+
+    Probes the handle, never ``graph.checkpointer``. With no handle (before
+    startup, after shutdown, or in tests that skip the lifespan) the shape stays
+    the same: ``{"kind": None, "ok": False}``. The response carries no exception
+    text; a failed probe is just ``ok: False``.
+    """
+    handle = app_state.checkpointer_handle
+    if handle is None:
+        return {"kind": None, "ok": False}
+    try:
+        ok = bool(await handle.ping(timeout=CHECKPOINTER_HEALTH_TIMEOUT_S))
+    except Exception as exc:  # noqa: BLE001 - ping() never raises; guard anyway
+        logger.debug("Checkpointer health check failed (kind={}): {}", handle.kind, type(exc).__name__)
+        ok = False
+    return {"kind": handle.kind, "ok": ok}
+
+
 async def _build_published_default_agent(
     *,
     tool_provider: Any,
@@ -2376,7 +2398,15 @@ if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
 
 @app.get("/health")
 async def health():
-    return JSONResponse({"status": "ok", "subsystems": app_state.get_subsystem_statuses()})
+    # Informational only: the checkpointer field never changes the status code or
+    # "status", so a checkpoint-DB outage cannot fail a liveness check.
+    return JSONResponse(
+        {
+            "status": "ok",
+            "subsystems": app_state.get_subsystem_statuses(),
+            "checkpointer": await _checkpointer_health(),
+        }
+    )
 
 
 @app.get("/health/readiness")
@@ -2403,11 +2433,14 @@ async def readiness(subsystem: Optional[str] = Query(None)):
     elif any(state != "ready" for state in active_states):
         overall = "starting"
 
+    # Reported alongside, not folded into "ready": a SQLite probe can time out
+    # behind a busy writer, and this endpoint has always answered 200.
     return JSONResponse(
         {
             "status": overall,
             "ready": overall == "ready",
             "subsystems": statuses,
+            "checkpointer": await _checkpointer_health(),
         }
     )
 
