@@ -1223,6 +1223,8 @@ instruction_set = "default"  # or any instruction set above
 
 These `[storage]` keys in `settings.toml` control how published agent graphs persist execution state between turns. `checkpointer` defaults to `"memory"`, which keeps the current in-process behavior. Set any key with `DYNACONF_STORAGE__<KEY>`, for example `DYNACONF_STORAGE__CHECKPOINTER=durable`.
 
+A pending approval is tied to the published agent configuration that created it. If the agent is published again before the approval arrives, the server rejects that approval; start a new conversation with the updated agent.
+
 | Key | Default | Description |
 |---|---|---|
 | `checkpointer` | `"memory"` | `memory` (in-process, lost on restart) \| `durable` (SQLite when `storage.mode = "local"`, Postgres when `"prod"`) |
