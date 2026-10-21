@@ -168,3 +168,33 @@ async def test_default_memory_mode_uses_the_real_factory():
 
     assert handle.closed
     assert main.app_state.checkpointer_handle is None
+
+
+async def test_startup_published_agent_writes_to_the_shared_saver(monkeypatch):
+    """The startup build of ``app_state.agent`` compiles on the lifespan saver (W04.2).
+
+    Judged by storage, not identity: a strict-msgpack compile wraps the saver in a
+    ``with_allowlist`` clone, so ``graph.checkpointer is saver`` does not hold.
+    """
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
+    from cuga.backend.llm.models import LLMManager
+
+    saver = MemorySaver()
+    main.app_state.checkpointer_handle = CheckpointerHandle(saver=saver, kind="memory")
+    monkeypatch.setattr(main.app_state, "policy_system", None)
+    tool_provider = MagicMock(spec=ToolProviderInterface)
+    tool_provider.initialize = AsyncMock()
+    tool_provider.get_apps = AsyncMock(return_value=[])
+
+    with patch.object(LLMManager, "get_model", return_value=MagicMock()):
+        agent = await main._build_published_default_agent(
+            tool_provider=tool_provider, startup_config={}, startup_llm_cfg={}
+        )
+
+    cfg = {"configurable": {"thread_id": "startup-thread"}}
+    await agent.graph.aupdate_state(cfg, {"input": "published turn"}, as_node=agent.chat.chat_agent.name)
+    stored = await saver.aget_tuple(cfg)
+    assert stored is not None
+    assert stored.checkpoint["channel_values"]["input"] == "published turn"
