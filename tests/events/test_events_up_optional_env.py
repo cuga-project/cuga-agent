@@ -84,6 +84,9 @@ def _run(root: pathlib.Path, script: pathlib.Path, *args: str) -> subprocess.Com
         **os.environ,
         "REAL_SLEEP": _real_sleep(),
     }
+    # The suite targets "optional values absent": don't let the runner's own environment fill them in.
+    env.pop("EVENTS_NGROK_DOMAIN", None)
+    env.pop("EVENTS_PUBLIC_URL", None)
     return subprocess.run(
         [BASH, str(script), *args],
         cwd=root,
