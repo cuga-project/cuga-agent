@@ -687,6 +687,40 @@ async def _close_checkpointer() -> None:
         logger.warning("Closing the checkpointer failed (kind={}): {}", handle.kind, type(exc).__name__)
 
 
+async def _build_published_default_agent(
+    *,
+    tool_provider: Any,
+    startup_config: Optional[Dict[str, Any]],
+    startup_llm_cfg: Optional[Dict[str, Any]],
+    langfuse_handler: Any = None,
+) -> "DynamicAgentGraph":
+    """Build the published cuga-default graph at startup (``app_state.agent``).
+
+    It compiles on the shared lifespan saver, so a publish rebuild keeps conversations
+    (issue #774). The draft graph is built separately and keeps its own MemorySaver.
+    """
+    from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph as DynamicAgentGraph
+    from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
+
+    overrides = _extract_agent_feature_overrides(startup_config or {})
+    agent = DynamicAgentGraph(
+        None,
+        langfuse_handler=langfuse_handler,
+        policy_system=app_state.policy_system,
+        tool_provider=tool_provider,
+        llm_config=startup_llm_cfg or None,
+        enable_todos=overrides.get("enable_todos"),
+        reflection_enabled=overrides.get("reflection_enabled"),
+        shortlisting_tool_threshold=overrides.get("shortlisting_tool_threshold"),
+        cuga_lite_max_steps=overrides.get("cuga_lite_max_steps"),
+        enable_filesystem_tools=overrides.get("enable_filesystem_tools"),
+        special_instructions=(startup_config or {}).get("special_instructions") or None,
+        supervisor_id=app_state.agent_id,
+    )
+    await agent.build_graph(checkpointer=app_state.checkpointer)
+    return agent
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown.
@@ -1159,24 +1193,12 @@ async def _app_lifespan(app: FastAPI):
         )
 
     tool_provider = CombinedToolProvider(get_include_by_app=_get_include_by_app, agent_id="cuga-default")
-    from cuga.backend.server.manage_routes import _extract_agent_feature_overrides as _extract_prod_overrides
-
-    _prod_overrides = _extract_prod_overrides(_startup_config or {})
-    app_state.agent = DynamicAgentGraph(
-        None,
-        langfuse_handler=langfuse_handler,
-        policy_system=app_state.policy_system,
+    app_state.agent = await _build_published_default_agent(
         tool_provider=tool_provider,
-        llm_config=_startup_llm_cfg or None,
-        enable_todos=_prod_overrides.get("enable_todos"),
-        reflection_enabled=_prod_overrides.get("reflection_enabled"),
-        shortlisting_tool_threshold=_prod_overrides.get("shortlisting_tool_threshold"),
-        cuga_lite_max_steps=_prod_overrides.get("cuga_lite_max_steps"),
-        enable_filesystem_tools=_prod_overrides.get("enable_filesystem_tools"),
-        special_instructions=(_startup_config or {}).get("special_instructions") or None,
-        supervisor_id=app_state.agent_id,
+        startup_config=_startup_config,
+        startup_llm_cfg=_startup_llm_cfg,
+        langfuse_handler=langfuse_handler,
     )
-    await app_state.agent.build_graph()
 
     draft_config = await load_draft()
     if draft_config is None:
@@ -1239,6 +1261,7 @@ async def _app_lifespan(app: FastAPI):
         special_instructions=(draft_config or {}).get("special_instructions") or None,
         supervisor_id=draft_agent_id,
     )
+    # Draft graphs stay on their own in-memory saver (not the shared one).
     await draft_app_state.agent.build_graph()
 
     logger.info("Application finished starting up...")
@@ -2879,10 +2902,15 @@ async def _resolve_stream_agent(
                     enable_filesystem_tools=overrides.get("enable_filesystem_tools"),
                 )
 
-            await graph.build_graph()
+            # Published builds share the lifespan saver; draft builds keep their own MemorySaver.
+            if use_draft:
+                await graph.build_graph()
+            else:
+                await graph.build_graph(checkpointer=app_state.checkpointer)
             # Another request may have finished first, or a draft-save/publish may have
-            # invalidated this key while we were building. Keep one live graph per key
-            # so both turns share the same MemorySaver; never cache a stale build.
+            # invalidated this key while we were building. The cache only dedupes builds:
+            # published state lives in the shared saver, not in the graph instance, so a
+            # rebuild keeps conversations. Never cache a stale build.
             if isinstance(gens, dict) and gens.get(agent_id, 0) != generation:
                 return graph
             existing = app_state.agent_graphs_cache.get(cache_key)
