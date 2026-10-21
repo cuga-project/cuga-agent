@@ -26,8 +26,8 @@ async function stubAgents(page: Page, options: {
     else if (url.pathname === "/api/agents") body = { agents };
     else if (url.pathname === "/api/commands") body = [];
     else if (url.pathname === "/api/skills") body = { skills: [] };
-    else if (url.pathname === "/api/agent/context") body = { agent_id: "cuga-default", config_version: 1 };
-    else if (url.pathname === "/api/manage/config") body = { config: { agent: agents.find((agent) => agent.id === id) } };
+    else if (url.pathname === "/api/agent/context") body = { agent_id: "cuga-default", config_version: 99, knowledge_enabled: false, session_level_knowledge_enabled: false };
+    else if (url.pathname === "/api/manage/config") body = { version: id === "cuga" ? 3 : 2, config: { agent: agents.find((agent) => agent.id === id) } };
     else if (url.pathname === "/api/tools/list") body = {
       tools: [{ name: `${id}_tool`, app: `${id}_app`, description: `Tools for ${id}` }],
     };
@@ -88,6 +88,34 @@ test("configuration tools switch with the selected agent", async ({ page }) => {
   await page.getByRole("button", { name: "Configuration section", exact: true }).click();
   await expect(page.getByText("pricebot_app", { exact: true })).toBeVisible();
   await expect(page.getByText("weatherbot_app", { exact: true })).toHaveCount(0);
+});
+
+test("configuration versions belong to the selected agent rather than the global context", async ({ page }) => {
+  await stubAgents(page);
+  await page.goto("/chat/weatherbot");
+  await expect(page.getByText("Config v2", { exact: true })).toBeVisible();
+  await selectAgent(page, "Supervisor Supervisor");
+  await expect(page.getByText("Config v3", { exact: true })).toBeVisible();
+  await selectAgent(page, "Price specialist");
+  await expect(page.getByText("Config v2", { exact: true })).toBeVisible();
+  await expect(page.getByText("Config v99", { exact: true })).toHaveCount(0);
+});
+
+test("new conversations skip knowledge cleanup when knowledge is disabled", async ({ page }) => {
+  await stubAgents(page);
+  const cleanupRequests: string[] = [];
+  await page.route("**/api/knowledge/session*", async (route) => {
+    if (route.request().method() !== "DELETE") return route.fallback();
+    cleanupRequests.push(route.request().url());
+    await route.fulfill({ status: 503, contentType: "application/json", body: '{}' });
+  });
+  await page.goto("/chat/weatherbot");
+  await expect(page.getByText("Config v2", { exact: true })).toBeVisible();
+  const priorThread = await page.locator("code").first().textContent();
+  await page.getByRole("button", { name: "New conversation", exact: true }).click();
+  await expect(page.locator("code").first()).not.toHaveText(priorThread!);
+  await expect(page.getByText("Draft cleanup incomplete", { exact: true })).toHaveCount(0);
+  expect(cleanupRequests).toEqual([]);
 });
 
 test("late history from the previous agent does not appear after switching", async ({ page }) => {
