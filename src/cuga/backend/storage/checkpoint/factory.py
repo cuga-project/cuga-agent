@@ -91,8 +91,10 @@ class CheckpointerHandle:
     async def ping(self, timeout: float = DEFAULT_PING_TIMEOUT_S) -> bool:
         """Return whether the saver's backend answers within ``timeout`` seconds.
 
-        Memory is always healthy while open. SQLite runs ``SELECT 1`` on the
-        connection; Postgres runs ``SELECT 1`` on a pooled connection. Never
+        Memory is always healthy while open. SQLite is healthy while its
+        aiosqlite connection is open (no query: one would queue behind writes on
+        the connection's single thread); Postgres runs ``SELECT 1`` on a pooled
+        connection. Never
         raises; a closed handle reports ``False``.
         """
         if self._closed:
@@ -193,6 +195,25 @@ def _ensure_private_file(path: Path) -> None:
         logger.warning("Could not restrict checkpoint DB permissions to 0o600: {}", type(exc).__name__)
 
 
+def _sqlite_connection_open(conn: Any) -> bool:
+    """Whether an ``aiosqlite.Connection`` can still run queries, without queueing one.
+
+    aiosqlite (0.22.1) has no public "is open" property. This mirrors the guard
+    its own ``Connection._execute`` uses before queueing work
+    (``if not self._running or not self._connection``, aiosqlite/core.py:152)
+    and also checks the worker thread is alive (``self._thread``, core.py:90).
+    Missing attributes read as closed, so an aiosqlite change fails the probe
+    (and the tests) rather than reporting healthy.
+    """
+    thread = getattr(conn, "_thread", None)
+    return bool(
+        getattr(conn, "_running", False)
+        and getattr(conn, "_connection", None) is not None
+        and thread is not None
+        and thread.is_alive()
+    )
+
+
 async def _create_sqlite(
     path: str | Path, *, serde: Optional[SerializerProtocol] = None
 ) -> CheckpointerHandle:
@@ -215,8 +236,8 @@ async def _create_sqlite(
         raise
 
     async def _probe() -> None:
-        async with conn.execute("SELECT 1") as cur:
-            await cur.fetchone()
+        if not _sqlite_connection_open(conn):
+            raise ConnectionError("sqlite checkpointer connection is closed")
 
     logger.info("Checkpointer ready (kind=sqlite, file={})", path.name)
     return CheckpointerHandle(saver=saver, kind="sqlite", _close=conn.close, _probe=_probe)
