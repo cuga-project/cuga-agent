@@ -692,6 +692,7 @@ export function ChatLanding() {
 
   const clearDraftSessionFiles = useCallback(
     async (threadId: string) => {
+      if (!knowledgeEnabled || !sessionKnowledgeEnabled) return;
       try {
         const res = await api.deleteSessionKnowledgeCollection(threadId);
         if (!res.ok) {
@@ -703,7 +704,7 @@ export function ChatLanding() {
         addToast("warning", "Draft cleanup incomplete", "The draft knowledge collection could not be removed.");
       }
     },
-    [addToast],
+    [addToast, knowledgeEnabled, sessionKnowledgeEnabled],
   );
 
   // ── Thread helpers ──────────────────────────────────────────────────────────
@@ -732,8 +733,9 @@ export function ChatLanding() {
       }
       if (threadId !== selectedThreadId) {
         setSelectedThreadId(threadId);
-        setTimeout(refreshThreads, 500);
       }
+      // An approval can complete the already selected conversation.
+      void refreshThreads();
     },
     [draftThread.hasSentFirstMessage, draftThread.threadId, selectedThreadId, refreshThreads],
   );
@@ -789,7 +791,7 @@ export function ChatLanding() {
           if (!routeAgentId) {
             agentIdFallback = contextData.agent_id ?? agentIdFallback;
           }
-          configVersion = contextData.config_version ?? null;
+          if (agentId === "cuga-default") configVersion = contextData.config_version ?? null;
           const kEnabled = contextData.knowledge_enabled ?? false;
           const agentKEnabled = contextData.agent_level_knowledge_enabled ?? false;
           const sessionKEnabled = contextData.session_level_knowledge_enabled ?? false;
@@ -811,9 +813,10 @@ export function ChatLanding() {
           }
         }
 
-        let manageData: { config?: { agent?: { name?: string; description?: string }; homescreen?: { isOn?: boolean; greeting?: string; starters?: string[] } } } | null = null;
+        let manageData: { version?: number | string; config?: { agent?: { name?: string; description?: string }; homescreen?: { isOn?: boolean; greeting?: string; starters?: string[] } } } | null = null;
         if (manageRes.ok) {
           manageData = await manageRes.json();
+          configVersion = manageData?.version ?? (agentId === "cuga-default" ? configVersion : null);
           const ag = manageData?.config?.agent;
           if (ag && typeof ag === "object") {
             if (ag.name && String(ag.name).trim()) {
