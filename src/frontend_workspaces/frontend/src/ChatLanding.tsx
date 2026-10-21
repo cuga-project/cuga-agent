@@ -24,8 +24,7 @@ import {
   Tile,
   Layer,
   Stack,
-  Select,
-  SelectItem,
+  Dropdown,
 } from "@carbon/react";
 import Markdown from "@carbon/ai-chat-components/es/react/markdown.js";
 import {
@@ -46,6 +45,8 @@ import {
   Download,
   Upload,
   Renew,
+  Bot,
+  Flow,
 } from "@carbon/icons-react";
 import { KnowledgeSidePanel } from "agentic_chat/KnowledgeSidePanel";
 import type { SessionAttachmentSnapshot } from "./knowledge/useSessionKnowledgeAttachments";
@@ -63,6 +64,27 @@ interface ConversationThread {
 interface AppTool {
   name: string;
   description: string;
+}
+
+interface ChatAgentOption {
+  id: string;
+  name?: string;
+  kind?: "single" | "supervisor";
+}
+
+function renderChatAgentOption(agent: ChatAgentOption) {
+  const isSupervisor = agent.kind === "supervisor";
+  return (
+    <span className="chat-agent-option">
+      {isSupervisor ? (
+        <Flow size={16} className="chat-agent-option-supervisor-icon" aria-hidden="true" />
+      ) : (
+        <Bot size={16} aria-hidden="true" />
+      )}
+      <span className="chat-agent-option-name">{agent.name?.trim() || agent.id}</span>
+      {isSupervisor && <Tag type="purple" size="sm">Supervisor</Tag>}
+    </span>
+  );
 }
 
 interface AppConfig {
@@ -375,7 +397,13 @@ export function ChatLanding() {
   useLayoutEffect(() => {
     api.setKnowledgeAgentId(effectiveChatAgentId);
   }, [effectiveChatAgentId]);
-  const [availableAgents, setAvailableAgents] = useState<Array<{ id: string; name?: string }>>([]);
+  const [availableAgents, setAvailableAgents] = useState<ChatAgentOption[]>([]);
+  const chatAgentOptions: ChatAgentOption[] = availableAgents.length > 0
+    ? [
+        ...availableAgents.filter((agent) => agent.kind === "supervisor"),
+        ...availableAgents.filter((agent) => agent.kind !== "supervisor"),
+      ]
+    : [{ id: effectiveChatAgentId }];
   const showAgentSwitcher = agentRegistry === true;
   const headerHeight = CARBON_HEADER_HEIGHT + (showAgentSwitcher ? AGENT_SWITCHER_HEIGHT : 0);
 
@@ -1253,33 +1281,31 @@ export function ChatLanding() {
             padding: "0 1rem",
             background: "var(--cds-layer)",
             borderBottom: "1px solid var(--cds-border-subtle-00)",
-            zIndex: 10,
+            zIndex: 202, // Keep the dropdown above the floating panels (200) and their controls (201).
           }}
         >
           <Chat size={16} style={{ color: "var(--cds-text-secondary)", flexShrink: 0 }} />
-          <Select
+          <Dropdown
             id="chat-agent-switcher"
-            labelText="Agent"
+            className="chat-agent-switcher"
+            titleText="Agent"
+            label={renderChatAgentOption({ id: effectiveChatAgentId })}
             hideLabel
             size="sm"
-            inline
-            value={effectiveChatAgentId}
-            onChange={(e) => {
-              const nextId = e.target.value;
+            items={chatAgentOptions}
+            selectedItem={chatAgentOptions.find((agent) => agent.id === effectiveChatAgentId)}
+            itemToString={(agent) => agent
+              ? `${agent.name?.trim() || agent.id}${agent.kind === "supervisor" ? " (Supervisor)" : ""}`
+              : ""}
+            itemToElement={renderChatAgentOption}
+            renderSelectedItem={renderChatAgentOption}
+            onChange={({ selectedItem }) => {
+              const nextId = selectedItem?.id;
               if (nextId && nextId !== effectiveChatAgentId) {
                 navigate(nextId === "cuga-default" ? "/chat" : `/chat/${encodeURIComponent(nextId)}`);
               }
             }}
-            style={{ maxWidth: "16rem" }}
-          >
-            {availableAgents.length === 0 ? (
-              <SelectItem value={effectiveChatAgentId} text={effectiveChatAgentId} />
-            ) : (
-              availableAgents.map((a) => (
-                <SelectItem key={a.id} value={a.id} text={a.name?.trim() || a.id} />
-              ))
-            )}
-          </Select>
+          />
         </div>
         )}
 
