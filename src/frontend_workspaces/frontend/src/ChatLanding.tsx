@@ -1354,6 +1354,7 @@ export function ChatLanding() {
             sessionKnowledgeEnabled={sessionKnowledgeEnabled}
             isReadonly={selectedThreadId != null && selectedThreadId !== activeThreadId}
             onThreadChange={handleThreadChange}
+            onRestart={createAndActivateDraftThread}
             homescreen={homescreenConfig}
             sessionDocsVersion={sessionDocsVersion}
             onSessionDocsChanged={handleSessionDocsChanged}
