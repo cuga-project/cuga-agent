@@ -171,6 +171,8 @@ async def build_agents_from_list(
             # every downstream supervisor user regardless of their settings — with no error to
             # notice. Headless callers now ask for it explicitly instead of imposing it on all.
             policy_system = agent_config.get("policy_system")
+            # No checkpointer: sub-agent state (sup_child_* threads) stays in this agent's own
+            # MemorySaver by design until W12.6 can delete/retain it with the parent (#774, PR 3).
             agent = CugaAgent(
                 tools=tools,
                 tool_provider=tool_provider,
