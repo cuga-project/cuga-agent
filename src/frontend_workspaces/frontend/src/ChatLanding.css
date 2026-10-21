@@ -46,9 +46,9 @@
 .chat-content-area {
   position: relative;
   flex: 1;
-  margin-top: 4rem;
+  margin-top: var(--chat-header-height, 48px);
   width: 100%;
-  height: calc(100vh - 48px); /* 48px = Carbon shell header */
+  height: calc(100vh - var(--chat-header-height, 48px));
   overflow: hidden;
   background: transparent;
 }
