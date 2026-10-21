@@ -157,7 +157,7 @@ async def test_concurrent_first_stream_shares_one_graph():
         with patch(
             "cuga.backend.server.config_store.load_config",
             new_callable=AsyncMock,
-            return_value=({"agent": {"kind": "single"}}, None),
+            return_value=({"agent": {"kind": "single"}}, 4),
         ):
             with patch(
                 "cuga.backend.cuga_graph.graph.DynamicAgentGraph",
@@ -171,6 +171,7 @@ async def test_concurrent_first_stream_shares_one_graph():
     assert first is second
     assert len(builds) == 1
     assert state.agent_graphs_cache[("sales-east", False)] is first
+    assert first._checkpoint_config_version == "4"
 
 
 @pytest.mark.asyncio
@@ -238,6 +239,7 @@ async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
         async def run_stream(self, **_kwargs):
             from cuga.backend.cuga_graph.utils.agent_loop import AgentLoopAnswer
 
+            assert _kwargs["state"].service_scope["published_config_version"] == "4"
             yield AgentLoopAnswer(end=True, answer="done", tools=[])
 
     graph = MagicMock()
@@ -245,6 +247,7 @@ async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
     graph.get_state.side_effect = AssertionError("event_stream must read state via aget_state")
     run_agent = SimpleNamespace(
         graph=graph,
+        _checkpoint_config_version="4",
         policy_system=None,
         enable_todos=None,
         reflection_enabled=None,
@@ -282,6 +285,53 @@ async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("is_resume", [False, True])
+@pytest.mark.parametrize("graph_version", ["3", "4"])
+async def test_stream_rejects_pending_approval_after_published_config_changes(
+    monkeypatch, is_resume, graph_version
+):
+    from cuga.backend.cuga_graph.state.agent_state import default_state
+
+    checkpoint = default_state(page=None, observation=None, goal="")
+    checkpoint.service_scope["published_config_version"] = "3"
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(
+        return_value=SimpleNamespace(values=checkpoint.model_dump(), next=("WaitForResponse",))
+    )
+    run_agent = SimpleNamespace(graph=graph, _checkpoint_config_version=graph_version)
+
+    def unexpected_loop(**_kwargs):
+        raise AssertionError("A stale approval must not invoke the graph")
+
+    _patch_agent_loop(monkeypatch, unexpected_loop)
+    load_config = AsyncMock(return_value=({}, "4"))
+    monkeypatch.setattr("cuga.backend.server.config_store.load_config", load_config)
+    monkeypatch.setattr(main_mod, "_assert_run_thread_access", AsyncMock())
+    monkeypatch.setattr(main_mod.app_state, "stop_events", {})
+    monkeypatch.setattr(main_mod.app_state, "output_format", None)
+
+    chunks = [
+        chunk
+        async for chunk in main_mod.event_stream(
+            "next turn",
+            api_mode=True,
+            resume=SimpleNamespace(model_dump_json=lambda: "{}") if is_resume else None,
+            thread_id="thread-1",
+            agent=run_agent,
+            agent_id="sales-east",
+        )
+    ]
+
+    assert len(chunks) == 1
+    assert "older agent configuration" in chunks[0]
+    graph.aget_state.assert_awaited_once()
+    if graph_version == "3":
+        load_config.assert_awaited_once_with(None, "sales-east")
+    else:
+        load_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("wxo", [False, True])
 @pytest.mark.parametrize("turn_id", ["interrupted-turn", ""])
 async def test_resumed_stream_uses_checkpoint_memory_disclosure(monkeypatch, wxo, turn_id):
@@ -290,10 +340,12 @@ async def test_resumed_stream_uses_checkpoint_memory_disclosure(monkeypatch, wxo
 
     checkpoint = default_state(page=None, observation=None, goal="")
     checkpoint.service_scope["memory_turn_id"] = turn_id
+    checkpoint.service_scope["published_config_version"] = "4"
     checkpoint.thread_id = "thread-1"
     saved: dict = {}
     usage = AsyncMock(return_value={"count": 1, "entity_ids": ["fact-a"]})
     monkeypatch.setattr(memory_store, "get_turn_memory_usage", usage)
+    monkeypatch.setattr("cuga.backend.server.config_store.load_config", AsyncMock(return_value=({}, "4")))
     monkeypatch.setattr(main_mod.settings.evolve, "enabled", True)
     monkeypatch.setattr(main_mod.settings.advanced_features, "wxo_integration", wxo)
 
@@ -315,10 +367,13 @@ async def test_resumed_stream_uses_checkpoint_memory_disclosure(monkeypatch, wxo
             yield AgentLoopAnswer(end=True, answer="done", tools=[])
 
     graph = MagicMock()
-    graph.aget_state = AsyncMock(return_value=SimpleNamespace(values=checkpoint.model_dump()))
+    graph.aget_state = AsyncMock(
+        return_value=SimpleNamespace(values=checkpoint.model_dump(), next=("WaitForResponse",))
+    )
     graph.get_state.side_effect = AssertionError("event_stream must read state via aget_state")
     run_agent = SimpleNamespace(
         graph=graph,
+        _checkpoint_config_version="4",
         policy_system=None,
         enable_todos=None,
         reflection_enabled=None,
