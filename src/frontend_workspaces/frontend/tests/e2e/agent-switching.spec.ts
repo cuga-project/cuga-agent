@@ -266,6 +266,11 @@ test("restarting while saved history is pending keeps the conversation empty", a
   let release!: () => void;
   const delayed = new Promise<void>((resolve) => { release = resolve; });
   await stubAgents(page, { historyDelay: delayed });
+  let sentThread = "";
+  await page.route("**/stream", async (route) => {
+    sentThread = route.request().headers()["x-thread-id"];
+    await route.fulfill({ contentType: "text/event-stream", body: "event: Answer\ndata: Fresh conversation answer.\n\n" });
+  });
   try {
     await page.goto("/chat/weatherbot");
     const requested = page.waitForRequest("**/conversation-stream-events/weatherbot-thread?*");
@@ -279,5 +284,12 @@ test("restarting while saved history is pending keeps the conversation empty", a
     await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     await expect(page.getByText("History answer for weatherbot-thread.", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Hello, how can I help you today?" })).toBeVisible();
+    await expect(page.locator("code").first()).not.toHaveText("weatherbot-thread");
+    const newDraft = await page.locator("code").first().textContent();
+    const composer = page.getByTestId("home_screen_panel").getByRole("textbox");
+    await composer.fill("Weather after restart");
+    await composer.press("Enter");
+    await expect(page.getByText("Fresh conversation answer.", { exact: true })).toBeVisible();
+    expect(sentThread).toBe(newDraft);
   } finally { release(); }
 });
