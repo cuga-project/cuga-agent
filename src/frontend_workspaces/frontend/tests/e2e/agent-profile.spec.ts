@@ -40,6 +40,19 @@ function assistantTitle(page: Page) {
   return page.getByTestId("header_name").last();
 }
 
+test("one navigation click from a dirty field survives draft-save rerenders", async ({ page }) => {
+  await stubBackend(page);
+  await page.goto("/manage/weatherbot");
+  await expect(page.getByPlaceholder("Enter agent name")).toHaveValue("Weather specialist");
+  const saved = page.waitForRequest((request) => request.method() === "PATCH"
+    && new URL(request.url()).pathname === "/api/manage/config/draft/agent");
+  await page.locator("#agent-description").fill("Weather draft saved on navigation");
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  expect(new URL((await saved).url()).searchParams.get("agent_id")).toBe("weatherbot");
+  await expect(page).toHaveURL(/\/manage$/);
+  await expect(page.getByRole("heading", { name: "Agent dashboard", exact: true })).toBeVisible();
+});
+
 test("weatherbot displays its own name and sends its own execution identity", async ({ page }) => {
   const streamAgents = await stubBackend(page);
   await page.goto("/chat/weatherbot");
@@ -118,10 +131,18 @@ test("a pending profile lookup does not block sending or cancellation", async ({
 test("approval responses use the selected agent after switching", async ({ page }) => {
   await stubBackend(page);
   const approvalAgents: string[] = [];
+  let savedThread = "";
+  await page.route("**/api/conversation-threads?*", (route) => route.fulfill({
+    contentType: "application/json", body: JSON.stringify({ threads: savedThread ? [{
+      thread_id: savedThread, first_message: "Check weather with approval", latest_version: 1,
+      updated_at: new Date().toISOString(),
+    }] : [] }),
+  }));
   await page.route("**/stream", async (route) => {
     const body = route.request().postDataJSON();
     if (body.action_id) {
       approvalAgents.push(route.request().headers()["x-agent-id"]);
+      savedThread = route.request().headers()["x-thread-id"];
       await route.fulfill({ contentType: "text/event-stream", body: "event: Answer\ndata: Approved weather action.\n\n" });
     } else {
       await route.fulfill({
@@ -142,8 +163,11 @@ test("approval responses use the selected agent after switching", async ({ page 
   await expect(assistantTitle(page)).toHaveText("Weather specialist");
   const composer = page.getByRole("textbox").first();
   await composer.fill("Check weather with approval");
+  const pendingThreads = page.waitForResponse("**/api/conversation-threads?*");
   await composer.press("Enter");
+  await pendingThreads;
   await page.getByRole("button", { name: "Approve weather lookup", exact: true }).click();
   await expect(page.getByText("Approved weather action.", { exact: true })).toBeVisible();
   expect(approvalAgents).toEqual(["weatherbot"]);
+  await expect(page.getByRole("button", { name: /Check weather with approval.*active/ })).toBeVisible();
 });
