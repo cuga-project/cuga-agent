@@ -237,11 +237,12 @@ async def test_default_publish_rebuild_keeps_conversations_on_shared_saver():
     saver = MemorySaver()
     agent, cfg = await _seeded_default_agent(saver)
     old_graph = agent.graph
-    state = SimpleNamespace(agent=agent, checkpointer=saver)
+    state = SimpleNamespace(agent=agent, checkpointer=saver, config_version=2)
 
     await _rebuild(state)
 
     assert agent.graph is not old_graph
+    assert agent._checkpoint_config_version == "2"
     assert (await agent.graph.aget_state(cfg)).values["input"] == "before publish"
 
 
