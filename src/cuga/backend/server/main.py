@@ -714,6 +714,7 @@ async def _build_published_default_agent(
     tool_provider: Any,
     startup_config: Optional[Dict[str, Any]],
     startup_llm_cfg: Optional[Dict[str, Any]],
+    startup_version: Optional[int] = None,
     langfuse_handler: Any = None,
 ) -> "DynamicAgentGraph":
     """Build the published cuga-default graph at startup (``app_state.agent``).
@@ -740,6 +741,7 @@ async def _build_published_default_agent(
         supervisor_id=app_state.agent_id,
     )
     await agent.build_graph(checkpointer=app_state.checkpointer)
+    agent._checkpoint_config_version = str(startup_version or 0)
     return agent
 
 
@@ -1135,7 +1137,7 @@ async def _app_lifespan(app: FastAPI):
     # Load the latest published config so both agents start with the correct LLM.
     # This ensures that a previously saved provider/model/api_key is applied from
     # the first request rather than always falling back to .env defaults.
-    _startup_config, _ = await load_config(None) or (None, None)
+    _startup_config, _startup_version = await load_config(None) or (None, None)
     _startup_llm_cfg = (_startup_config or {}).get("llm") or {}
 
     # Apply the published config at startup so the runtime override is set
@@ -1219,6 +1221,7 @@ async def _app_lifespan(app: FastAPI):
         tool_provider=tool_provider,
         startup_config=_startup_config,
         startup_llm_cfg=_startup_llm_cfg,
+        startup_version=_startup_version,
         langfuse_handler=langfuse_handler,
     )
 
@@ -1759,6 +1762,32 @@ async def event_stream(
     from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
     from langchain_core.messages import AIMessage
 
+    checkpoint_config_key = "published_config_version"
+
+    async def _stale_pending_checkpoint(snapshot: Any) -> bool:
+        """A paused action may only resume on the published config that created it."""
+        expected = getattr(run_agent, "_checkpoint_config_version", None)
+        if expected is None or not getattr(snapshot, "next", None):
+            return False
+        values = getattr(snapshot, "values", None) or {}
+        scope = values.get("service_scope") or {}
+        if not isinstance(scope, dict) or scope.get(checkpoint_config_key) != expected:
+            return True
+        # A publish may have committed after /stream resolved its graph but before
+        # this request reached the checkpoint. Check the store as well as the graph.
+        try:
+            from cuga.backend.server.config_store import load_config
+
+            _, current_version = await load_config(None, runtime_agent_id)
+        except Exception as exc:
+            logger.warning("Could not verify pending approval configuration: {}", type(exc).__name__)
+            return True
+        return str(current_version or 0) != expected
+
+    stale_approval_message = (
+        "This pending approval belongs to an older agent configuration. Start a new conversation to continue."
+    )
+
     memory_turn_id = str(uuid.uuid4()) if not resume else ""
     run_agent = agent if agent is not None else app_state.agent
     runtime_agent_id = agent_id or app_state.agent_id
@@ -1807,9 +1836,15 @@ async def event_stream(
         # Check if we have existing state for this thread_id (for followup questions)
         if thread_id:
             try:
-                latest_state_values = (
-                    await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
-                ).values
+                snapshot = await run_agent.graph.aget_state(
+                    {"configurable": {"thread_id": checkpoint_thread_id}}
+                )
+                if await _stale_pending_checkpoint(snapshot):
+                    yield StreamEvent(name="Error", data=stale_approval_message).format(
+                        app_state.output_format, thread_id=thread_id
+                    )
+                    return
+                latest_state_values = snapshot.values
                 if latest_state_values:
                     # Load existing state for followup questions
                     local_state = AgentState(**latest_state_values)
@@ -1842,18 +1877,25 @@ async def event_stream(
     else:
         # For resume, fetch state from LangGraph
         if thread_id:
-            latest_state_values = (
-                await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
-            ).values
+            snapshot = await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
+            if await _stale_pending_checkpoint(snapshot):
+                yield StreamEvent(name="Error", data=stale_approval_message).format(
+                    app_state.output_format, thread_id=thread_id
+                )
+                return
+            latest_state_values = snapshot.values
             if latest_state_values:
                 local_state = AgentState(**latest_state_values)
                 local_state.thread_id = thread_id
 
     if local_state:
+        config_version = getattr(run_agent, "_checkpoint_config_version", None)
         if resume:
             memory_turn_id = str((local_state.service_scope or {}).get("memory_turn_id") or "")
         apply_request_user_context(local_state, user_id)
         local_state.service_scope.update({"agent_id": runtime_agent_id, "memory_turn_id": memory_turn_id})
+        if not resume and config_version is not None:
+            local_state.service_scope[checkpoint_config_key] = config_version
         # Route this run to the CugaSupervisor node when the resolved agent is a supervisor
         # graph (issue #101). Only override when True so non-supervisor agents keep falling
         # back to the global settings.supervisor.enabled default.
@@ -2848,7 +2890,7 @@ async def _resolve_stream_agent(
             if use_draft:
                 config = await load_draft(agent_id)
             else:
-                config, _ = await load_config(None, agent_id)
+                config, config_version = await load_config(None, agent_id)
 
             if not config:
                 raise HTTPException(
@@ -2940,6 +2982,7 @@ async def _resolve_stream_agent(
                 await graph.build_graph()
             else:
                 await graph.build_graph(checkpointer=app_state.checkpointer)
+                graph._checkpoint_config_version = str(config_version or 0)
             # Another request may have finished first, or a draft-save/publish may have
             # invalidated this key while we were building. The cache only dedupes builds:
             # published state lives in the shared saver, not in the graph instance, so a
