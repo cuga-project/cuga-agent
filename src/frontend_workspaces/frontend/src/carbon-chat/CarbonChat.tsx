@@ -270,10 +270,10 @@ const CarbonChat = ({
   const chatInstanceRef = useRef<ChatInstance | null>(null);
   const historyMutationQueueRef = useRef<Promise<void>>(Promise.resolve());
   const historyReplayGenerationRef = useRef(0);
-  const sendContextRef = useRef({ agentId, useDraft, disableHistory, onRestart });
+  const sendContextRef = useRef({ agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange });
   useLayoutEffect(() => {
-    sendContextRef.current = { agentId, useDraft, disableHistory, onRestart };
-  }, [agentId, useDraft, disableHistory, onRestart]);
+    sendContextRef.current = { agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange };
+  }, [agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange]);
   const chatElementRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -755,6 +755,7 @@ const CarbonChat = ({
       instance: ChatInstance
     ) => {
       setTranscriptScope(conversationScope);
+      const sentThreadId = getOrCreateThreadId();
       const attachmentSnapshot = createMessageAttachmentSnapshot();
       const result = await customSendMessageImpl(
         request,
@@ -767,12 +768,12 @@ const CarbonChat = ({
         agentId,
       );
       
-      if (onThreadChange && currentThreadId) {
-        skipNextHistoryLoadRef.current = currentThreadId;
-        onThreadChange(currentThreadId);
+      const context = sendContextRef.current;
+      if (context.agentId === agentId && currentThreadId === sentThreadId) {
+        if (context.threadId !== sentThreadId) skipNextHistoryLoadRef.current = sentThreadId;
+        context.onThreadChange?.(sentThreadId);
+        await refreshMessageAttachmentSnapshots(sentThreadId);
       }
-
-      await refreshMessageAttachmentSnapshots(currentThreadId);
       
       return result;
     },
@@ -847,7 +848,12 @@ const CarbonChat = ({
           };
           // Carbon installs this listener once; read the current agent after dropdown switches.
           const context = sendContextRef.current;
+          const approvedThreadId = getOrCreateThreadId();
+          if (user_defined.thread_id && user_defined.thread_id !== approvedThreadId) return;
           await customSendMessageImpl(request, options, instance, context.useDraft, context.disableHistory, actionResponse, undefined, context.agentId);
+          if (sendContextRef.current.agentId === context.agentId && currentThreadId === approvedThreadId) {
+            sendContextRef.current.onThreadChange?.(approvedThreadId);
+          }
         }
       },
     });
