@@ -311,7 +311,7 @@ async def _create_postgres(
         max_size=max_size,
         # Required by AsyncPostgresSaver: autocommit DDL/writes, dict rows; no
         # server-side prepared statements, so transaction poolers work.
-        kwargs={"autocommit": True, "row_factory": dict_row, "prepare_threshold": 0},
+        kwargs={"autocommit": True, "row_factory": dict_row, "prepare_threshold": None},
         open=False,
     )
     try:
