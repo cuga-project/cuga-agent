@@ -6,7 +6,7 @@
  *
  *  @license
  */
-import React, { useCallback, useRef, useEffect, useState } from 'react';
+import React, { useCallback, useRef, useEffect, useLayoutEffect, useState } from 'react';
 import {
   ChatCustomElement,
   type ChatInstance,
@@ -38,7 +38,7 @@ import {
 import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './customSendMessage';
 import { customLoadHistory } from './customLoadHistory';
 import { useEventsInbox } from '../events/useEventsInbox';
-import { initAgentProfile, getResponseUserProfile } from './carbonChatHelpers';
+import { getResponseUserProfile } from './carbonChatHelpers';
 import { SlashCommandDropdown } from './SlashCommandDropdown';
 import { findShadowRoots } from './composerTextarea';
 import './CarbonChat.css';
@@ -90,6 +90,7 @@ interface HomescreenConfig {
 }
 
 interface CarbonChatProps {
+  agentId?: string;
   className?: string;
   theme?: 'light' | 'dark';
   contained?: boolean;
@@ -242,6 +243,7 @@ function ComposerToolbar({
 }
 
 const CarbonChat = ({
+  agentId = api.getKnowledgeAgentId(),
   className = '',
   theme = 'light',
   contained = false,
@@ -264,6 +266,10 @@ const CarbonChat = ({
   const hs = homescreen ?? DEFAULT_HOMESCREEN;
   const starterLabels = (hs.starters ?? DEFAULT_HOMESCREEN.starters ?? []).filter(Boolean).slice(0, 4);
   const chatInstanceRef = useRef<ChatInstance | null>(null);
+  const sendContextRef = useRef({ agentId, useDraft, disableHistory });
+  useLayoutEffect(() => {
+    sendContextRef.current = { agentId, useDraft, disableHistory };
+  }, [agentId, useDraft, disableHistory]);
   const chatElementRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -375,10 +381,19 @@ const CarbonChat = ({
     );
   }, [onOpenMemoryUsage]);
 
+  const getChatResponseUserProfile = useCallback(
+    (draft = useDraft) => getResponseUserProfile(draft, agentId),
+    [agentId, useDraft],
+  );
+
   useEffect(() => {
-    initAgentProfile(useDraft);
-    getResponseUserProfile(useDraft).then((p) => setAssistantName(p.nickname || "CUGA Agent"));
-  }, [useDraft]);
+    let cancelled = false;
+    setAssistantName(agentId === "cuga-default" ? "CUGA Agent" : agentId);
+    getChatResponseUserProfile().then((profile) => {
+      if (!cancelled) setAssistantName(profile.nickname);
+    });
+    return () => { cancelled = true; };
+  }, [agentId, getChatResponseUserProfile]);
 
   useEffect(() => {
     let cancelled = false;
@@ -742,6 +757,7 @@ const CarbonChat = ({
         disableHistory,
         undefined,
         attachmentScope === "session" ? attachmentSnapshot : undefined,
+        agentId,
       );
       
       if (onThreadChange && currentThreadId) {
@@ -753,7 +769,7 @@ const CarbonChat = ({
       
       return result;
     },
-    [attachmentScope, createMessageAttachmentSnapshot, disableHistory, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
+    [agentId, attachmentScope, createMessageAttachmentSnapshot, disableHistory, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
   );
 
   const handleChatReady = useCallback((instance: ChatInstance) => {
@@ -811,14 +827,17 @@ const CarbonChat = ({
             signal: new AbortController().signal,
             silent: false,
           };
-          await customSendMessageImpl(request, options, instance, useDraft, disableHistory, actionResponse);
+          // Carbon installs this listener once; read the current agent after dropdown switches.
+          const context = sendContextRef.current;
+          await customSendMessageImpl(request, options, instance, context.useDraft, context.disableHistory, actionResponse, undefined, context.agentId);
         }
       },
     });
-  }, [useDraft, disableHistory]);
+  }, []);
 
   // Load history when threadId changes
   useEffect(() => {
+    let cancelled = false;
     if (chatInstanceRef.current) {
       if (threadId) {
         currentThreadId = threadId;
@@ -838,9 +857,11 @@ const CarbonChat = ({
           try {
             // Clear the current conversation
             await chatInstanceRef.current.messaging.clearConversation();
+            if (cancelled) return;
             
             // Load the history
-            const history = await customLoadHistory(chatInstanceRef.current, threadId);
+            const history = await customLoadHistory(chatInstanceRef.current, threadId, agentId, useDraft);
+            if (cancelled) return;
             
             if (history.length > 0 && chatInstanceRef.current) {
               console.log(`Loaded ${history.length} history items for thread ${threadId}`);
@@ -864,11 +885,12 @@ const CarbonChat = ({
         chatInstanceRef.current.messaging.clearConversation();
       }
     }
-  }, [threadId]);
+    return () => { cancelled = true; };
+  }, [agentId, threadId, useDraft]);
 
   // Armed-flow fires land in the transcript. The whole mechanism — mailbox, cursor, polling —
   // lives in the events UI; this is the single line that connects it to the chat.
-  useEventsInbox(threadId, chatInstanceRef, getResponseUserProfile, useDraft);
+  useEventsInbox(threadId, chatInstanceRef, getChatResponseUserProfile, useDraft);
 
   // Wrap customLoadHistory to pass threadId and disableHistory
   const handleCustomLoadHistory = useCallback(
@@ -876,9 +898,9 @@ const CarbonChat = ({
       if (disableHistory) {
         return [];
       }
-      return await customLoadHistory(instance, threadId || undefined);
+      return await customLoadHistory(instance, threadId || undefined, agentId, useDraft);
     },
-    [threadId, disableHistory]
+    [agentId, threadId, disableHistory, useDraft]
   );
 
   return (
