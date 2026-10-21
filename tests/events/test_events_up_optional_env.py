@@ -24,7 +24,10 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "events" / "scripts" / "events_up.sh"
 BASH = shutil.which("bash")
 
-pytestmark = pytest.mark.skipif(BASH is None, reason="bash is required to execute events_up.sh")
+pytestmark = [
+    pytest.mark.skipif(BASH is None, reason="bash is required to execute events_up.sh"),
+    pytest.mark.unit,
+]
 
 # `$REAL_SLEEP` is exported by _run(); it is the genuine sleep binary, resolved before the stub dir
 # is put on PATH. The `sleep` stub shortens the script's boot-wait loops to ~nothing.
@@ -37,7 +40,10 @@ STUBS = {
     "cloudflared": "echo 'https://stub-demo.trycloudflare.com'",
 }
 # Fake long-running services must stay alive through the script's `kill -0 <pid>` liveness checks.
-VENV_STUBS = {"cuga": '"$REAL_SLEEP" 20', "python": '"$REAL_SLEEP" 20'}
+VENV_STUBS = {
+    "cuga": 'printf "%s\\n" "$*" > "$PWD/cuga.started"\n"$REAL_SLEEP" 20',  # records how it was started
+    "python": '"$REAL_SLEEP" 20',
+}
 
 
 def _write_exe(path: pathlib.Path, body: str) -> None:
@@ -107,6 +113,7 @@ def test_boot_succeeds_without_ngrok_domain(tmp_path, dotenv, flags):
 
     assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     assert "next: 'make channels'" in proc.stdout
+    assert (tmp_path / "cuga.started").read_text(encoding="utf-8").strip() == "start demo"
     assert "No such file or directory" not in proc.stderr + proc.stdout
 
 
@@ -128,6 +135,8 @@ def test_public_url_succeeds_without_tunnel_log(tmp_path, dotenv):
 
     assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     assert "PUBLIC URL" in proc.stdout
+    assert "<none" in proc.stdout
+    assert "/api/events/slack/events" not in proc.stdout  # no callback instructions without a URL
 
 
 @pytest.mark.parametrize("dotenv", DOTENVS.values(), ids=DOTENVS.keys())

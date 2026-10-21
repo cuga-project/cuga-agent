@@ -69,6 +69,11 @@ print_public_url() {
   local url; url="${EVENTS_PUBLIC_URL:-$(cuga_tunnel_url)}"
   echo ""
   echo "──────────── PUBLIC URL  (EVENTS_PUBLIC_URL) ────────────"
+  if [ -z "$url" ]; then
+    echo "  <none - no tunnel is running; Slack and Gmail callbacks need a public URL (use 'make up')>"
+    echo "─────────────────────────────────────────────────────────"
+    return 0
+  fi
   echo "  $url"
   if [ -n "$NGROK_DOMAIN" ]; then
     echo "  ✓ STABLE (ngrok) — this never changes. Set these EXTERNAL consoles ONCE:"
