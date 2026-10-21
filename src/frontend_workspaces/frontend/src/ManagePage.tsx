@@ -779,7 +779,7 @@ export function ManagePage() {
       skipDraftSaveRef.current = true;
       const [draftRes, toolsListRes] = await Promise.all([
         api.getManageConfig(true, agentId),
-        api.getToolsList(true),
+        api.getToolsList(true, agentId),
       ]);
       if (isStale()) return;
 
