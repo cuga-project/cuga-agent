@@ -161,7 +161,9 @@ class TestCugaAgentHitl:
             paused = await agent.invoke("delete the users table", thread_id=thread_id)
             # The pause notice comes from the aget_state read after the turn.
             assert PAUSED in paused.answer
-            assert "aget_state" in paused.answer
+            # It points at the resume API that works (not aupdate_state + ainvoke(None)).
+            assert "agent.invoke(None, thread_id=..., action_response=...)" in paused.answer
+            assert "aupdate_state" not in paused.answer
             snapshot = await agent.graph.aget_state({"configurable": {"thread_id": thread_id}})
             assert snapshot.next == ("WaitForResponse",)
 
