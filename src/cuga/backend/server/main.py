@@ -2064,6 +2064,7 @@ async def event_stream(
                                         f"for thread_id: {thread_id}"
                                     )
 
+                        stream_events_buffer.clear()
                         yield StreamEvent(
                             name="Answer",
                             data=final_answer_text,
@@ -2194,6 +2195,19 @@ async def event_stream(
         # exception would reach the caller the same way a response body would.
         _ref = log_error_ref(e, context="Agent event stream failed")
         yield StreamEvent(name="Error", data=f"Agent request failed (ref {_ref})").format()
+    finally:
+        # Approval pauses and disconnected clients can end a request without an
+        # Answer. Retain this request's prompt/events for the resumed transcript;
+        # only a completed answer creates/updates the recent-chat entry.
+        if thread_id and stream_events_buffer:
+            await _save_conversation_and_events_async(
+                agent_id=runtime_agent_id,
+                thread_id=thread_id,
+                user_id=user_id,
+                state=local_state,
+                events=stream_events_buffer.copy(),
+                events_only=True,
+            )
 
 
 app = FastAPI(lifespan=lifespan)
