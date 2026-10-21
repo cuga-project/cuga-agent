@@ -60,8 +60,12 @@ for (const failure of ["404", "500", "network", "SSE Error"]) {
     // A visible error alone is insufficient: Carbon must finish the active response so
     // cancellation is no longer offered and another turn can receive its own answer.
     await expect(page.getByRole("button", { name: /stop/i })).toHaveCount(0);
-    await composer.fill("Try again");
-    await composer.press("Enter");
+    // Sending dismisses the homescreen. Target the conversation composer once
+    // that transition completes instead of filling an outgoing home input.
+    const retryComposer = page.getByTestId("main_panel").getByRole("textbox");
+    await retryComposer.fill("Try again");
+    await expect(page.getByTestId("main_panel").getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    await retryComposer.press("Enter");
     await expect(page.getByText("Retry succeeded.", { exact: true })).toBeVisible();
     expect(requests).toBe(2);
   });
