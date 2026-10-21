@@ -190,9 +190,10 @@ async def test_startup_published_agent_writes_to_the_shared_saver(monkeypatch):
 
     with patch.object(LLMManager, "get_model", return_value=MagicMock()):
         agent = await main._build_published_default_agent(
-            tool_provider=tool_provider, startup_config={}, startup_llm_cfg={}
+            tool_provider=tool_provider, startup_config={}, startup_llm_cfg={}, startup_version=3
         )
 
+    assert agent._checkpoint_config_version == "3"
     cfg = {"configurable": {"thread_id": "startup-thread"}}
     await agent.graph.aupdate_state(cfg, {"input": "published turn"}, as_node=agent.chat.chat_agent.name)
     stored = await saver.aget_tuple(cfg)
