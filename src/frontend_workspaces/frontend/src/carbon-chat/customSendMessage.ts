@@ -18,7 +18,7 @@ import {
 } from "@carbon/ai-chat";
 import {
   BUTTON_KIND,
-  RESPONSE_USER_PROFILE,
+  getCachedResponseUserProfile,
   parseReasoningStepContent,
   parseAnswerEventData,
   buildToolApprovalCard,
@@ -123,6 +123,7 @@ export async function customSendMessage(
   disableHistory: boolean = false,
   actionResponse?: any,
   attachmentSnapshot?: KnowledgeAttachmentSnapshot[],
+  agentId = api.getKnowledgeAgentId(),
 ) {
   const userMessage = request.input.text?.trim() ?? "";
   
@@ -133,6 +134,7 @@ export async function customSendMessage(
 
   const threadId = getOrCreateThreadId();
   const responseID = generateUUID();
+  const responseUserProfile = getCachedResponseUserProfile(useDraft, agentId);
   
   // Listen for abort signal to call /stop endpoint
   const abortHandler = () => {
@@ -169,7 +171,7 @@ export async function customSendMessage(
           streaming_metadata: { id: "text-stream", cancellable: true },
         },
         partial_response: {
-          message_options: { reasoning: { steps: [] }, response_user_profile: RESPONSE_USER_PROFILE },
+          message_options: { reasoning: { steps: [] }, response_user_profile: responseUserProfile },
         },
         streaming_metadata: { response_id: responseID },
       });
@@ -192,7 +194,7 @@ export async function customSendMessage(
         output: { generic: [completeItem] },
         message_options: {
           ...(steps.length > 0 ? { reasoning: { steps } } : {}),
-          response_user_profile: RESPONSE_USER_PROFILE,
+          response_user_profile: responseUserProfile,
         },
       },
     });
@@ -272,6 +274,7 @@ export async function customSendMessage(
       },
       {
         threadId,
+        agentId,
         useDraft,
         disableHistory,
         signal: requestOptions.signal,
@@ -318,7 +321,7 @@ export async function customSendMessage(
                 streaming_metadata: { id: "text-stream", cancellable: true },
               },
               partial_response: {
-                message_options: { reasoning: { steps: [...collectedSteps, createReasoningStep(currentStepTitle, currentStepContent)] }, response_user_profile: RESPONSE_USER_PROFILE },
+                message_options: { reasoning: { steps: [...collectedSteps, createReasoningStep(currentStepTitle, currentStepContent)] }, response_user_profile: responseUserProfile },
               },
               streaming_metadata: { response_id: responseID },
             } as StreamChunk);
@@ -394,7 +397,7 @@ export async function customSendMessage(
             partial_response: {
               message_options: {
                 reasoning: { steps: [...collectedSteps] },
-                response_user_profile: RESPONSE_USER_PROFILE,
+                response_user_profile: responseUserProfile,
               },
             },
             streaming_metadata: { response_id: responseID },
@@ -426,7 +429,7 @@ export async function customSendMessage(
                 streaming_metadata: { id: "text-stream", cancellable: true },
               },
               partial_response: {
-                message_options: { reasoning: { steps: [...collectedSteps, createReasoningStep(currentStepTitle, currentStepContent)] }, response_user_profile: RESPONSE_USER_PROFILE },
+                message_options: { reasoning: { steps: [...collectedSteps, createReasoningStep(currentStepTitle, currentStepContent)] }, response_user_profile: responseUserProfile },
               },
               streaming_metadata: { response_id: responseID },
             } as StreamChunk);
@@ -447,7 +450,7 @@ export async function customSendMessage(
               streaming_metadata: { id: "text-stream", cancellable: true },
             },
             partial_response: {
-              message_options: { reasoning: { steps: collectedSteps }, response_user_profile: RESPONSE_USER_PROFILE },
+              message_options: { reasoning: { steps: collectedSteps }, response_user_profile: responseUserProfile },
             },
             streaming_metadata: { response_id: responseID },
           } as StreamChunk);
@@ -706,9 +709,9 @@ export async function customSendMessage(
           };
 
           if (collectedSteps.length > 0) {
-            finalResponse.final_response.message_options = { reasoning: { steps: collectedSteps }, response_user_profile: RESPONSE_USER_PROFILE };
+            finalResponse.final_response.message_options = { reasoning: { steps: collectedSteps }, response_user_profile: responseUserProfile };
           } else {
-            finalResponse.final_response.message_options = { response_user_profile: RESPONSE_USER_PROFILE };
+            finalResponse.final_response.message_options = { response_user_profile: responseUserProfile };
           }
 
           instance.messaging.addMessageChunk(finalResponse);
@@ -745,7 +748,7 @@ export async function customSendMessage(
               output: { generic: [completeItem] },
               message_options: {
                 ...(collectedSteps.length > 0 ? { reasoning: { steps: collectedSteps } } : {}),
-                response_user_profile: RESPONSE_USER_PROFILE,
+                response_user_profile: responseUserProfile,
               },
             },
           });
@@ -765,7 +768,7 @@ export async function customSendMessage(
                 streaming_metadata: { id: "text-stream", cancellable: true },
               },
               partial_response: {
-                message_options: { reasoning: { steps: collectedSteps }, response_user_profile: RESPONSE_USER_PROFILE },
+                message_options: { reasoning: { steps: collectedSteps }, response_user_profile: responseUserProfile },
               },
               streaming_metadata: { response_id: responseID },
             } as StreamChunk);
@@ -795,7 +798,7 @@ export async function customSendMessage(
           output: { generic: [completeItem] },
           message_options: {
             ...(collectedSteps.length > 0 ? { reasoning: { steps: collectedSteps } } : {}),
-            response_user_profile: RESPONSE_USER_PROFILE,
+            response_user_profile: responseUserProfile,
           },
         },
       });
