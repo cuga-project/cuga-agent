@@ -514,7 +514,7 @@ async def test_prod_branch_pool_kwargs_and_open_setup_close_order(monkeypatch):
     assert created["pool_kwargs"] == {
         "min_size": 2,
         "max_size": 7,
-        "kwargs": {"autocommit": True, "row_factory": dict_row, "prepare_threshold": 0},
+        "kwargs": {"autocommit": True, "row_factory": dict_row, "prepare_threshold": None},
         "open": False,
     }
     assert created["saver_conn"] is created["pool"]
