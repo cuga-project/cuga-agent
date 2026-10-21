@@ -720,14 +720,8 @@ export async function customSendMessage(
         case "Error":
           // Handle error
           const errorMsg = typeof event.data === "string" ? event.data : JSON.stringify(event.data);
-          instance.messaging.addMessage({
-            output: {
-              generic: [{
-                response_type: MessageResponseTypes.TEXT,
-                text: `Error: ${errorMsg}`,
-              }],
-            },
-          });
+          flushPendingStep();
+          finalizeStream(`Error: ${errorMsg}`);
           return;
 
         case "Complete":
@@ -817,14 +811,9 @@ export async function customSendMessage(
       clearLoadingIndicator();
       const url = api.getApiBaseUrl();
       const msg = error.message || "Failed to connect to CUGA backend";
-      instance.messaging.addMessage({
-        output: {
-          generic: [{
-            response_type: MessageResponseTypes.TEXT,
-            text: `Error: ${msg}. Backend URL: ${url}. Check that the backend is running and reachable (e.g. CORS, firewall, proxy).`,
-          }],
-        },
-      });
+      finalizeStream(
+        `Error: ${msg}. Backend URL: ${url}. Check that the backend is running and reachable (e.g. CORS, firewall, proxy).`
+      );
     }
   } finally {
     clearLoadingIndicator();
