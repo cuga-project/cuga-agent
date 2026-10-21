@@ -266,3 +266,56 @@ async def test_events_rejects_unsupported_legacy_options_with_existing_fallback(
 
     assert await load_mcp_tools({"legacy": {"url": "http://127.0.0.1:9", "session_kwargs": {}}}) == []
     assert "Unsupported MCP options" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_installed_evolve_sse_reconnects_and_preserves_host_trace(tmp_path, monkeypatch):
+    """Cross the CUGA consumer and installed Evolve server boundary, without an LLM."""
+    pytest.importorskip("altk_evolve")
+    from altk_evolve import telemetry
+    from altk_evolve.config.evolve import EvolveConfig
+    from altk_evolve.config.filesystem import FilesystemSettings
+    from altk_evolve.frontend.client.evolve_client import EvolveClient
+    from altk_evolve.frontend.mcp import mcp_server
+    import fastmcp.telemetry as fastmcp_telemetry
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    client = EvolveClient(
+        config=EvolveConfig(backend="filesystem", settings=FilesystemSettings(data_dir=str(tmp_path)))
+    )
+    monkeypatch.setattr(mcp_server, "get_client", lambda: client)
+    monkeypatch.setenv("EVOLVE_OTEL_ENABLED", "false")
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("cuga.consumer.test")
+    monkeypatch.setattr(telemetry, "_TRACER", tracer)
+    monkeypatch.setattr(fastmcp_telemetry, "otel_get_tracer", lambda *args, **kwargs: tracer)
+    try:
+        async with serve_mcp(mcp_server.mcp, "sse") as url:
+            config = ServiceConfig(type=ServiceType.MCP_SERVER, url=url, transport="sse")
+            manager = MCPManager({"evolve": config})
+            assert await manager._initialize_single_fastmcp_server("evolve", config)
+            names = {tool["function"]["name"] for tool in manager.tools_by_server["evolve"]}
+            assert "evolve_retrieve_user_facts" in names
+            monkeypatch.setattr(settings.evolve, "url", url)
+            monkeypatch.setattr(settings.evolve, "timeout", 5)
+            # The real consumer closes each connection; the second call must reconnect.
+            for user in ("private-alice", "private-bob"):
+                with tracer.start_as_current_span("cuga.request") as parent:
+                    result = await EvolveIntegration._call_tool_direct(
+                        "retrieve_user_facts", {"namespace_id": "absent", "user_id": user}
+                    )
+                assert result["matched_count"] == 0
+                memory = [
+                    span
+                    for span in exporter.get_finished_spans()
+                    if span.name == "evolve.mcp.retrieve_user_facts"
+                ][-1]
+                assert memory.context.trace_id == parent.get_span_context().trace_id
+                assert memory.parent is not None
+                assert user not in str(memory.attributes)
+    finally:
+        provider.shutdown()
