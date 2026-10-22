@@ -36,6 +36,7 @@ import {
   type KnowledgeAttachmentSnapshot,
 } from "../knowledge/useSessionKnowledgeAttachments";
 import { customSendMessage as customSendMessageImpl, stopCugaAgent, StreamHttpError } from './customSendMessage';
+import { HistoryLoadGuard, resolveSendThreadIdKeepingTranscript, SendSupersededError } from '../conversationIdentity';
 import { customLoadHistory } from './customLoadHistory';
 import { useEventsInbox } from '../events/useEventsInbox';
 import { initAgentProfile, getResponseUserProfile } from './carbonChatHelpers';
@@ -92,6 +93,7 @@ interface CarbonChatProps {
   contained?: boolean;
   useDraft?: boolean;
   threadId?: string | null;
+  resolveThreadIdForSend?: () => Promise<string | null>;
   agentId?: string;
   attachmentScope?: "none" | KnowledgeAttachmentScope;
   knowledgeEnabled?: boolean | null;
@@ -246,6 +248,7 @@ const CarbonChat = ({
   contained = false,
   useDraft = false,
   threadId = null,
+  resolveThreadIdForSend,
   agentId,
   attachmentScope = "none",
   knowledgeEnabled = true,
@@ -269,7 +272,7 @@ const CarbonChat = ({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [chatElement, setChatElement] = useState<HTMLElement | null>(null);
-  const skipNextHistoryLoadRef = useRef<string | null>(null);
+  const historyGuardRef = useRef(new HistoryLoadGuard());
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
   const [isLoadingDebug, setIsLoadingDebug] = useState(false);
@@ -728,6 +731,44 @@ const CarbonChat = ({
     };
   }, [chatRenderTick, knownCommandNames, messageAttachmentSnapshots, onPreviewKnowledgeAttachment, resolveChatDomRoots]);
 
+  const reloadHistory = useCallback(async (historyThreadId: string) => {
+    // Citation state is per conversation; the map repopulates as
+    // renderUserDefinedResponse runs over the replayed history.
+    sourcesByMessageKey.current.clear();
+    setSourcesPanel(null);
+    if (!chatInstanceRef.current) return;
+    try {
+      // Clear the current conversation
+      await chatInstanceRef.current.messaging.clearConversation();
+
+      // Load the history
+      const history = await customLoadHistory(chatInstanceRef.current, historyThreadId);
+
+      if (history.length > 0 && chatInstanceRef.current) {
+        console.log(`Loaded ${history.length} history items for thread ${historyThreadId}`);
+        // Insert the history into the chat
+        chatInstanceRef.current.messaging.insertHistory(history);
+      } else {
+        console.log(`No history found for thread ${historyThreadId}`);
+      }
+    } catch (error) {
+      console.error('Error loading history:', error);
+    }
+  }, []);
+
+  // A first send on a draft allocates the conversation ID, which reaches this
+  // component as a new threadId prop before the stream finishes. Hold history
+  // reloads for that promotion so the message being sent stays on screen.
+  const resolveSendThreadId = useCallback(
+    () => resolveSendThreadIdKeepingTranscript(
+      historyGuardRef.current,
+      resolveThreadIdForSend,
+      threadId ?? null,
+      (navigatedTo) => void reloadHistory(navigatedTo),
+    ),
+    [reloadHistory, resolveThreadIdForSend, threadId],
+  );
+
   // Wrap the custom send message function to ensure it's properly bound
   const handleCustomSendMessage = useCallback(
     async (
@@ -737,6 +778,7 @@ const CarbonChat = ({
     ) => {
       const attachmentSnapshot = createMessageAttachmentSnapshot();
       try {
+        const sendThreadId = await resolveSendThreadId();
         const result = await customSendMessageImpl(
           request,
           options,
@@ -746,10 +788,11 @@ const CarbonChat = ({
           undefined,
           attachmentScope === "session" ? attachmentSnapshot : undefined,
           agentId,
+          sendThreadId,
         );
 
         if (onThreadChange && currentThreadId) {
-          skipNextHistoryLoadRef.current = currentThreadId;
+          historyGuardRef.current.skipNext(currentThreadId);
           onThreadChange(currentThreadId);
         }
 
@@ -759,12 +802,15 @@ const CarbonChat = ({
       } catch (err) {
         if (err instanceof StreamHttpError) {
           onStreamError?.(err.status, err.errorCode);
+        } else if (err instanceof SendSupersededError) {
+          // The user left this draft before its ID existed; nothing was streamed.
+          console.log(`[CarbonChat] ${err.message}`);
         } else {
           throw err;
         }
       }
     },
-    [agentId, attachmentScope, createMessageAttachmentSnapshot, disableHistory, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
+    [agentId, attachmentScope, createMessageAttachmentSnapshot, disableHistory, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, resolveSendThreadId, useDraft]
   );
 
   const handleChatReady = useCallback((instance: ChatInstance) => {
@@ -831,52 +877,24 @@ const CarbonChat = ({
 
   // Load history when threadId changes
   useEffect(() => {
-    if (chatInstanceRef.current) {
-      if (threadId) {
-        currentThreadId = threadId;
-        if (skipNextHistoryLoadRef.current === threadId) {
-          // Same conversation echoed back after a send — keep citation state.
-          skipNextHistoryLoadRef.current = null;
-          return;
-        }
-        skipNextHistoryLoadRef.current = null;
-        // Citation state is per conversation; the map repopulates as
-        // renderUserDefinedResponse runs over the replayed history.
-        sourcesByMessageKey.current.clear();
-        setSourcesPanel(null);
-        const loadAndInsertHistory = async () => {
-          if (!chatInstanceRef.current) return;
-          
-          try {
-            // Clear the current conversation
-            await chatInstanceRef.current.messaging.clearConversation();
-            
-            // Load the history
-            const history = await customLoadHistory(chatInstanceRef.current, threadId);
-            
-            if (history.length > 0 && chatInstanceRef.current) {
-              console.log(`Loaded ${history.length} history items for thread ${threadId}`);
-              // Insert the history into the chat
-              chatInstanceRef.current.messaging.insertHistory(history);
-            } else {
-              console.log(`No history found for thread ${threadId}`);
-            }
-          } catch (error) {
-            console.error('Error loading history:', error);
-          }
-        };
-        
-        loadAndInsertHistory();
-      } else {
-        // If threadId is null, start a fresh conversation
-        console.log('Starting new conversation');
-        currentThreadId = null;
-        sourcesByMessageKey.current.clear();
-        setSourcesPanel(null);
-        chatInstanceRef.current.messaging.clearConversation();
-      }
+    if (!chatInstanceRef.current) return;
+    const decision = historyGuardRef.current.onThreadIdChange(threadId ?? null);
+    currentThreadId = threadId ?? null;
+    if (decision === 'skip') {
+      // Same conversation echoed back after (or during) a send — keep the
+      // live transcript and citation state.
+      return;
     }
-  }, [threadId]);
+    if (decision === 'load' && threadId) {
+      void reloadHistory(threadId);
+      return;
+    }
+    // If threadId is null, start a fresh conversation
+    console.log('Starting new conversation');
+    sourcesByMessageKey.current.clear();
+    setSourcesPanel(null);
+    chatInstanceRef.current.messaging.clearConversation();
+  }, [threadId, reloadHistory]);
 
   // Armed-flow fires land in the transcript. The whole mechanism — mailbox, cursor, polling —
   // lives in the events UI; this is the single line that connects it to the chat.

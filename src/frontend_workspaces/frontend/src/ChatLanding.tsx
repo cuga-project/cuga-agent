@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import * as api from "./api";
+import { ensureDraftConversationId, isCurrentDraft, type ConversationCreationRef } from "./conversationIdentity";
 import { useAuth } from "./AuthContext";
 import { ConfigHeader } from "./ConfigHeader";
 import CarbonChat from "./carbon-chat/CarbonChat";
@@ -475,12 +476,15 @@ export function ChatLanding() {
   const prevChatAgentIdRef = useRef(effectiveChatAgentId);
   const chatAgentIdRef = useRef(effectiveChatAgentId);
   chatAgentIdRef.current = effectiveChatAgentId;
+  const draftKeyRef = useRef(draftThread.draftKey);
+  draftKeyRef.current = draftThread.draftKey;
 
   useEffect(() => {
     if (prevChatAgentIdRef.current === effectiveChatAgentId) return;
     prevChatAgentIdRef.current = effectiveChatAgentId;
     const nextDraft =
       loadDraftThreadState(effectiveChatAgentId) ?? createDraftThreadState(effectiveChatAgentId);
+    draftKeyRef.current = nextDraft.draftKey;
     setDraftThread(nextDraft);
     setSelectedThreadId(null);
     setSelectedThreadStatus(null);
@@ -662,6 +666,7 @@ export function ChatLanding() {
 
   const createAndActivateDraftThread = useCallback(() => {
     const nextDraft = createDraftThreadState(effectiveChatAgentId);
+    draftKeyRef.current = nextDraft.draftKey;
     setDraftThread(nextDraft);
     setSelectedThreadId(null);
     setSelectedThreadStatus(null);
@@ -1089,56 +1094,29 @@ export function ChatLanding() {
   // Eager ID allocation for uploads on a new draft (W14.2). Concurrent callers share one request.
   // The ref is keyed to both agentId and draftKey so a resolved result from a previous
   // draft (agent switch or New chat) can never rebind the current one.
-  const conversationCreationRef = useRef<{
-    agentId: string;
-    draftKey: string;
-    promise: Promise<string | null>;
-  } | null>(null);
+  const conversationCreationRef = useRef<ConversationCreationRef["current"]>(null);
   const ensureConversationId = useCallback(async (): Promise<string | null> => {
-    const existing = effectiveChatThreadId?.trim();
-    if (existing) return existing;
-    const currentDraftKey = draftThread.draftKey;
-    // Reuse the in-flight request only when both agent and draft identity match.
-    if (
-      conversationCreationRef.current?.agentId === effectiveChatAgentId &&
-      conversationCreationRef.current?.draftKey === currentDraftKey
-    ) {
-      return conversationCreationRef.current.promise;
-    }
-    // Capture the identities before the async boundary so the closure checks
-    // the same values it was started with, not whatever is current when it resolves.
-    const capturedAgentId = effectiveChatAgentId;
-    const capturedDraftKey = currentDraftKey;
-    const promise = (async () => {
-      try {
-        const created = await api.createConversation(capturedAgentId);
-        // Only apply if both agent and draft identity still match.
+    if (draftThread.agentId !== effectiveChatAgentId) return null;
+    return ensureDraftConversationId(
+      effectiveChatThreadId,
+      { agentId: effectiveChatAgentId, draftKey: draftThread.draftKey },
+      conversationCreationRef,
+      api.createConversation,
+      () => ({ agentId: chatAgentIdRef.current, draftKey: draftKeyRef.current }),
+      (threadId, identity) => {
         setDraftThread((prev) => {
-          if (prev.agentId !== capturedAgentId || prev.draftKey !== capturedDraftKey) return prev;
+          if (!isCurrentDraft(identity, prev)) return prev;
           if (prev.threadId) return prev; // another create already won
-          return { ...prev, threadId: created.id, updatedAt: new Date().toISOString() };
+          return { ...prev, threadId, updatedAt: new Date().toISOString() };
         });
-        // Guard setActiveThreadId: only apply when agent still matches.
-        // chatAgentIdRef.current always holds the live agentId, so we can check it
-        // inside the async continuation without capturing a stale closure value.
-        if (chatAgentIdRef.current === capturedAgentId) {
-          setActiveThreadId(created.id);
+        if (isCurrentDraft(
+          identity,
+          { agentId: chatAgentIdRef.current, draftKey: draftKeyRef.current },
+        )) {
+          setActiveThreadId(threadId);
         }
-        return created.id;
-      } catch (err) {
-        console.error("Failed to create conversation", err);
-        return null;
-      } finally {
-        if (
-          conversationCreationRef.current?.agentId === capturedAgentId &&
-          conversationCreationRef.current?.draftKey === capturedDraftKey
-        ) {
-          conversationCreationRef.current = null;
-        }
-      }
-    })();
-    conversationCreationRef.current = { agentId: capturedAgentId, draftKey: capturedDraftKey, promise };
-    return promise;
+      },
+    );
   }, [effectiveChatThreadId, effectiveChatAgentId, draftThread.draftKey]);
 
   // Clear any in-flight creation that belongs to a different agent or draft when either changes.
@@ -1490,6 +1468,7 @@ export function ChatLanding() {
           <CarbonChat
             contained={true}
             threadId={effectiveChatThreadId}
+            resolveThreadIdForSend={ensureConversationId}
             agentId={effectiveChatAgentId}
             attachmentScope="session"
             knowledgeEnabled={knowledgeEnabled}
