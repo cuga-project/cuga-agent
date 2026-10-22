@@ -96,7 +96,8 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         list of dicts with ``role`` and ``content``. If absent (or explicitly ``None``) and
         ``find_tools`` is enabled, ``prompts/find_tools_few_shot_examples.json`` (bundled next to the
         MCP template) is loaded, with optional fallback to repo ``samples/cuga_lite/mcp_few_shot_examples.json``.
-        Bundled few-shots only apply when ``find_tools`` shortlisting is active
+        Bundled few-shots are withheld in function-calling mode or with step discipline enabled.
+        Otherwise, they only apply when ``find_tools`` shortlisting is active
         (``total_tool_count > shortlisting_tool_threshold``, see settings configurable).
 
         Disable few-shots entirely via ``advanced_features.cuga_lite_enable_few_shots`` in settings.toml
@@ -137,6 +138,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             model_name=_runtime_model_name,
         )
         _execution_mode = resolve_execution_mode(configurable, _runtime_model_name)
+        _one_per_step = (
+            resolve_step_discipline(configurable, _runtime_model_name) == STEP_DISCIPLINE_ONE_TOOL_PER_STEP
+        )
         logger.debug(
             f"[APPROVAL DEBUG] prepare_tools_and_apps received cuga_lite_metadata: {state.cuga_lite_metadata}"
         )
@@ -298,15 +302,18 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             few_shot_examples = []
             logger.debug("MCP few-shots disabled (cuga_lite_enable_few_shots=false)")
         if (
-            _execution_mode == EXECUTION_MODE_FUNCTION_CALLING
+            (_execution_mode == EXECUTION_MODE_FUNCTION_CALLING or _one_per_step)
             and few_shot_examples
             and configurable.get("mcp_few_shot_examples") is None
         ):
-            # The bundled demos are CodeAct-shaped (```python turns, "Execution output:"
-            # replies) and would contradict the function-calling prompt. Only demos the
-            # caller passes explicitly are replayed in this mode.
+            # Bundled demos use unrestricted CodeAct blocks, contradicting both
+            # native function calling and one-tool-per-step plans. Only caller-supplied
+            # demos are replayed in these modes.
             logger.info(
-                "Function-calling mode: bundled CodeAct few-shots withheld ({} turns)", len(few_shot_examples)
+                "Bundled CodeAct few-shots withheld ({} turns, execution_mode={}, step_discipline={})",
+                len(few_shot_examples),
+                _execution_mode,
+                _one_per_step,
             )
             few_shot_examples = []
         if few_shot_examples:
@@ -816,10 +823,6 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                     "Function-calling mode ignores the static prompt and renders the FC prompt instead"
                 )
             _fragments = resolve_fc_prompt_fragments(configurable, _runtime_model_name)
-            _one_per_step = (
-                resolve_step_discipline(configurable, _runtime_model_name)
-                == STEP_DISCIPLINE_ONE_TOOL_PER_STEP
-            )
             dynamic_prompt = render_fc_prompt(
                 instructions=effective_instructions,
                 special_instructions=special_instructions_final,
@@ -860,6 +863,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 few_shots_enabled=few_shots_enabled,
                 agents_enabled=agents_enabled,
                 agents_prompt_section=agents_prompt_section,
+                step_discipline=_one_per_step,
             )
             logger.info(
                 "Prepared CugaLite prompt: enable_find_tools={} few_shot_message_turns={} "
