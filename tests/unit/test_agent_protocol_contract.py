@@ -582,8 +582,8 @@ async def test_supervisor_runner_is_lazy_forwards_context_and_uses_configured_ca
     invoke_calls = []
 
     class FakeSupervisor:
-        async def invoke(self, message, thread_id=None):
-            invoke_calls.append((message, thread_id))
+        async def invoke(self, message, thread_id=None, checkpoint_thread_id=None):
+            invoke_calls.append((message, thread_id, checkpoint_thread_id))
             return SimpleNamespace(answer="answer", error=None)
 
     fake = FakeSupervisor()
@@ -605,7 +605,12 @@ async def test_supervisor_runner_is_lazy_forwards_context_and_uses_configured_ca
 
     assert from_yaml_calls == ["supervisor.yaml"]
     assert state.isolated_cache is fake
-    assert invoke_calls == [("one", "ctx-1"), ("two", "ctx-2")]
+    from cuga.backend.server.thread_scope import checkpoint_thread_id
+
+    assert invoke_calls == [
+        ("one", "ctx-1", checkpoint_thread_id("ctx-1", "agent_protocol_user", "cuga-default")),
+        ("two", "ctx-2", checkpoint_thread_id("ctx-2", "agent_protocol_user", "cuga-default")),
+    ]
     assert [first[-1].data, second[-1].data] == [{"text": "answer"}, {"text": "answer"}]
 
 
@@ -618,7 +623,7 @@ async def test_supervisor_runner_propagates_task_cancellation_without_error_even
     events = []
 
     class BlockingSupervisor:
-        async def invoke(self, message, thread_id=None):
+        async def invoke(self, message, thread_id=None, checkpoint_thread_id=None):
             entered.set()
             await asyncio.Future()
 
@@ -644,7 +649,7 @@ async def test_supervisor_runner_converts_normal_exception_to_sanitized_error() 
     from cuga.backend.server.agent_protocol.supervisor_runner import SupervisorAgentRunner
 
     class FailingSupervisor:
-        async def invoke(self, message, thread_id=None):
+        async def invoke(self, message, thread_id=None, checkpoint_thread_id=None):
             raise RuntimeError("secret detail")
 
     state = SimpleNamespace(supervisor=FailingSupervisor())
@@ -666,7 +671,7 @@ async def test_a2a_supervisor_wrapper_propagates_task_cancellation_without_error
     events = []
 
     class BlockingSupervisor:
-        async def invoke(self, message, thread_id=None):
+        async def invoke(self, message, thread_id=None, checkpoint_thread_id=None):
             entered.set()
             await asyncio.Future()
 

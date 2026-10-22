@@ -287,8 +287,9 @@ const fetchStreamingData = async (
   console.log("🚀 Starting new fetchStreamingData with query:", query.substring(0, 50));
 
   // Create abort controller for this stream
+  threadId = threadId || randomUUID();
   const abortController = new AbortController();
-  streamStateManager.setAbortController(abortController);
+  streamStateManager.setAbortController(abortController, threadId);
 
   let fullResponse = "";
   let workflowInitialized = false;

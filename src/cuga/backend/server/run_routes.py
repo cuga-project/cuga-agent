@@ -47,6 +47,14 @@ router = APIRouter()
 # readable at the top level instead of nested inside a 400-line factory.
 _EVENT_STREAM = None
 _DEFAULT_USER_ID = "default_user"
+_ASSERT_THREAD_ACCESS = None
+
+
+def _default_runtime_agent_id():
+    return "cuga-default"
+
+
+_RUNTIME_AGENT_ID = _default_runtime_agent_id
 
 
 def run_api_enabled() -> bool:
@@ -70,11 +78,15 @@ def run_api_enabled() -> bool:
     return bool(_run_token() or _supervisor_roster_path() or _run_dev_unauthenticated())
 
 
-def build_run_router(*, event_stream, default_user_id: str) -> APIRouter:
+def build_run_router(
+    *, event_stream, default_user_id: str, assert_thread_access=None, runtime_agent_id=None
+) -> APIRouter:
     """Wire the dependencies and hand back the router for ``app.include_router``."""
-    global _EVENT_STREAM, _DEFAULT_USER_ID
+    global _EVENT_STREAM, _DEFAULT_USER_ID, _ASSERT_THREAD_ACCESS, _RUNTIME_AGENT_ID
     _EVENT_STREAM = event_stream
     _DEFAULT_USER_ID = default_user_id
+    _ASSERT_THREAD_ACCESS = assert_thread_access
+    _RUNTIME_AGENT_ID = runtime_agent_id or _default_runtime_agent_id
     warn_if_run_is_unauthenticated()
     return router
 
@@ -601,7 +613,7 @@ async def run_sync(request: Request):
                 {"ok": False, "status": "error", "error": "action_response is malformed"}, 422
             )
 
-    thread_id = str(body.get("thread_id") or "") or str(uuid.uuid4())
+    thread_id = str(body.get("thread_id") or "").strip() or str(uuid.uuid4())
     # A SIGNED-IN CALLER IS WHO THE TOKEN SAYS. This read body["user_id"] unconditionally, so a
     # logged-in user could act as anyone by naming them — their runs, their history, their scope.
     # The token wins when there is one; the body still decides for the machine caller (the eventing
@@ -614,6 +626,22 @@ async def run_sync(request: Request):
             body.get("user_id"),
             _auth_uid,
         )
+    from cuga.backend.server.thread_scope import checkpoint_thread_id
+
+    runtime_agent_id = _RUNTIME_AGENT_ID()
+    if _ASSERT_THREAD_ACCESS is not None:
+        await _ASSERT_THREAD_ACCESS(thread_id, user_id, runtime_agent_id)
+    else:
+        # Standalone router users retain ownership enforcement without importing main.
+        from cuga.backend.server.conversation_history import get_conversation_db, ThreadOwnershipError
+
+        try:
+            await get_conversation_db().claim_thread(thread_id, user_id, runtime_agent_id)
+        except ThreadOwnershipError as exc:
+            raise HTTPException(403, "Access denied: thread belongs to another user or agent") from exc
+        except Exception as exc:
+            raise HTTPException(503, "Thread ownership unavailable") from exc
+    checkpoint_id = checkpoint_thread_id(thread_id, user_id, runtime_agent_id)
     disable_history = bool(body.get("disable_history", False))
     attachments = body.get("attachments") or None
 
@@ -687,7 +715,9 @@ async def run_sync(request: Request):
             )
         try:
             try:
-                res = await supervisor.invoke(query, thread_id=thread_id, user_id=user_id)
+                res = await supervisor.invoke(
+                    query, thread_id=thread_id, checkpoint_thread_id=checkpoint_id, user_id=user_id
+                )
                 answer = (getattr(res, "answer", None) or getattr(res, "result", None) or "") if res else ""
                 return {
                     "ok": bool(answer),

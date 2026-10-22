@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 
 from cuga.backend.knowledge.session_provider import SessionProvider
 from cuga.backend.server import main
+from cuga.backend.server.conversation_history import ConversationHistoryDB
 
 pytestmark = pytest.mark.unit
 
@@ -21,9 +22,11 @@ def runtime(monkeypatch):
         knowledge_provider=provider,
         knowledge_engine=SimpleNamespace(_config=SimpleNamespace(enabled=True)),
         current_llm=None,
+        agent_id="cuga-default",
+        output_format=None,
         agent=SimpleNamespace(graph=graph),
     )
-    database = SimpleNamespace(get_thread_history=AsyncMock(return_value=[]))
+    database = ConversationHistoryDB()
     monkeypatch.setattr(main, "app_state", state)
     monkeypatch.setattr(main, "get_conversation_db", lambda: database)
     return provider, database, graph
@@ -37,7 +40,7 @@ async def test_stream_authorizes_thread_before_dispatch(runtime, monkeypatch, ow
     if owner_source == "knowledge":
         provider.claim_session("victim-thread", "alice")
     else:
-        database.get_thread_history.return_value = [SimpleNamespace(user_id="alice")]
+        await database.save_conversation("cuga-default", "victim-thread", 1, "alice", [])
 
     async def empty_stream(*args, **kwargs):
         if False:
@@ -58,6 +61,14 @@ async def test_stream_authorizes_thread_before_dispatch(runtime, monkeypatch, ow
         dispatch.assert_not_called()
         if owner_source == "conversation":
             assert provider.get_session("victim-thread") is None
+        else:
+            assert await database.claim_thread("victim-thread", "alice", create=False) is None
+            app.dependency_overrides[main.require_chat_access] = lambda: SimpleNamespace(sub="alice")
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                owner_response = await client.post("/stream", headers={"X-Thread-ID": "victim-thread"})
+            assert owner_response.status_code == 200, owner_response.text
     else:
         assert response.status_code == 200, response.text
         assert dispatch.call_args.kwargs["thread_id"] == "victim-thread"
@@ -66,21 +77,23 @@ async def test_stream_authorizes_thread_before_dispatch(runtime, monkeypatch, ow
 
 @pytest.mark.asyncio
 async def test_event_stream_also_checks_owner_before_reading_checkpoint(runtime):
-    provider, _, graph = runtime
+    provider, database, graph = runtime
     provider.claim_session("victim-thread", "alice")
     stream = main.event_stream("list documents", thread_id="victim-thread", user_id="bob")
-    with pytest.raises(HTTPException) as exc:
-        await anext(stream)
-    assert exc.value.status_code == 403
+    frame = await anext(stream)
+    assert "event: Error" in frame
+    assert "Access denied" in frame
     graph.get_state.assert_not_called()
+    assert await database.claim_thread("victim-thread", "alice", create=False) is None
 
 
 @pytest.mark.asyncio
 async def test_run_authorization_stays_off_without_authenticated_user(runtime):
     provider, database, _ = runtime
     provider.claim_session("victim-thread", "alice")
+    database.claim_thread = AsyncMock()
     await main._assert_run_thread_access("victim-thread", main.DEFAULT_USER_ID)
-    database.get_thread_history.assert_not_awaited()
+    database.claim_thread.assert_not_awaited()
     assert provider.get_session("victim-thread").user_id == "alice"
 
 

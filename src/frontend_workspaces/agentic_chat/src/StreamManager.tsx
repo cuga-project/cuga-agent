@@ -5,6 +5,7 @@ type StreamStateListener = (isStreaming: boolean) => void;
 class StreamStateManager {
   private isStreaming = false;
   private listeners: Set<StreamStateListener> = new Set();
+  private currentThreadId: string | null = null;
   private currentAbortController: AbortController | null = null;
 
   setStreaming(streaming: boolean) {
@@ -24,21 +25,26 @@ class StreamStateManager {
     };
   }
 
-  setAbortController(controller: AbortController | null) {
+  setAbortController(controller: AbortController | null, threadId?: string) {
     this.currentAbortController = controller;
+    this.currentThreadId = controller ? threadId ?? null : null;
   }
 
   async stopStream() {
+    const threadId = this.currentThreadId;
     if (this.currentAbortController) {
       this.currentAbortController.abort();
     }
 
     try {
+      if (!threadId) return;
       const response = await apiFetch('/stop', {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Thread-ID": threadId,
         },
+        body: JSON.stringify({ thread_id: threadId }),
       });
 
       if (!response.ok) {
@@ -46,9 +52,9 @@ class StreamStateManager {
       }
     } catch (error) {
       console.error("Error stopping stream:", error);
+    } finally {
+      this.setStreaming(false);
     }
-
-    this.setStreaming(false);
   }
 }
 
