@@ -3139,7 +3139,7 @@ async def get_tools_config(current_user: Optional[UserInfo] = Depends(require_au
 @app.post("/api/config/tools")
 async def save_tools_config(
     request: Request,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
 ):
     """Save tools configuration."""
     config_path = os.path.join(
@@ -3174,7 +3174,7 @@ async def get_model_config(current_user: Optional[UserInfo] = Depends(require_au
 @app.post("/api/config/model")
 async def save_model_config(
     request: Request,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
 ):
     """Endpoint to save model configuration (note: this updates environment variables for current session only)."""
     try:
