@@ -402,7 +402,8 @@ async def load_policies_from_json(
     Args:
         file_path: Path to JSON file containing policies
         storage: PolicyStorage instance
-        clear_existing: If True, clear all existing policies before loading
+        clear_existing: If True, clear all existing policies before loading.
+            Extraction errors abort replacement without changing storage or files.
         filesystem_sync: Optional PolicyFilesystemSync; when given, each imported
             policy is also written to the .cuga folder
         prune_filesystem: With *clear_existing* and *filesystem_sync*, also delete
@@ -416,6 +417,11 @@ async def load_policies_from_json(
     """
     try:
         extracted = extract_policies_data_from_json(file_path)
+        # An invalid export is not an intentional empty (or partial) replacement.
+        # Reject it before the apply phase can clear storage or prune recovery files.
+        if clear_existing and extracted["errors"]:
+            logger.warning("Aborting policy replacement due to extraction errors")
+            return {"count": 0, "enabled": extracted["enabled"], "errors": extracted["errors"]}
         result = await apply_policies_data_to_storage(
             storage,
             extracted["policies"],
