@@ -184,12 +184,26 @@ async def _require_workspace_thread_access(
     current_user: Optional[UserInfo],
 ) -> Optional[str]:
     from cuga.backend.server.conversation_threads import request_scope
-    from cuga.backend.server.thread_guard import resolve_owned_thread
+    from cuga.backend.server.thread_guard import resolve_owned_thread, ThreadNotFound
 
     tid = _workspace_thread_id(request, thread_id)
     if tid:
         scope = request_scope(current_user, _runtime_agent_id(request) or "cuga-default")
-        await resolve_owned_thread(scope, tid)
+        try:
+            await resolve_owned_thread(scope, tid)
+        except ThreadNotFound:
+            # W13.2: legacy thread (history rows, no lifecycle record). Allow workspace
+            # reads only when the caller is the sole owner of the thread's history.
+            user_id = current_user.sub if current_user else DEFAULT_USER_ID
+            agent_id = _runtime_agent_id(request) or "cuga-default"
+            try:
+                owners = await get_conversation_db().get_thread_owners_for_agent(agent_id)
+                thread_users = {uid for t, uid in owners if t == tid}
+                sole_owner = thread_users == {user_id}
+            except Exception:
+                sole_owner = False
+            if not sole_owner:
+                raise
     return tid
 
 
@@ -1768,10 +1782,13 @@ async def event_stream(
     agent_id: Optional[str] = None,
     current_llm: Any = _RUNTIME_LLM_UNSET,
     issued_thread_id: Optional[str] = None,
+    prelude_result: Any = None,
 ):
     """Handles the main agent event stream. If agent is None, uses app_state.agent (published).
 
     ``issued_thread_id`` is set when /stream created the thread record itself (W09.6 consumes it).
+    ``prelude_result`` is a PreludeResult from run_turn_prelude; when set, the checkpoint was already
+    loaded (fail-closed) and the lease is held — this generator must release it in finally.
     """
     from cuga.backend.activity_tracker.tracker import ActivityTracker
     from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
@@ -1859,39 +1876,71 @@ async def event_stream(
     if not resume:
         # Check if we have existing state for this thread_id (for followup questions)
         if thread_id:
-            try:
-                snapshot = await run_agent.graph.aget_state(
-                    {"configurable": {"thread_id": checkpoint_thread_id}}
-                )
-                if await _stale_pending_checkpoint(snapshot):
-                    yield StreamEvent(name="Error", data=stale_approval_message).format(
-                        app_state.output_format, thread_id=thread_id
-                    )
-                    return
-                latest_state_values = snapshot.values
-                if latest_state_values:
-                    # Load existing state for followup questions
-                    local_state = AgentState(**latest_state_values)
-                    local_state.thread_id = thread_id
-                    local_state.input = query  # Update input for the new query
-                    local_tracker.intent = query
-                    # Apply sliding window to maintain message history limit
-                    local_state.apply_message_sliding_window()
-                    logger.info(f"Loaded existing state for thread_id: {thread_id} (followup question)")
+            if prelude_result is not None:
+                # Web thread — lease already acquired, checkpoint already loaded (fail-closed)
+                if prelude_result.snapshot is not None:
+                    snapshot = prelude_result.snapshot
+                    if await _stale_pending_checkpoint(snapshot):
+                        yield StreamEvent(name="Error", data=stale_approval_message).format(
+                            app_state.output_format, thread_id=thread_id
+                        )
+                        return
+                    latest_state_values = snapshot.values
+                    if latest_state_values:
+                        local_state = AgentState(**latest_state_values)
+                        local_state.thread_id = thread_id
+                        local_state.input = query
+                        local_tracker.intent = query
+                        local_state.apply_message_sliding_window()
+                        logger.info(f"Loaded existing state for thread_id: {thread_id} (followup question)")
+                    else:
+                        local_state = default_state(page=None, observation=None, goal="")
+                        local_state.input = query
+                        local_state.thread_id = thread_id
+                        local_tracker.intent = query
+                        logger.info(f"Created new state for thread_id: {thread_id}")
                 else:
-                    # No existing state, create new one
+                    # Fresh thread (status=new or memory-mode exception)
                     local_state = default_state(page=None, observation=None, goal="")
                     local_state.input = query
                     local_state.thread_id = thread_id
                     local_tracker.intent = query
                     logger.info(f"Created new state for thread_id: {thread_id}")
-            except Exception as e:
-                # If state retrieval fails, create new state
-                logger.warning(f"Failed to retrieve state for thread_id {thread_id}, creating new state: {e}")
-                local_state = default_state(page=None, observation=None, goal="")
-                local_state.input = query
-                local_state.thread_id = thread_id
-                local_tracker.intent = query
+            else:
+                # Non-web entry point (A2A, /run, etc.) — keep existing behavior
+                try:
+                    snapshot = await run_agent.graph.aget_state(
+                        {"configurable": {"thread_id": checkpoint_thread_id}}
+                    )
+                    if await _stale_pending_checkpoint(snapshot):
+                        yield StreamEvent(name="Error", data=stale_approval_message).format(
+                            app_state.output_format, thread_id=thread_id
+                        )
+                        return
+                    latest_state_values = snapshot.values
+                    if latest_state_values:
+                        # Load existing state for followup questions
+                        local_state = AgentState(**latest_state_values)
+                        local_state.thread_id = thread_id
+                        local_state.input = query  # Update input for the new query
+                        local_tracker.intent = query
+                        # Apply sliding window to maintain message history limit
+                        local_state.apply_message_sliding_window()
+                        logger.info(f"Loaded existing state for thread_id: {thread_id} (followup question)")
+                    else:
+                        # No existing state, create new one
+                        local_state = default_state(page=None, observation=None, goal="")
+                        local_state.input = query
+                        local_state.thread_id = thread_id
+                        local_tracker.intent = query
+                        logger.info(f"Created new state for thread_id: {thread_id}")
+                except Exception as e:
+                    # If state retrieval fails, create new state
+                    logger.warning(f"Failed to retrieve state for thread_id {thread_id}, creating new state: {e}")
+                    local_state = default_state(page=None, observation=None, goal="")
+                    local_state.input = query
+                    local_state.thread_id = thread_id
+                    local_tracker.intent = query
         else:
             # No thread_id, create new state
             local_state = default_state(page=None, observation=None, goal="")
@@ -2078,6 +2127,7 @@ async def event_stream(
 
     # W09.7/W09.8/W11.1: track turn outcome for lifecycle calls in finally
     _turn_outcome = "error"  # default; updated at each exit path
+    _history_save_failed = False  # W11.1: True when a save was attempted but raised
     try:
         while True:
             # Check cancellation event (non-blocking)
@@ -2230,14 +2280,18 @@ async def event_stream(
                             # and reload replay work, but we skip conversation_history so
                             # the sidebar is not polluted.
                             if not disable_history:
-                                await _save_conversation_and_events_async(
-                                    agent_id=runtime_agent_id,
-                                    thread_id=thread_id,
-                                    user_id=user_id,
-                                    state=local_state if local_state else AgentState(),
-                                    events=stream_events_buffer.copy(),
-                                    user_attachments=user_attachments,
-                                )
+                                try:
+                                    await _save_conversation_and_events_async(
+                                        agent_id=runtime_agent_id,
+                                        thread_id=thread_id,
+                                        user_id=user_id,
+                                        state=local_state if local_state else AgentState(),
+                                        events=stream_events_buffer.copy(),
+                                        user_attachments=user_attachments,
+                                    )
+                                except Exception:
+                                    logger.exception("history save failed for thread %s", thread_id)
+                                    _history_save_failed = True
                             else:
                                 try:
                                     await _save_conversation_and_events_async(
@@ -2261,6 +2315,7 @@ async def event_stream(
                                         f"Try-It-Out: ephemeral stream-events save failed (non-fatal) "
                                         f"for thread_id: {thread_id}"
                                     )
+                                    _history_save_failed = True
 
                         yield StreamEvent(
                             name="Answer",
@@ -2411,8 +2466,10 @@ async def event_stream(
                         runtime_ver="",
                         pending_interrupt=bool(getattr(_snap, "next", None)),
                     )
-                    # W11.1: mark projected
-                    await _threads_db.mark_projected(_scope, thread_id, _ckpt_id)
+                    # W11.1: mark projected only when history save was not attempted or succeeded.
+                    # If the save was attempted but failed, leave projected behind for W11.2 repair.
+                    if not _history_save_failed:
+                        await _threads_db.mark_projected(_scope, thread_id, _ckpt_id)
                 elif _turn_outcome in ("cancelled", "error"):
                     # W09.8: errored or cancelled — mark_projected only
                     # W09.8: errored turns write checkpoints for completed steps,
@@ -2420,6 +2477,13 @@ async def event_stream(
                     await _threads_db.mark_projected(_scope, thread_id, _ckpt_id)
             except Exception:
                 logger.exception("failed to record turn lifecycle for thread %s", thread_id)
+        # F2: release the lease acquired by run_turn_prelude
+        if prelude_result is not None and prelude_result.lease_token is not None:
+            from cuga.backend.server.thread_lease import get_thread_lease
+            try:
+                await get_thread_lease().release(prelude_result.lease_token)
+            except Exception:
+                logger.exception("failed to release lease for thread %s", thread_id)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -3121,12 +3185,13 @@ async def stream(
     # other entry points before reading checkpoints, previews or workspace data.
     from cuga.backend.server.thread_lease import ThreadBusy
 
+    record = None
     try:
         if use_draft and disable_history:
             # W06.2: draft preview uses client-generated ID with a draft: prefix
             graph_thread_id = f"draft:{scope.tenant_id}:{scope.instance_id}:{scope.agent_id}:{thread_id}"
         elif thread_id_provided:
-            await resolve_owned_thread(scope, thread_id)
+            record = await resolve_owned_thread(scope, thread_id)
             provider = getattr(app_state, "knowledge_provider", None)
             if user_id and user_id != DEFAULT_USER_ID:
                 if provider is not None and not provider.check_session_access(thread_id, user_id):
@@ -3184,6 +3249,30 @@ async def stream(
         run_agent = await _resolve_stream_agent(request, agent_id_header, use_draft)
         runtime_llm = None
 
+    # W09.1/W09.3/W09.4: run prelude — acquires lease, loads checkpoint fail-closed
+    # Only for web threads with a lifecycle record (not draft, not no-ID-yet)
+    prelude_result = None
+    if thread_id_provided and not (use_draft and disable_history) and record is not None:
+        from cuga.backend.server.turn_prelude import run_turn_prelude, ThreadUnavailable
+        from cuga.backend.server.thread_lease import get_thread_lease
+        _run_agent_for_prelude = run_agent if run_agent is not None else app_state.agent
+        import inspect
+        _prelude_graph = getattr(_run_agent_for_prelude, "graph", None)
+        if _prelude_graph is not None and inspect.iscoroutinefunction(getattr(_prelude_graph, "aget_state", None)):
+            _ckpt_thread_id = _checkpoint_thread_id(graph_thread_id, user_id, agent_id_header)
+            try:
+                prelude_result = await run_turn_prelude(
+                    record=record,
+                    thread_id=_ckpt_thread_id,
+                    graph=_prelude_graph,
+                    lease=get_thread_lease(),
+                    checkpointer_kind=getattr(getattr(app_state, "checkpointer", None), "kind", "memory"),
+                )
+            except ThreadBusy:
+                return _thread_conflict_response()
+            except ThreadUnavailable as exc:
+                return _thread_unavailable_response(exc.reason)
+
     return StreamingResponse(
         event_stream(
             query if isinstance(query, str) else None,
@@ -3197,6 +3286,7 @@ async def stream(
             agent_id=agent_id_header,
             current_llm=runtime_llm,
             issued_thread_id=issued_thread_id,
+            prelude_result=prelude_result,
         ),
         media_type="text/event-stream",
     )
@@ -3633,6 +3723,10 @@ async def delete_conversation(
                 )
         except Exception as e:
             logger.error(f"checkpoint deletion failed for {conversation_id}: {e}")
+            # W12.1: Checkpoint deletion failed. A retry outbox for the durable saver is
+            # deferred to PR3 (W17.4/outbox consumer). The record is already marked
+            # deleted so the thread is unreachable; the orphaned checkpoint state will
+            # be cleaned up by the W12.3 retention sweep in PR3.
 
         # W12.6: delete supervisor child threads, only when a graph can delegate.
         try:

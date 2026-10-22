@@ -65,10 +65,7 @@ function resetThreadId() {
   currentThreadId = null;
 }
 
-export function getOrCreateThreadId(): string {
-  if (!currentThreadId) {
-    currentThreadId = generateUUID();
-  }
+export function getOrCreateThreadId(): string | null {
   return currentThreadId;
 }
 
@@ -458,10 +455,11 @@ const CarbonChat = ({
 
   // Fetch debug data from /api/agent/state
   const fetchDebugData = useCallback(async () => {
+    const activeThreadId = currentThreadId;
+    if (!activeThreadId) return;
     setIsLoadingDebug(true);
     setDebugError(null);
     try {
-      const activeThreadId = currentThreadId || getOrCreateThreadId();
       const response = await api.getAgentState(activeThreadId);
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -788,6 +786,7 @@ const CarbonChat = ({
       type: BusEventType.STOP_STREAMING,
       handler: () => {
         const tid = getOrCreateThreadId();
+        if (!tid) return;
         console.log('[CarbonChat] STOP_STREAMING event received, calling /stop for thread:', tid);
         stopCugaAgent(tid);
       },

@@ -51,6 +51,7 @@ def legacy_app(threads_db, monkeypatch):
     history.get_conversation = AsyncMock(
         return_value=SimpleNamespace(messages=[SimpleNamespace(model_dump=lambda: {"role": "user", "content": "hi"})])
     )
+    history.get_thread_owners_for_agent = AsyncMock(return_value={(LEGACY, "user-a")})
     history.delete_thread = AsyncMock(return_value=True)
     monkeypatch.setattr(main, "get_conversation_db", lambda: history)
 
@@ -183,8 +184,38 @@ async def test_owner_deletes_legacy_thread(legacy_app):
 
 
 @pytest.mark.asyncio
+async def test_sole_owner_workspace_read_on_legacy_thread_is_allowed(legacy_app):
+    """W13.2: sole owner of a legacy thread passes the guard (missing file -> 404 from handler, not guard)."""
+    seen: list = []
+
+    async def fake_require(request, thread_id, current_user):
+        tid = await real_require(request, thread_id, current_user)
+        seen.append(tid)
+        return tid
+
+    real_require = legacy_app.main._require_workspace_thread_access
+    legacy_app.main._require_workspace_thread_access = fake_require
+    try:
+        async with _client(legacy_app.app) as client:
+            await client.get("/api/workspace/file", params={"path": "a.txt", "thread_id": LEGACY})
+    finally:
+        legacy_app.main._require_workspace_thread_access = real_require
+
+    assert seen == [LEGACY]
+
+
+@pytest.mark.asyncio
+async def test_workspace_read_on_legacy_thread_without_history_is_404(legacy_app):
+    _as(legacy_app, OTHER)
+    async with _client(legacy_app.app) as client:
+        response = await client.get("/api/workspace/file", params={"path": "a.txt", "thread_id": LEGACY})
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_workspace_read_on_shared_legacy_thread_is_404_for_both_users(legacy_app):
     """History from two users on one thread id: workspace reads 404 for both."""
+    legacy_app.history.get_thread_owners_for_agent.return_value = {(LEGACY, "user-a"), (LEGACY, "user-b")}
     for user in (OWNER, OTHER):
         _as(legacy_app, user)
         async with _client(legacy_app.app) as client:
