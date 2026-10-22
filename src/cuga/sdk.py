@@ -1245,6 +1245,8 @@ class PoliciesManager:
 
         Generation is scoped to policy IDs present in the JSON file. Existing policies
         already in storage are not generated unless their IDs are also present in the file.
+        Replacement imports with extraction errors are rejected before changing storage
+        or files and do not run generation. Intentional empty replacements are allowed.
 
         Args:
             file_path: Path to JSON file containing policies
@@ -1281,6 +1283,18 @@ class PoliciesManager:
                 "generated": {},
                 "skipped": [],
                 "errors": [error_msg],
+            }
+
+        # Fail closed before replacement clears storage or prunes recovery files.
+        if clear_existing and extracted["errors"]:
+            logger.warning("Aborting policy replacement due to extraction errors")
+            return {
+                "status": "error",
+                "import": {"count": 0, "enabled": extracted["enabled"], "errors": extracted["errors"]},
+                "source_policy_ids": extracted["policy_ids"],
+                "generated": {},
+                "skipped": [],
+                "errors": extracted["errors"],
             }
 
         from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
