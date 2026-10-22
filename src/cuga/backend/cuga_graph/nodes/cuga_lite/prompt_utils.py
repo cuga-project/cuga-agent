@@ -816,6 +816,7 @@ def create_mcp_prompt(
     few_shots_enabled: Optional[bool] = None,
     agents_enabled: bool = False,
     agents_prompt_section: str = "",
+    step_discipline: bool = False,
 ):
     """Create a prompt for CodeAct agent that works with MCP tools.
 
@@ -840,6 +841,7 @@ def create_mcp_prompt(
         has_knowledge: If True, include knowledge-base search guidance in the prompt
         few_shot_examples: Unused (few-shots are chat-prefix only in ``cuga_lite_graph``).
         few_shots_enabled: Unused (reserved for API compatibility).
+        step_discipline: If True, require a short plan and one tool call per code block.
     """
     processed_tools = []
     # Graph passes "" when no DB instructions; still allow CLI/demo env (e.g. cuga start demo_crm).
@@ -895,6 +897,7 @@ def create_mcp_prompt(
             "has_knowledge": has_knowledge,
             "agents_enabled": agents_enabled,
             "agents_prompt_section": agents_prompt_section,
+            "step_discipline": step_discipline,
         }
     ).to_string()
     return prompt
