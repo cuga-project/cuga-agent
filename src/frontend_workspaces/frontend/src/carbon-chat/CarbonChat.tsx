@@ -273,6 +273,10 @@ const CarbonChat = ({
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [chatElement, setChatElement] = useState<HTMLElement | null>(null);
   const historyGuardRef = useRef(new HistoryLoadGuard());
+  // clearConversation() reopens Carbon's home screen, and insertHistory() does
+  // not close it, so loaded history would sit hidden behind the home screen
+  // until the next send. The home screen is only for an empty chat.
+  const [historyShown, setHistoryShown] = useState(false);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
   const [isLoadingDebug, setIsLoadingDebug] = useState(false);
@@ -743,6 +747,8 @@ const CarbonChat = ({
 
       // Load the history
       const history = await customLoadHistory(chatInstanceRef.current, historyThreadId);
+      // The user may have opened another conversation while this loaded.
+      if (currentThreadId !== historyThreadId) return;
 
       if (history.length > 0 && chatInstanceRef.current) {
         console.log(`Loaded ${history.length} history items for thread ${historyThreadId}`);
@@ -751,6 +757,7 @@ const CarbonChat = ({
       } else {
         console.log(`No history found for thread ${historyThreadId}`);
       }
+      setHistoryShown(history.length > 0);
     } catch (error) {
       console.error('Error loading history:', error);
     }
@@ -891,10 +898,22 @@ const CarbonChat = ({
     }
     // If threadId is null, start a fresh conversation
     console.log('Starting new conversation');
+    setHistoryShown(false);
     sourcesByMessageKey.current.clear();
     setSourcesPanel(null);
     chatInstanceRef.current.messaging.clearConversation();
   }, [threadId, reloadHistory]);
+
+  // The effect above cannot load before the chat instance exists. A conversation
+  // that is already selected when the chat boots (restored after a page reload)
+  // would otherwise stay blank until the first send makes Carbon hydrate it.
+  useEffect(() => {
+    if (chatRenderTick === 0 || !threadId) return;
+    currentThreadId = threadId;
+    void reloadHistory(threadId);
+    // Only on instance readiness; later threadId changes go through the effect above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatRenderTick]);
 
   // Armed-flow fires land in the transcript. The whole mechanism — mailbox, cursor, polling —
   // lives in the events UI; this is the single line that connects it to the chat.
@@ -1027,7 +1046,7 @@ const CarbonChat = ({
 
         } as any}
         homescreen={{
-          isOn: !isReadonly && (hs.isOn ?? true),
+          isOn: !isReadonly && !historyShown && (hs.isOn ?? true),
           greeting: hs.greeting ?? DEFAULT_HOMESCREEN.greeting,
           starters: !isReadonly && starterLabels.length > 0
             ? { isOn: true, buttons: starterLabels.map((label) => ({ label })) }
