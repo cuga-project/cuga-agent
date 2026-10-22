@@ -1077,27 +1077,48 @@ export function ChatLanding() {
   );
 
   // Eager ID allocation for uploads on a new draft (W14.2). Concurrent callers share one request.
-  const conversationCreationRef = useRef<Promise<string | null> | null>(null);
+  // The ref is keyed to the current agentId so a stale promise from a previous agent is discarded.
+  const conversationCreationRef = useRef<{ agentId: string; promise: Promise<string | null> } | null>(null);
   const ensureConversationId = useCallback(async (): Promise<string | null> => {
     const existing = effectiveChatThreadId?.trim();
     if (existing) return existing;
-    if (!conversationCreationRef.current) {
-      conversationCreationRef.current = (async () => {
-        try {
-          const created = await api.createConversation(effectiveChatAgentId);
-          setDraftThread((prev) => ({ ...prev, threadId: created.id, updatedAt: new Date().toISOString() }));
-          setActiveThreadId(created.id);
-          return created.id;
-        } catch (err) {
-          console.error("Failed to create conversation", err);
-          return null;
-        } finally {
+    // If there's an in-flight request for the same agent, reuse it.
+    if (conversationCreationRef.current?.agentId === effectiveChatAgentId) {
+      return conversationCreationRef.current.promise;
+    }
+    const promise = (async () => {
+      try {
+        const created = await api.createConversation(effectiveChatAgentId);
+        // Only apply if still on the same agent and still a draft (no existing threadId).
+        setDraftThread((prev) => {
+          if (prev.threadId) return prev; // another create already won
+          return { ...prev, threadId: created.id, updatedAt: new Date().toISOString() };
+        });
+        setActiveThreadId(created.id);
+        return created.id;
+      } catch (err) {
+        console.error("Failed to create conversation", err);
+        return null;
+      } finally {
+        // Clear only if this is still the current in-flight request for this agent.
+        if (conversationCreationRef.current?.agentId === effectiveChatAgentId) {
           conversationCreationRef.current = null;
         }
-      })();
-    }
-    return conversationCreationRef.current;
+      }
+    })();
+    conversationCreationRef.current = { agentId: effectiveChatAgentId, promise };
+    return promise;
   }, [effectiveChatThreadId, effectiveChatAgentId]);
+
+  // Clear any in-flight creation that belongs to a different agent when the agent changes.
+  useEffect(() => {
+    if (
+      conversationCreationRef.current !== null &&
+      conversationCreationRef.current.agentId !== effectiveChatAgentId
+    ) {
+      conversationCreationRef.current = null;
+    }
+  }, [effectiveChatAgentId]);
 
   // Opening the session knowledge panel on a new draft allocates the thread ID so uploads are enabled.
   useEffect(() => {

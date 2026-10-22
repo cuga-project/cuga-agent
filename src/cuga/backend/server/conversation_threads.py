@@ -9,6 +9,7 @@ local SQLite or prod Postgres — same store as conversation_history.py.
 """
 
 import sqlite3
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -124,6 +125,13 @@ class ConversationThreadsDB:
             "CREATE INDEX IF NOT EXISTS idx_ct_scope ON conversation_threads"
             "(tenant_id, instance_id, agent_id, user_id, updated_at)"
         )
+        await store.execute("""
+            CREATE TABLE IF NOT EXISTS checkpoint_delete_outbox (
+                event_id             TEXT PRIMARY KEY,
+                scoped_checkpoint_id TEXT NOT NULL,
+                deleted_at           TEXT NOT NULL
+            )
+        """)
         await store.commit()
         self._schema_ensured = True
         self._schema_store = store
@@ -298,6 +306,44 @@ class ConversationThreadsDB:
                 scope.user_id,
                 thread_id,
             ),
+        )
+        await store.commit()
+
+    async def enqueue_checkpoint_delete(self, scoped_checkpoint_id: str) -> None:
+        """Record a checkpoint ID for retry deletion after adelete_thread failed."""
+        await self._ensure_schema()
+        store = self._get_store()
+        event_id = str(uuid.uuid4())
+        now = _now()
+        await store.execute(
+            """
+            INSERT INTO checkpoint_delete_outbox (event_id, scoped_checkpoint_id, deleted_at)
+            VALUES (?, ?, ?)
+            """,
+            (event_id, scoped_checkpoint_id, now),
+        )
+        await store.commit()
+
+    async def pending_checkpoint_deletes(self, limit: int = 100) -> list[dict]:
+        """Return up to ``limit`` pending checkpoint delete events."""
+        await self._ensure_schema()
+        store = self._get_store()
+        rows = await store.fetchall(
+            "SELECT event_id, scoped_checkpoint_id, deleted_at"
+            " FROM checkpoint_delete_outbox"
+            " ORDER BY deleted_at"
+            " LIMIT ?",
+            (limit,),
+        )
+        return [dict(r) for r in rows]
+
+    async def acknowledge_checkpoint_delete(self, event_id: str) -> None:
+        """Remove the event after the checkpoint was successfully deleted."""
+        await self._ensure_schema()
+        store = self._get_store()
+        await store.execute(
+            "DELETE FROM checkpoint_delete_outbox WHERE event_id = ?",
+            (event_id,),
         )
         await store.commit()
 

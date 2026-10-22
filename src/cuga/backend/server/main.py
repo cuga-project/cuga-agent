@@ -2584,9 +2584,9 @@ async def event_stream(*args, prelude_result: Any = None, **kwargs):
             await renewal_task
         except asyncio.CancelledError:
             pass
-        # Shield the release: even if this generator is cancelled during cleanup, the release
-        # still runs. If the stream was never consumed, Python's GC calls aclose() on the
-        # generator, which triggers this finally (fallback for pre-iteration cancellation).
+        # Normal exit path: shield the release in case this generator is cancelled during cleanup.
+        # Pre-iteration safety: the BackgroundTask on StreamingResponse releases the lease if
+        # this generator never starts (ASGI cancellation before first body iteration).
         try:
             await asyncio.shield(get_thread_lease().release(lease_token))
         except Exception:
@@ -3388,6 +3388,20 @@ async def stream(
             except ThreadUnavailable as exc:
                 return _thread_unavailable_response(exc.reason)
 
+    _background = None
+    if prelude_result is not None and getattr(prelude_result, "lease_token", None) is not None:
+        from starlette.background import BackgroundTask
+
+        _lease_token = prelude_result.lease_token
+
+        async def _release_lease_bg() -> None:
+            try:
+                await get_thread_lease().release(_lease_token)
+            except Exception:
+                logger.exception("background lease release failed for thread %s", _lease_token.thread_id)
+
+        _background = BackgroundTask(_release_lease_bg)
+
     return StreamingResponse(
         event_stream(
             query if isinstance(query, str) else None,
@@ -3404,6 +3418,7 @@ async def stream(
             prelude_result=prelude_result,
         ),
         media_type="text/event-stream",
+        background=_background,
     )
 
 
@@ -3779,6 +3794,32 @@ async def create_conversation(
         raise HTTPException(status_code=500, detail="Failed to create conversation")
 
 
+async def _retry_checkpoint_deletes(app_state) -> None:
+    """Drain the checkpoint_delete_outbox: retry failed adelete_thread calls.
+
+    Called as a fire-and-forget asyncio task from delete_conversation when a row
+    has been enqueued. Each pending row is retried once; on success it is
+    acknowledged (removed). On failure the row is left for the next retry cycle.
+    """
+    from cuga.backend.server.conversation_threads import get_conversation_threads_db
+
+    _saver = getattr(app_state, "checkpointer", None) if app_state else None
+    if _saver is None or not hasattr(_saver, "adelete_thread"):
+        return
+    db = get_conversation_threads_db()
+    try:
+        pending = await db.pending_checkpoint_deletes()
+    except Exception:
+        logger.exception("failed to fetch pending checkpoint deletes")
+        return
+    for row in pending:
+        try:
+            await _saver.adelete_thread(row["scoped_checkpoint_id"])
+            await db.acknowledge_checkpoint_delete(row["event_id"])
+        except Exception:
+            logger.exception("retry checkpoint delete failed for %s", row["scoped_checkpoint_id"])
+
+
 @app.delete("/api/conversations/{conversation_id}")
 async def delete_conversation(
     request: Request,
@@ -3832,18 +3873,19 @@ async def delete_conversation(
         # Step 3: delete checkpoints (non-fatal). ``AppState.checkpointer`` is the saver.
         _app_state = getattr(request.app.state, "app_state", None)
         _saver = getattr(_app_state, "checkpointer", None) if _app_state else None
+        _ckpt_key = _checkpoint_thread_id(conversation_id, user_id, record.agent_id or agent_id)
         try:
             if _saver is not None and hasattr(_saver, "adelete_thread"):
-                await _saver.adelete_thread(
-                    _checkpoint_thread_id(conversation_id, user_id, record.agent_id or agent_id)
-                )
+                await _saver.adelete_thread(_ckpt_key)
         except Exception as e:
             logger.error(f"checkpoint deletion failed for {conversation_id}: {e}")
-            # W12.1 DEFERRED: adelete_thread failed. A retry outbox consumer is required
-            # (W12.1 assigns this to PR 2 but it needs new infra). The W12.3 retention sweep
-            # in PR3 selects only 'active' and 'new' records, so it will NOT reach this
-            # 'deleted' row. The orphaned checkpoint state persists until the outbox
-            # consumer is built in PR3.
+            # W12.1: enqueue for retry — the BackgroundTask consumer will drain the outbox.
+            try:
+                from cuga.backend.server.conversation_threads import get_conversation_threads_db
+
+                await get_conversation_threads_db().enqueue_checkpoint_delete(_ckpt_key)
+            except Exception:
+                logger.exception("failed to enqueue checkpoint delete for {}", conversation_id)
 
         # W12.6: delete supervisor child threads, only when a graph can delegate.
         try:
@@ -3871,6 +3913,9 @@ async def delete_conversation(
             logger.error(f"history/knowledge/uploads deletion failed for {conversation_id}: {e}")
 
         logger.info(f"Deleted conversation: {conversation_id}")
+        # W12.1: fire-and-forget retry consumer — drains the outbox in the background.
+        _retry_app_state = getattr(request.app.state, "app_state", None)
+        asyncio.create_task(_retry_checkpoint_deletes(_retry_app_state))
         return JSONResponse({"status": "success", "message": "Conversation deleted"})
     except Exception as e:
         logger.error(f"Failed to delete conversation: {e}")

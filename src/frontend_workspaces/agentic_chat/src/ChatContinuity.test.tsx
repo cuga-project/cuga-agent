@@ -200,3 +200,98 @@ describe("isReadonly logic", () => {
     expect(computeIsReadonly("new", false)).toBe(false);
   });
 });
+
+// ── 6. ensureConversationId — in-flight dedup and agent-switch discard ────────
+describe("ensureConversationId creation ref scoping", () => {
+  // Mirror the logic from ChatLanding.tsx without importing the component.
+  // This validates the ref-keying invariants in isolation.
+
+  function makeEnsureConversationId(
+    createConversation: (agentId: string) => Promise<{ id: string }>,
+    setDraftThread: (fn: (prev: { threadId: string | null }) => { threadId: string | null }) => void,
+    setActiveThreadId: (id: string) => void,
+  ) {
+    // Mirrors the exact shape used in ChatLanding.tsx
+    let conversationCreationRef: { agentId: string; promise: Promise<string | null> } | null = null;
+
+    return async function ensureConversationId(
+      effectiveChatThreadId: string | null,
+      effectiveChatAgentId: string,
+    ): Promise<string | null> {
+      const existing = effectiveChatThreadId?.trim();
+      if (existing) return existing;
+
+      if (conversationCreationRef?.agentId === effectiveChatAgentId) {
+        return conversationCreationRef.promise;
+      }
+
+      const promise = (async () => {
+        try {
+          const created = await createConversation(effectiveChatAgentId);
+          setDraftThread((prev) => {
+            if (prev.threadId) return prev;
+            return { ...prev, threadId: created.id };
+          });
+          setActiveThreadId(created.id);
+          return created.id;
+        } catch {
+          return null;
+        } finally {
+          if (conversationCreationRef?.agentId === effectiveChatAgentId) {
+            conversationCreationRef = null;
+          }
+        }
+      })();
+
+      conversationCreationRef = { agentId: effectiveChatAgentId, promise };
+      return promise;
+    };
+  }
+
+  it("concurrent calls for the same agent share one createConversation call", async () => {
+    let callCount = 0;
+    const createConversation = vi.fn(async (_agentId: string) => {
+      callCount++;
+      return { id: `thread-${callCount}` };
+    });
+    const setDraft = vi.fn();
+    const setActive = vi.fn();
+
+    const ensure = makeEnsureConversationId(createConversation, setDraft, setActive);
+
+    // Fire two concurrent calls for the same agent
+    const [id1, id2] = await Promise.all([
+      ensure(null, "agent-a"),
+      ensure(null, "agent-a"),
+    ]);
+
+    expect(createConversation).toHaveBeenCalledTimes(1);
+    expect(id1).toBe("thread-1");
+    expect(id2).toBe("thread-1");
+  });
+
+  it("switching agent discards the in-flight ref so a new create fires", async () => {
+    let callCount = 0;
+    const createConversation = vi.fn(async (agentId: string) => {
+      callCount++;
+      return { id: `${agentId}-thread-${callCount}` };
+    });
+    const setDraft = vi.fn();
+    const setActive = vi.fn();
+
+    const ensure = makeEnsureConversationId(createConversation, setDraft, setActive);
+
+    // First call for agent-a (don't await yet — simulates in-flight)
+    const p1 = ensure(null, "agent-a");
+
+    // Simulate agent switch: second call is for agent-b
+    const p2 = ensure(null, "agent-b");
+
+    const [id1, id2] = await Promise.all([p1, p2]);
+
+    // Both resolved but each got a separate create call
+    expect(createConversation).toHaveBeenCalledTimes(2);
+    expect(id1).toContain("agent-a");
+    expect(id2).toContain("agent-b");
+  });
+});
