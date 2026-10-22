@@ -12,6 +12,8 @@ import pytest
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import resolve_child_checkpoint_id
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import SupervisorGraphAdapter
 from cuga.backend.server import run_routes
+from cuga.backend.server.thread_scope import checkpoint_thread_id
+from fastapi import HTTPException
 from cuga.sdk import CugaAgent, CugaSupervisor
 from cuga.supervisor_utils.supervisor_config import load_supervisor_config
 
@@ -36,7 +38,7 @@ def _child_id(state, adapter):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("authenticated", [False, True])
 async def test_run_keeps_users_isolated_on_the_same_parent_thread(monkeypatch, authenticated):
-    """The roster path must pass its resolved caller through to child checkpoint derivation."""
+    """The roster propagates the owner and rejects another user on the same thread."""
     states = []
     supervisor = _capturing_supervisor(states)
     adapter = SupervisorGraphAdapter(agents={}, supervisor_id=supervisor._name)
@@ -60,16 +62,20 @@ async def test_run_keeps_users_isolated_on_the_same_parent_thread(monkeypatch, a
                 }
             )
         )
+        if user_id == "bob":
+            with pytest.raises(HTTPException) as exc:
+                await run_routes.run_sync(request)
+            assert exc.value.status_code == 403
+            continue
         result = await run_routes.run_sync(request)
         assert result["ok"] is True
         assert result["thread_id"] == "shared-thread"
 
-    assert [state.user_id for state in states] == ["alice", "bob", "alice"]
+    assert [state.user_id for state in states] == ["alice", "alice"]
     child_ids = [_child_id(state, adapter) for state in states]
-    assert child_ids[0] != child_ids[1]
-    assert child_ids[0] == child_ids[2]
-    assert get_supervisor.await_args_list == [call(retain=True)] * 3
-    assert release.await_args_list == [call(supervisor)] * 3
+    assert child_ids[0] == child_ids[1]
+    assert get_supervisor.await_args_list == [call(retain=True)] * 2
+    assert release.await_args_list == [call(supervisor)] * 2
 
 
 @pytest.mark.asyncio
@@ -93,7 +99,12 @@ async def test_run_releases_supervisor_after_failed_or_cancelled_invoke(monkeypa
         result = await run_routes.run_sync(request)
         assert result.status_code == 500
 
-    supervisor.invoke.assert_awaited_once_with("hello", thread_id="shared-thread", user_id="alice")
+    supervisor.invoke.assert_awaited_once_with(
+        "hello",
+        thread_id="shared-thread",
+        user_id="alice",
+        checkpoint_thread_id=checkpoint_thread_id("shared-thread", "alice", run_routes._RUNTIME_AGENT_ID()),
+    )
     release.assert_awaited_once_with(supervisor)
 
 
