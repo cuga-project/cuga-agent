@@ -119,19 +119,27 @@ class SimpleAgentRunner:
         Yields:
             AgentStreamEvent instances representing the agent's response.
         """
-        thread_id = (context_id or "").strip() or uuid.uuid4().hex
+        raw_context_id = (context_id or "").strip() or uuid.uuid4().hex
+        thread_id = raw_context_id  # kept for conversation_history claim (external id)
         resume: Optional[ActionResponse] = None
 
         try:
             from cuga.backend.server.conversation_history import get_conversation_db
 
+            agent_id = getattr(self._app_state, "agent_id", "cuga-default")
             await get_conversation_db().claim_thread(
-                thread_id, self._caller_user_id, getattr(self._app_state, "agent_id", "cuga-default")
+                thread_id, self._caller_user_id, agent_id
             )
+            # W07.3: isolate A2A checkpoint namespace from web threads
+            from cuga.backend.server.conversation_threads import request_scope as _request_scope  # noqa: PLC0415
+            from cuga.backend.server.thread_scope_key import scoped_checkpoint_key as _scoped_checkpoint_key  # noqa: PLC0415
+
+            _a2a_scope = _request_scope(None, agent_id)
+            checkpoint_key = _scoped_checkpoint_key("a2a", _a2a_scope, raw_context_id)
             # If the thread is already parked on a HITL interrupt, this inbound
             # message is the approval response — resume the graph rather than
             # starting a fresh query (the auto_approve=False round-trip).
-            parked = await self._pending_action(thread_id)
+            parked = await self._pending_action(checkpoint_key)
             if parked is not None:
                 decision = self._decide(parked, message, approval)
                 logger.info(
@@ -150,7 +158,7 @@ class SimpleAgentRunner:
                 stream = self._event_stream(
                     query=message if resume is None else None,
                     api_mode=True,  # Skip browser environment for API callers
-                    thread_id=thread_id,
+                    thread_id=checkpoint_key,
                     agent=None,  # Use default (published) agent
                     disable_history=False,  # Keep conversation history
                     user_id=self._caller_user_id,
@@ -184,7 +192,7 @@ class SimpleAgentRunner:
 
                 # Stream ended without a terminal answer. The graph may be
                 # paused on a human-in-the-loop interrupt awaiting approval.
-                pending = await self._pending_action(thread_id)
+                pending = await self._pending_action(checkpoint_key)
                 if not pending:
                     break
 
@@ -197,7 +205,7 @@ class SimpleAgentRunner:
 
             # Exhausted the resume budget (or the stream ended cleanly with no
             # answer and no pending interrupt) without a terminal answer.
-            logger.warning(f"Event stream completed without a final answer (thread_id={thread_id})")
+            logger.warning(f"Event stream completed without a final answer (thread_id={raw_context_id})")
             yield AgentStreamEvent("final_answer", {"text": "Agent completed processing"}, final=True)
 
         except Exception as exc:
@@ -282,27 +290,21 @@ class SimpleAgentRunner:
                 return value
         return json.dumps(mapping, ensure_ascii=False)
 
-    async def _pending_action(self, thread_id: str) -> Optional[dict]:
+    async def _pending_action(self, checkpoint_key: str) -> Optional[dict]:
         """Return the pending ``hitl_action`` dict if the graph is paused, else None.
 
-        Reads the published agent's graph state for ``thread_id``. The graph is
-        only treated as paused when it has a ``next`` node *and* a non-empty
-        ``hitl_action`` in state (set by the producing node, cleared after
-        WaitForResponse resumes).
+        Reads the published agent's graph state for ``checkpoint_key``, which
+        must already be the fully-scoped checkpoint identifier (e.g. produced by
+        ``scoped_checkpoint_key``). No further scoping is applied here.
         """
         agent = getattr(self._app_state, "agent", None)
         graph = getattr(agent, "graph", None)
         if graph is None:
             return None
         try:
-            from cuga.backend.server.thread_scope import checkpoint_thread_id
-
-            scoped_id = checkpoint_thread_id(
-                thread_id, self._caller_user_id, getattr(self._app_state, "agent_id", "cuga-default")
-            )
-            snapshot = await graph.aget_state({"configurable": {"thread_id": scoped_id}})
+            snapshot = await graph.aget_state({"configurable": {"thread_id": checkpoint_key}})
         except Exception:
-            logger.debug(f"Could not read graph state for thread {thread_id}", exc_info=True)
+            logger.debug(f"Could not read graph state for thread {checkpoint_key}", exc_info=True)
             return None
 
         if not getattr(snapshot, "next", None):

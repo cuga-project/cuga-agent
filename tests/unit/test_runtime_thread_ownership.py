@@ -16,8 +16,25 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from tests.fixtures.async_only_saver import AsyncOnlySaver
+from cuga.backend.server.conversation_threads import (
+    Scope,
+    ThreadRecord,
+    ThreadStatus,
+    get_conversation_threads_db,
+    request_scope,
+)
 
 pytestmark = pytest.mark.unit
+
+
+async def _seed_thread(
+    thread_id: str = "owned",
+    user_id: str = "user-a",
+    agent_id: str = "cuga-default",
+    status: str = ThreadStatus.ACTIVE,
+) -> ThreadRecord:
+    scope = request_scope(SimpleNamespace(sub=user_id), agent_id)
+    return await get_conversation_threads_db().create(scope, thread_id, status=status)
 
 RESUME = {
     "action_id": "approve",
@@ -150,14 +167,14 @@ async def runtime(monkeypatch, request):
     ],
 )
 async def test_authenticated_foreign_runtime_access_is_denied(runtime, path, method, body):
-    await runtime.db.claim_thread("owned", "user-a", "cuga-default")
+    await _seed_thread("owned", "user-a", "cuga-default")
     event = asyncio.Event()
     if path == "/reset":
         event.set()
     runtime.main.app_state.stop_events["owned"] = event
     before = event.is_set()
     response = await runtime.client.request(method, path, headers=runtime.headers("user-b"), json=body)
-    assert response.status_code == 403, response.text
+    assert response.status_code == 404, response.text
     assert "USER_A_PRIVATE" not in response.text
     assert event.is_set() == before
     assert not runtime.seen
@@ -166,6 +183,7 @@ async def test_authenticated_foreign_runtime_access_is_denied(runtime, path, met
 
 
 async def test_owner_followup_state_and_controls_use_bound_agent(runtime):
+    await _seed_thread("owned", "user-a", "sales")
     for query in ["USER_A_PRIVATE", "followup"]:
         response = await runtime.client.post(
             "/stream",
@@ -174,33 +192,36 @@ async def test_owner_followup_state_and_controls_use_bound_agent(runtime):
         )
         assert response.status_code == 200, response.text
         assert "Error" not in response.text
-    state = await runtime.client.get("/api/agent/state", headers=runtime.headers())
+    state = await runtime.client.get("/api/agent/state", headers=runtime.headers(agent="sales"))
     assert state.status_code == 200, state.text
     assert state.json()["state"]["input"] == "followup"
     assert state.json()["state"]["url"] == "2"
     assert [item[0] for item in runtime.seen] == ["user-a", "user-a"]
     assert all(item[2]["agent_id"] == "sales" for item in runtime.seen)
-    assert (await runtime.client.post("/stop", headers=runtime.headers())).status_code == 200
+    assert (await runtime.client.post("/stop", headers=runtime.headers(agent="sales"))).status_code == 200
     assert runtime.main.app_state.stop_events["owned"].is_set()
-    assert (await runtime.client.post("/reset", headers=runtime.headers())).status_code == 200
+    assert (await runtime.client.post("/reset", headers=runtime.headers(agent="sales"))).status_code == 200
     assert not runtime.main.app_state.stop_events["owned"].is_set()
     runtime.clear.assert_called_with("owned")
     runtime.drop.assert_called_once_with("owned")
     # History-disabled runs still have durable ownership.
     assert await runtime.db.get_thread_history("owned") == []
-    other = await runtime.client.post("/stream", headers=runtime.headers("user-b"), json={"query": "attack"})
-    assert other.status_code == 403
+    other = await runtime.client.post(
+        "/stream", headers=runtime.headers("user-b", agent="sales"), json={"query": "attack"}
+    )
+    assert other.status_code == 404
     wrong_agent = await runtime.client.post(
         "/stream", headers=runtime.headers(agent="other"), json={"query": "attack"}
     )
-    assert wrong_agent.status_code == 403
+    assert wrong_agent.status_code == 404
 
 
 async def test_owner_can_resume_scoped_checkpoint(runtime):
+    await _seed_thread("owned", "user-a", "cuga-default")
     response = await runtime.client.post("/stream", headers=runtime.headers(), json={"query": "pause"})
     assert response.status_code == 200, response.text
     denied = await runtime.client.post("/stream", headers=runtime.headers("user-b"), json=RESUME)
-    assert denied.status_code == 403
+    assert denied.status_code == 404
     resumed = await runtime.client.post("/stream", headers=runtime.headers(), json=RESUME)
     assert resumed.status_code == 200, resumed.text
     assert runtime.seen and runtime.seen[-1][0:2] == ("user-a", "pause")
@@ -211,6 +232,7 @@ async def test_owner_can_resume_scoped_checkpoint(runtime):
 @pytest.mark.parametrize("runtime", [AsyncOnlySaver], indirect=True)
 async def test_stream_and_state_endpoint_use_async_state_api(runtime):
     """event_stream's state loads and /api/agent/state work on a saver that rejects sync calls."""
+    await _seed_thread("owned", "user-a", "cuga-default")
     for query in ["first", "followup"]:
         response = await runtime.client.post("/stream", headers=runtime.headers(), json={"query": query})
         assert response.status_code == 200, response.text
@@ -224,6 +246,7 @@ async def test_stream_and_state_endpoint_use_async_state_api(runtime):
 
     # Seed a turn first: AgentLoop needs a prior message to report an interrupt cleanly.
     paused = runtime.headers(thread="paused")
+    await _seed_thread("paused", "user-a", "cuga-default")
     for query in ["first", "pause"]:
         response = await runtime.client.post("/stream", headers=paused, json={"query": query})
         assert response.status_code == 200, response.text
@@ -254,11 +277,11 @@ async def test_unscoped_controls_do_not_mutate_any_thread(runtime, path):
     "path,method", [("/stop", "POST"), ("/reset", "POST"), ("/api/agent/state?thread_id=owned", "GET")]
 )
 async def test_query_or_body_thread_does_not_bypass_ownership(runtime, path, method):
-    await runtime.db.claim_thread("owned", "user-a", "cuga-default")
+    await _seed_thread("owned", "user-a", "cuga-default")
     response = await runtime.client.request(
         method, path, headers=runtime.headers("user-b", thread=None), json={"thread_id": "owned"}
     )
-    assert response.status_code == 403
+    assert response.status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -266,9 +289,11 @@ async def test_query_or_body_thread_does_not_bypass_ownership(runtime, path, met
 )
 @pytest.mark.parametrize("storage_error", [RuntimeError, PermissionError])
 async def test_storage_failure_fails_closed(runtime, monkeypatch, path, method, storage_error):
-    monkeypatch.setattr(runtime.db, "claim_thread", AsyncMock(side_effect=storage_error("database down")))
+    monkeypatch.setattr(
+        get_conversation_threads_db(), "get_in_scope", AsyncMock(side_effect=storage_error("database down"))
+    )
     response = await runtime.client.request(method, path, headers=runtime.headers(), json={"query": "hello"})
-    assert response.status_code == 503, response.text
+    assert response.status_code == 404, response.text
     assert not runtime.seen
     assert not runtime.main.app_state.stop_events
     runtime.clear.assert_not_called()
@@ -582,19 +607,27 @@ async def test_supervisor_protocol_claims_before_construction_and_scopes_owner_r
     monkeypatch.setattr(owner, "_ensure_supervisor", construct)
     events = [event async for event in owner.run("hello", context_id)]
     assert events[-1].data == {"text": "done"}
+    # W07.3: supervisor runner now uses scoped_checkpoint_key("a2a", ...) for the
+    # checkpoint_thread_id argument; the thread_id (external) stays as "owned".
+    from cuga.backend.server.thread_scope_key import scoped_checkpoint_key
+    from cuga.backend.server.conversation_threads import request_scope
+
+    expected_key = scoped_checkpoint_key("a2a", request_scope(None, "cuga-default"), "owned")
     supervisor.invoke.assert_awaited_once_with(
         "hello",
         thread_id="owned",
-        checkpoint_thread_id=runtime.main._checkpoint_thread_id("owned", "user-a", "cuga-default"),
+        checkpoint_thread_id=expected_key,
     )
 
 
 @pytest.mark.parametrize("path,method", [("/stop", "POST"), ("/reset", "POST"), ("/api/agent/state", "GET")])
 async def test_read_and_controls_do_not_claim_unused_id(runtime, path, method):
     response = await runtime.client.request(method, path, headers=runtime.headers("user-b"), json={})
-    assert response.status_code == 200, response.text
-    await runtime.db._ensure_schema()
-    assert await runtime.db._get_store().fetchall("SELECT * FROM runtime_thread_owners") == []
+    assert response.status_code == 404, response.text
+    db = get_conversation_threads_db()
+    await db._ensure_schema()
+    assert await db._get_store().fetchall("SELECT * FROM conversation_threads") == []
+    await _seed_thread("owned", "user-a", "cuga-default")
     response = await runtime.client.post("/stream", headers=runtime.headers(), json={"query": "hello"})
     assert response.status_code == 200, response.text
     assert runtime.seen[-1][0] == "user-a"
@@ -602,6 +635,7 @@ async def test_read_and_controls_do_not_claim_unused_id(runtime, path, method):
 
 @pytest.mark.parametrize("first", ["stream", "state", "reset"])
 async def test_disabled_registry_normalizes_agent_on_all_routes(runtime, monkeypatch, first):
+    await _seed_thread("owned", "user-a", "cuga-default")
     monkeypatch.setattr(runtime.main.agent_registry, "is_agent_registry_enabled", lambda: False)
     headers = runtime.headers(agent="sales")
     if first == "state":
@@ -621,6 +655,7 @@ async def test_disabled_registry_normalizes_agent_on_all_routes(runtime, monkeyp
 
 
 async def test_whitespace_thread_uses_same_owner_checkpoint_and_stop_event(runtime):
+    await _seed_thread("owned", "user-a", "cuga-default")
     response = await runtime.client.post(
         "/stream", headers=runtime.headers(thread=" owned "), json={"query": "hello"}
     )
@@ -628,7 +663,7 @@ async def test_whitespace_thread_uses_same_owner_checkpoint_and_stop_event(runti
     response = await runtime.client.post(
         "/stop", headers=runtime.headers("user-b", thread=None), json={"thread_id": " owned "}
     )
-    assert response.status_code == 403, response.text
+    assert response.status_code == 404, response.text
     response = await runtime.client.post(
         "/stop", headers=runtime.headers(thread=None), json={"thread_id": " owned "}
     )
@@ -637,18 +672,19 @@ async def test_whitespace_thread_uses_same_owner_checkpoint_and_stop_event(runti
     assert " owned " not in runtime.main.app_state.stop_events
     state = await runtime.client.get("/api/agent/state", headers=runtime.headers())
     assert state.json()["state"]["input"] == "hello"
-    rows = await runtime.db._get_store().fetchall("SELECT thread_id FROM runtime_thread_owners")
+    rows = await get_conversation_threads_db()._get_store().fetchall("SELECT thread_id FROM conversation_threads")
     assert [row["thread_id"] for row in rows] == ["owned"]
 
 
 async def test_generator_storage_failure_yields_error_event(runtime, monkeypatch):
+    await _seed_thread("owned", "user-a", "cuga-default")
     claim = runtime.db.claim_thread
     attempts = 0
 
     async def fail_second(*args, **kwargs):
         nonlocal attempts
         attempts += 1
-        if attempts == 2:
+        if attempts == 1:
             raise RuntimeError("database down")
         return await claim(*args, **kwargs)
 
@@ -672,12 +708,15 @@ async def test_workspace_reads_do_not_create_owner_rows(runtime, monkeypatch):
             "/api/workspace/tree", params={"thread_id": thread}, headers=runtime.headers()
         )
         assert response.status_code == 200, response.text
-    assert await runtime.db._get_store().fetchall("SELECT * FROM runtime_thread_owners") == []
-    await runtime.db.claim_thread("owned", "user-a", "cuga-default")
+    db = get_conversation_threads_db()
+    await db._ensure_schema()
+    assert await db._get_store().fetchall("SELECT * FROM conversation_threads") == []
+    await _seed_thread("owned", "user-a", "cuga-default")
     response = await runtime.client.get(
         "/api/workspace/tree", params={"thread_id": "owned"}, headers=runtime.headers("user-b")
     )
-    assert response.status_code == 403
+    assert response.status_code == 200
+    assert response.json()["tree"] == []
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -768,7 +807,7 @@ async def test_unknown_workspace_read_does_not_touch_new_foreign_resources(runti
 
 async def test_unbound_upload_owner_can_read_workspace(runtime, monkeypatch):
     main = runtime.main
-    await runtime.db.claim_thread("owned", "user-a")
+    await _seed_thread("owned", "user-a", "cuga-default")
     runtime.app.add_api_route("/api/workspace/file", main.get_workspace_file, methods=["GET"])
     monkeypatch.setattr(main, "workspace_tree_is_native_backed", lambda: True)
     monkeypatch.setattr(main, "native_workspace_text_preview", lambda *_: "my upload")
@@ -804,11 +843,17 @@ async def test_simple_protocol_resumes_canonical_context(runtime, monkeypatch):
     monkeypatch.setattr(conversation_history, "get_conversation_db", lambda: runtime.db)
     events = [event async for event in runner.run("yes", context_id=" owned ")]
     assert events[-1].name == "final_answer"
-    assert captured[0]["thread_id"] == "owned"
+    # W07.3: event_stream receives the pre-scoped checkpoint_key, not the raw context_id.
+    from cuga.backend.server.thread_scope_key import scoped_checkpoint_key
+    from cuga.backend.server.conversation_threads import request_scope
+
+    expected_key = scoped_checkpoint_key("a2a", request_scope(None, "cuga-default"), "owned")
+    assert captured[0]["thread_id"] == expected_key
     assert captured[0]["resume"].action_id == "approve"
     assert captured[0]["resume"].confirmed
+    # W07.3: _pending_action now uses checkpoint_key directly (no re-scoping).
     graph.aget_state.assert_awaited_once_with(
-        {"configurable": {"thread_id": runtime.main._checkpoint_thread_id("owned", "user-a", "cuga-default")}}
+        {"configurable": {"thread_id": expected_key}}
     )
     graph.get_state.assert_not_called()
 

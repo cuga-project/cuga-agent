@@ -171,11 +171,13 @@ async def _require_workspace_thread_access(
     thread_id: Optional[str],
     current_user: Optional[UserInfo],
 ) -> Optional[str]:
+    from cuga.backend.server.conversation_threads import request_scope
+    from cuga.backend.server.thread_guard import resolve_owned_thread
+
     tid = _workspace_thread_id(request, thread_id)
     if tid:
-        owner_agent = await _assert_thread_access(tid, _workspace_user_id(current_user), create=False)
-        if owner_agent is None:
-            raise HTTPException(status_code=404, detail="Thread not found")
+        scope = request_scope(current_user, _runtime_agent_id(request) or "cuga-default")
+        await resolve_owned_thread(scope, tid)
     return tid
 
 
@@ -2779,7 +2781,8 @@ async def extension_agent_query(
 
     body = await request.json()
     query = body.get("query", "")
-    request_id = _canonical_thread_id(body.get("request_id") or str(uuid.uuid4()))
+    body_request_id = _canonical_thread_id(body.get("request_id") or str(uuid.uuid4()))
+    request_id = body_request_id  # echoed back in responses; internal key is ext_key below
     user_id = _workspace_user_id(current_user)
     if not query:
         return JSONResponse({"type": "agent_error", "message": "Missing query"}, status_code=400)
@@ -2790,6 +2793,13 @@ async def extension_agent_query(
         return JSONResponse({"type": "agent_error", "message": e.detail}, status_code=e.status_code)
 
     await _assert_thread_access(request_id, user_id, app_state.agent_id)
+
+    # W07.5: isolate extension checkpoint namespace from web threads
+    from cuga.backend.server.conversation_threads import request_scope as _ext_request_scope  # noqa: PLC0415
+    from cuga.backend.server.thread_scope_key import scoped_checkpoint_key as _ext_scoped_checkpoint_key  # noqa: PLC0415
+
+    _ext_scope = _ext_request_scope(current_user, app_state.agent_id)
+    ext_key = _ext_scoped_checkpoint_key("ext", _ext_scope, body_request_id)
 
     async def event_gen():
         # Initial processing message
@@ -2808,7 +2818,7 @@ async def extension_agent_query(
                 query,
                 api_mode=settings.advanced_features.mode == "api",
                 resume=query if isinstance(query, ActionResponse) else None,
-                thread_id=request_id,
+                thread_id=ext_key,
                 user_id=user_id,
             ):
                 if chunk.strip():
@@ -3014,7 +3024,11 @@ async def stream(
 
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     query = await get_query(request)
+    from cuga.backend.server.conversation_threads import request_scope
+    from cuga.backend.server.thread_guard import resolve_owned_thread
+
     thread_id = (request.headers.get("X-Thread-ID") or "").strip()
+    thread_id_provided = bool(thread_id)
     if not thread_id:
         thread_id = str(uuid.uuid4())
         logger.info(f"No X-Thread-ID header found, generated new thread_id: {thread_id}")
@@ -3023,9 +3037,30 @@ async def stream(
 
     thread_id = _canonical_thread_id(thread_id)
     agent_id_header = _runtime_agent_id(request) or "cuga-default"
+    use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
+    disable_history = str(request.headers.get("X-Disable-History", "") or "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    scope = request_scope(current_user, agent_id_header)
+    graph_thread_id = thread_id
     # Reject before StreamingResponse sends headers; event_stream also guards
     # other entry points before reading checkpoints, previews or workspace data.
-    await _assert_run_thread_access(thread_id, user_id, agent_id_header)
+    if use_draft and disable_history:
+        # W06.2: draft preview uses client-generated ID with a draft: prefix
+        graph_thread_id = f"draft:{scope.tenant_id}:{scope.instance_id}:{scope.agent_id}:{thread_id}"
+    elif thread_id_provided:
+        await resolve_owned_thread(scope, thread_id)
+        provider = getattr(app_state, "knowledge_provider", None)
+        if user_id and user_id != DEFAULT_USER_ID:
+            if provider is not None and not provider.check_session_access(thread_id, user_id):
+                raise HTTPException(status_code=403, detail="access denied to session")
+            if provider is not None or _knowledge_enabled_for_app_state(app_state):
+                from cuga.backend.knowledge.auth import ensure_session_access
+
+                ensure_session_access(thread_id, user_id, provider)
     user_attachments = await get_attachment_snapshot(request)
 
     # User message will be saved as part of the event stream buffer
@@ -3057,14 +3092,6 @@ async def stream(
 
         return StreamingResponse(_arming_stream(), media_type="text/event-stream")
 
-    use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
-    disable_history = str(request.headers.get("X-Disable-History", "") or "").lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-
     if disable_history:
         logger.info(f"History saving disabled for thread_id: {thread_id}")
 
@@ -3085,7 +3112,7 @@ async def stream(
             query if isinstance(query, str) else None,
             api_mode=settings.advanced_features.mode == "api",
             resume=query if isinstance(query, ActionResponse) else None,
-            thread_id=thread_id,
+            thread_id=graph_thread_id,
             agent=run_agent,
             disable_history=disable_history,
             user_id=user_id,
@@ -3133,11 +3160,11 @@ async def stop(request: Request, current_user: Optional[UserInfo] = Depends(requ
             pass
 
     thread_id = _canonical_thread_id(thread_id)
-    owner_agent = await _assert_thread_access(
-        thread_id, _workspace_user_id(current_user), _runtime_agent_id(request), create=False
-    )
-    if owner_agent is None:
-        return {"status": "success", "message": f"Stop request received for thread_id: {thread_id}"}
+    from cuga.backend.server.conversation_threads import request_scope
+    from cuga.backend.server.thread_guard import resolve_owned_thread
+
+    scope = request_scope(current_user, _runtime_agent_id(request) or "cuga-default")
+    await resolve_owned_thread(scope, thread_id)
     if thread_id:
         logger.info(f"Received stop request for thread_id: {thread_id}")
         # Create event if it doesn't exist, then set it
@@ -3173,11 +3200,11 @@ async def reset_agent_state(
                 pass
 
         thread_id = _canonical_thread_id(thread_id)
-        owner_agent = await _assert_thread_access(
-            thread_id, _workspace_user_id(current_user), _runtime_agent_id(request), create=False
-        )
-        if owner_agent is None:
-            return {"status": "success", "message": "Agent state reset successfully"}
+        from cuga.backend.server.conversation_threads import request_scope
+        from cuga.backend.server.thread_guard import resolve_owned_thread
+
+        scope = request_scope(current_user, _runtime_agent_id(request) or "cuga-default")
+        await resolve_owned_thread(scope, thread_id)
         if thread_id:
             logger.info(f"Resetting state for thread_id: {thread_id}")
             # Clear stop event for this thread
@@ -3409,21 +3436,47 @@ async def create_conversation(
     request: Request,
     current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
-    """Endpoint to create a new conversation."""
+    """Endpoint to create a new conversation (server-issued thread record)."""
+    from cuga.backend.server.conversation_threads import (
+        ThreadIdConflict,
+        get_conversation_threads_db,
+        request_scope,
+    )
+
     try:
         data = await request.json()
-        # TODO: Implement actual conversation storage
-        conversation = {
-            "id": str(uuid.uuid4()),
-            "title": data.get("title", "New Conversation"),
-            "timestamp": data.get("timestamp", int(datetime.datetime.now().timestamp() * 1000)),
-            "preview": data.get("preview", ""),
-        }
-        logger.info(f"Created conversation: {conversation['id']}")
-        return JSONResponse(conversation)
-    except Exception as e:
-        logger.error(f"Failed to create conversation: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create conversation: {str(e)}")
+        agent_id = "cuga-default"
+        if agent_registry.is_agent_registry_enabled():
+            agent_id = (data.get("agent_id") or "").strip() or _runtime_agent_id(request) or "cuga-default"
+            if agent_id != "cuga-default":
+                from cuga.backend.server.config_store import load_config
+
+                config, _ = await load_config(None, agent_id)
+                if not config:
+                    raise HTTPException(status_code=404, detail="Agent not found")
+        scope = request_scope(current_user, agent_id)
+        threads_db = get_conversation_threads_db()
+        thread_id = str(uuid.uuid4())
+        try:
+            await threads_db.create(scope, thread_id)
+        except ThreadIdConflict:
+            thread_id = str(uuid.uuid4())
+            await threads_db.create(scope, thread_id)
+        logger.info(f"Created conversation: {thread_id}")
+        return JSONResponse(
+            {
+                "id": thread_id,
+                "title": data.get("title", "New Conversation"),
+                "timestamp": int(datetime.datetime.now().timestamp() * 1000),
+                "preview": "",
+                "status": "new",
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to create conversation")
+        raise HTTPException(status_code=500, detail="Failed to create conversation")
 
 
 @app.delete("/api/conversations/{conversation_id}")
@@ -3434,11 +3487,15 @@ async def delete_conversation(
     current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Delete a conversation thread and its stream events."""
+    from cuga.backend.server.conversation_threads import request_scope
+    from cuga.backend.server.thread_guard import resolve_owned_thread
+
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     conversation_id = conversation_id.strip()
     # A user-scoped DB delete can succeed without matching rows. Authorize
     # before it triggers unscoped knowledge, ownership and upload cleanup.
-    await _assert_run_thread_access(conversation_id, user_id)
+    scope = request_scope(current_user, agent_id)
+    await resolve_owned_thread(scope, conversation_id)
     try:
         conversation_db = get_conversation_db()
         success = await conversation_db.delete_thread(agent_id, conversation_id, user_id)
@@ -4157,10 +4214,14 @@ async def get_agent_state(
                 detail="thread_id is required (provide via X-Thread-ID header or thread_id query parameter)",
             )
 
+        from cuga.backend.server.conversation_threads import request_scope
+        from cuga.backend.server.thread_guard import resolve_owned_thread
+
         user_id = _workspace_user_id(current_user)
         thread_id = _canonical_thread_id(thread_id)
-        agent_id = await _assert_thread_access(thread_id, user_id, _runtime_agent_id(request), create=False)
-        agent_id = agent_id or "cuga-default"
+        scope = request_scope(current_user, _runtime_agent_id(request) or "cuga-default")
+        record = await resolve_owned_thread(scope, thread_id)
+        agent_id = record.agent_id or "cuga-default"
         use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
         run_agent = app_state.agent
         if agent_id != "cuga-default" or use_draft:
@@ -4636,8 +4697,11 @@ async def upload_workspace_file(
         if not tid:
             raise HTTPException(status_code=400, detail="thread_id required for workspace upload")
 
-        user_id = _workspace_user_id(current_user)
-        await _assert_thread_access(tid, user_id)
+        from cuga.backend.server.conversation_threads import request_scope
+        from cuga.backend.server.thread_guard import resolve_owned_thread
+
+        scope = request_scope(current_user, _runtime_agent_id(request) or agent_id or "cuga-default")
+        await resolve_owned_thread(scope, tid)
 
         try:
             sanitize_upload_filename(file.filename or "upload.json")
