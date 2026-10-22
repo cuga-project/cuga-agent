@@ -1,4 +1,5 @@
 """Unit tests for DELETE /api/conversations/{id} — W12.1 (checkpoints) and W12.6 (child threads)."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -193,3 +194,77 @@ async def test_single_agent_delete_does_not_list_children(threads_db, delete_app
     assert response.status_code == 200
     saver.alist.assert_not_called()
     assert saver.adelete_thread.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# W12.1 — checkpoint_delete_outbox retry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_failure_enqueues_outbox_row(threads_db, delete_app, monkeypatch):
+    """When adelete_thread fails the scoped key is inserted into the outbox."""
+    await _create(threads_db)
+    saver = _make_saver()
+    saver.adelete_thread = AsyncMock(side_effect=RuntimeError("disk full"))
+    delete_app.app.state.app_state.checkpointer = saver
+
+    # Prevent the fire-and-forget task from running concurrently during the test.
+    # Close the coroutine immediately to suppress "coroutine was never awaited" warnings.
+    def _noop_create_task(coro, *args, **kwargs):
+        coro.close()
+
+    monkeypatch.setattr(delete_app.main.asyncio, "create_task", _noop_create_task)
+
+    async with _client(delete_app.app) as client:
+        response = await client.delete("/api/conversations/thread-a")
+
+    assert response.status_code == 200
+    pending = await threads_db.pending_checkpoint_deletes()
+    assert len(pending) == 1
+    expected_key = delete_app.main._checkpoint_thread_id("thread-a", "user-a", AGENT_ID)
+    assert pending[0]["scoped_checkpoint_id"] == expected_key
+
+
+@pytest.mark.asyncio
+async def test_retry_consumer_acks_on_success(threads_db, delete_app, monkeypatch):
+    """Retry consumer deletes the checkpoint and removes the outbox row."""
+    from cuga.backend.server import main as main_mod
+
+    await _create(threads_db)
+
+    # Pre-populate the outbox
+    expected_key = main_mod._checkpoint_thread_id("thread-a", "user-a", AGENT_ID)
+    await threads_db.enqueue_checkpoint_delete(expected_key)
+
+    # Saver succeeds on retry
+    saver = _make_saver()
+    delete_app.app.state.app_state.checkpointer = saver
+
+    await main_mod._retry_checkpoint_deletes(delete_app.app.state.app_state)
+
+    saver.adelete_thread.assert_awaited_once_with(expected_key)
+    pending = await threads_db.pending_checkpoint_deletes()
+    assert pending == [], "outbox should be empty after successful retry"
+
+
+@pytest.mark.asyncio
+async def test_retry_consumer_leaves_row_on_failure(threads_db, delete_app, monkeypatch):
+    """When retry also fails the outbox row remains for the next cycle."""
+    from cuga.backend.server import main as main_mod
+
+    await _create(threads_db)
+
+    expected_key = main_mod._checkpoint_thread_id("thread-a", "user-a", AGENT_ID)
+    await threads_db.enqueue_checkpoint_delete(expected_key)
+
+    # Saver still fails on retry
+    saver = _make_saver()
+    saver.adelete_thread = AsyncMock(side_effect=RuntimeError("still down"))
+    delete_app.app.state.app_state.checkpointer = saver
+
+    await main_mod._retry_checkpoint_deletes(delete_app.app.state.app_state)
+
+    pending = await threads_db.pending_checkpoint_deletes()
+    assert len(pending) == 1, "row must remain when retry fails"
+    assert pending[0]["scoped_checkpoint_id"] == expected_key
