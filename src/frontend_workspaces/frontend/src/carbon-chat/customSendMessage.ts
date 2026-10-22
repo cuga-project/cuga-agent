@@ -30,8 +30,15 @@ import { injectCitations, type MessageSource } from "agentic_chat/Citations";
 import type { KnowledgeAttachmentSnapshot } from "../knowledge/useSessionKnowledgeAttachments";
 
 // Import thread ID management from CarbonChat
-import { getOrCreateThreadId, generateUUID } from './CarbonChat';
+import { getOrCreateThreadId, generateUUID, setThreadId } from './CarbonChat';
 
+
+export class StreamHttpError extends Error {
+  constructor(public readonly status: number, public readonly errorCode?: string) {
+    super(`HTTP ${status}`);
+    this.name = "StreamHttpError";
+  }
+}
 
 export async function stopCugaAgent(threadId: string) {
   try {
@@ -281,9 +288,15 @@ export async function customSendMessage(
     console.log(`Response status: ${response.status}`);
 
     if (!response.ok) {
-      const errorText = await response.text();
+      const errorText = await response.text().catch(() => "");
       console.error(`HTTP error response:`, errorText);
-      throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+      // Parse error code for structured handling by the caller
+      let errorCode: string | undefined;
+      try {
+        const parsed = JSON.parse(errorText);
+        errorCode = parsed?.error;
+      } catch { /* ignore */ }
+      throw new StreamHttpError(response.status, errorCode);
     }
 
     // Process the stream
@@ -291,6 +304,16 @@ export async function customSendMessage(
       // Check if cancelled
       if (requestOptions.signal?.aborted) {
         break;
+      }
+
+      // W14.2 — server-issued thread ID: adopt the server's ID as soon as it arrives
+      if (event.name === "thread_created") {
+        const serverId = typeof event.data === "string" ? event.data.trim() : null;
+        if (serverId) {
+          setThreadId(serverId);
+          console.log("[thread_created] adopted server thread ID:", serverId);
+        }
+        continue; // thread_created is housekeeping only — no UI output
       }
 
       // First event means backend is responding — create shell and hide loading indicator
@@ -810,7 +833,10 @@ export async function customSendMessage(
   } catch (error: any) {
     console.error("Error calling CUGA backend:", error);
     
-    if (error.name === "AbortError") {
+    if (error.name === "StreamHttpError") {
+      // Re-throw structured HTTP errors so callers (CarbonChat) can handle 404/409
+      throw error;
+    } else if (error.name === "AbortError") {
       handleCancellation();
     } else {
       ensureShellMessage();

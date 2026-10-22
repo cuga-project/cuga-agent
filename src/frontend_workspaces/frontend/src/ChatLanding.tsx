@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import * as api from "./api";
 import { useAuth } from "./AuthContext";
 import { ConfigHeader } from "./ConfigHeader";
-import CarbonChat, { generateUUID } from "./carbon-chat/CarbonChat";
+import CarbonChat from "./carbon-chat/CarbonChat";
 import { MemoryWorkspace } from "./memory/MemoryWorkspace";
 import {
   IconButton,
@@ -58,6 +58,8 @@ interface ConversationThread {
   latest_version: number;
   first_message: string;
   updated_at: string;
+  status?: string;  // "new" | "active" | "legacy" | "expired"
+  pending_interrupt?: boolean;
 }
 
 interface AppTool {
@@ -127,7 +129,7 @@ interface SkillInfo {
 }
 
 interface DraftThreadState {
-  threadId: string;
+  threadId: string | null;
   hasSentFirstMessage: boolean;
   updatedAt: string;
   agentId: string;
@@ -267,7 +269,7 @@ const filterJsonUploadFiles = (files: File[]): File[] =>
   files.filter((file) => JSON_UPLOAD_SUFFIXES.some((suffix) => file.name.toLowerCase().endsWith(suffix)));
 
 const createDraftThreadState = (agentId: string): DraftThreadState => ({
-  threadId: generateUUID(),
+  threadId: null,  // Server will issue the ID via thread_created SSE event
   hasSentFirstMessage: false,
   updatedAt: new Date().toISOString(),
   agentId,
@@ -282,12 +284,12 @@ const loadDraftThreadState = (agentId: string): DraftThreadState | null => {
     }
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<DraftThreadState>;
-    if (typeof parsed.threadId !== "string" || !parsed.threadId || parsed.hasSentFirstMessage === true) {
+    if (parsed.hasSentFirstMessage === true) {
       window.sessionStorage.removeItem(draftStorageKey(agentId));
       return null;
     }
     return {
-      threadId: parsed.threadId,
+      threadId: typeof parsed.threadId === "string" ? parsed.threadId : null,
       hasSentFirstMessage: false,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
       agentId,
@@ -433,7 +435,9 @@ export function ChatLanding() {
   const [threads, setThreads] = useState<ConversationThread[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
-  const [activeThreadId, setActiveThreadId] = useState<string>(draftThread.threadId);
+  const [selectedThreadStatus, setSelectedThreadStatus] = useState<string | null>(null);
+  const [selectedThreadUnavailable, setSelectedThreadUnavailable] = useState(false);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(draftThread.threadId);
   const [rightSection, setRightSection] = useState<RightPanelSection>("workspace");
   const [knowledgeDocCount, setKnowledgeDocCount] = useState(0);
   const [knowledgeEnabled, setKnowledgeEnabled] = useState(false);
@@ -469,6 +473,8 @@ export function ChatLanding() {
       loadDraftThreadState(effectiveChatAgentId) ?? createDraftThreadState(effectiveChatAgentId);
     setDraftThread(nextDraft);
     setSelectedThreadId(null);
+    setSelectedThreadStatus(null);
+    setSelectedThreadUnavailable(false);
     setActiveThreadId(nextDraft.threadId);
     setThreads([]);
     setLoading(true);
@@ -635,7 +641,9 @@ export function ChatLanding() {
   }, [draftThread.threadId, selectedThreadId]);
 
   useEffect(() => {
-    void refreshKnowledgeDocCount(effectiveChatThreadId);
+    if (effectiveChatThreadId) {
+      void refreshKnowledgeDocCount(effectiveChatThreadId);
+    }
   }, [effectiveChatThreadId, refreshKnowledgeDocCount, sessionDocsVersion]);
 
   const handleSessionDocsChanged = useCallback(() => {
@@ -646,10 +654,30 @@ export function ChatLanding() {
     const nextDraft = createDraftThreadState(effectiveChatAgentId);
     setDraftThread(nextDraft);
     setSelectedThreadId(null);
+    setSelectedThreadStatus(null);
+    setSelectedThreadUnavailable(false);
     setActiveThreadId(nextDraft.threadId);
     setSessionDocsVersion((version) => version + 1);
     return nextDraft;
   }, [effectiveChatAgentId]);
+
+  const handleStreamError = useCallback((status: number, error?: string) => {
+    if (status === 404) {
+      // Thread no longer exists — remove from sidebar and start fresh
+      addToast("warning", "Conversation unavailable", "This conversation is no longer available.");
+      if (selectedThreadId) {
+        setThreads((prev) => prev.filter((t) => t.thread_id !== selectedThreadId));
+      }
+      createAndActivateDraftThread();
+    } else if (status === 409) {
+      if (error === "conflict") {
+        // Inline notice — handled via a toast here, isReadonly not set
+        addToast("warning", "Response still running", "Another response is still running in this conversation. Try again in a moment.");
+      } else if (error === "unavailable") {
+        setSelectedThreadUnavailable(true);
+      }
+    }
+  }, [addToast, createAndActivateDraftThread, selectedThreadId]);
 
   const clearDraftSessionFiles = useCallback(
     async (threadId: string) => {
@@ -684,15 +712,22 @@ export function ChatLanding() {
   const handleThreadChange = useCallback(
     async (threadId: string) => {
       setActiveThreadId(threadId);
-      if (!draftThread.hasSentFirstMessage && threadId === draftThread.threadId) {
+      if (!draftThread.hasSentFirstMessage && (draftThread.threadId === null || threadId === draftThread.threadId)) {
         setDraftThread((prev) => ({
           ...prev,
+          threadId: threadId,
           hasSentFirstMessage: true,
           updatedAt: new Date().toISOString(),
         }));
       }
       if (threadId !== selectedThreadId) {
         setSelectedThreadId(threadId);
+        // Move the thread to top of sidebar after a successful send
+        setThreads((prev) => {
+          const existing = prev.find((t) => t.thread_id === threadId);
+          if (!existing) return prev;
+          return [existing, ...prev.filter((t) => t.thread_id !== threadId)];
+        });
         setTimeout(refreshThreads, 500);
       }
     },
@@ -700,13 +735,16 @@ export function ChatLanding() {
   );
 
   const handleSelectThread = useCallback((threadId: string) => {
+    const thread = threads.find((t) => t.thread_id === threadId);
     setSelectedThreadId(threadId);
-  }, []);
+    setSelectedThreadStatus(thread?.status ?? null);
+    setSelectedThreadUnavailable(false);
+  }, [threads]);
 
   const handleRemoveAll = async () => {
     if (!window.confirm("Remove all conversations? This cannot be undone.")) return;
     try {
-      if (!draftThread.hasSentFirstMessage) {
+      if (!draftThread.hasSentFirstMessage && draftThread.threadId) {
         await clearDraftSessionFiles(draftThread.threadId);
       }
       await Promise.all(
@@ -1085,7 +1123,7 @@ export function ChatLanding() {
       const response = await api.getKnowledgeDocumentFile(
         attachment.scope,
         attachment.knowledge_filename,
-        attachment.scope === "session" ? effectiveChatThreadId : undefined,
+        attachment.scope === "session" ? (effectiveChatThreadId || undefined) : undefined,
       );
       if (!response.ok) {
         addToast("error", "Preview unavailable", response.statusText || "Failed to load attachment.");
@@ -1297,7 +1335,10 @@ export function ChatLanding() {
             onClearFocus={() => setFocusedMemoryIds([])}
             onClose={() => setActiveView("chat")}
             onOpenConversation={(threadId) => {
+              const thread = threads.find((t) => t.thread_id === threadId);
               setSelectedThreadId(threadId);
+              setSelectedThreadStatus(thread?.status ?? null);
+              setSelectedThreadUnavailable(false);
               setActiveView("chat");
             }}
           />
@@ -1305,13 +1346,49 @@ export function ChatLanding() {
       )}
       {/* Keep the chat instance and its active stream alive while viewing memory. */}
         <div className="chat-content-area" hidden={activeView === "memory" && memoryEnabled} style={{ display: activeView === "memory" && memoryEnabled ? "none" : undefined, position: "relative", height: `calc(100vh - ${headerHeight}px)` }}>
+          {/* W14.5 — legacy conversation notice */}
+          {selectedThreadStatus === "legacy" && (
+            <div style={{
+              padding: "0.75rem 1rem",
+              background: "var(--cds-layer-accent-01, #e0e0e0)",
+              borderBottom: "1px solid var(--cds-border-subtle-01)",
+              fontSize: "0.8125rem",
+              color: "var(--cds-text-secondary)",
+            }}>
+              This conversation was created before conversations could be continued. Start a new conversation to keep going.
+            </div>
+          )}
+          {/* W14.4 — unavailable conversation notice */}
+          {selectedThreadUnavailable && (
+            <div style={{
+              padding: "0.75rem 1rem",
+              background: "var(--cds-notification-background-warning, #fdf6dd)",
+              borderBottom: "1px solid var(--cds-border-subtle-01)",
+              fontSize: "0.8125rem",
+              color: "var(--cds-text-primary)",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.75rem",
+            }}>
+              <span style={{ flex: 1 }}>
+                This conversation&apos;s saved state can&apos;t be loaded. You can still read it, but you&apos;ll need to start a new conversation to continue.
+              </span>
+              <Button kind="tertiary" size="sm" onClick={() => createAndActivateDraftThread()}>
+                New chat
+              </Button>
+            </div>
+          )}
           <CarbonChat
             contained={true}
             threadId={effectiveChatThreadId}
             attachmentScope="session"
             knowledgeEnabled={knowledgeEnabled}
             sessionKnowledgeEnabled={sessionKnowledgeEnabled}
-            isReadonly={selectedThreadId != null && selectedThreadId !== activeThreadId}
+            isReadonly={
+              selectedThreadStatus === "legacy" ||
+              selectedThreadStatus === "expired" ||
+              selectedThreadUnavailable
+            }
             onThreadChange={handleThreadChange}
             homescreen={homescreenConfig}
             sessionDocsVersion={sessionDocsVersion}
@@ -1323,6 +1400,7 @@ export function ChatLanding() {
               setActiveView("memory");
             } : undefined}
             onPreviewKnowledgeAttachment={handlePreviewKnowledgeAttachment}
+            onStreamError={handleStreamError}
           />
         </div>
 
@@ -1352,7 +1430,7 @@ export function ChatLanding() {
                   kind="ghost"
                   size="sm"
                   onClick={async () => {
-                    if (!draftThread.hasSentFirstMessage) {
+                    if (!draftThread.hasSentFirstMessage && draftThread.threadId) {
                       await clearDraftSessionFiles(draftThread.threadId);
                     }
                     createAndActivateDraftThread();
