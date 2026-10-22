@@ -262,7 +262,7 @@ async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id:
 
     engine = getattr(app_state, "knowledge_engine", None)
     if engine:
-        await engine.drop_collection(_session_knowledge_collection(thread_id))
+        await engine.drop_collection(_session_knowledge_collection(thread_id), strict=True)
 
     provider = getattr(app_state, "knowledge_provider", None)
     if provider:
@@ -3804,34 +3804,158 @@ async def create_conversation(
         raise HTTPException(status_code=500, detail="Failed to create conversation")
 
 
-async def _retry_checkpoint_deletes(app_state) -> None:
-    """Drain the checkpoint_delete_outbox: attempt adelete_thread for each pending row.
+def _thread_may_have_children() -> bool:
+    return bool(getattr(settings.supervisor, "enabled", False)) or agent_registry.is_agent_registry_enabled()
 
-    Each row is retried once per call; on success it is acknowledged (removed).
-    On failure the row is left for the next call. The outbox worker calls this
-    on startup and on a recurring timer so no new DELETE is required to unblock.
+
+def _thread_cleanup_context(scope, thread_id: str, delete_children: bool) -> dict:
+    return {
+        "tenant_id": scope.tenant_id,
+        "instance_id": scope.instance_id,
+        "agent_id": scope.agent_id,
+        "user_id": scope.user_id,
+        "thread_id": thread_id,
+        "delete_children": delete_children,
+    }
+
+
+async def _cleanup_if_deleted_during_write(app_state, scope, record, thread_id: str) -> bool:
+    """Recheck a thread after a request wrote workspace data for it.
+
+    The request was authorized before writing, so a deletion may have run its
+    cleanup in between and missed the new data. Writing first and rechecking
+    after closes that gap: if the thread is still live here, any later delete
+    cleans up after this data exists. Returns True if the thread was deleted;
+    in that case a new cleanup is queued and attempted now.
     """
     from cuga.backend.server.conversation_threads import get_conversation_threads_db
 
-    _saver = getattr(app_state, "checkpointer", None) if app_state else None
-    if _saver is None or not hasattr(_saver, "adelete_thread"):
-        return
-    db = get_conversation_threads_db()
+    threads_db = get_conversation_threads_db()
+    if await threads_db.get_in_scope(scope, thread_id) is not None:
+        return False
+    ckpt_key = _checkpoint_thread_id(thread_id, scope.user_id, record.agent_id or scope.agent_id)
+    delete_children = _thread_may_have_children()
+    event_id = await threads_db.enqueue_thread_cleanup(
+        scope, thread_id, ckpt_key, delete_children=delete_children
+    )
     try:
-        pending = await db.pending_checkpoint_deletes()
+        if await _cleanup_deleted_thread(
+            app_state, ckpt_key, _thread_cleanup_context(scope, thread_id, delete_children)
+        ):
+            await threads_db.acknowledge_checkpoint_delete(event_id)
     except Exception:
-        logger.exception("failed to fetch pending checkpoint deletes")
-        return
-    for row in pending:
+        logger.exception("cleanup after late write failed for {}; outbox will retry", thread_id)
+    return True
+
+
+async def _cleanup_deleted_thread(app_state, scoped_checkpoint_id: str, context: dict | None) -> bool:
+    """Try every cleanup stage; a false result keeps the durable outbox row."""
+    from cuga.backend.server.thread_lease import get_thread_lease
+    from cuga.config import get_service_instance_id, get_tenant_id
+
+    saver = getattr(app_state, "checkpointer", None) if app_state else None
+    complete = True
+    if context and (
+        context["tenant_id"] != get_tenant_id() or context["instance_id"] != get_service_instance_id()
+    ):
+        # Another instance owns this row and must use its own history/knowledge stores.
+        return False
+
+    try:
+        active_lease = await get_thread_lease().is_active(scoped_checkpoint_id)
+    except Exception:
+        logger.exception("lease lookup failed during cleanup for {}", scoped_checkpoint_id)
+        return False
+    if active_lease:
+        # A live turn can still write checkpoints, history, and uploads.
+        # Retry all stages after the lease ends.
+        return False
+
+    try:
+        if saver is None or not hasattr(saver, "adelete_thread"):
+            logger.warning("checkpoint cleanup waiting for saver for {}", scoped_checkpoint_id)
+            complete = False
+        else:
+            await saver.adelete_thread(scoped_checkpoint_id)
+    except Exception:
+        logger.exception("parent checkpoint cleanup failed for {}", scoped_checkpoint_id)
+        complete = False
+
+    if context is None:
+        return complete  # Rows from the older checkpoint-only outbox format.
+
+    thread_id = context["thread_id"]
+    if context["delete_children"]:
+        if saver is None or not hasattr(saver, "alist"):
+            complete = False
+        else:
+            try:
+                child_ids = set()
+                async for tup in saver.alist(None, filter={"cuga_parent_thread_id": thread_id}):
+                    child_id = ((tup.config or {}).get("configurable") or {}).get("thread_id", "")
+                    if child_id:
+                        child_ids.add(child_id)
+                for child_id in child_ids:
+                    try:
+                        await saver.adelete_thread(child_id)
+                    except Exception:
+                        logger.exception("child checkpoint cleanup failed for {}", child_id)
+                        complete = False
+            except Exception:
+                logger.exception("child checkpoint lookup failed for {}", thread_id)
+                complete = False
+
+    try:
+        if not await get_conversation_db().delete_thread(context["agent_id"], thread_id, context["user_id"]):
+            logger.warning("history cleanup returned failure for {}", thread_id)
+            complete = False
+    except Exception:
+        logger.exception("history cleanup failed for {}", thread_id)
+        complete = False
+    try:
+        await _delete_session_knowledge_for_thread(app_state, thread_id)
+    except Exception:
+        logger.exception("session knowledge cleanup failed for {}", thread_id)
+        complete = False
+    try:
+        await delete_thread_uploads(thread_id)
+    except Exception:
+        logger.exception("upload cleanup failed for {}", thread_id)
+        complete = False
+    return complete
+
+
+async def _retry_checkpoint_deletes(app_state) -> None:
+    """Retry every pending cleanup intent; acknowledge only complete threads."""
+    import json
+
+    from cuga.backend.server.conversation_threads import get_conversation_threads_db
+
+    db = get_conversation_threads_db()
+    after = None
+    while True:
         try:
-            await _saver.adelete_thread(row["scoped_checkpoint_id"])
-            await db.acknowledge_checkpoint_delete(row["event_id"])
+            pending = await db.pending_checkpoint_deletes(after=after)
         except Exception:
-            logger.exception("retry checkpoint delete failed for %s", row["scoped_checkpoint_id"])
+            logger.exception("failed to fetch pending conversation cleanup")
+            return
+        if not pending:
+            return
+        for row in pending:
+            try:
+                context = json.loads(row["cleanup_context"]) if row["cleanup_context"] else None
+                if await _cleanup_deleted_thread(app_state, row["scoped_checkpoint_id"], context):
+                    await db.acknowledge_checkpoint_delete(row["event_id"])
+            except Exception:
+                logger.exception("retry cleanup failed for {}", row["scoped_checkpoint_id"])
+        last = pending[-1]
+        after = (last["deleted_at"], last["event_id"])
+        if len(pending) < 100:
+            return
 
 
 async def _run_outbox_worker(get_app_state, interval: float = 60.0) -> None:
-    """Periodic checkpoint-delete outbox worker.
+    """Periodic conversation cleanup outbox worker.
 
     Runs at startup (once) and then every *interval* seconds.  Cancelled and
     awaited during lifespan shutdown so no pending task is left after the
@@ -3895,62 +4019,37 @@ async def delete_conversation(
             pass
 
         _ckpt_key = _checkpoint_thread_id(conversation_id, user_id, record.agent_id or agent_id)
+        can_delegate = _thread_may_have_children()
+        cleanup_context = _thread_cleanup_context(scope, conversation_id, can_delegate)
 
-        # Step 1: atomically mark deleted and record the checkpoint key for cleanup.
+        # Step 1: atomically mark deleted and record every cleanup stage.
         # If this write fails the route returns 500 — the thread stays accessible and
         # no orphan is created. The outbox entry is the durable retry guarantee; it
         # is written here before we report success so a restart cannot lose it.
-        await threads_db.mark_deleted_and_enqueue(scope, conversation_id, _ckpt_key)
+        event_id = await threads_db.mark_deleted_and_enqueue(
+            scope, conversation_id, _ckpt_key, delete_children=can_delegate
+        )
 
         # Step 2: ask any in-flight turn to stop.
         if lease_module:
             try:
-                await lease_module.request_stop(conversation_id)
+                await lease_module.request_stop(_ckpt_key)
             except Exception:
                 logger.warning("failed to request stop on lease for thread {}", conversation_id)
 
-        # Step 3: delete checkpoints (non-fatal — the outbox worker retries on failure).
-        _app_state = getattr(request.app.state, "app_state", None)
-        _saver = getattr(_app_state, "checkpointer", None) if _app_state else None
-        try:
-            if _saver is not None and hasattr(_saver, "adelete_thread"):
-                await _saver.adelete_thread(_ckpt_key)
-                # Best-effort immediate acknowledge; the startup worker also drains.
-                try:
-                    await threads_db.acknowledge_checkpoint_delete_by_key(_ckpt_key)
-                except Exception:
-                    logger.warning(
-                        "acknowledge after inline delete failed for {}; outbox worker will clean up",
-                        conversation_id,
-                    )
-        except Exception as e:
-            logger.error(f"checkpoint deletion failed for {conversation_id}: {e}")
-            # Outbox row is already present (written in step 1); worker will retry.
+        # Stop a local turn promptly; the lease check in cleanup also prevents
+        # acknowledging deletion while a turn on another replica can still write.
+        stop_events = getattr(request.app.state.app_state, "stop_events", {})
+        if conversation_id in stop_events:
+            stop_events[conversation_id].set()
 
-        # W12.6: delete supervisor child threads, only when a graph can delegate.
-        try:
-            can_delegate = bool(getattr(settings.supervisor, "enabled", False)) or (
-                agent_registry.is_agent_registry_enabled()
-            )
-            if can_delegate and _saver is not None and hasattr(_saver, "alist"):
-                child_ids = set()
-                async for tup in _saver.alist(None, filter={"cuga_parent_thread_id": conversation_id}):
-                    child_tid = ((tup.config or {}).get("configurable") or {}).get("thread_id", "")
-                    if child_tid:
-                        child_ids.add(child_tid)
-                for child_tid in child_ids:
-                    await _saver.adelete_thread(child_tid)
-        except Exception:
-            logger.exception("child thread deletion failed for parent {}", conversation_id)
-
-        # Step 4: delete history, session knowledge, uploads.
-        try:
-            conversation_db = get_conversation_db()
-            await conversation_db.delete_thread(agent_id, conversation_id, user_id)
-            await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
-            await delete_thread_uploads(conversation_id)
-        except Exception as e:
-            logger.error(f"history/knowledge/uploads deletion failed for {conversation_id}: {e}")
+        if await _cleanup_deleted_thread(request.app.state.app_state, _ckpt_key, cleanup_context):
+            try:
+                # Only this event: a concurrent upload may have queued another
+                # cleanup for the same thread that must still run.
+                await threads_db.acknowledge_checkpoint_delete(event_id)
+            except Exception:
+                logger.exception("failed to acknowledge cleanup for {}", conversation_id)
 
         logger.info(f"Deleted conversation: {conversation_id}")
         return JSONResponse({"status": "success", "message": "Conversation deleted"})
@@ -5145,10 +5244,10 @@ async def upload_workspace_file(
             raise HTTPException(status_code=400, detail="thread_id required for workspace upload")
 
         from cuga.backend.server.conversation_threads import request_scope
-        from cuga.backend.server.thread_guard import resolve_owned_thread
+        from cuga.backend.server.thread_guard import ThreadNotFound, resolve_owned_thread
 
         scope = request_scope(current_user, _runtime_agent_id(request) or agent_id or "cuga-default")
-        await resolve_owned_thread(scope, tid)
+        thread_record = await resolve_owned_thread(scope, tid)
 
         try:
             sanitize_upload_filename(file.filename or "upload.json")
@@ -5195,6 +5294,13 @@ async def upload_workspace_file(
             if "too large" in msg.lower():
                 raise HTTPException(status_code=413, detail=msg) from e
             raise HTTPException(status_code=400, detail=msg) from e
+        finally:
+            # Also after a partial failure: a sandbox may already be recorded.
+            deleted_meanwhile = await _cleanup_if_deleted_during_write(
+                request.app.state.app_state, scope, thread_record, tid
+            )
+        if deleted_meanwhile:
+            raise ThreadNotFound()
 
         logger.info(f"Workspace upload: {result['path']} ({result['size_bytes']} bytes) thread={tid}")
         return JSONResponse({"status": "success", **result})

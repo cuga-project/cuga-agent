@@ -153,7 +153,9 @@ async def test_conversation_owner_can_still_delete_knowledge_and_uploads(runtime
         response = await client.delete("/api/conversations/victim-thread")
     assert response.status_code == 200, response.text
     database.delete_thread.assert_awaited_once_with("cuga-default", "victim-thread", "alice")
-    main.app_state.knowledge_engine.drop_collection.assert_awaited_once_with("kb_sess_victim_thread")
+    main.app_state.knowledge_engine.drop_collection.assert_awaited_once_with(
+        "kb_sess_victim_thread", strict=True
+    )
     uploads.assert_awaited_once_with("victim-thread")
     # Generated files and checkpoints may survive cleanup, so keep the owner.
     assert provider.get_session("victim-thread").user_id == "alice"

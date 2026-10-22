@@ -44,6 +44,48 @@ def _scope(
     )
 
 
+@pytest.mark.asyncio
+async def test_cleanup_outbox_keyset_pagination_survives_acknowledgement(tmp_path):
+    db = _make_db(tmp_path)
+    for index in range(3):
+        await db.enqueue_checkpoint_delete(f"key-{index}")
+
+    first = await db.pending_checkpoint_deletes(limit=1)
+    cursor = (first[-1]["deleted_at"], first[-1]["event_id"])
+    await db.acknowledge_checkpoint_delete(first[0]["event_id"])
+    second = await db.pending_checkpoint_deletes(limit=2, after=cursor)
+
+    assert len(second) == 2
+    assert {row["scoped_checkpoint_id"] for row in second} | {first[0]["scoped_checkpoint_id"]} == {
+        "key-0",
+        "key-1",
+        "key-2",
+    }
+
+
+@pytest.mark.asyncio
+async def test_cleanup_context_column_is_added_to_existing_outbox(tmp_path):
+    store = LocalRelationalStore(str(tmp_path / "old.db"))
+    await store.execute("""
+        CREATE TABLE checkpoint_delete_outbox (
+            event_id TEXT PRIMARY KEY,
+            scoped_checkpoint_id TEXT NOT NULL,
+            deleted_at TEXT NOT NULL
+        )
+    """)
+    await store.commit()
+    db = ConversationThreadsDB()
+    db._get_store = lambda: store
+
+    scope = _scope()
+    await db.create(scope, "old-thread")
+    await db.mark_deleted_and_enqueue(scope, "old-thread", "scoped-old")
+
+    rows = await db.pending_checkpoint_deletes()
+    assert len(rows) == 1
+    assert '"thread_id": "old-thread"' in rows[0]["cleanup_context"]
+
+
 # ---------------------------------------------------------------------------
 # W05.1 — Schema idempotency
 # ---------------------------------------------------------------------------
@@ -359,7 +401,9 @@ def test_post_conversations_creates_record_in_callers_scope(tmp_path, monkeypatc
     assert record.status == ThreadStatus.NEW
     assert record.user_id == "user-create"
     # Another user cannot see it.
-    other = asyncio.run(db.get_in_scope(request_scope(SimpleNamespace(sub="someone-else"), "cuga-default"), body["id"]))
+    other = asyncio.run(
+        db.get_in_scope(request_scope(SimpleNamespace(sub="someone-else"), "cuga-default"), body["id"])
+    )
     assert other is None
 
 
@@ -496,13 +540,16 @@ def test_get_conversations_returns_status_and_legacy(tmp_path, monkeypatch):
     monkeypatch.setattr("cuga.config.get_service_instance_id", lambda: "inst-1")
 
     user = SimpleNamespace(sub="user-listing")
-    scope = _scope(tenant_id="tenant-1", instance_id="inst-1", agent_id="cuga-default", user_id="user-listing")
+    scope = _scope(
+        tenant_id="tenant-1", instance_id="inst-1", agent_id="cuga-default", user_id="user-listing"
+    )
 
     # Create a record for thread "t-active" (status will be 'active' after mark_turn_committed)
     asyncio.run(db.create(scope, "t-active"))
     asyncio.run(
         db.mark_turn_committed(
-            scope, "t-active",
+            scope,
+            "t-active",
             checkpoint_id="ckpt-x",
             agent_hash="",
             runtime_ver="",
