@@ -4,10 +4,6 @@ from unittest.mock import Mock
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState, VariablesManager
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
-from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.benchmark_mode import (
-    reset_skills_relaxed_execution,
-    set_skills_relaxed_execution,
-)
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.security import SecurityValidator
 from cuga.config import settings
 
@@ -425,34 +421,34 @@ async def test_dangerous_import_blocked(mock_state, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_skills_mode_allows_non_allowlisted_import(mock_state, monkeypatch):
-    """Skills mode skips import allowlist so skill workflows can use extra packages."""
+async def test_skills_mode_still_enforces_import_allowlist(mock_state, monkeypatch):
+    """Skills mode no longer bypasses the import allowlist (GHSA-4rj2).
+
+    Enabling Skills used to force relaxed execution for the whole run, which
+    disabled the allowlist entirely. Skills is now decoupled from relaxation, so
+    a non-allowlisted import is rejected exactly as it would be without skills.
+    """
     mock_state.reflection_skills_enabled = True
     code = "import pathlib\np = pathlib.Path('.')\nprint(p.name or '.')"
-    result, new_vars = await CodeExecutor.eval_with_tools_async(
-        code=code,
-        _locals={"x": 1},
-        state=mock_state,
-        mode="local",
-    )
-    assert "." in result
+    with pytest.raises(ImportError, match="not allowed"):
+        await CodeExecutor.eval_with_tools_async(
+            code=code,
+            _locals={"x": 1},
+            state=mock_state,
+            mode="local",
+        )
 
 
-def test_skills_relaxed_skips_wrapped_code_validation():
-    token = set_skills_relaxed_execution(True)
-    try:
+@pytest.mark.unit
+def test_skills_has_no_relaxation_lever_over_wrapped_code_validation():
+    """Skills no longer has any lever over the sandbox (GHSA-4rj2/GHSA-w5rx).
+
+    The only relaxation lever is ``execution.enforce_code_security = false``; there is no per-run
+    skills flag any more, so the strict validator rejects dangerous code on every
+    normal (sandbox-on) run.
+    """
+    with pytest.raises(PermissionError, match="Security violation"):
         SecurityValidator.validate_wrapped_code("open('/tmp/x')")
-    finally:
-        reset_skills_relaxed_execution(token)
-
-
-def test_wrapped_code_validation_active_without_skills():
-    token = set_skills_relaxed_execution(False)
-    try:
-        with pytest.raises(PermissionError, match="Security violation"):
-            SecurityValidator.validate_wrapped_code("open('/tmp/x')")
-    finally:
-        reset_skills_relaxed_execution(token)
 
 
 @pytest.mark.asyncio
@@ -565,7 +561,7 @@ async def test_mode_auto_detection(mock_state):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_generated_exit_ends_the_block_not_the_runtime(mock_state):
+async def test_generated_exit_ends_the_block_not_the_runtime(mock_state, monkeypatch):
     """exit() ends the block early and keeps its variables — it must not escape.
 
     Relaxed execution hands generated code the full builtins dict, so `exit`,
@@ -575,10 +571,11 @@ async def test_generated_exit_ends_the_block_not_the_runtime(mock_state):
     way). Stopping the block early is legitimate intent, so it is honoured:
     stdout and the variables computed before the exit survive, exactly as they
     would for a block that ended normally.
+
+    Relaxed execution now needs an explicit `execution.enforce_code_security = false` (GHSA-4rj2):
+    neither skills nor a benchmark profile grants the full builtins this scenario needs.
     """
-    # CodeExecutor sets the relaxed flag itself from the run's state, so ask for
-    # it there rather than via set_skills_relaxed_execution (which it overwrites).
-    mock_state.reflection_skills_enabled = True
+    monkeypatch.setattr(settings.execution, "enforce_code_security", False)
 
     result, new_vars = await CodeExecutor.eval_with_tools_async(
         code=(

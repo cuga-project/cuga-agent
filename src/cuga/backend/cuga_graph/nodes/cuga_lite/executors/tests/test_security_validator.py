@@ -1,9 +1,5 @@
 import pytest
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.benchmark_mode import (
-    reset_skills_relaxed_execution,
-    set_skills_relaxed_execution,
-)
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.security import SecurityValidator
 
 
@@ -92,23 +88,17 @@ def test_validate_wrapped_code_allows_allowed_imports():
 
 
 @pytest.mark.unit
-def test_skills_relaxed_skips_wrapped_code_validation():
-    token = set_skills_relaxed_execution(True)
-    try:
+def test_skills_has_no_relaxation_lever_over_wrapped_code_validation():
+    """Skills no longer has any lever over the sandbox (GHSA-4rj2/GHSA-w5rx).
+
+    The only way to relax execution is the operator setting ``execution.enforce_code_security = false``;
+    there is no per-run skills flag any more. The strict validator therefore rejects a
+    dangerous call and a forbidden import on every normal (sandbox-on) run.
+    """
+    with pytest.raises(PermissionError, match="Security violation"):
         SecurityValidator.validate_wrapped_code("open('/tmp/x')")
+    with pytest.raises(PermissionError, match="Security violation"):
         SecurityValidator.validate_wrapped_code("import requests")
-    finally:
-        reset_skills_relaxed_execution(token)
-
-
-@pytest.mark.unit
-def test_wrapped_code_validation_active_without_skills():
-    token = set_skills_relaxed_execution(False)
-    try:
-        with pytest.raises(PermissionError, match="Security violation"):
-            SecurityValidator.validate_wrapped_code("open('/tmp/x')")
-    finally:
-        reset_skills_relaxed_execution(token)
 
 
 @pytest.mark.unit
