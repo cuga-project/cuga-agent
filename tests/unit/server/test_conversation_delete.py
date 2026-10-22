@@ -134,7 +134,7 @@ async def test_checkpoint_failure_is_logged_and_does_not_fail_delete(threads_db,
 
 @pytest.mark.asyncio
 async def test_checkpoint_failure_still_completes_mark_deleted(threads_db, delete_app):
-    """Step 1 (mark_deleted) has succeeded even when checkpoint deletion fails."""
+    """Step 1 (mark_deleted_and_enqueue) has succeeded even when checkpoint deletion fails."""
     await _create(threads_db)
     saver = _make_saver()
     saver.adelete_thread = AsyncMock(side_effect=RuntimeError("boom"))
@@ -197,24 +197,50 @@ async def test_single_agent_delete_does_not_list_children(threads_db, delete_app
 
 
 # ---------------------------------------------------------------------------
-# W12.1 — checkpoint_delete_outbox retry
+# W12.1 — checkpoint_delete_outbox: durable intent and retry
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_failure_enqueues_outbox_row(threads_db, delete_app, monkeypatch):
-    """When adelete_thread fails the scoped key is inserted into the outbox."""
+async def test_outbox_row_created_atomically_with_mark_deleted(threads_db, delete_app):
+    """delete_conversation writes the outbox entry in the same step as mark_deleted."""
+    await _create(threads_db)
+    # Even with no saver, the outbox row must appear.
+    delete_app.app.state.app_state.checkpointer = None
+
+    async with _client(delete_app.app) as client:
+        response = await client.delete("/api/conversations/thread-a")
+
+    assert response.status_code == 200
+    pending = await threads_db.pending_checkpoint_deletes()
+    # Row is present even though there was nothing to delete.
+    assert len(pending) == 1
+    expected_key = delete_app.main._checkpoint_thread_id("thread-a", "user-a", AGENT_ID)
+    assert pending[0]["scoped_checkpoint_id"] == expected_key
+
+
+@pytest.mark.asyncio
+async def test_outbox_row_acknowledged_when_inline_delete_succeeds(threads_db, delete_app):
+    """After a successful adelete_thread the outbox row is removed immediately."""
+    await _create(threads_db)
+    saver = _make_saver()
+    delete_app.app.state.app_state.checkpointer = saver
+
+    async with _client(delete_app.app) as client:
+        response = await client.delete("/api/conversations/thread-a")
+
+    assert response.status_code == 200
+    pending = await threads_db.pending_checkpoint_deletes()
+    assert pending == [], "outbox should be empty after successful inline delete"
+
+
+@pytest.mark.asyncio
+async def test_outbox_row_remains_when_inline_delete_fails(threads_db, delete_app):
+    """When adelete_thread fails the outbox row stays for the worker to retry."""
     await _create(threads_db)
     saver = _make_saver()
     saver.adelete_thread = AsyncMock(side_effect=RuntimeError("disk full"))
     delete_app.app.state.app_state.checkpointer = saver
-
-    # Prevent the fire-and-forget task from running concurrently during the test.
-    # Close the coroutine immediately to suppress "coroutine was never awaited" warnings.
-    def _noop_create_task(coro, *args, **kwargs):
-        coro.close()
-
-    monkeypatch.setattr(delete_app.main.asyncio, "create_task", _noop_create_task)
 
     async with _client(delete_app.app) as client:
         response = await client.delete("/api/conversations/thread-a")
@@ -227,17 +253,14 @@ async def test_checkpoint_failure_enqueues_outbox_row(threads_db, delete_app, mo
 
 
 @pytest.mark.asyncio
-async def test_retry_consumer_acks_on_success(threads_db, delete_app, monkeypatch):
+async def test_retry_consumer_acks_on_success(threads_db, delete_app):
     """Retry consumer deletes the checkpoint and removes the outbox row."""
     from cuga.backend.server import main as main_mod
 
     await _create(threads_db)
-
-    # Pre-populate the outbox
     expected_key = main_mod._checkpoint_thread_id("thread-a", "user-a", AGENT_ID)
     await threads_db.enqueue_checkpoint_delete(expected_key)
 
-    # Saver succeeds on retry
     saver = _make_saver()
     delete_app.app.state.app_state.checkpointer = saver
 
@@ -249,16 +272,42 @@ async def test_retry_consumer_acks_on_success(threads_db, delete_app, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_retry_consumer_leaves_row_on_failure(threads_db, delete_app, monkeypatch):
+async def test_two_consecutive_saver_failures_then_recovery_without_new_delete(threads_db, delete_app):
+    """Row survives two consecutive saver failures and is acked on the third attempt — no new DELETE needed."""
+    from cuga.backend.server import main as main_mod
+
+    await _create(threads_db)
+    expected_key = main_mod._checkpoint_thread_id("thread-a", "user-a", AGENT_ID)
+    await threads_db.enqueue_checkpoint_delete(expected_key)
+
+    saver = _make_saver()
+    saver.adelete_thread = AsyncMock(side_effect=RuntimeError("still down"))
+    delete_app.app.state.app_state.checkpointer = saver
+
+    # First failure
+    await main_mod._retry_checkpoint_deletes(delete_app.app.state.app_state)
+    assert len(await threads_db.pending_checkpoint_deletes()) == 1, "row must remain after first failure"
+
+    # Second failure
+    await main_mod._retry_checkpoint_deletes(delete_app.app.state.app_state)
+    assert len(await threads_db.pending_checkpoint_deletes()) == 1, "row must remain after second failure"
+
+    # Saver recovers — third attempt succeeds
+    saver.adelete_thread = AsyncMock()
+    await main_mod._retry_checkpoint_deletes(delete_app.app.state.app_state)
+    assert await threads_db.pending_checkpoint_deletes() == [], "outbox must be empty after recovery"
+    saver.adelete_thread.assert_awaited_once_with(expected_key)
+
+
+@pytest.mark.asyncio
+async def test_retry_consumer_leaves_row_on_failure(threads_db, delete_app):
     """When retry also fails the outbox row remains for the next cycle."""
     from cuga.backend.server import main as main_mod
 
     await _create(threads_db)
-
     expected_key = main_mod._checkpoint_thread_id("thread-a", "user-a", AGENT_ID)
     await threads_db.enqueue_checkpoint_delete(expected_key)
 
-    # Saver still fails on retry
     saver = _make_saver()
     saver.adelete_thread = AsyncMock(side_effect=RuntimeError("still down"))
     delete_app.app.state.app_state.checkpointer = saver

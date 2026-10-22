@@ -133,6 +133,11 @@ interface DraftThreadState {
   hasSentFirstMessage: boolean;
   updatedAt: string;
   agentId: string;
+  /** Monotonically-changing key that identifies this draft instance.
+   *  Changes whenever the user starts a new chat or switches agent.
+   *  Used to scope the in-flight creation promise so a resolved result
+   *  from a previous draft never rebinds the current one. */
+  draftKey: string;
 }
 
 interface KnowledgePreviewModalState {
@@ -273,6 +278,7 @@ const createDraftThreadState = (agentId: string): DraftThreadState => ({
   hasSentFirstMessage: false,
   updatedAt: new Date().toISOString(),
   agentId,
+  draftKey: `${agentId}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
 });
 
 const loadDraftThreadState = (agentId: string): DraftThreadState | null => {
@@ -293,6 +299,10 @@ const loadDraftThreadState = (agentId: string): DraftThreadState | null => {
       hasSentFirstMessage: false,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
       agentId,
+      draftKey:
+        typeof parsed.draftKey === "string"
+          ? parsed.draftKey
+          : `${agentId}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
     };
   } catch (error) {
     console.error("Failed to restore draft thread state:", error);
@@ -1077,48 +1087,70 @@ export function ChatLanding() {
   );
 
   // Eager ID allocation for uploads on a new draft (W14.2). Concurrent callers share one request.
-  // The ref is keyed to the current agentId so a stale promise from a previous agent is discarded.
-  const conversationCreationRef = useRef<{ agentId: string; promise: Promise<string | null> } | null>(null);
+  // The ref is keyed to both agentId and draftKey so a resolved result from a previous
+  // draft (agent switch or New chat) can never rebind the current one.
+  const conversationCreationRef = useRef<{
+    agentId: string;
+    draftKey: string;
+    promise: Promise<string | null>;
+  } | null>(null);
   const ensureConversationId = useCallback(async (): Promise<string | null> => {
     const existing = effectiveChatThreadId?.trim();
     if (existing) return existing;
-    // If there's an in-flight request for the same agent, reuse it.
-    if (conversationCreationRef.current?.agentId === effectiveChatAgentId) {
+    const currentDraftKey = draftThread.draftKey;
+    // Reuse the in-flight request only when both agent and draft identity match.
+    if (
+      conversationCreationRef.current?.agentId === effectiveChatAgentId &&
+      conversationCreationRef.current?.draftKey === currentDraftKey
+    ) {
       return conversationCreationRef.current.promise;
     }
+    // Capture the identities before the async boundary so the closure checks
+    // the same values it was started with, not whatever is current when it resolves.
+    const capturedAgentId = effectiveChatAgentId;
+    const capturedDraftKey = currentDraftKey;
     const promise = (async () => {
       try {
-        const created = await api.createConversation(effectiveChatAgentId);
-        // Only apply if still on the same agent and still a draft (no existing threadId).
+        const created = await api.createConversation(capturedAgentId);
+        // Only apply if both agent and draft identity still match.
         setDraftThread((prev) => {
+          if (prev.agentId !== capturedAgentId || prev.draftKey !== capturedDraftKey) return prev;
           if (prev.threadId) return prev; // another create already won
           return { ...prev, threadId: created.id, updatedAt: new Date().toISOString() };
         });
-        setActiveThreadId(created.id);
+        // Guard setActiveThreadId: only apply when agent still matches.
+        // chatAgentIdRef.current always holds the live agentId, so we can check it
+        // inside the async continuation without capturing a stale closure value.
+        if (chatAgentIdRef.current === capturedAgentId) {
+          setActiveThreadId(created.id);
+        }
         return created.id;
       } catch (err) {
         console.error("Failed to create conversation", err);
         return null;
       } finally {
-        // Clear only if this is still the current in-flight request for this agent.
-        if (conversationCreationRef.current?.agentId === effectiveChatAgentId) {
+        if (
+          conversationCreationRef.current?.agentId === capturedAgentId &&
+          conversationCreationRef.current?.draftKey === capturedDraftKey
+        ) {
           conversationCreationRef.current = null;
         }
       }
     })();
-    conversationCreationRef.current = { agentId: effectiveChatAgentId, promise };
+    conversationCreationRef.current = { agentId: capturedAgentId, draftKey: capturedDraftKey, promise };
     return promise;
-  }, [effectiveChatThreadId, effectiveChatAgentId]);
+  }, [effectiveChatThreadId, effectiveChatAgentId, draftThread.draftKey]);
 
-  // Clear any in-flight creation that belongs to a different agent when the agent changes.
+  // Clear any in-flight creation that belongs to a different agent or draft when either changes.
   useEffect(() => {
+    const ref = conversationCreationRef.current;
     if (
-      conversationCreationRef.current !== null &&
-      conversationCreationRef.current.agentId !== effectiveChatAgentId
+      ref !== null &&
+      (ref.agentId !== effectiveChatAgentId || ref.draftKey !== draftThread.draftKey)
     ) {
       conversationCreationRef.current = null;
     }
-  }, [effectiveChatAgentId]);
+  }, [effectiveChatAgentId, draftThread.draftKey]);
 
   // Opening the session knowledge panel on a new draft allocates the thread ID so uploads are enabled.
   useEffect(() => {
