@@ -69,6 +69,7 @@ Tool Approval Example (with HITL):
 """
 
 from typing import Callable, List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
+import sys
 import time
 import uuid
 from loguru import logger
@@ -81,6 +82,8 @@ from cuga.backend.observability.openlit_init import init_openlit, set_session_at
 from cuga.config import settings
 
 if TYPE_CHECKING:
+    from langgraph.checkpoint.base import BaseCheckpointSaver
+
     from cuga.backend.cuga_graph.nodes.answer.answer_function import FinalAnswerConfig
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
     from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import Shortlister
@@ -1766,6 +1769,36 @@ def _empty_answer_is_final(result: dict, formatter_configured: bool) -> bool:
     return formatter_configured and _finalization_ran(result)
 
 
+def _resolve_checkpointer(saver: Optional["BaseCheckpointSaver"], owner: str) -> "BaseCheckpointSaver":
+    """Return the saver to compile ``owner``'s graph with.
+
+    ``None`` keeps the historical default: a fresh in-process ``MemorySaver``.
+    A passed saver must be async-capable, because the SDK drives its graph with
+    ``ainvoke``/``astream``. A saver that leaves ``aget_tuple`` to the base class
+    is sync-only. ``SqliteSaver`` overrides it only to raise, so it is rejected
+    by type as well.
+    """
+    from langgraph.checkpoint.base import BaseCheckpointSaver
+    from langgraph.checkpoint.memory import MemorySaver
+
+    if saver is None:
+        return MemorySaver()
+    aget_tuple = getattr(type(saver), "aget_tuple", None)
+    sync_only = aget_tuple is None or aget_tuple is BaseCheckpointSaver.aget_tuple
+    if not sync_only:
+        # Only an already-imported module can own the instance, so this never
+        # imports the sqlite package on its own.
+        sqlite_mod = sys.modules.get("langgraph.checkpoint.sqlite")
+        sqlite_saver_cls = getattr(sqlite_mod, "SqliteSaver", None)
+        sync_only = sqlite_saver_cls is not None and isinstance(saver, sqlite_saver_cls)
+    if sync_only:
+        raise TypeError(
+            f"{owner} requires an async-capable checkpointer "
+            "(e.g. AsyncSqliteSaver, AsyncPostgresSaver, MemorySaver)"
+        )
+    return saver
+
+
 class CugaAgent:
     """
     Simple SDK interface for CUGA Agent.
@@ -1782,6 +1815,10 @@ class CugaAgent:
         auto_load_policies: If True, automatically loads policies from cuga_folder on first invoke/stream
         filesystem_sync: If True, automatically saves policies to .cuga folder when added/updated (default: True)
         enable_knowledge: If True, enable knowledge tools; False to disable; None to auto-detect from settings
+        checkpointer: Keyword-only LangGraph saver for conversation state. None (the default)
+            uses a fresh in-process ``MemorySaver``. A passed saver must be async-capable
+            (e.g. ``AsyncSqliteSaver``, ``AsyncPostgresSaver``); a sync-only saver raises
+            ``TypeError`` when the graph is first compiled. The caller owns its lifecycle.
 
     Attributes:
         graph: The underlying LangGraph StateGraph (compiled)
@@ -1857,6 +1894,8 @@ class CugaAgent:
         final_answer: "Optional[Union[str, Callable[[str], str], FinalAnswerConfig]]" = None,
         execution_mode: Optional[str] = None,
         step_discipline: Optional[str] = None,
+        *,
+        checkpointer: Optional["BaseCheckpointSaver"] = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -1893,6 +1932,9 @@ class CugaAgent:
                 function=...)` combines both. None = unchanged behavior. Non-SDK
                 deployments use the `[final_answer]` settings section. Not applied to
                 supervisor-composed synthesis (#621).
+            checkpointer: Keyword-only LangGraph saver for the compiled graph. None = a fresh
+                `MemorySaver` (unchanged behavior). Must be async-capable; a sync-only saver
+                (e.g. `SqliteSaver`) raises `TypeError` on first compile.
 
         Example with tool approval policy:
             ```python
@@ -1905,15 +1947,25 @@ class CugaAgent:
             )
 
             # Invoke - will interrupt if approval needed
-            config = {"configurable": {"thread_id": "user-123"}}
-            result = await agent.graph.ainvoke({"input": "Delete all data"}, config)
+            thread_id = "user-123"
+            result = await agent.invoke("Delete all data", thread_id=thread_id)
 
             # Check if interrupted
-            state = agent.graph.get_state(config)
+            config = {"configurable": {"thread_id": thread_id}}
+            state = await agent.graph.aget_state(config)
             if state.next:  # Has pending nodes = interrupted
-                # Handle approval (see docs for full example)
-                agent.graph.update_state(config, {"hitl_response": {...}})
-                result = await agent.graph.ainvoke(None, config)  # Resume
+                # Resume with the user's answer (message=None means "resume this thread")
+                from datetime import datetime
+                from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
+                    ActionResponse, ActionType
+                )
+                approval = ActionResponse(
+                    action_id="tool_approval",
+                    response_type=ActionType.CONFIRMATION,
+                    confirmed=True,  # or False to deny
+                    timestamp=datetime.now().isoformat(),
+                )
+                result = await agent.invoke(None, thread_id=thread_id, action_response=approval)
             ```
         """
         # Load settings
@@ -1923,6 +1975,7 @@ class CugaAgent:
         self._callbacks = callbacks
         self._graph = None
         self._compiled_graph = None
+        self._checkpointer = checkpointer
         self._policy_system = policy_system
         self._special_instructions = special_instructions
 
@@ -2541,20 +2594,35 @@ class CugaAgent:
             result = await agent.graph.ainvoke({"input": "Run tool"}, config)
 
             # Check if interrupted for approval
-            state = agent.graph.get_state(config)
+            state = await agent.graph.aget_state(config)
             if state.next:  # Interrupted
-                # Handle approval and resume
-                agent.graph.update_state(config, {"hitl_response": approval})
-                result = await agent.graph.ainvoke(None, config)
+                # Resume on the graph by passing the user's ActionResponse in
+                # Command(resume=...). Updating "hitl_response" with aupdate_state()
+                # and then calling ainvoke(None) does NOT resume.
+                # Outside direct graph use, prefer
+                # agent.invoke(None, thread_id="user-123", action_response=approval).
+                from datetime import datetime
+                from langgraph.types import Command
+                from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
+                    ActionResponse, ActionType
+                )
+
+                approval = ActionResponse(
+                    action_id="tool_approval",
+                    response_type=ActionType.CONFIRMATION,
+                    confirmed=True,  # or False to deny
+                    timestamp=datetime.now().isoformat(),
+                )
+                result = await agent.graph.ainvoke(Command(resume=approval.model_dump()), config)
             ```
         """
         if self._compiled_graph is None:
-            from langgraph.checkpoint.memory import MemorySaver
+            # Always compile with checkpointer and interrupt for HITL support.
+            # Resolve (and validate) it before building, so a bad saver fails fast.
+            checkpointer = _resolve_checkpointer(self._checkpointer, "CugaAgent")
 
             graph = self._create_graph()
 
-            # Always compile with checkpointer and interrupt for HITL support
-            checkpointer = MemorySaver()
             self._compiled_graph = graph.compile(
                 checkpointer=checkpointer,
                 interrupt_before=["WaitForResponse"],  # Interrupt before waiting for user
@@ -2780,7 +2848,7 @@ class CugaAgent:
             resume_prior_tool_calls = 0
             if receipt_collector is not None:
                 try:
-                    prior_state = self.graph.get_state(run_config)
+                    prior_state = await self.graph.aget_state(run_config)
                     if prior_state and prior_state.values:
                         resume_prior_tool_calls = len(prior_state.values.get("tool_calls") or [])
                 except Exception as e:
@@ -2811,7 +2879,7 @@ class CugaAgent:
             # Check if graph interrupted again
             if not final_answer and not empty_is_final:
                 try:
-                    state = self.graph.get_state(run_config)
+                    state = await self.graph.aget_state(run_config)
                     if state.next:  # Has pending nodes = interrupted again
                         logger.info("Graph interrupted again for human-in-the-loop interaction")
                         final_answer = (
@@ -2883,7 +2951,7 @@ class CugaAgent:
         # Try to get existing state for this thread_id
         existing_state = None
         try:
-            state_snapshot = self.graph.get_state(run_config)
+            state_snapshot = await self.graph.aget_state(run_config)
             if state_snapshot and state_snapshot.values:
                 existing_state = AgentState(**state_snapshot.values)
                 logger.debug(f"Found existing state for thread_id: {thread_id}")
@@ -3031,12 +3099,12 @@ class CugaAgent:
         # Check if graph interrupted for approval
         if not final_answer:
             try:
-                state = self.graph.get_state(run_config)
+                state = await self.graph.aget_state(run_config)
                 if state.next:  # Has pending nodes = interrupted
                     logger.info("Graph interrupted for human-in-the-loop interaction")
                     final_answer = (
                         "⏸️ Execution paused for approval. "
-                        "Use agent.graph.get_state() and agent.graph.update_state() to handle the interrupt."
+                        "Use agent.invoke(None, thread_id=..., action_response=...) to resume."
                     )
             except Exception as e:
                 logger.debug(f"Could not check interrupt state: {e}")
@@ -3406,6 +3474,13 @@ class CugaSupervisor:
     Example (YAML):
         supervisor = await CugaSupervisor.from_yaml("supervisor_config.yaml")
         result = await supervisor.invoke("Complex task requiring multiple agents")
+
+    Checkpointer:
+        Pass ``checkpointer=`` (keyword-only) to keep the supervisor graph's state in your own
+        async-capable LangGraph saver (e.g. ``AsyncSqliteSaver``, ``AsyncPostgresSaver``). None
+        (the default) uses a fresh in-process ``MemorySaver``; a sync-only saver raises
+        ``TypeError`` on first compile. It is not passed on to internal ``CugaAgent``
+        sub-agents, which keep their own checkpointers.
     """
 
     def __init__(
@@ -3424,6 +3499,8 @@ class CugaSupervisor:
         filesystem_sync: Optional[bool] = None,
         interactive: bool = True,
         name: Optional[str] = None,
+        *,
+        checkpointer: Optional["BaseCheckpointSaver"] = None,
     ):
         """
         Initialize supervisor.
@@ -3447,6 +3524,10 @@ class CugaSupervisor:
             reset_policy_storage: If True, clears all existing policies from storage on init
             filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
             name: Optional supervisor identity mixed into child sub-agent checkpoint keys
+            checkpointer: Keyword-only LangGraph saver for the supervisor graph. None = a fresh
+                `MemorySaver` (unchanged behavior). Must be async-capable; a sync-only saver
+                (e.g. `SqliteSaver`) raises `TypeError` on first compile. Not passed on to
+                internal sub-agents.
         """
         from cuga.config import settings
 
@@ -3458,6 +3539,7 @@ class CugaSupervisor:
         self._special_instructions = special_instructions
         self._graph = None
         self._compiled_graph = None
+        self._checkpointer = checkpointer
         self._supervisor_state = None
         self._interactive = interactive
         from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
@@ -3685,14 +3767,14 @@ class CugaSupervisor:
             Compiled LangGraph graph
         """
         if self._compiled_graph is None:
-            from langgraph.checkpoint.memory import MemorySaver
-
             from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
+
+            # Resolve (and validate) the saver before building, so a bad saver fails fast.
+            checkpointer = _resolve_checkpointer(self._checkpointer, "CugaSupervisor")
 
             if self._graph is None:
                 self._graph = self._create_supervisor_hitl_wrapper_graph()
 
-            checkpointer = MemorySaver()
             self._compiled_graph = self._graph.compile(
                 checkpointer=checkpointer,
                 interrupt_before=[NodeNames.WAIT_FOR_RESPONSE],
@@ -3820,7 +3902,7 @@ class CugaSupervisor:
 
         if not final_answer:
             try:
-                state = self.graph.get_state(config)
+                state = await self.graph.aget_state(config)
                 if state.next:
                     logger.info("Supervisor graph interrupted for human-in-the-loop interaction")
                     final_answer = (

@@ -46,6 +46,8 @@ jobs:
       - run: uv run ruff check && uv run ruff format --check
       - name: No exception detail in caller-facing responses (#681 / #721)
         run: uv run python scripts/checks/no_exc_in_responses.py
+      - name: No synchronous LangGraph state calls in production code (#774)
+        run: uv run python scripts/checks/no_sync_graph_state.py
 
   unit-a:
     name: Unit (graph)
@@ -229,8 +231,8 @@ jobs:
         run: |
           psql -h localhost -U cuga -d cuga_test \
             -c "CREATE EXTENSION IF NOT EXISTS vector;"
-      - name: Run pgvector integration tests (MVT)
-        run: uv run pytest tests/integration/test_knowledge_pgvector_rollback.py
+      - name: Run pgvector tests
+        run: uv run pytest tests/unit tests/integration
               -v -m pgvector -o addopts="-ra --strict-markers --import-mode=importlib"
               --maxfail=3 --durations=10
       - name: Dump Postgres logs on failure

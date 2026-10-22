@@ -218,6 +218,15 @@ The default `uv run pytest` excludes `@pytest.mark.manual` and `@pytest.mark.pgv
 > `test_*.py` path to `.github/workflows/tests.yml` — put the file in `tests/unit/`
 > (or the matching colocated `src/.../tests/` directory) and mark it. See AGENTS.md.
 
+## Checkpoint compatibility
+
+Durable checkpoints keep `AgentState` across CUGA upgrades, and LangGraph does not migrate it. A thread saved by an older release must still load, so changes to `AgentState` (and the models it nests) must stay backward compatible:
+
+- **New fields need a default.** A checkpoint written before the field existed does not have it.
+- **Removed fields must be tolerated.** `AgentState` has no `extra` setting, so pydantic's default `extra="ignore"` drops unknown keys. Do not set `extra="forbid"` (old checkpoints stop loading) or `extra="allow"` (removed fields come back as attributes). List a removed field in `ACKNOWLEDGED_REMOVED_FIELDS` in `tests/unit/state/test_agent_state_compat.py`.
+- **Renames need an alias.** Use `validation_alias=AliasChoices("new_name", "old_name")` so stored values are kept instead of silently dropped.
+- **Add a fixture for each release.** Run `uv run python tests/unit/state/test_agent_state_compat.py` to write `tests/unit/state/fixtures/agent_state_v<version>.json`. Never edit an existing fixture.
+
 
 ## AI Agent Skills
 

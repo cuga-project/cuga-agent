@@ -121,7 +121,7 @@ async def test_browser_action_interrupt_keeps_tool_call_in_parent_checkpoint():
 
     await graph.ainvoke(AgentState(input="click login"), config=config)
 
-    snapshot = graph.get_state(config)
+    snapshot = await graph.aget_state(config)
     messages = AgentState(**snapshot.values).messages
     assert snapshot.next == (planner.browser_planner_agent.name,)
     assert messages[-1].tool_calls == [

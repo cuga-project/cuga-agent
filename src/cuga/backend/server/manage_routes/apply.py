@@ -189,5 +189,8 @@ async def rebuild_production_agent(app_state: Any, config: dict[str, Any]) -> No
     if not prod_agent:
         logger.warning("No production agent found in state, skipping rebuild")
         return
-    await rebuild_agent_from_config(prod_agent, config)
+    # Pass the shared saver so a publish keeps conversations (#774). None (lifespan
+    # not run) falls back to a fresh MemorySaver, as before.
+    await rebuild_agent_from_config(prod_agent, config, checkpointer=getattr(app_state, "checkpointer", None))
+    prod_agent._checkpoint_config_version = str(getattr(app_state, "config_version", None) or 0)
     logger.info("Production agent graph rebuilt successfully")

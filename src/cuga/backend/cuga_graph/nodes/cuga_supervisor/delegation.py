@@ -121,6 +121,8 @@ def create_agent_delegation_func(
                 agent_name=agent_name,
                 agent_or_config=agent_or_config,
             )
+            # A child tool-approval pause is not surfaced to the parent: invoke() returns the
+            # pause notice as the answer and the child stays parked in its own saver (#774, W04.4).
             async with child_checkpoint_lock(agent_or_config, child_thread_id):
                 result = await agent_or_config.invoke(
                     task,

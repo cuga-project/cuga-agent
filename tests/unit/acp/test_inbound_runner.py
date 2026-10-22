@@ -8,6 +8,8 @@ from typing import Any
 
 import pytest
 
+from tests.fixtures.async_only_saver import parked_hitl_graph
+
 pytestmark = [pytest.mark.unit, pytest.mark.anyio]
 
 
@@ -23,8 +25,11 @@ class _FakeAgent:
         self.invoke_started = asyncio.Event()
         self.invoke_release = asyncio.Event()
         self.block_invoke = False
-        self.graph = SimpleNamespace(get_state=lambda _config: type(self).snapshot)
+        self.graph = SimpleNamespace(aget_state=self._aget_state)
         type(self).instances.append(self)
+
+    async def _aget_state(self, _config: dict[str, Any]) -> Any:
+        return type(self).snapshot
 
     async def initialize(self) -> None:
         self.initialize_calls += 1
@@ -208,9 +213,10 @@ async def test_runner_fails_closed_when_state_inspection_raises(monkeypatch: pyt
     class _BrokenAgent(_FakeAgent):
         def __init__(self) -> None:
             super().__init__()
-            self.graph = SimpleNamespace(
-                get_state=lambda _config: (_ for _ in ()).throw(RuntimeError("secret"))
-            )
+            self.graph = SimpleNamespace(aget_state=self._raise)
+
+        async def _raise(self, _config: dict[str, Any]) -> Any:
+            raise RuntimeError("secret")
 
     monkeypatch.setattr(cuga.sdk, "CugaAgent", _BrokenAgent)
     events = [event async for event in StdioCugaRunner().run("do it", context_id="ctx")]
@@ -231,3 +237,58 @@ async def test_runner_shutdown_closes_once_and_is_idempotent(monkeypatch: pytest
     await runner.shutdown()
 
     assert agent.closed == 1
+
+
+# -- durable saver: the pending-action reads must use the async state API ----------
+
+
+@pytest.mark.unit
+async def test_runner_reads_pending_action_on_async_only_saver(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both ``_pending_action`` reads (approval lookup and post-invoke) await ``aget_state``.
+
+    The graph runs on ``AsyncOnlySaver``, which simulates an async durable saver
+    (``AsyncSqliteSaver`` / ``AsyncPostgresSaver``) rejecting sync calls from the event
+    loop. It records each sync call before raising, so the test does not depend on how
+    the runner reports a failed state read.
+    """
+    import cuga.sdk
+    from cuga.backend.server.acp.runner import StdioCugaRunner
+
+    graph, saver = parked_hitl_graph({"action_id": "action-1", "description": "Approve operation"})
+
+    class _GraphAgent(_FakeAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self.graph = graph
+
+        async def invoke(self, message: str | None, **kwargs: Any) -> Any:
+            self.calls.append({"message": message, **kwargs})
+            config = {"configurable": {"thread_id": kwargs["thread_id"]}}
+            if kwargs.get("action_response") is None:
+                await self.graph.ainvoke({"answer": ""}, config)  # parks before WaitForResponse
+                return SimpleNamespace(answer=None, error=None)
+            final = await self.graph.ainvoke(None, config)
+            return SimpleNamespace(answer=final["answer"], error=None)
+
+    monkeypatch.setattr(cuga.sdk, "CugaAgent", _GraphAgent)
+    runner = StdioCugaRunner()
+
+    # Post-invoke read: the graph parked, so the runner surfaces the action.
+    events = [event async for event in runner.run("do it", context_id="ctx")]
+    assert [event.name for event in events] == ["input_required"]
+    assert events[0].data == {"text": "Approve operation", "action_id": "action-1"}
+
+    # Approval read binds the resume to the parked action; the post-invoke read
+    # then sees the finished graph.
+    resumed = [
+        event
+        async for event in runner.run(
+            "do it", context_id="ctx", approval={"action_id": "action-1", "confirmed": True}
+        )
+    ]
+    assert [event.name for event in resumed] == ["final_answer"]
+    assert resumed[0].data == {"text": "done"}
+    call = _GraphAgent.instances[0].calls[-1]
+    assert call["message"] is None
+    assert call["action_response"].action_id == "action-1"
+    assert saver.sync_calls == []

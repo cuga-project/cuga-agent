@@ -5,8 +5,12 @@ from typing import Any
 from cuga.backend.server.manage_routes.helpers import extract_agent_feature_overrides
 
 
-async def rebuild_agent_from_config(agent: Any, config: dict[str, Any]) -> None:
-    """Reset tool provider and rebuild an agent graph from config."""
+async def rebuild_agent_from_config(agent: Any, config: dict[str, Any], *, checkpointer: Any = None) -> None:
+    """Reset tool provider and rebuild an agent graph from config.
+
+    ``checkpointer`` is the shared saver for published agents; ``None`` (draft
+    agents) gives the rebuilt graph its own fresh ``MemorySaver``.
+    """
     if not agent:
         return
     tp = getattr(agent, "tool_provider", None)
@@ -25,4 +29,4 @@ async def rebuild_agent_from_config(agent: Any, config: dict[str, Any]) -> None:
         agent.enable_filesystem_tools = overrides["enable_filesystem_tools"]
     llm_cfg = (config or {}).get("llm") or {}
     agent.llm_config = llm_cfg if llm_cfg else None
-    await agent.build_graph()
+    await agent.build_graph(checkpointer=checkpointer)
