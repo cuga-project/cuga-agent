@@ -158,17 +158,24 @@ export async function getAgentContext(): Promise<Response> {
   return apiFetch("/api/agent/context");
 }
 
-export async function getAgentState(threadId: string): Promise<Response> {
+export async function getAgentState(threadId: string, agentId?: string): Promise<Response> {
   return apiFetch(`/api/agent/state?thread_id=${encodeURIComponent(threadId)}`, {
-    headers: { "X-Thread-ID": threadId },
+    headers: {
+      "X-Thread-ID": threadId,
+      ...(agentId ? { "X-Agent-ID": agentId } : {}),
+    },
   });
 }
 
-export async function postStop(threadId: string): Promise<Response> {
+export async function postStop(threadId: string, agentId?: string): Promise<Response> {
   const base = getApiBaseUrl();
   return apiFetch(`${base}/stop`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Thread-ID": threadId },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Thread-ID": threadId,
+      ...(agentId ? { "X-Agent-ID": agentId } : {}),
+    },
     body: JSON.stringify({ thread_id: threadId }),
   });
 }
@@ -176,7 +183,7 @@ export async function postStop(threadId: string): Promise<Response> {
 export async function postStream(
   body: { query: string } | object,
   options: {
-    threadId: string;
+    threadId: string | null | undefined;
     useDraft?: boolean;
     disableHistory?: boolean;
     signal?: AbortSignal;
@@ -185,7 +192,7 @@ export async function postStream(
 ): Promise<Response> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "X-Thread-ID": options.threadId,
+    ...(options.threadId ? { "X-Thread-ID": options.threadId } : {}),
     "X-Agent-ID": options.agentId || getKnowledgeAgentId(),
   };
   if (options.useDraft) headers["X-Use-Draft"] = "true";
@@ -466,33 +473,41 @@ export async function getCommands(): Promise<SlashCommandInfo[]> {
   }));
 }
 
-export async function getWorkspaceTree(threadId?: string, forceRefresh = false): Promise<Response> {
+export async function getWorkspaceTree(
+  threadId?: string,
+  agentId?: string,
+  forceRefresh = false
+): Promise<Response> {
   const params = new URLSearchParams();
   if (threadId) params.set("thread_id", threadId);
+  if (agentId) params.set("agent_id", agentId);
   if (forceRefresh) params.set("_", String(Date.now()));
   const q = params.toString();
   return apiFetch(`/api/workspace/tree${q ? `?${q}` : ""}`);
 }
 
-export async function getWorkspaceFile(path: string, threadId?: string): Promise<Response> {
+export async function getWorkspaceFile(path: string, threadId?: string, agentId?: string): Promise<Response> {
   const params = new URLSearchParams({ path });
   if (threadId) params.set("thread_id", threadId);
+  if (agentId) params.set("agent_id", agentId);
   return apiFetch(`/api/workspace/file?${params.toString()}`);
 }
 
-export async function getWorkspaceDownload(path: string, threadId?: string): Promise<Response> {
+export async function getWorkspaceDownload(path: string, threadId?: string, agentId?: string): Promise<Response> {
   const params = new URLSearchParams({ path });
   if (threadId) params.set("thread_id", threadId);
+  if (agentId) params.set("agent_id", agentId);
   return apiFetch(`/api/workspace/download?${params.toString()}`);
 }
 
-export async function uploadWorkspaceFile(file: File, threadId: string): Promise<Response> {
+export async function uploadWorkspaceFile(file: File, threadId: string, agentId?: string): Promise<Response> {
   const formData = new FormData();
   formData.append("file", file);
   const params = new URLSearchParams({ thread_id: threadId });
+  if (agentId) params.set("agent_id", agentId);
   return apiFetch(`/api/workspace/upload?${params.toString()}`, {
     method: "POST",
-    headers: { "X-Thread-ID": threadId },
+    headers: { "X-Thread-ID": threadId, ...(agentId ? { "X-Agent-ID": agentId } : {}) },
     body: formData,
   });
 }

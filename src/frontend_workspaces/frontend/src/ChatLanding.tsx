@@ -699,10 +699,18 @@ export function ChatLanding() {
   const refreshThreads = useCallback(async () => {
     const agentId = effectiveChatAgentId;
     try {
-      const res = await api.getConversationThreads(agentId);
-      if (res.ok) {
-        const data = await res.json();
-        if (agentId === chatAgentIdRef.current) setThreads(data.threads || []);
+      const convs = await api.getConversations();
+      if (agentId === chatAgentIdRef.current) {
+        setThreads(
+          convs.map((c) => ({
+            thread_id: c.id,
+            latest_version: 0,
+            first_message: c.title || c.preview || "",
+            updated_at: c.timestamp ? new Date(c.timestamp).toISOString() : new Date().toISOString(),
+            status: c.status,
+            pending_interrupt: c.pending_interrupt,
+          }))
+        );
       }
     } catch (err) {
       console.error("Error fetching threads:", err);
@@ -737,7 +745,7 @@ export function ChatLanding() {
   const handleSelectThread = useCallback((threadId: string) => {
     const thread = threads.find((t) => t.thread_id === threadId);
     setSelectedThreadId(threadId);
-    setSelectedThreadStatus(thread?.status ?? null);
+    setSelectedThreadStatus(thread?.status || null);
     setSelectedThreadUnavailable(false);
   }, [threads]);
 
@@ -910,18 +918,20 @@ export function ChatLanding() {
 
   useEffect(() => {
     let cancelled = false;
-    const agentId = effectiveChatAgentId;
     (async () => {
       try {
-        const res = await api.getConversationThreads(agentId);
+        const convs = await api.getConversations();
         if (cancelled) return;
-        if (!res.ok) {
-          const errorMsg = `Failed to load conversation threads (${res.status} ${res.statusText})`;
-          addToast("warning", "Threads Load Warning", errorMsg);
-          console.error(errorMsg);
-        } else {
-          setThreads((await res.json()).threads || []);
-        }
+        setThreads(
+          convs.map((c) => ({
+            thread_id: c.id,
+            latest_version: 0,
+            first_message: c.title || c.preview || "",
+            updated_at: c.timestamp ? new Date(c.timestamp).toISOString() : new Date().toISOString(),
+            status: c.status,
+            pending_interrupt: c.pending_interrupt,
+          }))
+        );
       } catch (err) {
         if (cancelled) return;
         const errorMsg = err instanceof Error ? err.message : "Network error loading conversation threads";
@@ -957,7 +967,7 @@ export function ChatLanding() {
   const fetchWorkspaceTree = useCallback(async (forceRefresh = false) => {
     try {
       if (forceRefresh) setWorkspaceTreeLoading(true);
-      const res = await api.getWorkspaceTree(effectiveChatThreadId || undefined, forceRefresh);
+      const res = await api.getWorkspaceTree(effectiveChatThreadId || undefined, effectiveChatAgentId, forceRefresh);
       if (res.ok) {
         const data = await res.json();
         setWorkspaceTree(data.tree || []);
@@ -972,7 +982,7 @@ export function ChatLanding() {
     } finally {
       setWorkspaceTreeLoading(false);
     }
-  }, [addToast, effectiveChatThreadId]);
+  }, [addToast, effectiveChatThreadId, effectiveChatAgentId]);
 
   useEffect(() => {
     fetchWorkspaceTree();
@@ -1337,7 +1347,7 @@ export function ChatLanding() {
             onOpenConversation={(threadId) => {
               const thread = threads.find((t) => t.thread_id === threadId);
               setSelectedThreadId(threadId);
-              setSelectedThreadStatus(thread?.status ?? null);
+              setSelectedThreadStatus(thread?.status || null);
               setSelectedThreadUnavailable(false);
               setActiveView("chat");
             }}

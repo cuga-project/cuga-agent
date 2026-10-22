@@ -144,7 +144,7 @@ export async function customSendMessage(
   // Listen for abort signal to call /stop endpoint
   const abortHandler = () => {
     console.log("User cancelled request, calling /stop endpoint");
-    stopCugaAgent(threadId);
+    if (threadId) stopCugaAgent(threadId);
   };
   
   if (requestOptions.signal) {
@@ -253,22 +253,6 @@ export async function customSendMessage(
       currentStepTitle = "";
       currentStepContent = "";
     };
-
-    // Build headers
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "X-Thread-ID": threadId,
-    };
-
-    // Add draft header if needed
-    if (useDraft) {
-      headers["X-Use-Draft"] = "true";
-    }
-
-    // Add disable history header if needed
-    if (disableHistory) {
-      headers["X-Disable-History"] = "true";
-    }
 
     const response = await api.postStream(
       actionResponse || {
