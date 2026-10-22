@@ -262,7 +262,7 @@ Example output:
 
 Run tests with:
 ```bash
-pytest src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/test_code_executor.py -v
+uv run pytest src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/tests/test_code_executor.py -v
 ```
 
 All tests include:
