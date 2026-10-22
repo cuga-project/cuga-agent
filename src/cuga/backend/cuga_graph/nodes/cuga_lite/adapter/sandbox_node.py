@@ -388,6 +388,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                             "skills_enabled": state.reflection_skills_enabled,
                             "skills_prompt_section": skills_prompt_section,
                             "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
+                            "step_discipline": one_tool_per_step,
                         },
                         config=config or {},
                     )
