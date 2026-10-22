@@ -468,3 +468,76 @@ def test_stream_unknown_thread_id_is_404_and_creates_no_record(tmp_path, monkeyp
     assert response.status_code == 404
     assert seen == []
     assert asyncio.run(db.get_in_scope(request_scope(user, "cuga-default"), "unknown-id")) is None
+
+
+# ---------------------------------------------------------------------------
+# W05.6 — GET /api/conversations returns status + pending_interrupt
+# ---------------------------------------------------------------------------
+
+
+def test_get_conversations_returns_status_and_legacy(tmp_path, monkeypatch):
+    """Mixed listing: active thread has record → 'active'; history-only thread → 'legacy'.
+    No new record is created for the legacy thread.
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from cuga.backend.server import main
+
+    # Build an in-memory ConversationThreadsDB
+    db = _make_db(tmp_path)
+    monkeypatch.setattr("cuga.backend.server.conversation_threads.get_conversation_threads_db", lambda: db)
+
+    # Patch config accessors so request_scope works
+    monkeypatch.setattr("cuga.config.get_tenant_id", lambda: "tenant-1")
+    monkeypatch.setattr("cuga.config.get_service_instance_id", lambda: "inst-1")
+
+    user = SimpleNamespace(sub="user-listing")
+    scope = _scope(tenant_id="tenant-1", instance_id="inst-1", agent_id="cuga-default", user_id="user-listing")
+
+    # Create a record for thread "t-active" (status will be 'active' after mark_turn_committed)
+    asyncio.run(db.create(scope, "t-active"))
+    asyncio.run(
+        db.mark_turn_committed(
+            scope, "t-active",
+            checkpoint_id="ckpt-x",
+            agent_hash="",
+            runtime_ver="",
+            pending_interrupt=False,
+        )
+    )
+    # "t-legacy" has no record at all
+
+    # Stub conversation_db.get_all_threads_for_agent
+    class FakeConvDB:
+        async def get_all_threads_for_agent(self, agent_id, user_id):
+            return [
+                {"thread_id": "t-active", "first_message": "Hello", "updated_at": "2024-01-01T00:00:00"},
+                {"thread_id": "t-legacy", "first_message": "Old msg", "updated_at": "2023-06-01T00:00:00"},
+            ]
+
+    monkeypatch.setattr(main, "get_conversation_db", lambda: FakeConvDB())
+
+    app_under_test = FastAPI()
+    app_under_test.get("/api/conversations")(main.get_conversations)
+    app_under_test.dependency_overrides[main.require_chat_access] = lambda: user
+
+    with TestClient(app_under_test) as client:
+        response = client.get("/api/conversations")
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    by_id = {item["id"]: item for item in data}
+
+    assert by_id["t-active"]["status"] == ThreadStatus.ACTIVE
+    assert by_id["t-active"]["pending_interrupt"] is False
+
+    assert by_id["t-legacy"]["status"] == "legacy"
+    assert by_id["t-legacy"]["pending_interrupt"] is False
+
+    # No new record was created for the legacy thread
+    record = asyncio.run(db.get_in_scope(scope, "t-legacy"))
+    assert record is None
