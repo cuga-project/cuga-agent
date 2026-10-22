@@ -191,7 +191,7 @@ async def _require_workspace_thread_access(
         scope = request_scope(current_user, _runtime_agent_id(request) or "cuga-default")
         try:
             await resolve_owned_thread(scope, tid)
-        except ThreadNotFound:
+        except ThreadNotFound as not_found:
             # F11: a lifecycle row (e.g. status=deleted) means this is not a legacy thread;
             # never fall back to history ownership for it.
             try:
@@ -199,7 +199,9 @@ async def _require_workspace_thread_access(
 
                 has_record = await get_conversation_threads_db().has_any_record(tid)
             except Exception:
-                has_record = False
+                # Fail closed: a lookup failure is not proof the thread is a legacy one.
+                logger.exception("thread lifecycle lookup failed for workspace access check")
+                raise not_found
             if has_record:
                 raise
             # W13.2: legacy thread (history rows, no lifecycle record). Allow workspace
@@ -2511,8 +2513,11 @@ async def _event_stream_impl(
                 elif _turn_outcome in ("cancelled", "error"):
                     # W09.8: errored or cancelled — mark_projected only
                     # W09.8: errored turns write checkpoints for completed steps,
-                    # so projected_checkpoint_id must be updated to avoid stale-projection repair
-                    await _threads_db.mark_projected(_scope, thread_id, _ckpt_id)
+                    # so projected_checkpoint_id must be updated to avoid stale-projection repair.
+                    # Unless a history save was attempted and failed: leave the marker behind
+                    # for W11.2 repair regardless of outcome.
+                    if not _history_save_failed:
+                        await _threads_db.mark_projected(_scope, thread_id, _ckpt_id)
             except Exception:
                 logger.exception("failed to record turn lifecycle for thread %s", thread_id)
 
@@ -2565,8 +2570,11 @@ async def event_stream(*args, prelude_result: Any = None, **kwargs):
             await renewal_task
         except asyncio.CancelledError:
             pass
+        # Shield the release: even if this generator is cancelled during cleanup, the release
+        # still runs. If the stream was never consumed, Python's GC calls aclose() on the
+        # generator, which triggers this finally (fallback for pre-iteration cancellation).
         try:
-            await get_thread_lease().release(lease_token)
+            await asyncio.shield(get_thread_lease().release(lease_token))
         except Exception:
             logger.exception("failed to release lease for thread %s", stop_key)
 
@@ -3253,7 +3261,7 @@ async def stream(
             issued_thread_id = thread_id  # server-issued; consumed by the thread_created event (W09.6)
         except Exception:
             logger.exception("failed to create thread record for server-generated thread {}", thread_id)
-            # Continue anyway — the guard/prelude will handle it
+            raise HTTPException(status_code=500, detail="Failed to start conversation")
         logger.info(f"No X-Thread-ID header found, generated and recorded new thread_id: {thread_id}")
     else:
         logger.info(f"Using provided thread_id: {thread_id}")
@@ -3810,10 +3818,11 @@ async def delete_conversation(
                 )
         except Exception as e:
             logger.error(f"checkpoint deletion failed for {conversation_id}: {e}")
-            # W12.1: Checkpoint deletion failed. A retry outbox for the durable saver is
-            # deferred to PR3 (W17.4/outbox consumer). The record is already marked
-            # deleted so the thread is unreachable; the orphaned checkpoint state will
-            # be cleaned up by the W12.3 retention sweep in PR3.
+            # W12.1 DEFERRED: adelete_thread failed. A retry outbox consumer is required
+            # (W12.1 assigns this to PR 2 but it needs new infra). The W12.3 retention sweep
+            # in PR3 selects only 'active' and 'new' records, so it will NOT reach this
+            # 'deleted' row. The orphaned checkpoint state persists until the outbox
+            # consumer is built in PR3.
 
         # W12.6: delete supervisor child threads, only when a graph can delegate.
         try:
