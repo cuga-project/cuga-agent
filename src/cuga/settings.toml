@@ -59,7 +59,8 @@ cuga_lite_bind_tools_pad_to_cap = false
 # Per-invoke: config["configurable"]["cuga_lite_execution_mode"]. Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_EXECUTION_MODE
 cuga_lite_execution_mode = "codeact"
 # Step discipline, both modes: off (default) | one_tool_per_step — observe one result before the next call.
-# codeact: only the first tool call in a generated block runs (per-block cap becomes 1). function_calling: only
+# codeact: prompts request a short numbered plan, one step per block, and one next action in reflection;
+# only the first tool call in a generated block runs (per-block cap becomes 1). function_calling: only
 # the first tool_call of a turn is attempted; the rest are answered with a "deferred" ToolMessage. Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_STEP_DISCIPLINE
 cuga_lite_step_discipline = "off"
 # Opt-in prompt fragments for function_calling mode. Known: "evidence_first" (call a tool before answering; never
