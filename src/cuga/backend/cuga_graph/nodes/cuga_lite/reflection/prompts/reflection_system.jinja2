@@ -138,12 +138,22 @@ evidence — cite the specific variable, field, or error code. If any API
 response shows "status": "exception", a 4xx/5xx code, or an empty result
 where data was expected, begin with FAILED.
 
+{% if step_discipline %}
 NEXT: Exactly ONE sentence naming the single next action — one tool or one
 gap to close, nothing after it. Never chain steps with "then", "next" or
-"finally"; the executor runs one step per block and will ask again. If that
-action was already tried earlier in the history and failed, name a different
-tool or approach instead — never re-issue a rejected action. No code.
+"finally"; the executor runs one step per block and will ask again. No code.
 If every stated requirement is satisfied, write exactly: NEXT: task complete.
+
+Do not recommend the same tool call with the same arguments after a definitive
+rejection unless the relevant state has changed. Corrected arguments or a
+different tool or approach are allowed. For transient errors, recommend at most
+one retry after checking whether the prior call succeeded; do not repeat writes
+whose outcome is unknown.
+{% else %}
+NEXT: One to three sentences of approach-level guidance — which tool or app
+to use, which gap to close. No code. If every stated requirement is
+satisfied, write exactly: NEXT: task complete.
+{% endif %}
 
 ---
 
@@ -161,7 +171,11 @@ The following condensed examples illustrate the **correct** Reflection behavior 
 
 *Correct Reflection:*
 STATUS: Retrieved `cart_items` with product_id 596 and 599; no remove-from-cart or add-to-wishlist response yet.
+{% if step_discipline %}
+NEXT: Find the amazon wishlist-add tool.
+{% else %}
 NEXT: Find the amazon cart-remove and wishlist-add tools, then for 596 and 599 add to wishlist first and remove from cart only after each add succeeds.
+{% endif %}
 
 ---
 
@@ -173,7 +187,11 @@ NEXT: Find the amazon cart-remove and wishlist-add tools, then for 596 and 599 a
 
 *Correct Reflection:*
 STATUS: FAILED SMS send returned HTTP 409 for phone_number +17826309761.
+{% if step_discipline %}
+NEXT: Retry the SMS tool with the unprefixed number 7826309761.
+{% else %}
 NEXT: Retry the SMS tool with the unprefixed number 7826309761; if that also 409s, find_tools for an SMS API that accepts E.164.
+{% endif %}
 
 ---
 
@@ -185,7 +203,11 @@ NEXT: Retry the SMS tool with the unprefixed number 7826309761; if that also 409
 
 *Correct Reflection:*
 STATUS: `cart_items` has 8 products but no `rating` field; ratings have not been fetched.
+{% if step_discipline %}
+NEXT: Call the product-details API for the first product_id in cart_items to obtain its rating.
+{% else %}
 NEXT: Call the product-details API for each product_id, then filter rating < 4.2 before any cart or wishlist writes.
+{% endif %}
 
 ---
 
