@@ -30,6 +30,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     enforce_step_limit,
 )
 from cuga.backend.cuga_graph.utils.harmony import contains_harmony_tokens, strip_harmony_tokens
+from cuga.backend.cuga_graph.utils.surrogates import repair_message, repair_messages
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.fc_actions import (
     FC_PENDING_KEY,
     plan_tool_calls,
@@ -642,7 +643,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
             # Outbound only as well.
             msgs.append(HumanMessage(content=TOOL_BUDGET_EXHAUSTED_INSTRUCTION))
 
-        response, provider_error = await self._invoke_fc_model(bound, msgs, invoke_config)
+        # Same repair as call_model's CodeAct path: the request here, and the reply
+        # (content, reasoning, tool-call arguments) below, before it is kept verbatim (#963).
+        response, provider_error = await self._invoke_fc_model(bound, repair_messages(msgs), invoke_config)
         if response is None:
             logger.error("[fc] provider rejected the request twice; ending the turn: {}", provider_error)
             return create_error_command(
@@ -652,6 +655,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 state.step_count,
             )
 
+        response = repair_message(response)
         tool_calls = list(getattr(response, "tool_calls", None) or [])
         invalid_tool_calls = list(getattr(response, "invalid_tool_calls", None) or [])
         content = strip_harmony_tokens(normalize_assistant_text(getattr(response, "content", "")) or "")

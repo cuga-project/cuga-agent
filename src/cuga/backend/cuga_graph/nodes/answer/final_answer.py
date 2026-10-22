@@ -13,6 +13,7 @@ from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.config import settings
 from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
+from cuga.backend.cuga_graph.utils.surrogates import repair_surrogates
 from cuga.backend.cuga_graph.utils.nodes_names import NodeNames, MessagePrefixes
 
 tracker = ActivityTracker()
@@ -86,6 +87,10 @@ class FinalAnswerNode(BaseNode):
         It is applied once per delivered answer: the supervisor forward
         branch deliberately skips it (the sub-agent already applied it).
         """
+        # A lone surrogate (half an emoji) would make model_dump_json() and the
+        # streamed answer fail; repair it before anything serializes the answer (#963).
+        if state.final_answer:
+            state.final_answer = repair_surrogates(state.final_answer)
         text = state.final_answer or ""
         if "<|" in text:
             state.final_answer = strip_harmony_tokens(text)
@@ -200,7 +205,8 @@ class FinalAnswerNode(BaseNode):
             state.sender = name
             # Use final_answer if available, otherwise use last_planner_answer
             # For lite mode, the supervisor already generated the final answer
-            answer_to_forward = state.final_answer or state.last_planner_answer or ""
+            # Forward-only skips finalize_answer, so repair here as it would (#963).
+            answer_to_forward = repair_surrogates(state.final_answer or state.last_planner_answer or "")
             if answer_to_forward:
                 state.final_answer = answer_to_forward
                 # Forward-only: the sub-agent's FinalAnswerNode already ran

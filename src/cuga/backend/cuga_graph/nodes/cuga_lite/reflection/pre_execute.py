@@ -21,6 +21,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
     has_write_call,
 )
 from cuga.backend.cuga_graph.utils.context_management_utils import prepare_verify_context
+from cuga.backend.cuga_graph.utils.surrogates import repair_surrogates_in
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 
 VERIFY_REVISE_STREAK_CAP = 2
@@ -151,17 +152,19 @@ async def decide_pre_execute_verify(
                 }
             ],
         )
+        # A lone surrogate (#963) would make the request fail, and VERIFY would
+        # fail open to "unknown", running the block unverified.
+        verify_inputs = repair_surrogates_in(
+            {
+                "current_task": current_task or "(no task text)",
+                "agent_history": history,
+                "variables_snapshot": variables,
+                "proposed_code": proposed,
+                "write_arguments": write_arguments,
+            }
+        )
         result = await asyncio.wait_for(
-            verify_task(llm=active_model).ainvoke(
-                {
-                    "current_task": current_task or "(no task text)",
-                    "agent_history": history,
-                    "variables_snapshot": variables,
-                    "proposed_code": proposed,
-                    "write_arguments": write_arguments,
-                },
-                config=config or {},
-            ),
+            verify_task(llm=active_model).ainvoke(verify_inputs, config=config or {}),
             timeout=timeout,
         )
         decision = parse_verify_output(getattr(result, "content", "") or "")
