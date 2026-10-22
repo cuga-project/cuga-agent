@@ -3580,30 +3580,90 @@ async def delete_conversation(
     agent_id: str = "cuga-default",
     current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
-    """Delete a conversation thread and its stream events."""
-    from cuga.backend.server.conversation_threads import request_scope
-    from cuga.backend.server.thread_guard import resolve_owned_thread
+    """Delete a conversation thread and its state, history, session knowledge, and uploads."""
+    from cuga.backend.server.conversation_threads import get_conversation_threads_db, request_scope
+    from cuga.backend.server.thread_guard import ThreadNotFound, resolve_owned_thread
 
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     conversation_id = conversation_id.strip()
+    scope = request_scope(current_user, agent_id)
+
     # A user-scoped DB delete can succeed without matching rows. Authorize
     # before it triggers unscoped knowledge, ownership and upload cleanup.
-    scope = request_scope(current_user, agent_id)
-    await resolve_owned_thread(scope, conversation_id)
     try:
-        conversation_db = get_conversation_db()
-        success = await conversation_db.delete_thread(agent_id, conversation_id, user_id)
+        record = await resolve_owned_thread(scope, conversation_id)
+    except ThreadNotFound:
+        # W13.3: legacy (history-only) thread. Only the caller's own history rows go.
+        try:
+            conversation_db = get_conversation_db()
+            if await conversation_db.get_latest_version(agent_id, conversation_id, user_id) > 0:
+                if await conversation_db.delete_thread(agent_id, conversation_id, user_id):
+                    return JSONResponse({"status": "success", "message": "Conversation deleted"})
+        except Exception as e:
+            logger.error(f"Legacy conversation delete failed: {e}")
+        raise ThreadNotFound()
 
-        if success:
+    try:
+        threads_db = get_conversation_threads_db()
+        lease_module = None
+        try:
+            from cuga.backend.server.thread_lease import get_thread_lease
+
+            lease_module = get_thread_lease()
+        except Exception:
+            pass
+
+        # Step 1: mark deleted, so the guard now returns 404 for this thread.
+        await threads_db.mark_deleted(scope, conversation_id)
+
+        # Step 2: ask any in-flight turn to stop.
+        if lease_module:
+            try:
+                await lease_module.request_stop(conversation_id)
+            except Exception:
+                logger.warning("failed to request stop on lease for thread {}", conversation_id)
+
+        # Step 3: delete checkpoints (non-fatal). ``AppState.checkpointer`` is the saver.
+        _app_state = getattr(request.app.state, "app_state", None)
+        _saver = getattr(_app_state, "checkpointer", None) if _app_state else None
+        try:
+            if _saver is not None and hasattr(_saver, "adelete_thread"):
+                await _saver.adelete_thread(
+                    _checkpoint_thread_id(conversation_id, user_id, record.agent_id or agent_id)
+                )
+        except Exception as e:
+            logger.error(f"checkpoint deletion failed for {conversation_id}: {e}")
+
+        # W12.6: delete supervisor child threads, only when a graph can delegate.
+        try:
+            can_delegate = bool(getattr(settings.supervisor, "enabled", False)) or (
+                agent_registry.is_agent_registry_enabled()
+            )
+            if can_delegate and _saver is not None and hasattr(_saver, "alist"):
+                child_ids = set()
+                async for tup in _saver.alist(None, filter={"cuga_parent_thread_id": conversation_id}):
+                    child_tid = ((tup.config or {}).get("configurable") or {}).get("thread_id", "")
+                    if child_tid:
+                        child_ids.add(child_tid)
+                for child_tid in child_ids:
+                    await _saver.adelete_thread(child_tid)
+        except Exception:
+            logger.exception("child thread deletion failed for parent {}", conversation_id)
+
+        # Step 4: delete history, session knowledge, uploads.
+        try:
+            conversation_db = get_conversation_db()
+            await conversation_db.delete_thread(agent_id, conversation_id, user_id)
             await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
             await delete_thread_uploads(conversation_id)
-            logger.info(f"Deleted conversation and stream events: {conversation_id}")
-            return JSONResponse({"status": "success", "message": "Conversation deleted"})
-        else:
-            raise HTTPException(status_code=500, detail="Failed to delete conversation")
+        except Exception as e:
+            logger.error(f"history/knowledge/uploads deletion failed for {conversation_id}: {e}")
+
+        logger.info(f"Deleted conversation: {conversation_id}")
+        return JSONResponse({"status": "success", "message": "Conversation deleted"})
     except Exception as e:
         logger.error(f"Failed to delete conversation: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete conversation: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to delete conversation")
 
 
 @app.get("/api/config/memory")
