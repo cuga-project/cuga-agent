@@ -360,3 +360,47 @@ async def test_auth_disabled_invented_thread_id_is_404(threads_db, stream_app):
     assert stop.status_code == 404
     assert stream.status_code == 404
     assert stream_app.seen == []
+
+
+# ---------------------------------------------------------------------------
+# W09.5 — two simultaneous /stream posts on one thread: 200 + 409 conflict
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_stream_posts_one_200_one_409_conflict(tmp_path, monkeypatch, stream_app):
+    """The second simultaneous turn on a thread gets 409 {"error": "conflict", "retry_after_ms": 2000}."""
+    import asyncio
+    from types import SimpleNamespace
+
+
+    from cuga.backend.server.thread_lease import ThreadLease
+    from cuga.backend.storage.relational.local import LocalRelationalStore
+
+    store = LocalRelationalStore(str(tmp_path / "leases.db"))
+    lease = ThreadLease()
+    lease._get_store = lambda: store
+
+    # Stand-in for the T13 prelude: acquire the per-thread lease and never release it,
+    # as an in-flight turn would. The loser raises ThreadBusy, which /stream maps to 409.
+    async def guard_with_lease(scope, thread_id):
+        await lease.acquire(thread_id)
+
+    monkeypatch.setattr("cuga.backend.server.thread_guard.resolve_owned_thread", guard_with_lease)
+    stream_app.app.dependency_overrides[stream_app.main.require_chat_access] = lambda: SimpleNamespace(
+        sub="user-a"
+    )
+
+    async def two_posts():
+        async with _client(stream_app.app) as client:
+            return await asyncio.gather(
+                client.post("/stream", headers={"X-Thread-ID": "busy-thread"}),
+                client.post("/stream", headers={"X-Thread-ID": "busy-thread"}),
+            )
+
+    responses = asyncio.run(two_posts())
+
+    codes = sorted(r.status_code for r in responses)
+    assert codes == [200, 409]
+    loser = next(r for r in responses if r.status_code == 409)
+    assert loser.json() == {"error": "conflict", "retry_after_ms": 2000}
+    assert len(stream_app.seen) == 1

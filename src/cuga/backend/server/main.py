@@ -110,6 +110,18 @@ def _canonical_thread_id(thread_id: str) -> str:
     return thread_id.strip()
 
 
+def _thread_conflict_response():
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(status_code=409, content={"error": "conflict", "retry_after_ms": 2000})
+
+
+def _thread_unavailable_response(reason: str):
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(status_code=409, content={"error": "unavailable", "reason": reason})
+
+
 def _runtime_agent_id(request: Request) -> Optional[str]:
     """Normalize explicit agent IDs while allowing controls to use the bound agent."""
     if not agent_registry.is_agent_registry_enabled():
@@ -1755,8 +1767,12 @@ async def event_stream(
     user_attachments: Optional[List[Dict[str, Any]]] = None,
     agent_id: Optional[str] = None,
     current_llm: Any = _RUNTIME_LLM_UNSET,
+    issued_thread_id: Optional[str] = None,
 ):
-    """Handles the main agent event stream. If agent is None, uses app_state.agent (published)."""
+    """Handles the main agent event stream. If agent is None, uses app_state.agent (published).
+
+    ``issued_thread_id`` is set when /stream created the thread record itself (W09.6 consumes it).
+    """
     from cuga.backend.activity_tracker.tracker import ActivityTracker
     from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
     from cuga.backend.cuga_graph.utils.agent_loop import AgentLoop, AgentLoopAnswer, StreamEvent
@@ -3027,16 +3043,26 @@ async def stream(
     from cuga.backend.server.conversation_threads import request_scope
     from cuga.backend.server.thread_guard import resolve_owned_thread
 
+    agent_id_header = _runtime_agent_id(request) or "cuga-default"
+    scope = request_scope(current_user, agent_id_header)
     thread_id = (request.headers.get("X-Thread-ID") or "").strip()
     thread_id_provided = bool(thread_id)
+    issued_thread_id = None
     if not thread_id:
         thread_id = str(uuid.uuid4())
-        logger.info(f"No X-Thread-ID header found, generated new thread_id: {thread_id}")
+        try:
+            from cuga.backend.server.conversation_threads import get_conversation_threads_db
+
+            await get_conversation_threads_db().create(scope, thread_id)
+            issued_thread_id = thread_id  # server-issued; consumed by the thread_created event (W09.6)
+        except Exception:
+            logger.exception("failed to create thread record for server-generated thread {}", thread_id)
+            # Continue anyway — the guard/prelude will handle it
+        logger.info(f"No X-Thread-ID header found, generated and recorded new thread_id: {thread_id}")
     else:
         logger.info(f"Using provided thread_id: {thread_id}")
 
     thread_id = _canonical_thread_id(thread_id)
-    agent_id_header = _runtime_agent_id(request) or "cuga-default"
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
     disable_history = str(request.headers.get("X-Disable-History", "") or "").lower() in (
         "1",
@@ -3044,23 +3070,28 @@ async def stream(
         "yes",
         "on",
     )
-    scope = request_scope(current_user, agent_id_header)
     graph_thread_id = thread_id
     # Reject before StreamingResponse sends headers; event_stream also guards
     # other entry points before reading checkpoints, previews or workspace data.
-    if use_draft and disable_history:
-        # W06.2: draft preview uses client-generated ID with a draft: prefix
-        graph_thread_id = f"draft:{scope.tenant_id}:{scope.instance_id}:{scope.agent_id}:{thread_id}"
-    elif thread_id_provided:
-        await resolve_owned_thread(scope, thread_id)
-        provider = getattr(app_state, "knowledge_provider", None)
-        if user_id and user_id != DEFAULT_USER_ID:
-            if provider is not None and not provider.check_session_access(thread_id, user_id):
-                raise HTTPException(status_code=403, detail="access denied to session")
-            if provider is not None or _knowledge_enabled_for_app_state(app_state):
-                from cuga.backend.knowledge.auth import ensure_session_access
+    from cuga.backend.server.thread_lease import ThreadBusy
 
-                ensure_session_access(thread_id, user_id, provider)
+    try:
+        if use_draft and disable_history:
+            # W06.2: draft preview uses client-generated ID with a draft: prefix
+            graph_thread_id = f"draft:{scope.tenant_id}:{scope.instance_id}:{scope.agent_id}:{thread_id}"
+        elif thread_id_provided:
+            await resolve_owned_thread(scope, thread_id)
+            provider = getattr(app_state, "knowledge_provider", None)
+            if user_id and user_id != DEFAULT_USER_ID:
+                if provider is not None and not provider.check_session_access(thread_id, user_id):
+                    raise HTTPException(status_code=403, detail="access denied to session")
+                if provider is not None or _knowledge_enabled_for_app_state(app_state):
+                    from cuga.backend.knowledge.auth import ensure_session_access
+
+                    ensure_session_access(thread_id, user_id, provider)
+    except ThreadBusy:
+        # Prelude (T13) raises this before StreamingResponse; map to 409 with no exception text.
+        return _thread_conflict_response()
     user_attachments = await get_attachment_snapshot(request)
 
     # User message will be saved as part of the event stream buffer
@@ -3119,6 +3150,7 @@ async def stream(
             user_attachments=user_attachments,
             agent_id=agent_id_header,
             current_llm=runtime_llm,
+            issued_thread_id=issued_thread_id,
         ),
         media_type="text/event-stream",
     )

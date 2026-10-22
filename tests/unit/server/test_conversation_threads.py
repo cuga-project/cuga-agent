@@ -386,3 +386,85 @@ def test_post_conversations_error_does_not_leak_exception_text(tmp_path, monkeyp
     assert response.status_code == 500
     assert response.json() == {"detail": "Failed to create conversation"}
     assert "secret-db-detail" not in response.text
+
+
+# ---------------------------------------------------------------------------
+# W05.5 — /stream creates a record only when X-Thread-ID is absent
+# ---------------------------------------------------------------------------
+
+
+def _stream_client_app(tmp_path, monkeypatch, user):
+    from types import SimpleNamespace
+
+    from unittest.mock import AsyncMock, MagicMock
+
+    from fastapi import FastAPI
+
+    from cuga.backend.server import main
+
+    db = _make_db(tmp_path)
+    monkeypatch.setattr("cuga.backend.server.conversation_threads.get_conversation_threads_db", lambda: db)
+    state = SimpleNamespace(
+        knowledge_provider=None,
+        knowledge_engine=None,
+        current_llm=None,
+        agent_id="cuga-default",
+        output_format=None,
+        agent=SimpleNamespace(graph=MagicMock()),
+        stop_events={},
+    )
+    seen: list = []
+
+    async def fake_event_stream(*args, **kwargs):
+        seen.append(kwargs)
+        yield "data: ok\n\n"
+
+    monkeypatch.setattr(main, "app_state", state)
+    monkeypatch.setattr(main, "event_stream", fake_event_stream)
+    monkeypatch.setattr(main, "get_query", AsyncMock(return_value="hello"))
+    monkeypatch.setattr(main, "get_attachment_snapshot", AsyncMock(return_value=None))
+    monkeypatch.setattr(main.events_bridge, "forwards_to_events", lambda *args: False)
+    app = FastAPI()
+    app.post("/stream")(main.stream)
+    app.dependency_overrides[main.require_chat_access] = lambda: user
+    return app, db, seen
+
+
+def test_stream_without_thread_id_creates_record(tmp_path, monkeypatch):
+    """No X-Thread-ID: /stream issues an ID, persists a 'new' record, and passes it to event_stream."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    user = SimpleNamespace(sub="user-stream")
+    app, db, seen = _stream_client_app(tmp_path, monkeypatch, user)
+
+    with TestClient(app) as client:
+        response = client.post("/stream")
+
+    assert response.status_code == 200, response.text
+    issued = seen[0]["thread_id"]
+    assert seen[0]["issued_thread_id"] == issued
+    record = asyncio.run(db.get_in_scope(request_scope(user, "cuga-default"), issued))
+    assert record is not None
+    assert record.status == ThreadStatus.NEW
+    assert record.user_id == "user-stream"
+
+
+def test_stream_unknown_thread_id_is_404_and_creates_no_record(tmp_path, monkeypatch):
+    """A client-supplied unknown X-Thread-ID is 404 and never creates a record."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    user = SimpleNamespace(sub="user-stream")
+    app, db, seen = _stream_client_app(tmp_path, monkeypatch, user)
+
+    with TestClient(app) as client:
+        response = client.post("/stream", headers={"X-Thread-ID": "unknown-id"})
+
+    assert response.status_code == 404
+    assert seen == []
+    assert asyncio.run(db.get_in_scope(request_scope(user, "cuga-default"), "unknown-id")) is None
