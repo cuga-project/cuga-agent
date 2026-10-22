@@ -808,6 +808,99 @@ async def test_failed_replacement_preserves_recovery_files(cuga_folder, tmp_path
     assert {"seed_1", "seed_2"} <= set(restarted._policy_system.storage._policies)
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["load_from_json", "generate_tool_guards_from_json"])
+@pytest.mark.parametrize(
+    "invalid_entry, expected_error",
+    [
+        ({"name": "missing id"}, "Policy at index 0 is missing required field 'id'"),
+        ("not an object", "Policy at index 0 must be an object"),
+    ],
+)
+@pytest.mark.parametrize("include_valid", [False, True])
+async def test_replacement_extraction_errors_preserve_storage_and_files(
+    cuga_folder, tmp_path, monkeypatch, method, invalid_entry, expected_error, include_valid
+):
+    import json
+    from pathlib import Path
+    from unittest.mock import AsyncMock
+
+    from cuga.backend.server import tool_guard_generation
+
+    build_generation = MagicMock(return_value=None)
+    generate = AsyncMock(return_value={"status": "ok", "generated": {}, "skipped": [], "errors": []})
+    monkeypatch.setattr(tool_guard_generation, "build_tool_guard_generation_agent", build_generation)
+    monkeypatch.setattr(tool_guard_generation, "generate_tool_guards_for_policies", generate)
+
+    json_path = tmp_path / "replacement.json"
+    _write_json(json_path, ["replacement"] if include_valid else [])
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    data["enablePolicies"] = False
+    data["policies"].insert(0, invalid_entry)
+    json_path.write_text(json.dumps(data), encoding="utf-8")
+
+    agent = _make_agent(cuga_folder)
+    await agent.policies._ensure_policy_system()
+    storage = agent._policy_system.storage
+    original_policies = dict(storage._policies)
+    original_files = {p: p.read_bytes() for p in Path(cuga_folder).rglob("*.md")}
+    delete = AsyncMock(wraps=storage.delete_policy)
+    monkeypatch.setattr(storage, "delete_policy", delete)
+
+    result = await getattr(agent.policies, method)(str(json_path), clear_existing=True)
+
+    summary = result if method == "load_from_json" else result["import"]
+    assert summary == {"count": 0, "enabled": False, "errors": [expected_error]}
+    if method == "generate_tool_guards_from_json":
+        assert result["status"] == "error"
+        assert result["errors"] == [expected_error]
+        assert result["source_policy_ids"] == (["replacement"] if include_valid else [])
+        assert result["generated"] == {}
+        assert result["skipped"] == []
+    build_generation.assert_not_called()
+    generate.assert_not_awaited()
+    delete.assert_not_awaited()
+    assert storage._policies == original_policies
+    assert {p: p.read_bytes() for p in Path(cuga_folder).rglob("*.md")} == original_files
+
+    restarted = _make_agent(cuga_folder)
+    await restarted.policies._ensure_policy_system()
+    assert restarted._policy_system.storage._policies == original_policies
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["load_from_json", "generate_tool_guards_from_json"])
+@pytest.mark.parametrize("frontend_format", [False, True])
+async def test_json_empty_replacement_clears_storage_and_files(
+    cuga_folder, tmp_path, monkeypatch, method, frontend_format
+):
+    from cuga.backend.server import tool_guard_generation
+
+    async def fake_generate(*, policy_system, policy_ids, generation_agent):
+        assert policy_ids == []
+        return {"status": "ok", "generated": {}, "skipped": [], "errors": []}
+
+    monkeypatch.setattr(tool_guard_generation, "build_tool_guard_generation_agent", lambda **_: None)
+    monkeypatch.setattr(tool_guard_generation, "generate_tool_guards_for_policies", fake_generate)
+    json_path = tmp_path / "empty.json"
+    json_path.write_text('{"policies": []}' if frontend_format else "[]", encoding="utf-8")
+    agent = _make_agent(cuga_folder)
+
+    result = await getattr(agent.policies, method)(str(json_path), clear_existing=True)
+
+    summary = result if method == "load_from_json" else result["import"]
+    assert summary == {"count": 0, "enabled": True, "errors": []}
+    if method == "generate_tool_guards_from_json":
+        assert result["status"] == "ok"
+    assert agent._policy_system.storage._policies == {}
+    assert agent.policies._fs_sync.get_filesystem_policy_ids() == set()
+    restarted = _make_agent(cuga_folder)
+    await restarted.policies._ensure_policy_system()
+    assert restarted._policy_system.storage._policies == {}
+
+
 @pytest.mark.asyncio
 async def test_server_style_apply_does_not_prune_by_default(cuga_folder):
     """Server callers (shared draft/live .cuga) keep the old behaviour unless they opt in."""
