@@ -21,7 +21,7 @@ def test_completed_conversation_continues_after_restart():
     5. POST /stream with the same X-Thread-ID.
     6. Assert the response references prior context (history is preserved).
     """
-    pytest.skip("Requires full server restart setup — implement in a later iteration")
+    pytest.skip("Restart harness deferred to PR3: W17.1 rows 1 and 5 moved from PR2 plan (see README.md)")
 
 
 @pytest.mark.slow
@@ -32,4 +32,4 @@ def test_thread_sidebar_count_stable_on_resume():
     Implementation plan mirrors row 1; assertion checks
     GET /api/conversations returns a single item for the thread.
     """
-    pytest.skip("Requires full server restart setup — implement in a later iteration")
+    pytest.skip("Restart harness deferred to PR3: W17.1 rows 1 and 5 moved from PR2 plan (see README.md)")

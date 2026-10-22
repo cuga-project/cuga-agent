@@ -1076,21 +1076,57 @@ export function ChatLanding() {
     [addToast, effectiveChatThreadId, effectiveChatAgentId],
   );
 
-  const handleWorkspaceUpload = useCallback(
-    async (files: File[]) => {
-      let tid = effectiveChatThreadId?.trim();
-      // Eager ID allocation for uploads on a new draft (W14.2)
-      if (!tid) {
+  // Eager ID allocation for uploads on a new draft (W14.2). Concurrent callers share one request.
+  const conversationCreationRef = useRef<Promise<string | null> | null>(null);
+  const ensureConversationId = useCallback(async (): Promise<string | null> => {
+    const existing = effectiveChatThreadId?.trim();
+    if (existing) return existing;
+    if (!conversationCreationRef.current) {
+      conversationCreationRef.current = (async () => {
         try {
           const created = await api.createConversation(effectiveChatAgentId);
-          tid = created.id;
           setDraftThread((prev) => ({ ...prev, threadId: created.id, updatedAt: new Date().toISOString() }));
           setActiveThreadId(created.id);
+          return created.id;
         } catch (err) {
-          console.error("Failed to create conversation for upload", err);
-          addToast("error", "Upload unavailable", "Could not start a conversation for this upload.");
-          return;
+          console.error("Failed to create conversation", err);
+          return null;
+        } finally {
+          conversationCreationRef.current = null;
         }
+      })();
+    }
+    return conversationCreationRef.current;
+  }, [effectiveChatThreadId, effectiveChatAgentId]);
+
+  // Opening the session knowledge panel on a new draft allocates the thread ID so uploads are enabled.
+  useEffect(() => {
+    if (
+      rightSection === "knowledge" &&
+      rightOpen &&
+      knowledgeEnabled &&
+      sessionKnowledgeEnabled &&
+      selectedThreadId == null &&
+      !draftThread.threadId
+    ) {
+      void ensureConversationId();
+    }
+  }, [
+    rightSection,
+    rightOpen,
+    knowledgeEnabled,
+    sessionKnowledgeEnabled,
+    selectedThreadId,
+    draftThread.threadId,
+    ensureConversationId,
+  ]);
+
+  const handleWorkspaceUpload = useCallback(
+    async (files: File[]) => {
+      const tid = await ensureConversationId();
+      if (!tid) {
+        addToast("error", "Upload unavailable", "Could not start a conversation for this upload.");
+        return;
       }
       const uploadThreadId = tid;
       try {
@@ -1115,7 +1151,7 @@ export function ChatLanding() {
         addToast("error", "Upload failed", err instanceof Error ? err.message : "Unknown error");
       }
     },
-    [addToast, effectiveChatThreadId, effectiveChatAgentId, fetchWorkspaceTree],
+    [addToast, ensureConversationId, effectiveChatAgentId, fetchWorkspaceTree],
   );
 
   const handleWorkspaceFileInputChange = useCallback(
