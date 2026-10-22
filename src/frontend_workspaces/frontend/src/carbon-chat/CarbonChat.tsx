@@ -35,7 +35,7 @@ import {
   type SessionAttachmentItem,
   type KnowledgeAttachmentSnapshot,
 } from "../knowledge/useSessionKnowledgeAttachments";
-import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './customSendMessage';
+import { customSendMessage as customSendMessageImpl, stopCugaAgent, StreamHttpError } from './customSendMessage';
 import { customLoadHistory } from './customLoadHistory';
 import { useEventsInbox } from '../events/useEventsInbox';
 import { initAgentProfile, getResponseUserProfile } from './carbonChatHelpers';
@@ -108,6 +108,7 @@ interface CarbonChatProps {
   onOpenKnowledge?: () => void;
   onOpenMemoryUsage?: (entityIds: string[], relationship: "used" | "saved") => void;
   onPreviewKnowledgeAttachment?: (attachment: KnowledgeAttachmentSnapshot) => void;
+  onStreamError?: (status: number, error?: string) => void;
 }
 
 interface ConversationMessage {
@@ -260,6 +261,7 @@ const CarbonChat = ({
   onOpenKnowledge,
   onOpenMemoryUsage,
   onPreviewKnowledgeAttachment,
+  onStreamError,
 }: CarbonChatProps) => {
   const hs = homescreen ?? DEFAULT_HOMESCREEN;
   const starterLabels = (hs.starters ?? DEFAULT_HOMESCREEN.starters ?? []).filter(Boolean).slice(0, 4);
@@ -734,26 +736,34 @@ const CarbonChat = ({
       instance: ChatInstance
     ) => {
       const attachmentSnapshot = createMessageAttachmentSnapshot();
-      const result = await customSendMessageImpl(
-        request,
-        options,
-        instance,
-        useDraft,
-        disableHistory,
-        undefined,
-        attachmentScope === "session" ? attachmentSnapshot : undefined,
-      );
-      
-      if (onThreadChange && currentThreadId) {
-        skipNextHistoryLoadRef.current = currentThreadId;
-        onThreadChange(currentThreadId);
-      }
+      try {
+        const result = await customSendMessageImpl(
+          request,
+          options,
+          instance,
+          useDraft,
+          disableHistory,
+          undefined,
+          attachmentScope === "session" ? attachmentSnapshot : undefined,
+        );
 
-      await refreshMessageAttachmentSnapshots(currentThreadId);
-      
-      return result;
+        if (onThreadChange && currentThreadId) {
+          skipNextHistoryLoadRef.current = currentThreadId;
+          onThreadChange(currentThreadId);
+        }
+
+        await refreshMessageAttachmentSnapshots(currentThreadId);
+
+        return result;
+      } catch (err) {
+        if (err instanceof StreamHttpError) {
+          onStreamError?.(err.status, err.errorCode);
+        } else {
+          throw err;
+        }
+      }
     },
-    [attachmentScope, createMessageAttachmentSnapshot, disableHistory, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
+    [attachmentScope, createMessageAttachmentSnapshot, disableHistory, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
   );
 
   const handleChatReady = useCallback((instance: ChatInstance) => {

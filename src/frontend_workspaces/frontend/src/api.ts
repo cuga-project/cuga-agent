@@ -411,8 +411,31 @@ export async function getConversationThreads(agentId?: string): Promise<Response
   return apiFetch(`/api/conversation-threads?agent_id=${encodeURIComponent(agentId || getKnowledgeAgentId())}`);
 }
 
-export async function getConversations(): Promise<Response> {
-  return apiFetch("/api/conversations");
+export interface ConversationThread {
+  id: string;
+  title: string;
+  timestamp: number;
+  preview: string;
+  status?: string;           // "new" | "active" | "legacy" | "expired"
+  pending_interrupt?: boolean;
+}
+
+export async function getConversations(): Promise<ConversationThread[]> {
+  const response = await apiFetch("/api/conversations");
+  if (!response.ok) return [];
+  return response.json();
+}
+
+export async function createConversation(agentId: string, title?: string): Promise<ConversationThread> {
+  const response = await apiFetch("/api/conversations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent_id: agentId, title: title || "" }),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to create conversation: HTTP ${response.status}`);
+  }
+  return response.json();
 }
 
 export async function deleteConversation(threadId: string, agentId?: string): Promise<Response> {
