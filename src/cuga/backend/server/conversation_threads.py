@@ -8,6 +8,7 @@ Uses the storage layer (get_storage().get_relational_store("conversation")) for
 local SQLite or prod Postgres — same store as conversation_history.py.
 """
 
+import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -74,6 +75,19 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _cleanup_context_json(scope: Scope, thread_id: str, delete_children: bool) -> str:
+    return json.dumps(
+        {
+            "tenant_id": scope.tenant_id,
+            "instance_id": scope.instance_id,
+            "agent_id": scope.agent_id,
+            "user_id": scope.user_id,
+            "thread_id": thread_id,
+            "delete_children": delete_children,
+        }
+    )
+
+
 def _row_to_record(row: dict) -> ThreadRecord:
     return ThreadRecord(
         thread_id=row["thread_id"],
@@ -129,9 +143,18 @@ class ConversationThreadsDB:
             CREATE TABLE IF NOT EXISTS checkpoint_delete_outbox (
                 event_id             TEXT PRIMARY KEY,
                 scoped_checkpoint_id TEXT NOT NULL,
-                deleted_at           TEXT NOT NULL
+                deleted_at           TEXT NOT NULL,
+                cleanup_context      TEXT
             )
         """)
+        # This table was introduced earlier in this branch without the context
+        # needed to retry history, knowledge, uploads, and child checkpoints.
+        # Existing local databases can still contain rows in the old shape.
+        try:
+            await store.execute("ALTER TABLE checkpoint_delete_outbox ADD COLUMN cleanup_context TEXT")
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower() and "already exists" not in str(exc).lower():
+                raise
         await store.commit()
         self._schema_ensured = True
         self._schema_store = store
@@ -309,11 +332,19 @@ class ConversationThreadsDB:
         )
         await store.commit()
 
-    async def mark_deleted_and_enqueue(self, scope: Scope, thread_id: str, scoped_checkpoint_id: str) -> None:
-        """Atomically mark the thread deleted and record it for checkpoint cleanup.
+    async def mark_deleted_and_enqueue(
+        self,
+        scope: Scope,
+        thread_id: str,
+        scoped_checkpoint_id: str,
+        *,
+        delete_children: bool = False,
+    ) -> str:
+        """Atomically mark the thread deleted and record all cleanup work.
 
         Both writes land in a single SQLite transaction so a crash between them
         cannot leave a ``deleted`` lifecycle row without a matching outbox entry.
+        Returns the outbox event ID.
         """
         await self._ensure_schema()
         store = self._get_store()
@@ -341,13 +372,51 @@ class ConversationThreadsDB:
                 (
                     """
                     INSERT INTO checkpoint_delete_outbox
-                        (event_id, scoped_checkpoint_id, deleted_at)
-                    VALUES (?, ?, ?)
+                        (event_id, scoped_checkpoint_id, deleted_at, cleanup_context)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (event_id, scoped_checkpoint_id, now),
+                    (
+                        event_id,
+                        scoped_checkpoint_id,
+                        now,
+                        _cleanup_context_json(scope, thread_id, delete_children),
+                    ),
                 ),
             ]
         )
+        return event_id
+
+    async def enqueue_thread_cleanup(
+        self,
+        scope: Scope,
+        thread_id: str,
+        scoped_checkpoint_id: str,
+        *,
+        delete_children: bool = False,
+    ) -> str:
+        """Record another full cleanup for an already deleted thread.
+
+        Used when a request authorized before deletion wrote data after the
+        deletion's own cleanup may have run. Returns the outbox event ID.
+        """
+        await self._ensure_schema()
+        store = self._get_store()
+        event_id = str(uuid.uuid4())
+        await store.execute(
+            """
+            INSERT INTO checkpoint_delete_outbox
+                (event_id, scoped_checkpoint_id, deleted_at, cleanup_context)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                scoped_checkpoint_id,
+                _now(),
+                _cleanup_context_json(scope, thread_id, delete_children),
+            ),
+        )
+        await store.commit()
+        return event_id
 
     async def enqueue_checkpoint_delete(self, scoped_checkpoint_id: str) -> None:
         """Record a checkpoint ID for retry deletion after adelete_thread failed."""
@@ -364,17 +433,20 @@ class ConversationThreadsDB:
         )
         await store.commit()
 
-    async def pending_checkpoint_deletes(self, limit: int = 100) -> list[dict]:
-        """Return up to ``limit`` pending checkpoint delete events."""
+    async def pending_checkpoint_deletes(
+        self, limit: int = 100, after: tuple[str, str] | None = None
+    ) -> list[dict]:
+        """Return a stable page of pending cleanup events."""
         await self._ensure_schema()
         store = self._get_store()
-        rows = await store.fetchall(
-            "SELECT event_id, scoped_checkpoint_id, deleted_at"
-            " FROM checkpoint_delete_outbox"
-            " ORDER BY deleted_at"
-            " LIMIT ?",
-            (limit,),
+        sql = (
+            "SELECT event_id, scoped_checkpoint_id, deleted_at, cleanup_context FROM checkpoint_delete_outbox"
         )
+        params: tuple = (limit,)
+        if after is not None:
+            sql += " WHERE deleted_at > ? OR (deleted_at = ? AND event_id > ?)"
+            params = (after[0], after[0], after[1], limit)
+        rows = await store.fetchall(sql + " ORDER BY deleted_at, event_id LIMIT ?", params)
         return [dict(r) for r in rows]
 
     async def acknowledge_checkpoint_delete(self, event_id: str) -> None:
@@ -384,16 +456,6 @@ class ConversationThreadsDB:
         await store.execute(
             "DELETE FROM checkpoint_delete_outbox WHERE event_id = ?",
             (event_id,),
-        )
-        await store.commit()
-
-    async def acknowledge_checkpoint_delete_by_key(self, scoped_checkpoint_id: str) -> None:
-        """Remove the outbox entry matching a checkpoint key (used after inline success)."""
-        await self._ensure_schema()
-        store = self._get_store()
-        await store.execute(
-            "DELETE FROM checkpoint_delete_outbox WHERE scoped_checkpoint_id = ?",
-            (scoped_checkpoint_id,),
         )
         await store.commit()
 

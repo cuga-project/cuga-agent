@@ -76,7 +76,10 @@ def _wire_sandbox_mocks(interpreter, *, delay: float = 0.0) -> dict:
         counter["create_calls"] += 1
         if delay:
             await asyncio.sleep(delay)
-        return MagicMock()  # the raw Sandbox object (not the interpreter)
+        sandbox = MagicMock()  # the raw Sandbox object (not the interpreter)
+        sandbox.id = f"sbx-{counter['create_calls']}"
+        sandbox.kill = AsyncMock()
+        return sandbox
 
     sys.modules["opensandbox"].Sandbox = MagicMock()
     sys.modules["opensandbox"].Sandbox.create = AsyncMock(side_effect=_slow_create)
@@ -89,6 +92,18 @@ def _wire_sandbox_mocks(interpreter, *, delay: float = 0.0) -> dict:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def sandbox_registry_store(tmp_path, monkeypatch):
+    """Back the durable sandbox registry with a throwaway SQLite file."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.opensandbox import sandbox_registry
+    from cuga.backend.storage.relational.local import LocalRelationalStore
+
+    store = LocalRelationalStore(str(tmp_path / "registry.db"))
+    monkeypatch.setattr(sandbox_registry, "_get_store", lambda: store)
+    monkeypatch.setattr(sandbox_registry, "_schema_store", None)
+    return store
 
 
 @pytest.fixture(autouse=True)
@@ -151,7 +166,7 @@ async def test_different_thread_ids_each_get_own_sandbox() -> None:
 
     async def _create(*args, **kwargs):
         call_count["n"] += 1
-        return MagicMock()
+        return MagicMock(id=f"sbx-{call_count['n']}")
 
     sys.modules["opensandbox"].Sandbox = MagicMock()
     sys.modules["opensandbox"].Sandbox.create = AsyncMock(side_effect=_create)
@@ -342,3 +357,118 @@ def test_release_sandbox_clears_all_state() -> None:
     assert key not in executor._active_skills_config
     assert key not in executor._skills_config
     assert key not in executor._locks
+
+
+# ---------------------------------------------------------------------------
+# Conversation deletion targets the recorded sandbox, not a fresh one
+# ---------------------------------------------------------------------------
+
+
+def _wire_manager(kill_side_effect=None) -> MagicMock:
+    manager = MagicMock()
+    manager.kill_sandbox = AsyncMock(side_effect=kill_side_effect)
+    manager.close = AsyncMock()
+    sys.modules["opensandbox"].SandboxManager = MagicMock()
+    sys.modules["opensandbox"].SandboxManager.create = AsyncMock(return_value=manager)
+    return manager
+
+
+class _ApiError(Exception):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.status_code = status_code
+
+
+@pytest.mark.asyncio
+async def test_sandbox_id_is_recorded_on_creation() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.opensandbox.sandbox_registry import (
+        thread_sandbox_ids,
+    )
+
+    _wire_sandbox_mocks(_make_interpreter())
+    executor = OpenSandboxExecutor()
+    executor._skills_config["thread-A"] = (None, False)
+
+    await executor._get_or_create_interpreter("thread-A")
+
+    assert await thread_sandbox_ids("thread-A") == ["sbx-1"]
+
+
+@pytest.mark.asyncio
+async def test_unrecordable_sandbox_is_killed_not_used(monkeypatch) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.opensandbox import opensandbox_executor as mod
+
+    created = []
+    sandbox = MagicMock(id="sbx-unrecorded", kill=AsyncMock())
+
+    async def _create(*args, **kwargs):
+        created.append(sandbox)
+        return sandbox
+
+    _wire_sandbox_mocks(_make_interpreter())
+    sys.modules["opensandbox"].Sandbox.create = AsyncMock(side_effect=_create)
+    monkeypatch.setattr(mod, "record_thread_sandbox", AsyncMock(side_effect=RuntimeError("db down")))
+    executor = OpenSandboxExecutor()
+
+    with pytest.raises(RuntimeError, match="db down"):
+        await executor._get_or_create_interpreter("thread-A")
+
+    sandbox.kill.assert_awaited_once()
+    assert "thread-A" not in executor._sandboxes
+
+
+@pytest.mark.asyncio
+async def test_upload_cleanup_after_restart_kills_original_sandbox(tmp_path, monkeypatch) -> None:
+    """After the process cache is lost, a retry targets the recorded sandbox,
+    does not create a new one, and keeps failing until the kill succeeds."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.opensandbox.sandbox_registry import (
+        thread_sandbox_ids,
+    )
+    from cuga.backend.server import workspace_upload as wu
+
+    counter = _wire_sandbox_mocks(_make_interpreter())
+    executor = OpenSandboxExecutor()
+    executor._skills_config["t1"] = (None, False)
+    await executor._get_or_create_interpreter("t1")
+
+    # Restart / other replica: the interpreter cache is empty.
+    OpenSandboxExecutor._sandboxes.clear()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(wu, "workspace_tree_is_sandbox_backed", lambda: True)
+    monkeypatch.setattr(CodeExecutor, "_get_opensandbox_executor", lambda: OpenSandboxExecutor())
+
+    manager = _wire_manager(kill_side_effect=[_ApiError(503), None])
+    with pytest.raises(RuntimeError, match="failed to kill sandboxes"):
+        await wu.delete_thread_uploads("t1")
+    assert await thread_sandbox_ids("t1") == ["sbx-1"]
+
+    await wu.delete_thread_uploads("t1")
+
+    assert [c.args[0] for c in manager.kill_sandbox.await_args_list] == ["sbx-1", "sbx-1"]
+    assert counter["create_calls"] == 1, "cleanup must not create a replacement sandbox"
+    assert await thread_sandbox_ids("t1") == []
+
+
+@pytest.mark.asyncio
+async def test_expired_sandbox_counts_as_cleaned() -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.opensandbox.sandbox_registry import (
+        record_thread_sandbox,
+        thread_sandbox_ids,
+    )
+
+    await record_thread_sandbox("t1", "sbx-expired")
+    manager = _wire_manager(kill_side_effect=_ApiError(404))
+
+    await OpenSandboxExecutor().kill_thread_sandboxes("t1")
+
+    manager.kill_sandbox.assert_awaited_once_with("sbx-expired")
+    assert await thread_sandbox_ids("t1") == []
+
+
+@pytest.mark.asyncio
+async def test_kill_without_records_is_a_noop() -> None:
+    _wire_manager()
+    await OpenSandboxExecutor().kill_thread_sandboxes("never-used")
+    sys.modules["opensandbox"].SandboxManager.create.assert_not_awaited()

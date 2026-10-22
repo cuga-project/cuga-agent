@@ -4483,18 +4483,30 @@ class KnowledgeEngine:
 
     # --- Collection lifecycle ---
 
-    async def drop_collection(self, collection: str) -> None:
+    async def drop_collection(self, collection: str, *, strict: bool = False) -> None:
         """Drop a collection and all its data."""
         await self._ensure_metadata_ready()
         collection = _sanitize_collection(collection)
 
+        # A cleanup retry may run after a restart, before the collection has
+        # been loaded into the LRU cache. Reopen it while metadata still exists
+        # so the persistent vector store can be dropped as well.
+        if strict and collection not in self._vector_stores:
+            if await self._metadata.get_collection_config(collection):
+                await self._ensure_vector_store_cached(collection)
+
         with self._vector_store_lock:
             adapter = self._vector_stores.pop(collection, None)
-            self._record_managers.pop(collection, None)
+            manager = self._record_managers.pop(collection, None)
             if adapter:
                 try:
                     adapter.drop()
                 except Exception as e:
+                    if strict:
+                        self._vector_stores[collection] = adapter
+                        if manager is not None:
+                            self._record_managers[collection] = manager
+                        raise
                     logger.debug(f"Drop collection {collection}: {e}")
 
         files_dir = self._files_dir / collection

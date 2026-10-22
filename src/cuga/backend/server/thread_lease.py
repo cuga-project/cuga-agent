@@ -126,6 +126,14 @@ class ThreadLease:
         )
         return bool(row and row["stop_requested"])
 
+    async def is_active(self, thread_id: str) -> bool:
+        """Whether a live holder can still write this thread's checkpoint."""
+        await self._ensure_schema()
+        row = await self._get_store().fetchone(
+            "SELECT expires_at FROM thread_leases WHERE thread_id = ?", (thread_id,)
+        )
+        return bool(row and row["expires_at"] > time.time())
+
     async def request_stop(self, thread_id: str) -> bool:
         """Flag the thread's lease for stop regardless of holder. True if a lease row exists."""
         await self._ensure_schema()

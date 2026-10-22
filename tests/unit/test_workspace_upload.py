@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from cuga.backend.server import workspace_upload as wu
+
+pytestmark = pytest.mark.unit
 
 
 def test_sanitize_upload_filename_accepts_json() -> None:
@@ -136,6 +140,26 @@ async def test_delete_thread_uploads(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     await wu.delete_thread_uploads("t1")
     assert not uploads.exists()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_upload_delete_failure_is_visible_to_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(wu, "workspace_tree_is_sandbox_backed", lambda: True)
+    executor = SimpleNamespace(
+        kill_thread_sandboxes=AsyncMock(side_effect=RuntimeError("failed to kill sandboxes")),
+        get_interpreter_for_thread=AsyncMock(),
+    )
+    monkeypatch.setattr(CodeExecutor, "_get_opensandbox_executor", lambda: executor)
+
+    with pytest.raises(RuntimeError, match="failed to kill sandboxes"):
+        await wu.delete_thread_uploads("t1")
+    executor.kill_thread_sandboxes.assert_awaited_once_with("t1")
+    executor.get_interpreter_for_thread.assert_not_awaited()
 
 
 def test_resolve_host_workspace_path_thread_scoped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
