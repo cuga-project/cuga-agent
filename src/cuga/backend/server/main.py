@@ -1823,6 +1823,12 @@ async def event_stream(
             )
         return
     checkpoint_thread_id = _checkpoint_thread_id(thread_id, user_id, runtime_agent_id)
+
+    # W09.6: emit thread_created before any graph event
+    if issued_thread_id:
+        from cuga.backend.cuga_graph.utils.agent_loop import StreamEvent as _SE
+        yield _SE(name="thread_created", data=issued_thread_id).format(app_state.output_format, thread_id=issued_thread_id)
+
     if current_llm is _RUNTIME_LLM_UNSET:
         runtime_llm = (
             app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None)
@@ -2070,12 +2076,15 @@ async def event_stream(
         else:
             print("Langfuse Trace ID will be generated after first LLM call")
 
+    # W09.7/W09.8/W11.1: track turn outcome for lifecycle calls in finally
+    _turn_outcome = "error"  # default; updated at each exit path
     try:
         while True:
             # Check cancellation event (non-blocking)
             if thread_id and thread_id in app_state.stop_events and app_state.stop_events[thread_id].is_set():
                 logger.info(f"Agent execution stopped by user for thread_id: {thread_id}")
                 yield StreamEvent(name="Stopped", data="Agent execution was stopped by user.").format()
+                _turn_outcome = "cancelled"
                 return
 
             stop_ev = app_state.stop_events.get(thread_id) if thread_id else None
@@ -2084,8 +2093,10 @@ async def event_stream(
                 if status is True:
                     logger.info(f"Agent execution stopped by user for thread_id: {thread_id}")
                     yield StreamEvent(name="Stopped", data="Agent execution was stopped by user.").format()
+                    _turn_outcome = "cancelled"
                     return
                 if status == "done":
+                    _turn_outcome = "cancelled"
                     return
 
                 if isinstance(event, AgentLoopAnswer):
@@ -2095,6 +2106,7 @@ async def event_stream(
                             latest_state_values = await _load_state_values()
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
+                        _turn_outcome = "interrupted"
                         return
                     if event.end:
                         try:
@@ -2268,6 +2280,7 @@ async def event_stream(
                         # Add small delay to ensure data is flushed to client
                         await asyncio.sleep(0.1)
                         logger.info(f"Stream finished for thread_id: {thread_id}")
+                        _turn_outcome = "completed"
                         return
                     elif event.has_tools:
                         if thread_id:
@@ -2374,6 +2387,39 @@ async def event_stream(
         # exception would reach the caller the same way a response body would.
         _ref = log_error_ref(e, context="Agent event stream failed")
         yield StreamEvent(name="Error", data=f"Agent request failed (ref {_ref})").format()
+    finally:
+        # W09.7/W09.8/W11.1: lifecycle calls after every turn
+        if thread_id:
+            try:
+                from cuga.backend.server.conversation_threads import Scope as _Scope, get_conversation_threads_db as _get_threads_db
+                from cuga.config import get_tenant_id as _get_tenant, get_service_instance_id as _get_instance
+                _scope = _Scope(
+                    tenant_id=_get_tenant(),
+                    instance_id=_get_instance(),
+                    agent_id=runtime_agent_id,
+                    user_id=user_id,
+                )
+                _threads_db = _get_threads_db()
+                _snap = await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
+                _ckpt_id = ((_snap.config or {}).get("configurable", {}).get("checkpoint_id", "")) if _snap else ""
+                if _turn_outcome in ("completed", "interrupted"):
+                    # W09.7: mark turn committed
+                    await _threads_db.mark_turn_committed(
+                        _scope, thread_id,
+                        checkpoint_id=_ckpt_id,
+                        agent_hash="",
+                        runtime_ver="",
+                        pending_interrupt=bool(getattr(_snap, "next", None)),
+                    )
+                    # W11.1: mark projected
+                    await _threads_db.mark_projected(_scope, thread_id, _ckpt_id)
+                elif _turn_outcome in ("cancelled", "error"):
+                    # W09.8: errored or cancelled — mark_projected only
+                    # W09.8: errored turns write checkpoints for completed steps,
+                    # so projected_checkpoint_id must be updated to avoid stale-projection repair
+                    await _threads_db.mark_projected(_scope, thread_id, _ckpt_id)
+            except Exception:
+                logger.exception("failed to record turn lifecycle for thread %s", thread_id)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -3437,11 +3483,17 @@ async def get_conversations(
     """Endpoint to retrieve conversation history."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     try:
+        from cuga.backend.server.conversation_threads import get_conversation_threads_db, request_scope
         conversation_db = get_conversation_db()
         threads = await conversation_db.get_all_threads_for_agent(agent_id, user_id)
-        # Map to the format the frontend expects: [{id, title, timestamp, preview}]
+
+        # Build scope for lifecycle record lookups (W05.6)
+        scope = request_scope(current_user, agent_id)
+        threads_db = get_conversation_threads_db()
+
         conversations = []
         for t in threads:
+            thread_id = t.get("thread_id", "")
             first_msg = t.get("first_message", "")
             # Convert ISO timestamp to epoch ms for frontend
             ts = 0
@@ -3449,18 +3501,28 @@ async def get_conversations(
                 ts = int(datetime.datetime.fromisoformat(t.get("updated_at", "")).timestamp() * 1000)
             except Exception:
                 pass
+            # W05.6: include lifecycle status and pending_interrupt
+            record = await threads_db.get_in_scope(scope, thread_id)
+            if record:
+                status = record.status
+                pending_interrupt = bool(record.pending_interrupt)
+            else:
+                status = "legacy"
+                pending_interrupt = False
             conversations.append(
                 {
-                    "id": t.get("thread_id", ""),
+                    "id": thread_id,
                     "title": first_msg if first_msg else "New Chat",
                     "timestamp": ts,
                     "preview": first_msg[:100] if first_msg else "",
+                    "status": status,
+                    "pending_interrupt": pending_interrupt,
                 }
             )
         return JSONResponse(conversations)
     except Exception as e:
         logger.error(f"Failed to load conversations: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to load conversations: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to load conversations")
 
 
 @app.post("/api/conversations")

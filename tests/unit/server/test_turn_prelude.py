@@ -194,3 +194,293 @@ async def test_memory_mode_active_without_checkpoint_starts_fresh(caplog):
     assert result.lease_token is token
     assert any("starting fresh" in r.getMessage() for r in caplog.records)
     lease.release.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# W09.7 + W09.8: event_stream finally block lifecycle calls
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_app_state():
+    """Build a minimal app_state that lets event_stream initialise."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+
+    graph = MagicMock()
+
+    async def _aget_state(cfg):
+        snap = SimpleNamespace(
+            values={"messages": []},
+            next=(),
+            config={"configurable": {"checkpoint_id": "ckpt-test"}},
+        )
+        return snap
+
+    graph.aget_state = AsyncMock(side_effect=_aget_state)
+
+    async def _aupdate_state(cfg, vals):
+        pass
+
+    graph.aupdate_state = AsyncMock(side_effect=_aupdate_state)
+
+    agent = SimpleNamespace(
+        graph=graph,
+        policy_system=None,
+        enable_todos=None,
+        reflection_enabled=None,
+        shortlisting_tool_threshold=None,
+        cuga_lite_max_steps=None,
+        enable_filesystem_tools=None,
+        special_instructions=None,
+        supervisor_enabled=False,
+        _checkpoint_config_version=None,
+    )
+
+    env = MagicMock()
+    env.get_url = MagicMock(return_value="http://localhost")
+    env.tool_implementation_provider = None
+    env.extension_communicator = None
+
+    pu = MagicMock()
+    pu.img = None
+    pu.string_representation = ""
+    pu.focused_element_bid = ""
+    pu.page_content = ""
+
+    async def _step(_):
+        return None, None, None, None, None
+
+    async def _pu_transform(**_):
+        return pu
+
+    env.step = AsyncMock(side_effect=_step)
+    env.pu_processor = MagicMock()
+    env.pu_processor.transform = AsyncMock(side_effect=_pu_transform)
+
+    return SimpleNamespace(
+        agent=agent,
+        agent_id="cuga-default",
+        output_format=None,
+        current_llm=None,
+        knowledge_provider=None,
+        knowledge_engine=None,
+        config_version=None,
+        env=env,
+        stop_events={},
+        get_subsystem_statuses=lambda: {},
+    )
+
+
+def _drain_gen(gen):
+    """Drain an async generator synchronously."""
+    import asyncio
+
+    async def _collect():
+        events = []
+        async for ev in gen:
+            events.append(ev)
+        return events
+
+    return asyncio.run(_collect())
+
+
+@pytest.mark.unit
+def test_successful_turn_calls_mark_turn_committed_and_mark_projected(monkeypatch):
+    """W09.7: after a completed turn, mark_turn_committed AND mark_projected are called."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from cuga.backend.cuga_graph.utils.agent_loop import AgentLoopAnswer
+
+    from cuga.backend.server import main
+
+    app_state = _make_mock_app_state()
+    monkeypatch.setattr(main, "app_state", app_state)
+    monkeypatch.setattr(main, "_assert_run_thread_access", AsyncMock())
+    monkeypatch.setattr(main, "_canonical_thread_id", lambda x: x)
+    monkeypatch.setattr(main, "_checkpoint_thread_id", lambda tid, uid, aid: tid)
+    monkeypatch.setattr(main, "_rehydrate_citation_ledger", AsyncMock())
+    monkeypatch.setattr(main, "format_upload_context", MagicMock(return_value=None))
+    monkeypatch.setattr(main, "_save_conversation_and_events_async", AsyncMock())
+    monkeypatch.setattr(main, "log_error_ref", MagicMock(return_value="ref-x"))
+    monkeypatch.setattr("cuga.config.get_tenant_id", lambda: "tenant-t")
+    monkeypatch.setattr("cuga.config.get_service_instance_id", lambda: "inst-t")
+
+    committed_calls = []
+    projected_calls = []
+
+    class FakeThreadsDB:
+        async def mark_turn_committed(self, scope, tid, **kwargs):
+            committed_calls.append((tid, kwargs))
+
+        async def mark_projected(self, scope, tid, checkpoint_id):
+            projected_calls.append((tid, checkpoint_id))
+
+    monkeypatch.setattr(
+        "cuga.backend.server.conversation_threads.get_conversation_threads_db",
+        lambda: FakeThreadsDB(),
+    )
+
+    # Stub AgentLoop to emit a finished answer
+    answer = AgentLoopAnswer(answer="Hello", end=True, interrupt=False, has_tools=False, tools=[])
+
+    async def _fake_run_stream(state=None, resume=None):
+        yield answer
+
+    fake_loop = MagicMock()
+    fake_loop.run_stream = _fake_run_stream
+    fake_loop.get_langfuse_trace_id = MagicMock(return_value=None)
+    monkeypatch.setattr("cuga.backend.cuga_graph.utils.agent_loop.AgentLoop", MagicMock(return_value=fake_loop))
+
+    _drain_gen(
+        main.event_stream(
+            query="hi",
+            api_mode=True,
+            thread_id="thread-success",
+            user_id="user-x",
+            agent_id="cuga-default",
+        )
+    )
+
+    assert len(committed_calls) == 1, f"expected 1 committed call, got {committed_calls}"
+    assert committed_calls[0][0] == "thread-success"
+    assert committed_calls[0][1]["pending_interrupt"] is False
+
+    assert len(projected_calls) == 1, f"expected 1 projected call, got {projected_calls}"
+    assert projected_calls[0][0] == "thread-success"
+    assert projected_calls[0][1] == "ckpt-test"
+
+
+@pytest.mark.unit
+def test_errored_turn_calls_mark_projected_only(monkeypatch):
+    """W09.8: after a turn that errors, mark_turn_committed is NOT called; mark_projected IS called."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from cuga.backend.server import main
+
+    app_state = _make_mock_app_state()
+    monkeypatch.setattr(main, "app_state", app_state)
+    monkeypatch.setattr(main, "_assert_run_thread_access", AsyncMock())
+    monkeypatch.setattr(main, "_canonical_thread_id", lambda x: x)
+    monkeypatch.setattr(main, "_checkpoint_thread_id", lambda tid, uid, aid: tid)
+    monkeypatch.setattr(main, "_rehydrate_citation_ledger", AsyncMock())
+    monkeypatch.setattr(main, "format_upload_context", MagicMock(return_value=None))
+    monkeypatch.setattr(main, "log_error_ref", MagicMock(return_value="ref-err"))
+    monkeypatch.setattr("cuga.config.get_tenant_id", lambda: "tenant-t")
+    monkeypatch.setattr("cuga.config.get_service_instance_id", lambda: "inst-t")
+
+    committed_calls = []
+    projected_calls = []
+
+    class FakeThreadsDB:
+        async def mark_turn_committed(self, scope, tid, **kwargs):
+            committed_calls.append(tid)
+
+        async def mark_projected(self, scope, tid, checkpoint_id):
+            projected_calls.append(tid)
+
+    monkeypatch.setattr(
+        "cuga.backend.server.conversation_threads.get_conversation_threads_db",
+        lambda: FakeThreadsDB(),
+    )
+
+    # Stub AgentLoop to raise
+    async def _fake_run_stream(state=None, resume=None):
+        raise RuntimeError("boom")
+        yield  # make it an async generator
+
+    fake_loop = MagicMock()
+    fake_loop.run_stream = _fake_run_stream
+    fake_loop.get_langfuse_trace_id = MagicMock(return_value=None)
+    monkeypatch.setattr("cuga.backend.cuga_graph.utils.agent_loop.AgentLoop", MagicMock(return_value=fake_loop))
+
+    _drain_gen(
+        main.event_stream(
+            query="hi",
+            api_mode=True,
+            thread_id="thread-error",
+            user_id="user-x",
+            agent_id="cuga-default",
+        )
+    )
+
+    assert committed_calls == [], f"mark_turn_committed should NOT be called on error, got {committed_calls}"
+    # W09.8: errored turns write checkpoints for completed steps, so projected_checkpoint_id must be updated to avoid stale-projection repair
+    assert len(projected_calls) == 1, f"expected 1 projected call, got {projected_calls}"
+    assert projected_calls[0] == "thread-error"
+
+
+@pytest.mark.unit
+def test_interrupted_turn_calls_mark_turn_committed_and_mark_projected(monkeypatch):
+    """W09.7+W09.8: after a paused (interrupt) turn, both mark_turn_committed and mark_projected are called."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from cuga.backend.cuga_graph.utils.agent_loop import AgentLoopAnswer
+
+    from cuga.backend.server import main
+
+    app_state = _make_mock_app_state()
+
+    # aget_state for interrupt returns snap with next=(something,) so pending_interrupt=True
+    async def _aget_state_interrupted(cfg):
+        return SimpleNamespace(
+            values={"messages": []},
+            next=("__interrupt__",),
+            config={"configurable": {"checkpoint_id": "ckpt-interrupted"}},
+        )
+
+    app_state.agent.graph.aget_state = AsyncMock(side_effect=_aget_state_interrupted)
+
+    monkeypatch.setattr(main, "app_state", app_state)
+    monkeypatch.setattr(main, "_assert_run_thread_access", AsyncMock())
+    monkeypatch.setattr(main, "_canonical_thread_id", lambda x: x)
+    monkeypatch.setattr(main, "_checkpoint_thread_id", lambda tid, uid, aid: tid)
+    monkeypatch.setattr(main, "_rehydrate_citation_ledger", AsyncMock())
+    monkeypatch.setattr(main, "format_upload_context", MagicMock(return_value=None))
+    monkeypatch.setattr(main, "log_error_ref", MagicMock(return_value="ref-x"))
+    monkeypatch.setattr("cuga.config.get_tenant_id", lambda: "tenant-t")
+    monkeypatch.setattr("cuga.config.get_service_instance_id", lambda: "inst-t")
+
+    committed_calls = []
+    projected_calls = []
+
+    class FakeThreadsDB:
+        async def mark_turn_committed(self, scope, tid, **kwargs):
+            committed_calls.append((tid, kwargs))
+
+        async def mark_projected(self, scope, tid, checkpoint_id):
+            projected_calls.append((tid, checkpoint_id))
+
+    monkeypatch.setattr(
+        "cuga.backend.server.conversation_threads.get_conversation_threads_db",
+        lambda: FakeThreadsDB(),
+    )
+
+    # Emit an interrupt answer
+    interrupt_answer = AgentLoopAnswer(answer="", end=False, interrupt=True, has_tools=False, tools=[])
+
+    async def _fake_run_stream(state=None, resume=None):
+        yield interrupt_answer
+
+    fake_loop = MagicMock()
+    fake_loop.run_stream = _fake_run_stream
+    fake_loop.get_langfuse_trace_id = MagicMock(return_value=None)
+    monkeypatch.setattr("cuga.backend.cuga_graph.utils.agent_loop.AgentLoop", MagicMock(return_value=fake_loop))
+
+    _drain_gen(
+        main.event_stream(
+            query="hi",
+            api_mode=True,
+            thread_id="thread-interrupt",
+            user_id="user-x",
+            agent_id="cuga-default",
+        )
+    )
+
+    assert len(committed_calls) == 1, f"expected committed call, got {committed_calls}"
+    assert committed_calls[0][0] == "thread-interrupt"
+    assert committed_calls[0][1]["pending_interrupt"] is True  # snap.next is non-empty
+
+    assert len(projected_calls) == 1
+    assert projected_calls[0][0] == "thread-interrupt"
