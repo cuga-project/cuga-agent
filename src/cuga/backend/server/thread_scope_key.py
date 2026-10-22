@@ -1,4 +1,5 @@
 """Scoped checkpoint keys for non-UI entry points (W07.1, design §11.1 step 4)."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal

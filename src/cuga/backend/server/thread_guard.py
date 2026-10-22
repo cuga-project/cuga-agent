@@ -1,4 +1,5 @@
 """Thread ownership guard (W06.1, design §11.1 steps 1–3, 5)."""
+
 from __future__ import annotations
 
 import logging
@@ -32,6 +33,7 @@ async def resolve_owned_thread(scope: "Scope", thread_id: str) -> "ThreadRecord"
         raise ThreadNotFound()
     try:
         from cuga.backend.server.conversation_threads import get_conversation_threads_db
+
         rec = await get_conversation_threads_db().get_in_scope(scope, tid)
     except Exception:
         logger.exception("thread ownership lookup failed")
