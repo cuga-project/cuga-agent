@@ -165,7 +165,7 @@ validators = [
     Validator("advanced_features.execd_url", default=""),
     Validator("advanced_features.execd_api_key", default=""),
     Validator("advanced_features.sandbox_secret_dir", default="/bindings/cuga-sandbox"),
-    Validator("advanced_features.execd_verify_ssl", default=False),
+    Validator("advanced_features.execd_verify_ssl", default=True),
     Validator("advanced_features.execd_package_index", default=""),
     Validator("advanced_features.sandbox_callback_url", default=""),
     Validator("advanced_features.execd_execution_timeout", default=120, is_type_of=int, gte=0),

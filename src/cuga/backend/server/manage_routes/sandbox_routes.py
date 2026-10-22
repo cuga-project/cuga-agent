@@ -4,6 +4,7 @@ Independent of agent config versions — a change applies to the running server
 immediately and is persisted so it survives a restart.
 """
 
+import asyncio
 from typing import Any, Optional
 
 from fastapi import HTTPException
@@ -21,6 +22,9 @@ from cuga.backend.server.sandbox_store import (
 )
 from cuga.backend.storage import secrets_store
 
+_LOAD_ATTEMPTS = 3
+_LOAD_RETRY_DELAY_S = 1.0
+
 
 class SandboxSettingsBody(BaseModel):
     enabled: bool
@@ -32,12 +36,24 @@ class SandboxSettingsBody(BaseModel):
 
 
 async def load_sandbox_settings_into_runtime() -> None:
-    """Install the stored choice at startup. Missing row → env defaults apply."""
-    try:
-        stored = await load_sandbox_settings()
-    except Exception as e:
-        logger.warning(f"Failed to load sandbox settings from DB; using env defaults: {e}")
-        return
+    """Install the stored choice at startup. Missing row → env defaults apply.
+
+    A row that exists but cannot be read is not a missing row: starting without
+    it could turn a sandbox the operator enabled in Manage off, and run code on
+    the host with nothing to say so. Retry, then fail startup.
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(_LOAD_ATTEMPTS):
+        try:
+            stored = await load_sandbox_settings()
+            break
+        except Exception as e:
+            last_exc = e
+            logger.warning(f"Loading sandbox settings failed (attempt {attempt + 1}/{_LOAD_ATTEMPTS}): {e}")
+            if attempt + 1 < _LOAD_ATTEMPTS:
+                await asyncio.sleep(_LOAD_RETRY_DELAY_S)
+    else:
+        raise RuntimeError("Could not load the code-sandbox settings from the DB") from last_exc
     connection.set_runtime_config(stored)
     try:
         await connection.load_manual_key()
@@ -51,7 +67,7 @@ async def _probe(url: Optional[str]) -> dict[str, Any]:
     if not url:
         return {"reachable": None}
     try:
-        # Same client as real calls: API key, tenant/agent headers, self-signed TLS accepted.
+        # Same client as real calls: API key, tenant/agent headers, same TLS verification.
         async with ExecdExecutor._client(5.0) as client:
             r = await client.get(f"{url.rstrip('/')}/status")
         result: dict[str, Any] = {"reachable": True, "status_code": r.status_code}

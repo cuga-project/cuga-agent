@@ -193,6 +193,47 @@ async def test_call_budget_is_charged_in_the_block_context(cuga_server, monkeypa
     assert ToolCallTracker.get_run_budget_used() == 2
 
 
+async def test_in_kernel_tools_are_charged_against_the_budget(cuga_server, monkeypatch):
+    """Filesystem tools and run_command run in the kernel, past the counted wrappers; they still pay."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import execd_executor
+
+    url, seen = cuga_server
+    monkeypatch.setattr(settings.advanced_features, "max_tool_calls_per_block", 2, raising=False)
+
+    ToolCallTracker.seed_call_budget(0)
+    ToolCallTracker.seed_block_budget()
+    namespace = {execd_executor._CHARGE_NAME: execd_executor._budget_charge()}
+    # Top-level, as the generated filesystem/shell definitions are in the real kernel.
+    kernel_tool = (
+        "async def read_file(path):\n"
+        "    return 'body of ' + path\n" + execd_executor._charged_tools_code(["read_file", "absent_tool"])
+    )
+    code = (
+        "a = await read_file('a')\nb = await read_file('b')\n"
+        "try:\n    await read_file('c')\nexcept Exception as e:\n    refused = e.type"
+    )
+    async with tool_callback.registered_block(namespace, "thread-t", 10.0) as block:
+        src = tool_callback.stub_code(
+            namespace, url=url, block_id=block.block_id, token=block.token, timeout=10.0
+        )
+
+        def kernel_run() -> dict:
+            kernel: dict = {}
+            exec(compile(src + kernel_tool, "<stubs>", "exec"), kernel)
+            exec(
+                compile(f"async def _main():\n{_indent(code)}\n    return locals()", "<block>", "exec"),
+                kernel,
+            )
+            return asyncio.run(kernel["_main"]())
+
+        out = await asyncio.to_thread(kernel_run)
+
+    assert out["a"] == "body of a" and out["b"] == "body of b"
+    assert out["refused"] == BlockToolCallBudgetExceeded.__name__
+    assert ToolCallTracker.get_run_budget_used() == 2
+    assert {c["name"] for c in seen} == {execd_executor._CHARGE_NAME}
+
+
 async def test_callable_table_becomes_a_table_of_stubs(cuga_server):
     url, seen = cuga_server
 

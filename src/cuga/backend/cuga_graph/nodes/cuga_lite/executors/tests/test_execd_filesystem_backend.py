@@ -15,6 +15,7 @@ import pytest
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd.filesystem_backend import (
     _INVOKE,
+    _MAX_WRITE_CHUNK,
     ExecdFilesystemBackend,
 )
 
@@ -96,7 +97,32 @@ async def test_operands_travel_in_the_environment_not_the_command():
     # The command is a fixed one-liner: same string for every operation.
     assert command == _INVOKE
     spec = json.loads(base64.b64decode(env["CUGA_FS_OP"]).decode())
-    assert spec["args"]["content"] == nasty
+    assert base64.b64decode(spec["args"]["data"]).decode("utf-8") == nasty
+
+
+@pytest.mark.asyncio
+async def test_large_writes_are_split_so_each_env_var_fits_one_execve_string():
+    """Linux caps one exported string at 128 KiB; a 100 MiB upload must not be one."""
+    backend, fake = _backend(result={"path": "/workspace/big.bin"})
+    text = "x" * (3 * _MAX_WRITE_CHUNK + 1)
+
+    await backend.write_text("/workspace/big.bin", text, operation="write_file")
+
+    specs = [json.loads(base64.b64decode(env["CUGA_FS_OP"]).decode()) for _c, env in fake.calls]
+    assert len(specs) == 4
+    assert [s["args"]["append"] for s in specs] == [False, True, True, True]
+    assert all(len(env["CUGA_FS_OP"]) < 128 * 1024 for _c, env in fake.calls)
+    assert b"".join(base64.b64decode(s["args"]["data"]) for s in specs) == text.encode()
+
+
+@pytest.mark.asyncio
+async def test_an_empty_write_still_truncates_the_file():
+    backend, fake = _backend(result={"path": "/workspace/x"})
+
+    await backend.write_text("/workspace/x", "", operation="write_file")
+
+    spec = json.loads(base64.b64decode(fake.calls[0][1]["CUGA_FS_OP"]).decode())
+    assert len(fake.calls) == 1 and spec["args"] == {"path": "x", "data": "", "append": False}
 
 
 @pytest.mark.asyncio

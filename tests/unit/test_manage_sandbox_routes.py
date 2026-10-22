@@ -8,6 +8,8 @@ from cuga.backend.server.manage_routes import sandbox_routes
 from cuga.backend.server.manage_routes.sandbox_routes import SandboxSettingsBody, put_sandbox_settings
 from cuga.config import settings
 
+pytestmark = pytest.mark.unit
+
 _real_probe = sandbox_routes._probe
 
 
@@ -138,3 +140,41 @@ async def test_probe_reports_a_rejected_key(monkeypatch):
     result = await _real_probe("https://sandbox.example")
     assert result["status_code"] == 401
     assert result["auth_error"] == "API key rejected by the sandbox"
+
+
+@pytest.mark.asyncio
+async def test_startup_fails_loudly_when_stored_settings_cannot_be_read(monkeypatch):
+    """A transient DB error must not start the server with the sandbox silently off."""
+    attempts = []
+
+    async def broken():
+        attempts.append(1)
+        raise ConnectionError("db down")
+
+    async def no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(sandbox_routes, "load_sandbox_settings", broken)
+    monkeypatch.setattr(sandbox_routes.asyncio, "sleep", no_sleep)
+    with pytest.raises(RuntimeError, match="code-sandbox settings"):
+        await sandbox_routes.load_sandbox_settings_into_runtime()
+    assert len(attempts) == sandbox_routes._LOAD_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_startup_retries_a_transient_settings_read(monkeypatch):
+    calls = []
+
+    async def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionError("db blip")
+        return {"enabled": True, "url": "https://sandbox.example"}
+
+    async def no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(sandbox_routes, "load_sandbox_settings", flaky)
+    monkeypatch.setattr(sandbox_routes.asyncio, "sleep", no_sleep)
+    await sandbox_routes.load_sandbox_settings_into_runtime()
+    assert connection.is_enabled() is True

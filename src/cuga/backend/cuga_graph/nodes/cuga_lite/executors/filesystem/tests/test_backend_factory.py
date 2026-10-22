@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import connection
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd.filesystem_backend import (
     ExecdFilesystemBackend,
 )
@@ -27,6 +28,8 @@ def mode(monkeypatch):
     def _set(sandbox_mode, *, opensandbox_sandbox=True):
         monkeypatch.setattr(settings.advanced_features, "sandbox_mode", sandbox_mode)
         monkeypatch.setattr(settings.advanced_features, "opensandbox_sandbox", opensandbox_sandbox)
+        # The runtime toggle overrides sandbox_mode; pin it so other tests cannot leak execd in.
+        monkeypatch.setattr(connection, "is_enabled", lambda: sandbox_mode == "execd")
 
     return _set
 

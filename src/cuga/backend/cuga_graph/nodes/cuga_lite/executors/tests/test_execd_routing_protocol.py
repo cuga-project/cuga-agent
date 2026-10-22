@@ -11,6 +11,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import ExecdExecuto
 from cuga.backend.cuga_graph.state.agent_state import AgentState, VariablesManager
 from cuga.config import settings
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def fake_sandbox(monkeypatch):
@@ -76,7 +78,7 @@ async def test_throwaway_context_still_routes_consistently(fake_sandbox):
         (True, True),
         ("false", False),
         ("true", True),
-        ("", False),
+        ("", True),
         ("/etc/ca.crt", "/etc/ca.crt"),
     ],
 )

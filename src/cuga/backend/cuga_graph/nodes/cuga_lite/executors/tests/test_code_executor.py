@@ -671,7 +671,12 @@ async def test_execd_sends_filesystem_tools_inline_and_everything_else_as_callba
     assert "_CUGA_SH_ROOT" in code  # inline run_command
     assert "async def crm_get_contact(*args, **kwargs)" in code
     assert "_cuga_cb_acall('crm_get_contact'" in code
-    assert "'write_file'" not in code and "'run_command'" not in code  # not routed back to CUGA
+    # Not routed back to CUGA...
+    assert "_cuga_cb_acall('write_file'" not in code and "_cuga_cb_acall('run_command'" not in code
+    # ...but still charged against the call budget through the one counted callback.
+    assert "_cuga_cb_acall('_cuga_charge_tool_call'" in code
+    assert "write_file = _cuga_charged(write_file)" in code
+    assert "run_command = _cuga_charged(run_command)" in code
     assert "http://cuga.test:7860/sandbox/tools/call" in code
 
 

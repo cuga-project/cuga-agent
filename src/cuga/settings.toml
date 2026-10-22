@@ -53,9 +53,9 @@ execd_api_key = ""
 # execd_api_key, EXECD_API_KEY or SANDBOX_API_KEY. Re-read when the files change, so rotation needs no restart.
 # Mount it with `optional: true` so the pod starts without it; a missing directory means URL/key are entered by hand.
 sandbox_secret_dir = "/bindings/cuga-sandbox"  # directory the secret is mounted at; empty disables the lookup. Env: DYNACONF_ADVANCED_FEATURES__SANDBOX_SECRET_DIR
-# TLS verification for execd/sandbox-api calls: false (default; accepts self-signed certs),
-# true (system/certifi CAs), or a path to a CA bundle. Env: DYNACONF_ADVANCED_FEATURES__EXECD_VERIFY_SSL
-execd_verify_ssl = false
+# TLS verification for execd/sandbox-api calls: true (default; system/certifi CAs), a path to a
+# CA bundle for self-signed routes, or false (insecure; dev only). Env: DYNACONF_ADVANCED_FEATURES__EXECD_VERIFY_SSL
+execd_verify_ssl = true
 # Package index for code in the execd sandbox. Empty = installs fail closed. Add its host
 # to the sandbox network policy — egress is denied by default.
 execd_package_index = ""

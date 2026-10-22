@@ -46,6 +46,7 @@ from cuga.config import get_tenant_id, settings
 from ..common.run_output import format_run_command_output
 from ..filesystem.paths import normalize_shell_command_paths
 from ..e2b import E2BExecutor
+from ...tracking.tracker import counted_tool_call
 from . import block_runner, connection, tool_callback
 
 
@@ -58,6 +59,42 @@ def _block_timeout() -> int:
 def _is_callable_table(value: Any) -> bool:
     """A dict whose values are all callables, like the function-calling ``_fc_tools`` lookup."""
     return isinstance(value, dict) and bool(value) and all(callable(v) for v in value.values())
+
+
+# Name of the callback the in-kernel tools charge the call budget through.
+_CHARGE_NAME = "_cuga_charge_tool_call"
+
+
+def _budget_charge() -> Callable[..., Any]:
+    """A counted no-op: calling it charges one unit against the run, block and thread budgets.
+
+    Filesystem tools and ``run_command`` run in the kernel, so the counted
+    wrappers ``CodeExecutor`` put around them never run. Each in-kernel tool
+    calls this back in CUGA before doing its work, so it is charged — and
+    refused — exactly as a tool answered by CUGA would be.
+    """
+
+    async def _charge(tool_name: str = "") -> None:
+        return None
+
+    return counted_tool_call(_charge)
+
+
+def _charged_tools_code(names: list[str]) -> str:
+    """Kernel Python wrapping each in-kernel tool so it charges the budget before it runs."""
+    lines = [
+        "def _cuga_charged(_fn):",
+        "    async def _cuga_charged_call(*args, **kwargs):",
+        f"        await {_CHARGE_NAME}(_fn.__name__)",
+        "        return await _fn(*args, **kwargs)",
+        "    _cuga_charged_call.__name__ = _fn.__name__",
+        "    _cuga_charged_call.__doc__ = _fn.__doc__",
+        "    return _cuga_charged_call",
+        "",
+    ]
+    for name in names:
+        lines.append(f"if {name!r} in globals(): {name} = _cuga_charged({name})")
+    return "\n".join(lines) + "\n"
 
 
 class _KernelGone(Exception):
@@ -153,17 +190,18 @@ class ExecdExecutor(E2BExecutor):
 
     @staticmethod
     def _verify_ssl() -> bool | str:
-        """``advanced_features.execd_verify_ssl``: false (default), true, or a CA bundle path.
+        """``advanced_features.execd_verify_ssl``: true (default), false, or a CA bundle path.
 
-        Off by default because sandbox routes are commonly served with self-signed certs.
+        On by default: every request carries the sandbox API key, so the server
+        must be authenticated. Self-signed routes should name their CA bundle.
         """
-        value = getattr(settings.advanced_features, "execd_verify_ssl", False)
+        value = getattr(settings.advanced_features, "execd_verify_ssl", True)
         if isinstance(value, bool):
             return value
         text = str(value or "").strip()
-        if text.lower() in ("", "false", "0", "no", "off"):
+        if text.lower() in ("false", "0", "no", "off"):
             return False
-        if text.lower() in ("true", "1", "yes", "on"):
+        if text.lower() in ("", "true", "1", "yes", "on"):
             return True
         return text
 
@@ -1079,7 +1117,8 @@ async def edit_file(path, edits, dryRun=False):
             workspace = self._workspace_path(thread_id)
 
             # Filesystem tools and run_command run in the kernel itself, next to the
-            # files and the venv; every other callable is answered by CUGA.
+            # files and the venv; every other callable is answered by CUGA. The
+            # in-kernel ones still charge the call budget through a callback.
             in_kernel: dict[str, Any] = {}
             remote: dict[str, Any] = {}
             for name, value in context_locals.items():
@@ -1089,6 +1128,9 @@ async def edit_file(path, edits, dryRun=False):
                     in_kernel[name] = value
                 elif callable(value) or inspect.ismodule(value) or _is_callable_table(value):
                     remote[name] = value
+            if in_kernel:
+                # In-kernel tools bypass the counted wrappers; they charge through this callback.
+                remote[_CHARGE_NAME] = _budget_charge()
             fs_code = (
                 self._filesystem_tools_code(workspace) if any(n != "run_command" for n in in_kernel) else ""
             )
@@ -1126,11 +1168,14 @@ async def edit_file(path, edits, dryRun=False):
                     else ""
                 )
 
+                charged_code = _charged_tools_code(sorted(in_kernel)) if in_kernel else ""
+
                 complete_code = f"""
 import asyncio
 {fs_code}
 {shell_code}
 {tools_code}
+{charged_code}
 {variables_code}
 {wrapped_code}
 {block_runner.runner_code(sandbox_timeout)}"""

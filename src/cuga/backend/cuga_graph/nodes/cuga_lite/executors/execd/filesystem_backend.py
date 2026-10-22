@@ -170,7 +170,8 @@ def run():
     if op == "write_bytes":
         p = resolve(args["path"])
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(base64.b64decode(args["data"]))
+        with p.open("ab" if args.get("append") else "wb") as stream:
+            stream.write(base64.b64decode(args["data"]))
         return {"path": public(p)}
 
     raise ValueError("unknown op: %s" % op)
@@ -188,6 +189,10 @@ sys.stdout.write("\nCUGA_FS_RESULT:" + base64.b64encode(json.dumps(payload).enco
 # Fixed string — nothing is interpolated, so there is nothing to quote.
 _INVOKE = 'python3 -c \'import os; exec(os.environ["CUGA_FS_SRC"])\''
 _RESULT_MARKER = "CUGA_FS_RESULT:"
+# Raw bytes per write. The operation travels in an exported env var, and Linux
+# caps a single execve string at 128 KiB; base64 twice over turns 48 KiB into
+# ~86 KiB, leaving room for the JSON around it.
+_MAX_WRITE_CHUNK = 48 * 1024
 
 
 class ExecdFilesystemBackend(FilesystemBackend):
@@ -261,6 +266,19 @@ class ExecdFilesystemBackend(FilesystemBackend):
             logger.debug(f"[ExecdFilesystemBackend] {op} reported a non-zero exit but returned a result")
         return payload["result"]
 
+    async def _write_bytes_chunked(self, rel: str, data: bytes) -> str:
+        """Write ``data`` in pieces small enough for one env var: truncate first, then append."""
+        result: dict = {}
+        for offset in range(0, max(len(data), 1), _MAX_WRITE_CHUNK):
+            chunk = data[offset : offset + _MAX_WRITE_CHUNK]
+            result = await self._call(
+                "write_bytes",
+                path=rel,
+                data=base64.b64encode(chunk).decode("ascii"),
+                append=offset > 0,
+            )
+        return result["path"]
+
     # ------------------------------------------------------------------ #
     # FilesystemBackend                                                    #
     # ------------------------------------------------------------------ #
@@ -269,7 +287,7 @@ class ExecdFilesystemBackend(FilesystemBackend):
         return (await self._call("read_text", path=self._rel(path)))["text"]
 
     async def write_text(self, path: str, content: str, *, operation: str) -> str:
-        return (await self._call("write_text", path=self._rel(path), content=content))["path"]
+        return await self._write_bytes_chunked(self._rel(path), content.encode("utf-8"))
 
     async def exists(self, path: str, *, operation: str) -> bool:
         try:
@@ -311,11 +329,7 @@ class ExecdFilesystemBackend(FilesystemBackend):
             payload = read_bytes_under(Path(local_path), base)
         except FileNotFoundError as exc:
             raise FileNotFoundError(f"Local file not found: {local_path}") from exc
-        await self._call(
-            "write_bytes",
-            path=self._rel(sandbox_path),
-            data=base64.b64encode(payload).decode("ascii"),
-        )
+        await self._write_bytes_chunked(self._rel(sandbox_path), payload)
         logger.info(f"[ExecdFilesystemBackend] Uploaded {local_path} → {sandbox_path}")
         return UploadResult(local_path=str(local_path), sandbox_path=sandbox_path)
 
