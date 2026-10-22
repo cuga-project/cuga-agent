@@ -699,7 +699,7 @@ export function ChatLanding() {
   const refreshThreads = useCallback(async () => {
     const agentId = effectiveChatAgentId;
     try {
-      const convs = await api.getConversations();
+      const convs = await api.getConversations(agentId);
       if (agentId === chatAgentIdRef.current) {
         setThreads(
           convs.map((c) => ({
@@ -920,7 +920,7 @@ export function ChatLanding() {
     let cancelled = false;
     (async () => {
       try {
-        const convs = await api.getConversations();
+        const convs = await api.getConversations(effectiveChatAgentId);
         if (cancelled) return;
         setThreads(
           convs.map((c) => ({
@@ -1041,7 +1041,7 @@ export function ChatLanding() {
       return;
     }
     try {
-      const res = await api.getWorkspaceFile(node.path, effectiveChatThreadId || undefined);
+      const res = await api.getWorkspaceFile(node.path, effectiveChatThreadId || undefined, effectiveChatAgentId);
       if (res.ok) {
         const data = await res.json();
         setFileModal({ path: node.path, content: data.content, name: node.name });
@@ -1051,13 +1051,13 @@ export function ChatLanding() {
     } catch (err) {
       addToast("error", "Error loading file", err instanceof Error ? err.message : "Unknown error");
     }
-  }, [addToast, effectiveChatThreadId]);
+  }, [addToast, effectiveChatThreadId, effectiveChatAgentId]);
 
   const handleWorkspaceFileDownload = useCallback(
     async (node: FileNode) => {
       if (node.type !== "file") return;
       try {
-        const res = await api.getWorkspaceDownload(node.path, effectiveChatThreadId || undefined);
+        const res = await api.getWorkspaceDownload(node.path, effectiveChatThreadId || undefined, effectiveChatAgentId);
         if (!res.ok) {
           addToast("error", "Download failed", res.statusText || `HTTP ${res.status}`);
           return;
@@ -1073,20 +1073,30 @@ export function ChatLanding() {
         addToast("error", "Download failed", err instanceof Error ? err.message : "Unknown error");
       }
     },
-    [addToast, effectiveChatThreadId],
+    [addToast, effectiveChatThreadId, effectiveChatAgentId],
   );
 
   const handleWorkspaceUpload = useCallback(
     async (files: File[]) => {
-      const tid = effectiveChatThreadId?.trim();
+      let tid = effectiveChatThreadId?.trim();
+      // Eager ID allocation for uploads on a new draft (W14.2)
       if (!tid) {
-        addToast("warning", "Upload unavailable", "Start a chat before uploading files.");
-        return;
+        try {
+          const created = await api.createConversation(effectiveChatAgentId);
+          tid = created.id;
+          setDraftThread((prev) => ({ ...prev, threadId: created.id, updatedAt: new Date().toISOString() }));
+          setActiveThreadId(created.id);
+        } catch (err) {
+          console.error("Failed to create conversation for upload", err);
+          addToast("error", "Upload unavailable", "Could not start a conversation for this upload.");
+          return;
+        }
       }
+      const uploadThreadId = tid;
       try {
         await Promise.all(
           files.map(async (file) => {
-            const res = await api.uploadWorkspaceFile(file, tid);
+            const res = await api.uploadWorkspaceFile(file, uploadThreadId, effectiveChatAgentId);
             if (!res.ok) {
               let detail = res.statusText;
               try {
@@ -1105,7 +1115,7 @@ export function ChatLanding() {
         addToast("error", "Upload failed", err instanceof Error ? err.message : "Unknown error");
       }
     },
-    [addToast, effectiveChatThreadId, fetchWorkspaceTree],
+    [addToast, effectiveChatThreadId, effectiveChatAgentId, fetchWorkspaceTree],
   );
 
   const handleWorkspaceFileInputChange = useCallback(
@@ -1391,6 +1401,7 @@ export function ChatLanding() {
           <CarbonChat
             contained={true}
             threadId={effectiveChatThreadId}
+            agentId={effectiveChatAgentId}
             attachmentScope="session"
             knowledgeEnabled={knowledgeEnabled}
             sessionKnowledgeEnabled={sessionKnowledgeEnabled}
@@ -2054,7 +2065,7 @@ export function ChatLanding() {
               renderIcon={Download}
               onClick={async () => {
                 try {
-                  const res = await api.getWorkspaceDownload(fileModal.path, effectiveChatThreadId || undefined);
+                  const res = await api.getWorkspaceDownload(fileModal.path, effectiveChatThreadId || undefined, effectiveChatAgentId);
                   if (res.ok) {
                     const blob = await res.blob();
                     const url = URL.createObjectURL(blob);

@@ -92,6 +92,7 @@ interface CarbonChatProps {
   contained?: boolean;
   useDraft?: boolean;
   threadId?: string | null;
+  agentId?: string;
   attachmentScope?: "none" | KnowledgeAttachmentScope;
   knowledgeEnabled?: boolean | null;
   agentKnowledgeEnabled?: boolean | null;
@@ -245,6 +246,7 @@ const CarbonChat = ({
   contained = false,
   useDraft = false,
   threadId = null,
+  agentId,
   attachmentScope = "none",
   knowledgeEnabled = true,
   agentKnowledgeEnabled = true,
@@ -460,7 +462,7 @@ const CarbonChat = ({
     setIsLoadingDebug(true);
     setDebugError(null);
     try {
-      const response = await api.getAgentState(activeThreadId);
+      const response = await api.getAgentState(activeThreadId, agentId);
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
@@ -474,7 +476,7 @@ const CarbonChat = ({
     } finally {
       setIsLoadingDebug(false);
     }
-  }, []);
+  }, [agentId]);
 
   // Auto-refresh debug data when panel is open
   useEffect(() => {
@@ -743,6 +745,7 @@ const CarbonChat = ({
           disableHistory,
           undefined,
           attachmentScope === "session" ? attachmentSnapshot : undefined,
+          agentId,
         );
 
         if (onThreadChange && currentThreadId) {
@@ -761,7 +764,7 @@ const CarbonChat = ({
         }
       }
     },
-    [attachmentScope, createMessageAttachmentSnapshot, disableHistory, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
+    [agentId, attachmentScope, createMessageAttachmentSnapshot, disableHistory, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
   );
 
   const handleChatReady = useCallback((instance: ChatInstance) => {
@@ -788,7 +791,7 @@ const CarbonChat = ({
         const tid = getOrCreateThreadId();
         if (!tid) return;
         console.log('[CarbonChat] STOP_STREAMING event received, calling /stop for thread:', tid);
-        stopCugaAgent(tid);
+        stopCugaAgent(tid, agentId);
       },
     });
     
@@ -820,11 +823,11 @@ const CarbonChat = ({
             signal: new AbortController().signal,
             silent: false,
           };
-          await customSendMessageImpl(request, options, instance, useDraft, disableHistory, actionResponse);
+          await customSendMessageImpl(request, options, instance, useDraft, disableHistory, actionResponse, undefined, agentId);
         }
       },
     });
-  }, [useDraft, disableHistory]);
+  }, [useDraft, disableHistory, agentId]);
 
   // Load history when threadId changes
   useEffect(() => {

@@ -192,6 +192,16 @@ async def _require_workspace_thread_access(
         try:
             await resolve_owned_thread(scope, tid)
         except ThreadNotFound:
+            # F11: a lifecycle row (e.g. status=deleted) means this is not a legacy thread;
+            # never fall back to history ownership for it.
+            try:
+                from cuga.backend.server.conversation_threads import get_conversation_threads_db
+
+                has_record = await get_conversation_threads_db().has_any_record(tid)
+            except Exception:
+                has_record = False
+            if has_record:
+                raise
             # W13.2: legacy thread (history rows, no lifecycle record). Allow workspace
             # reads only when the caller is the sole owner of the thread's history.
             user_id = current_user.sub if current_user else DEFAULT_USER_ID
@@ -1537,21 +1547,30 @@ async def _save_conversation_and_events_async(
     stream_events are persisted so that citation-ledger rehydration and reload
     replay still work — the conversation_history table (sidebar) is left untouched.
     """
+    ok = True
     try:
         if not events_only:
-            await save_conversation_to_db(
-                agent_id,
-                thread_id,
-                state,
-                user_id,
-                user_attachments=user_attachments,
-            )
+            if (
+                await save_conversation_to_db(
+                    agent_id,
+                    thread_id,
+                    state,
+                    user_id,
+                    user_attachments=user_attachments,
+                )
+                is False
+            ):
+                ok = False
         if events:
             conversation_db = get_conversation_db()
-            await conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
-            logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
+            if await conversation_db.save_stream_events(agent_id, thread_id, user_id, events) is False:
+                ok = False
+            else:
+                logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
     except Exception as e:
         logger.error(f"Error in async save: {e}")
+        ok = False
+    return ok
 
 
 def _build_slash_skill_registry():
@@ -1606,7 +1625,7 @@ async def save_conversation_to_db(
     state: AgentState,
     user_id: str = DEFAULT_USER_ID,
     user_attachments: Optional[List[Dict[str, Any]]] = None,
-):
+) -> bool:
     """
     Save conversation history to database.
 
@@ -1615,12 +1634,15 @@ async def save_conversation_to_db(
         thread_id: The thread/conversation identifier
         state: The current agent state containing messages
         user_id: The user identifier (defaults to DEFAULT_USER_ID)
+
+    Returns:
+        False when a save was attempted and failed; True otherwise.
     """
     try:
         from langchain_core.messages import AIMessage, HumanMessage
 
         if not thread_id or not state:
-            return
+            return True
 
         conversation_db = get_conversation_db()
 
@@ -1725,10 +1747,13 @@ async def save_conversation_to_db(
                 )
             else:
                 logger.warning(f"✗ Failed to save conversation history: thread_id={thread_id}")
+                return False
         else:
             logger.warning(f"No messages to save for thread_id={thread_id}")
+        return True
     except Exception as e:
         logger.error(f"Error saving conversation to database: {e}")
+        return False
 
 
 async def _next_event_or_stop(stream, stop_event):
@@ -1770,7 +1795,7 @@ def apply_request_user_context(state: AgentState, user_id: Optional[str]) -> Non
     state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
 
 
-async def event_stream(
+async def _event_stream_impl(
     query: str,
     api_mode=False,
     resume=None,
@@ -1788,7 +1813,7 @@ async def event_stream(
 
     ``issued_thread_id`` is set when /stream created the thread record itself (W09.6 consumes it).
     ``prelude_result`` is a PreludeResult from run_turn_prelude; when set, the checkpoint was already
-    loaded (fail-closed) and the lease is held — this generator must release it in finally.
+    loaded (fail-closed) and the lease is held — the ``event_stream`` wrapper renews and releases it.
     """
     from cuga.backend.activity_tracker.tracker import ActivityTracker
     from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
@@ -1887,6 +1912,7 @@ async def event_stream(
                         return
                     latest_state_values = snapshot.values
                     if latest_state_values:
+                        # F12: the prelude already validated that this checkpoint loads as AgentState
                         local_state = AgentState(**latest_state_values)
                         local_state.thread_id = thread_id
                         local_state.input = query
@@ -2127,7 +2153,8 @@ async def event_stream(
 
     # W09.7/W09.8/W11.1: track turn outcome for lifecycle calls in finally
     _turn_outcome = "error"  # default; updated at each exit path
-    _history_save_failed = False  # W11.1: True when a save was attempted but raised
+    _history_save_attempted = False  # F7: True once a history save was tried (interrupts never try)
+    _history_save_failed = False  # W11.1: True when a save was attempted but raised or reported failure
     try:
         while True:
             # Check cancellation event (non-blocking)
@@ -2280,32 +2307,43 @@ async def event_stream(
                             # and reload replay work, but we skip conversation_history so
                             # the sidebar is not polluted.
                             if not disable_history:
+                                _history_save_attempted = True
                                 try:
-                                    await _save_conversation_and_events_async(
-                                        agent_id=runtime_agent_id,
-                                        thread_id=thread_id,
-                                        user_id=user_id,
-                                        state=local_state if local_state else AgentState(),
-                                        events=stream_events_buffer.copy(),
-                                        user_attachments=user_attachments,
-                                    )
+                                    if (
+                                        await _save_conversation_and_events_async(
+                                            agent_id=runtime_agent_id,
+                                            thread_id=thread_id,
+                                            user_id=user_id,
+                                            state=local_state if local_state else AgentState(),
+                                            events=stream_events_buffer.copy(),
+                                            user_attachments=user_attachments,
+                                        )
+                                        is False
+                                    ):
+                                        logger.error("history save reported failure for thread %s", thread_id)
+                                        _history_save_failed = True
                                 except Exception:
                                     logger.exception("history save failed for thread %s", thread_id)
                                     _history_save_failed = True
                             else:
+                                _history_save_attempted = True
                                 try:
-                                    await _save_conversation_and_events_async(
-                                        agent_id=runtime_agent_id,
-                                        thread_id=thread_id,
-                                        user_id=user_id,
-                                        # state is unused when events_only=True; pass it
-                                        # like the normal branch does (AgentState() would
-                                        # raise on its required fields anyway).
-                                        state=local_state,
-                                        events=stream_events_buffer.copy(),
-                                        user_attachments=user_attachments,
-                                        events_only=True,
-                                    )
+                                    if (
+                                        await _save_conversation_and_events_async(
+                                            agent_id=runtime_agent_id,
+                                            thread_id=thread_id,
+                                            user_id=user_id,
+                                            # state is unused when events_only=True; pass it
+                                            # like the normal branch does (AgentState() would
+                                            # raise on its required fields anyway).
+                                            state=local_state,
+                                            events=stream_events_buffer.copy(),
+                                            user_attachments=user_attachments,
+                                            events_only=True,
+                                        )
+                                        is False
+                                    ):
+                                        _history_save_failed = True
                                     logger.info(
                                         f"Try-It-Out: saved stream events (no conversation history) "
                                         f"for thread_id: {thread_id}"
@@ -2466,9 +2504,9 @@ async def event_stream(
                         runtime_ver="",
                         pending_interrupt=bool(getattr(_snap, "next", None)),
                     )
-                    # W11.1: mark projected only when history save was not attempted or succeeded.
-                    # If the save was attempted but failed, leave projected behind for W11.2 repair.
-                    if not _history_save_failed:
+                    # W11.1/F7: mark projected only when history was saved successfully. An interrupt
+                    # never saves history, and a failed save must stay behind for W11.2 repair.
+                    if _turn_outcome == "completed" and _history_save_attempted and not _history_save_failed:
                         await _threads_db.mark_projected(_scope, thread_id, _ckpt_id)
                 elif _turn_outcome in ("cancelled", "error"):
                     # W09.8: errored or cancelled — mark_projected only
@@ -2477,13 +2515,60 @@ async def event_stream(
                     await _threads_db.mark_projected(_scope, thread_id, _ckpt_id)
             except Exception:
                 logger.exception("failed to record turn lifecycle for thread %s", thread_id)
-        # F2: release the lease acquired by run_turn_prelude
-        if prelude_result is not None and prelude_result.lease_token is not None:
-            from cuga.backend.server.thread_lease import get_thread_lease
+
+
+async def event_stream(*args, prelude_result: Any = None, **kwargs):
+    """Run ``_event_stream_impl`` while owning the turn lease from ``run_turn_prelude``.
+
+    The lease is renewed in the background for the life of the stream (F3) and released on every
+    exit path — early returns, errors, cancellation (F4). Non-web callers pass no prelude.
+    """
+    from contextlib import aclosing
+
+    if prelude_result is None or getattr(prelude_result, "lease_token", None) is None:
+        async with aclosing(_event_stream_impl(*args, prelude_result=prelude_result, **kwargs)) as inner:
+            async for chunk in inner:
+                yield chunk
+        return
+
+    from cuga.backend.server.thread_lease import get_thread_lease
+
+    lease_token = prelude_result.lease_token
+    raw_thread_id = kwargs.get("thread_id")
+    if raw_thread_id is None and len(args) > 3:
+        raw_thread_id = args[3]
+    stop_key = _canonical_thread_id(raw_thread_id) if raw_thread_id else None
+
+    async def _renew_loop():
+        lease = get_thread_lease()
+        while True:
+            await asyncio.sleep(20)  # TTL is 60s
             try:
-                await get_thread_lease().release(prelude_result.lease_token)
+                still_held = await lease.renew(lease_token)
             except Exception:
-                logger.exception("failed to release lease for thread %s", thread_id)
+                logger.exception("lease renewal failed for thread %s", stop_key)
+                still_held = False
+            if not still_held:
+                logger.error("lease lost for thread %s; stopping turn", stop_key)
+                if stop_key and stop_key in app_state.stop_events:
+                    app_state.stop_events[stop_key].set()
+                return
+
+    renewal_task = asyncio.create_task(_renew_loop())
+    try:
+        async with aclosing(_event_stream_impl(*args, prelude_result=prelude_result, **kwargs)) as inner:
+            async for chunk in inner:
+                yield chunk
+    finally:
+        renewal_task.cancel()
+        try:
+            await renewal_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await get_thread_lease().release(lease_token)
+        except Exception:
+            logger.exception("failed to release lease for thread %s", stop_key)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -3158,12 +3243,13 @@ async def stream(
     thread_id = (request.headers.get("X-Thread-ID") or "").strip()
     thread_id_provided = bool(thread_id)
     issued_thread_id = None
+    created_record = None
     if not thread_id:
         thread_id = str(uuid.uuid4())
         try:
             from cuga.backend.server.conversation_threads import get_conversation_threads_db
 
-            await get_conversation_threads_db().create(scope, thread_id)
+            created_record = await get_conversation_threads_db().create(scope, thread_id)
             issued_thread_id = thread_id  # server-issued; consumed by the thread_created event (W09.6)
         except Exception:
             logger.exception("failed to create thread record for server-generated thread {}", thread_id)
@@ -3185,7 +3271,8 @@ async def stream(
     # other entry points before reading checkpoints, previews or workspace data.
     from cuga.backend.server.thread_lease import ThreadBusy
 
-    record = None
+    # F2: a server-issued thread uses the record just created so its first turn also takes the lease
+    record = created_record
     try:
         if use_draft and disable_history:
             # W06.2: draft preview uses client-generated ID with a draft: prefix
@@ -3250,9 +3337,9 @@ async def stream(
         runtime_llm = None
 
     # W09.1/W09.3/W09.4: run prelude — acquires lease, loads checkpoint fail-closed
-    # Only for web threads with a lifecycle record (not draft, not no-ID-yet)
+    # Only for web threads with a lifecycle record (not draft); includes server-issued threads
     prelude_result = None
-    if thread_id_provided and not (use_draft and disable_history) and record is not None:
+    if record is not None and not (use_draft and disable_history):
         from cuga.backend.server.turn_prelude import run_turn_prelude, ThreadUnavailable
         from cuga.backend.server.thread_lease import get_thread_lease
         _run_agent_for_prelude = run_agent if run_agent is not None else app_state.agent
@@ -3266,7 +3353,7 @@ async def stream(
                     thread_id=_ckpt_thread_id,
                     graph=_prelude_graph,
                     lease=get_thread_lease(),
-                    checkpointer_kind=getattr(getattr(app_state, "checkpointer", None), "kind", "memory"),
+                    checkpointer_kind=getattr(getattr(app_state, "checkpointer_handle", None), "kind", "memory"),
                 )
             except ThreadBusy:
                 return _thread_conflict_response()

@@ -120,7 +120,7 @@ _RAISES = "raises"
 
 def _checkpoint(kind):
     if kind == _PRESENT:
-        return _snap({"messages": ["hi"]})
+        return _snap({}, next_=("node",))
     if kind == _ABSENT:
         return _snap()
     return RuntimeError("unreadable")
@@ -482,5 +482,4 @@ def test_interrupted_turn_calls_mark_turn_committed_and_mark_projected(monkeypat
     assert committed_calls[0][0] == "thread-interrupt"
     assert committed_calls[0][1]["pending_interrupt"] is True  # snap.next is non-empty
 
-    assert len(projected_calls) == 1
-    assert projected_calls[0][0] == "thread-interrupt"
+    assert projected_calls == [], f"mark_projected must NOT be called for interrupted turns, got {projected_calls}"

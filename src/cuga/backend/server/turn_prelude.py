@@ -60,6 +60,16 @@ async def run_turn_prelude(
         has_checkpoint = bool(snap and (snap.values or snap.next))
 
         if has_checkpoint:
+            # W09.3: validate schema here so an incompatible checkpoint yields a clean 409
+            # before StreamingResponse has sent HTTP 200.
+            if snap.values:
+                try:
+                    from cuga.backend.cuga_graph.state.agent_state import AgentState
+
+                    AgentState(**snap.values)
+                except Exception as e:
+                    logger.exception("checkpoint schema incompatible for thread %s", thread_id)
+                    raise ThreadUnavailable(reason="incompatible") from e
             snapshot = snap
         elif record.status == ThreadStatus.NEW:
             snapshot = None

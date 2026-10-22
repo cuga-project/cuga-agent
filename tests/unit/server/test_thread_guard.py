@@ -233,7 +233,10 @@ def stream_app(monkeypatch):
     from cuga.backend.server import main
 
     graph = MagicMock()
-    graph.aget_state = AsyncMock()
+    mock_snap = MagicMock()
+    mock_snap.values = {}
+    mock_snap.next = ()
+    graph.aget_state = AsyncMock(return_value=mock_snap)
     graph.get_state = MagicMock()
     state = SimpleNamespace(
         knowledge_provider=None,
