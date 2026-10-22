@@ -201,18 +201,31 @@ describe("isReadonly logic", () => {
   });
 });
 
-// ── 6. ensureConversationId — in-flight dedup and agent-switch discard ────────
-describe("ensureConversationId creation ref scoping", () => {
-  // Mirror the logic from ChatLanding.tsx without importing the component.
-  // This validates the ref-keying invariants in isolation.
+// ── 6. ensureConversationId — draftKey-scoped in-flight dedup ─────────────────
+describe("ensureConversationId creation ref scoping (agentId + draftKey)", () => {
+  // Mirror the production logic from ChatLanding.tsx without importing the component.
+  // Both agentId and draftKey must match for a pending promise to be reused.
+
+  interface DraftRef {
+    agentId: string;
+    draftKey: string;
+    promise: Promise<string | null>;
+  }
+
+  interface DraftState {
+    threadId: string | null;
+    agentId: string;
+    draftKey: string;
+  }
 
   function makeEnsureConversationId(
     createConversation: (agentId: string) => Promise<{ id: string }>,
-    setDraftThread: (fn: (prev: { threadId: string | null }) => { threadId: string | null }) => void,
+    getDraft: () => DraftState,
+    setDraftThread: (fn: (prev: DraftState) => DraftState) => void,
     setActiveThreadId: (id: string) => void,
+    chatAgentIdRef: { current: string },
   ) {
-    // Mirrors the exact shape used in ChatLanding.tsx
-    let conversationCreationRef: { agentId: string; promise: Promise<string | null> } | null = null;
+    let conversationCreationRef: DraftRef | null = null;
 
     return async function ensureConversationId(
       effectiveChatThreadId: string | null,
@@ -220,46 +233,56 @@ describe("ensureConversationId creation ref scoping", () => {
     ): Promise<string | null> {
       const existing = effectiveChatThreadId?.trim();
       if (existing) return existing;
-
-      if (conversationCreationRef?.agentId === effectiveChatAgentId) {
+      const currentDraftKey = getDraft().draftKey;
+      if (
+        conversationCreationRef?.agentId === effectiveChatAgentId &&
+        conversationCreationRef?.draftKey === currentDraftKey
+      ) {
         return conversationCreationRef.promise;
       }
-
+      const capturedAgentId = effectiveChatAgentId;
+      const capturedDraftKey = currentDraftKey;
       const promise = (async () => {
         try {
-          const created = await createConversation(effectiveChatAgentId);
+          const created = await createConversation(capturedAgentId);
           setDraftThread((prev) => {
+            if (prev.agentId !== capturedAgentId || prev.draftKey !== capturedDraftKey) return prev;
             if (prev.threadId) return prev;
             return { ...prev, threadId: created.id };
           });
-          setActiveThreadId(created.id);
+          if (chatAgentIdRef.current === capturedAgentId) {
+            setActiveThreadId(created.id);
+          }
           return created.id;
         } catch {
           return null;
         } finally {
-          if (conversationCreationRef?.agentId === effectiveChatAgentId) {
+          if (
+            conversationCreationRef?.agentId === capturedAgentId &&
+            conversationCreationRef?.draftKey === capturedDraftKey
+          ) {
             conversationCreationRef = null;
           }
         }
       })();
-
-      conversationCreationRef = { agentId: effectiveChatAgentId, promise };
+      conversationCreationRef = { agentId: capturedAgentId, draftKey: capturedDraftKey, promise };
       return promise;
     };
   }
 
-  it("concurrent calls for the same agent share one createConversation call", async () => {
+  function makeDraft(agentId: string, key?: string): DraftState {
+    return { threadId: null, agentId, draftKey: key ?? `${agentId}:${Date.now()}:x` };
+  }
+
+  it("concurrent calls for the same agent and draft share one createConversation call", async () => {
     let callCount = 0;
-    const createConversation = vi.fn(async (_agentId: string) => {
-      callCount++;
-      return { id: `thread-${callCount}` };
-    });
-    const setDraft = vi.fn();
+    const createConversation = vi.fn(async (_agentId: string) => ({ id: `thread-${++callCount}` }));
+    let draft = makeDraft("agent-a", "key-1");
+    const setDraft = vi.fn((fn: (p: DraftState) => DraftState) => { draft = fn(draft); });
     const setActive = vi.fn();
+    const agentRef = { current: "agent-a" };
+    const ensure = makeEnsureConversationId(createConversation, () => draft, setDraft, setActive, agentRef);
 
-    const ensure = makeEnsureConversationId(createConversation, setDraft, setActive);
-
-    // Fire two concurrent calls for the same agent
     const [id1, id2] = await Promise.all([
       ensure(null, "agent-a"),
       ensure(null, "agent-a"),
@@ -270,28 +293,60 @@ describe("ensureConversationId creation ref scoping", () => {
     expect(id2).toBe("thread-1");
   });
 
-  it("switching agent discards the in-flight ref so a new create fires", async () => {
-    let callCount = 0;
-    const createConversation = vi.fn(async (agentId: string) => {
-      callCount++;
-      return { id: `${agentId}-thread-${callCount}` };
-    });
-    const setDraft = vi.fn();
+  it("agent switch: resolved result does NOT call setActiveThreadId for the new agent", async () => {
+    let resolve!: (v: { id: string }) => void;
+    const createConversation = vi.fn(() => new Promise<{ id: string }>((r) => { resolve = r; }));
+    let currentDraft = makeDraft("agent-a", "key-1");
+    const setDraft = vi.fn((fn: (p: DraftState) => DraftState) => { currentDraft = fn(currentDraft); });
     const setActive = vi.fn();
+    const agentRef = { current: "agent-a" };
+    const ensure = makeEnsureConversationId(
+      createConversation, () => currentDraft, setDraft, setActive, agentRef,
+    );
 
-    const ensure = makeEnsureConversationId(createConversation, setDraft, setActive);
+    // Start create for agent-a
+    const p = ensure(null, "agent-a");
 
-    // First call for agent-a (don't await yet — simulates in-flight)
-    const p1 = ensure(null, "agent-a");
+    // Simulate agent switch before the promise resolves
+    currentDraft = makeDraft("agent-b", "key-2");
+    agentRef.current = "agent-b";
 
-    // Simulate agent switch: second call is for agent-b
-    const p2 = ensure(null, "agent-b");
+    // Now resolve agent-a's request
+    resolve({ id: "thread-agent-a" });
+    await p;
 
-    const [id1, id2] = await Promise.all([p1, p2]);
+    // setActiveThreadId must NOT have been called (agent changed)
+    expect(setActive).not.toHaveBeenCalled();
+  });
 
-    // Both resolved but each got a separate create call
-    expect(createConversation).toHaveBeenCalledTimes(2);
-    expect(id1).toContain("agent-a");
-    expect(id2).toContain("agent-b");
+  it("new-chat (draftKey change for same agent): resolved result does NOT apply to new draft", async () => {
+    let resolve!: (v: { id: string }) => void;
+    const createConversation = vi.fn(() => new Promise<{ id: string }>((r) => { resolve = r; }));
+    let currentDraft = makeDraft("agent-a", "key-1");
+    const results: DraftState[] = [];
+    const setDraft = vi.fn((fn: (p: DraftState) => DraftState) => {
+      const next = fn(currentDraft);
+      results.push(next);
+      currentDraft = next;
+    });
+    const setActive = vi.fn();
+    const agentRef = { current: "agent-a" };
+    const ensure = makeEnsureConversationId(
+      createConversation, () => currentDraft, setDraft, setActive, agentRef,
+    );
+
+    // Start create for draft key-1
+    const p = ensure(null, "agent-a");
+
+    // User pressed "New chat" — same agent, new draftKey
+    currentDraft = makeDraft("agent-a", "key-2");
+
+    // Old create resolves
+    resolve({ id: "thread-old" });
+    await p;
+
+    // The functional update returns `prev` unchanged (draftKey mismatch), so the new draft stays null
+    const finalThreadId = results.length > 0 ? results[results.length - 1].threadId : currentDraft.threadId;
+    expect(finalThreadId).toBeNull();
   });
 });

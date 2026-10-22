@@ -1375,6 +1375,10 @@ async def _app_lifespan(app: FastAPI):
     if await EvolveIntegration.is_configured():
         app_state.background_tasks.append(asyncio.create_task(source_deletion_delivery_loop()))
 
+    # W12.1: start the checkpoint-delete outbox worker now that the checkpointer is open.
+    # Cancelled and awaited in the shutdown block below so it stops before the checkpointer closes.
+    app_state.background_tasks.append(asyncio.create_task(_run_outbox_worker(lambda: app_state)))
+
     yield
 
     logger.info("Application is shutting down...")
@@ -2584,9 +2588,9 @@ async def event_stream(*args, prelude_result: Any = None, **kwargs):
             await renewal_task
         except asyncio.CancelledError:
             pass
-        # Normal exit path: shield the release in case this generator is cancelled during cleanup.
-        # Pre-iteration safety: the BackgroundTask on StreamingResponse releases the lease if
-        # this generator never starts (ASGI cancellation before first body iteration).
+        # Normal exit path: shield the release so cancellation during cleanup does not skip it.
+        # Pre-iteration safety is handled by _LeaseStreamingResponse.__call__ try/finally, which
+        # runs even when the ASGI task is cancelled before the first body byte is sent.
         try:
             await asyncio.shield(get_thread_lease().release(lease_token))
         except Exception:
@@ -3388,38 +3392,44 @@ async def stream(
             except ThreadUnavailable as exc:
                 return _thread_unavailable_response(exc.reason)
 
-    _background = None
-    if prelude_result is not None and getattr(prelude_result, "lease_token", None) is not None:
-        from starlette.background import BackgroundTask
+    _body = event_stream(
+        query if isinstance(query, str) else None,
+        api_mode=settings.advanced_features.mode == "api",
+        resume=query if isinstance(query, ActionResponse) else None,
+        thread_id=graph_thread_id,
+        agent=run_agent,
+        disable_history=disable_history,
+        user_id=user_id,
+        user_attachments=user_attachments,
+        agent_id=agent_id_header,
+        current_llm=runtime_llm,
+        issued_thread_id=issued_thread_id,
+        prelude_result=prelude_result,
+    )
 
+    if prelude_result is not None and getattr(prelude_result, "lease_token", None) is not None:
+        # _LeaseStreamingResponse wraps __call__ in try/finally so the lease is
+        # released even when the ASGI task is cancelled before the first body byte.
+        # release() is idempotent (WHERE thread_id=? AND holder_id=?), so the
+        # generator's own finally block and this wrapper releasing twice is safe.
         _lease_token = prelude_result.lease_token
 
-        async def _release_lease_bg() -> None:
-            try:
-                await get_thread_lease().release(_lease_token)
-            except Exception:
-                logger.exception("background lease release failed for thread %s", _lease_token.thread_id)
+        class _LeaseStreamingResponse(StreamingResponse):
+            async def __call__(self, scope, receive, send) -> None:  # type: ignore[override]
+                try:
+                    await super().__call__(scope, receive, send)
+                finally:
+                    try:
+                        await asyncio.shield(get_thread_lease().release(_lease_token))
+                    except Exception:
+                        logger.exception(
+                            "response-level lease release failed for thread %s",
+                            _lease_token.thread_id,
+                        )
 
-        _background = BackgroundTask(_release_lease_bg)
+        return _LeaseStreamingResponse(_body, media_type="text/event-stream")
 
-    return StreamingResponse(
-        event_stream(
-            query if isinstance(query, str) else None,
-            api_mode=settings.advanced_features.mode == "api",
-            resume=query if isinstance(query, ActionResponse) else None,
-            thread_id=graph_thread_id,
-            agent=run_agent,
-            disable_history=disable_history,
-            user_id=user_id,
-            user_attachments=user_attachments,
-            agent_id=agent_id_header,
-            current_llm=runtime_llm,
-            issued_thread_id=issued_thread_id,
-            prelude_result=prelude_result,
-        ),
-        media_type="text/event-stream",
-        background=_background,
-    )
+    return StreamingResponse(_body, media_type="text/event-stream")
 
 
 # ── /run, the roster, and the events bridge ───────────────────────────────────────────────────
@@ -3795,11 +3805,11 @@ async def create_conversation(
 
 
 async def _retry_checkpoint_deletes(app_state) -> None:
-    """Drain the checkpoint_delete_outbox: retry failed adelete_thread calls.
+    """Drain the checkpoint_delete_outbox: attempt adelete_thread for each pending row.
 
-    Called as a fire-and-forget asyncio task from delete_conversation when a row
-    has been enqueued. Each pending row is retried once; on success it is
-    acknowledged (removed). On failure the row is left for the next retry cycle.
+    Each row is retried once per call; on success it is acknowledged (removed).
+    On failure the row is left for the next call. The outbox worker calls this
+    on startup and on a recurring timer so no new DELETE is required to unblock.
     """
     from cuga.backend.server.conversation_threads import get_conversation_threads_db
 
@@ -3818,6 +3828,30 @@ async def _retry_checkpoint_deletes(app_state) -> None:
             await db.acknowledge_checkpoint_delete(row["event_id"])
         except Exception:
             logger.exception("retry checkpoint delete failed for %s", row["scoped_checkpoint_id"])
+
+
+async def _run_outbox_worker(get_app_state, interval: float = 60.0) -> None:
+    """Periodic checkpoint-delete outbox worker.
+
+    Runs at startup (once) and then every *interval* seconds.  Cancelled and
+    awaited during lifespan shutdown so no pending task is left after the
+    checkpointer is closed.  ``get_app_state`` is a callable so the worker
+    always reads the live ``app_state`` reference rather than a startup snapshot.
+    """
+    # Startup pass — drain any rows that survived a previous crash.
+    try:
+        await _retry_checkpoint_deletes(get_app_state())
+    except Exception:
+        logger.exception("outbox worker startup drain failed (non-fatal)")
+    while True:
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+        try:
+            await _retry_checkpoint_deletes(get_app_state())
+        except Exception:
+            logger.exception("outbox worker periodic drain failed (non-fatal)")
 
 
 @app.delete("/api/conversations/{conversation_id}")
@@ -3860,8 +3894,13 @@ async def delete_conversation(
         except Exception:
             pass
 
-        # Step 1: mark deleted, so the guard now returns 404 for this thread.
-        await threads_db.mark_deleted(scope, conversation_id)
+        _ckpt_key = _checkpoint_thread_id(conversation_id, user_id, record.agent_id or agent_id)
+
+        # Step 1: atomically mark deleted and record the checkpoint key for cleanup.
+        # If this write fails the route returns 500 — the thread stays accessible and
+        # no orphan is created. The outbox entry is the durable retry guarantee; it
+        # is written here before we report success so a restart cannot lose it.
+        await threads_db.mark_deleted_and_enqueue(scope, conversation_id, _ckpt_key)
 
         # Step 2: ask any in-flight turn to stop.
         if lease_module:
@@ -3870,22 +3909,23 @@ async def delete_conversation(
             except Exception:
                 logger.warning("failed to request stop on lease for thread {}", conversation_id)
 
-        # Step 3: delete checkpoints (non-fatal). ``AppState.checkpointer`` is the saver.
+        # Step 3: delete checkpoints (non-fatal — the outbox worker retries on failure).
         _app_state = getattr(request.app.state, "app_state", None)
         _saver = getattr(_app_state, "checkpointer", None) if _app_state else None
-        _ckpt_key = _checkpoint_thread_id(conversation_id, user_id, record.agent_id or agent_id)
         try:
             if _saver is not None and hasattr(_saver, "adelete_thread"):
                 await _saver.adelete_thread(_ckpt_key)
+                # Best-effort immediate acknowledge; the startup worker also drains.
+                try:
+                    await threads_db.acknowledge_checkpoint_delete_by_key(_ckpt_key)
+                except Exception:
+                    logger.warning(
+                        "acknowledge after inline delete failed for {}; outbox worker will clean up",
+                        conversation_id,
+                    )
         except Exception as e:
             logger.error(f"checkpoint deletion failed for {conversation_id}: {e}")
-            # W12.1: enqueue for retry — the BackgroundTask consumer will drain the outbox.
-            try:
-                from cuga.backend.server.conversation_threads import get_conversation_threads_db
-
-                await get_conversation_threads_db().enqueue_checkpoint_delete(_ckpt_key)
-            except Exception:
-                logger.exception("failed to enqueue checkpoint delete for {}", conversation_id)
+            # Outbox row is already present (written in step 1); worker will retry.
 
         # W12.6: delete supervisor child threads, only when a graph can delegate.
         try:
@@ -3913,9 +3953,6 @@ async def delete_conversation(
             logger.error(f"history/knowledge/uploads deletion failed for {conversation_id}: {e}")
 
         logger.info(f"Deleted conversation: {conversation_id}")
-        # W12.1: fire-and-forget retry consumer — drains the outbox in the background.
-        _retry_app_state = getattr(request.app.state, "app_state", None)
-        asyncio.create_task(_retry_checkpoint_deletes(_retry_app_state))
         return JSONResponse({"status": "success", "message": "Conversation deleted"})
     except Exception as e:
         logger.error(f"Failed to delete conversation: {e}")
