@@ -245,12 +245,15 @@ describe("ensureConversationId creation ref scoping (agentId + draftKey)", () =>
       const promise = (async () => {
         try {
           const created = await createConversation(capturedAgentId);
+          if (chatAgentIdRef.current !== capturedAgentId || getDraft().draftKey !== capturedDraftKey) {
+            return null;
+          }
           setDraftThread((prev) => {
             if (prev.agentId !== capturedAgentId || prev.draftKey !== capturedDraftKey) return prev;
             if (prev.threadId) return prev;
             return { ...prev, threadId: created.id };
           });
-          if (chatAgentIdRef.current === capturedAgentId) {
+          if (chatAgentIdRef.current === capturedAgentId && getDraft().draftKey === capturedDraftKey) {
             setActiveThreadId(created.id);
           }
           return created.id;
@@ -313,7 +316,7 @@ describe("ensureConversationId creation ref scoping (agentId + draftKey)", () =>
 
     // Now resolve agent-a's request
     resolve({ id: "thread-agent-a" });
-    await p;
+    expect(await p).toBeNull();
 
     // setActiveThreadId must NOT have been called (agent changed)
     expect(setActive).not.toHaveBeenCalled();
@@ -343,10 +346,11 @@ describe("ensureConversationId creation ref scoping (agentId + draftKey)", () =>
 
     // Old create resolves
     resolve({ id: "thread-old" });
-    await p;
+    expect(await p).toBeNull();
 
     // The functional update returns `prev` unchanged (draftKey mismatch), so the new draft stays null
     const finalThreadId = results.length > 0 ? results[results.length - 1].threadId : currentDraft.threadId;
     expect(finalThreadId).toBeNull();
+    expect(setActive).not.toHaveBeenCalled();
   });
 });

@@ -131,6 +131,7 @@ export async function customSendMessage(
   actionResponse?: any,
   attachmentSnapshot?: KnowledgeAttachmentSnapshot[],
   agentId?: string,
+  threadIdOverride?: string | null,
 ) {
   const userMessage = request.input.text?.trim() ?? "";
   
@@ -139,7 +140,8 @@ export async function customSendMessage(
     return;
   }
 
-  const threadId = getOrCreateThreadId();
+  const threadId = threadIdOverride || getOrCreateThreadId();
+  if (threadIdOverride) setThreadId(threadIdOverride);
   const responseID = generateUUID();
   
   // Listen for abort signal to call /stop endpoint
