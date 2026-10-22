@@ -5,14 +5,32 @@ Helper functions for managing message context and summarization across different
 """
 
 import json
+import math
+import re
+from collections.abc import Mapping
 from typing import Any, List, Optional
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from loguru import logger
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState
-from cuga.backend.cuga_graph.utils.token_counter import resolve_model_identifier
+from cuga.backend.cuga_graph.utils.token_counter import TokenCounter, resolve_model_identifier
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
+
+# Reflection and pre-execute VERIFY size their inputs from the model's context window
+# (#1001). A fixed 30,000-char cap per field used about 20% of a 128K window and could
+# still overflow a 32K one, and it cut the newest messages, the ones both tasks judge.
+# 3 chars per token is conservative: JSON-heavy tool output counts more tokens per char.
+CHARS_PER_TOKEN = 3
+DEFAULT_CONTEXT_FRACTION = 0.70  # same as context_summarization.trigger_fraction
+COMPLETION_RESERVE_FRACTION = 0.25
+MIN_INPUT_BUDGET_CHARS = 2_000
+# Each field takes at most its share; history gets the rest of the budget.
+REFLECTION_OUTPUT_SHARE = 0.40
+REFLECTION_SKILLS_SHARE = 0.15
+VERIFY_CODE_SHARE = 0.25
+VERIFY_VARIABLES_SHARE = 0.35
+_MARKER_ROOM = 120
 
 
 def truncate_text_for_context(text: str, max_chars: int, *, label: str = "content") -> str:
@@ -23,17 +41,184 @@ def truncate_text_for_context(text: str, max_chars: int, *, label: str = "conten
     return f"{trimmed[:max_chars]}...\n\n[{label} trimmed to {max_chars} chars]"
 
 
+def truncate_head_tail(text: str, max_chars: int, *, label: str = "content") -> str:
+    """Keep the start and the end of *text*; errors and final results are at the end."""
+    trimmed = (text or "").strip()
+    if max_chars <= 0 or len(trimmed) <= max_chars:
+        return trimmed
+    keep = max(0, max_chars - _MARKER_ROOM)
+    head = keep // 3
+    tail = keep - head
+    omitted = len(trimmed) - head - tail
+    return (
+        f"{trimmed[:head]}\n\n[... {omitted} chars of {label} omitted ...]\n\n"
+        f"{trimmed[len(trimmed) - tail :]}"
+    )
+
+
+def _message_line(msg: BaseMessage) -> str:
+    if isinstance(msg, HumanMessage):
+        return f"User: {msg.content}"
+    if isinstance(msg, AIMessage):
+        return f"Assistant: {msg.content}"
+    return f"{type(msg).__name__}: {getattr(msg, 'content', str(msg))}"
+
+
 def messages_to_history_text(messages: List[BaseMessage]) -> str:
     """Format chat messages as a plain-text history block."""
-    parts: list[str] = []
-    for msg in messages:
-        if isinstance(msg, HumanMessage):
-            parts.append(f"User: {msg.content}")
-        elif isinstance(msg, AIMessage):
-            parts.append(f"Assistant: {msg.content}")
-        else:
-            parts.append(f"{type(msg).__name__}: {getattr(msg, 'content', str(msg))}")
+    parts = [_message_line(msg) for msg in messages]
     return "\n".join(parts) if parts else "No previous conversation history"
+
+
+def history_text_keep_recent(messages: List[BaseMessage], max_chars: int) -> str:
+    """Format *messages* within *max_chars*, keeping the newest whole messages.
+
+    The first user message is kept too: ``current_task`` can be a sub-task, so the
+    original request would otherwise be lost. Dropped messages are replaced by a
+    marker with their count. Only when the newest message alone does not fit is it
+    cut, head and tail.
+    """
+    full = messages_to_history_text(messages)
+    if max_chars <= 0 or len(full) <= max_chars:
+        return full
+    lines = [_message_line(msg) for msg in messages]
+    first_idx = next((i for i, m in enumerate(messages) if isinstance(m, HumanMessage)), None)
+    if first_idx == len(lines) - 1:
+        return truncate_head_tail(full, max_chars, label="Agent history")
+
+    first_line = ""
+    if first_idx is not None:
+        first_line = truncate_head_tail(lines[first_idx], max(1, max_chars // 5), label="first user message")
+    remaining = max_chars - len(first_line) - _MARKER_ROOM
+    stop = first_idx if first_idx is not None else -1
+    kept: list[str] = []
+    oldest_kept = len(lines)
+    for i in range(len(lines) - 1, stop, -1):
+        cost = len(lines[i]) + 1
+        if cost <= remaining:
+            kept.append(lines[i])
+            remaining -= cost
+            oldest_kept = i
+            continue
+        if not kept:
+            kept.append(truncate_head_tail(lines[i], max(remaining, 1), label="latest message"))
+            oldest_kept = i
+        break
+    kept.reverse()
+
+    # Messages before the first user message (rare) are dropped as well.
+    omitted = oldest_kept - (stop + 1) + (first_idx or 0)
+    parts = [first_line] if first_line else []
+    if omitted > 0:
+        parts.append(f"[{omitted} earlier messages omitted to fit the context budget]")
+    parts.extend(kept)
+    return "\n".join(parts)
+
+
+_VARIABLE_SECTION_RE = re.compile(r"(?m)^(?=## )")
+
+
+def truncate_variables_summary(summary: str, max_chars: int) -> str:
+    """Keep whole variables from the start of a ``get_variables_summary`` text.
+
+    Callers order the summary most relevant first, so the variables dropped are the
+    least relevant ones.
+    """
+    text = (summary or "").strip()
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    header, *sections = _VARIABLE_SECTION_RE.split(text)
+    if not sections:
+        return truncate_head_tail(text, max_chars, label="Variables")
+    out = header
+    room = max_chars - len(header) - _MARKER_ROOM
+    kept = 0
+    for section in sections:
+        if len(section) <= room:
+            out += section
+            room -= len(section)
+            kept += 1
+            continue
+        if kept == 0:
+            out += truncate_head_tail(section, max(room, 1), label="variable") + "\n"
+            kept = 1
+        break
+    omitted = len(sections) - kept
+    if omitted:
+        out = f"{out.rstrip()}\n\n[{omitted} more variables omitted to fit the context budget]"
+    return out
+
+
+def _model_completion_tokens(model: Any) -> Optional[int]:
+    """Configured completion budget of *model*, if it exposes one as an int."""
+    llm = model
+    for _ in range(5):  # RunnableBinding wraps the chat model in .bound
+        inner = getattr(llm, "bound", None)
+        if inner is None:
+            break
+        llm = inner
+    candidates = [getattr(llm, "max_completion_tokens", None), getattr(llm, "max_tokens", None)]
+    params = getattr(llm, "params", None)
+    if isinstance(params, Mapping):
+        candidates += [params.get(k) for k in ("max_completion_tokens", "max_new_tokens", "max_tokens")]
+    for value in candidates:
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
+def model_input_budget_chars(model: Any, fixed_prompt_chars: int, *, context_fraction: float) -> int:
+    """Characters left for the trimmed prompt fields of one call to *model*.
+
+    ``context_size × context_fraction`` minus a completion reserve (the model's
+    configured completion budget, at most a quarter of the window), converted at
+    ``CHARS_PER_TOKEN``, minus the prompt text that is never trimmed. Unknown models
+    use ``DEFAULT_CONTEXT_SIZE``, as context summarization does.
+    """
+    # No "gpt-4" fallback name here: its 8,192-token entry would shrink the budget of
+    # any model whose name cannot be read.
+    model_name = resolve_model_identifier(model, fallback_name="")
+    context_tokens = TokenCounter(model=model, model_name=model_name).get_model_context_size(model)
+    reserve_cap = int(context_tokens * COMPLETION_RESERVE_FRACTION)
+    completion = _model_completion_tokens(model)
+    reserve = min(completion, reserve_cap) if completion else reserve_cap
+    available_tokens = int(context_tokens * context_fraction) - reserve
+    budget = available_tokens * CHARS_PER_TOKEN - max(0, fixed_prompt_chars)
+    return max(MIN_INPUT_BUDGET_CHARS, budget)
+
+
+def context_fraction_setting(name: str) -> float:
+    """Read an ``advanced_features`` context fraction; fall back to the default if invalid."""
+    from cuga.config import settings
+
+    value = getattr(settings.advanced_features, name, None)
+    if value is None or value == "":
+        return DEFAULT_CONTEXT_FRACTION
+    try:
+        fraction = float(value) if not isinstance(value, bool) else math.nan
+    except (TypeError, ValueError):
+        fraction = math.nan
+    if not math.isfinite(fraction) or not 0 < fraction <= 1:
+        logger.warning("Invalid {} {!r}; using {}", name, value, DEFAULT_CONTEXT_FRACTION)
+        return DEFAULT_CONTEXT_FRACTION
+    return fraction
+
+
+def rendered_prompt_chars(prompt: Any, inputs: dict) -> int:
+    """Length of *prompt* rendered with *inputs*: the part of a call that is never trimmed."""
+    try:
+        return sum(len(str(m.content)) for m in prompt.format_messages(**inputs))
+    except Exception as e:
+        logger.debug("Could not render prompt to size it: {}", e)
+        return sum(len(v) for v in inputs.values() if isinstance(v, str))
+
+
+def _log_input_budget(kind: str, budget_chars: int, original: dict, kept: dict) -> None:
+    sizes = ", ".join(f"{k} {original[k]}->{kept[k]}" for k in original)
+    if any(kept[k] < original[k] for k in original):
+        logger.info("{} input trimmed to a {}-char budget: {}", kind, budget_chars, sizes)
+    else:
+        logger.debug("{} input within its {}-char budget: {}", kind, budget_chars, sizes)
 
 
 def prepare_verify_context(
@@ -43,21 +228,26 @@ def prepare_verify_context(
     *,
     max_chars: int,
 ) -> tuple[str, str, str]:
-    """Trim chat, variables, and proposed code for pre-execute VERIFY. Never summarize."""
-    history = truncate_text_for_context(
-        messages_to_history_text(list(chat_messages)),
+    """Fit chat, variables, and proposed code for pre-execute VERIFY into *max_chars*. Never summarize.
+
+    The code takes at most ``VERIFY_CODE_SHARE`` of the budget and the variables at most
+    ``VERIFY_VARIABLES_SHARE``; history gets the rest and keeps its newest messages.
+    """
+    messages = list(chat_messages)
+    raw_code = proposed_code or ""
+    raw_variables = variables_snapshot or "(no variables)"
+    code = truncate_head_tail(raw_code, int(max_chars * VERIFY_CODE_SHARE), label="Proposed code")
+    variables = truncate_variables_summary(raw_variables, int(max_chars * VERIFY_VARIABLES_SHARE))
+    history = history_text_keep_recent(messages, max(1, max_chars - len(code) - len(variables)))
+    _log_input_budget(
+        "Pre-execute VERIFY",
         max_chars,
-        label="Agent history",
-    )
-    variables = truncate_text_for_context(
-        variables_snapshot or "(no variables)",
-        max_chars,
-        label="Variables",
-    )
-    code = truncate_text_for_context(
-        proposed_code or "",
-        max_chars,
-        label="Proposed code",
+        {
+            "history": len(messages_to_history_text(messages)),
+            "variables": len(raw_variables.strip()),
+            "code": len(raw_code.strip()),
+        },
+        {"history": len(history), "variables": len(variables), "code": len(code)},
     )
     return history, variables, code
 
@@ -67,28 +257,44 @@ async def prepare_reflection_context(
     coder_agent_output: str,
     model: Any,
     *,
-    max_output_chars: int,
-    max_history_chars: int,
+    budget_chars: int,
+    skills_prompt_section: str = "",
     tracker: Optional[ActivityTracker] = None,
-) -> tuple[str, str]:
-    """Summarize chat history and trim execution output for reflection prompts."""
+) -> tuple[str, str, str]:
+    """Summarize chat history, then fit history, execution output, and skills into *budget_chars*.
+
+    The output takes at most ``REFLECTION_OUTPUT_SHARE`` of the budget and the skills
+    section at most ``REFLECTION_SKILLS_SHARE``; history gets the rest and keeps its
+    newest messages.
+    """
     summarized = await apply_context_summarization(
         list(chat_messages),
         model,
         tracker=tracker,
         message_list_name="chat_messages",
     )
-    history = truncate_text_for_context(
-        messages_to_history_text(summarized),
-        max_history_chars,
-        label="Agent history",
-    )
-    output = truncate_text_for_context(
+    output = truncate_head_tail(
         coder_agent_output,
-        max_output_chars,
+        int(budget_chars * REFLECTION_OUTPUT_SHARE),
         label="Execution output",
     )
-    return history, output
+    skills = truncate_text_for_context(
+        skills_prompt_section or "",
+        int(budget_chars * REFLECTION_SKILLS_SHARE),
+        label="Skills prompt section",
+    )
+    history = history_text_keep_recent(summarized, max(1, budget_chars - len(output) - len(skills)))
+    _log_input_budget(
+        "Reflection",
+        budget_chars,
+        {
+            "history": len(messages_to_history_text(summarized)),
+            "output": len((coder_agent_output or "").strip()),
+            "skills": len((skills_prompt_section or "").strip()),
+        },
+        {"history": len(history), "output": len(output), "skills": len(skills)},
+    )
+    return history, output, skills
 
 
 async def apply_context_summarization(
