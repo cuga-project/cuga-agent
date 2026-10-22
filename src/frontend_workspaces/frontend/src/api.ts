@@ -427,9 +427,12 @@ export interface ConversationThread {
   pending_interrupt?: boolean;
 }
 
-export async function getConversations(): Promise<ConversationThread[]> {
-  const response = await apiFetch("/api/conversations");
-  if (!response.ok) return [];
+export async function getConversations(agentId?: string): Promise<ConversationThread[]> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  const response = await apiFetch(`/api/conversations${q}`);
+  if (!response.ok) {
+    throw new Error(`Failed to load conversations: HTTP ${response.status}`);
+  }
   return response.json();
 }
 
@@ -483,21 +486,27 @@ export async function getWorkspaceTree(
   if (agentId) params.set("agent_id", agentId);
   if (forceRefresh) params.set("_", String(Date.now()));
   const q = params.toString();
-  return apiFetch(`/api/workspace/tree${q ? `?${q}` : ""}`);
+  return apiFetch(`/api/workspace/tree${q ? `?${q}` : ""}`, {
+    headers: agentId ? { "X-Agent-ID": agentId } : undefined,
+  });
 }
 
 export async function getWorkspaceFile(path: string, threadId?: string, agentId?: string): Promise<Response> {
   const params = new URLSearchParams({ path });
   if (threadId) params.set("thread_id", threadId);
   if (agentId) params.set("agent_id", agentId);
-  return apiFetch(`/api/workspace/file?${params.toString()}`);
+  return apiFetch(`/api/workspace/file?${params.toString()}`, {
+    headers: agentId ? { "X-Agent-ID": agentId } : undefined,
+  });
 }
 
 export async function getWorkspaceDownload(path: string, threadId?: string, agentId?: string): Promise<Response> {
   const params = new URLSearchParams({ path });
   if (threadId) params.set("thread_id", threadId);
   if (agentId) params.set("agent_id", agentId);
-  return apiFetch(`/api/workspace/download?${params.toString()}`);
+  return apiFetch(`/api/workspace/download?${params.toString()}`, {
+    headers: agentId ? { "X-Agent-ID": agentId } : undefined,
+  });
 }
 
 export async function uploadWorkspaceFile(file: File, threadId: string, agentId?: string): Promise<Response> {

@@ -203,6 +203,15 @@ class ConversationThreadsDB:
             return None
         return _row_to_record(row)
 
+    async def has_any_record(self, thread_id: str) -> bool:
+        """True if a lifecycle row exists for ``thread_id`` in any scope or status (incl. deleted)."""
+        await self._ensure_schema()
+        row = await self._get_store().fetchone(
+            "SELECT 1 AS present FROM conversation_threads WHERE thread_id = ?",
+            (thread_id,),
+        )
+        return row is not None
+
     async def mark_turn_committed(
         self,
         scope: Scope,

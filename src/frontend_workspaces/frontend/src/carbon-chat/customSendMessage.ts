@@ -40,10 +40,10 @@ export class StreamHttpError extends Error {
   }
 }
 
-export async function stopCugaAgent(threadId: string) {
+export async function stopCugaAgent(threadId: string, agentId?: string) {
   try {
     console.log(`Calling /stop for thread: ${threadId}`);
-    const response = await api.postStop(threadId);
+    const response = await api.postStop(threadId, agentId);
     
     if (response.ok) {
       const result = await response.json();
@@ -130,6 +130,7 @@ export async function customSendMessage(
   disableHistory: boolean = false,
   actionResponse?: any,
   attachmentSnapshot?: KnowledgeAttachmentSnapshot[],
+  agentId?: string,
 ) {
   const userMessage = request.input.text?.trim() ?? "";
   
@@ -144,7 +145,7 @@ export async function customSendMessage(
   // Listen for abort signal to call /stop endpoint
   const abortHandler = () => {
     console.log("User cancelled request, calling /stop endpoint");
-    if (threadId) stopCugaAgent(threadId);
+    if (threadId) stopCugaAgent(threadId, agentId);
   };
   
   if (requestOptions.signal) {
@@ -266,6 +267,7 @@ export async function customSendMessage(
         useDraft,
         disableHistory,
         signal: requestOptions.signal,
+        agentId,
       }
     );
 
