@@ -1871,7 +1871,10 @@ async def _event_stream_impl(
     # W09.6: emit thread_created before any graph event
     if issued_thread_id:
         from cuga.backend.cuga_graph.utils.agent_loop import StreamEvent as _SE
-        yield _SE(name="thread_created", data=issued_thread_id).format(app_state.output_format, thread_id=issued_thread_id)
+
+        yield _SE(name="thread_created", data=issued_thread_id).format(
+            app_state.output_format, thread_id=issued_thread_id
+        )
 
     if current_llm is _RUNTIME_LLM_UNSET:
         runtime_llm = (
@@ -1964,7 +1967,9 @@ async def _event_stream_impl(
                         logger.info(f"Created new state for thread_id: {thread_id}")
                 except Exception as e:
                     # If state retrieval fails, create new state
-                    logger.warning(f"Failed to retrieve state for thread_id {thread_id}, creating new state: {e}")
+                    logger.warning(
+                        f"Failed to retrieve state for thread_id {thread_id}, creating new state: {e}"
+                    )
                     local_state = default_state(page=None, observation=None, goal="")
                     local_state.input = query
                     local_state.thread_id = thread_id
@@ -2486,8 +2491,12 @@ async def _event_stream_impl(
         # W09.7/W09.8/W11.1: lifecycle calls after every turn
         if thread_id:
             try:
-                from cuga.backend.server.conversation_threads import Scope as _Scope, get_conversation_threads_db as _get_threads_db
+                from cuga.backend.server.conversation_threads import (
+                    Scope as _Scope,
+                    get_conversation_threads_db as _get_threads_db,
+                )
                 from cuga.config import get_tenant_id as _get_tenant, get_service_instance_id as _get_instance
+
                 _scope = _Scope(
                     tenant_id=_get_tenant(),
                     instance_id=_get_instance(),
@@ -2495,12 +2504,17 @@ async def _event_stream_impl(
                     user_id=user_id,
                 )
                 _threads_db = _get_threads_db()
-                _snap = await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
-                _ckpt_id = ((_snap.config or {}).get("configurable", {}).get("checkpoint_id", "")) if _snap else ""
+                _snap = await run_agent.graph.aget_state(
+                    {"configurable": {"thread_id": checkpoint_thread_id}}
+                )
+                _ckpt_id = (
+                    ((_snap.config or {}).get("configurable", {}).get("checkpoint_id", "")) if _snap else ""
+                )
                 if _turn_outcome in ("completed", "interrupted"):
                     # W09.7: mark turn committed
                     await _threads_db.mark_turn_committed(
-                        _scope, thread_id,
+                        _scope,
+                        thread_id,
                         checkpoint_id=_ckpt_id,
                         agent_hash="",
                         runtime_ver="",
@@ -3350,10 +3364,14 @@ async def stream(
     if record is not None and not (use_draft and disable_history):
         from cuga.backend.server.turn_prelude import run_turn_prelude, ThreadUnavailable
         from cuga.backend.server.thread_lease import get_thread_lease
+
         _run_agent_for_prelude = run_agent if run_agent is not None else app_state.agent
         import inspect
+
         _prelude_graph = getattr(_run_agent_for_prelude, "graph", None)
-        if _prelude_graph is not None and inspect.iscoroutinefunction(getattr(_prelude_graph, "aget_state", None)):
+        if _prelude_graph is not None and inspect.iscoroutinefunction(
+            getattr(_prelude_graph, "aget_state", None)
+        ):
             _ckpt_thread_id = _checkpoint_thread_id(graph_thread_id, user_id, agent_id_header)
             try:
                 prelude_result = await run_turn_prelude(
@@ -3361,7 +3379,9 @@ async def stream(
                     thread_id=_ckpt_thread_id,
                     graph=_prelude_graph,
                     lease=get_thread_lease(),
-                    checkpointer_kind=getattr(getattr(app_state, "checkpointer_handle", None), "kind", "memory"),
+                    checkpointer_kind=getattr(
+                        getattr(app_state, "checkpointer_handle", None), "kind", "memory"
+                    ),
                 )
             except ThreadBusy:
                 return _thread_conflict_response()
@@ -3669,6 +3689,7 @@ async def get_conversations(
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     try:
         from cuga.backend.server.conversation_threads import get_conversation_threads_db, request_scope
+
         conversation_db = get_conversation_db()
         threads = await conversation_db.get_all_threads_for_agent(agent_id, user_id)
 
