@@ -50,8 +50,12 @@ async def test_http_identity(monkeypatch):
     app = FastAPI()
     app.add_api_route('/stream', m.stream, methods=['POST'])
     app.dependency_overrides[m.require_chat_access] = lambda: None
+    from cuga.backend.server.conversation_threads import get_conversation_threads_db, request_scope
+
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://probe') as client:
         for agent in ['sales-east', 'sales-west']:
+            scope = request_scope(None, agent)
+            await get_conversation_threads_db().create(scope, f'probe-{agent}')
             response = await client.post(
                 '/stream',
                 json={'query': 'hello'},
