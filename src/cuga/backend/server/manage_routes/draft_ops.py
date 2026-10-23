@@ -1,14 +1,29 @@
 """Shared draft-state mutations: agent graph rebuild, tools include."""
 
+import asyncio
 from typing import Any
 
 from cuga.backend.server.manage_routes.helpers import extract_agent_feature_overrides
 
 
+def agent_rebuild_lock(agent: Any) -> asyncio.Lock:
+    lock = getattr(agent, "_config_rebuild_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        agent._config_rebuild_lock = lock
+    return lock
+
+
 async def rebuild_agent_from_config(agent: Any, config: dict[str, Any], *, use_draft: bool = False) -> None:
-    """Reset tool provider and rebuild an agent graph from config."""
+    """Serialize direct edits with rebuilds triggered by a changed roster member."""
     if not agent:
         return
+    async with agent_rebuild_lock(agent):
+        await _apply_config_and_rebuild(agent, config, use_draft=use_draft)
+
+
+async def _apply_config_and_rebuild(agent: Any, config: dict[str, Any], *, use_draft: bool = False) -> None:
+    """Apply config while the caller holds agent_rebuild_lock."""
     tp = getattr(agent, "tool_provider", None)
     if tp is not None and hasattr(tp, "reset"):
         tp.reset()
@@ -25,8 +40,9 @@ async def rebuild_agent_from_config(agent: Any, config: dict[str, Any], *, use_d
         agent.enable_filesystem_tools = overrides["enable_filesystem_tools"]
     llm_cfg = (config or {}).get("llm") or {}
     agent.llm_config = llm_cfg if llm_cfg else None
-    from cuga.backend.server.agent_registry import supervisor_graph_overrides
+    from cuga.backend.server.agent_registry import agent_special_instructions, supervisor_graph_overrides
 
+    agent.special_instructions = agent_special_instructions(config)
     for key, value in (await supervisor_graph_overrides(config, use_draft=use_draft)).items():
         setattr(agent, key, value)
     await agent.build_graph()
