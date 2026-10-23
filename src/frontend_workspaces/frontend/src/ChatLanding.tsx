@@ -5,6 +5,7 @@ import { useAuth } from "./AuthContext";
 import { ConfigHeader } from "./ConfigHeader";
 import CarbonChat, { generateUUID } from "./carbon-chat/CarbonChat";
 import { MemoryWorkspace } from "./memory/MemoryWorkspace";
+import { SupervisorRoster, type SupervisorMember } from "./SupervisorRoster";
 import {
   IconButton,
   Tag,
@@ -70,6 +71,7 @@ interface ChatAgentOption {
   id: string;
   name?: string;
   kind?: "single" | "supervisor";
+  description?: string;
 }
 
 function renderChatAgentOption(agent: ChatAgentOption) {
@@ -129,6 +131,8 @@ interface AgentConfig {
   name: string;
   description: string;
   configVersion?: number | string | null;
+  kind?: "single" | "supervisor";
+  supervisedAgents?: SupervisorMember[];
   apps: AppConfig[];
   workspaceFolders: WorkspaceFolder[];
 }
@@ -813,7 +817,7 @@ export function ChatLanding() {
           }
         }
 
-        let manageData: { version?: number | string; config?: { agent?: { name?: string; description?: string }; homescreen?: { isOn?: boolean; greeting?: string; starters?: string[] } } } | null = null;
+        let manageData: { version?: number | string; config?: { agent?: { name?: string; description?: string; kind?: "single" | "supervisor" }; supervisor?: { subAgents?: SupervisorMember[] }; homescreen?: { isOn?: boolean; greeting?: string; starters?: string[] } } } | null = null;
         if (manageRes.ok) {
           manageData = await manageRes.json();
           configVersion = manageData?.version ?? (agentId === "cuga-default" ? configVersion : null);
@@ -893,6 +897,8 @@ export function ChatLanding() {
           name: agentName,
           description: agentDescription,
           configVersion,
+          kind: manageData?.config?.agent?.kind ?? "single",
+          supervisedAgents: manageData?.config?.supervisor?.subAgents ?? [],
           apps,
           workspaceFolders: MOCK_AGENT_CONFIG.workspaceFolders, // TODO: Get from API if available
         };
@@ -1263,13 +1269,16 @@ export function ChatLanding() {
     setRightOpen(true);
   };
   const activeKnowledgeThreadId = effectiveChatThreadId;
+  const isSupervisor = agentConfig.kind === "supervisor";
+  const FlowIcon = isSupervisor ? Flow : Application;
+  const configurationMeta = isSupervisor ? { ...RIGHT_PANEL_META.configuration, title: "Supervised agents", subtitle: "Published agents available for delegation", icon: Flow } : RIGHT_PANEL_META.configuration;
   const sectionCounts: Record<RightPanelSection, number> = {
-    configuration: totalTools,
+    configuration: isSupervisor ? (agentConfig.supervisedAgents ?? []).length : totalTools,
     workspace: workspaceTree.length,
     knowledge: knowledgeDocCount,
     skills: skills.length,
   };
-  const activeSectionMeta = RIGHT_PANEL_META[rightSection];
+  const activeSectionMeta = rightSection === "configuration" ? configurationMeta : RIGHT_PANEL_META[rightSection];
   const ActiveSectionIcon = activeSectionMeta.icon;
 
   return (
@@ -1517,7 +1526,7 @@ export function ChatLanding() {
           <div style={panelHeader}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: "0.625rem" }}>
-                <Application
+                <FlowIcon
                   size={20}
                   style={{ flexShrink: 0, marginTop: "0.125rem", color: "var(--cds-interactive)" }}
                 />
@@ -1556,7 +1565,7 @@ export function ChatLanding() {
           >
             <div className="agent-section-switcher">
               {(["configuration", "workspace", "knowledge", "skills"] as RightPanelSection[]).map((section) => {
-                const meta = RIGHT_PANEL_META[section];
+                const meta = section === "configuration" ? configurationMeta : RIGHT_PANEL_META[section];
                 const SectionIcon = meta.icon;
                 const handleClick =
                   section === "configuration"
@@ -1615,7 +1624,10 @@ export function ChatLanding() {
 
               <Layer level={2} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
                 <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
-              {rightSection === "configuration" && (
+              {rightSection === "configuration" && isSupervisor && (
+                <SupervisorRoster members={agentConfig.supervisedAgents ?? []} agents={availableAgents} />
+              )}
+              {rightSection === "configuration" && !isSupervisor && (
                 <div style={{ padding: "1rem" }}>
                   <Accordion>
                     {agentConfig.apps.map((app) => (
