@@ -1094,7 +1094,7 @@ async def lifespan(app: FastAPI):
         shortlisting_tool_threshold=_prod_overrides.get("shortlisting_tool_threshold"),
         cuga_lite_max_steps=_prod_overrides.get("cuga_lite_max_steps"),
         enable_filesystem_tools=_prod_overrides.get("enable_filesystem_tools"),
-        special_instructions=(_startup_config or {}).get("special_instructions") or None,
+        special_instructions=agent_registry.agent_special_instructions(_startup_config or {}),
         supervisor_id=app_state.agent_id,
         **await agent_registry.supervisor_graph_overrides(_startup_config or {}),
     )
@@ -1158,7 +1158,7 @@ async def lifespan(app: FastAPI):
         cuga_lite_max_steps=draft_overrides.get("cuga_lite_max_steps"),
         enable_filesystem_tools=draft_overrides.get("enable_filesystem_tools"),
         llm_config=_draft_llm_cfg or None,
-        special_instructions=(draft_config or {}).get("special_instructions") or None,
+        special_instructions=agent_registry.agent_special_instructions(draft_config or {}),
         supervisor_id=draft_agent_id,
         **await agent_registry.supervisor_graph_overrides(draft_config or {}, use_draft=True),
     )
@@ -2782,9 +2782,7 @@ async def _resolve_stream_agent(
                     policy_system=policy_system,
                     tool_provider=CombinedToolProvider(agent_id=agent_id),
                     llm_config=sup_llm_config,
-                    special_instructions=config.get("special_instructions")
-                    or agent_meta.get("description")
-                    or None,
+                    special_instructions=agent_registry.agent_special_instructions(config),
                     supervisor_agents=agents_dict,
                     supervisor_enabled=True,
                     supervisor_plan_approval=bool(supervisor_cfg.get("planApproval")),
@@ -2810,9 +2808,7 @@ async def _resolve_stream_agent(
                         agent_id=agent_id,
                     ),
                     llm_config=config.get("llm") or None,
-                    special_instructions=config.get("special_instructions")
-                    or agent_meta.get("description")
-                    or None,
+                    special_instructions=agent_registry.agent_special_instructions(config),
                     enable_todos=overrides.get("enable_todos"),
                     reflection_enabled=overrides.get("reflection_enabled"),
                     shortlisting_tool_threshold=overrides.get("shortlisting_tool_threshold"),
