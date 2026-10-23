@@ -309,7 +309,7 @@ async def build_agents_from_stored_subagents(
             agent_configs.append(
                 {
                     "name": ref,
-                    "agent_id": ref,
+                    "agent_id": f"{ref}--draft" if resolved_draft else ref,
                     "apps": [t["name"] for t in tools_list if t.get("name")],
                     "include_by_app": include_by_app,
                     "special_instructions": ref_config.get("special_instructions")
@@ -445,6 +445,8 @@ def _model_config_from_stored_llm(llm_cfg: Optional[Dict[str, Any]]) -> Optional
     translated = {k: v for k, v in llm_cfg.items() if k != "model" and v is not None}
     translated["provider"] = llm_cfg.get("provider") or "openai"
     translated["model_name"] = model_name
+    if "base_url" in translated:
+        translated["url"] = translated.pop("base_url")
     return translated
 
 
