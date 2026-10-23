@@ -31,9 +31,15 @@ spec:
             - name: CUGA_DBS_DIR
               value: "/data/dbs"
             {{- end }}
+            {{- /* Address the execd sandbox calls tools back on. Only the chart knows the real
+                   Service name, so it is derived per release; a non-empty env value overrides it. */}}
+            {{- $callbackKey := "DYNACONF_ADVANCED_FEATURES__SANDBOX_CALLBACK_URL" }}
+            - name: {{ $callbackKey }}
+              value: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "cuga.fullname" .) .Release.Namespace .Values.service.port) (get .Values.env $callbackKey) | quote }}
             {{- $secret := .Values.existingSecret }}
             {{- $sensitiveKeys := list "GROQ_API_KEY" "OIDC_CLIENT_SECRET" "OIDC_CLIENT_ID" "OIDC_DISCOVERY_URL" "OIDC_REDIRECT_URI" "DYNACONF_STORAGE__POSTGRES_URL" "VAULT_TOKEN" }}
             {{- range $key, $value := .Values.env }}
+            {{- if ne $key $callbackKey }}
             - name: {{ $key }}
               {{- if and $secret (has $key $sensitiveKeys) }}
               valueFrom:
@@ -44,6 +50,7 @@ spec:
               {{- else }}
               value: {{ $value | quote }}
               {{- end }}
+            {{- end }}
             {{- end }}
           livenessProbe:
             httpGet:

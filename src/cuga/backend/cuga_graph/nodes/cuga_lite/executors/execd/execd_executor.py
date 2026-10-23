@@ -6,9 +6,9 @@ can live inside an OpenShell sandbox. Each thread gets its own execd code
 context — a separate Jupyter kernel, i.e. a separate OS process with its own
 Python state that persists across calls.
 
-Only the transport differs from the E2B path: code assembly, tool
-serialisation and output parsing are identical and are inherited rather than
-duplicated.
+Tools are not serialised into the kernel: everything except the filesystem
+tools and run_command is a stub that calls back into CUGA (``tool_callback``),
+and each block reports its outcome through ``block_runner``.
 
 Logging — what you see in ``docker logs`` / ``kubectl logs``
 ------------------------------------------------------------
@@ -45,7 +45,7 @@ from cuga.backend.cuga_graph.state.agent_state import AgentState, VariablesManag
 from cuga.config import get_tenant_id, settings
 from ..common.run_output import format_run_command_output
 from ..filesystem.paths import normalize_shell_command_paths
-from ..e2b import E2BExecutor
+from ..base_executor import RemoteExecutor
 from ...tracking.tracker import counted_tool_call
 from . import block_runner, connection, tool_callback
 
@@ -101,7 +101,7 @@ class _KernelGone(Exception):
     """The sandbox no longer has the thread's kernel (evicted, released or reassigned)."""
 
 
-class ExecdExecutor(E2BExecutor):
+class ExecdExecutor(RemoteExecutor):
     """Executes agent code in a remote execd sandbox."""
 
     # thread_id -> execd context id. A context is a live Jupyter kernel, so
