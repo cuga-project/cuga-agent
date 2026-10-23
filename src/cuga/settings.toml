@@ -32,6 +32,9 @@ pre_execute_verify_enabled = false  # Independent of reflection; eval can hold V
 # Share of the model's context window that reflection / VERIFY inputs may fill (0 < x <= 1). Lower it to cut cost or latency.
 reflection_context_fraction = 0.70  # Env: DYNACONF_ADVANCED_FEATURES__REFLECTION_CONTEXT_FRACTION
 pre_execute_verify_context_fraction = 0.70  # Env: DYNACONF_ADVANCED_FEATURES__PRE_EXECUTE_VERIFY_CONTEXT_FRACTION
+# Ask the model's endpoint (OpenRouter, watsonx.ai, LiteLLM proxy, vLLM) for its context window, once per model.
+# Off: use LiteLLM's bundled map and MODEL_CONTEXT_SIZES only. A model setting `context_window = N` always wins.
+context_window_discovery = true  # Env: DYNACONF_ADVANCED_FEATURES__CONTEXT_WINDOW_DISCOVERY
 enable_filesystem_tools = false  # Enable workspace filesystem tools (read_file, write_file, etc.)
 e2b_sandbox = false           # use E2B cloud sandbox for code execution
 opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; requires Docker + opensandbox SDK
