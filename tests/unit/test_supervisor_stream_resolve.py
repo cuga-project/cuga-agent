@@ -166,21 +166,24 @@ def test_registry_disabled_ignores_non_default_agent_id(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("use_draft", [False, True])
-async def test_registered_single_agent_does_not_inherit_global_supervisor(monkeypatch, use_draft):
+@pytest.mark.parametrize("tools", [[], [{"name": "crm"}]])
+async def test_registered_single_agent_does_not_inherit_global_supervisor(monkeypatch, use_draft, tools):
     monkeypatch.setattr(main_mod.settings.supervisor, "enabled", True)
-    config = {"agent": {"name": "Digital Sales Assistant", "kind": "single"}}
+    config = {"agent": {"name": "Digital Sales Assistant", "kind": "single"}, "tools": tools}
     graph = SimpleNamespace(build_graph=AsyncMock())
     state = SimpleNamespace(agent=object(), agent_graphs_cache={})
     with (
         patch.object(main_mod, "app_state", state),
         patch("cuga.backend.server.config_store.load_config", AsyncMock(return_value=(config, 1))),
         patch("cuga.backend.server.config_store.load_draft", AsyncMock(return_value=config)),
+        patch("cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined.CombinedToolProvider") as provider,
         patch("cuga.backend.cuga_graph.graph.DynamicAgentGraph", return_value=graph) as factory,
     ):
         resolved = await main_mod._resolve_stream_agent(_request(), "digital-sales-assistant", use_draft)
 
     assert resolved is graph
     assert factory.call_args.kwargs["supervisor_enabled"] is False
+    assert provider.call_args.kwargs["app_names"] == [tool["name"] for tool in tools]
 
 
 @pytest.mark.asyncio
