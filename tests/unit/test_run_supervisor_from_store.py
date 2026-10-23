@@ -14,6 +14,8 @@ on the stored config version.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -85,6 +87,149 @@ async def test_details_come_from_the_stored_config():
 
     assert details["pricebot"]["description"] == "You are pricebot."
     assert details["pricebot"]["mcp_servers"] == ["cuga_web"]
+
+
+@pytest.mark.asyncio
+async def test_renamed_member_keeps_stable_roster_identity_and_description():
+    await _store_supervisor(["pricebot"])
+    cfg, _ = await config_store.load_config(None, "pricebot")
+    cfg["agent"]["name"] = "Price Specialist"
+    await config_store.save_config(cfg, agent_id="pricebot")
+
+    details = await run_routes._roster_details(["pricebot"])
+
+    assert details["pricebot"]["description"] == "You are pricebot."
+
+
+@pytest.mark.asyncio
+async def test_child_invalidation_retries_inflight_build_and_preserves_active_lease(monkeypatch):
+    await _store_supervisor(["weatherbot"])
+    started, release = asyncio.Event(), asyncio.Event()
+    snapshots = []
+    owners = []
+
+    async def build(subs, **kwargs):
+        cfg, _ = await config_store.load_config(None, "weatherbot")
+        snapshots.append(cfg["special_instructions"])
+        if len(snapshots) == 1:
+            started.set()
+            await release.wait()
+        return await _fake_agents(subs)
+
+    class Owner:
+        def __init__(self, **kwargs):
+            self.closed = False
+            owners.append(self)
+
+        async def aclose(self):
+            self.closed = True
+
+    monkeypatch.setattr("cuga.supervisor_utils.supervisor_config.build_agents_from_stored_subagents", build)
+    monkeypatch.setattr("cuga.sdk.CugaSupervisor", Owner)
+    pending = asyncio.create_task(run_routes._get_supervisor(retain=True))
+    await started.wait()
+    cfg, _ = await config_store.load_config(None, "weatherbot")
+    cfg["special_instructions"] = "updated child"
+    await config_store.save_config(cfg, agent_id="weatherbot")
+    await run_routes.invalidate_cached_supervisor()
+    release.set()
+    current = await pending
+
+    assert snapshots == ["You are weatherbot.", "updated child"]
+    assert owners[0].closed
+    assert current is owners[1]
+    assert current._cuga_roster[0]["description"] == "updated child"
+    await run_routes.invalidate_cached_supervisor()
+    assert not current.closed
+    assert current._cuga_roster[0]["name"] == "weatherbot"
+    await run_routes._release_supervisor(current)
+    assert current.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra,status",
+    [
+        ({"agent": "deleted-agent"}, 404),
+        ({"use_draft": True}, 422),
+        ({"attachments": [{"name": "file"}]}, 422),
+        (
+            {
+                "action_response": {
+                    "action_id": "approve",
+                    "confirmed": True,
+                    "response_type": "confirmation",
+                    "timestamp": "2026-10-08T00:00:00Z",
+                    "user_id": "test",
+                }
+            },
+            422,
+        ),
+    ],
+)
+async def test_unsupported_or_missing_target_never_invokes_different_config(monkeypatch, extra, status):
+    from fastapi import FastAPI
+    import httpx
+
+    owner = SimpleNamespace(invoke=AsyncMock())
+    release = AsyncMock()
+    monkeypatch.setattr(run_routes, "_run_auth_failure", AsyncMock(return_value=None))
+    monkeypatch.setattr(run_routes, "_authenticated_user_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(run_routes, "_ASSERT_THREAD_ACCESS", AsyncMock())
+    monkeypatch.setattr(run_routes, "_get_supervisor", AsyncMock(return_value=owner))
+    monkeypatch.setattr(run_routes, "_release_supervisor", release)
+    monkeypatch.setattr(run_routes.events_bridge, "forwards_to_events", lambda *_: False)
+    run_routes._supervisor_roster["__current__"] = [{"name": "weatherbot"}]
+    app = FastAPI()
+    app.add_api_route("/run", run_routes.run_sync, methods=["POST"])
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/run", json={"query": "test", **extra})
+
+    assert response.status_code == status
+    owner.invoke.assert_not_awaited()
+    release.assert_awaited_once_with(owner)
+
+
+@pytest.mark.asyncio
+async def test_agent_listing_uses_owner_snapshot_after_invalidation(monkeypatch):
+    owner = SimpleNamespace(_cuga_roster=[{"name": "weatherbot", "description": "Weather specialist"}])
+    monkeypatch.setattr(run_routes, "_run_auth_failure", AsyncMock(return_value=None))
+
+    async def get_then_invalidate():
+        run_routes._supervisor_roster.clear()
+        return owner
+
+    monkeypatch.setattr(run_routes, "_get_supervisor", get_then_invalidate)
+
+    response = await run_routes.run_agents(SimpleNamespace())
+
+    assert [entry["name"] for entry in response["agents"]] == ["cuga", "weatherbot"]
+
+
+@pytest.mark.asyncio
+async def test_supervisor_uses_editor_instructions_and_configured_model(monkeypatch):
+    await _store_supervisor(["weatherbot"])
+    config, _ = await config_store.load_config(None, "cuga")
+    config.update(special_instructions="edited instructions", llm={"model": "parent-model"})
+    config["supervisor"]["special_instructions"] = "old nested instructions"
+    await config_store.save_config(config, agent_id="cuga")
+    monkeypatch.setattr(
+        "cuga.supervisor_utils.supervisor_config.build_agents_from_stored_subagents",
+        lambda subs, **kw: _fake_agents(subs),
+    )
+    from unittest.mock import Mock
+
+    model = object()
+    factory = Mock(return_value=SimpleNamespace())
+    create_model = Mock(return_value=model)
+    monkeypatch.setattr("cuga.backend.llm.models.create_llm_from_config", create_model)
+    monkeypatch.setattr("cuga.sdk.CugaSupervisor", factory)
+
+    await run_routes._get_supervisor()
+
+    assert factory.call_args.kwargs["special_instructions"] == "edited instructions"
+    assert factory.call_args.kwargs["model"] is model
+    create_model.assert_called_once_with({"model": "parent-model"})
 
 
 @pytest.mark.asyncio
