@@ -1096,6 +1096,7 @@ async def lifespan(app: FastAPI):
         enable_filesystem_tools=_prod_overrides.get("enable_filesystem_tools"),
         special_instructions=(_startup_config or {}).get("special_instructions") or None,
         supervisor_id=app_state.agent_id,
+        **await agent_registry.supervisor_graph_overrides(_startup_config or {}),
     )
     await app_state.agent.build_graph()
 
@@ -1159,6 +1160,7 @@ async def lifespan(app: FastAPI):
         llm_config=_draft_llm_cfg or None,
         special_instructions=(draft_config or {}).get("special_instructions") or None,
         supervisor_id=draft_agent_id,
+        **await agent_registry.supervisor_graph_overrides(draft_config or {}, use_draft=True),
     )
     await draft_app_state.agent.build_graph()
 
@@ -1730,11 +1732,11 @@ async def event_stream(
             memory_turn_id = str((local_state.service_scope or {}).get("memory_turn_id") or "")
         apply_request_user_context(local_state, user_id)
         local_state.service_scope.update({"agent_id": runtime_agent_id, "memory_turn_id": memory_turn_id})
-        # Route this run to the CugaSupervisor node when the resolved agent is a supervisor
-        # graph (issue #101). Only override when True so non-supervisor agents keep falling
-        # back to the global settings.supervisor.enabled default.
-        if getattr(run_agent, "supervisor_enabled", None):
-            local_state.supervisor_mode = True
+        # An explicit single-agent role must override global settings and any
+        # supervisor mode retained in an older checkpoint too.
+        supervisor_enabled = getattr(run_agent, "supervisor_enabled", None)
+        if supervisor_enabled is not None:
+            local_state.supervisor_mode = supervisor_enabled
         if os.getenv("CUGA_DEMO_MODE") == "health" and not local_state.pi:
             from cuga.backend.server.demo_manage_setup import HEALTH_USER_CONTEXT
 
@@ -2816,6 +2818,7 @@ async def _resolve_stream_agent(
                     shortlisting_tool_threshold=overrides.get("shortlisting_tool_threshold"),
                     cuga_lite_max_steps=overrides.get("cuga_lite_max_steps"),
                     enable_filesystem_tools=overrides.get("enable_filesystem_tools"),
+                    supervisor_enabled=False,
                 )
 
             await graph.build_graph()
