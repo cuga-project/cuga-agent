@@ -73,6 +73,53 @@ async def test_seeds_sub_agents_and_supervisor(roster_file):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "- invalid",
+        "agents: wrong",
+        "supervisor: wrong\nagents: []",
+        "agents:\n  - name: duplicate--id\n  - name: duplicate-id",
+        "supervisor:\n  special_instructions: 7\nagents:\n  - name: valid",
+        "agents:\n  - name: valid\n  - name: 7",
+        "agents:\n  - name: valid\n  - name: invalid\n    special_instructions: 7",
+        "agents:\n  - name: valid\n  - name: invalid\n    apps: wrong",
+        "agents:\n  - name: valid\n  - invalid",
+    ],
+)
+async def test_invalid_roster_preserves_existing_configs(tmp_path, contents):
+    existing = {"agent": {"kind": "supervisor"}, "special_instructions": "keep"}
+    await config_store.save_config(existing, agent_id="cuga")
+    before = await config_store.list_agents_with_configs()
+    roster = tmp_path / "invalid.yaml"
+    roster.write_text(contents)
+
+    assert await roster_seed.seed_roster(str(roster)) == (0, {})
+    assert await config_store.list_agents_with_configs() == before
+    assert (await config_store.load_config(None, "cuga"))[0] == existing
+
+
+@pytest.mark.asyncio
+async def test_seed_preserves_supervisor_and_member_model_and_memory_scope(tmp_path):
+    roster = tmp_path / "models.yaml"
+    roster.write_text(
+        "supervisor:\n  model: {provider: openai, model_name: parent-model, url: 'https://example.invalid/v1'}\nagents:\n  - name: weatherbot\n    model: {provider: openai, model_name: child-model, temperature: 0.2}\n    memory_scope: isolated"
+    )
+
+    await roster_seed.seed_roster(str(roster))
+
+    parent, _ = await config_store.load_config(None, "cuga")
+    child, _ = await config_store.load_config(None, "weatherbot")
+    assert parent["llm"] == {
+        "provider": "openai",
+        "model": "parent-model",
+        "base_url": "https://example.invalid/v1",
+    }
+    assert child["llm"] == {"provider": "openai", "model": "child-model", "temperature": 0.2}
+    assert child["feature_flags"]["sub_agent_memory_scope"] == "isolated"
+
+
+@pytest.mark.asyncio
 async def test_sub_agent_record_matches_what_the_ui_writes(roster_file):
     """`build_agents_from_stored_subagents` reads agent/tools/special_instructions — a seeded record
     has to carry exactly those, or the sub-agent loads with no tools and no instructions."""
