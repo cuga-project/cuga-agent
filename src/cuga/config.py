@@ -152,6 +152,7 @@ validators = [
     Validator("advanced_features.local_sandbox", default=True),
     Validator("advanced_features.message_window_limit", default=20),
     Validator("advanced_features.max_input_length", default=50000),
+    Validator("advanced_features.e2b_sandbox", default=True),
     Validator("advanced_features.e2b_sandbox_mode", default="per-session"),
     Validator("advanced_features.e2b_sandbox_idle_ttl", default=600),
     Validator("advanced_features.e2b_sandbox_max_age", default=86400),

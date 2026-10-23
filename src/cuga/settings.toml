@@ -30,7 +30,7 @@ reflection_enabled = false
 pre_execute_verify_enabled = false  # Independent of reflection; eval can hold VERIFY without dropping PLAN reflection
 # pre_execute_verify_timeout = 60  # Seconds for the VERIFY model call before the block runs unverified (default 60). Env: DYNACONF_ADVANCED_FEATURES__PRE_EXECUTE_VERIFY_TIMEOUT
 enable_filesystem_tools = false  # Enable workspace filesystem tools (read_file, write_file, etc.)
-e2b_sandbox = false           # use E2B cloud sandbox for code execution
+e2b_sandbox = true            # default isolated backend for Python code execution; disable only for local debugging
 opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; requires Docker + opensandbox SDK
 e2b_sandbox_mode = "per-session"  # E2B sandbox lifecycle: "per-session" = cache per thread_id (default), "single" = shared sandbox for all threads, "per-call" = new sandbox each call
 e2b_sandbox_idle_ttl = 600  # Idle timeout in seconds (default: 10 min) - sandbox expires after this much idle time

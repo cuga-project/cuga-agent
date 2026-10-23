@@ -21,7 +21,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy impor
 
 def _settings(**advanced) -> SimpleNamespace:
     defaults = dict(
-        e2b_sandbox=False,
+        e2b_sandbox=True,
         opensandbox_sandbox=True,
         enable_shell_tool=False,
         sandbox_mode="native",
@@ -53,14 +53,19 @@ def _settings_with_execution(
 # ─── python_backend (the behavior-preserving core) ──────────────────────────
 
 
-def test_default_settings_resolve_python_local() -> None:
+def test_default_settings_resolve_python_e2b() -> None:
     plan = ExecutionRouter.resolve(_settings())
-    assert plan.python_backend == "local"
+    assert plan.python_backend == "e2b"
 
 
 def test_e2b_sandbox_flag_resolves_python_e2b() -> None:
     plan = ExecutionRouter.resolve(_settings(e2b_sandbox=True))
     assert plan.python_backend == "e2b"
+
+
+def test_local_opt_out_resolves_python_local() -> None:
+    plan = ExecutionRouter.resolve(_settings(e2b_sandbox=False))
+    assert plan.python_backend == "local"
 
 
 def test_explicit_mode_overrides_settings() -> None:
@@ -70,9 +75,9 @@ def test_explicit_mode_overrides_settings() -> None:
 
 
 def test_opensandbox_flag_does_not_change_python_backend() -> None:
-    """Today opensandbox only affects shell tools, never the Python path."""
+    """The Python path stays in the isolated default; opensandbox only affects shell tools."""
     plan = ExecutionRouter.resolve(_settings(opensandbox_sandbox=True))
-    assert plan.python_backend == "local"
+    assert plan.python_backend == "e2b"
 
 
 # ─── shell_backend ──────────────────────────────────────────────────────────
