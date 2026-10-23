@@ -1104,14 +1104,13 @@ export function ManagePage() {
       const c: AgentConfig = {
         agent: { name: agentName, description: agentDescription || undefined, kind: agentKind },
         supervisor: agentKind === "supervisor" ? { subAgents, planApproval, _saveSeq: supervisorSaveSeqRef.current } : undefined,
-        // Supervisors have no LLM section in this UI (they use the environment's default
-        // model) — omit it so a stale DEFAULT_CONFIG.llm placeholder never gets saved and
-        // mistakenly overrides that default (see main.py's _resolve_stream_agent guard).
-        llm: agentKind === "supervisor" ? undefined : llmConfig,
+        // Preserve a model imported for a supervisor, while omitting the empty
+        // editor placeholder so environment defaults still apply.
+        llm: agentKind === "supervisor" && !llmConfig.model?.trim() ? undefined : llmConfig,
         tools: tools,
         feature_flags: featureFlags,
         homescreen,
-        special_instructions: specialInstructions || undefined,
+        special_instructions: specialInstructions,
         policies,
         knowledge: knowledgeConfig,
       };
