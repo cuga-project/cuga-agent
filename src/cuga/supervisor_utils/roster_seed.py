@@ -129,7 +129,19 @@ def _sub_agent_config(entry: Dict[str, Any]) -> Dict[str, Any]:
         },
         "tools": [{"name": n} for n in _app_names(entry)],
         "special_instructions": instructions,
+        **({"llm": _stored_llm(entry["model"])} if entry.get("model") else {}),
+        **(
+            {"feature_flags": {"sub_agent_memory_scope": entry["memory_scope"]}}
+            if entry.get("memory_scope")
+            else {}
+        ),
     }
+
+
+def _stored_llm(model: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate the YAML model name into the editor's persisted LLM shape."""
+    aliases = {"model_name": "model", "url": "base_url"}
+    return {aliases.get(key, key): value for key, value in model.items()}
 
 
 async def _partition_prior(prior: List[Dict[str, Any]], yaml_refs: List[str]) -> List[Dict[str, Any]]:
@@ -184,6 +196,7 @@ def _supervisor_config(
                 else {}
             ),
         },
+        **({"llm": _stored_llm(sup["model"])} if sup.get("model") else {}),
     }
 
 
@@ -272,7 +285,47 @@ async def seed_roster(path: Optional[str] = None) -> Tuple[int, Dict[str, int]]:
         logger.warning(f"roster seed: could not read {path!r}: {e}")
         return 0, {}
 
-    entries = [a for a in (roster.get("agents") or []) if isinstance(a, dict) and a.get("name")]
+    if (
+        not isinstance(roster, dict)
+        or not isinstance(roster.get("agents", []), list)
+        or not isinstance(roster.get("supervisor", {}), dict)
+    ):
+        logger.warning("roster seed: invalid roster structure in {}", path)
+        return 0, {}
+    entries = roster.get("agents") or []
+    supervisor = roster.get("supervisor") or {}
+    records = [supervisor, *entries]
+    for record in records:
+        if not isinstance(record, dict) or any(
+            record.get(key) is not None and not isinstance(record[key], str)
+            for key in ("name", "special_instructions", "description", "memory_scope")
+        ):
+            logger.warning("roster seed: invalid agent fields in {}", path)
+            return 0, {}
+        if record.get("model") is not None and not isinstance(record["model"], dict):
+            logger.warning("roster seed: invalid model in {}", path)
+            return 0, {}
+        for key in ("apps", "mcp_servers"):
+            apps = record.get(key) or []
+            if not isinstance(apps, list) or any(
+                not (
+                    isinstance(app, str)
+                    and app.strip()
+                    or isinstance(app, dict)
+                    and isinstance(app.get("name"), str)
+                    and app["name"].strip()
+                )
+                for app in apps
+            ):
+                logger.warning("roster seed: invalid tool list in {}", path)
+                return 0, {}
+    if any(not isinstance(entry.get("name"), str) or not entry["name"].strip() for entry in entries):
+        logger.warning("roster seed: missing agent name in {}", path)
+        return 0, {}
+    entry_ids = [_agent_id(a["name"]) for a in entries]
+    if len(set(entry_ids)) != len(entry_ids):
+        logger.warning("roster seed: duplicate agent identities in {}", path)
+        return 0, {}
     if not entries:
         logger.warning(f"roster seed: {path!r} declares no agents")
         return 0, {}
