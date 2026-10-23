@@ -165,6 +165,25 @@ def test_registry_disabled_ignores_non_default_agent_id(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("use_draft", [False, True])
+async def test_registered_single_agent_does_not_inherit_global_supervisor(monkeypatch, use_draft):
+    monkeypatch.setattr(main_mod.settings.supervisor, "enabled", True)
+    config = {"agent": {"name": "Digital Sales Assistant", "kind": "single"}}
+    graph = SimpleNamespace(build_graph=AsyncMock())
+    state = SimpleNamespace(agent=object(), agent_graphs_cache={})
+    with (
+        patch.object(main_mod, "app_state", state),
+        patch("cuga.backend.server.config_store.load_config", AsyncMock(return_value=(config, 1))),
+        patch("cuga.backend.server.config_store.load_draft", AsyncMock(return_value=config)),
+        patch("cuga.backend.cuga_graph.graph.DynamicAgentGraph", return_value=graph) as factory,
+    ):
+        resolved = await main_mod._resolve_stream_agent(_request(), "digital-sales-assistant", use_draft)
+
+    assert resolved is graph
+    assert factory.call_args.kwargs["supervisor_enabled"] is False
+
+
+@pytest.mark.asyncio
 async def test_stream_forwards_x_agent_id_as_execution_identity(monkeypatch):
     captured: dict = {}
 
@@ -291,7 +310,11 @@ async def test_invalidate_during_build_does_not_cache_stale_graph():
 
 
 @pytest.mark.asyncio
-async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
+@pytest.mark.parametrize("supervisor_enabled", [False, True])
+@pytest.mark.parametrize("checkpoint_supervisor_mode", [None, True])
+async def test_event_stream_persists_under_requested_agent_id(
+    monkeypatch, supervisor_enabled, checkpoint_supervisor_mode
+):
     saved: dict = {}
 
     async def fake_save(**kwargs):
@@ -307,10 +330,18 @@ async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
         async def run_stream(self, **_kwargs):
             from cuga.backend.cuga_graph.utils.agent_loop import AgentLoopAnswer
 
+            saved["observed_supervisor_mode"] = _kwargs["state"].supervisor_mode
             yield AgentLoopAnswer(end=True, answer="done", tools=[])
 
     graph = MagicMock()
-    graph.get_state.return_value = SimpleNamespace(values=None)
+    if checkpoint_supervisor_mode is not None:
+        from cuga.backend.cuga_graph.state.agent_state import default_state
+
+        checkpoint = default_state(page=None, observation=None, goal="previous question")
+        checkpoint.supervisor_mode = checkpoint_supervisor_mode
+        graph.get_state.return_value = SimpleNamespace(values=checkpoint.model_dump())
+    else:
+        graph.get_state.return_value = SimpleNamespace(values=None)
     run_agent = SimpleNamespace(
         graph=graph,
         policy_system=None,
@@ -321,7 +352,10 @@ async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
         enable_filesystem_tools=None,
         special_instructions=None,
         chat=None,
+        supervisor_enabled=supervisor_enabled,
     )
+
+    monkeypatch.setattr(main_mod.settings.supervisor, "enabled", True)
 
     monkeypatch.setattr(
         "cuga.backend.cuga_graph.utils.agent_loop.AgentLoop",
@@ -349,7 +383,8 @@ async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
         chunks.append(chunk)
 
     assert saved["agent_id"] == "sales-east"
-    assert any(chunks)
+    assert saved["observed_supervisor_mode"] is supervisor_enabled
+    assert any("Answer" in chunk for chunk in chunks)
 
 
 @pytest.mark.asyncio
