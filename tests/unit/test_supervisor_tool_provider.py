@@ -39,6 +39,18 @@ def test_create_tool_provider_returns_none_without_apps():
 
 
 @pytest.mark.asyncio
+async def test_stored_member_with_no_tools_keeps_explicit_empty_scope():
+    with patch("cuga.supervisor_utils.supervisor_config.CombinedToolProvider") as provider_cls:
+        provider_cls.return_value.initialize = AsyncMock()
+        result = await _create_tool_provider(apps=[], mcp_servers=[], agent_id="empty-member")
+
+    assert result is provider_cls.return_value
+    assert provider_cls.call_args.kwargs["app_names"] == []
+    assert provider_cls.call_args.kwargs["agent_id"] == "empty-member"
+    provider_cls.return_value.initialize.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "use_draft,has_draft,namespace",
     [(False, True, "weatherbot"), (True, True, "weatherbot--draft"), (True, False, "weatherbot")],
