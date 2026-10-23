@@ -40,8 +40,18 @@ async def _apply_config_and_rebuild(agent: Any, config: dict[str, Any], *, use_d
         agent.enable_filesystem_tools = overrides["enable_filesystem_tools"]
     llm_cfg = (config or {}).get("llm") or {}
     agent.llm_config = llm_cfg if llm_cfg else None
-    from cuga.backend.server.agent_registry import agent_special_instructions, supervisor_graph_overrides
+    from cuga.backend.server.agent_registry import (
+        agent_special_instructions,
+        configured_tool_apps,
+        supervisor_graph_overrides,
+    )
 
+    if tp is not None:
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import unwrap_tool_provider
+
+        scoped_provider = unwrap_tool_provider(tp)
+        if hasattr(scoped_provider, "app_names"):
+            scoped_provider.app_names = configured_tool_apps(config)
     agent.special_instructions = agent_special_instructions(config)
     for key, value in (await supervisor_graph_overrides(config, use_draft=use_draft)).items():
         setattr(agent, key, value)
