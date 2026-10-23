@@ -140,6 +140,7 @@ validators = [
     Validator("observability.pricing_json", default=""),
     Validator("observability.litellm_local_model_cost_map", default=True),
     Validator("advanced_features.benchmark", default="default"),
+    Validator("execution.enforce_code_security", default=True),
     Validator("advanced_features.appworld_final_answer_plain", default=False),
     # No is_type_of here: strict validators raise at import time for malformed
     # DYNACONF_FINAL_ANSWER__* env values (outside the ValidationError catch
