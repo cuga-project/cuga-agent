@@ -5,7 +5,7 @@ from typing import Any
 from cuga.backend.server.manage_routes.helpers import extract_agent_feature_overrides
 
 
-async def rebuild_agent_from_config(agent: Any, config: dict[str, Any]) -> None:
+async def rebuild_agent_from_config(agent: Any, config: dict[str, Any], *, use_draft: bool = False) -> None:
     """Reset tool provider and rebuild an agent graph from config."""
     if not agent:
         return
@@ -25,4 +25,8 @@ async def rebuild_agent_from_config(agent: Any, config: dict[str, Any]) -> None:
         agent.enable_filesystem_tools = overrides["enable_filesystem_tools"]
     llm_cfg = (config or {}).get("llm") or {}
     agent.llm_config = llm_cfg if llm_cfg else None
+    from cuga.backend.server.agent_registry import supervisor_graph_overrides
+
+    for key, value in (await supervisor_graph_overrides(config, use_draft=use_draft)).items():
+        setattr(agent, key, value)
     await agent.build_graph()
