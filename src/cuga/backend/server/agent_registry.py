@@ -19,6 +19,13 @@ def agent_special_instructions(config: dict) -> str | None:
     return meta.get("description") or None
 
 
+def configured_tool_apps(config: dict) -> list[str] | None:
+    """None preserves a legacy registry; an explicit empty tools list grants no apps."""
+    if "tools" not in config:
+        return None
+    return [tool["name"] for tool in config.get("tools") or [] if isinstance(tool, dict) and tool.get("name")]
+
+
 async def supervisor_graph_overrides(config: dict, *, use_draft: bool = False) -> dict:
     """Registry agents use their stored role, including the default agent.
 
