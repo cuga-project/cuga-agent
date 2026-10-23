@@ -7,6 +7,18 @@ def is_agent_registry_enabled() -> bool:
     return bool(getattr(getattr(settings, "supervisor", None), "registry_enabled", False))
 
 
+def agent_special_instructions(config: dict) -> str | None:
+    """Read editor instructions and legacy roster instructions consistently."""
+    if "special_instructions" in config:
+        return config.get("special_instructions") or None
+    meta = config.get("agent") or {}
+    if meta.get("kind") == "supervisor":
+        instructions = (config.get("supervisor") or {}).get("special_instructions")
+        if instructions:
+            return instructions
+    return meta.get("description") or None
+
+
 async def supervisor_graph_overrides(config: dict, *, use_draft: bool = False) -> dict:
     """Registry agents use their stored role, including the default agent.
 
