@@ -281,6 +281,11 @@ MODEL_CONTEXT_SIZES = {
     # DeepSeek Models
     # ============================================================================
     "deepseek-v3": 64000,
+    # V3.2 serves 163840 (LiteLLM model map: deepseek/deepseek-v3.2, azure_ai/deepseek-v3.2).
+    # Without these keys it prefix-matches "deepseek-v3" and resolves to 64000.
+    "deepseek-v3.2": 163840,
+    "deepseek/deepseek-v3.2": 163840,
+    "deepseek-ai/deepseek-v3.2": 163840,
     "deepseek-chat": 64000,
     "deepseek-chat-v3": 64000,
     "deepseek-coder": 64000,
