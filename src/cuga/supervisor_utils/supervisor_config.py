@@ -389,9 +389,10 @@ async def _create_tool_provider(
 ) -> Optional[ToolProviderInterface]:
     """Create a tool provider from apps and MCP servers configuration.
 
-    An agent that names NOTHING gets `app_names=None`, i.e. the whole registry — unchanged.
+    Stored agents keep an explicit empty scope. Legacy YAML without a scope
+    keeps its default provider behavior.
     """
-    if not apps and not mcp_servers:
+    if not apps and not mcp_servers and agent_id is None:
         return None
 
     app_names = []
@@ -412,7 +413,7 @@ async def _create_tool_provider(
         if n:
             app_names.append(n)
 
-    if app_names or mcp_servers:
+    if app_names or mcp_servers or agent_id is not None:
         # Names are passed through EXACTLY as declared — no normalising, no rewriting. There was a
         # hyphen→underscore translation here for a while, because the events roster spelled its
         # servers `cuga-finance` while the registry keys them `cuga_finance`. It was the wrong
@@ -425,7 +426,7 @@ async def _create_tool_provider(
             f"Creating CombinedToolProvider for apps: {app_names}, MCP servers: {len(mcp_servers) if mcp_servers else 0}"
         )
         tool_provider = CombinedToolProvider(
-            app_names=app_names or None,
+            app_names=app_names if agent_id is not None else app_names or None,
             agent_id=agent_id,
             get_include_by_app=(lambda: (include_by_app, 0)) if include_by_app else None,
         )
