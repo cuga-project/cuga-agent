@@ -12,11 +12,13 @@ from __future__ import annotations
 
 from typing import Any, List, Optional
 
+import pytest
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import CoreGraphAdapter
 
+pytestmark = pytest.mark.unit
 
 # ── Minimal adapter & state for graph construction ─────────────────────────
 
@@ -100,8 +102,8 @@ def test_built_graph_has_prepare_and_call_model_nodes():
     assert "sandbox" in node_names  # adapter.execute_node_name
 
 
-def test_built_graph_has_execute_to_call_model_edge():
-    """Sandbox must loop back to call_model after code execution (regression guard)."""
+def test_built_graph_has_no_static_execute_to_call_model_edge():
+    """Execute Commands must be able to pause without scheduling another model call."""
     build = _get_builder()
     adapter = _MinimalAdapter()
 
@@ -114,7 +116,7 @@ def test_built_graph_has_execute_to_call_model_edge():
     )
 
     edges = graph.edges
-    assert ("sandbox", "call_model") in edges
+    assert ("sandbox", "call_model") not in edges
 
 
 def test_built_graph_has_no_prepare_to_call_model_edge():

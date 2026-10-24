@@ -233,19 +233,24 @@ def test_apply_execution_mode_is_a_noop_when_unconfigured():
 
 
 def _dummy_nodes():
+    from langgraph.graph import END
+    from langgraph.types import Command
+
     async def prepare(state, config=None):
-        return {}
+        return Command(goto="sandbox")
 
     async def call_model(state, config=None):
-        return {}
+        assert state.final_answer == "Execution result"
+        return Command(goto=END, update={"final_answer": "Model answer"})
 
     async def execute(state, config=None):
-        return {}
+        return {"final_answer": "Execution result"}
 
     return prepare, call_model, execute
 
 
-def test_build_agent_graph_has_exactly_the_three_shared_nodes():
+@pytest.mark.asyncio
+async def test_build_agent_graph_has_exactly_the_three_shared_nodes():
     """Function-calling adds no node: a native turn is a block the execute node runs."""
     from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_graph import build_agent_graph
     from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import CugaLiteState
@@ -260,11 +265,11 @@ def test_build_agent_graph_has_exactly_the_three_shared_nodes():
         execute_node=execute,
     )
     assert set(graph.nodes) - {"__start__"} == {"prepare", "call_model", "sandbox"}
-    assert ("sandbox", "call_model") in graph.edges
+    result = await graph.compile().ainvoke({"input": "Test execution routing"})
+    assert result["final_answer"] == "Model answer"
 
 
 def test_cuga_lite_graph_has_no_mode_specific_node():
-
     from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import create_cuga_lite_graph
 
     graph = create_cuga_lite_graph(model=MagicMock(), tool_provider=None, apps_list=[], thread_id="t")

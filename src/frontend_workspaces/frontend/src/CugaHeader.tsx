@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, type ReactNode, type ComponentType } from "react";
 import {
   Header,
-  HeaderContainer,
   HeaderName,
   HeaderNavigation,
   HeaderMenuItem,
@@ -131,36 +130,34 @@ export function CugaHeader({
   };
 
   return (
-    <HeaderContainer
-      render={() => (
-        <div className="cuga-header-wrapper">
-          <Header aria-label="CUGA">
-            {!hideLogo && (
-              <a href="/" className="cuga-header-logo" aria-label="Home">
-                <img src="https://avatars.githubusercontent.com/u/230847519?s=200&v=4" alt="" />
-              </a>
-            )}
-            <HeaderName href="/" prefix={prefix ?? ""}>
-              {displayTitle}
-            </HeaderName>
-            <HeaderNavigation aria-label="CUGA">
-              {navItems.map((item) => renderNavItem(item))}
-            </HeaderNavigation>
-            <HeaderGlobalBar>
-              {actions.map((action) => {
-                if (action.href && !action.onClick) {
-                  return (
-                    <a
-                      key={action.label}
-                      href={action.href}
-                      className={`cds--header__global-action ${action.className ?? ""}`.trim()}
-                      aria-label={action.label}
-                      title={action.label}
-                      style={{ display: "flex", alignItems: "center", padding: "0 1rem", color: "inherit", textDecoration: "none" }}
-                    >
-                      {action.icon}
-                    </a>
-                  );
+    <div className="cuga-header-wrapper">
+      <Header aria-label="CUGA">
+        {!hideLogo && (
+          <a href="/" className="cuga-header-logo" aria-label="Home">
+            <img src="https://avatars.githubusercontent.com/u/230847519?s=200&v=4" alt="" />
+          </a>
+        )}
+        <HeaderName href="/" prefix={prefix ?? ""}>
+          {displayTitle}
+        </HeaderName>
+        <HeaderNavigation aria-label="CUGA">
+          {navItems.map((item) => renderNavItem(item))}
+        </HeaderNavigation>
+        <HeaderGlobalBar>
+          {actions.map((action) => {
+            if (action.href && !action.onClick) {
+              return (
+                <a
+                  key={action.label}
+                  href={action.href}
+                  className={`cds--header__global-action ${action.className ?? ""}`.trim()}
+                  aria-label={action.label}
+                  title={action.label}
+                  style={{ display: "flex", alignItems: "center", padding: "0 1rem", color: "inherit", textDecoration: "none" }}
+                >
+                  {action.icon}
+                </a>
+              );
                 }
                 return (
                   <HeaderGlobalAction
@@ -262,7 +259,5 @@ export function CugaHeader({
             </HeaderPanel>
           </div>
         </div>
-      )}
-    />
   );
 }
