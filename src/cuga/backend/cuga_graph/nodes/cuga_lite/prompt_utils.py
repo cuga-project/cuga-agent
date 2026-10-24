@@ -402,7 +402,9 @@ class PromptUtils:
         """
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:
-                if hasattr(tool.args_schema, 'model_json_schema'):
+                if isinstance(tool.args_schema, dict):
+                    schema = tool.args_schema
+                elif hasattr(tool.args_schema, 'model_json_schema'):
                     schema = tool.args_schema.model_json_schema()
                 else:
                     schema = tool.args_schema.schema()
@@ -496,7 +498,9 @@ class PromptUtils:
 
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:
-                if hasattr(tool.args_schema, 'model_json_schema'):
+                if isinstance(tool.args_schema, dict):
+                    schema = tool.args_schema
+                elif hasattr(tool.args_schema, 'model_json_schema'):
                     schema = tool.args_schema.model_json_schema()
                 else:
                     schema = tool.args_schema.schema()
@@ -550,7 +554,9 @@ class PromptUtils:
             tool_dict = tool.model_dump()
             if hasattr(tool, 'args_schema') and tool.args_schema:
                 try:
-                    if hasattr(tool.args_schema, 'schema'):
+                    if isinstance(tool.args_schema, dict):
+                        tool_dict['args_schema'] = tool.args_schema
+                    elif hasattr(tool.args_schema, 'schema'):
                         tool_dict['args_schema'] = tool.args_schema.schema()
                     elif hasattr(tool.args_schema, 'model_json_schema'):
                         tool_dict['args_schema'] = tool.args_schema.model_json_schema()

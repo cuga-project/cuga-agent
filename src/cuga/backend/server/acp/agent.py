@@ -17,14 +17,22 @@ from acp.schema import (
     AllowedOutcome,
     Implementation,
     McpCapabilities,
+    ListSessionsResponse,
+    LoadSessionResponse,
     NewSessionResponse,
     PermissionOption,
     PromptCapabilities,
     PromptResponse,
     SessionCapabilities,
+    SessionAdditionalDirectoriesCapabilities,
+    SessionInfo,
+    SessionListCapabilities,
     TextContentBlock,
     ToolCallUpdate,
+    UserMessageChunk,
 )
+
+from cuga.backend.server.acp.session_store import AcpSessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +74,9 @@ class SessionRecord:
 class CugaAcpAgent:
     """Text-only stable ACP v1 adapter over a protocol-neutral CUGA runner."""
 
-    def __init__(self, runner: Any) -> None:
+    def __init__(self, runner: Any, session_store: AcpSessionStore | None = None) -> None:
         self._runner = runner
+        self._store = session_store or AcpSessionStore()
         self._client: Any | None = None
         self._sessions: dict[str, SessionRecord] = {}
         self._sessions_lock = asyncio.Lock()
@@ -93,10 +102,13 @@ class CugaAcpAgent:
         return __import__("acp.schema", fromlist=["InitializeResponse"]).InitializeResponse(
             protocolVersion=PROTOCOL_VERSION,
             agentCapabilities=AgentCapabilities(
-                loadSession=False,
+                loadSession=True,
                 promptCapabilities=PromptCapabilities(image=False, audio=False, embeddedContext=False),
-                mcpCapabilities=McpCapabilities(http=False, sse=False, acp=False),
-                sessionCapabilities=SessionCapabilities(),
+                mcpCapabilities=McpCapabilities(http=True, sse=True, acp=False),
+                sessionCapabilities=SessionCapabilities(
+                    list=SessionListCapabilities(),
+                    additionalDirectories=SessionAdditionalDirectoriesCapabilities(),
+                ),
             ),
             authMethods=[],
             agentInfo=Implementation(name="cuga", title="CUGA", version=cuga_version),
@@ -109,7 +121,7 @@ class CugaAcpAgent:
         mcp_servers: list[Any] | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
-        del mcp_servers, kwargs
+        del kwargs
         directories = tuple(additional_directories or ())
         if not _is_absolute_path(cwd) or any(not _is_absolute_path(path) for path in directories):
             raise RequestError.invalid_params()
@@ -120,6 +132,10 @@ class CugaAcpAgent:
             cwd=cwd,
             additional_directories=directories,
         )
+        configure = getattr(self._runner, "configure_session", None)
+        if callable(configure):
+            configure(record.context_id, mcp_servers or [])
+        self._store.add(session_id, record.context_id, cwd, directories)
         async with self._sessions_lock:
             self._sessions[session_id] = record
         return NewSessionResponse(sessionId=session_id)
@@ -164,6 +180,7 @@ class CugaAcpAgent:
                 record.active_task = current
                 record.pending_action_id = None
                 record.state = "running"
+            self._store.append(session_id, "user", message)
             return await self._run_turn(record, generation, message)
         except asyncio.CancelledError:
             if await self._is_cancelled(record, generation):
@@ -253,6 +270,9 @@ class CugaAcpAgent:
         if self._client is None:
             raise RequestError.internal_error()
         safe_text = _safe_event_text(data) or "CUGA requests permission to continue."
+        approval_code = data.get("approval_code") if isinstance(data, dict) else None
+        if isinstance(approval_code, str) and approval_code:
+            safe_text = f"{safe_text}\n\nCode to execute:\n{approval_code}"
         response = await self._client.request_permission(
             record.session_id,
             ToolCallUpdate(
@@ -260,6 +280,7 @@ class CugaAcpAgent:
                 kind="other",
                 status="pending",
                 title=safe_text,
+                rawInput={"code": approval_code} if approval_code else None,
             ),
             [
                 PermissionOption(optionId="allow-once", name="Allow once", kind="allow_once"),
@@ -316,6 +337,7 @@ class CugaAcpAgent:
                 content=TextContentBlock(type="text", text=text),
             ),
         )
+        self._store.append(record.session_id, "assistant", text)
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         del kwargs
@@ -348,14 +370,56 @@ class CugaAcpAgent:
         shutdown = getattr(self._runner, "shutdown", None)
         if callable(shutdown):
             await shutdown()
+        self._store.close()
 
-    async def load_session(self, **kwargs: Any) -> None:
+    async def load_session(
+        self,
+        cwd: str,
+        session_id: str,
+        mcp_servers: list[Any] | None = None,
+        **kwargs: Any,
+    ) -> LoadSessionResponse:
         del kwargs
-        raise RequestError.method_not_found("session/load")
+        if not _is_absolute_path(cwd):
+            raise RequestError.invalid_params()
+        saved = self._store.get(session_id)
+        if saved is None:
+            raise RequestError.resource_not_found()
+        async with self._sessions_lock:
+            if session_id not in self._sessions:
+                self._sessions[session_id] = SessionRecord(
+                    session_id=session_id,
+                    context_id=saved.context_id,
+                    cwd=saved.cwd,
+                    additional_directories=saved.additional_directories,
+                )
+        configure = getattr(self._runner, "configure_session", None)
+        if callable(configure):
+            configure(saved.context_id, mcp_servers or [])
+        if self._client is None:
+            raise RequestError.internal_error()
+        for role, text in self._store.messages(session_id):
+            chunk = UserMessageChunk if role == "user" else AgentMessageChunk
+            update_kind = "user_message_chunk" if role == "user" else "agent_message_chunk"
+            await self._client.session_update(
+                session_id,
+                chunk(sessionUpdate=update_kind, content=TextContentBlock(type="text", text=text)),
+            )
+        return LoadSessionResponse()
 
-    async def list_sessions(self, **kwargs: Any) -> None:
+    async def list_sessions(self, **kwargs: Any) -> ListSessionsResponse:
         del kwargs
-        raise RequestError.method_not_found("session/list")
+        return ListSessionsResponse(
+            sessions=[
+                SessionInfo(
+                    sessionId=saved.session_id,
+                    cwd=saved.cwd,
+                    additionalDirectories=list(saved.additional_directories),
+                    updatedAt=saved.updated_at or saved.created_at,
+                )
+                for saved in self._store.list()
+            ]
+        )
 
     async def set_session_mode(self, **kwargs: Any) -> None:
         del kwargs

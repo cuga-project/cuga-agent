@@ -111,6 +111,12 @@ class BoundedConnection:
     async def prompt(self, *args: Any, **kwargs: Any) -> Any:
         return await asyncio.wait_for(self._connection.prompt(*args, **kwargs), timeout=self._timeout)
 
+    async def list_sessions(self, *args: Any, **kwargs: Any) -> Any:
+        return await asyncio.wait_for(self._connection.list_sessions(*args, **kwargs), timeout=self._timeout)
+
+    async def load_session(self, *args: Any, **kwargs: Any) -> Any:
+        return await asyncio.wait_for(self._connection.load_session(*args, **kwargs), timeout=self._timeout)
+
     async def cancel(self, *args: Any, **kwargs: Any) -> Any:
         return await asyncio.wait_for(self._connection.cancel(*args, **kwargs), timeout=self._timeout)
 
@@ -131,9 +137,12 @@ async def spawn_cuga_agent(
     permission: str = "allow",
     observers: list[Any] | None = None,
     receive_timeout: float = 10,
+    store_folder: Path | None = None,
 ) -> AsyncIterator[tuple[FakeClient, Any, Any]]:
     """Launch the real CUGA stdio adapter with a deterministic injected runner."""
     command, env, root = cuga_agent_launch(scenario)
+    if store_folder is not None:
+        env["CUGA_FOLDER"] = str(store_folder)
     client = FakeClient(permission=permission)
     async with spawn_agent_process(
         client,
