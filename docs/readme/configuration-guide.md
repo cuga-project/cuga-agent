@@ -202,7 +202,7 @@ and omit `WXO_API_KEY` — local instances are auto-detected and don't require a
 
 ## Using CUGA in mainland China
 
-CUGA does not require OpenAI: any OpenAI-compatible endpoint works through the standard override, including Chinese providers. Two services are commonly unreachable from mainland China and have workarounds:
+CUGA does not require OpenAI: OpenAI-compatible endpoints work through the standard override, including Chinese providers. Two services are commonly unreachable from mainland China and have workarounds:
 
 - **PyPI is slow:** use a local mirror, for example `pip install cuga -i https://pypi.tuna.tsinghua.edu.cn/simple`. With uv, set `UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple` rather than adding a `uv.toml` to the project root, which would make uv ignore the `[tool.uv]` section of `pyproject.toml`. A changed index re-resolves `uv.lock`; don't commit that change. torch and torchvision still come from the PyTorch CPU index pinned in `pyproject.toml`, not the mirror.
 - **Hugging Face is blocked:** with the default `[storage.embedding] provider = "local"`, policies and knowledge download a small embedding model from Hugging Face on first use. Set `HF_ENDPOINT=https://hf-mirror.com`, or preload the models ahead of time with `uv run python src/scripts/preload_models.py` (which also needs `HF_ENDPOINT` set).
@@ -212,7 +212,7 @@ Example `.env` for Alibaba Model Studio (Qwen), replacing the default Groq lines
 ```dotenv
 AGENT_SETTING_CONFIG=settings.openai.toml
 OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-OPENAI_API_KEY=sk-xxxxxxxx
+OPENAI_API_KEY=your-dashscope-api-key  # pragma: allowlist secret
 MODEL_NAME=qwen-plus
 ```
 

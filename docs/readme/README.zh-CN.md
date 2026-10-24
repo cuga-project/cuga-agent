@@ -8,7 +8,7 @@
 
 **企业级智能体运行框架（agent harness）：自主可控、受策略管控的自动化。**
 
-CUGA 把业务请求转化为跨应用、API 和文档的实际操作。你可以把它部署在私有云或离线环境中，用细粒度的执行策略（policy）管控它的行为，并在自有基础设施上使用开源模型，按工作负载优化推理。
+CUGA 把业务请求转化为跨应用、API 和文档的实际操作。你可以把它部署在私有云或离线（物理隔离）环境中，用细粒度的执行策略（policy）管控它的行为，并在自有基础设施上使用开源模型。接入你的工具、配置工作流，并针对具体工作负载优化推理。
 
 **[快速开始](#快速开始)** · **[在中国大陆使用](#在中国大陆使用)** · **[文档（英文）](https://docs.cuga.dev)** · **[Discord](https://discord.gg/PN3Zdq4dEd)**
 
@@ -20,11 +20,11 @@ CUGA 把业务请求转化为跨应用、API 和文档的实际操作。你可�
 
 | 你的关注点 | CUGA 提供的能力 |
 | --- | --- |
-| **自主可控** | 在你自己的环境中运行；连接私有部署的模型和工具；可为离线部署预置辅助模型（如嵌入模型），推理所用的大模型及其推理服务需另行部署。 |
-| **执行策略** | 拦截不允许的意图（Intent Guard），对指定工具要求人工审批（Tool Approval），用 Playbook（标准操作流程）引导工作流，并配置工具级防护（ToolGuard）。 |
+| **自主可控** | 在你自己的环境中运行；连接私有部署的模型和工具；可为离线部署预先下载所需的辅助模型（如嵌入模型）；用于推理的大模型需自行部署推理服务。 |
+| **执行策略** | 拦截不被允许的用户意图（Intent Guard），调用指定工具前须经人工审批（Tool Approval），用 Playbook（标准操作流程）引导工作流，并配置工具级防护（ToolGuard）。 |
 | **推理效率** | 选用开源模型，调整思考模式（reasoning mode），自动筛选相关工具，设置工具调用预算，并可启用运行回执（Run Receipt），查看每次运行的 token 用量。 |
-| **快速交付** | 接入 MCP 服务器、OpenAPI 服务和 Python 工具；在 UI 中配置和测试智能体，再发布版本。 |
-| **定时与事件驱动自动化** | 通过单独部署的事件服务（events service），按定时计划、Webhook 或应用事件触发智能体运行。 |
+| **快速交付** | 接入 MCP 服务器、OpenAPI 服务和 Python 工具；在管理界面中配置并测试智能体，确认无误后再发布版本。 |
+| **定时与事件驱动自动化** | 通过单独部署的事件服务（events service），按定时计划、Webhook 或应用事件触发智能体运行，并在 Events Studio 中查看运行历史。 |
 | **经验复用** | 加载任务专用技能（Skills），并通过已配置的 Evolve 集成检索相关指导和用户偏好。 |
 | **多智能体** | CugaSupervisor 可以把任务分派给本地 CUGA 智能体和远程 A2A 智能体；CUGA 自身也可以作为 MCP 服务器或通过 A2A 供其他智能体调用，还可以通过 ACP（Agent Client Protocol）接入 Zed 等编辑器。 |
 
@@ -39,13 +39,13 @@ uv sync --python 3.12
 test -f .env || cp .env.example .env
 ```
 
-在 `.env` 中设置模型服务商、模型名和 API 密钥（参见英文文档：[模型配置](configuration-guide.md#supported-platforms)），然后启动：
+在 `.env` 中设置模型服务商、模型名和 API Key（参见英文文档：[模型配置](configuration-guide.md#supported-platforms)），然后启动：
 
 ```bash
 uv run cuga start manager --crm
 ```
 
-在浏览器中打开命令行输出的本地地址，进入 `/manage` 页面，即可试用 CRM 工具、配置策略，并在发布前测试草稿版本。
+在浏览器中打开终端中显示的本地地址，进入 `/manage` 页面，即可试用 CRM 工具、配置策略，并在发布前测试草稿版本。
 
 也可以作为 Python 库使用（运行前请先按上文配置模型）：
 
@@ -71,7 +71,7 @@ asyncio.run(main())
 
 ## 在中国大陆使用
 
-CUGA 不依赖 OpenAI 官方服务，任何兼容 OpenAI 接口的模型服务都可以接入，例如阿里云百炼（千问 Qwen）。
+CUGA 不依赖 OpenAI 官方服务，兼容 OpenAI 接口的模型服务均可接入，例如阿里云百炼（千问 Qwen）。
 
 **1. 使用国内 PyPI 镜像加速安装**（以[清华大学 TUNA 镜像](https://mirrors.tuna.tsinghua.edu.cn/help/pypi/)为例）：
 
@@ -101,11 +101,11 @@ export HF_ENDPOINT=https://hf-mirror.com
 AGENT_SETTING_CONFIG=settings.openai.toml
 OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 # 百炼控制台中创建的 API Key
-OPENAI_API_KEY=sk-xxxxxxxx
+OPENAI_API_KEY=your-dashscope-api-key  # pragma: allowlist secret
 MODEL_NAME=qwen-plus
 ```
 
-API Key 按地域绑定，需与 `OPENAI_BASE_URL` 的地域一致（上例为北京）。阿里云现推荐使用业务空间专属域名 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`（业务空间 ID 见控制台“业务空间详情”），上例中的原域名仍可正常使用。
+API Key 按地域绑定，需与 `OPENAI_BASE_URL` 的地域一致（上例为北京）。阿里云现推荐使用业务空间专属域名 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`（业务空间 ID 见控制台“业务空间详情”），上例中的通用域名仍可使用。
 
 DeepSeek 等其他兼容 OpenAI 接口的服务配置方式相同：把 `OPENAI_BASE_URL`、`OPENAI_API_KEY` 和 `MODEL_NAME` 换成对应服务的地址、密钥和模型名即可。
 
