@@ -709,11 +709,14 @@ export function ChatLanding() {
       if (!draftThread.hasSentFirstMessage) {
         await clearDraftSessionFiles(draftThread.threadId);
       }
-      await Promise.all(
-        threads.map((t) => api.deleteConversation(t.thread_id, effectiveChatAgentId)),
-      );
+      const toDelete = threads;
+      // Switch away first: the workspace panel polls the active thread, and a
+      // poll landing while it is being deleted brings its sandbox kernel back.
       setThreads([]);
       createAndActivateDraftThread();
+      await Promise.all(
+        toDelete.map((t) => api.deleteConversation(t.thread_id, effectiveChatAgentId)),
+      );
     } catch (err) {
       console.error(err);
       alert("Failed to remove conversations.");

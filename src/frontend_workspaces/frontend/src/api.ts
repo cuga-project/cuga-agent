@@ -790,3 +790,40 @@ export function deleteSessionKnowledgeCollection(
 // link) keep importing from one place. Delete the events layer and this block goes with it; nothing
 // above this line knows the events service exists.
 export * from "./events/api";
+
+// Code sandbox (execd) settings — independent of agent config draft/publish.
+export interface SandboxSettingsStatus {
+  enabled: boolean;
+  required_by_config: boolean;
+  overridden: boolean;
+  connection: "secret" | "manual";
+  secret: { dir: string | null; available: boolean; found?: boolean; has_url?: boolean; has_api_key?: boolean };
+  manual: { url: string; api_key_set: boolean };
+  effective_url?: string | null;
+  error: string | null;
+  reachable?: boolean | null;
+  status_code?: number;
+  probe_error?: string;
+  auth_error?: string;
+}
+
+export async function getSandboxSettings(): Promise<Response> {
+  return apiFetch(`/api/manage/sandbox`);
+}
+
+export async function putSandboxSettings(body: {
+  enabled: boolean;
+  url?: string;
+  api_key?: string;
+  clear_api_key?: boolean;
+}): Promise<Response> {
+  return apiFetch(`/api/manage/sandbox`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function refreshSandboxSettings(): Promise<Response> {
+  return apiFetch(`/api/manage/sandbox/refresh`, { method: "POST" });
+}

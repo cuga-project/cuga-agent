@@ -140,11 +140,15 @@ def _write_manifest_host(thread_id: Optional[str], manifest: dict[str, Any]) -> 
     path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
-async def _write_manifest_remote(thread_id: Optional[str], manifest: dict[str, Any]) -> None:
-    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.backends import RemoteSandboxBackend
-    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
+def _remote_workspace_backend(thread_id: Optional[str]):
+    """The filesystem backend for whichever sandbox holds the workspace."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.factory import sandbox_workspace_backend
 
-    backend = RemoteSandboxBackend(CodeExecutor._get_opensandbox_executor(), thread_id)
+    return sandbox_workspace_backend(thread_id)
+
+
+async def _write_manifest_remote(thread_id: Optional[str], manifest: dict[str, Any]) -> None:
+    backend = _remote_workspace_backend(thread_id)
     await backend.write_text(
         manifest_sandbox_path(), json.dumps(manifest, indent=2), operation="write_manifest"
     )
@@ -196,10 +200,7 @@ async def upload_workspace_bytes(
     workspace_base = local_base_dir()
 
     if workspace_tree_is_sandbox_backed():
-        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.backends import RemoteSandboxBackend
-        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
-
-        backend = RemoteSandboxBackend(CodeExecutor._get_opensandbox_executor(), tid)
+        backend = _remote_workspace_backend(tid)
         tmp_name = f".upload-{secrets.token_hex(8)}.tmp"
         tmp = write_bytes_under(workspace_base, data, tid, UPLOADS_SUBDIR, tmp_name)
         try:
@@ -250,13 +251,9 @@ async def delete_thread_uploads(thread_id: Optional[str]) -> None:
         logger.info(f"[workspace_upload] removed host uploads for thread={safe_tid}")
 
     if workspace_tree_is_sandbox_backed():
-        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
-
-        executor = CodeExecutor._get_opensandbox_executor()
-        interpreter = await executor.get_interpreter_for_thread(safe_tid)
         uploads_sp = f"{VIRTUAL_WORKSPACE_ROOT}/{UPLOADS_SUBDIR}"
         try:
-            await interpreter.sandbox.commands.run(f"rm -rf {uploads_sp}")
+            await _remote_workspace_backend(safe_tid).remove_tree(uploads_sp)
         except Exception as exc:
             logger.warning(f"[workspace_upload] sandbox remove uploads for thread={safe_tid}: {exc}")
 

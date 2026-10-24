@@ -58,6 +58,7 @@ import KnowledgePanel from "agentic_chat/KnowledgePanel";
 import VariablesSidebar from "agentic_chat/VariablesSidebar";
 import { ToolsConfig, type ConnectedApp, type ConnectedTool } from "./ToolsConfig";
 import { SecretsManager } from "./SecretsManager";
+import { SandboxSettings } from "./manage/SandboxSettings";
 import type { ToolEntry } from "./types/tools";
 import type { AgentItem } from "./ManageDashboard";
 import type { KnowledgeAttachmentSnapshot } from "./knowledge/useSessionKnowledgeAttachments";
@@ -2142,6 +2143,13 @@ export function ManagePage() {
                   )}
               </AccordionItem>
               )}
+
+              <AccordionItem title="Code Sandbox">
+                <SandboxSettings
+                  onError={(title, message) => addToast("error", title, message)}
+                  onSaved={(message) => addToast("success", "Code sandbox", message)}
+                />
+              </AccordionItem>
 
               {agentKind !== "supervisor" && (
               <AccordionItem title="Tools" open>

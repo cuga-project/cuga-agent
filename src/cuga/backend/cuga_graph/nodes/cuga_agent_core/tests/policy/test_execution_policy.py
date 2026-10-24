@@ -272,3 +272,37 @@ def test_no_deprecation_when_no_execution_section_and_legacy_flags_used() -> Non
     assert plan.python_backend == "e2b"
     # No deprecation without an execution.* override
     assert not any("deprecated" in f.lower() for f in plan.fallbacks)
+
+
+# ─── execd ──────────────────────────────────────────────────────────────────
+
+
+def test_execd_mode_is_reported_as_the_python_backend():
+    """The plan is what the logs and split-execution detection read.
+
+    execd arrives as ``advanced_features.sandbox_mode`` rather than an
+    ``execution.*`` setting, but it decides where Python runs, so a plan that
+    still said ``local`` would describe the wrong environment.
+    """
+    plan = ExecutionRouter.resolve(_settings(sandbox_mode="execd"))
+    assert plan.python_backend == "execd"
+
+
+def test_execd_shell_and_filesystem_follow_the_python():
+    plan = ExecutionRouter.resolve(
+        _settings(sandbox_mode="execd", enable_shell_tool=True, enable_filesystem_tools=True)
+    )
+    assert plan.shell_backend == "execd"
+    assert plan.filesystem_backend == "sandbox_execd"
+    # Everything is in one sandbox, so nothing is split.
+    assert plan.split_execution_active is False
+
+
+def test_execd_filesystem_is_sandboxed_without_the_shell_tool():
+    plan = ExecutionRouter.resolve(_settings(sandbox_mode="execd", enable_filesystem_tools=True))
+    assert plan.filesystem_backend == "sandbox_execd"
+
+
+def test_explicit_python_backend_still_outranks_execd():
+    plan = ExecutionRouter.resolve(_settings_with_execution(python_backend="e2b", sandbox_mode="execd"))
+    assert plan.python_backend == "e2b"
