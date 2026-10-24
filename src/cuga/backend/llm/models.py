@@ -1549,6 +1549,13 @@ class LLMManager:
         else:
             raise ValueError(f"Unsupported platform: {platform}")
 
+        context_window = model_settings.get("context_window")
+        if context_window not in (None, ""):
+            from cuga.backend.llm.context_window import set_context_window_override
+
+            # The deployment's window when no lookup finds it (gateway aliases, capped servers).
+            set_context_window_override(llm, context_window)
+            ensure_model_context_profile(llm, model_name)
         return llm
 
     def get_model(self, model_settings: Dict[str, Any]):
