@@ -1,31 +1,12 @@
-"""Checkpoint serializer with an explicit msgpack allowlist (issue #774, W16.1).
+"""Checkpoint serializer with an explicit msgpack allowlist (issue #774).
 
-``langgraph-checkpoint`` 4.x reconstructs non-builtin types from checkpoints
-only if they are allowlisted. Without a list it allows everything and warns
-(default) or blocks everything outside ``SAFE_MSGPACK_TYPES``
-(``LANGGRAPH_STRICT_MSGPACK=true``). A blocked type does **not** raise: it comes
-back as a plain dict (or the raw enum value), so a gap here shows up as subtle
-state corruption, not as an error.
-
-``CUGA_ALLOWED_MSGPACK_TYPES`` must therefore be complete on its own:
-
-- An explicit ``allowed_msgpack_modules`` list blocks unlisted types even when
-  strict mode is off.
-- ``StateGraph.compile()`` only merges its schema-derived allowlist into the
-  saver when strict mode is on, and only for that graph's own schemas. A parent
-  graph reading a subgraph's checkpoint (or a reader with no graph at all)
-  gets no merge.
-
-Entries are ``(module, ClassName)`` pairs, the form ``JsonPlusSerializer``
-matches on. Bare module names (or 1-tuples) are accepted silently but match
-nothing. The pairs are strings, so building them imports nothing.
-
-The list covers every pydantic model, dataclass and Enum reachable from the
-graph state schemas (``AgentState``, ``CugaSupervisorState``, ``CugaLiteState``).
-``tests/unit/storage/test_checkpoint_serde.py`` walks those schemas and the
-compiled graphs and fails when a reachable type is missing here. Types that
-only appear inside ``Any``-typed fields (for example tool results in
-``variables_storage``) are not covered.
+``langgraph-checkpoint`` 4.x rebuilds non-builtin types from checkpoints only if they
+are allowlisted. A blocked type does **not** raise: it comes back as a plain dict (or
+an Enum's raw value). An explicit list also blocks unlisted types when strict mode is
+off, so ``CUGA_ALLOWED_MSGPACK_TYPES`` must cover every pydantic model, dataclass and
+Enum reachable from the graph state schemas; ``tests/unit/storage/test_checkpoint_serde.py``
+fails when one is missing. Entries are ``(module, ClassName)`` pairs; bare module names
+match nothing.
 
 Keep this module import-light: ``langgraph`` is imported inside the function.
 """
@@ -71,21 +52,8 @@ CUGA_ALLOWED_MSGPACK_TYPES: tuple[tuple[str, str], ...] = (
 )
 
 
-def build_checkpoint_serde(*, encrypt: bool | None = None) -> SerializerProtocol:
-    """Return the serializer every CUGA checkpointer should use.
-
-    ``encrypt`` is the seam for W16.2 (optional ``EncryptedSerializer``).
-    ``None`` will mean "follow ``storage.checkpoint_encryption``" once that
-    setting exists; until then ``None`` and ``False`` both return the plain
-    serializer, and ``True`` raises instead of silently storing plaintext.
-    """
+def build_checkpoint_serde() -> SerializerProtocol:
+    """Return the serializer every durable CUGA checkpointer uses."""
     from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
-    serde = JsonPlusSerializer(allowed_msgpack_modules=CUGA_ALLOWED_MSGPACK_TYPES)
-    return _maybe_encrypt(serde, encrypt)
-
-
-def _maybe_encrypt(serde: SerializerProtocol, encrypt: bool | None) -> SerializerProtocol:
-    if encrypt:
-        raise NotImplementedError("Checkpoint encryption is not implemented yet (issue #774, W16.2).")
-    return serde
+    return JsonPlusSerializer(allowed_msgpack_modules=CUGA_ALLOWED_MSGPACK_TYPES)
