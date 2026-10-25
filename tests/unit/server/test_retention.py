@@ -40,6 +40,7 @@ def lease():
 def saver():
     saver = MagicMock()
     saver.adelete_thread = AsyncMock()
+    saver.aget_tuple = AsyncMock(return_value=None)
     return saver
 
 
