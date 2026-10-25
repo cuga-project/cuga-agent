@@ -640,10 +640,9 @@ def format_time_custom():
 
 
 async def _open_checkpointer() -> None:
-    """Create the shared checkpointer handle from ``settings.storage`` (issue #774, W02.3).
+    """Create the shared checkpointer handle from ``settings.storage`` (issue #774).
 
-    Never falls back to memory: a durable saver that cannot be opened fails startup,
-    because silently running on memory would lose every conversation on restart.
+    Never falls back to memory: a durable saver that cannot be opened fails startup.
     """
     from cuga.backend.storage.checkpoint import create_checkpointer
 
@@ -651,25 +650,13 @@ async def _open_checkpointer() -> None:
     try:
         app_state.checkpointer_handle = await create_checkpointer(storage)
     except Exception as exc:
-        checkpointer = getattr(storage, "checkpointer", None)
-        mode = getattr(storage, "mode", None) or "local"
-        if checkpointer == "durable" and mode == "prod":
-            hint = (
-                "check that storage.postgres_url points at a reachable Postgres whose user has "
-                "DDL rights, or set storage.checkpointer=memory"
-            )
-        elif checkpointer == "durable":
-            hint = "check that storage.checkpoint_db_path is writable, or set storage.checkpointer=memory"
-        else:
-            hint = "check the [storage] settings"
         # Type name only: driver errors can echo connection details.
         logger.error(
             "Startup aborted: could not open the checkpointer (storage.checkpointer={}, storage.mode={}): {}. "
-            "Fix: {}.",
-            checkpointer,
-            mode,
+            "Check the [storage] settings, or set storage.checkpointer=memory.",
+            getattr(storage, "checkpointer", None),
+            getattr(storage, "mode", None) or "local",
             type(exc).__name__,
-            hint,
         )
         raise
 
