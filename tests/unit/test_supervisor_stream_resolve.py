@@ -473,7 +473,7 @@ def _shared_saver_state(saver):
 
 @pytest.mark.asyncio
 async def test_published_rebuild_after_invalidation_keeps_thread_state():
-    """A publish invalidation rebuilds the graph; the shared saver keeps the thread (#774 W04.2)."""
+    """A publish invalidation rebuilds the graph; the shared saver keeps the thread (#774)."""
     from langgraph.checkpoint.memory import MemorySaver
 
     from cuga.backend.server.manage_routes.helpers import invalidate_agent_graph_cache

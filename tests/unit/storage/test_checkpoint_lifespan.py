@@ -133,7 +133,7 @@ async def test_later_startup_failure_still_closes_handle():
 
 
 async def test_startup_published_agent_writes_to_the_shared_saver(monkeypatch):
-    """The startup build of ``app_state.agent`` compiles on the lifespan saver (W04.2).
+    """The startup build of ``app_state.agent`` compiles on the lifespan saver.
 
     Judged by storage, not identity: a strict-msgpack compile wraps the saver in a
     ``with_allowlist`` clone, so ``graph.checkpointer is saver`` does not hold.

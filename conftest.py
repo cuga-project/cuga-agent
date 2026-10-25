@@ -6,7 +6,7 @@ import os
 import shutil
 from pathlib import Path
 
-# Strict msgpack checkpoint deserialization for every test (issue #774, W16.1),
+# Strict msgpack checkpoint deserialization for every test (issue #774),
 # so a state type missing from CUGA_ALLOWED_MSGPACK_TYPES fails the tests instead
 # of loading as a dict. langgraph reads this once at import time, so it must be
 # set before anything imports langgraph; this root conftest loads before the
