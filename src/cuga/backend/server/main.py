@@ -2,36 +2,40 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
+import os
 import platform
 import re
 import shutil
-import os
 import subprocess
 import tempfile
 import uuid
-import yaml
-import httpx
-import json
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, List, Dict, Any, Union, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+
+import httpx
+import yaml
 
 if TYPE_CHECKING:
+    from langgraph.checkpoint.base import BaseCheckpointSaver
+
     from cuga.backend.activity_tracker.tracker import ActivityTracker
     from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
     from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
     from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph as DynamicAgentGraph
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
     from cuga.backend.cuga_graph.state.agent_state import AgentState
     from cuga.backend.cuga_graph.utils.agent_loop import OutputFormat
-    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
     from cuga.backend.storage.checkpoint import CheckpointerHandle
-    from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from pathlib import Path
 import traceback
-from pydantic import BaseModel, ValidationError
-from fastapi import Depends, FastAPI, Request, HTTPException, Query, File, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, RedirectResponse, Response
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from loguru import logger
+from pydantic import BaseModel, ValidationError
 
 # Import openlit_init BEFORE any other Cuga imports.
 # This triggers process-level initialization of OpenLit observability (if enabled).
@@ -40,38 +44,22 @@ from fastapi.middleware.cors import CORSMiddleware
 # picks up the correct resource attributes (agent.id, service.version, etc.).
 # The module also calls init_openlit() at import time to set up instrumentation.
 import cuga.backend.observability.openlit_init as _openlit_init  # noqa: F401
-
-from loguru import logger
-
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+    assert_resolved_path_under,
+)
+from cuga.backend.server import agent_registry, agents_routes, manage_routes, secrets_routes
+from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
+from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled, has_manage_access
+from cuga.backend.server.auth.models import TokenResponse, UserInfo
+from cuga.backend.server.conversation_history import ThreadOwnershipError, get_conversation_db
 from cuga.backend.server.error_responses import (
     log_error_ref,
     safe_error_payload,
     safe_error_response,
 )
-from cuga.config import (
-    get_app_name_from_url,
-    get_user_data_path,
-    settings,
-    PACKAGE_ROOT,
-    LOGGING_DIR,
-    TRACES_DIR,
-)
-from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
-    assert_resolved_path_under,
-)
-from cuga.backend.server import agent_registry
-from cuga.backend.server import agents_routes
-from cuga.backend.server import manage_routes
-from cuga.backend.server import secrets_routes
-from cuga.backend.server.workspace_upload import (
-    MAX_UPLOAD_BYTES,
-    delete_thread_uploads,
-    fetch_host_workspace_tree,
-    format_upload_context,
-    resolve_host_workspace_path,
-    sanitize_upload_filename,
-    upload_workspace_bytes,
-    validate_upload_content,
+from cuga.backend.server.tool_guard_generation import (
+    build_tool_guard_generation_agent,
+    generate_tool_guards_for_policy,
 )
 from cuga.backend.server.workspace_sandbox import (
     NATIVE_WORKSPACE_ROOT,
@@ -85,14 +73,24 @@ from cuga.backend.server.workspace_sandbox import (
     workspace_tree_is_native_backed,
     workspace_tree_is_sandbox_backed,
 )
-from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
-from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled, has_manage_access
-from cuga.backend.server.auth.models import TokenResponse, UserInfo
-from cuga.backend.server.tool_guard_generation import (
-    build_tool_guard_generation_agent,
-    generate_tool_guards_for_policy,
+from cuga.backend.server.workspace_upload import (
+    MAX_UPLOAD_BYTES,
+    delete_thread_uploads,
+    fetch_host_workspace_tree,
+    format_upload_context,
+    resolve_host_workspace_path,
+    sanitize_upload_filename,
+    upload_workspace_bytes,
+    validate_upload_content,
 )
-from cuga.backend.server.conversation_history import ThreadOwnershipError, get_conversation_db
+from cuga.config import (
+    LOGGING_DIR,
+    PACKAGE_ROOT,
+    TRACES_DIR,
+    get_app_name_from_url,
+    get_user_data_path,
+    settings,
+)
 
 # Default user ID for conversation history
 DEFAULT_USER_ID = "default_user"
@@ -226,6 +224,72 @@ async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id:
     provider = getattr(app_state, "knowledge_provider", None)
     if provider:
         provider.clear_session(thread_id)
+
+
+async def _delete_child_checkpoints(
+    *,
+    saver: Any,
+    agent_id: str,
+    conversation_id: str,
+    user_id: str,
+) -> None:
+    """Delete conversation-scoped supervisor child checkpoints for one conversation.
+
+    Called from the delete endpoint and the retention sweep so that child threads on the
+    shared saver are removed before (or together with) their parent.  All errors are
+    swallowed after logging so callers remain atomic even when a sub-agent config is missing.
+    """
+    try:
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
+            MEMORY_SCOPE_CONVERSATION,
+            child_checkpoint_id,
+            normalize_memory_scope,
+        )
+        from cuga.backend.server.config_store import load_config
+        from cuga.config import get_tenant_id, settings
+
+        config, _ = await load_config(None, agent_id)
+        if not config:
+            return
+        supervisor_cfg = config.get("supervisor") or {}
+        sub_agents = supervisor_cfg.get("subAgents") or []
+        tenant_id = get_tenant_id()
+        for entry in sub_agents:
+            if entry.get("kind") != "internal":
+                continue
+            ref = entry.get("ref") or ""
+            if not ref:
+                continue
+            ref_config, _ = await load_config(None, ref)
+            scope_raw = None
+            if ref_config:
+                scope_raw = (
+                    (ref_config.get("feature_flags") or {}).get("sub_agent_memory_scope")
+                    or (ref_config.get("advanced_features") or {}).get("sub_agent_memory_scope")
+                )
+            scope = normalize_memory_scope(
+                scope_raw
+                if scope_raw is not None
+                else getattr(getattr(settings, "supervisor", None), "sub_agent_memory_scope", None)
+            )
+            if scope != MEMORY_SCOPE_CONVERSATION:
+                continue
+            child_key = child_checkpoint_id(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                supervisor_id=agent_id,
+                parent_thread_id=conversation_id,
+                sub_agent_id=ref,
+            )
+            try:
+                await saver.adelete_thread(child_key)
+                logger.debug("deleted child checkpoint for sub-agent {}", ref)
+            except Exception as exc:
+                logger.warning(
+                    "failed to delete child checkpoint for sub-agent {}: {}", ref, type(exc).__name__
+                )
+    except Exception as exc:
+        logger.warning("_delete_child_checkpoints failed: {}", type(exc).__name__)
 
 
 def _knowledge_config(app_state: "AppState" | None):
@@ -459,8 +523,8 @@ else:
     print("📁 Using file system assets (embedded assets disabled)")
 
 try:
-    from agent_analytics.instrumentation.configs import OTLPCollectorConfig
     from agent_analytics.instrumentation import agent_analytics_sdk
+    from agent_analytics.instrumentation.configs import OTLPCollectorConfig
 except ImportError as e:
     logger.warning(f"Failed to import agent_analytics: {e}")
     OTLPCollectorConfig = None
@@ -706,6 +770,10 @@ async def _build_published_default_agent(
     )
     await agent.build_graph(checkpointer=app_state.checkpointer)
     agent._checkpoint_config_version = str(startup_version or 0)
+    if startup_config is not None:
+        from cuga.backend.server.config_fingerprint import compute_fingerprint
+
+        agent._config_fingerprint = compute_fingerprint(startup_config)
     return agent
 
 
@@ -1005,9 +1073,9 @@ async def _app_lifespan(app: FastAPI):
 
     if os.getenv("CUGA_MANAGER_MODE", "").lower() in ("true", "1", "yes", "on"):
         try:
+            from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
             from cuga.backend.server.config_store import load_config
             from cuga.backend.server.managed_mcp import get_managed_mcp_path, write_managed_mcp_yaml
-            from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
 
             config, version = await load_config(None)
             app_state.config_version = version
@@ -1052,10 +1120,10 @@ async def _app_lifespan(app: FastAPI):
     # re-introduce the startup latency that was removed by this optimisation.
     from cuga.backend.activity_tracker.tracker import ActivityTracker
     from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
+    from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
     from cuga.backend.browser_env.browser.gym_obs.http_stream_comm import (
         ChromeExtensionCommunicatorHTTP,
     )
-    from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
     from cuga.backend.browser_env.browser.open_ended_async import OpenEndedTaskAsync
     from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph as DynamicAgentGraph
     from cuga.cli import start_extension_browser_if_configured
@@ -1293,11 +1361,33 @@ async def _app_lifespan(app: FastAPI):
     await warm_shortlister_catalogue()
 
     from cuga.backend.evolve.deleted_sources import source_deletion_delivery_loop
-
     from cuga.backend.evolve.integration import EvolveIntegration
 
     if await EvolveIntegration.is_configured():
         app_state.background_tasks.append(asyncio.create_task(source_deletion_delivery_loop()))
+
+    # Checkpoint retention sweep: prod + durable checkpointer only; 0 days disables it.
+    storage_settings = settings.storage
+    retention_days = int(getattr(storage_settings, "checkpoint_retention_days", 0) or 0)
+    if (
+        getattr(storage_settings, "mode", "local") == "prod"
+        and getattr(storage_settings, "checkpointer", "memory") == "durable"
+        and retention_days > 0
+        and app_state.checkpointer_handle is not None
+    ):
+        from cuga.backend.server.retention import run_retention_loop
+
+        prune_interval_minutes = int(getattr(storage_settings, "checkpoint_prune_interval_minutes", 60) or 60)
+        app_state.background_tasks.append(
+            asyncio.create_task(
+                run_retention_loop(
+                    handle=app_state.checkpointer_handle,
+                    checkpoint_thread_id_fn=_checkpoint_thread_id,
+                    interval_seconds=prune_interval_minutes * 60,
+                    retention_days=retention_days,
+                )
+            )
+        )
 
     yield
 
@@ -1706,6 +1796,32 @@ def apply_request_user_context(state: AgentState, user_id: Optional[str]) -> Non
     state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
 
 
+async def _cancel_pending_interrupt(graph: Any, checkpoint_key: str) -> bool:
+    """Cancel a paused turn without touching its history.
+
+    The pending node is recorded as having run, with its ``hitl_action`` cleared so the next turn
+    does not re-raise the old approval, and whatever it would have scheduled is then dropped. That
+    works for both a static ``interrupt_after`` breakpoint and ``WaitForResponse``'s dynamic
+    ``interrupt()``. Resuming instead is not an option: ``WaitForResponse`` would parse a
+    cancellation as an ``ActionResponse`` and run the old approved action.
+
+    Returns True when no node is pending afterwards.
+    """
+    from langgraph.graph import END
+
+    config = {"configurable": {"thread_id": checkpoint_key}}
+    try:
+        snapshot = await graph.aget_state(config)
+        if not snapshot.next:
+            return True
+        await graph.aupdate_state(config, {"hitl_action": None}, as_node=snapshot.next[0])
+        await graph.aupdate_state(config, None, as_node=END)
+        return not (await graph.aget_state(config)).next
+    except Exception as exc:
+        logger.warning("Cancelling the pending interrupt failed: {}", type(exc).__name__)
+        return False
+
+
 async def event_stream(
     query: str,
     api_mode=False,
@@ -1726,38 +1842,70 @@ async def event_stream(
     checkpoints apart. ``issued_thread_id`` is set when ``/stream`` created the conversation, and is
     sent to the client as the first event.
     """
+    from langchain_core.messages import AIMessage
+
     from cuga.backend.activity_tracker.tracker import ActivityTracker
+    from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
     from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
     from cuga.backend.cuga_graph.utils.agent_loop import AgentLoop, AgentLoopAnswer, StreamEvent
     from cuga.backend.cuga_graph.utils.controller import AgentRunner
-    from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
-    from langchain_core.messages import AIMessage
+    from cuga.backend.server.config_fingerprint import ConfigDecision, classify_config_change
 
-    checkpoint_config_key = "published_config_version"
-
-    async def _stale_pending_checkpoint(snapshot: Any) -> bool:
-        """A paused action may only resume on the published config that created it."""
-        expected = getattr(run_agent, "_checkpoint_config_version", None)
-        if expected is None or not getattr(snapshot, "next", None):
-            return False
-        values = getattr(snapshot, "values", None) or {}
-        scope = values.get("service_scope") or {}
-        if not isinstance(scope, dict) or scope.get(checkpoint_config_key) != expected:
-            return True
-        # A publish may have committed after /stream resolved its graph but before
-        # this request reached the checkpoint. Check the store as well as the graph.
-        try:
-            from cuga.backend.server.config_store import load_config
-
-            _, current_version = await load_config(None, runtime_agent_id)
-        except Exception as exc:
-            logger.warning("Could not verify pending approval configuration: {}", type(exc).__name__)
-            return True
-        return str(current_version or 0) != expected
-
+    published_version_key = "published_config_version"
+    fingerprint_key = "config_fingerprint"
     stale_approval_message = (
         "This pending approval belongs to an older agent configuration. Start a new conversation to continue."
     )
+    config_changed_message = (
+        "The agent configuration changed, so the pending approval was cancelled. Please repeat your request."
+    )
+
+    def _notice(name: str, data: str) -> str:
+        return StreamEvent(name=name, data=data).format(app_state.output_format, thread_id=thread_id)
+
+    async def _reconcile_config(snapshot: Any, is_resume: bool) -> tuple[Any, List[str], bool]:
+        """Apply the config-change decision table to a loaded checkpoint (#774, W10.3).
+
+        Returns the checkpoint to continue from (re-read after a cancel), the events to send
+        before the graph runs, and whether the request ends with those events. The events are
+        notices, not conversation content: they never enter the stream-event buffer.
+        """
+        fingerprint = getattr(run_agent, "_config_fingerprint", None)
+        expected_version = getattr(run_agent, "_checkpoint_config_version", None)
+        values = getattr(snapshot, "values", None) or {}
+        scope = values.get("service_scope")
+        scope = scope if isinstance(scope, dict) else {}
+        pending = bool(getattr(snapshot, "next", None))
+        decision = classify_config_change(scope, fingerprint, pending, expected_version)
+        if decision is ConfigDecision.NONE and pending and expected_version is not None:
+            # A publish may have committed after /stream resolved its graph but before this
+            # request reached the checkpoint. Check the store as well as the graph.
+            try:
+                from cuga.backend.server.config_store import load_config
+
+                _, stored_version = await load_config(None, runtime_agent_id)
+                if str(stored_version or 0) != expected_version:
+                    decision = ConfigDecision.CANCEL_PENDING
+            except Exception as exc:
+                logger.warning("Could not verify pending approval configuration: {}", type(exc).__name__)
+                decision = ConfigDecision.CANCEL_PENDING
+
+        if decision is ConfigDecision.NOTICE:
+            stamped = scope.get(fingerprint_key) or {}
+            payload = {
+                "previous_agent_hash": str(stamped.get("agent_hash", ""))[:12],
+                "current_agent_hash": fingerprint.short_hash(),
+            }
+            return snapshot, [_notice("config_changed", json.dumps(payload))], False
+        if decision is not ConfigDecision.CANCEL_PENDING:
+            return snapshot, [], False
+        if not await _cancel_pending_interrupt(run_agent.graph, checkpoint_thread_id):
+            return snapshot, [_notice("Error", stale_approval_message)], True
+        cancelled = _notice("pending_cancelled", json.dumps({"reason": "config_changed"}))
+        if is_resume:
+            return snapshot, [cancelled, _notice("Answer", config_changed_message)], True
+        refreshed = await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
+        return refreshed, [cancelled], False
 
     memory_turn_id = str(uuid.uuid4()) if not resume else ""
     run_agent = agent if agent is not None else app_state.agent
@@ -1793,6 +1941,7 @@ async def event_stream(
 
     # Create a local state object - retrieve from LangGraph if resuming or if thread_id exists, otherwise create new
     local_state = None
+    config_notices: List[str] = []
 
     # Create local tracker instance
     local_tracker = ActivityTracker()
@@ -1808,10 +1957,10 @@ async def event_stream(
                 snapshot = await run_agent.graph.aget_state(
                     {"configurable": {"thread_id": checkpoint_thread_id}}
                 )
-                if await _stale_pending_checkpoint(snapshot):
-                    yield StreamEvent(name="Error", data=stale_approval_message).format(
-                        app_state.output_format, thread_id=thread_id
-                    )
+                snapshot, config_notices, finished = await _reconcile_config(snapshot, False)
+                if finished:
+                    for notice in config_notices:
+                        yield notice
                     return
                 latest_state_values = snapshot.values
                 if latest_state_values:
@@ -1847,24 +1996,30 @@ async def event_stream(
         # For resume, fetch state from LangGraph
         if thread_id:
             snapshot = await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
-            if await _stale_pending_checkpoint(snapshot):
-                yield StreamEvent(name="Error", data=stale_approval_message).format(
-                    app_state.output_format, thread_id=thread_id
-                )
+            snapshot, config_notices, finished = await _reconcile_config(snapshot, True)
+            if finished:
+                for notice in config_notices:
+                    yield notice
                 return
             latest_state_values = snapshot.values
             if latest_state_values:
                 local_state = AgentState(**latest_state_values)
                 local_state.thread_id = thread_id
 
+    for notice in config_notices:
+        yield notice
+
     if local_state:
         config_version = getattr(run_agent, "_checkpoint_config_version", None)
+        fingerprint = getattr(run_agent, "_config_fingerprint", None)
         if resume:
             memory_turn_id = str((local_state.service_scope or {}).get("memory_turn_id") or "")
         apply_request_user_context(local_state, user_id)
         local_state.service_scope.update({"agent_id": runtime_agent_id, "memory_turn_id": memory_turn_id})
         if not resume and config_version is not None:
-            local_state.service_scope[checkpoint_config_key] = config_version
+            local_state.service_scope[published_version_key] = config_version
+        if not resume and fingerprint is not None:
+            local_state.service_scope[fingerprint_key] = fingerprint.to_scope_dict()
         # Route this run to the CugaSupervisor node when the resolved agent is a supervisor
         # graph (issue #101). Only override when True so non-supervisor agents keep falling
         # back to the global settings.supervisor.enabled default.
@@ -2371,7 +2526,6 @@ app.include_router(agents_routes.router)
 # knows a URL: it detects `/automate …` and POSTs it. Inert when EVENTS_API_URL is unset.
 from cuga.backend.server import events_bridge  # noqa: E402
 
-
 # ── the Studio's admin proxy ───────────────────────────────────────────────────────────────────
 # The eventing service's /api/events/admin/* endpoints now require X-Gateway-Token, because they
 # previously trusted a caller-asserted identity — an unauthenticated POST could create an admin.
@@ -2860,9 +3014,8 @@ async def _resolve_stream_agent(
                 )
 
             from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
-            from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
-
             from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
+            from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
 
             agent_meta = config.get("agent") or {}
             kind = agent_meta.get("kind") or "single"
@@ -2881,6 +3034,9 @@ async def _resolve_stream_agent(
                 agents_dict = await build_agents_from_stored_subagents(
                     supervisor_cfg.get("subAgents") or [],
                     use_draft=use_draft,
+                    # Published builds share the lifespan saver so sub-agent state survives
+                    # restarts. Draft builds keep their own MemorySaver.
+                    checkpointer=app_state.checkpointer if not use_draft else None,
                 )
 
                 # Supervisors have no LLM UI section (that panel is hidden for kind=supervisor), so a
@@ -2942,6 +3098,9 @@ async def _resolve_stream_agent(
             else:
                 await graph.build_graph(checkpointer=app_state.checkpointer)
                 graph._checkpoint_config_version = str(config_version or 0)
+                from cuga.backend.server.config_fingerprint import compute_fingerprint
+
+                graph._config_fingerprint = compute_fingerprint(config)
             # Another request may have finished first, or a draft-save/publish may have
             # invalidated this key while we were building. The cache only dedupes builds:
             # published state lives in the shared saver, not in the graph instance, so a
@@ -3119,9 +3278,9 @@ async def _leased_turn(body, lease, token, thread_id: str, user_id: str, graph, 
             try:
                 snapshot = await graph.aget_state({"configurable": {"thread_id": checkpoint_key}})
                 if snapshot and (snapshot.values or snapshot.next):
-                    await get_conversation_db().set_thread_status(
-                        thread_id, user_id, "active", only_from="new"
-                    )
+                    conversation_db = get_conversation_db()
+                    await conversation_db.set_thread_status(thread_id, user_id, "active", only_from="new")
+                    await conversation_db.mark_last_turn_at(thread_id, user_id)
             except Exception as exc:
                 logger.error(f"Could not mark conversation active: {type(exc).__name__}")
 
@@ -3187,6 +3346,18 @@ async def stop(request: Request, current_user: Optional[UserInfo] = Depends(requ
         if thread_id not in app_state.stop_events:
             app_state.stop_events[thread_id] = asyncio.Event()
         app_state.stop_events[thread_id].set()
+        # The turn may be running on another replica: flag its lease so that replica stops it too.
+        try:
+            from cuga.backend.server.thread_lease import get_thread_lease
+
+            checkpoint_key = _checkpoint_thread_id(
+                thread_id,
+                _workspace_user_id(current_user),
+                owner_agent or _runtime_agent_id(request) or "cuga-default",
+            )
+            await get_thread_lease().request_stop(checkpoint_key)
+        except Exception as e:
+            logger.warning(f"Failed to request cross-replica stop for {thread_id}: {type(e).__name__}")
         try:
             from cuga.backend.agent_spawn import clear_runtime_caches
 
@@ -3524,6 +3695,12 @@ async def delete_conversation(
         if handle is not None:
             saver = handle.saver
             await saver.adelete_thread(checkpoint_key)
+            await _delete_child_checkpoints(
+                saver=saver,
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+                user_id=user_id,
+            )
         await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
         await delete_thread_uploads(conversation_id)
         if not await conversation_db.delete_thread(agent_id, conversation_id, user_id):
@@ -4062,7 +4239,7 @@ async def get_tools_list(
     """
     try:
         # Check for draft mode from query parameter or header
-        from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apps, get_apis
+        from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apis, get_apps
 
         use_draft = False
         if draft is not None:
@@ -4162,7 +4339,7 @@ async def get_tools_list(
 async def get_tools_status(current_user: Optional[UserInfo] = Depends(require_chat_access)):
     """Endpoint to retrieve tools connection status."""
     try:
-        from cuga.backend.tools_env.registry.utils.api_utils import get_apps, get_apis
+        from cuga.backend.tools_env.registry.utils.api_utils import get_apis, get_apps
 
         # Get available apps and their tools
         apps = await get_apps()
@@ -4306,8 +4483,9 @@ async def get_agent_state(
 async def get_subagents_config(current_user: Optional[UserInfo] = Depends(require_auth)):
     """Endpoint to retrieve sub-agents configuration."""
     try:
-        from cuga.config import settings
         import os
+
+        from cuga.config import settings
 
         # Check if supervisor is enabled
         supervisor_enabled = getattr(settings.supervisor, 'enabled', False)
