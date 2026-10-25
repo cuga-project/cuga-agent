@@ -1,7 +1,7 @@
 """Child process for ``test_sdk_durable_checkpointer.py`` (#774, W15.4). Not a test module.
 
 Run as ``python _durable_checkpointer_child.py <step> <db_path> <thread_ids>``. Each
-step opens ``cuga.checkpointers.sqlite(db_path)``, builds a fresh ``CugaAgent`` on a
+step opens an ``AsyncSqliteSaver`` on ``db_path``, builds a fresh ``CugaAgent`` on a
 fake chat model, does one thing on the comma-separated thread ids and prints one ``RESULT_JSON: {...}``
 line. Every run is a new interpreter, so whatever a step reads from the thread came
 from the SQLite file, not from memory.
@@ -164,8 +164,11 @@ async def _run(step: str, db_path: str, thread_arg: str) -> dict:
     from contextlib import nullcontext
     from unittest.mock import patch
 
-    import cuga
+    import aiosqlite
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
     from cuga import CugaAgent
+    from cuga.backend.storage.checkpoint.serde import build_checkpoint_serde
 
     out: dict = {"step": step}
     hitl = step.startswith("hitl_")
@@ -178,7 +181,8 @@ async def _run(step: str, db_path: str, thread_arg: str) -> dict:
         if hitl
         else nullcontext()
     )
-    async with cuga.checkpointers.sqlite(db_path) as cp:
+    async with aiosqlite.connect(db_path) as conn:
+        saver = AsyncSqliteSaver(conn, serde=build_checkpoint_serde())
         with stand_in:
             agent = CugaAgent(
                 tools=[],
@@ -186,7 +190,7 @@ async def _run(step: str, db_path: str, thread_arg: str) -> dict:
                 auto_load_policies=False,
                 enable_knowledge=False,
                 enable_skills=False,
-                checkpointer=cp.saver,
+                checkpointer=saver,
             )
             out["saver"] = type(agent.graph.checkpointer).__name__
 

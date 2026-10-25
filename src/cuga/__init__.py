@@ -51,8 +51,6 @@ __all__ = [
     "client_adaptation_hash",
     "client_glossary_hash",
     "expand_query_with_glossary",
-    # Durable checkpointers for CugaAgent(checkpointer=...) (submodule).
-    "checkpointers",
 ]
 
 # For type checkers and IDEs — not executed at runtime.
@@ -79,10 +77,8 @@ if TYPE_CHECKING:
         PolicyDecisionStage,
     )
     from cuga.backend.knowledge.query_expansion import expand_query_with_glossary
-    from cuga import checkpointers
 
 # Lazy-loading map: attribute name -> (module, attribute).
-# An attribute of None exports the module itself (a lazy submodule).
 # All public exports are deferred to first access via __getattr__ (PEP 562).
 _import_map: dict = {
     "CugaAgent": ("cuga.sdk", "CugaAgent"),
@@ -141,7 +137,6 @@ _import_map: dict = {
         "cuga.backend.cuga_graph.policy.models",
         "PolicyDecisionStage",
     ),
-    "checkpointers": ("cuga.checkpointers", None),
 }
 
 
@@ -157,7 +152,7 @@ def __getattr__(name: str):
 
         module_name, attr_name = _import_map[name]
         module = importlib.import_module(module_name)
-        attr = module if attr_name is None else getattr(module, attr_name)
+        attr = getattr(module, attr_name)
         # Cache in module namespace — subsequent accesses skip __getattr__.
         globals()[name] = attr
         return attr

@@ -1,4 +1,4 @@
-"""A ``CugaAgent`` on ``cuga.checkpointers.sqlite`` resumes a thread in a new process (#774, W15.4).
+"""A ``CugaAgent`` on an ``AsyncSqliteSaver`` resumes a thread in a new process (#774, W15.4).
 
 Each step runs ``_durable_checkpointer_child.py`` in its own interpreter
 (``sys.executable``, the parent's environment), so the only thing two steps share
