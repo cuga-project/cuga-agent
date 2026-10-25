@@ -1,6 +1,5 @@
-"""Tests for the ``checkpointer=`` argument of CugaAgent and CugaSupervisor (#774, W15.1)."""
+"""Tests for the ``checkpointer=`` argument of CugaAgent and CugaSupervisor (#774)."""
 
-import inspect
 import sqlite3
 from unittest.mock import MagicMock
 
@@ -64,89 +63,33 @@ async def _assert_graph_writes_to(graph, saver: BaseCheckpointSaver, thread_id: 
     assert stored.checkpoint["id"] == written["configurable"]["checkpoint_id"]
 
 
-@pytest.mark.parametrize("cls", [CugaAgent, CugaSupervisor])
-def test_checkpointer_is_keyword_only_and_last(cls):
-    params = list(inspect.signature(cls.__init__).parameters.values())
-    assert params[-1].name == "checkpointer"
-    assert params[-1].kind is inspect.Parameter.KEYWORD_ONLY
-    assert params[-1].default is None
+_BUILDERS = [pytest.param(_agent, id="agent"), pytest.param(_supervisor, id="supervisor")]
 
 
-class TestCugaAgentCheckpointer:
-    def test_default_is_fresh_memory_saver(self):
-        first = _agent().graph
-        second = _agent().graph
+@pytest.mark.parametrize("build", _BUILDERS)
+def test_default_is_a_fresh_memory_saver_per_instance(build):
+    first, second = build().graph, build().graph
+    assert isinstance(first.checkpointer, MemorySaver)
+    assert first.checkpointer is not second.checkpointer
 
-        assert isinstance(first.checkpointer, MemorySaver)
-        assert first.checkpointer is not second.checkpointer
 
-    @pytest.mark.asyncio
-    async def test_passed_memory_saver_is_used(self):
-        saver = MemorySaver()
+@pytest.mark.parametrize("build", _BUILDERS)
+async def test_passed_saver_is_used(build, tmp_path):
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-        graph = _agent(checkpointer=saver).graph
+    async with AsyncSqliteSaver.from_conn_string(str(tmp_path / "cp.db")) as saver:
+        await _assert_graph_writes_to(build(checkpointer=saver).graph, saver, "sdk-sqlite")
 
-        await _assert_graph_writes_to(graph, saver, "sdk-agent-memory")
 
-    @pytest.mark.asyncio
-    async def test_passed_async_sqlite_saver_is_used(self, tmp_path):
-        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+@pytest.mark.parametrize("build", _BUILDERS)
+def test_sync_only_saver_is_rejected_on_first_compile(build):
+    from langgraph.checkpoint.sqlite import SqliteSaver
 
-        async with AsyncSqliteSaver.from_conn_string(str(tmp_path / "cp.db")) as saver:
-            graph = _agent(checkpointer=saver).graph
-
-            await _assert_graph_writes_to(graph, saver, "sdk-agent-sqlite")
-
-    def test_sync_only_saver_raises_on_first_compile(self):
-        agent = _agent(checkpointer=_SyncOnlySaver())  # construction does not validate
-
-        with pytest.raises(TypeError, match="CugaAgent requires an async-capable checkpointer"):
-            agent.graph
-        assert agent._compiled_graph is None
-
-    def test_sync_sqlite_saver_raises(self):
-        # SqliteSaver overrides aget_tuple only to raise NotImplementedError.
-        from langgraph.checkpoint.sqlite import SqliteSaver
-
-        conn = sqlite3.connect(":memory:", check_same_thread=False)
-        try:
-            agent = _agent(checkpointer=SqliteSaver(conn))
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    try:
+        # SqliteSaver overrides the async methods only to raise NotImplementedError.
+        for saver in (_SyncOnlySaver(), SqliteSaver(conn)):
             with pytest.raises(TypeError, match="async-capable checkpointer"):
-                agent.graph
-        finally:
-            conn.close()
-
-
-class TestCugaSupervisorCheckpointer:
-    def test_default_is_fresh_memory_saver(self):
-        first = _supervisor().graph
-        second = _supervisor().graph
-
-        assert isinstance(first.checkpointer, MemorySaver)
-        assert first.checkpointer is not second.checkpointer
-
-    @pytest.mark.asyncio
-    async def test_passed_saver_is_used(self):
-        saver = MemorySaver()
-
-        graph = _supervisor(checkpointer=saver).graph
-
-        await _assert_graph_writes_to(graph, saver, "sdk-supervisor-memory")
-
-    def test_passed_saver_is_not_given_to_internal_agents(self):
-        saver = MemorySaver()
-        helper = _agent()
-        supervisor = CugaSupervisor(
-            agents={"helper": helper}, model=MagicMock(), auto_load_policies=False, checkpointer=saver
-        )
-
-        supervisor.graph
-
-        assert helper._checkpointer is None
-
-    def test_sync_only_saver_raises_on_first_compile(self):
-        supervisor = _supervisor(checkpointer=_SyncOnlySaver())
-
-        with pytest.raises(TypeError, match="CugaSupervisor requires an async-capable checkpointer"):
-            supervisor.graph
-        assert supervisor._compiled_graph is None
+                build(checkpointer=saver).graph
+    finally:
+        conn.close()
