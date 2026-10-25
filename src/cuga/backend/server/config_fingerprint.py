@@ -34,8 +34,10 @@ _VOLATILE_KEYS = frozenset({"updated_at", "published_at", "version", "created_at
 _SECRET_VALUE_KEYS = frozenset({"api_key", "token", "password", "secret", "key_env_var", "embedding_api_key"})
 
 # URI schemes that indicate a secret *reference* rather than a bare credential.
-# Matching is prefix-based and case-insensitive.
-_REFERENCE_PREFIXES = ("vault://", "env://", "secret://", "arn:", "sm://")
+# Matching is prefix-based and case-insensitive. ``vault://``, ``db://``, ``aws://`` and
+# ``env://`` are the schemes the secret resolver and the Manage redactor
+# (``manage_routes.helpers.is_secret_ref``) recognise; keep them in sync.
+_REFERENCE_PREFIXES = ("vault://", "db://", "aws://", "env://", "secret://", "arn:", "sm://")
 
 
 def _is_reference(value: Any) -> bool:

@@ -70,6 +70,20 @@ def test_api_key_env_reference_change_changes_the_hash():
     assert agent_config_hash(base) != agent_config_hash(changed)
 
 
+@pytest.mark.parametrize(
+    "first, second",
+    [
+        ("db://openai-prod", "db://openai-staging"),
+        ("aws://prod/openai", "aws://staging/openai"),
+    ],
+)
+def test_api_key_db_and_aws_reference_change_changes_the_hash(first, second):
+    """``db://`` and ``aws://`` are resolver-supported references, so changing one is a config change."""
+    base = {"llm": {"provider": "openai", "api_key": first}}
+    changed = {"llm": {"provider": "openai", "api_key": second}}
+    assert agent_config_hash(base) != agent_config_hash(changed)
+
+
 def test_published_snapshot_and_applied_config_hash_alike():
     """Publish applies the config with the knowledge secret and without the export-only state."""
     applied = {"knowledge": {"embedding_api_key": "sk-live", "enabled": True}}

@@ -258,6 +258,7 @@ async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
     )
 
     _patch_agent_loop(monkeypatch, _ImmediateLoop)
+    monkeypatch.setattr("cuga.backend.server.config_store.load_config", AsyncMock(return_value=({}, "4")))
     monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", fake_save)
     monkeypatch.setattr(main_mod, "_knowledge_enabled_for_app_state", lambda _state: False)
     monkeypatch.setattr(main_mod, "_rehydrate_citation_ledger", AsyncMock())
@@ -364,10 +365,8 @@ async def test_stream_cancels_pending_approval_after_published_config_changes(
         assert "pending approval was cancelled" in chunks[1]
     else:
         assert "fresh" in chunks[-1]
-    if graph_version == "3":
-        load_config.assert_awaited_once_with(None, "sales-east")
-    else:
-        load_config.assert_not_awaited()
+    # The published configuration is read under the turn lease on every request.
+    load_config.assert_awaited_once_with(None, "sales-east")
 
 
 @pytest.mark.asyncio

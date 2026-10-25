@@ -106,6 +106,22 @@ async def test_delete_removes_checkpoint_and_history_and_the_id_cannot_return(se
     assert (await server.send(thread_id)).status_code == 404
 
 
+async def test_delete_failure_in_child_cleanup_leaves_the_parent_checkpoint_intact(server, monkeypatch):
+    thread_id = await server.create()
+    await server.send(thread_id)
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            server.main, "_delete_child_checkpoints", AsyncMock(side_effect=RuntimeError("child saver down"))
+        )
+        response = await server.client.delete(f"/api/conversations/{thread_id}")
+
+    assert response.status_code == 500
+    snapshot = await server.graph.aget_state({"configurable": {"thread_id": server.key(thread_id)}})
+    assert snapshot.values  # still continuable: the parent checkpoint was not deleted first
+    assert await server.db.get_thread_status(thread_id, "alice", "cuga-default") == "active"
+    assert (await server.send(thread_id, "again")).status_code == 200
+
+
 async def test_delete_waits_for_a_running_turn(server):
     thread_id = await server.create()
     gate = server.hold_turns()

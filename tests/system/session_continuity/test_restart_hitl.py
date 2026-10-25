@@ -9,14 +9,21 @@ the product uses: a static breakpoint (``interrupt_after`` / ``interrupt_before`
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Literal
+from unittest.mock import patch
 
 import pytest
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import resolve_child_checkpoint_id
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.delegation import create_agent_delegation_func
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import SupervisorExecutionContext
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import SupervisorGraphAdapter
 from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
     ActionResponse,
     ActionType,
@@ -24,6 +31,7 @@ from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
 )
 from cuga.backend.cuga_graph.nodes.human_in_the_loop.wait_for_response import WaitForResponse
 from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.supervisor_utils.supervisor_config import build_agents_from_list
 
 pytestmark = pytest.mark.slow
 
@@ -175,78 +183,94 @@ async def test_pending_approval_is_resumed_through_stream_after_restart(conversa
     assert snapshot.values["final_answer"] == APPROVED
 
 
-async def test_conversation_scoped_child_agent_retains_history_across_restart(checkpoints):
-    """W17.1 row 2f: a conversation-scoped sub-agent retains its history after a restart.
-
-    The shared saver is passed to the child CugaAgent (W04.4).  After closing and
-    reopening the saver on the same file, the child's prior checkpoint is still readable
-    so the next delegation can continue the conversation.
-    """
-    from langchain_core.language_models.fake_chat_models import FakeListChatModel
-    from langchain_core.messages import AIMessage, HumanMessage
-    from langgraph.graph import END, START, StateGraph
-
-    from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
-        child_checkpoint_id,
-    )
-    from cuga.config import get_tenant_id
-
-    PARENT_THREAD = "row-2f-parent-thread"
-    SUPERVISOR_ID = "test-supervisor"
-    SUB_AGENT = "child-a"
-    TENANT = get_tenant_id()
-
-    # Deterministic child key for conversation scope (mirrors what the delegation layer uses)
-    child_key = child_checkpoint_id(
-        tenant_id=TENANT,
+def _delegation_state():
+    """The supervisor state fields that child checkpoint identity and ``record_delegation`` read."""
+    return SimpleNamespace(
         user_id="u1",
-        supervisor_id=SUPERVISOR_ID,
-        parent_thread_id=PARENT_THREAD,
-        sub_agent_id=SUB_AGENT,
+        thread_id="row-2f-parent-thread",
+        service_scope={"tenant_id": "t1", "instance_id": "i1"},
+        selected_agents=[],
+        agent_results={},
+        agent_variables={},
+        agent_chat_messages={},
+        metrics={},
     )
-    child_cfg = {"configurable": {"thread_id": child_key}}
 
-    def _build_child_graph(saver, responses=("child answer 1",)):
-        """A tiny child graph: stores the answer in final_answer and appends chat messages."""
-        model = FakeListChatModel(responses=list(responses))
 
-        async def child_node(state: AgentState):
-            reply = (await model.ainvoke(state.input)).content
-            prior = list(state.chat_messages or [])
-            return {
-                "final_answer": reply,
-                "chat_messages": [*prior, HumanMessage(state.input), AIMessage(reply)],
-            }
+async def _delegate(adapter, agents, name, state, task):
+    """Call the real delegation function from a frame that carries the supervisor context."""
+    delegate = create_agent_delegation_func(adapter, name, agents[name])
+    __supervisor_exec__ = SupervisorExecutionContext(state=state)  # noqa: F841 (found by frame walk)
+    return await delegate(task)
 
-        builder = StateGraph(AgentState)
-        builder.add_node("child", child_node)
-        builder.add_edge(START, "child")
-        builder.add_edge("child", END)
-        return builder.compile(checkpointer=saver)
 
-    # --- First "process" ---
-    saver1 = (await checkpoints.open()).saver
-    child_graph = _build_child_graph(saver1, responses=("child answer 1",))
-    result1 = await child_graph.ainvoke({"input": "first message"}, child_cfg)
-    assert result1["final_answer"] == "child answer 1"
+async def _build_roster(saver, reply):
+    """The same loader the server uses for the YAML roster and the stored sub-agents."""
+    model = FakeListChatModel(responses=[reply])
+    with patch("cuga.supervisor_utils.supervisor_config._get_model_from_config", return_value=model):
+        return await build_agents_from_list(
+            [
+                {
+                    "name": "child-a",
+                    "model": {"provider": "openai", "model_name": "fake"},
+                    "memory_scope": "conversation",
+                    "auto_load_policies": False,
+                }
+            ],
+            checkpointer=saver,
+        )
 
-    snap = await child_graph.aget_state(child_cfg)
-    chat_before = snap.values.get("chat_messages", [])
-    assert len(chat_before) == 2, "one exchange should be in the checkpoint"
-    assert chat_before[-1].content == "child answer 1"
 
-    # --- Restart: new saver on the same file ---
-    saver2 = (await checkpoints.open()).saver
-    # New graph instance, new model — each restart gets its own FakeListChatModel.
-    child_graph2 = _build_child_graph(saver2, responses=("child answer 2",))
+async def _child_messages(agents, adapter, state):
+    child_id = resolve_child_checkpoint_id(
+        state=state, adapter=adapter, agent_name="child-a", agent_or_config=agents["child-a"]
+    )
+    snapshot = await agents["child-a"].graph.aget_state({"configurable": {"thread_id": child_id}})
+    # The nodes persist ``model_dump()``, so messages come back as plain dicts.
+    return [
+        m["content"] if isinstance(m, dict) else m.content
+        for m in (snapshot.values or {}).get("chat_messages", [])
+    ]
 
-    snap_after = await child_graph2.aget_state(child_cfg)
-    chat_after = snap_after.values.get("chat_messages", [])
-    assert len(chat_after) == 2, "child history must survive the restart"
-    assert chat_after[-1].content == "child answer 1"
 
-    # The second run starts from the restored checkpoint and appends a new exchange.
-    result2 = await child_graph2.ainvoke({"input": "second message"}, child_cfg)
-    assert result2["final_answer"] == "child answer 2"
-    snap_final = await child_graph2.aget_state(child_cfg)
-    assert len(snap_final.values.get("chat_messages", [])) == 4
+async def test_conversation_scoped_child_agent_retains_history_across_restart_and_rebuild(checkpoints):
+    """W17.1 row 2f / W04.4: a conversation-scoped child keeps its history across both events.
+
+    The roster is built by ``build_agents_from_list`` with the shared saver, so the child is a real
+    ``CugaAgent`` on it, and each delegation goes through ``create_agent_delegation_func`` and
+    ``resolve_child_checkpoint_id``. Only the supervisor's own model is left out: the test calls the
+    delegation function the generated supervisor code would call. The saver is closed and reopened
+    (a restart), then the roster is rebuilt on the same saver (a publish).
+    """
+    state = _delegation_state()
+
+    # --- first process: one delegation ---
+    saver = (await checkpoints.open()).saver
+    agents = await _build_roster(saver, "child answer 1")
+    adapter = SupervisorGraphAdapter(agents=agents, supervisor_id="test-supervisor")
+    assert await _delegate(adapter, agents, "child-a", state, "first message") == "child answer 1"
+    assert len(await _child_messages(agents, adapter, state)) == 2
+
+    # --- restart: a new saver on the same file, a rebuilt roster and supervisor ---
+    saver = (await checkpoints.open()).saver
+    agents = await _build_roster(saver, "child answer 2")
+    adapter = SupervisorGraphAdapter(agents=agents, supervisor_id="test-supervisor")
+    before = await _child_messages(agents, adapter, state)
+    assert len(before) == 2, "child history must survive the restart"
+    assert before[-1] == "child answer 1"
+    assert await _delegate(adapter, agents, "child-a", state, "second message") == "child answer 2"
+    assert (await _child_messages(agents, adapter, state))[-2:] == ["second message", "child answer 2"]
+
+    # --- publish: the roster is rebuilt on the same saver, the old agents are discarded ---
+    agents = await _build_roster(saver, "child answer 3")
+    adapter = SupervisorGraphAdapter(agents=agents, supervisor_id="test-supervisor")
+    assert await _delegate(adapter, agents, "child-a", state, "third message") == "child answer 3"
+    history = await _child_messages(agents, adapter, state)
+    assert history == [
+        "first message",
+        "child answer 1",
+        "second message",
+        "child answer 2",
+        "third message",
+        "child answer 3",
+    ]

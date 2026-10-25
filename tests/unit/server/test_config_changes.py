@@ -197,7 +197,15 @@ def _event_stream_agent(graph, fingerprint):
     )
 
 
-async def _run_event_stream(monkeypatch, run_agent, *, saved: dict, scope_seen: Optional[dict] = None):
+async def _run_event_stream(
+    monkeypatch,
+    run_agent,
+    *,
+    saved: dict,
+    scope_seen: Optional[dict] = None,
+    stored_config: Optional[dict] = None,
+    store_error: Optional[Exception] = None,
+):
     from cuga.backend.cuga_graph.utils.agent_loop import AgentLoopAnswer
 
     class _ImmediateLoop:
@@ -217,6 +225,13 @@ async def _run_event_stream(monkeypatch, run_agent, *, saved: dict, scope_seen: 
 
     import cuga.backend.cuga_graph.utils.controller  # noqa: F401
 
+    # The published config the turn lease re-reads: same version, same content as the graph's.
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.load_config",
+        AsyncMock(side_effect=store_error)
+        if store_error
+        else AsyncMock(return_value=(stored_config if stored_config is not None else {}, "4")),
+    )
     monkeypatch.setattr("cuga.backend.cuga_graph.utils.agent_loop.AgentLoop", _ImmediateLoop)
     monkeypatch.setattr(main_mod, "_assert_run_thread_access", AsyncMock())
     monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", fake_save)
@@ -366,3 +381,80 @@ async def test_pending_interrupt_from_before_an_upgrade_is_cancelled_with_a_noti
     assert pending["next"] == ()
     assert seen["config_fingerprint"] == after_upgrade.to_scope_dict()
     assert {e["event_name"] for e in saved["events"]} == {"UserMessage", "Answer"}
+
+
+# --- in-place policy updates at an unchanged published version (F5) -------------------------
+
+
+async def test_same_version_policy_rewrite_cancels_a_pending_approval(monkeypatch):
+    """A tool-guard sync rewrites the published config in place; the graph is not rebuilt."""
+    from cuga.backend.cuga_graph.state.agent_state import default_state
+
+    built_from = {"policies": {"policies": [{"id": "p1", "tool_guards": {"delete": {"code": "v1"}}}]}}
+    rewritten = {"policies": {"policies": [{"id": "p1", "tool_guards": {"delete": {"code": "v2"}}}]}}
+    at_build = compute_fingerprint(built_from)
+    assert at_build.agent_hash != compute_fingerprint(rewritten).agent_hash
+
+    state = default_state(page=None, observation=None, goal="")
+    state.service_scope["config_fingerprint"] = at_build.to_scope_dict()
+    values = state.model_dump()
+    pending = {"next": ("WaitForResponse",)}
+
+    async def aget_state(_config):
+        return SimpleNamespace(values=values, next=pending["next"])
+
+    async def aupdate_state(_config, _update, as_node=None):
+        if as_node == "__end__":
+            pending["next"] = ()
+
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(side_effect=aget_state)
+    graph.aupdate_state = AsyncMock(side_effect=aupdate_state)
+    run_agent = _event_stream_agent(graph, at_build)  # the graph still carries the build-time hash
+
+    chunks = await _run_event_stream(monkeypatch, run_agent, saved={}, stored_config=rewritten)
+
+    names = [chunk.split("\n", 1)[0] for chunk in chunks]
+    assert "event: pending_cancelled" in names
+    assert pending["next"] == ()
+    # The graph now carries the stored config's hash, so the next turn is compared against it.
+    assert run_agent._config_fingerprint.agent_hash == compute_fingerprint(rewritten).agent_hash
+
+
+async def test_same_version_policy_rewrite_is_announced_on_a_completed_turn(monkeypatch):
+    built_from = {"policies": {"policies": [{"id": "p1", "tool_guards": {"delete": {"code": "v1"}}}]}}
+    rewritten = {"policies": {"policies": [{"id": "p1", "tool_guards": {"delete": {"code": "v2"}}}]}}
+    at_build = compute_fingerprint(built_from)
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(return_value=_completed_checkpoint(at_build))
+
+    chunks = await _run_event_stream(
+        monkeypatch, _event_stream_agent(graph, at_build), saved={}, stored_config=rewritten
+    )
+
+    names = [chunk.split("\n", 1)[0] for chunk in chunks]
+    assert names[:2] == ["event: thread_created", "event: config_changed"]
+
+
+async def test_unreadable_published_config_cancels_a_pending_approval(monkeypatch):
+    from cuga.backend.cuga_graph.state.agent_state import default_state
+
+    state = default_state(page=None, observation=None, goal="")
+    state.service_scope["config_fingerprint"] = OLD.to_scope_dict()
+    values = state.model_dump()
+    pending = {"next": ("WaitForResponse",)}
+
+    async def aupdate_state(_config, _update, as_node=None):
+        if as_node == "__end__":
+            pending["next"] = ()
+
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(side_effect=lambda _c: SimpleNamespace(values=values, next=pending["next"]))
+    graph.aupdate_state = AsyncMock(side_effect=aupdate_state)
+
+    chunks = await _run_event_stream(
+        monkeypatch, _event_stream_agent(graph, OLD), saved={}, store_error=RuntimeError("store down")
+    )
+
+    assert any(chunk.startswith("event: pending_cancelled") for chunk in chunks)
+    assert pending["next"] == ()

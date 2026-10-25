@@ -226,6 +226,33 @@ async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id:
         provider.clear_session(thread_id)
 
 
+def _yaml_supervisor_children() -> list[tuple[str, Any]]:
+    """Return ``(name, memory_scope)`` for the children of the YAML supervisor roster.
+
+    The default graph loads its children from ``settings.supervisor.config_path`` (see
+    ``CugaEntryGraph._load_supervisor_agents``) onto the shared saver, so their checkpoints
+    need the same cleanup as the stored ``supervisor.subAgents``. A roster file that does not
+    exist yields nothing, exactly as the loader treats it; one that cannot be read raises.
+    """
+    from cuga.config import settings
+
+    config_path = getattr(getattr(settings, "supervisor", None), "config_path", "") or ""
+    if not config_path:
+        return []
+    path = os.path.join(os.getcwd(), config_path)
+    if not os.path.exists(path):
+        return []
+    import yaml
+
+    with open(path, "r") as f:
+        roster = yaml.safe_load(f) or {}
+    return [
+        (entry["name"], entry.get("memory_scope"))
+        for entry in roster.get("agents") or []
+        if isinstance(entry, dict) and entry.get("name")
+    ]
+
+
 async def _delete_child_checkpoints(
     *,
     saver: Any,
@@ -235,10 +262,10 @@ async def _delete_child_checkpoints(
 ) -> None:
     """Delete conversation-scoped supervisor child checkpoints for one conversation.
 
-    Called before the parent checkpoint is deleted, inside the delete endpoint's try/except
-    block.  Saver errors are re-raised so that a transient failure keeps the parent row
-    retriable (the endpoint returns 500 and the client retries).  Config-lookup failures
-    are logged and swallowed — a missing sub-agent config is not a deletion blocker.
+    Called before the parent checkpoint is deleted, inside the caller's try/except block.
+    Children come from the stored ``supervisor.subAgents`` and, for the default agent, from the
+    YAML roster. Every failure (config lookup, roster read, saver) propagates, so the caller
+    leaves the parent conversation retriable instead of orphaning durable child data.
     """
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
         MEMORY_SCOPE_CONVERSATION,
@@ -248,38 +275,27 @@ async def _delete_child_checkpoints(
     from cuga.backend.server.config_store import load_config
     from cuga.config import get_tenant_id, settings
 
-    try:
-        config, _ = await load_config(None, agent_id)
-    except Exception as exc:
-        logger.warning(
-            "_delete_child_checkpoints: could not load config for {}: {}", agent_id, type(exc).__name__
-        )
-        return
-    if not config:
-        return
-    supervisor_cfg = config.get("supervisor") or {}
-    sub_agents = supervisor_cfg.get("subAgents") or []
-    tenant_id = get_tenant_id()
-    for entry in sub_agents:
+    # (child id, explicit memory scope or None) — a lookup failure raises out of this function.
+    children: list[tuple[str, Any]] = []
+    config, _ = await load_config(None, agent_id)
+    for entry in ((config or {}).get("supervisor") or {}).get("subAgents") or []:
         if entry.get("kind") != "internal":
             continue
         ref = entry.get("ref") or ""
         if not ref:
             continue
-        try:
-            ref_config, _ = await load_config(None, ref)
-        except Exception as exc:
-            logger.warning(
-                "_delete_child_checkpoints: could not load config for sub-agent {}: {}",
-                ref,
-                type(exc).__name__,
-            )
-            continue
+        ref_config, _ = await load_config(None, ref)
         scope_raw = None
         if ref_config:
             scope_raw = (ref_config.get("feature_flags") or {}).get("sub_agent_memory_scope") or (
                 ref_config.get("advanced_features") or {}
             ).get("sub_agent_memory_scope")
+        children.append((ref, scope_raw))
+    if agent_id == getattr(app_state, "agent_id", "cuga-default"):
+        children.extend(_yaml_supervisor_children())
+
+    tenant_id = get_tenant_id()
+    for name, scope_raw in children:
         scope = normalize_memory_scope(
             scope_raw
             if scope_raw is not None
@@ -292,11 +308,10 @@ async def _delete_child_checkpoints(
             user_id=user_id,
             supervisor_id=agent_id,
             parent_thread_id=conversation_id,
-            sub_agent_id=ref,
+            sub_agent_id=name,
         )
-        # Saver errors propagate so the endpoint returns 500 and the client can retry.
         await saver.adelete_thread(child_key)
-        logger.debug("deleted child checkpoint for sub-agent {}", ref)
+        logger.debug("deleted child checkpoint for sub-agent {}", name)
 
 
 def _knowledge_config(app_state: "AppState" | None):
@@ -1856,7 +1871,11 @@ async def event_stream(
     from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
     from cuga.backend.cuga_graph.utils.agent_loop import AgentLoop, AgentLoopAnswer, StreamEvent
     from cuga.backend.cuga_graph.utils.controller import AgentRunner
-    from cuga.backend.server.config_fingerprint import ConfigDecision, classify_config_change
+    from cuga.backend.server.config_fingerprint import (
+        ConfigDecision,
+        classify_config_change,
+        compute_fingerprint,
+    )
 
     published_version_key = "published_config_version"
     fingerprint_key = "config_fingerprint"
@@ -1877,25 +1896,37 @@ async def event_stream(
         before the graph runs, and whether the request ends with those events. The events are
         notices, not conversation content: they never enter the stream-event buffer.
         """
-        fingerprint = getattr(run_agent, "_config_fingerprint", None)
         expected_version = getattr(run_agent, "_checkpoint_config_version", None)
-        values = getattr(snapshot, "values", None) or {}
-        scope = values.get("service_scope")
-        scope = scope if isinstance(scope, dict) else {}
         pending = bool(getattr(snapshot, "next", None))
-        decision = classify_config_change(scope, fingerprint, pending, expected_version)
-        if decision is ConfigDecision.NONE and pending and expected_version is not None:
-            # A publish may have committed after /stream resolved its graph but before this
-            # request reached the checkpoint. Check the store as well as the graph.
+        # A publish may have committed after /stream resolved its graph, and an in-place update
+        # (tool-guard sync, roster seed) rewrites the published version without rebuilding it.
+        # This request holds the turn lease, so read the current published config once and let
+        # it decide: a newer version cancels a pending approval, and a same-version rewrite
+        # moves the graph's fingerprint to the stored config's.
+        store_unverified = False
+        store_version_moved = False
+        if expected_version is not None:
             try:
                 from cuga.backend.server.config_store import load_config
 
-                _, stored_version = await load_config(None, runtime_agent_id)
+                stored_config, stored_version = await load_config(None, runtime_agent_id)
                 if str(stored_version or 0) != expected_version:
-                    decision = ConfigDecision.CANCEL_PENDING
+                    store_version_moved = True
+                elif stored_config:
+                    stored_fingerprint = compute_fingerprint(stored_config)
+                    current = getattr(run_agent, "_config_fingerprint", None)
+                    if current is None or current.agent_hash != stored_fingerprint.agent_hash:
+                        run_agent._config_fingerprint = stored_fingerprint
             except Exception as exc:
-                logger.warning("Could not verify pending approval configuration: {}", type(exc).__name__)
-                decision = ConfigDecision.CANCEL_PENDING
+                logger.warning("Could not verify the published configuration: {}", type(exc).__name__)
+                store_unverified = True
+        fingerprint = getattr(run_agent, "_config_fingerprint", None)
+        values = getattr(snapshot, "values", None) or {}
+        scope = values.get("service_scope")
+        scope = scope if isinstance(scope, dict) else {}
+        decision = classify_config_change(scope, fingerprint, pending, expected_version)
+        if decision is ConfigDecision.NONE and pending and (store_version_moved or store_unverified):
+            decision = ConfigDecision.CANCEL_PENDING
 
         if decision is ConfigDecision.NOTICE:
             stamped = scope.get(fingerprint_key) or {}
@@ -3701,13 +3732,15 @@ async def delete_conversation(
         handle = getattr(request.app.state.app_state, "checkpointer_handle", None)
         if handle is not None:
             saver = handle.saver
-            await saver.adelete_thread(checkpoint_key)
+            # Children first: if one fails the parent checkpoint is still intact and the
+            # conversation stays continuable, so the client can retry the delete.
             await _delete_child_checkpoints(
                 saver=saver,
                 agent_id=agent_id,
                 conversation_id=conversation_id,
                 user_id=user_id,
             )
+            await saver.adelete_thread(checkpoint_key)
         await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
         await delete_thread_uploads(conversation_id)
         if not await conversation_db.delete_thread(agent_id, conversation_id, user_id):

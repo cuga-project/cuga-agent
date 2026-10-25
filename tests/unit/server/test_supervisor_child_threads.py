@@ -233,3 +233,114 @@ async def test_delete_child_checkpoints_propagates_saver_errors():
                     conversation_id="thread-123",
                     user_id="user-456",
                 )
+
+
+async def test_delete_child_checkpoints_propagates_parent_config_lookup_errors():
+    """A failed parent config lookup must not look like "no children" (F3)."""
+    from cuga.backend.server.main import _delete_child_checkpoints
+
+    saver = MagicMock()
+    saver.adelete_thread = AsyncMock()
+
+    with patch("cuga.backend.server.config_store.load_config", new_callable=AsyncMock) as mock_load:
+        mock_load.side_effect = RuntimeError("config store down")
+        with pytest.raises(RuntimeError, match="config store down"):
+            await _delete_child_checkpoints(
+                saver=saver,
+                agent_id="supervisor-agent",
+                conversation_id="thread-123",
+                user_id="user-456",
+            )
+
+    saver.adelete_thread.assert_not_awaited()
+
+
+async def test_delete_child_checkpoints_propagates_child_config_lookup_errors():
+    """A failed sub-agent config lookup must not skip that child's checkpoint (F3)."""
+    from cuga.backend.server.main import _delete_child_checkpoints
+
+    saver = MagicMock()
+    saver.adelete_thread = AsyncMock()
+
+    config = {"supervisor": {"subAgents": [{"kind": "internal", "ref": "agent-a"}]}}
+    with patch("cuga.backend.server.config_store.load_config", new_callable=AsyncMock) as mock_load:
+        mock_load.side_effect = [(config, 1), RuntimeError("config store down")]
+        with pytest.raises(RuntimeError, match="config store down"):
+            await _delete_child_checkpoints(
+                saver=saver,
+                agent_id="supervisor-agent",
+                conversation_id="thread-123",
+                user_id="user-456",
+            )
+
+    saver.adelete_thread.assert_not_awaited()
+
+
+async def test_delete_child_checkpoints_covers_yaml_roster_children(tmp_path, monkeypatch):
+    """The default agent's YAML supervisor children share the saver, so they are deleted too (F2)."""
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import child_checkpoint_id
+    from cuga.backend.server import main as main_mod
+    from cuga.config import settings
+
+    roster = tmp_path / "roster.yaml"
+    roster.write_text(
+        "agents:\n"
+        "  - name: yaml-conversation\n"
+        "  - name: yaml-explicit\n"
+        "    memory_scope: conversation\n"
+        "  - name: yaml-call\n"
+        "    memory_scope: call\n"
+    )
+    monkeypatch.setattr(settings.supervisor, "config_path", str(roster))
+    monkeypatch.setattr(settings.supervisor, "sub_agent_memory_scope", "conversation", raising=False)
+
+    saver = MagicMock()
+    saver.adelete_thread = AsyncMock()
+    default_id = main_mod.app_state.agent_id
+
+    with patch("cuga.backend.server.config_store.load_config", new_callable=AsyncMock) as mock_load:
+        mock_load.return_value = (None, None)
+        with patch("cuga.config.get_tenant_id", return_value="t1"):
+            await main_mod._delete_child_checkpoints(
+                saver=saver,
+                agent_id=default_id,
+                conversation_id="thread-123",
+                user_id="user-456",
+            )
+
+    deleted = {call.args[0] for call in saver.adelete_thread.await_args_list}
+    expected = {
+        child_checkpoint_id(
+            tenant_id="t1",
+            user_id="user-456",
+            supervisor_id=default_id,
+            parent_thread_id="thread-123",
+            sub_agent_id=name,
+        )
+        for name in ("yaml-conversation", "yaml-explicit")
+    }
+    assert deleted == expected  # the call-scoped child has no durable checkpoint
+
+
+async def test_delete_child_checkpoints_ignores_yaml_roster_for_other_agents(tmp_path, monkeypatch):
+    """Only the default agent loads the YAML roster; other agents' children come from the store."""
+    from cuga.backend.server import main as main_mod
+    from cuga.config import settings
+
+    roster = tmp_path / "roster.yaml"
+    roster.write_text("agents:\n  - name: yaml-child\n")
+    monkeypatch.setattr(settings.supervisor, "config_path", str(roster))
+
+    saver = MagicMock()
+    saver.adelete_thread = AsyncMock()
+
+    with patch("cuga.backend.server.config_store.load_config", new_callable=AsyncMock) as mock_load:
+        mock_load.return_value = (None, None)
+        await main_mod._delete_child_checkpoints(
+            saver=saver,
+            agent_id="some-other-supervisor",
+            conversation_id="thread-123",
+            user_id="user-456",
+        )
+
+    saver.adelete_thread.assert_not_awaited()

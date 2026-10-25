@@ -55,8 +55,8 @@ async def _prune_batch(
             logger.debug("retention: thread busy, skipping {}", key[:16])
             continue
         try:
-            # Delete conversation-scoped children first; config-lookup failures are
-            # swallowed inside _delete_child_checkpoints but saver failures propagate.
+            # Delete conversation-scoped children first. Config-lookup and saver failures
+            # both propagate, leaving the conversation un-pruned for the next sweep.
             await _delete_child_checkpoints(
                 saver=saver,
                 agent_id=agent_id,
