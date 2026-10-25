@@ -287,17 +287,14 @@ async def _delete_child_checkpoints(
     # checkpoint's service_scope, then add IDs derived from the current roster.
     ids_to_delete: set[str] = set()
 
-    try:
-        last = await saver.aget_tuple({"configurable": {"thread_id": checkpoint_key}})
-        if last is not None:
-            channel_values = (last.checkpoint or {}).get("channel_values") or {}
-            scope = channel_values.get("service_scope") or {}
-            if isinstance(scope, dict):
-                for recorded_id in scope.get("child_checkpoint_ids") or []:
-                    if isinstance(recorded_id, str) and recorded_id:
-                        ids_to_delete.add(recorded_id)
-    except Exception as exc:
-        logger.warning("Could not read parent checkpoint for child ID recovery: {}", type(exc).__name__)
+    last = await saver.aget_tuple({"configurable": {"thread_id": checkpoint_key}})
+    if last is not None:
+        channel_values = (last.checkpoint or {}).get("channel_values") or {}
+        scope = channel_values.get("service_scope") or {}
+        if isinstance(scope, dict):
+            for recorded_id in scope.get("child_checkpoint_ids") or []:
+                if isinstance(recorded_id, str) and recorded_id:
+                    ids_to_delete.add(recorded_id)
 
     # (child name, explicit memory scope or None) — a lookup failure raises out of this function.
     children: list[tuple[str, Any]] = []
@@ -824,6 +821,35 @@ async def _build_published_default_agent(
 
         agent._config_fingerprint = compute_fingerprint(startup_config)
     return agent
+
+
+async def _refresh_published_graph(agent_id: str, config: Dict[str, Any], version: int | None) -> Any:
+    """Build a graph for the current published config on the shared saver."""
+    if agent_id != app_state.agent_id:
+        app_state.agent_graphs_cache.pop((agent_id, False), None)
+        return await _resolve_stream_agent(None, agent_id, False)
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
+    from cuga.backend.server.manage_routes import _apply_published_config
+
+    await _apply_published_config(app_state, config)
+    app_state.config_version = version
+
+    def _get_include_by_app():
+        return (
+            getattr(app_state, "tools_include_by_app", None),
+            getattr(app_state, "tools_include_version", 0),
+        )
+
+    graph = await _build_published_default_agent(
+        tool_provider=CombinedToolProvider(get_include_by_app=_get_include_by_app, agent_id=agent_id),
+        startup_config=config,
+        startup_llm_cfg=config.get("llm") or {},
+        startup_version=version,
+        langfuse_handler=getattr(app_state.agent, "langfuse_handler", None),
+    )
+    app_state.agent = graph
+    return graph
 
 
 @asynccontextmanager
@@ -1841,8 +1867,12 @@ def apply_request_user_context(state: AgentState, user_id: Optional[str]) -> Non
     """
     from cuga.config import get_service_instance_id, get_tenant_id
 
+    previous_scope = state.service_scope or {}
+    child_ids = previous_scope.get("child_checkpoint_ids") if isinstance(previous_scope, dict) else None
     state.user_id = user_id
     state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
+    if isinstance(child_ids, list):
+        state.service_scope["child_checkpoint_ids"] = child_ids
 
 
 async def _cancel_pending_interrupt(graph: Any, checkpoint_key: str) -> bool:
@@ -1923,69 +1953,75 @@ async def event_stream(
         before the graph runs, and whether the request ends with those events. The events are
         notices, not conversation content: they never enter the stream-event buffer.
         """
+        nonlocal run_agent, runtime_llm
         expected_version = getattr(run_agent, "_checkpoint_config_version", None)
         pending = bool(getattr(snapshot, "next", None))
-        # A publish may have committed after /stream resolved its graph. An in-place update
-        # (tool-guard sync, roster seed) rewrites the published version without rebuilding the
-        # graph; load the current stored config once to detect same-version content drift.
-        # On CANCEL_PENDING the graph's fingerprint is advanced to the stored hash so the next
-        # turn does not re-detect the same drift. On NOTICE (completed turn) the fingerprint
-        # is left at the build-time hash so the next publish (which bumps the version) will
-        # trigger a proper rebuild and the hash will be updated then.
         store_unverified = False
-        store_version_moved = False
+        stored_config = None
+        stored_version = None
         stored_fingerprint = None
         if expected_version is not None:
             try:
                 from cuga.backend.server.config_store import load_config
 
                 stored_config, stored_version = await load_config(None, runtime_agent_id)
-                if str(stored_version or 0) != expected_version:
-                    store_version_moved = True
-                elif stored_config:
+                if stored_config:
                     stored_fingerprint = compute_fingerprint(stored_config)
-                    current_fp = getattr(run_agent, "_config_fingerprint", None)
-                    if current_fp is not None and current_fp.agent_hash != stored_fingerprint.agent_hash:
-                        # Same-version content drift: temporarily surface the stored hash to
-                        # classify_config_change so it can detect the change.  Do NOT apply
-                        # this to run_agent yet; see the CANCEL_PENDING branch below.
-                        pass  # stored_fingerprint carries the new hash for use below
-                    else:
-                        stored_fingerprint = None  # no drift — nothing to do
             except Exception as exc:
                 logger.warning("Could not verify the published configuration: {}", type(exc).__name__)
                 store_unverified = True
         fingerprint = getattr(run_agent, "_config_fingerprint", None)
-        # For same-version drift classification, pretend the current fingerprint is the stored one
-        # so classify_config_change can see the new hash vs the checkpoint's stamped hash.
-        classify_fp = stored_fingerprint if stored_fingerprint is not None else fingerprint
+        version_moved = stored_version is not None and str(stored_version or 0) != expected_version
+        content_moved = (
+            stored_fingerprint is not None
+            and fingerprint is not None
+            and stored_fingerprint.agent_hash != fingerprint.agent_hash
+        )
+        graph_stale = version_moved or content_moved
         values = getattr(snapshot, "values", None) or {}
         scope = values.get("service_scope")
         scope = scope if isinstance(scope, dict) else {}
-        decision = classify_config_change(scope, classify_fp, pending, expected_version)
-        if decision is ConfigDecision.NONE and pending and (store_version_moved or store_unverified):
+        decision = classify_config_change(scope, stored_fingerprint or fingerprint, pending, expected_version)
+        if decision is ConfigDecision.NONE and pending and (version_moved or store_unverified):
             decision = ConfigDecision.CANCEL_PENDING
 
-        if decision is ConfigDecision.NOTICE:
+        notices = []
+        if decision is ConfigDecision.CANCEL_PENDING:
+            if not await _cancel_pending_interrupt(run_agent.graph, checkpoint_thread_id):
+                return snapshot, [_notice("Error", stale_approval_message)], True
+            notices.append(_notice("pending_cancelled", json.dumps({"reason": "config_changed"})))
+            if is_resume:
+                return snapshot, [*notices, _notice("Answer", config_changed_message)], True
+        if store_unverified or (graph_stale and not stored_config):
+            return (
+                snapshot,
+                [*notices, _notice("Error", "Could not verify the published configuration.")],
+                True,
+            )
+
+        if graph_stale and stored_config:
+            try:
+                run_agent = await _refresh_published_graph(runtime_agent_id, stored_config, stored_version)
+                if runtime_agent_id == app_state.agent_id and agent is None:
+                    runtime_llm = app_state.current_llm
+                snapshot = await run_agent.graph.aget_state(
+                    {"configurable": {"thread_id": checkpoint_thread_id}}
+                )
+            except Exception as exc:
+                logger.error("Could not rebuild the published graph: {}", type(exc).__name__)
+                return snapshot, [*notices, _notice("Error", "Agent configuration unavailable.")], True
+        elif decision is ConfigDecision.CANCEL_PENDING:
+            snapshot = await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
+
+        fingerprint = getattr(run_agent, "_config_fingerprint", None)
+        if decision is ConfigDecision.NOTICE and fingerprint is not None:
             stamped = scope.get(fingerprint_key) or {}
             payload = {
                 "previous_agent_hash": str(stamped.get("agent_hash", ""))[:12],
-                "current_agent_hash": classify_fp.short_hash(),
+                "current_agent_hash": fingerprint.short_hash(),
             }
-            return snapshot, [_notice("config_changed", json.dumps(payload))], False
-        if decision is not ConfigDecision.CANCEL_PENDING:
-            return snapshot, [], False
-        if not await _cancel_pending_interrupt(run_agent.graph, checkpoint_thread_id):
-            return snapshot, [_notice("Error", stale_approval_message)], True
-        # After a successful cancel, advance the graph's fingerprint to the stored hash so the
-        # next turn does not repeatedly detect the same same-version drift.
-        if stored_fingerprint is not None:
-            run_agent._config_fingerprint = stored_fingerprint
-        cancelled = _notice("pending_cancelled", json.dumps({"reason": "config_changed"}))
-        if is_resume:
-            return snapshot, [cancelled, _notice("Answer", config_changed_message)], True
-        refreshed = await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
-        return refreshed, [cancelled], False
+            notices.append(_notice("config_changed", json.dumps(payload)))
+        return snapshot, notices, False
 
     memory_turn_id = str(uuid.uuid4()) if not resume else ""
     run_agent = agent if agent is not None else app_state.agent
@@ -3039,7 +3075,7 @@ if getattr(settings.advanced_features, "use_extension", False):
 
 
 async def _resolve_stream_agent(
-    request: Request, agent_id: str, use_draft: bool
+    request: Optional[Request], agent_id: str, use_draft: bool
 ) -> Optional[DynamicAgentGraph]:
     """Resolve the DynamicAgentGraph to run /stream against for a given X-Agent-ID.
 
@@ -3050,7 +3086,7 @@ async def _resolve_stream_agent(
     special_instructions) otherwise. Built graphs are cached on app_state.agent_graphs_cache,
     keyed by (agent_id, use_draft); manage_routes invalidates the entry on draft-save/publish.
     """
-    draft_state = getattr(request.app.state, "draft_app_state", None)
+    draft_state = getattr(request.app.state, "draft_app_state", None) if request is not None else None
     default_graph = (getattr(draft_state, "agent", None) if use_draft else app_state.agent) or app_state.agent
 
     if not agent_registry.is_agent_registry_enabled() or not agent_id or agent_id == "cuga-default":
