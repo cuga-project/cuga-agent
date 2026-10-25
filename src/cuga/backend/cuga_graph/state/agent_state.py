@@ -1,9 +1,9 @@
-from typing import Annotated, Dict, List, Optional, Literal, Any
-import json
 import inspect
+import json
 import traceback
 from datetime import datetime
 from pathlib import Path
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from langchain_core.messages import (
     AIMessage,
@@ -13,22 +13,22 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from pydantic import BaseModel, Field, SerializeAsAny, field_validator
 from loguru import logger
+from pydantic import BaseModel, Field, SerializeAsAny, field_validator
 
+from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.api_models import ApiDescription
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.browser_models import NextAgentPlan
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.task_models import (
     AnalyzeTaskOutput,
     TaskDecompositionPlan,
 )
-from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import FollowUpAction, ActionResponse
+from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse, FollowUpAction
 from cuga.backend.cuga_graph.state.api_planner_history import (
     HistoricalAction,
 )
-from cuga.config import settings
 from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
-from cuga.backend.activity_tracker.tracker import ActivityTracker
+from cuga.config import settings
 
 
 def keep_highest(current: Optional[int], incoming: Optional[int]) -> int:
@@ -997,7 +997,8 @@ class AgentState(BaseModel):
     # makes it monotonic, so a caller that rebuilds state and passes the default 0 (the
     # server does exactly this per turn) cannot silently reset the ceiling.
     tool_calls_used_thread: Annotated[int, keep_highest] = 0
-    service_scope: Optional[Dict[str, str]] = Field(
+    # Values are strings, except ``config_fingerprint`` which the server stamps as a small dict.
+    service_scope: Optional[Dict[str, Any]] = Field(
         default_factory=lambda: {"tenant_id": "", "instance_id": ""},
         description="Tenant and instance context for multi-tenant/prod DB scoping",
     )
