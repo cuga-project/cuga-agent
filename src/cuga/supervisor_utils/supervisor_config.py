@@ -37,7 +37,10 @@ def _protocol_block(
 
 
 async def build_agents_from_list(
-    agents_list: List[Dict[str, Any]], *, auto_load_policies: Optional[bool] = None
+    agents_list: List[Dict[str, Any]],
+    *,
+    auto_load_policies: Optional[bool] = None,
+    checkpointer: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Build a ``{agent_name: CugaAgent | external-config-dict}`` map from a list of
@@ -50,14 +53,21 @@ async def build_agents_from_list(
     the run until the caller times out. A per-agent ``auto_load_policies:`` key in the YAML always
     wins over this.
 
+    ``checkpointer`` is an optional shared saver (``BaseCheckpointSaver``).  When provided,
+    sub-agents whose memory scope resolves to ``"conversation"`` are compiled on this saver so
+    their state survives a server restart.  Call-scoped sub-agents keep their own ``MemorySaver``.
+    Imported (``import_from:``) and external (A2A/ACP) agents are never overridden.
+
     Shared by the YAML loader (:func:`load_supervisor_config`) and the manage-UI
     store-sourced loader (:func:`build_agents_from_stored_subagents`), so both paths
     feed :func:`cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph.create_cuga_supervisor_graph`
     the exact same agent shapes.
     """
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
+        MEMORY_SCOPE_CONVERSATION,
         AgentMap,
         attach_agent_memory_scopes,
+        normalize_memory_scope,
     )
 
     agents = AgentMap()
@@ -171,16 +181,37 @@ async def build_agents_from_list(
             # every downstream supervisor user regardless of their settings — with no error to
             # notice. Headless callers now ask for it explicitly instead of imposing it on all.
             policy_system = agent_config.get("policy_system")
-            # No checkpointer: sub-agent state (sup_child_* threads) stays in this agent's own
-            # MemorySaver by design until child threads are deleted with their parent (#774).
-            agent = CugaAgent(
-                tools=tools,
-                tool_provider=tool_provider,
-                policy_system=policy_system,
-                special_instructions=agent_config.get("special_instructions"),
-                model=model,
-                auto_load_policies=agent_config.get("auto_load_policies", auto_load_policies),
+
+            # Determine whether this sub-agent should share the parent's saver.
+            # Conversation-scoped agents persist state across restarts; call-scoped
+            # agents keep an ephemeral MemorySaver (unique per invocation).
+            from cuga.config import settings as _settings
+
+            _scope_raw = agent_config.get("memory_scope")
+            _scope = normalize_memory_scope(
+                _scope_raw
+                if _scope_raw is not None
+                else getattr(getattr(_settings, "supervisor", None), "sub_agent_memory_scope", None)
             )
+            if checkpointer is not None and _scope == MEMORY_SCOPE_CONVERSATION:
+                agent = CugaAgent(
+                    tools=tools,
+                    tool_provider=tool_provider,
+                    policy_system=policy_system,
+                    special_instructions=agent_config.get("special_instructions"),
+                    model=model,
+                    auto_load_policies=agent_config.get("auto_load_policies", auto_load_policies),
+                    checkpointer=checkpointer,
+                )
+            else:
+                agent = CugaAgent(
+                    tools=tools,
+                    tool_provider=tool_provider,
+                    policy_system=policy_system,
+                    special_instructions=agent_config.get("special_instructions"),
+                    model=model,
+                    auto_load_policies=agent_config.get("auto_load_policies", auto_load_policies),
+                )
             feature_overrides = agent_config.get("feature_overrides") or {}
             agent._feature_overrides = {k: v for k, v in feature_overrides.items() if v is not None}
             memory_scope = agent_config.get("memory_scope")
@@ -209,7 +240,10 @@ def retain_agent_memory_scopes(built: dict, stored: dict) -> dict:
 
 
 async def load_supervisor_config(
-    yaml_path: str, *, auto_load_policies: Optional[bool] = None
+    yaml_path: str,
+    *,
+    auto_load_policies: Optional[bool] = None,
+    checkpointer: Optional[Any] = None,
 ) -> SupervisorConfig:
     """
     Load and parse supervisor YAML configuration.
@@ -219,6 +253,8 @@ async def load_supervisor_config(
         yaml_path: Path to YAML configuration file
         auto_load_policies: Default for sub-agents that do not set it themselves. ``None`` (the
             default) preserves existing behaviour. See :func:`build_agents_from_list`.
+        checkpointer: Optional shared saver forwarded to :func:`build_agents_from_list`.
+            See that function's docstring for details.
 
     Returns:
         SupervisorConfig with loaded configuration
@@ -226,7 +262,11 @@ async def load_supervisor_config(
     with open(yaml_path, "r") as f:
         config = yaml.safe_load(f)
 
-    agents = await build_agents_from_list(config.get("agents", []), auto_load_policies=auto_load_policies)
+    agents = await build_agents_from_list(
+        config.get("agents", []),
+        auto_load_policies=auto_load_policies,
+        checkpointer=checkpointer,
+    )
     loaded = SupervisorConfig(
         supervisor=config.get("supervisor", {}),
         agents=agents,
@@ -241,6 +281,7 @@ async def build_agents_from_stored_subagents(
     *,
     auto_load_policies: Optional[bool] = None,
     use_draft: bool = False,
+    checkpointer: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Build a ``{agent_name: CugaAgent | external-config-dict}`` map from the manage-UI's
@@ -249,6 +290,9 @@ async def build_agents_from_stored_subagents(
     ``auto_load_policies`` is forwarded to :func:`build_agents_from_list` and defaults to ``None``,
     which is the existing behaviour for every caller. ``/run`` passes ``False`` because its runs are
     headless — see the note at that call site.
+
+    ``checkpointer`` is forwarded unchanged to :func:`build_agents_from_list`; pass
+    ``None`` for draft builds (they keep their own ``MemorySaver``).
 
     Each entry is either:
       - ``{"kind": "internal", "ref": "<agent_id>"}`` — resolved to a CugaAgent built
@@ -259,11 +303,11 @@ async def build_agents_from_stored_subagents(
     """
     import os
 
+    from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
     from cuga.backend.server.config_store import load_config, load_draft
     from cuga.backend.server.manage_routes.helpers import (
         extract_agent_feature_overrides,
     )
-    from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
 
     agent_configs: List[Dict[str, Any]] = []
 
@@ -353,7 +397,11 @@ async def build_agents_from_stored_subagents(
         else:
             logger.warning(f"Unknown supervisor sub-agent kind: {kind!r}")
 
-    return await build_agents_from_list(agent_configs, auto_load_policies=auto_load_policies)
+    return await build_agents_from_list(
+        agent_configs,
+        auto_load_policies=auto_load_policies,
+        checkpointer=checkpointer,
+    )
 
 
 async def _load_tools_from_config(tools_config: List[Dict[str, Any]]) -> List[Any]:
