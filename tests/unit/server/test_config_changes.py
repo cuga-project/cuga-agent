@@ -205,12 +205,16 @@ async def _run_event_stream(
     scope_seen: Optional[dict] = None,
     stored_config: Optional[dict] = None,
     store_error: Optional[Exception] = None,
+    refreshed_agent=None,
+    stored_version: str = "4",
+    graph_seen: Optional[list] = None,
 ):
     from cuga.backend.cuga_graph.utils.agent_loop import AgentLoopAnswer
 
     class _ImmediateLoop:
         def __init__(self, **_kwargs):
-            pass
+            if graph_seen is not None:
+                graph_seen.append(_kwargs["graph"])
 
         def get_langfuse_trace_id(self):
             return None
@@ -230,8 +234,13 @@ async def _run_event_stream(
         "cuga.backend.server.config_store.load_config",
         AsyncMock(side_effect=store_error)
         if store_error
-        else AsyncMock(return_value=(stored_config if stored_config is not None else {}, "4")),
+        else AsyncMock(return_value=(stored_config if stored_config is not None else {}, stored_version)),
     )
+    if stored_config is not None:
+        replacement = refreshed_agent or _event_stream_agent(
+            run_agent.graph, compute_fingerprint(stored_config)
+        )
+        monkeypatch.setattr(main_mod, "_refresh_published_graph", AsyncMock(return_value=replacement))
     monkeypatch.setattr("cuga.backend.cuga_graph.utils.agent_loop.AgentLoop", _ImmediateLoop)
     monkeypatch.setattr(main_mod, "_assert_run_thread_access", AsyncMock())
     monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", fake_save)
@@ -411,14 +420,26 @@ async def test_same_version_policy_rewrite_cancels_a_pending_approval(monkeypatc
     graph.aget_state = AsyncMock(side_effect=aget_state)
     graph.aupdate_state = AsyncMock(side_effect=aupdate_state)
     run_agent = _event_stream_agent(graph, at_build)  # the graph still carries the build-time hash
+    rebuilt_graph = MagicMock()
+    rebuilt_graph.aget_state = AsyncMock(return_value=_completed_checkpoint(at_build))
+    seen = []
 
-    chunks = await _run_event_stream(monkeypatch, run_agent, saved={}, stored_config=rewritten)
+    chunks = await _run_event_stream(
+        monkeypatch,
+        run_agent,
+        saved={},
+        stored_config=rewritten,
+        refreshed_agent=_event_stream_agent(rebuilt_graph, compute_fingerprint(rewritten)),
+        graph_seen=seen,
+    )
 
     names = [chunk.split("\n", 1)[0] for chunk in chunks]
     assert "event: pending_cancelled" in names
     assert pending["next"] == ()
-    # The graph now carries the stored config's hash, so the next turn is compared against it.
-    assert run_agent._config_fingerprint.agent_hash == compute_fingerprint(rewritten).agent_hash
+    # The old graph retains its build identity; a replacement graph handles the new message.
+    assert run_agent._config_fingerprint.agent_hash == at_build.agent_hash
+    assert seen == [rebuilt_graph]
+    main_mod._refresh_published_graph.assert_awaited_once()
 
 
 async def test_same_version_policy_rewrite_is_announced_on_a_completed_turn(monkeypatch):
@@ -427,13 +448,52 @@ async def test_same_version_policy_rewrite_is_announced_on_a_completed_turn(monk
     at_build = compute_fingerprint(built_from)
     graph = MagicMock()
     graph.aget_state = AsyncMock(return_value=_completed_checkpoint(at_build))
+    rebuilt_graph = MagicMock()
+    rebuilt_graph.aget_state = AsyncMock(return_value=_completed_checkpoint(at_build))
+    seen = []
+    scope_seen = {}
 
     chunks = await _run_event_stream(
-        monkeypatch, _event_stream_agent(graph, at_build), saved={}, stored_config=rewritten
+        monkeypatch,
+        _event_stream_agent(graph, at_build),
+        saved={},
+        stored_config=rewritten,
+        refreshed_agent=_event_stream_agent(rebuilt_graph, compute_fingerprint(rewritten)),
+        graph_seen=seen,
+        scope_seen=scope_seen,
     )
 
     names = [chunk.split("\n", 1)[0] for chunk in chunks]
     assert names[:2] == ["event: thread_created", "event: config_changed"]
+    assert seen == [rebuilt_graph]
+    assert scope_seen["config_fingerprint"]["agent_hash"] == compute_fingerprint(rewritten).agent_hash
+    main_mod._refresh_published_graph.assert_awaited_once()
+
+
+async def test_remote_publish_rebuilds_cached_graph_before_completed_turn(monkeypatch):
+    old_config = {"tools": [{"name": "old"}]}
+    new_config = {"tools": [{"name": "new"}]}
+    old_fp = compute_fingerprint(old_config)
+    old_graph = MagicMock()
+    old_graph.aget_state = AsyncMock(return_value=_completed_checkpoint(old_fp))
+    fresh_graph = MagicMock()
+    fresh_graph.aget_state = AsyncMock(return_value=_completed_checkpoint(old_fp))
+    fresh_agent = _event_stream_agent(fresh_graph, compute_fingerprint(new_config))
+    fresh_agent._checkpoint_config_version = "5"
+    seen = []
+
+    chunks = await _run_event_stream(
+        monkeypatch,
+        _event_stream_agent(old_graph, old_fp),
+        saved={},
+        stored_config=new_config,
+        stored_version="5",
+        refreshed_agent=fresh_agent,
+        graph_seen=seen,
+    )
+
+    assert seen == [fresh_graph]
+    assert "event: config_changed" in [chunk.split("\n", 1)[0] for chunk in chunks]
 
 
 async def test_unreadable_published_config_cancels_a_pending_approval(monkeypatch):
