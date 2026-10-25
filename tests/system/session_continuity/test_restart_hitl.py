@@ -1,9 +1,8 @@
 """A pending approval survives an app restart and can be resumed (#774).
 
-The graphs here use the real ``WaitForResponse`` node, the real approval action and response
-models, and the durable checkpointer with CUGA's strict serializer. The pause comes in the two forms
-the product uses: a static breakpoint (``interrupt_after`` / ``interrupt_before``) and a dynamic
-``interrupt()``. Each is run on the single-agent state and on the supervisor state.
+The tests use the durable checkpointer with CUGA's strict serializer and the real approval action
+and response models. They cover a static ``interrupt_after`` breakpoint, a dynamic ``interrupt()``
+in ``WaitForResponse`` resumed through ``/stream``, and the product supervisor plan approval.
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import resolve_child_checkpoint_id
-from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.delegation import create_agent_delegation_func
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import SupervisorExecutionContext
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import SupervisorGraphAdapter
@@ -58,7 +56,7 @@ def _approval() -> ActionResponse:
     )
 
 
-def _dynamic_graph(saver, state_cls=AgentState, **breakpoints):
+def _dynamic_graph(saver):
     """Ask -> WaitForResponse (``interrupt()``) -> Ask, which answers once it finds the response."""
 
     async def ask(state) -> Command[Literal["WaitForResponse", "FinalAnswerAgent"]]:
@@ -79,7 +77,7 @@ def _dynamic_graph(saver, state_cls=AgentState, **breakpoints):
     async def unused(state):
         return {}
 
-    builder = StateGraph(state_cls)
+    builder = StateGraph(AgentState)
     builder.add_node("Ask", ask)
     builder.add_node(WAIT, WaitForResponse().node)
     builder.add_node("FinalAnswerAgent", final_answer)
@@ -88,7 +86,7 @@ def _dynamic_graph(saver, state_cls=AgentState, **breakpoints):
         builder.add_node(declared, unused)
     builder.add_edge(START, "Ask")
     builder.add_edge("FinalAnswerAgent", END)
-    return builder.compile(checkpointer=saver, **breakpoints)
+    return builder.compile(checkpointer=saver)
 
 
 def _static_graph(saver):
@@ -109,51 +107,24 @@ def _static_graph(saver):
     return builder.compile(checkpointer=saver, interrupt_after=["Ask"])
 
 
-# id -> (graph factory, node waiting after the pause, resume input, answer after resuming)
-_CASES = {
-    "single-agent-static": (_static_graph, "Act", lambda: None, ACTED),
-    "single-agent-dynamic": (
-        lambda saver: _dynamic_graph(saver),
-        WAIT,
-        lambda: Command(resume=_approval().model_dump()),
-        APPROVED,
-    ),
-    "supervisor-static": (
-        lambda saver: _dynamic_graph(saver, CugaSupervisorState, interrupt_before=[WAIT]),
-        WAIT,
-        lambda: Command(resume=_approval().model_dump()),
-        APPROVED,
-    ),
-    "supervisor-dynamic": (
-        lambda saver: _dynamic_graph(saver, CugaSupervisorState),
-        WAIT,
-        lambda: Command(resume=_approval().model_dump()),
-        APPROVED,
-    ),
-}
-
-
-@pytest.mark.parametrize("case", list(_CASES))
-async def test_pending_approval_survives_restart_and_resumes(checkpoints, case):
-    build, waiting_node, resume_input, answer = _CASES[case]
+async def test_static_breakpoint_approval_survives_restart_and_resumes(checkpoints):
+    """The dynamic ``interrupt()`` and supervisor pauses are covered through the product paths."""
     config = {"configurable": {"thread_id": "pending-approval"}}
 
-    graph = build((await checkpoints.open()).saver)
+    graph = _static_graph((await checkpoints.open()).saver)
     await graph.ainvoke({"input": "delete the users table"}, config)
-    paused = await graph.aget_state(config)
-    assert paused.next == (waiting_node,)
+    assert (await graph.aget_state(config)).next == ("Act",)
 
-    graph = build((await checkpoints.open()).saver)  # a new saver on the same file, a new graph
+    graph = _static_graph((await checkpoints.open()).saver)  # a new saver on the same file, a new graph
 
     restored = await graph.aget_state(config)
-    assert restored.next == (waiting_node,)
+    assert restored.next == ("Act",)
     assert restored.values["input"] == "delete the users table"
     assert restored.values["hitl_action"].action_id == "tool_approval"  # a model, not a plain dict
-    assert bool(restored.interrupts) == case.endswith("dynamic")
 
-    result = await graph.ainvoke(resume_input(), config)
+    result = await graph.ainvoke(None, config)
 
-    assert result["final_answer"] == answer
+    assert result["final_answer"] == ACTED
     assert (await graph.aget_state(config)).next == ()
 
 

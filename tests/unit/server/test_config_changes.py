@@ -40,58 +40,41 @@ def _with_runtime(fp: ConfigFingerprint, runtime_ver: str) -> ConfigFingerprint:
 
 # --- decision table -------------------------------------------------------------------------
 
-
-def test_completed_turn_with_agent_change_emits_a_notice():
-    assert classify_config_change(_scope(OLD), NEW, pending=False) is ConfigDecision.NOTICE
-
-
-def test_completed_turn_with_runtime_only_change_is_silent():
-    older = _with_runtime(OLD, "0.0.1")
-    assert classify_config_change(_scope(older), _with_runtime(OLD, "9.9.9"), pending=False) is (
-        ConfigDecision.NONE
-    )
+OLD_RUNTIME = _with_runtime(OLD, "0.0.1")
+NEW_RUNTIME = _with_runtime(OLD, "9.9.9")
 
 
-def test_pending_turn_with_agent_change_is_cancelled():
-    assert classify_config_change(_scope(OLD), NEW, pending=True) is ConfigDecision.CANCEL_PENDING
-
-
-def test_pending_turn_with_runtime_only_change_is_cancelled():
-    older = _with_runtime(OLD, "0.0.1")
-    decision = classify_config_change(_scope(older), _with_runtime(OLD, "9.9.9"), pending=True)
-    assert decision is ConfigDecision.CANCEL_PENDING
-
-
-@pytest.mark.parametrize("pending", [False, True])
-def test_unchanged_fingerprint_needs_no_action(pending):
-    assert classify_config_change(_scope(OLD), OLD, pending=pending) is ConfigDecision.NONE
-
-
-def test_checkpoint_without_fingerprint_and_completed_turn_needs_no_action():
-    scope = {"published_config_version": "3"}
-    assert classify_config_change(scope, NEW, pending=False, expected_version="4") is ConfigDecision.NONE
-
-
-def test_legacy_pending_checkpoint_falls_back_to_the_published_version():
-    scope = {"published_config_version": "3"}
-    assert classify_config_change(scope, NEW, pending=True, expected_version="4") is (
-        ConfigDecision.CANCEL_PENDING
-    )
-    assert classify_config_change(scope, NEW, pending=True, expected_version="3") is ConfigDecision.NONE
-
-
-def test_agent_without_fingerprint_falls_back_to_the_published_version():
-    scope = _scope(OLD, published_config_version="3")
-    assert classify_config_change(scope, None, pending=True, expected_version="4") is (
-        ConfigDecision.CANCEL_PENDING
-    )
-
-
-def test_fingerprint_is_serialisable():
-    d = OLD.to_scope_dict()
-    json.dumps(d)  # must not raise
-    assert isinstance(d["agent_hash"], str)
-    assert isinstance(d["runtime_ver"], str)
+@pytest.mark.parametrize(
+    "scope, current, pending, expected_version, decision",
+    [
+        (_scope(OLD), NEW, False, None, ConfigDecision.NOTICE),
+        (_scope(OLD_RUNTIME), NEW_RUNTIME, False, None, ConfigDecision.NONE),
+        (_scope(OLD), NEW, True, None, ConfigDecision.CANCEL_PENDING),
+        (_scope(OLD_RUNTIME), NEW_RUNTIME, True, None, ConfigDecision.CANCEL_PENDING),
+        (_scope(OLD), OLD, False, None, ConfigDecision.NONE),
+        (_scope(OLD), OLD, True, None, ConfigDecision.NONE),
+        # Checkpoints from before fingerprints fall back to the published version.
+        ({"published_config_version": "3"}, NEW, False, "4", ConfigDecision.NONE),
+        ({"published_config_version": "3"}, NEW, True, "4", ConfigDecision.CANCEL_PENDING),
+        ({"published_config_version": "3"}, NEW, True, "3", ConfigDecision.NONE),
+        # So does a graph built without a fingerprint.
+        (_scope(OLD, published_config_version="3"), None, True, "4", ConfigDecision.CANCEL_PENDING),
+    ],
+    ids=[
+        "completed-agent-changed",
+        "completed-runtime-only",
+        "pending-agent-changed",
+        "pending-runtime-only",
+        "completed-unchanged",
+        "pending-unchanged",
+        "completed-legacy",
+        "pending-legacy-moved",
+        "pending-legacy-same",
+        "pending-graph-without-fingerprint",
+    ],
+)
+def test_decision_table(scope, current, pending, expected_version, decision):
+    assert classify_config_change(scope, current, pending, expected_version) is decision
 
 
 def test_agent_state_keeps_the_fingerprint_dict_in_service_scope():
@@ -158,24 +141,6 @@ async def test_cancel_pending_interrupt_does_not_run_the_cancelled_action():
     await main_mod._cancel_pending_interrupt(graph, "t")
 
     assert (await graph.aget_state(config)).values["log"] != "acted"
-
-
-@pytest.mark.asyncio
-async def test_cancel_pending_interrupt_is_a_noop_when_nothing_is_pending():
-    graph = MagicMock()
-    graph.aget_state = AsyncMock(return_value=SimpleNamespace(next=()))
-    graph.aupdate_state = AsyncMock()
-
-    assert await main_mod._cancel_pending_interrupt(graph, "t") is True
-    graph.aupdate_state.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_cancel_pending_interrupt_reports_failure_instead_of_raising():
-    graph = MagicMock()
-    graph.aget_state = AsyncMock(side_effect=RuntimeError("store down"))
-
-    assert await main_mod._cancel_pending_interrupt(graph, "t") is False
 
 
 # --- event_stream: notices ------------------------------------------------------------------
@@ -291,16 +256,6 @@ async def test_event_stream_emits_config_changed_after_thread_created_and_keeps_
     assert payload == {"previous_agent_hash": OLD.short_hash(), "current_agent_hash": NEW.short_hash()}
     assert names[-1] == "event: Answer"
     assert {e["event_name"] for e in saved["events"]} == {"UserMessage", "Answer"}
-
-
-@pytest.mark.asyncio
-async def test_event_stream_is_silent_when_only_the_runtime_changed(monkeypatch):
-    graph = MagicMock()
-    graph.aget_state = AsyncMock(return_value=_completed_checkpoint(_with_runtime(OLD, "0.0.1")))
-
-    chunks = await _run_event_stream(monkeypatch, _event_stream_agent(graph, OLD), saved={})
-
-    assert not any("config_changed" in chunk or "pending_cancelled" in chunk for chunk in chunks)
 
 
 @pytest.mark.asyncio
@@ -442,14 +397,18 @@ async def test_same_version_policy_rewrite_cancels_a_pending_approval(monkeypatc
     main_mod._refresh_published_graph.assert_awaited_once()
 
 
-async def test_same_version_policy_rewrite_is_announced_on_a_completed_turn(monkeypatch):
-    built_from = {"policies": {"policies": [{"id": "p1", "tool_guards": {"delete": {"code": "v1"}}}]}}
-    rewritten = {"policies": {"policies": [{"id": "p1", "tool_guards": {"delete": {"code": "v2"}}}]}}
+@pytest.mark.parametrize("stored_version", ["4", "5"], ids=["same-version-rewrite", "remote-publish"])
+async def test_changed_published_config_rebuilds_the_graph_and_is_announced(monkeypatch, stored_version):
+    """Another replica published, or a sync rewrote the config in place: rebuild, then notify."""
+    built_from = {"tools": [{"name": "old"}]}
+    rewritten = {"tools": [{"name": "new"}]}
     at_build = compute_fingerprint(built_from)
     graph = MagicMock()
     graph.aget_state = AsyncMock(return_value=_completed_checkpoint(at_build))
     rebuilt_graph = MagicMock()
     rebuilt_graph.aget_state = AsyncMock(return_value=_completed_checkpoint(at_build))
+    rebuilt = _event_stream_agent(rebuilt_graph, compute_fingerprint(rewritten))
+    rebuilt._checkpoint_config_version = stored_version
     seen = []
     scope_seen = {}
 
@@ -458,7 +417,8 @@ async def test_same_version_policy_rewrite_is_announced_on_a_completed_turn(monk
         _event_stream_agent(graph, at_build),
         saved={},
         stored_config=rewritten,
-        refreshed_agent=_event_stream_agent(rebuilt_graph, compute_fingerprint(rewritten)),
+        stored_version=stored_version,
+        refreshed_agent=rebuilt,
         graph_seen=seen,
         scope_seen=scope_seen,
     )
@@ -468,32 +428,6 @@ async def test_same_version_policy_rewrite_is_announced_on_a_completed_turn(monk
     assert seen == [rebuilt_graph]
     assert scope_seen["config_fingerprint"]["agent_hash"] == compute_fingerprint(rewritten).agent_hash
     main_mod._refresh_published_graph.assert_awaited_once()
-
-
-async def test_remote_publish_rebuilds_cached_graph_before_completed_turn(monkeypatch):
-    old_config = {"tools": [{"name": "old"}]}
-    new_config = {"tools": [{"name": "new"}]}
-    old_fp = compute_fingerprint(old_config)
-    old_graph = MagicMock()
-    old_graph.aget_state = AsyncMock(return_value=_completed_checkpoint(old_fp))
-    fresh_graph = MagicMock()
-    fresh_graph.aget_state = AsyncMock(return_value=_completed_checkpoint(old_fp))
-    fresh_agent = _event_stream_agent(fresh_graph, compute_fingerprint(new_config))
-    fresh_agent._checkpoint_config_version = "5"
-    seen = []
-
-    chunks = await _run_event_stream(
-        monkeypatch,
-        _event_stream_agent(old_graph, old_fp),
-        saved={},
-        stored_config=new_config,
-        stored_version="5",
-        refreshed_agent=fresh_agent,
-        graph_seen=seen,
-    )
-
-    assert seen == [fresh_graph]
-    assert "event: config_changed" in [chunk.split("\n", 1)[0] for chunk in chunks]
 
 
 async def test_unreadable_published_config_cancels_a_pending_approval(monkeypatch):

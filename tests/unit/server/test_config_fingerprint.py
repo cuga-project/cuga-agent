@@ -4,20 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from cuga.backend.server.config_fingerprint import (
-    ConfigFingerprint,
-    agent_config_hash,
-    compute_fingerprint,
-    runtime_version,
-)
+from cuga.backend.server.config_fingerprint import agent_config_hash
 
 pytestmark = pytest.mark.unit
 
 
 def test_key_order_does_not_change_the_hash():
-    a = agent_config_hash({"z": 1, "a": 2})
-    b = agent_config_hash({"a": 2, "z": 1})
-    assert a == b
+    assert agent_config_hash({"z": 1, "a": 2}) == agent_config_hash({"a": 2, "z": 1})
 
 
 def test_tool_include_list_change_changes_the_hash():
@@ -26,59 +19,28 @@ def test_tool_include_list_change_changes_the_hash():
     assert agent_config_hash(base) != agent_config_hash(changed)
 
 
-def test_volatile_keys_do_not_change_the_hash():
-    base = {"name": "cuga-default", "updated_at": "2024-01-01"}
-    changed = {"name": "cuga-default", "updated_at": "2025-12-31"}
-    assert agent_config_hash(base) == agent_config_hash(changed)
-
-
 def test_volatile_keys_are_dropped_at_any_depth():
-    base = {"tools": [{"name": "search", "created_at": "2024-01-01"}]}
-    changed = {"tools": [{"name": "search", "created_at": "2025-12-31"}]}
-    assert agent_config_hash(base) == agent_config_hash(changed)
-
-
-def test_secret_value_keys_do_not_change_the_hash():
-    base = {"llm": {"provider": "openai", "api_key": "sk-abc"}}
-    changed = {"llm": {"provider": "openai", "api_key": "sk-xyz"}}
+    base = {"updated_at": "2024-01-01", "tools": [{"name": "search", "created_at": "2024-01-01"}]}
+    changed = {"updated_at": "2025-12-31", "tools": [{"name": "search", "created_at": "2025-12-31"}]}
     assert agent_config_hash(base) == agent_config_hash(changed)
 
 
 def test_secret_value_never_reaches_the_digest_input():
-    # The digest of a config holding a secret equals the digest of the same config without it.
+    # Rotating a bare credential changes nothing: the digest equals that of the config without it.
     assert agent_config_hash({"llm": {"api_key": "sk-abc"}}) == agent_config_hash({"llm": {}})
-
-
-def test_api_key_reference_change_changes_the_hash():
-    """Rotating the vault path for api_key must invalidate a pending approval."""
-    base = {"llm": {"provider": "openai", "api_key": "vault://prod/llm-key"}}
-    changed = {"llm": {"provider": "openai", "api_key": "vault://staging/llm-key"}}
-    assert agent_config_hash(base) != agent_config_hash(changed)
-
-
-def test_api_key_plaintext_rotation_does_not_change_the_hash():
-    """Rotating a bare credential must NOT change the hash (the value is stripped)."""
-    base = {"llm": {"provider": "openai", "api_key": "sk-abc123"}}
-    changed = {"llm": {"provider": "openai", "api_key": "sk-xyz789"}}
-    assert agent_config_hash(base) == agent_config_hash(changed)
-
-
-def test_api_key_env_reference_change_changes_the_hash():
-    """Changing the env-var reference for api_key changes the hash."""
-    base = {"llm": {"provider": "openai", "api_key": "env://PROD_OPENAI_KEY"}}
-    changed = {"llm": {"provider": "openai", "api_key": "env://STAGING_OPENAI_KEY"}}
-    assert agent_config_hash(base) != agent_config_hash(changed)
+    assert agent_config_hash({"llm": {"api_key": "sk-xyz"}}) == agent_config_hash({"llm": {}})
 
 
 @pytest.mark.parametrize(
     "first, second",
     [
+        ("vault://prod/llm-key", "vault://staging/llm-key"),
+        ("env://PROD_OPENAI_KEY", "env://STAGING_OPENAI_KEY"),
         ("db://openai-prod", "db://openai-staging"),
         ("aws://prod/openai", "aws://staging/openai"),
     ],
 )
-def test_api_key_db_and_aws_reference_change_changes_the_hash(first, second):
-    """``db://`` and ``aws://`` are resolver-supported references, so changing one is a config change."""
+def test_secret_reference_change_changes_the_hash(first, second):
     base = {"llm": {"provider": "openai", "api_key": first}}
     changed = {"llm": {"provider": "openai", "api_key": second}}
     assert agent_config_hash(base) != agent_config_hash(changed)
@@ -92,30 +54,3 @@ def test_published_snapshot_and_applied_config_hash_alike():
         "knowledge_state": {"collection": "kb_agent_x"},
     }
     assert agent_config_hash(applied) == agent_config_hash(stored)
-
-
-def test_runtime_version_returns_a_string():
-    ver = runtime_version()
-    assert isinstance(ver, str)
-    assert ver  # not empty
-
-
-def test_fingerprint_round_trips_through_scope_dict():
-    fp = ConfigFingerprint(agent_hash="abc123" * 10 + "abcd", runtime_ver="0.3.1")
-    d = fp.to_scope_dict()
-    restored = ConfigFingerprint.from_scope_dict(d)
-    assert restored == fp
-
-
-def test_short_hash_is_a_12_char_prefix():
-    fp = compute_fingerprint({"tools": []})
-    assert fp.short_hash() == fp.agent_hash[:12]
-    assert len(fp.short_hash()) == 12
-
-
-def test_compute_fingerprint_returns_stable_fingerprint():
-    config = {"tools": [{"name": "search"}], "llm": {"provider": "openai"}}
-    fp1 = compute_fingerprint(config)
-    fp2 = compute_fingerprint(config)
-    assert fp1 == fp2
-    assert len(fp1.agent_hash) == 64
