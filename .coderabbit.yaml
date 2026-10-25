@@ -95,56 +95,68 @@ reviews:
         - Hard to reverse once released
         A small diff can still be high.
 
-    # Area labels: every area whose behavior the PR changes in non-test code, judged from
-    # the diff with paths as hints. CodeRabbit does not read YAML comments, so each rule
-    # states this itself.
+    # Area labels: one label for every area whose behavior the PR changes in non-test code,
+    # judged from the diff with paths as hints. CodeRabbit does not read YAML comments, so
+    # each rule states this itself.
     - label: "area: frontend"
       instructions: |
-        Apply when the PR changes UI behavior in non-test source code: UI components,
-        styling, accessibility, client state, navigation, chat, dashboards,
-        browser-extension UI, or desktop UI. Typical paths include src/frontend_workspaces/
-        and src/cuga/backend/cuga_dashboard/. A dependency-only update does not qualify.
-        Mentions in tests, mocks, comments, docstrings, or generated files do not count.
-        Every PR that changes non-test code gets at least one area label.
+        Apply when the PR changes UI behavior in non-test source code: UI components, styling,
+        accessibility, client state, navigation, chat, dashboards, browser-extension UI, or
+        desktop UI. Typical paths include src/frontend_workspaces/ and
+        src/cuga/backend/cuga_dashboard/. A dependency-only update does not qualify. Mentions in
+        tests, mocks, comments, docstrings, or generated files do not count. Apply every area
+        label whose rule matches: a PR that changes several areas gets one label for each (for
+        example frontend, api-sdk, and orchestration for a feature that changes the UI, the
+        server API, and the agent graph). A PR that changes non-test code gets at least one area
+        label.
 
     - label: "area: security"
       instructions: |
-        Apply when the PR changes security behavior in non-test source code:
-        authentication, authorization, credential or secret handling, sandboxing,
-        tenant/session isolation, untrusted input handling, or sensitive data exposure or
-        retention. Check all layers, not only auth directories. A regenerated
-        .secrets.baseline, a dependency bump, or a description that only mentions security
-        does not qualify. This is not a vulnerability finding. Mentions in tests, mocks,
-        comments, docstrings, or generated files do not count. Every PR that changes
-        non-test code gets at least one area label.
+        Apply when the PR changes security behavior in non-test source code: authentication,
+        authorization, credential or secret handling, sandboxing, tenant/session isolation,
+        untrusted input handling, or sensitive data exposure or retention. Check all layers, not
+        only auth directories. A regenerated .secrets.baseline, a dependency bump, or a
+        description that only mentions security does not qualify. This is not a vulnerability
+        finding. Mentions in tests, mocks, comments, docstrings, or generated files do not
+        count. Apply every area label whose rule matches: a PR that changes several areas gets
+        one label for each (for example frontend, api-sdk, and orchestration for a feature that
+        changes the UI, the server API, and the agent graph). A PR that changes non-test code
+        gets at least one area label.
 
     - label: "area: policies"
       instructions: |
         Apply when the PR changes policy behavior in non-test source code: guardrails, tool
         approval rules, policy matching, enforcement, playbooks, or policy administration,
-        including src/cuga/backend/cuga_graph/policy/ and related UI or SDK behavior.
-        Disabling or mocking the policy system in tests does not qualify. Mentions in
-        tests, mocks, comments, docstrings, or generated files do not count. Every PR that
-        changes non-test code gets at least one area label.
+        including src/cuga/backend/cuga_graph/policy/ and related UI or SDK behavior. Disabling
+        or mocking the policy system in tests does not qualify. Mentions in tests, mocks,
+        comments, docstrings, or generated files do not count. Apply every area label whose rule
+        matches: a PR that changes several areas gets one label for each (for example frontend,
+        api-sdk, and orchestration for a feature that changes the UI, the server API, and the
+        agent graph). A PR that changes non-test code gets at least one area label.
 
     - label: "area: orchestration"
       instructions: |
-        Apply when the PR changes orchestration behavior in non-test source code: agent
-        graph execution, supervisor routing, delegation, agent spawning, shared execution
-        state, checkpoints, cancellation, retries, or human-in-the-loop pause/resume
-        behavior. Paths include cuga_graph/, supervisor/, supervisor_utils/, and
-        backend/agent_spawn/ under src/cuga/. A file under cuga_graph/ does not qualify on
-        its path alone. Mentions in tests, mocks, comments, docstrings, or generated files
-        do not count. Every PR that changes non-test code gets at least one area label.
+        Apply when the PR changes orchestration behavior in non-test source code: agent graph
+        execution, supervisor routing, delegation, agent spawning, shared execution state,
+        checkpoints, cancellation, retries, or human-in-the-loop pause/resume behavior. Paths
+        include cuga_graph/, supervisor/, supervisor_utils/, and backend/agent_spawn/ under
+        src/cuga/. A file under cuga_graph/ does not qualify on its path alone. Mentions in
+        tests, mocks, comments, docstrings, or generated files do not count. Apply every area
+        label whose rule matches: a PR that changes several areas gets one label for each (for
+        example frontend, api-sdk, and orchestration for a feature that changes the UI, the
+        server API, and the agent graph). A PR that changes non-test code gets at least one area
+        label.
 
     - label: "area: prompts"
       instructions: |
         Apply when the PR changes model-facing text in non-test files: LLM prompts, agent
-        instructions, skills, prompt construction, context supplied to a model, or model
-        output requirements, including prompts embedded in Python, configuration, or
-        Markdown. The word "prompt" used for a user's request text does not qualify.
-        Ordinary documentation is not a prompt. Mentions in tests, mocks, comments,
-        docstrings, or generated files do not count. Every PR that changes non-test code
+        instructions, skills, prompt construction, context supplied to a model, or model output
+        requirements, including prompts embedded in Python, configuration, or Markdown. The word
+        "prompt" used for a user's request text does not qualify. Ordinary documentation is not
+        a prompt. Mentions in tests, mocks, comments, docstrings, or generated files do not
+        count. Apply every area label whose rule matches: a PR that changes several areas gets
+        one label for each (for example frontend, api-sdk, and orchestration for a feature that
+        changes the UI, the server API, and the agent graph). A PR that changes non-test code
         gets at least one area label.
 
     - label: "area: llm-integrations"
@@ -152,130 +164,165 @@ reviews:
         Apply when the PR changes model integration in non-test source code: model-provider
         integrations, model selection, inference parameters, reasoning settings, token
         accounting, or model request/response handling. Typical paths include
-        src/cuga/backend/llm/ and src/cuga/configurations/models/. Prompt wording alone
-        does not qualify. Mentions in tests, mocks, comments, docstrings, or generated
-        files do not count. Every PR that changes non-test code gets at least one area
-        label.
+        src/cuga/backend/llm/ and src/cuga/configurations/models/. Prompt wording alone does not
+        qualify. Mentions in tests, mocks, comments, docstrings, or generated files do not
+        count. Apply every area label whose rule matches: a PR that changes several areas gets
+        one label for each (for example frontend, api-sdk, and orchestration for a feature that
+        changes the UI, the server API, and the agent graph). A PR that changes non-test code
+        gets at least one area label.
 
     - label: "area: tools-integrations"
       instructions: |
-        Apply when the PR changes tool behavior in non-test source code: tool
-        registration, discovery, invocation, MCP clients or servers, external
-        service adapters, or runtime skill/tool loading. Typical paths include
-        src/cuga/backend/tools_env/, src/cuga/backend/skills/, and demo tools. Mentions in
-        tests, mocks, comments, docstrings, or generated files do not count. Every PR that
-        changes non-test code gets at least one area label.
+        Apply when the PR changes tool behavior in non-test source code: tool registration,
+        discovery, invocation, MCP clients or servers, external service adapters, or runtime
+        skill/tool loading. Typical paths include src/cuga/backend/tools_env/,
+        src/cuga/backend/skills/, and demo tools. Mentions in tests, mocks, comments,
+        docstrings, or generated files do not count. Apply every area label whose rule matches:
+        a PR that changes several areas gets one label for each (for example frontend, api-sdk,
+        and orchestration for a feature that changes the UI, the server API, and the agent
+        graph). A PR that changes non-test code gets at least one area label.
 
     - label: "area: browser-automation"
       instructions: |
-        Apply when the PR changes browser automation in non-test source code: browser
-        control, page understanding, browser sessions, web navigation, or automated
-        interaction with pages. Typical paths include src/cuga/backend/browser_env/ and
-        src/cuga/backend/web_automation/. A browser-extension UI change alone does not
-        qualify. Mentions in tests, mocks, comments, docstrings, or generated files do not
-        count. Every PR that changes non-test code gets at least one area label.
+        Apply when the PR changes browser automation in non-test source code: browser control,
+        page understanding, browser sessions, web navigation, or automated interaction with
+        pages. Typical paths include src/cuga/backend/browser_env/ and
+        src/cuga/backend/web_automation/. A browser-extension UI change alone does not qualify.
+        Mentions in tests, mocks, comments, docstrings, or generated files do not count. Apply
+        every area label whose rule matches: a PR that changes several areas gets one label for
+        each (for example frontend, api-sdk, and orchestration for a feature that changes the
+        UI, the server API, and the agent graph). A PR that changes non-test code gets at least
+        one area label.
 
     - label: "area: api-sdk"
       instructions: |
-        Apply when the PR changes a public interface in non-test source code: server
-        endpoints, SDK methods, public request/response schemas, streaming or event
-        protocols, A2A/ACP integration, or API compatibility. Typical paths include
-        src/cuga/api/, src/cuga/sdk.py, src/cuga/sdk_core/, and src/cuga/backend/server/.
-        Internal server helpers do not qualify. Mentions in tests, mocks, comments,
-        docstrings, or generated files do not count. Every PR that changes non-test code
+        Apply when the PR changes a public interface in non-test source code: server endpoints,
+        SDK methods, public request/response schemas, streaming or event protocols, A2A/ACP
+        integration, or API compatibility. Typical paths include src/cuga/api/, src/cuga/sdk.py,
+        src/cuga/sdk_core/, and src/cuga/backend/server/. Internal server helpers do not
+        qualify. Mentions in tests, mocks, comments, docstrings, or generated files do not
+        count. Apply every area label whose rule matches: a PR that changes several areas gets
+        one label for each (for example frontend, api-sdk, and orchestration for a feature that
+        changes the UI, the server API, and the agent graph). A PR that changes non-test code
         gets at least one area label.
 
     - label: "area: cli"
       instructions: |
-        Apply when the PR changes CLI behavior in non-test source code: CLI commands,
-        options, terminal output, interactive terminal flows, or command-driven setup.
-        Typical paths include src/cuga/cli/. Mentions in tests, mocks, comments,
-        docstrings, or generated files do not count. Every PR that changes non-test code
-        gets at least one area label.
+        Apply when the PR changes CLI behavior in non-test source code: CLI commands, options,
+        terminal output, interactive terminal flows, or command-driven setup. Typical paths
+        include src/cuga/cli/. Mentions in tests, mocks, comments, docstrings, or generated
+        files do not count. Apply every area label whose rule matches: a PR that changes several
+        areas gets one label for each (for example frontend, api-sdk, and orchestration for a
+        feature that changes the UI, the server API, and the agent graph). A PR that changes
+        non-test code gets at least one area label.
 
     - label: "area: knowledge"
       instructions: |
         Apply when the PR changes knowledge behavior in non-test source code: knowledge
-        ingestion, document processing, retrieval, embeddings, indexing, or knowledge
-        profiles. Typical paths include src/cuga/backend/knowledge/ and
-        src/cuga/configurations/knowledge/. Mentions in tests, mocks, comments,
-        docstrings, or generated files do not count. Every PR that changes non-test code
-        gets at least one area label.
+        ingestion, document processing, retrieval, embeddings, indexing, or knowledge profiles.
+        Typical paths include src/cuga/backend/knowledge/ and
+        src/cuga/configurations/knowledge/. Mentions in tests, mocks, comments, docstrings, or
+        generated files do not count. Apply every area label whose rule matches: a PR that
+        changes several areas gets one label for each (for example frontend, api-sdk, and
+        orchestration for a feature that changes the UI, the server API, and the agent graph). A
+        PR that changes non-test code gets at least one area label.
 
     - label: "area: memory"
       instructions: |
-        Apply when the PR changes memory behavior in non-test source code: conversation or
-        agent memory, context summarization, memory retrieval, or retained context across
-        runs. Typical paths include src/cuga/backend/memory/. Loading or showing chat
-        history in the UI alone does not qualify. Mentions in tests, mocks, comments,
-        docstrings, or generated files do not count. Every PR that changes non-test code
-        gets at least one area label.
+        Apply when the PR changes memory behavior in non-test source code: conversation or agent
+        memory, context summarization, memory retrieval, or retained context across runs.
+        Typical paths include src/cuga/backend/memory/. Loading or showing chat history in the
+        UI alone does not qualify. Mentions in tests, mocks, comments, docstrings, or generated
+        files do not count. Apply every area label whose rule matches: a PR that changes several
+        areas gets one label for each (for example frontend, api-sdk, and orchestration for a
+        feature that changes the UI, the server API, and the agent graph). A PR that changes
+        non-test code gets at least one area label.
 
     - label: "area: storage"
       instructions: |
-        Apply when the PR changes how data is stored, in non-test source code: databases,
-        data schemas, migrations, storage backends, filesystem read/write behavior, or
-        data import/export. Typical paths include src/cuga/backend/storage/ and
-        src/cuga/dbs/. Reading from an existing store without changing how data is stored
-        does not qualify. Mentions in tests, mocks, comments, docstrings, or generated
-        files do not count. Every PR that changes non-test code gets at least one area
-        label.
+        Apply when the PR changes how data is stored, in non-test source code: databases, data
+        schemas, migrations, storage backends, filesystem read/write behavior, or data
+        import/export. Typical paths include src/cuga/backend/storage/ and src/cuga/dbs/.
+        Reading from an existing store without changing how data is stored does not qualify.
+        Mentions in tests, mocks, comments, docstrings, or generated files do not count. Apply
+        every area label whose rule matches: a PR that changes several areas gets one label for
+        each (for example frontend, api-sdk, and orchestration for a feature that changes the
+        UI, the server API, and the agent graph). A PR that changes non-test code gets at least
+        one area label.
 
     - label: "area: configuration"
       instructions: |
         Apply when the PR changes configuration in non-test files: application settings,
         defaults, environment-variable handling, feature flags, configuration loading,
         validation, or compatibility. Typical paths include src/cuga/config.py,
-        src/cuga/settings.toml, src/cuga/configurations/, and .env.example. One new
-        setting that only supports a feature in another area does not qualify. CI-only
-        edits belong to infra. Mentions in tests, mocks, comments, docstrings, or generated
-        files do not count. Every PR that changes non-test code gets at least one area
-        label.
+        src/cuga/settings.toml, src/cuga/configurations/, and .env.example. One new setting that
+        only supports a feature in another area does not qualify. CI-only edits belong to infra.
+        Mentions in tests, mocks, comments, docstrings, or generated files do not count. Apply
+        every area label whose rule matches: a PR that changes several areas gets one label for
+        each (for example frontend, api-sdk, and orchestration for a feature that changes the
+        UI, the server API, and the agent graph). A PR that changes non-test code gets at least
+        one area label.
 
     - label: "area: observability"
       instructions: |
-        Apply when the PR changes observability in non-test source code: logs, traces,
-        metrics, activity tracking, telemetry callbacks, or exported execution
-        trajectories. Typical paths include src/cuga/backend/observability/ and
-        src/cuga/backend/activity_tracker/. Mentions in tests, mocks, comments,
-        docstrings, or generated files do not count. Every PR that changes non-test code
-        gets at least one area label.
+        Apply when the PR changes observability in non-test source code: logs, traces, metrics,
+        activity tracking, telemetry callbacks, or exported execution trajectories. Typical
+        paths include src/cuga/backend/observability/ and src/cuga/backend/activity_tracker/.
+        Mentions in tests, mocks, comments, docstrings, or generated files do not count. Apply
+        every area label whose rule matches: a PR that changes several areas gets one label for
+        each (for example frontend, api-sdk, and orchestration for a feature that changes the
+        UI, the server API, and the agent graph). A PR that changes non-test code gets at least
+        one area label.
 
     - label: "area: testing-evaluation"
       instructions: |
-        Apply only when tests or evaluation are the main point of the change: test
-        tooling, shared fixtures, evaluation datasets, benchmarks, scoring, stability
-        checks, or a PR that is mostly tests. Tests that a feature or fix adds for its own
-        code do not qualify. Typical paths include tests/ and src/cuga/evaluation/.
+        Apply only when tests or evaluation are the main point of the change: test tooling,
+        shared fixtures, evaluation datasets, benchmarks, scoring, stability checks, or a PR
+        that is mostly tests. Tests that a feature or fix adds for its own code do not qualify.
+        Typical paths include tests/ and src/cuga/evaluation/. Apply every area label whose rule
+        matches: a PR that changes several areas gets one label for each (for example frontend,
+        api-sdk, and orchestration for a feature that changes the UI, the server API, and the
+        agent graph). A PR that changes non-test code gets at least one area label.
 
     - label: "area: infra"
       instructions: |
         Apply when the PR changes infrastructure files: CI workflows, repository automation
-        (including CodeRabbit configuration), containers, deployment, release processes,
-        build tooling, or packaging. Typical paths include .github/, .coderabbit.yaml,
-        Dockerfile*, deployment/, and scripts/. Issue-template prose alone is docs.
-        Mentions in tests, mocks, comments, docstrings, or generated files do not count.
-        Every PR that changes non-test code gets at least one area label.
+        (including CodeRabbit configuration), containers, deployment, release processes, build
+        tooling, or packaging. Typical paths include .github/, .coderabbit.yaml, Dockerfile*,
+        deployment/, and scripts/. Issue-template prose alone is docs. Mentions in tests, mocks,
+        comments, docstrings, or generated files do not count. Apply every area label whose rule
+        matches: a PR that changes several areas gets one label for each (for example frontend,
+        api-sdk, and orchestration for a feature that changes the UI, the server API, and the
+        agent graph). A PR that changes non-test code gets at least one area label.
 
     - label: "area: dependencies"
       instructions: |
         Apply when the diff adds, removes, or updates dependencies, version constraints,
-        overrides, or resolved lockfile entries, including Python, frontend,
-        container-base, and GitHub Actions dependencies. Edits to unrelated sections of a
-        package manifest do not qualify.
+        overrides, or resolved lockfile entries, including Python, frontend, container-base, and
+        GitHub Actions dependencies. Edits to unrelated sections of a package manifest do not
+        qualify. Apply every area label whose rule matches: a PR that changes several areas gets
+        one label for each (for example frontend, api-sdk, and orchestration for a feature that
+        changes the UI, the server API, and the agent graph). A PR that changes non-test code
+        gets at least one area label.
 
     - label: "area: docs"
       instructions: |
-        Apply when the PR changes documentation files: guides, READMEs, architecture
-        documents, contributor instructions, or documented examples. Docstrings and code
-        comments do not qualify. Runtime prompt or skill Markdown is not documentation.
+        Apply when the PR changes documentation files: guides, READMEs, architecture documents,
+        contributor instructions, or documented examples. Docstrings and code comments do not
+        qualify. Runtime prompt or skill Markdown is not documentation. Apply every area label
+        whose rule matches: a PR that changes several areas gets one label for each (for example
+        frontend, api-sdk, and orchestration for a feature that changes the UI, the server API,
+        and the agent graph). A PR that changes non-test code gets at least one area label.
 
     - label: "area: licensing"
       instructions: |
-        Apply when the PR changes licensing: licenses, notices, attribution, license
-        policy, dependency license allowlists/baselines, or license enforcement. Typical
-        paths include LICENSE, NOTICE, .github/licenses/, and scripts/licenses/. Mentions
-        in tests, mocks, comments, docstrings, or generated files do not count.
+        Apply when the PR changes licensing: licenses, notices, attribution, license policy,
+        dependency license allowlists/baselines, or license enforcement. Typical paths include
+        LICENSE, NOTICE, .github/licenses/, and scripts/licenses/. Mentions in tests, mocks,
+        comments, docstrings, or generated files do not count. Apply every area label whose rule
+        matches: a PR that changes several areas gets one label for each (for example frontend,
+        api-sdk, and orchestration for a feature that changes the UI, the server API, and the
+        agent graph). A PR that changes non-test code gets at least one area label.
 
   slop_detection:
     enabled: true
