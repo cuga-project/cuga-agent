@@ -14,6 +14,8 @@ EXPECTED_DEFAULTS = {
     "checkpoint_db_path": "",
     "checkpoint_pool_min_size": 1,
     "checkpoint_pool_max_size": 10,
+    "thread_lease_ttl_seconds": 60,
+    "thread_lease_renew_seconds": 20,
 }
 
 

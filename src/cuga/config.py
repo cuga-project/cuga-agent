@@ -179,6 +179,8 @@ validators = [
     Validator("storage.checkpoint_db_path", default=""),
     Validator("storage.checkpoint_pool_min_size", default=1, gte=1),
     Validator("storage.checkpoint_pool_max_size", default=10, gte=1),
+    Validator("storage.thread_lease_ttl_seconds", default=60, gte=1),
+    Validator("storage.thread_lease_renew_seconds", default=20, gte=1),
     Validator("service.instance_id", default=""),
     Validator("service.tenant_id", default=""),
     Validator("secrets.mode", default="local"),

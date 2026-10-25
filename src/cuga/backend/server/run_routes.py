@@ -613,8 +613,7 @@ async def run_sync(request: Request):
                 {"ok": False, "status": "error", "error": "action_response is malformed"}, 422
             )
 
-    body_thread_id = str(body.get("thread_id") or "").strip() or str(uuid.uuid4())
-    thread_id = body_thread_id  # echoed back in responses; internal key is run_key below
+    thread_id = str(body.get("thread_id") or "").strip() or str(uuid.uuid4())
     # A SIGNED-IN CALLER IS WHO THE TOKEN SAYS. This read body["user_id"] unconditionally, so a
     # logged-in user could act as anyone by naming them — their runs, their history, their scope.
     # The token wins when there is one; the body still decides for the machine caller (the eventing
@@ -642,13 +641,7 @@ async def run_sync(request: Request):
             raise HTTPException(403, "Access denied: thread belongs to another user or agent") from exc
         except Exception as exc:
             raise HTTPException(503, "Thread ownership unavailable") from exc
-    checkpoint_id = checkpoint_thread_id(thread_id, user_id, runtime_agent_id)
-    # W07.2: isolate /run checkpoint namespace from web threads
-    from cuga.backend.server.conversation_threads import request_scope as _request_scope  # noqa: PLC0415
-    from cuga.backend.server.thread_scope_key import scoped_checkpoint_key as _scoped_checkpoint_key  # noqa: PLC0415
-
-    _run_scope = _request_scope(None, runtime_agent_id)
-    run_key = _scoped_checkpoint_key("run", _run_scope, body_thread_id)
+    checkpoint_id = checkpoint_thread_id(thread_id, user_id, runtime_agent_id, entry="run")
     disable_history = bool(body.get("disable_history", False))
     attachments = body.get("attachments") or None
 
@@ -754,7 +747,8 @@ async def run_sync(request: Request):
             query,
             api_mode=settings.advanced_features.mode == "api",
             resume=resume,
-            thread_id=run_key,
+            thread_id=thread_id,
+            entry="run",
             agent=run_agent,
             disable_history=disable_history,
             user_id=user_id,

@@ -1109,6 +1109,8 @@ A pending approval is tied to the published agent configuration that created it.
 | `checkpoint_db_path` | `""` | Local mode only. SQLite file for checkpoints; empty means `DBS_DIR/checkpoints.db` |
 | `checkpoint_pool_min_size` | `1` | Prod mode only. Minimum Postgres connection pool size |
 | `checkpoint_pool_max_size` | `10` | Prod mode only. Maximum Postgres connection pool size |
+| `thread_lease_ttl_seconds` | `60` | How long a conversation's turn lease lasts without renewal |
+| `thread_lease_renew_seconds` | `20` | How often a running turn renews its lease |
 
 In `prod` mode the checkpoint tables are created at startup, so the database user needs DDL rights.
 

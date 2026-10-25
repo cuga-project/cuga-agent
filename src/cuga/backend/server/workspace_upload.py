@@ -252,15 +252,13 @@ async def delete_thread_uploads(thread_id: Optional[str]) -> None:
     if workspace_tree_is_sandbox_backed():
         from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
 
-        # Kill the thread's recorded sandboxes by ID. Going through the
-        # interpreter cache would create a fresh, empty sandbox after a restart
-        # or on another replica and leave the uploaded files in the original.
         executor = CodeExecutor._get_opensandbox_executor()
+        interpreter = await executor.get_interpreter_for_thread(safe_tid)
+        uploads_sp = f"{VIRTUAL_WORKSPACE_ROOT}/{UPLOADS_SUBDIR}"
         try:
-            await executor.kill_thread_sandboxes(safe_tid)
+            await interpreter.sandbox.commands.run(f"rm -rf {uploads_sp}")
         except Exception as exc:
-            logger.warning(f"[workspace_upload] sandbox cleanup for thread={safe_tid}: {exc}")
-            raise
+            logger.warning(f"[workspace_upload] sandbox remove uploads for thread={safe_tid}: {exc}")
 
 
 def resolve_host_workspace_path(user_path: str, thread_id: Optional[str]) -> Path:

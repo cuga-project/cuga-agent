@@ -187,6 +187,9 @@ checkpointer = "memory"
 checkpoint_db_path = ""  # local only; default DBS_DIR/checkpoints.db
 checkpoint_pool_min_size = 1  # prod only
 checkpoint_pool_max_size = 10  # prod only
+# One turn per conversation at a time. A lease not renewed within the TTL can be taken over.
+thread_lease_ttl_seconds = 60
+thread_lease_renew_seconds = 20
 
 [storage.embedding]
 provider = "local"  # "openai", "local", or "auto" (tries OpenAI, falls back to local)

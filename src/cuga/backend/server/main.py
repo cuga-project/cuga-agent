@@ -110,18 +110,6 @@ def _canonical_thread_id(thread_id: str) -> str:
     return thread_id.strip()
 
 
-def _thread_conflict_response():
-    from fastapi.responses import JSONResponse
-
-    return JSONResponse(status_code=409, content={"error": "conflict", "retry_after_ms": 2000})
-
-
-def _thread_unavailable_response(reason: str):
-    from fastapi.responses import JSONResponse
-
-    return JSONResponse(status_code=409, content={"error": "unavailable", "reason": reason})
-
-
 def _runtime_agent_id(request: Request) -> Optional[str]:
     """Normalize explicit agent IDs while allowing controls to use the bound agent."""
     if not agent_registry.is_agent_registry_enabled():
@@ -137,18 +125,17 @@ async def _assert_thread_access(
     try:
         return await get_conversation_db().claim_thread(thread_id, user_id, agent_id, create=create)
     except ThreadOwnershipError as exc:
-        raise HTTPException(
-            status_code=403, detail="Access denied: thread belongs to another user or agent"
-        ) from exc
+        # Same response as an unknown thread, so a caller cannot probe which IDs exist (#774).
+        raise HTTPException(status_code=404, detail="Conversation not found") from exc
     except Exception as exc:
         logger.error(f"Thread ownership unavailable: {exc}")
-        raise HTTPException(status_code=503, detail="Thread ownership unavailable") from exc
+        raise HTTPException(status_code=404, detail="Conversation not found") from exc
 
 
-def _checkpoint_thread_id(thread_id: str, user_id: str, agent_id: str) -> str:
+def _checkpoint_thread_id(thread_id: str, user_id: str, agent_id: str, entry: str = "web") -> str:
     from cuga.backend.server.thread_scope import checkpoint_thread_id
 
-    return checkpoint_thread_id(thread_id, user_id, agent_id)
+    return checkpoint_thread_id(thread_id, user_id, agent_id, entry)
 
 
 def _workspace_user_id(current_user: Optional[UserInfo]) -> str:
@@ -183,39 +170,11 @@ async def _require_workspace_thread_access(
     thread_id: Optional[str],
     current_user: Optional[UserInfo],
 ) -> Optional[str]:
-    from cuga.backend.server.conversation_threads import request_scope
-    from cuga.backend.server.thread_guard import resolve_owned_thread, ThreadNotFound
-
     tid = _workspace_thread_id(request, thread_id)
     if tid:
-        scope = request_scope(current_user, _runtime_agent_id(request) or "cuga-default")
-        try:
-            await resolve_owned_thread(scope, tid)
-        except ThreadNotFound as not_found:
-            # F11: a lifecycle row (e.g. status=deleted) means this is not a legacy thread;
-            # never fall back to history ownership for it.
-            try:
-                from cuga.backend.server.conversation_threads import get_conversation_threads_db
-
-                has_record = await get_conversation_threads_db().has_any_record(tid)
-            except Exception:
-                # Fail closed: a lookup failure is not proof the thread is a legacy one.
-                logger.exception("thread lifecycle lookup failed for workspace access check")
-                raise not_found
-            if has_record:
-                raise
-            # W13.2: legacy thread (history rows, no lifecycle record). Allow workspace
-            # reads only when the caller is the sole owner of the thread's history.
-            user_id = current_user.sub if current_user else DEFAULT_USER_ID
-            agent_id = _runtime_agent_id(request) or "cuga-default"
-            try:
-                owners = await get_conversation_db().get_thread_owners_for_agent(agent_id)
-                thread_users = {uid for t, uid in owners if t == tid}
-                sole_owner = thread_users == {user_id}
-            except Exception:
-                sole_owner = False
-            if not sole_owner:
-                raise
+        owner_agent = await _assert_thread_access(tid, _workspace_user_id(current_user), create=False)
+        if owner_agent is None:
+            raise HTTPException(status_code=404, detail="Thread not found")
     return tid
 
 
@@ -262,7 +221,7 @@ async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id:
 
     engine = getattr(app_state, "knowledge_engine", None)
     if engine:
-        await engine.drop_collection(_session_knowledge_collection(thread_id), strict=True)
+        await engine.drop_collection(_session_knowledge_collection(thread_id))
 
     provider = getattr(app_state, "knowledge_provider", None)
     if provider:
@@ -1340,10 +1299,6 @@ async def _app_lifespan(app: FastAPI):
     if await EvolveIntegration.is_configured():
         app_state.background_tasks.append(asyncio.create_task(source_deletion_delivery_loop()))
 
-    # W12.1: start the checkpoint-delete outbox worker now that the checkpointer is open.
-    # Cancelled and awaited in the shutdown block below so it stops before the checkpointer closes.
-    app_state.background_tasks.append(asyncio.create_task(_run_outbox_worker(lambda: app_state)))
-
     yield
 
     logger.info("Application is shutting down...")
@@ -1518,30 +1473,21 @@ async def _save_conversation_and_events_async(
     stream_events are persisted so that citation-ledger rehydration and reload
     replay still work — the conversation_history table (sidebar) is left untouched.
     """
-    ok = True
     try:
         if not events_only:
-            if (
-                await save_conversation_to_db(
-                    agent_id,
-                    thread_id,
-                    state,
-                    user_id,
-                    user_attachments=user_attachments,
-                )
-                is False
-            ):
-                ok = False
+            await save_conversation_to_db(
+                agent_id,
+                thread_id,
+                state,
+                user_id,
+                user_attachments=user_attachments,
+            )
         if events:
             conversation_db = get_conversation_db()
-            if await conversation_db.save_stream_events(agent_id, thread_id, user_id, events) is False:
-                ok = False
-            else:
-                logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
+            await conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
+            logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
     except Exception as e:
         logger.error(f"Error in async save: {e}")
-        ok = False
-    return ok
 
 
 def _build_slash_skill_registry():
@@ -1596,7 +1542,7 @@ async def save_conversation_to_db(
     state: AgentState,
     user_id: str = DEFAULT_USER_ID,
     user_attachments: Optional[List[Dict[str, Any]]] = None,
-) -> bool:
+):
     """
     Save conversation history to database.
 
@@ -1605,15 +1551,12 @@ async def save_conversation_to_db(
         thread_id: The thread/conversation identifier
         state: The current agent state containing messages
         user_id: The user identifier (defaults to DEFAULT_USER_ID)
-
-    Returns:
-        False when a save was attempted and failed; True otherwise.
     """
     try:
         from langchain_core.messages import AIMessage, HumanMessage
 
         if not thread_id or not state:
-            return True
+            return
 
         conversation_db = get_conversation_db()
 
@@ -1718,13 +1661,10 @@ async def save_conversation_to_db(
                 )
             else:
                 logger.warning(f"✗ Failed to save conversation history: thread_id={thread_id}")
-                return False
         else:
             logger.warning(f"No messages to save for thread_id={thread_id}")
-        return True
     except Exception as e:
         logger.error(f"Error saving conversation to database: {e}")
-        return False
 
 
 async def _next_event_or_stop(stream, stop_event):
@@ -1766,7 +1706,7 @@ def apply_request_user_context(state: AgentState, user_id: Optional[str]) -> Non
     state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
 
 
-async def _event_stream_impl(
+async def event_stream(
     query: str,
     api_mode=False,
     resume=None,
@@ -1777,14 +1717,14 @@ async def _event_stream_impl(
     user_attachments: Optional[List[Dict[str, Any]]] = None,
     agent_id: Optional[str] = None,
     current_llm: Any = _RUNTIME_LLM_UNSET,
+    entry: str = "web",
     issued_thread_id: Optional[str] = None,
-    prelude_result: Any = None,
 ):
     """Handles the main agent event stream. If agent is None, uses app_state.agent (published).
 
-    ``issued_thread_id`` is set when /stream created the thread record itself (W09.6 consumes it).
-    ``prelude_result`` is a PreludeResult from run_turn_prelude; when set, the checkpoint was already
-    loaded (fail-closed) and the lease is held — the ``event_stream`` wrapper renews and releases it.
+    ``entry`` names the caller (``web``, ``run``, ``a2a``, ``ext``) and keeps each caller's
+    checkpoints apart. ``issued_thread_id`` is set when ``/stream`` created the conversation, and is
+    sent to the client as the first event.
     """
     from cuga.backend.activity_tracker.tracker import ActivityTracker
     from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
@@ -1826,25 +1766,14 @@ async def _event_stream_impl(
     try:
         await _assert_run_thread_access(thread_id, user_id, runtime_agent_id)
     except HTTPException as exc:
-        if exc.status_code == 403:
-            yield StreamEvent(
-                name="Error", data="Access denied: thread belongs to another user or agent"
-            ).format(app_state.output_format, thread_id=thread_id)
-        else:
-            yield StreamEvent(name="Error", data="Thread ownership unavailable").format(
-                app_state.output_format, thread_id=thread_id
-            )
+        message = "Access denied to this conversation" if exc.status_code == 403 else "Conversation not found"
+        yield StreamEvent(name="Error", data=message).format(app_state.output_format, thread_id=thread_id)
         return
-    checkpoint_thread_id = _checkpoint_thread_id(thread_id, user_id, runtime_agent_id)
-
-    # W09.6: emit thread_created before any graph event
+    checkpoint_thread_id = _checkpoint_thread_id(thread_id, user_id, runtime_agent_id, entry)
     if issued_thread_id:
-        from cuga.backend.cuga_graph.utils.agent_loop import StreamEvent as _SE
-
-        yield _SE(name="thread_created", data=issued_thread_id).format(
+        yield StreamEvent(name="thread_created", data=issued_thread_id).format(
             app_state.output_format, thread_id=issued_thread_id
         )
-
     if current_llm is _RUNTIME_LLM_UNSET:
         runtime_llm = (
             app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None)
@@ -1875,74 +1804,39 @@ async def _event_stream_impl(
     if not resume:
         # Check if we have existing state for this thread_id (for followup questions)
         if thread_id:
-            if prelude_result is not None:
-                # Web thread — lease already acquired, checkpoint already loaded (fail-closed)
-                if prelude_result.snapshot is not None:
-                    snapshot = prelude_result.snapshot
-                    if await _stale_pending_checkpoint(snapshot):
-                        yield StreamEvent(name="Error", data=stale_approval_message).format(
-                            app_state.output_format, thread_id=thread_id
-                        )
-                        return
-                    latest_state_values = snapshot.values
-                    if latest_state_values:
-                        # F12: the prelude already validated that this checkpoint loads as AgentState
-                        local_state = AgentState(**latest_state_values)
-                        local_state.thread_id = thread_id
-                        local_state.input = query
-                        local_tracker.intent = query
-                        local_state.apply_message_sliding_window()
-                        logger.info(f"Loaded existing state for thread_id: {thread_id} (followup question)")
-                    else:
-                        local_state = default_state(page=None, observation=None, goal="")
-                        local_state.input = query
-                        local_state.thread_id = thread_id
-                        local_tracker.intent = query
-                        logger.info(f"Created new state for thread_id: {thread_id}")
+            try:
+                snapshot = await run_agent.graph.aget_state(
+                    {"configurable": {"thread_id": checkpoint_thread_id}}
+                )
+                if await _stale_pending_checkpoint(snapshot):
+                    yield StreamEvent(name="Error", data=stale_approval_message).format(
+                        app_state.output_format, thread_id=thread_id
+                    )
+                    return
+                latest_state_values = snapshot.values
+                if latest_state_values:
+                    # Load existing state for followup questions
+                    local_state = AgentState(**latest_state_values)
+                    local_state.thread_id = thread_id
+                    local_state.input = query  # Update input for the new query
+                    local_tracker.intent = query
+                    # Apply sliding window to maintain message history limit
+                    local_state.apply_message_sliding_window()
+                    logger.info(f"Loaded existing state for thread_id: {thread_id} (followup question)")
                 else:
-                    # Fresh thread (status=new or memory-mode exception)
+                    # No existing state, create new one
                     local_state = default_state(page=None, observation=None, goal="")
                     local_state.input = query
                     local_state.thread_id = thread_id
                     local_tracker.intent = query
                     logger.info(f"Created new state for thread_id: {thread_id}")
-            else:
-                # Non-web entry point (A2A, /run, etc.) — keep existing behavior
-                try:
-                    snapshot = await run_agent.graph.aget_state(
-                        {"configurable": {"thread_id": checkpoint_thread_id}}
-                    )
-                    if await _stale_pending_checkpoint(snapshot):
-                        yield StreamEvent(name="Error", data=stale_approval_message).format(
-                            app_state.output_format, thread_id=thread_id
-                        )
-                        return
-                    latest_state_values = snapshot.values
-                    if latest_state_values:
-                        # Load existing state for followup questions
-                        local_state = AgentState(**latest_state_values)
-                        local_state.thread_id = thread_id
-                        local_state.input = query  # Update input for the new query
-                        local_tracker.intent = query
-                        # Apply sliding window to maintain message history limit
-                        local_state.apply_message_sliding_window()
-                        logger.info(f"Loaded existing state for thread_id: {thread_id} (followup question)")
-                    else:
-                        # No existing state, create new one
-                        local_state = default_state(page=None, observation=None, goal="")
-                        local_state.input = query
-                        local_state.thread_id = thread_id
-                        local_tracker.intent = query
-                        logger.info(f"Created new state for thread_id: {thread_id}")
-                except Exception as e:
-                    # If state retrieval fails, create new state
-                    logger.warning(
-                        f"Failed to retrieve state for thread_id {thread_id}, creating new state: {e}"
-                    )
-                    local_state = default_state(page=None, observation=None, goal="")
-                    local_state.input = query
-                    local_state.thread_id = thread_id
-                    local_tracker.intent = query
+            except Exception as e:
+                # If state retrieval fails, create new state
+                logger.warning(f"Failed to retrieve state for thread_id {thread_id}, creating new state: {e}")
+                local_state = default_state(page=None, observation=None, goal="")
+                local_state.input = query
+                local_state.thread_id = thread_id
+                local_tracker.intent = query
         else:
             # No thread_id, create new state
             local_state = default_state(page=None, observation=None, goal="")
@@ -2127,17 +2021,12 @@ async def _event_stream_impl(
         else:
             print("Langfuse Trace ID will be generated after first LLM call")
 
-    # W09.7/W09.8/W11.1: track turn outcome for lifecycle calls in finally
-    _turn_outcome = "error"  # default; updated at each exit path
-    _history_save_attempted = False  # F7: True once a history save was tried (interrupts never try)
-    _history_save_failed = False  # W11.1: True when a save was attempted but raised or reported failure
     try:
         while True:
             # Check cancellation event (non-blocking)
             if thread_id and thread_id in app_state.stop_events and app_state.stop_events[thread_id].is_set():
                 logger.info(f"Agent execution stopped by user for thread_id: {thread_id}")
                 yield StreamEvent(name="Stopped", data="Agent execution was stopped by user.").format()
-                _turn_outcome = "cancelled"
                 return
 
             stop_ev = app_state.stop_events.get(thread_id) if thread_id else None
@@ -2146,10 +2035,8 @@ async def _event_stream_impl(
                 if status is True:
                     logger.info(f"Agent execution stopped by user for thread_id: {thread_id}")
                     yield StreamEvent(name="Stopped", data="Agent execution was stopped by user.").format()
-                    _turn_outcome = "cancelled"
                     return
                 if status == "done":
-                    _turn_outcome = "cancelled"
                     return
 
                 if isinstance(event, AgentLoopAnswer):
@@ -2159,7 +2046,6 @@ async def _event_stream_impl(
                             latest_state_values = await _load_state_values()
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
-                        _turn_outcome = "interrupted"
                         return
                     if event.end:
                         try:
@@ -2283,43 +2169,28 @@ async def _event_stream_impl(
                             # and reload replay work, but we skip conversation_history so
                             # the sidebar is not polluted.
                             if not disable_history:
-                                _history_save_attempted = True
-                                try:
-                                    if (
-                                        await _save_conversation_and_events_async(
-                                            agent_id=runtime_agent_id,
-                                            thread_id=thread_id,
-                                            user_id=user_id,
-                                            state=local_state if local_state else AgentState(),
-                                            events=stream_events_buffer.copy(),
-                                            user_attachments=user_attachments,
-                                        )
-                                        is False
-                                    ):
-                                        logger.error("history save reported failure for thread %s", thread_id)
-                                        _history_save_failed = True
-                                except Exception:
-                                    logger.exception("history save failed for thread %s", thread_id)
-                                    _history_save_failed = True
+                                await _save_conversation_and_events_async(
+                                    agent_id=runtime_agent_id,
+                                    thread_id=thread_id,
+                                    user_id=user_id,
+                                    state=local_state if local_state else AgentState(),
+                                    events=stream_events_buffer.copy(),
+                                    user_attachments=user_attachments,
+                                )
                             else:
-                                _history_save_attempted = True
                                 try:
-                                    if (
-                                        await _save_conversation_and_events_async(
-                                            agent_id=runtime_agent_id,
-                                            thread_id=thread_id,
-                                            user_id=user_id,
-                                            # state is unused when events_only=True; pass it
-                                            # like the normal branch does (AgentState() would
-                                            # raise on its required fields anyway).
-                                            state=local_state,
-                                            events=stream_events_buffer.copy(),
-                                            user_attachments=user_attachments,
-                                            events_only=True,
-                                        )
-                                        is False
-                                    ):
-                                        _history_save_failed = True
+                                    await _save_conversation_and_events_async(
+                                        agent_id=runtime_agent_id,
+                                        thread_id=thread_id,
+                                        user_id=user_id,
+                                        # state is unused when events_only=True; pass it
+                                        # like the normal branch does (AgentState() would
+                                        # raise on its required fields anyway).
+                                        state=local_state,
+                                        events=stream_events_buffer.copy(),
+                                        user_attachments=user_attachments,
+                                        events_only=True,
+                                    )
                                     logger.info(
                                         f"Try-It-Out: saved stream events (no conversation history) "
                                         f"for thread_id: {thread_id}"
@@ -2329,7 +2200,6 @@ async def _event_stream_impl(
                                         f"Try-It-Out: ephemeral stream-events save failed (non-fatal) "
                                         f"for thread_id: {thread_id}"
                                     )
-                                    _history_save_failed = True
 
                         yield StreamEvent(
                             name="Answer",
@@ -2349,7 +2219,6 @@ async def _event_stream_impl(
                         # Add small delay to ensure data is flushed to client
                         await asyncio.sleep(0.1)
                         logger.info(f"Stream finished for thread_id: {thread_id}")
-                        _turn_outcome = "completed"
                         return
                     elif event.has_tools:
                         if thread_id:
@@ -2456,110 +2325,6 @@ async def _event_stream_impl(
         # exception would reach the caller the same way a response body would.
         _ref = log_error_ref(e, context="Agent event stream failed")
         yield StreamEvent(name="Error", data=f"Agent request failed (ref {_ref})").format()
-    finally:
-        # W09.7/W09.8/W11.1: lifecycle calls after every turn
-        if thread_id:
-            try:
-                from cuga.backend.server.conversation_threads import (
-                    Scope as _Scope,
-                    get_conversation_threads_db as _get_threads_db,
-                )
-                from cuga.config import get_tenant_id as _get_tenant, get_service_instance_id as _get_instance
-
-                _scope = _Scope(
-                    tenant_id=_get_tenant(),
-                    instance_id=_get_instance(),
-                    agent_id=runtime_agent_id,
-                    user_id=user_id,
-                )
-                _threads_db = _get_threads_db()
-                _snap = await run_agent.graph.aget_state(
-                    {"configurable": {"thread_id": checkpoint_thread_id}}
-                )
-                _ckpt_id = (
-                    ((_snap.config or {}).get("configurable", {}).get("checkpoint_id", "")) if _snap else ""
-                )
-                if _turn_outcome in ("completed", "interrupted"):
-                    # W09.7: mark turn committed
-                    await _threads_db.mark_turn_committed(
-                        _scope,
-                        thread_id,
-                        checkpoint_id=_ckpt_id,
-                        agent_hash="",
-                        runtime_ver="",
-                        pending_interrupt=bool(getattr(_snap, "next", None)),
-                    )
-                    # W11.1/F7: mark projected only when history was saved successfully. An interrupt
-                    # never saves history, and a failed save must stay behind for W11.2 repair.
-                    if _turn_outcome == "completed" and _history_save_attempted and not _history_save_failed:
-                        await _threads_db.mark_projected(_scope, thread_id, _ckpt_id)
-                elif _turn_outcome in ("cancelled", "error"):
-                    # W09.8: errored or cancelled — mark_projected only
-                    # W09.8: errored turns write checkpoints for completed steps,
-                    # so projected_checkpoint_id must be updated to avoid stale-projection repair.
-                    # Unless a history save was attempted and failed: leave the marker behind
-                    # for W11.2 repair regardless of outcome.
-                    if not _history_save_failed:
-                        await _threads_db.mark_projected(_scope, thread_id, _ckpt_id)
-            except Exception:
-                logger.exception("failed to record turn lifecycle for thread %s", thread_id)
-
-
-async def event_stream(*args, prelude_result: Any = None, **kwargs):
-    """Run ``_event_stream_impl`` while owning the turn lease from ``run_turn_prelude``.
-
-    The lease is renewed in the background for the life of the stream (F3) and released on every
-    exit path — early returns, errors, cancellation (F4). Non-web callers pass no prelude.
-    """
-    from contextlib import aclosing
-
-    if prelude_result is None or getattr(prelude_result, "lease_token", None) is None:
-        async with aclosing(_event_stream_impl(*args, prelude_result=prelude_result, **kwargs)) as inner:
-            async for chunk in inner:
-                yield chunk
-        return
-
-    from cuga.backend.server.thread_lease import get_thread_lease
-
-    lease_token = prelude_result.lease_token
-    raw_thread_id = kwargs.get("thread_id")
-    if raw_thread_id is None and len(args) > 3:
-        raw_thread_id = args[3]
-    stop_key = _canonical_thread_id(raw_thread_id) if raw_thread_id else None
-
-    async def _renew_loop():
-        lease = get_thread_lease()
-        while True:
-            await asyncio.sleep(20)  # TTL is 60s
-            try:
-                still_held = await lease.renew(lease_token)
-            except Exception:
-                logger.exception("lease renewal failed for thread %s", stop_key)
-                still_held = False
-            if not still_held:
-                logger.error("lease lost for thread %s; stopping turn", stop_key)
-                if stop_key and stop_key in app_state.stop_events:
-                    app_state.stop_events[stop_key].set()
-                return
-
-    renewal_task = asyncio.create_task(_renew_loop())
-    try:
-        async with aclosing(_event_stream_impl(*args, prelude_result=prelude_result, **kwargs)) as inner:
-            async for chunk in inner:
-                yield chunk
-    finally:
-        renewal_task.cancel()
-        try:
-            await renewal_task
-        except asyncio.CancelledError:
-            pass
-        # Normal exit path: shield the release so cancellation during cleanup does not skip it.
-        # Pre-iteration safety is handled by _LeaseStreamingResponse.__call__ try/finally, which
-        # runs even when the ASGI task is cancelled before the first body byte is sent.
-        try:
-            await asyncio.shield(get_thread_lease().release(lease_token))
-        except Exception:
-            logger.exception("failed to release lease for thread %s", stop_key)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -2972,8 +2737,7 @@ async def extension_agent_query(
 
     body = await request.json()
     query = body.get("query", "")
-    body_request_id = _canonical_thread_id(body.get("request_id") or str(uuid.uuid4()))
-    request_id = body_request_id  # echoed back in responses; internal key is ext_key below
+    request_id = _canonical_thread_id(body.get("request_id") or str(uuid.uuid4()))
     user_id = _workspace_user_id(current_user)
     if not query:
         return JSONResponse({"type": "agent_error", "message": "Missing query"}, status_code=400)
@@ -2984,13 +2748,6 @@ async def extension_agent_query(
         return JSONResponse({"type": "agent_error", "message": e.detail}, status_code=e.status_code)
 
     await _assert_thread_access(request_id, user_id, app_state.agent_id)
-
-    # W07.5: isolate extension checkpoint namespace from web threads
-    from cuga.backend.server.conversation_threads import request_scope as _ext_request_scope  # noqa: PLC0415
-    from cuga.backend.server.thread_scope_key import scoped_checkpoint_key as _ext_scoped_checkpoint_key  # noqa: PLC0415
-
-    _ext_scope = _ext_request_scope(current_user, app_state.agent_id)
-    ext_key = _ext_scoped_checkpoint_key("ext", _ext_scope, body_request_id)
 
     async def event_gen():
         # Initial processing message
@@ -3009,7 +2766,8 @@ async def extension_agent_query(
                 query,
                 api_mode=settings.advanced_features.mode == "api",
                 resume=query if isinstance(query, ActionResponse) else None,
-                thread_id=ext_key,
+                thread_id=request_id,
+                entry="ext",
                 user_id=user_id,
             ):
                 if chunk.strip():
@@ -3215,30 +2973,7 @@ async def stream(
 
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     query = await get_query(request)
-    from cuga.backend.server.conversation_threads import request_scope
-    from cuga.backend.server.thread_guard import resolve_owned_thread
-
     agent_id_header = _runtime_agent_id(request) or "cuga-default"
-    scope = request_scope(current_user, agent_id_header)
-    thread_id = (request.headers.get("X-Thread-ID") or "").strip()
-    thread_id_provided = bool(thread_id)
-    issued_thread_id = None
-    created_record = None
-    if not thread_id:
-        thread_id = str(uuid.uuid4())
-        try:
-            from cuga.backend.server.conversation_threads import get_conversation_threads_db
-
-            created_record = await get_conversation_threads_db().create(scope, thread_id)
-            issued_thread_id = thread_id  # server-issued; consumed by the thread_created event (W09.6)
-        except Exception:
-            logger.exception("failed to create thread record for server-generated thread {}", thread_id)
-            raise HTTPException(status_code=500, detail="Failed to start conversation")
-        logger.info(f"No X-Thread-ID header found, generated and recorded new thread_id: {thread_id}")
-    else:
-        logger.info(f"Using provided thread_id: {thread_id}")
-
-    thread_id = _canonical_thread_id(thread_id)
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
     disable_history = str(request.headers.get("X-Disable-History", "") or "").lower() in (
         "1",
@@ -3246,30 +2981,28 @@ async def stream(
         "yes",
         "on",
     )
-    graph_thread_id = thread_id
+    # The agent-builder preview runs on the draft graph's own in-memory saver and is never listed,
+    # so it keeps client-generated thread IDs.
+    preview = use_draft and disable_history
+    thread_id = (request.headers.get("X-Thread-ID") or "").strip()
+    issued_thread_id = None
+    if thread_id:
+        thread_id = _canonical_thread_id(thread_id)
+    else:
+        thread_id = str(uuid.uuid4())
+        if not preview:
+            try:
+                await get_conversation_db().create_conversation(thread_id, user_id, agent_id_header)
+            except Exception as exc:
+                logger.error(f"Failed to create conversation: {type(exc).__name__}")
+                raise HTTPException(status_code=500, detail="Failed to start conversation") from exc
+            issued_thread_id = thread_id
+    if thread_id != issued_thread_id and not preview:
+        # Only server-issued conversations can be continued; anything else is not found (#774).
+        await _require_continuable_conversation(thread_id, user_id, agent_id_header)
     # Reject before StreamingResponse sends headers; event_stream also guards
     # other entry points before reading checkpoints, previews or workspace data.
-    from cuga.backend.server.thread_lease import ThreadBusy
-
-    # F2: a server-issued thread uses the record just created so its first turn also takes the lease
-    record = created_record
-    try:
-        if use_draft and disable_history:
-            # W06.2: draft preview uses client-generated ID with a draft: prefix
-            graph_thread_id = f"draft:{scope.tenant_id}:{scope.instance_id}:{scope.agent_id}:{thread_id}"
-        elif thread_id_provided:
-            record = await resolve_owned_thread(scope, thread_id)
-            provider = getattr(app_state, "knowledge_provider", None)
-            if user_id and user_id != DEFAULT_USER_ID:
-                if provider is not None and not provider.check_session_access(thread_id, user_id):
-                    raise HTTPException(status_code=403, detail="access denied to session")
-                if provider is not None or _knowledge_enabled_for_app_state(app_state):
-                    from cuga.backend.knowledge.auth import ensure_session_access
-
-                    ensure_session_access(thread_id, user_id, provider)
-    except ThreadBusy:
-        # Prelude (T13) raises this before StreamingResponse; map to 409 with no exception text.
-        return _thread_conflict_response()
+    await _assert_run_thread_access(thread_id, user_id, agent_id_header)
     user_attachments = await get_attachment_snapshot(request)
 
     # User message will be saved as part of the event stream buffer
@@ -3316,41 +3049,11 @@ async def stream(
         run_agent = await _resolve_stream_agent(request, agent_id_header, use_draft)
         runtime_llm = None
 
-    # W09.1/W09.3/W09.4: run prelude — acquires lease, loads checkpoint fail-closed
-    # Only for web threads with a lifecycle record (not draft); includes server-issued threads
-    prelude_result = None
-    if record is not None and not (use_draft and disable_history):
-        from cuga.backend.server.turn_prelude import run_turn_prelude, ThreadUnavailable
-        from cuga.backend.server.thread_lease import get_thread_lease
-
-        _run_agent_for_prelude = run_agent if run_agent is not None else app_state.agent
-        import inspect
-
-        _prelude_graph = getattr(_run_agent_for_prelude, "graph", None)
-        if _prelude_graph is not None and inspect.iscoroutinefunction(
-            getattr(_prelude_graph, "aget_state", None)
-        ):
-            _ckpt_thread_id = _checkpoint_thread_id(graph_thread_id, user_id, agent_id_header)
-            try:
-                prelude_result = await run_turn_prelude(
-                    record=record,
-                    thread_id=_ckpt_thread_id,
-                    graph=_prelude_graph,
-                    lease=get_thread_lease(),
-                    checkpointer_kind=getattr(
-                        getattr(app_state, "checkpointer_handle", None), "kind", "memory"
-                    ),
-                )
-            except ThreadBusy:
-                return _thread_conflict_response()
-            except ThreadUnavailable as exc:
-                return _thread_unavailable_response(exc.reason)
-
-    _body = event_stream(
+    body = event_stream(
         query if isinstance(query, str) else None,
         api_mode=settings.advanced_features.mode == "api",
         resume=query if isinstance(query, ActionResponse) else None,
-        thread_id=graph_thread_id,
+        thread_id=thread_id,
         agent=run_agent,
         disable_history=disable_history,
         user_id=user_id,
@@ -3358,32 +3061,83 @@ async def stream(
         agent_id=agent_id_header,
         current_llm=runtime_llm,
         issued_thread_id=issued_thread_id,
-        prelude_result=prelude_result,
+    )
+    graph = getattr(run_agent or app_state.agent, "graph", None)
+    if preview or graph is None:  # without a graph, event_stream reports "Agent not available"
+        return StreamingResponse(body, media_type="text/event-stream")
+
+    from cuga.backend.server.thread_lease import ThreadBusy, get_thread_lease
+    from cuga.backend.server.turn_prelude import ThreadUnavailable, check_turn_state
+
+    checkpoint_key = _checkpoint_thread_id(thread_id, user_id, agent_id_header)
+    lease = get_thread_lease()
+    try:
+        token = await lease.acquire(checkpoint_key)
+    except ThreadBusy:
+        return JSONResponse(status_code=409, content={"error": "conflict", "retry_after_ms": 2000})
+    try:
+        # Re-read under the lease: the conversation may have been deleted while this request waited.
+        status = await _require_continuable_conversation(thread_id, user_id, agent_id_header)
+        handle = getattr(app_state, "checkpointer_handle", None)
+        await check_turn_state(graph, checkpoint_key, status, handle.kind if handle else "memory")
+    except ThreadUnavailable as exc:
+        await lease.release(token)
+        return JSONResponse(status_code=409, content={"error": "unavailable", "reason": exc.reason})
+    except BaseException:
+        await lease.release(token)
+        raise
+    return _LeasedStreamingResponse(
+        _leased_turn(body, lease, token, thread_id, user_id, graph, checkpoint_key),
+        lease=lease,
+        token=token,
+        media_type="text/event-stream",
     )
 
-    if prelude_result is not None and getattr(prelude_result, "lease_token", None) is not None:
-        # _LeaseStreamingResponse wraps __call__ in try/finally so the lease is
-        # released even when the ASGI task is cancelled before the first body byte.
-        # release() is idempotent (WHERE thread_id=? AND holder_id=?), so the
-        # generator's own finally block and this wrapper releasing twice is safe.
-        _lease_token = prelude_result.lease_token
 
-        class _LeaseStreamingResponse(StreamingResponse):
-            async def __call__(self, scope, receive, send) -> None:  # type: ignore[override]
-                try:
-                    await super().__call__(scope, receive, send)
-                finally:
-                    try:
-                        await asyncio.shield(get_thread_lease().release(_lease_token))
-                    except Exception:
-                        logger.exception(
-                            "response-level lease release failed for thread %s",
-                            _lease_token.thread_id,
-                        )
+async def _require_continuable_conversation(thread_id: str, user_id: str, agent_id: str) -> str:
+    """Return the conversation's status, or 404 unless the caller owns it and it can continue."""
+    try:
+        status = await get_conversation_db().get_thread_status(thread_id, user_id, agent_id)
+    except Exception as exc:
+        logger.error(f"Conversation lookup failed: {type(exc).__name__}")
+        status = None
+    if status not in ("new", "active"):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return status
 
-        return _LeaseStreamingResponse(_body, media_type="text/event-stream")
 
-    return StreamingResponse(_body, media_type="text/event-stream")
+async def _leased_turn(body, lease, token, thread_id: str, user_id: str, graph, checkpoint_key: str):
+    """Stream one turn while holding the conversation's lease; mark it active once state exists."""
+    from cuga.backend.server.thread_lease import keep_lease
+
+    stop_event = app_state.stop_events.setdefault(thread_id, asyncio.Event())
+    async with keep_lease(lease, token, stop_event=stop_event):
+        try:
+            async for chunk in body:
+                yield chunk
+        finally:
+            try:
+                snapshot = await graph.aget_state({"configurable": {"thread_id": checkpoint_key}})
+                if snapshot and (snapshot.values or snapshot.next):
+                    await get_conversation_db().set_thread_status(
+                        thread_id, user_id, "active", only_from="new"
+                    )
+            except Exception as exc:
+                logger.error(f"Could not mark conversation active: {type(exc).__name__}")
+
+
+class _LeasedStreamingResponse(StreamingResponse):
+    """Releases the lease even if the response is cancelled before the body starts."""
+
+    def __init__(self, content, *, lease, token, **kwargs):
+        super().__init__(content, **kwargs)
+        self._lease, self._token = lease, token
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await asyncio.shield(self._lease.release(self._token))
 
 
 # ── /run, the roster, and the events bridge ───────────────────────────────────────────────────
@@ -3422,11 +3176,11 @@ async def stop(request: Request, current_user: Optional[UserInfo] = Depends(requ
             pass
 
     thread_id = _canonical_thread_id(thread_id)
-    from cuga.backend.server.conversation_threads import request_scope
-    from cuga.backend.server.thread_guard import resolve_owned_thread
-
-    scope = request_scope(current_user, _runtime_agent_id(request) or "cuga-default")
-    await resolve_owned_thread(scope, thread_id)
+    owner_agent = await _assert_thread_access(
+        thread_id, _workspace_user_id(current_user), _runtime_agent_id(request), create=False
+    )
+    if owner_agent is None:
+        return {"status": "success", "message": f"Stop request received for thread_id: {thread_id}"}
     if thread_id:
         logger.info(f"Received stop request for thread_id: {thread_id}")
         # Create event if it doesn't exist, then set it
@@ -3462,11 +3216,11 @@ async def reset_agent_state(
                 pass
 
         thread_id = _canonical_thread_id(thread_id)
-        from cuga.backend.server.conversation_threads import request_scope
-        from cuga.backend.server.thread_guard import resolve_owned_thread
-
-        scope = request_scope(current_user, _runtime_agent_id(request) or "cuga-default")
-        await resolve_owned_thread(scope, thread_id)
+        owner_agent = await _assert_thread_access(
+            thread_id, _workspace_user_id(current_user), _runtime_agent_id(request), create=False
+        )
+        if owner_agent is None:
+            return {"status": "success", "message": "Agent state reset successfully"}
         if thread_id:
             logger.info(f"Resetting state for thread_id: {thread_id}")
             # Clear stop event for this thread
@@ -3667,18 +3421,12 @@ async def get_conversations(
     """Endpoint to retrieve conversation history."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     try:
-        from cuga.backend.server.conversation_threads import get_conversation_threads_db, request_scope
-
         conversation_db = get_conversation_db()
         threads = await conversation_db.get_all_threads_for_agent(agent_id, user_id)
-
-        # Build scope for lifecycle record lookups (W05.6)
-        scope = request_scope(current_user, agent_id)
-        threads_db = get_conversation_threads_db()
-
+        # History without a continuable owner row predates session continuity (#774): read-only.
+        statuses = await conversation_db.get_thread_statuses(user_id, agent_id)
         conversations = []
         for t in threads:
-            thread_id = t.get("thread_id", "")
             first_msg = t.get("first_message", "")
             # Convert ISO timestamp to epoch ms for frontend
             ts = 0
@@ -3686,22 +3434,13 @@ async def get_conversations(
                 ts = int(datetime.datetime.fromisoformat(t.get("updated_at", "")).timestamp() * 1000)
             except Exception:
                 pass
-            # W05.6: include lifecycle status and pending_interrupt
-            record = await threads_db.get_in_scope(scope, thread_id)
-            if record:
-                status = record.status
-                pending_interrupt = bool(record.pending_interrupt)
-            else:
-                status = "legacy"
-                pending_interrupt = False
             conversations.append(
                 {
-                    "id": thread_id,
+                    "id": t.get("thread_id", ""),
                     "title": first_msg if first_msg else "New Chat",
                     "timestamp": ts,
                     "preview": first_msg[:100] if first_msg else "",
-                    "status": status,
-                    "pending_interrupt": pending_interrupt,
+                    "status": statuses.get(t.get("thread_id", ""), "legacy"),
                 }
             )
         return JSONResponse(conversations)
@@ -3715,32 +3454,15 @@ async def create_conversation(
     request: Request,
     current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
-    """Endpoint to create a new conversation (server-issued thread record)."""
-    from cuga.backend.server.conversation_threads import (
-        ThreadIdConflict,
-        get_conversation_threads_db,
-        request_scope,
-    )
-
+    """Create a conversation with a server-issued ID; ``/stream`` continues it by that ID (#774)."""
+    user_id = current_user.sub if current_user else DEFAULT_USER_ID
     try:
         data = await request.json()
         agent_id = "cuga-default"
         if agent_registry.is_agent_registry_enabled():
-            agent_id = (data.get("agent_id") or "").strip() or _runtime_agent_id(request) or "cuga-default"
-            if agent_id != "cuga-default":
-                from cuga.backend.server.config_store import load_config
-
-                config, _ = await load_config(None, agent_id)
-                if not config:
-                    raise HTTPException(status_code=404, detail="Agent not found")
-        scope = request_scope(current_user, agent_id)
-        threads_db = get_conversation_threads_db()
+            agent_id = str(data.get("agent_id") or "").strip() or _runtime_agent_id(request) or "cuga-default"
         thread_id = str(uuid.uuid4())
-        try:
-            await threads_db.create(scope, thread_id)
-        except ThreadIdConflict:
-            thread_id = str(uuid.uuid4())
-            await threads_db.create(scope, thread_id)
+        await get_conversation_db().create_conversation(thread_id, user_id, agent_id)
         logger.info(f"Created conversation: {thread_id}")
         return JSONResponse(
             {
@@ -3751,185 +3473,9 @@ async def create_conversation(
                 "status": "new",
             }
         )
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Failed to create conversation")
+    except Exception as e:
+        logger.error(f"Failed to create conversation: {type(e).__name__}")
         raise HTTPException(status_code=500, detail="Failed to create conversation")
-
-
-def _thread_may_have_children() -> bool:
-    return bool(getattr(settings.supervisor, "enabled", False)) or agent_registry.is_agent_registry_enabled()
-
-
-def _thread_cleanup_context(scope, thread_id: str, delete_children: bool) -> dict:
-    return {
-        "tenant_id": scope.tenant_id,
-        "instance_id": scope.instance_id,
-        "agent_id": scope.agent_id,
-        "user_id": scope.user_id,
-        "thread_id": thread_id,
-        "delete_children": delete_children,
-    }
-
-
-async def _cleanup_if_deleted_during_write(app_state, scope, record, thread_id: str) -> bool:
-    """Recheck a thread after a request wrote workspace data for it.
-
-    The request was authorized before writing, so a deletion may have run its
-    cleanup in between and missed the new data. Writing first and rechecking
-    after closes that gap: if the thread is still live here, any later delete
-    cleans up after this data exists. Returns True if the thread was deleted;
-    in that case a new cleanup is queued and attempted now.
-    """
-    from cuga.backend.server.conversation_threads import get_conversation_threads_db
-
-    threads_db = get_conversation_threads_db()
-    if await threads_db.get_in_scope(scope, thread_id) is not None:
-        return False
-    ckpt_key = _checkpoint_thread_id(thread_id, scope.user_id, record.agent_id or scope.agent_id)
-    delete_children = _thread_may_have_children()
-    event_id = await threads_db.enqueue_thread_cleanup(
-        scope, thread_id, ckpt_key, delete_children=delete_children
-    )
-    try:
-        if await _cleanup_deleted_thread(
-            app_state, ckpt_key, _thread_cleanup_context(scope, thread_id, delete_children)
-        ):
-            await threads_db.acknowledge_checkpoint_delete(event_id)
-    except Exception:
-        logger.exception("cleanup after late write failed for {}; outbox will retry", thread_id)
-    return True
-
-
-async def _cleanup_deleted_thread(app_state, scoped_checkpoint_id: str, context: dict | None) -> bool:
-    """Try every cleanup stage; a false result keeps the durable outbox row."""
-    from cuga.backend.server.thread_lease import get_thread_lease
-    from cuga.config import get_service_instance_id, get_tenant_id
-
-    saver = getattr(app_state, "checkpointer", None) if app_state else None
-    complete = True
-    if context and (
-        context["tenant_id"] != get_tenant_id() or context["instance_id"] != get_service_instance_id()
-    ):
-        # Another instance owns this row and must use its own history/knowledge stores.
-        return False
-
-    try:
-        active_lease = await get_thread_lease().is_active(scoped_checkpoint_id)
-    except Exception:
-        logger.exception("lease lookup failed during cleanup for {}", scoped_checkpoint_id)
-        return False
-    if active_lease:
-        # A live turn can still write checkpoints, history, and uploads.
-        # Retry all stages after the lease ends.
-        return False
-
-    try:
-        if saver is None or not hasattr(saver, "adelete_thread"):
-            logger.warning("checkpoint cleanup waiting for saver for {}", scoped_checkpoint_id)
-            complete = False
-        else:
-            await saver.adelete_thread(scoped_checkpoint_id)
-    except Exception:
-        logger.exception("parent checkpoint cleanup failed for {}", scoped_checkpoint_id)
-        complete = False
-
-    if context is None:
-        return complete  # Rows from the older checkpoint-only outbox format.
-
-    thread_id = context["thread_id"]
-    if context["delete_children"]:
-        if saver is None or not hasattr(saver, "alist"):
-            complete = False
-        else:
-            try:
-                child_ids = set()
-                async for tup in saver.alist(None, filter={"cuga_parent_thread_id": thread_id}):
-                    child_id = ((tup.config or {}).get("configurable") or {}).get("thread_id", "")
-                    if child_id:
-                        child_ids.add(child_id)
-                for child_id in child_ids:
-                    try:
-                        await saver.adelete_thread(child_id)
-                    except Exception:
-                        logger.exception("child checkpoint cleanup failed for {}", child_id)
-                        complete = False
-            except Exception:
-                logger.exception("child checkpoint lookup failed for {}", thread_id)
-                complete = False
-
-    try:
-        if not await get_conversation_db().delete_thread(context["agent_id"], thread_id, context["user_id"]):
-            logger.warning("history cleanup returned failure for {}", thread_id)
-            complete = False
-    except Exception:
-        logger.exception("history cleanup failed for {}", thread_id)
-        complete = False
-    try:
-        await _delete_session_knowledge_for_thread(app_state, thread_id)
-    except Exception:
-        logger.exception("session knowledge cleanup failed for {}", thread_id)
-        complete = False
-    try:
-        await delete_thread_uploads(thread_id)
-    except Exception:
-        logger.exception("upload cleanup failed for {}", thread_id)
-        complete = False
-    return complete
-
-
-async def _retry_checkpoint_deletes(app_state) -> None:
-    """Retry every pending cleanup intent; acknowledge only complete threads."""
-    import json
-
-    from cuga.backend.server.conversation_threads import get_conversation_threads_db
-
-    db = get_conversation_threads_db()
-    after = None
-    while True:
-        try:
-            pending = await db.pending_checkpoint_deletes(after=after)
-        except Exception:
-            logger.exception("failed to fetch pending conversation cleanup")
-            return
-        if not pending:
-            return
-        for row in pending:
-            try:
-                context = json.loads(row["cleanup_context"]) if row["cleanup_context"] else None
-                if await _cleanup_deleted_thread(app_state, row["scoped_checkpoint_id"], context):
-                    await db.acknowledge_checkpoint_delete(row["event_id"])
-            except Exception:
-                logger.exception("retry cleanup failed for {}", row["scoped_checkpoint_id"])
-        last = pending[-1]
-        after = (last["deleted_at"], last["event_id"])
-        if len(pending) < 100:
-            return
-
-
-async def _run_outbox_worker(get_app_state, interval: float = 60.0) -> None:
-    """Periodic conversation cleanup outbox worker.
-
-    Runs at startup (once) and then every *interval* seconds.  Cancelled and
-    awaited during lifespan shutdown so no pending task is left after the
-    checkpointer is closed.  ``get_app_state`` is a callable so the worker
-    always reads the live ``app_state`` reference rather than a startup snapshot.
-    """
-    # Startup pass — drain any rows that survived a previous crash.
-    try:
-        await _retry_checkpoint_deletes(get_app_state())
-    except Exception:
-        logger.exception("outbox worker startup drain failed (non-fatal)")
-    while True:
-        try:
-            await asyncio.sleep(interval)
-        except asyncio.CancelledError:
-            return
-        try:
-            await _retry_checkpoint_deletes(get_app_state())
-        except Exception:
-            logger.exception("outbox worker periodic drain failed (non-fatal)")
 
 
 @app.delete("/api/conversations/{conversation_id}")
@@ -3939,77 +3485,57 @@ async def delete_conversation(
     agent_id: str = "cuga-default",
     current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
-    """Delete a conversation thread and its state, history, session knowledge, and uploads."""
-    from cuga.backend.server.conversation_threads import get_conversation_threads_db, request_scope
-    from cuga.backend.server.thread_guard import ThreadNotFound, resolve_owned_thread
+    """Delete a conversation: its checkpoint, session knowledge, uploads and history (#774).
+
+    Runs under the conversation's lease, so no turn can write while it deletes. Every step is
+    idempotent: if one fails the response is 500 and the client can retry. The owner row stays,
+    marked ``deleted``, so the ID can never be claimed again.
+    """
+    from cuga.backend.server.thread_lease import ThreadBusy, get_thread_lease
 
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     conversation_id = conversation_id.strip()
-    scope = request_scope(current_user, agent_id)
-
-    # A user-scoped DB delete can succeed without matching rows. Authorize
-    # before it triggers unscoped knowledge, ownership and upload cleanup.
+    conversation_db = get_conversation_db()
     try:
-        record = await resolve_owned_thread(scope, conversation_id)
-    except ThreadNotFound:
-        # W13.3: legacy (history-only) thread. Only the caller's own history rows go.
-        try:
-            conversation_db = get_conversation_db()
-            if await conversation_db.get_latest_version(agent_id, conversation_id, user_id) > 0:
-                if await conversation_db.delete_thread(agent_id, conversation_id, user_id):
-                    return JSONResponse({"status": "success", "message": "Conversation deleted"})
-        except Exception as e:
-            logger.error(f"Legacy conversation delete failed: {e}")
-        raise ThreadNotFound()
+        status = await conversation_db.get_thread_status(conversation_id, user_id, agent_id)
+    except Exception as exc:
+        logger.error(f"Conversation lookup failed: {type(exc).__name__}")
+        raise HTTPException(status_code=404, detail="Conversation not found") from exc
 
+    if status is None:
+        # History with no owner row predates thread ownership: the caller may remove only their
+        # own rows. Knowledge and uploads are keyed by thread ID alone, so they are left alone.
+        if await conversation_db.get_latest_version(agent_id, conversation_id, user_id) > 0:
+            if await conversation_db.delete_thread(agent_id, conversation_id, user_id):
+                return JSONResponse({"status": "success", "message": "Conversation deleted"})
+            raise HTTPException(status_code=500, detail="Failed to delete conversation")
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if status == "deleted":
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    checkpoint_key = _checkpoint_thread_id(conversation_id, user_id, agent_id)
+    lease = get_thread_lease()
     try:
-        threads_db = get_conversation_threads_db()
-        lease_module = None
-        try:
-            from cuga.backend.server.thread_lease import get_thread_lease
-
-            lease_module = get_thread_lease()
-        except Exception:
-            pass
-
-        _ckpt_key = _checkpoint_thread_id(conversation_id, user_id, record.agent_id or agent_id)
-        can_delegate = _thread_may_have_children()
-        cleanup_context = _thread_cleanup_context(scope, conversation_id, can_delegate)
-
-        # Step 1: atomically mark deleted and record every cleanup stage.
-        # If this write fails the route returns 500 — the thread stays accessible and
-        # no orphan is created. The outbox entry is the durable retry guarantee; it
-        # is written here before we report success so a restart cannot lose it.
-        event_id = await threads_db.mark_deleted_and_enqueue(
-            scope, conversation_id, _ckpt_key, delete_children=can_delegate
-        )
-
-        # Step 2: ask any in-flight turn to stop.
-        if lease_module:
-            try:
-                await lease_module.request_stop(_ckpt_key)
-            except Exception:
-                logger.warning("failed to request stop on lease for thread {}", conversation_id)
-
-        # Stop a local turn promptly; the lease check in cleanup also prevents
-        # acknowledging deletion while a turn on another replica can still write.
-        stop_events = getattr(request.app.state.app_state, "stop_events", {})
-        if conversation_id in stop_events:
-            stop_events[conversation_id].set()
-
-        if await _cleanup_deleted_thread(request.app.state.app_state, _ckpt_key, cleanup_context):
-            try:
-                # Only this event: a concurrent upload may have queued another
-                # cleanup for the same thread that must still run.
-                await threads_db.acknowledge_checkpoint_delete(event_id)
-            except Exception:
-                logger.exception("failed to acknowledge cleanup for {}", conversation_id)
-
-        logger.info(f"Deleted conversation: {conversation_id}")
-        return JSONResponse({"status": "success", "message": "Conversation deleted"})
+        token = await lease.acquire(checkpoint_key)
+    except ThreadBusy:
+        return JSONResponse(status_code=409, content={"error": "conflict", "retry_after_ms": 2000})
+    try:
+        handle = getattr(request.app.state.app_state, "checkpointer_handle", None)
+        if handle is not None:
+            saver = handle.saver
+            await saver.adelete_thread(checkpoint_key)
+        await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
+        await delete_thread_uploads(conversation_id)
+        if not await conversation_db.delete_thread(agent_id, conversation_id, user_id):
+            raise RuntimeError("history delete failed")
+        await conversation_db.set_thread_status(conversation_id, user_id, "deleted")
     except Exception as e:
-        logger.error(f"Failed to delete conversation: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete conversation")
+        logger.error(f"Failed to delete conversation: {type(e).__name__}")
+        raise HTTPException(status_code=500, detail="Failed to delete conversation") from e
+    finally:
+        await lease.release(token)
+    logger.info(f"Deleted conversation: {conversation_id}")
+    return JSONResponse({"status": "success", "message": "Conversation deleted"})
 
 
 @app.get("/api/config/memory")
@@ -4714,14 +4240,10 @@ async def get_agent_state(
                 detail="thread_id is required (provide via X-Thread-ID header or thread_id query parameter)",
             )
 
-        from cuga.backend.server.conversation_threads import request_scope
-        from cuga.backend.server.thread_guard import resolve_owned_thread
-
         user_id = _workspace_user_id(current_user)
         thread_id = _canonical_thread_id(thread_id)
-        scope = request_scope(current_user, _runtime_agent_id(request) or "cuga-default")
-        record = await resolve_owned_thread(scope, thread_id)
-        agent_id = record.agent_id or "cuga-default"
+        agent_id = await _assert_thread_access(thread_id, user_id, _runtime_agent_id(request), create=False)
+        agent_id = agent_id or "cuga-default"
         use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
         run_agent = app_state.agent
         if agent_id != "cuga-default" or use_draft:
@@ -5197,11 +4719,10 @@ async def upload_workspace_file(
         if not tid:
             raise HTTPException(status_code=400, detail="thread_id required for workspace upload")
 
-        from cuga.backend.server.conversation_threads import request_scope
-        from cuga.backend.server.thread_guard import ThreadNotFound, resolve_owned_thread
-
-        scope = request_scope(current_user, _runtime_agent_id(request) or agent_id or "cuga-default")
-        thread_record = await resolve_owned_thread(scope, tid)
+        user_id = _workspace_user_id(current_user)
+        # Conversations are created by POST /api/conversations; an upload never reserves an ID.
+        if await _assert_thread_access(tid, user_id, create=False) is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
 
         try:
             sanitize_upload_filename(file.filename or "upload.json")
@@ -5248,13 +4769,6 @@ async def upload_workspace_file(
             if "too large" in msg.lower():
                 raise HTTPException(status_code=413, detail=msg) from e
             raise HTTPException(status_code=400, detail=msg) from e
-        finally:
-            # Also after a partial failure: a sandbox may already be recorded.
-            deleted_meanwhile = await _cleanup_if_deleted_during_write(
-                request.app.state.app_state, scope, thread_record, tid
-            )
-        if deleted_meanwhile:
-            raise ThreadNotFound()
 
         logger.info(f"Workspace upload: {result['path']} ({result['size_bytes']} bytes) thread={tid}")
         return JSONResponse({"status": "success", **result})

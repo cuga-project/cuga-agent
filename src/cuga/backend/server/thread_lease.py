@@ -1,14 +1,9 @@
-"""
-Thread Lease Module
+"""Per-thread lease: at most one turn runs on a conversation at a time, across replicas (#774).
 
-Cross-replica, per-thread lease used to guarantee that only one turn runs on a
-conversation thread at a time. Leases live in the ``thread_leases`` table of the
-same relational store as the conversation history
-(``get_storage().get_relational_store("conversation")``), so they work with both
-local SQLite and prod Postgres.
-
-``holder_id`` is ``f"{replica_id}:{turn_uuid}"`` where ``replica_id`` is generated
-once per process.
+Leases live in the ``thread_leases`` table of the conversation relational store, so they work
+on local SQLite and prod Postgres alike. A lease expires after ``storage.thread_lease_ttl_seconds``
+unless renewed; an expired lease can be taken over, so a crashed replica never blocks a thread.
+Clock skew between replicas is tolerated because the TTL is several renew intervals long.
 """
 
 import asyncio
@@ -23,56 +18,62 @@ from loguru import logger
 from cuga.backend.storage import get_storage
 
 REPLICA_ID = uuid.uuid4().hex[:12]
-logger.info(f"thread_lease replica_id={REPLICA_ID}")
 
 
 @dataclass
 class LeaseToken:
     thread_id: str
     holder_id: str
-    expires_at: float
 
 
 class ThreadBusy(Exception):
     """Another live holder owns the lease for this thread."""
 
 
+def _ttl_seconds() -> float:
+    from cuga.config import settings
+
+    return float(settings.storage.thread_lease_ttl_seconds)
+
+
+def _renew_seconds() -> float:
+    from cuga.config import settings
+
+    return float(settings.storage.thread_lease_renew_seconds)
+
+
 class ThreadLease:
     def __init__(self):
-        self._schema_ensured = False
         self._schema_store = None
 
     def _get_store(self):
         return get_storage().get_relational_store("conversation")
 
-    async def _ensure_schema(self):
+    async def _store(self):
         store = self._get_store()
-        if self._schema_ensured and self._schema_store is store:
-            return
-        await store.execute("""
-            CREATE TABLE IF NOT EXISTS thread_leases (
-                thread_id      TEXT PRIMARY KEY,
-                holder_id      TEXT NOT NULL,
-                expires_at     REAL NOT NULL,
-                stop_requested INTEGER NOT NULL DEFAULT 0,
-                updated_at     REAL NOT NULL
-            )
-        """)
-        await store.commit()
-        self._schema_ensured = True
-        self._schema_store = store
+        if self._schema_store is not store:
+            await store.execute("""
+                CREATE TABLE IF NOT EXISTS thread_leases (
+                    thread_id      TEXT PRIMARY KEY,
+                    holder_id      TEXT NOT NULL,
+                    expires_at     REAL NOT NULL,
+                    stop_requested INTEGER NOT NULL DEFAULT 0,
+                    updated_at     REAL NOT NULL
+                )
+            """)
+            await store.commit()
+            self._schema_store = store
+        return store
 
     async def _holder_of(self, store, thread_id: str) -> Optional[str]:
         row = await store.fetchone("SELECT holder_id FROM thread_leases WHERE thread_id = ?", (thread_id,))
         return row["holder_id"] if row else None
 
-    async def acquire(self, thread_id: str, ttl_seconds: float = 60.0) -> LeaseToken:
-        """Take the lease if free or expired; raise ThreadBusy if a live holder owns it."""
-        await self._ensure_schema()
-        store = self._get_store()
+    async def acquire(self, thread_id: str, ttl_seconds: Optional[float] = None) -> LeaseToken:
+        """Take the lease if it is free or expired; raise ``ThreadBusy`` otherwise."""
+        store = await self._store()
         now = time.time()
-        new_holder_id = f"{REPLICA_ID}:{uuid.uuid4().hex}"
-        expires_at = now + ttl_seconds
+        holder_id = f"{REPLICA_ID}:{uuid.uuid4().hex}"
         await store.execute(
             """
             INSERT INTO thread_leases(thread_id, holder_id, expires_at, stop_requested, updated_at)
@@ -82,104 +83,63 @@ class ThreadLease:
                   stop_requested = 0, updated_at = excluded.updated_at
               WHERE thread_leases.expires_at < ?
             """,
-            (thread_id, new_holder_id, expires_at, now, now),
+            (thread_id, holder_id, now + (ttl_seconds or _ttl_seconds()), now, now),
         )
         await store.commit()
-        if await self._holder_of(store, thread_id) != new_holder_id:
+        # Read the holder back: the store's shared rowcount is not safe under concurrency.
+        if await self._holder_of(store, thread_id) != holder_id:
             raise ThreadBusy(thread_id)
-        return LeaseToken(thread_id=thread_id, holder_id=new_holder_id, expires_at=expires_at)
+        return LeaseToken(thread_id=thread_id, holder_id=holder_id)
 
-    async def renew(self, token: LeaseToken, ttl_seconds: float = 60.0) -> bool:
-        """Extend the lease. Returns False if this holder no longer owns it."""
-        await self._ensure_schema()
-        store = self._get_store()
+    async def renew(self, token: LeaseToken, ttl_seconds: Optional[float] = None) -> bool:
+        """Extend the lease. ``False`` means another holder took it over."""
+        store = await self._store()
         now = time.time()
-        expires_at = now + ttl_seconds
         await store.execute(
             "UPDATE thread_leases SET expires_at = ?, updated_at = ? WHERE thread_id = ? AND holder_id = ?",
-            (expires_at, now, token.thread_id, token.holder_id),
+            (now + (ttl_seconds or _ttl_seconds()), now, token.thread_id, token.holder_id),
         )
         await store.commit()
-        # The store's shared _last_rowcount can be clobbered by concurrent statements,
-        # so confirm ownership by reading the holder back instead.
-        if await self._holder_of(store, token.thread_id) != token.holder_id:
-            return False
-        token.expires_at = expires_at
-        return True
+        return await self._holder_of(store, token.thread_id) == token.holder_id
 
     async def release(self, token: LeaseToken) -> None:
-        """Delete the lease only if this token's holder still owns it."""
-        await self._ensure_schema()
-        store = self._get_store()
+        """Delete the lease if this token still holds it. Safe to call more than once."""
+        store = await self._store()
         await store.execute(
             "DELETE FROM thread_leases WHERE thread_id = ? AND holder_id = ?",
             (token.thread_id, token.holder_id),
         )
         await store.commit()
 
-    async def stop_requested(self, token: LeaseToken) -> bool:
-        await self._ensure_schema()
-        store = self._get_store()
-        row = await store.fetchone(
-            "SELECT stop_requested FROM thread_leases WHERE thread_id = ? AND holder_id = ?",
-            (token.thread_id, token.holder_id),
-        )
-        return bool(row and row["stop_requested"])
-
-    async def is_active(self, thread_id: str) -> bool:
-        """Whether a live holder can still write this thread's checkpoint."""
-        await self._ensure_schema()
-        row = await self._get_store().fetchone(
-            "SELECT expires_at FROM thread_leases WHERE thread_id = ?", (thread_id,)
-        )
-        return bool(row and row["expires_at"] > time.time())
-
-    async def request_stop(self, thread_id: str) -> bool:
-        """Flag the thread's lease for stop regardless of holder. True if a lease row exists."""
-        await self._ensure_schema()
-        store = self._get_store()
-        await store.execute(
-            "UPDATE thread_leases SET stop_requested = 1 WHERE thread_id = ?",
-            (thread_id,),
-        )
-        await store.commit()
-        # Confirm via read-back rather than the shared _last_rowcount (see renew).
-        row = await store.fetchone(
-            "SELECT stop_requested FROM thread_leases WHERE thread_id = ?", (thread_id,)
-        )
-        return bool(row and row["stop_requested"])
-
-
-async def _renew_loop(
-    token: LeaseToken,
-    lease: ThreadLease,
-    renew_seconds: float,
-    stop_event: Optional[asyncio.Event],
-) -> None:
-    while True:
-        await asyncio.sleep(renew_seconds)
-        still_held = await lease.renew(token)
-        if not still_held:
-            if stop_event is not None:
-                stop_event.set()
-            return
-
 
 @asynccontextmanager
-async def lease_scope(
+async def keep_lease(
     lease: ThreadLease,
-    thread_id: str,
-    ttl_seconds: float = 60.0,
-    renew_seconds: float = 20.0,
+    token: LeaseToken,
     stop_event: Optional[asyncio.Event] = None,
+    renew_seconds: Optional[float] = None,
 ):
-    """Acquire a lease, keep it renewed while the body runs, and release on exit.
+    """Renew an acquired lease while the body runs, then release it, also on cancellation.
 
-    Raises ThreadBusy if acquisition fails. If the lease is lost during renewal,
-    ``stop_event`` (when provided) is set. Release is shielded from cancellation.
+    If the lease is lost, ``stop_event`` is set so the running turn stops.
     """
-    token = await lease.acquire(thread_id, ttl_seconds)
-    renew_task = asyncio.create_task(_renew_loop(token, lease, renew_seconds, stop_event))
+
+    async def _renew_loop() -> None:
+        interval = renew_seconds or _renew_seconds()
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                held = await lease.renew(token)
+            except Exception:
+                logger.exception("lease renewal failed")
+                held = False
+            if not held:
+                logger.error("lease lost for a running turn; stopping it")
+                if stop_event is not None:
+                    stop_event.set()
+                return
+
+    renew_task = asyncio.create_task(_renew_loop())
     try:
         yield token
     finally:

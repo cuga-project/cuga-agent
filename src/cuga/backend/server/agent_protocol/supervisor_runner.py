@@ -90,18 +90,14 @@ class SupervisorAgentRunner:
         """
         try:
             from cuga.backend.server.conversation_history import get_conversation_db
-            from cuga.backend.server.conversation_threads import request_scope as _request_scope  # noqa: PLC0415
-            from cuga.backend.server.thread_scope_key import scoped_checkpoint_key as _scoped_checkpoint_key  # noqa: PLC0415
+            from cuga.backend.server.thread_scope import checkpoint_thread_id
 
-            raw_context_id = (context_id or "").strip() or uuid.uuid4().hex
-            thread_id = raw_context_id  # kept for conversation_history claim (external id)
+            thread_id = (context_id or "").strip() or uuid.uuid4().hex
             agent_id = getattr(self._app_state, "agent_id", "cuga-default")
             await get_conversation_db().claim_thread(thread_id, self._caller_user_id, agent_id)
-            # W07.3: isolate supervisor A2A checkpoint namespace from web threads
-            _a2a_scope = _request_scope(None, agent_id)
-            checkpoint_key = _scoped_checkpoint_key("a2a", _a2a_scope, raw_context_id)
+            scoped_id = checkpoint_thread_id(thread_id, self._caller_user_id, agent_id, entry="a2a")
             supervisor = await self._ensure_supervisor()
-            result = await supervisor.invoke(message, thread_id=thread_id, checkpoint_thread_id=checkpoint_key)
+            result = await supervisor.invoke(message, thread_id=thread_id, checkpoint_thread_id=scoped_id)
             answer = getattr(result, "answer", None) or str(result)
             error = getattr(result, "error", None)
             if error:

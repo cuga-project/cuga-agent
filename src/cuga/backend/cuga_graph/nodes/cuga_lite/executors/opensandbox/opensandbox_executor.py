@@ -46,7 +46,6 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     normalize_shell_command_paths,
 )
 from ..base_executor import RemoteExecutor
-from .sandbox_registry import forget_thread_sandbox, record_thread_sandbox, thread_sandbox_ids
 
 
 VIRTUAL_WORKSPACE_ROOT = "/workspace"
@@ -158,19 +157,6 @@ class OpenSandboxExecutor(RemoteExecutor):
                 timeout=timedelta(seconds=timeout_s),
                 connection_config=conn,
             )
-            if thread_id:
-                # Record the ID before use so conversation deletion can find this
-                # sandbox after a restart or from another replica.
-                try:
-                    await record_thread_sandbox(key, sandbox.id)
-                except Exception:
-                    try:
-                        await sandbox.kill()
-                    except Exception:
-                        logger.warning(
-                            f"[OpenSandboxExecutor] Could not kill unrecorded sandbox {sandbox.id}"
-                        )
-                    raise
             interpreter = await CodeInterpreter.create(sandbox)
 
             # Ensure the agent-facing workspace and shared Python venv exist.
@@ -266,51 +252,6 @@ class OpenSandboxExecutor(RemoteExecutor):
                 await interpreter.sandbox.close()
             except Exception:
                 pass
-
-    async def kill_thread_sandboxes(self, thread_id: str) -> None:
-        """Kill every remote sandbox recorded for thread_id, by sandbox ID.
-
-        Works without the process-local cache, so it is safe after a restart
-        or on another replica. A sandbox that no longer exists (expired) counts
-        as cleaned. Any other failure raises and keeps the remaining records
-        so the caller can retry.
-        """
-        from opensandbox import SandboxManager  # type: ignore[import]
-
-        async with self._get_key_lock(thread_id):
-            cached = self._sandboxes.pop(thread_id, None)
-            self._active_skills_config.pop(thread_id, None)
-            self._skills_config.pop(thread_id, None)
-        sandbox_ids = await thread_sandbox_ids(thread_id)
-        cached_id = getattr(getattr(cached, "sandbox", None), "id", None)
-        if isinstance(cached_id, str) and cached_id not in sandbox_ids:
-            sandbox_ids.append(cached_id)
-        if not sandbox_ids:
-            return
-
-        failures: list[str] = []
-        manager = await SandboxManager.create(self._get_connection_config())
-        try:
-            for sandbox_id in sandbox_ids:
-                try:
-                    await manager.kill_sandbox(sandbox_id)
-                except Exception as exc:
-                    if getattr(exc, "status_code", None) != 404:
-                        logger.warning(
-                            f"[OpenSandboxExecutor] kill sandbox {sandbox_id} for thread={thread_id}: {exc}"
-                        )
-                        failures.append(sandbox_id)
-                        continue
-                await forget_thread_sandbox(thread_id, sandbox_id)
-        finally:
-            await manager.close()
-            if cached is not None:
-                try:
-                    await cached.sandbox.close()
-                except Exception:
-                    pass
-        if failures:
-            raise RuntimeError(f"failed to kill sandboxes {failures} for thread {thread_id}")
 
     # ------------------------------------------------------------------ #
     # Tool factories                                                       #

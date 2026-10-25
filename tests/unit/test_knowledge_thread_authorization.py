@@ -18,7 +18,9 @@ pytestmark = pytest.mark.unit
 def runtime(monkeypatch):
     provider = SessionProvider()
     graph = MagicMock()
+    graph.aget_state = AsyncMock(return_value=SimpleNamespace(values={}, next=()))
     state = SimpleNamespace(
+        stop_events={},
         knowledge_provider=provider,
         knowledge_engine=SimpleNamespace(_config=SimpleNamespace(enabled=True)),
         current_llm=None,
@@ -37,13 +39,11 @@ def runtime(monkeypatch):
 @pytest.mark.parametrize("user", ["alice", "bob"])
 async def test_stream_authorizes_thread_before_dispatch(runtime, monkeypatch, owner_source, user):
     provider, database, _ = runtime
-    from cuga.backend.server.conversation_threads import get_conversation_threads_db, request_scope
-
-    scope_alice = request_scope(SimpleNamespace(sub="alice"), "cuga-default")
-    await get_conversation_threads_db().create(scope_alice, "victim-thread")
     if owner_source == "knowledge":
         provider.claim_session("victim-thread", "alice")
+        await database.create_conversation("victim-thread", "alice", "cuga-default")
     else:
+        # History only: a conversation from before session continuity, which nobody can continue.
         await database.save_conversation("cuga-default", "victim-thread", 1, "alice", [])
 
     async def empty_stream(*args, **kwargs):
@@ -60,23 +60,15 @@ async def test_stream_authorizes_thread_before_dispatch(runtime, monkeypatch, ow
     app.dependency_overrides[main.require_chat_access] = lambda: SimpleNamespace(sub=user)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post("/stream", headers={"X-Thread-ID": " victim-thread "})
-    if user == "bob":
+    if user == "alice" and owner_source == "knowledge":
+        assert response.status_code == 200, response.text
+        assert dispatch.call_args.kwargs["thread_id"] == "victim-thread"
+        assert provider.get_session("victim-thread").user_id == "alice"
+    else:
         assert response.status_code == 404, response.text
         dispatch.assert_not_called()
         if owner_source == "conversation":
             assert provider.get_session("victim-thread") is None
-        else:
-            assert await database.claim_thread("victim-thread", "alice", create=False) is None
-            app.dependency_overrides[main.require_chat_access] = lambda: SimpleNamespace(sub="alice")
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                owner_response = await client.post("/stream", headers={"X-Thread-ID": "victim-thread"})
-            assert owner_response.status_code == 200, owner_response.text
-    else:
-        assert response.status_code == 200, response.text
-        assert dispatch.call_args.kwargs["thread_id"] == "victim-thread"
-        assert provider.get_session("victim-thread").user_id == "alice"
 
 
 @pytest.mark.asyncio
@@ -109,10 +101,6 @@ async def test_conversation_delete_cannot_remove_another_users_ownership(
     runtime, monkeypatch, thread, knowledge_enabled
 ):
     provider, database, _ = runtime
-    from cuga.backend.server.conversation_threads import get_conversation_threads_db, request_scope
-
-    scope_alice = request_scope(SimpleNamespace(sub="alice"), "cuga-default")
-    await get_conversation_threads_db().create(scope_alice, "victim-thread")
     main.app_state.knowledge_engine._config.enabled = knowledge_enabled
     provider.claim_session("victim-thread", "alice")
     # The DB layer returns True even for a user-filtered delete matching no rows.
@@ -136,11 +124,8 @@ async def test_conversation_delete_cannot_remove_another_users_ownership(
 @pytest.mark.asyncio
 async def test_conversation_owner_can_still_delete_knowledge_and_uploads(runtime, monkeypatch):
     provider, database, _ = runtime
-    from cuga.backend.server.conversation_threads import get_conversation_threads_db, request_scope
-
-    scope_alice = request_scope(SimpleNamespace(sub="alice"), "cuga-default")
-    await get_conversation_threads_db().create(scope_alice, "victim-thread")
     provider.claim_session("victim-thread", "alice")
+    await database.create_conversation("victim-thread", "alice", "cuga-default")
     database.delete_thread = AsyncMock(return_value=True)
     main.app_state.knowledge_engine.drop_collection = AsyncMock()
     uploads = AsyncMock()
@@ -153,9 +138,7 @@ async def test_conversation_owner_can_still_delete_knowledge_and_uploads(runtime
         response = await client.delete("/api/conversations/victim-thread")
     assert response.status_code == 200, response.text
     database.delete_thread.assert_awaited_once_with("cuga-default", "victim-thread", "alice")
-    main.app_state.knowledge_engine.drop_collection.assert_awaited_once_with(
-        "kb_sess_victim_thread", strict=True
-    )
+    main.app_state.knowledge_engine.drop_collection.assert_awaited_once_with("kb_sess_victim_thread")
     uploads.assert_awaited_once_with("victim-thread")
     # Generated files and checkpoints may survive cleanup, so keep the owner.
     assert provider.get_session("victim-thread").user_id == "alice"

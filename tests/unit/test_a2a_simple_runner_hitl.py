@@ -254,18 +254,16 @@ async def test_pending_action_reads_on_async_only_saver():
     The graph runs on ``AsyncOnlySaver``, which records each sync call before raising,
     because ``_pending_action`` swallows a state-read error and would otherwise report
     the thread as "not parked".
-
-    W07.3: SimpleAgentRunner now passes a pre-scoped checkpoint_key as thread_id to
-    event_stream, so the mock must use kwargs["thread_id"] directly rather than
-    re-applying checkpoint_thread_id.
     """
+    from cuga.backend.server.thread_scope import checkpoint_thread_id
+
     graph, saver = parked_hitl_graph(_HITL)
     seen = {"resume": []}
 
     async def event_stream(**kwargs):
         seen["resume"].append(kwargs.get("resume"))
-        # W07.3: thread_id is already the scoped checkpoint_key; use directly.
-        config = {"configurable": {"thread_id": kwargs["thread_id"]}}
+        scoped = checkpoint_thread_id(kwargs["thread_id"], kwargs["user_id"], "cuga-default", kwargs["entry"])
+        config = {"configurable": {"thread_id": scoped}}
         if kwargs.get("resume") is None:
             await graph.ainvoke({"answer": ""}, config)  # parks before WaitForResponse
             yield b"event: tool_call\ndata: preparing\n\n"

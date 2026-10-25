@@ -172,7 +172,7 @@ class ReactRuntime(AgentRuntime):
         graph = self._graphs.get((scope, agent_id))
         if graph is None:
             graph = self._graphs[(scope, agent_id)] = await self._build(spec)
-        cfg = {"configurable": {"thread_id": thread_id or "default"}}  # W07.6: thread_id here is a namespacing key; prefixed values are acceptable
+        cfg = {"configurable": {"thread_id": thread_id or "default"}}
         result = await graph.ainvoke({"messages": [HumanMessage(content=text)]}, config=cfg)
         return result["messages"][-1].content or ""
 

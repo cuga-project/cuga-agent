@@ -605,18 +605,12 @@ async def test_supervisor_runner_is_lazy_forwards_context_and_uses_configured_ca
 
     assert from_yaml_calls == ["supervisor.yaml"]
     assert state.isolated_cache is fake
-    # W07.3: SupervisorAgentRunner now uses scoped_checkpoint_key("a2a", ...) instead of
-    # the old checkpoint_thread_id hash. Assert the new prefixed format.
+    from cuga.backend.server.thread_scope import checkpoint_thread_id
 
-    # Re-derive the expected keys with the same scope request_scope would produce.
-    # Since get_tenant_id/get_service_instance_id may vary by env, match by prefix only.
-    assert len(invoke_calls) == 2
-    assert invoke_calls[0][0] == "one"
-    assert invoke_calls[0][1] == "ctx-1"
-    assert invoke_calls[0][2].startswith("a2a:"), f"Expected a2a: prefix, got {invoke_calls[0][2]}"
-    assert invoke_calls[1][0] == "two"
-    assert invoke_calls[1][1] == "ctx-2"
-    assert invoke_calls[1][2].startswith("a2a:"), f"Expected a2a: prefix, got {invoke_calls[1][2]}"
+    assert invoke_calls == [
+        ("one", "ctx-1", checkpoint_thread_id("ctx-1", "agent_protocol_user", "cuga-default", "a2a")),
+        ("two", "ctx-2", checkpoint_thread_id("ctx-2", "agent_protocol_user", "cuga-default", "a2a")),
+    ]
     assert [first[-1].data, second[-1].data] == [{"text": "answer"}, {"text": "answer"}]
 
 

@@ -376,24 +376,13 @@ async def delete_all_configs(agent_id: str = "cuga-default") -> int:
     return getattr(store, "_last_rowcount", 0)
 
 
-# Conversation state shares cuga.db with config in local mode, but its LangGraph
-# checkpoints live in a separate file. Resetting config must keep these tables:
-# dropping them loses every conversation and orphans its checkpoints (#774).
-CONVERSATION_TABLES = frozenset(
-    {
-        "conversation_threads",
-        "checkpoint_delete_outbox",
-        "conversation_history",
-        "stream_events",
-        "conversation_deletion_outbox",
-        "runtime_thread_owners",
-        "thread_leases",
-        "thread_sandboxes",
-    }
-)
+def reset_config_db() -> None:
+    from cuga.config import DBS_DIR
 
-
-def _remove_db_files(path: str) -> None:
+    # Close/clear cached relational stores first so we don't leave connections pointing at
+    # the deleted file; the next access reopens against the recreated DB.
+    get_storage().invalidate_relational_stores()
+    path = os.path.join(DBS_DIR, "cuga.db")
     # WAL mode makes this a three-file unit. Dropping only the main DB leaves an
     # orphaned -wal/-shm pair still describing pages the recreated file doesn't
     # have, so the next connection reads past EOF and raises
@@ -402,60 +391,3 @@ def _remove_db_files(path: str) -> None:
     for target in (path, f"{path}-wal", f"{path}-shm"):
         if os.path.exists(target):
             os.remove(target)
-
-
-def _drop_tables_except(path: str, keep: frozenset[str]) -> None:
-    import sqlite3
-
-    conn = sqlite3.connect(path)
-    try:
-        try:
-            import sqlite_vec
-
-            conn.enable_load_extension(True)
-            sqlite_vec.load(conn)
-            conn.enable_load_extension(False)
-        except ImportError:
-            pass
-
-        def _tables() -> list[tuple[str, str]]:
-            return conn.execute(
-                "SELECT name, COALESCE(sql, '') FROM sqlite_master "
-                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-            ).fetchall()
-
-        # Virtual tables (sqlite-vec policies, FTS) first: dropping one also
-        # drops its shadow tables, which cannot be dropped on their own.
-        for name, sql in _tables():
-            if name not in keep and sql.upper().startswith("CREATE VIRTUAL TABLE"):
-                conn.execute(f'DROP TABLE IF EXISTS "{name}"')
-        for name, _ in _tables():
-            if name not in keep:
-                conn.execute(f'DROP TABLE IF EXISTS "{name}"')
-        conn.commit()
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    finally:
-        conn.close()
-
-
-def reset_config_db() -> None:
-    """Reset config (agents, secrets, policies, ...) to a fresh state.
-
-    Conversation tables are kept so conversations survive a demo restart. If
-    the file cannot be cleaned in place (corrupt, or a virtual table whose
-    module is unavailable), the whole file is removed as before.
-    """
-    from cuga.config import DBS_DIR
-
-    # Close/clear cached relational stores first so no connection keeps stale
-    # schema; the next access reopens and recreates missing tables.
-    get_storage().invalidate_relational_stores()
-    path = os.path.join(DBS_DIR, "cuga.db")
-    if not os.path.exists(path):
-        _remove_db_files(path)
-        return
-    try:
-        _drop_tables_except(path, CONVERSATION_TABLES)
-    except Exception as exc:
-        logger.warning(f"Config reset could not clean {path} in place ({exc}); removing the file")
-        _remove_db_files(path)

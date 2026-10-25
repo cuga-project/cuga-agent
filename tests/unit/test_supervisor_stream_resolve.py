@@ -95,10 +95,6 @@ def test_registry_disabled_ignores_non_default_agent_id(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stream_forwards_x_agent_id_as_execution_identity(monkeypatch):
-    from cuga.backend.server.conversation_threads import get_conversation_threads_db, request_scope
-
-    scope = request_scope(None, "sales-east")
-    await get_conversation_threads_db().create(scope, "thread-1")
     captured: dict = {}
 
     async def fake_event_stream(*_args, **kwargs):
@@ -116,7 +112,6 @@ async def test_stream_forwards_x_agent_id_as_execution_identity(monkeypatch):
     request = MagicMock()
     request.headers.get.side_effect = lambda key, default=None: {
         "X-Agent-ID": "sales-east",
-        "X-Thread-ID": "thread-1",
         "X-Use-Draft": "",
         "X-Disable-History": "",
     }.get(key, default)

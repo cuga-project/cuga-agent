@@ -121,16 +121,12 @@ def create_agent_delegation_func(
                 agent_name=agent_name,
                 agent_or_config=agent_or_config,
             )
-            # Tag the child run so deleting the parent conversation can find it (#774, W12.6).
-            parent_thread_id = str(getattr(getattr(exec_ctx, "state", None), "thread_id", "") or "").strip()
-            child_config = {"metadata": {"cuga_parent_thread_id": parent_thread_id}} if parent_thread_id else None
             # A child tool-approval pause is not surfaced to the parent: invoke() returns the
             # pause notice as the answer and the child stays parked in its own saver (#774).
             async with child_checkpoint_lock(agent_or_config, child_thread_id):
                 result = await agent_or_config.invoke(
                     task,
                     thread_id=child_thread_id,
-                    config=child_config,
                     variables=vars_to_pass if vars_to_pass else None,
                 )
 

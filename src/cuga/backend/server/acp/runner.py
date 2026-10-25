@@ -54,14 +54,6 @@ class StdioCugaRunner:
         from cuga.backend.server.agent_protocol.events import AgentStreamEvent
 
         agent = await self._get_initialized_agent()
-        # W07.4: isolate ACP checkpoint namespace from web threads
-        from cuga.backend.server.conversation_threads import request_scope as _request_scope  # noqa: PLC0415
-        from cuga.backend.server.thread_scope_key import scoped_checkpoint_key as _scoped_checkpoint_key  # noqa: PLC0415
-
-        _acp_agent_id = getattr(agent, "agent_id", "cuga-default")
-        _acp_scope = _request_scope(None, _acp_agent_id)
-        checkpoint_key = _scoped_checkpoint_key("acp", _acp_scope, context_id or "") if context_id else None
-
         action_response = None
         invoke_message: str | None = message
         if approval is not None:
@@ -70,7 +62,7 @@ class StdioCugaRunner:
                 yield AgentStreamEvent("error", final=True)
                 return
             try:
-                pending = await _pending_action(agent, checkpoint_key)
+                pending = await _pending_action(agent, context_id)
             except Exception:
                 yield AgentStreamEvent("error", final=True)
                 return
@@ -95,11 +87,11 @@ class StdioCugaRunner:
 
         result = await agent.invoke(
             invoke_message,
-            thread_id=checkpoint_key,
+            thread_id=context_id,
             action_response=action_response,
         )
         try:
-            pending = await _pending_action(agent, checkpoint_key)
+            pending = await _pending_action(agent, context_id)
         except Exception:
             yield AgentStreamEvent("error", final=True)
             return

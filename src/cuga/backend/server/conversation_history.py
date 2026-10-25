@@ -109,6 +109,15 @@ class ConversationHistoryDB:
             tenant_id TEXT NOT NULL, instance_id TEXT NOT NULL, thread_id TEXT NOT NULL,
             user_id TEXT NOT NULL, agent_id TEXT NOT NULL, created_at TEXT NOT NULL,
             PRIMARY KEY (tenant_id, instance_id, thread_id))""")
+        # Conversation status for session continuity (#774): new | active | legacy | deleted.
+        # Owners recorded before the column existed are conversations that cannot be continued.
+        try:
+            await store.execute(
+                "ALTER TABLE runtime_thread_owners ADD COLUMN status TEXT NOT NULL DEFAULT 'legacy'"
+            )
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower() and "already exists" not in str(exc).lower():
+                raise
         for idx_sql in [
             "CREATE INDEX IF NOT EXISTS idx_thread_id ON conversation_history(thread_id)",
             "CREATE INDEX IF NOT EXISTS idx_user_id ON conversation_history(user_id)",
@@ -169,8 +178,8 @@ class ConversationHistoryDB:
             [
                 (
                     """INSERT INTO runtime_thread_owners
-                    (tenant_id, instance_id, thread_id, user_id, agent_id, created_at)
-                    SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (
+                    (tenant_id, instance_id, thread_id, user_id, agent_id, created_at, status)
+                    SELECT ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (
                         SELECT 1 FROM conversation_history
                         WHERE tenant_id = ? AND instance_id = ? AND thread_id = ? AND user_id <> ?
                     ) AND NOT EXISTS (
@@ -178,7 +187,13 @@ class ConversationHistoryDB:
                         WHERE tenant_id = ? AND instance_id = ? AND thread_id = ? AND user_id <> ?
                     ) ON CONFLICT (tenant_id, instance_id, thread_id) DO NOTHING""",
                     scope
-                    + (user_id, claimed_agent, datetime.now(timezone.utc).isoformat())
+                    # Binding pre-existing history keeps the thread read-only in the web UI.
+                    + (
+                        user_id,
+                        claimed_agent,
+                        datetime.now(timezone.utc).isoformat(),
+                        "legacy" if legacy else "active",
+                    )
                     + scope
                     + (user_id,)
                     + scope
@@ -198,6 +213,68 @@ class ConversationHistoryDB:
         if agent_id and owner["agent_id"] != agent_id:
             raise ThreadOwnershipError("Access denied: thread belongs to another agent")
         return owner["agent_id"]
+
+    async def create_conversation(self, thread_id: str, user_id: str, agent_id: str) -> None:
+        """Record a server-issued conversation in status ``new`` (#774).
+
+        Raises ``ThreadOwnershipError`` if the ID is already taken.
+        """
+        await self._ensure_schema()
+        store = self._get_store()
+        scope = (_tenant_id(), _instance_id(), thread_id)
+        await store.execute(
+            """INSERT INTO runtime_thread_owners
+            (tenant_id, instance_id, thread_id, user_id, agent_id, created_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'new') ON CONFLICT (tenant_id, instance_id, thread_id) DO NOTHING""",
+            scope + (user_id, agent_id, datetime.now(timezone.utc).isoformat()),
+        )
+        await store.commit()
+        row = await store.fetchone(
+            """SELECT user_id, agent_id, status FROM runtime_thread_owners
+            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?""",
+            scope,
+        )
+        if not row or (row["user_id"], row["agent_id"], row["status"]) != (user_id, agent_id, "new"):
+            raise ThreadOwnershipError("Thread ID already in use")
+
+    async def get_thread_status(self, thread_id: str, user_id: str, agent_id: str) -> Optional[str]:
+        """The conversation status if ``user_id`` / ``agent_id`` own the thread, else ``None``.
+
+        Storage errors propagate: callers must fail closed.
+        """
+        await self._ensure_schema()
+        row = await self._get_store().fetchone(
+            """SELECT user_id, agent_id, status FROM runtime_thread_owners
+            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?""",
+            (_tenant_id(), _instance_id(), thread_id.strip()),
+        )
+        if not row or row["user_id"] != user_id or (row["agent_id"] and row["agent_id"] != agent_id):
+            return None
+        return row["status"]
+
+    async def set_thread_status(
+        self, thread_id: str, user_id: str, status: str, *, only_from: Optional[str] = None
+    ) -> None:
+        sql = """UPDATE runtime_thread_owners SET status = ?
+            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ? AND user_id = ?"""
+        params: tuple = (status, _tenant_id(), _instance_id(), thread_id.strip(), user_id)
+        if only_from is not None:
+            sql += " AND status = ?"
+            params += (only_from,)
+        await self._ensure_schema()
+        store = self._get_store()
+        await store.execute(sql, params)
+        await store.commit()
+
+    async def get_thread_statuses(self, user_id: str, agent_id: str) -> Dict[str, str]:
+        """``thread_id -> status`` for every conversation the user owns with this agent."""
+        await self._ensure_schema()
+        rows = await self._get_store().fetchall(
+            """SELECT thread_id, status FROM runtime_thread_owners
+            WHERE tenant_id = ? AND instance_id = ? AND user_id = ? AND agent_id IN (?, '')""",
+            (_tenant_id(), _instance_id(), user_id, agent_id),
+        )
+        return {row["thread_id"]: row["status"] for row in rows}
 
     async def save_conversation(
         self, agent_id: str, thread_id: str, version: int, user_id: str, messages: List[Dict[str, Any]]
