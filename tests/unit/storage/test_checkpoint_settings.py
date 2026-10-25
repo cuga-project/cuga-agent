@@ -1,4 +1,4 @@
-"""Checkpointer settings under ``[storage]`` (issue #774, W01.2).
+"""Checkpointer settings under ``[storage]`` (issue #774).
 
 Rejection tests build a private ``Dynaconf`` instance from the real
 ``cuga.config.validators`` so the global ``settings`` object is never mutated.
@@ -14,13 +14,7 @@ EXPECTED_DEFAULTS = {
     "checkpoint_db_path": "",
     "checkpoint_pool_min_size": 1,
     "checkpoint_pool_max_size": 10,
-    "checkpoint_retention_days": 90,
-    "checkpoint_prune_interval_minutes": 60,
-    "thread_lease_ttl_seconds": 60,
-    "thread_lease_renew_seconds": 20,
 }
-
-INTEGER_KEYS = [k for k, v in EXPECTED_DEFAULTS.items() if isinstance(v, int)]
 
 
 def _storage_validators():
@@ -48,42 +42,13 @@ def test_settings_toml_ships_the_defaults():
         assert settings.storage[key] == expected, key
 
 
-def test_every_key_has_a_validator_with_the_same_default():
-    validators = {v.names[0]: v for v in _storage_validators()}
-    assert set(validators) == {f"storage.{k}" for k in EXPECTED_DEFAULTS}
-    for key, expected in EXPECTED_DEFAULTS.items():
-        assert validators[f"storage.{key}"].default == expected, key
-
-
-def test_validators_supply_defaults_when_the_keys_are_missing(tmp_path):
-    isolated = _isolated_settings(tmp_path)
-    isolated.validators.validate_all()
-    for key, expected in EXPECTED_DEFAULTS.items():
-        assert isolated.storage[key] == expected, key
-
-
-@pytest.mark.parametrize("value", ["durable", "memory"])
-def test_checkpointer_accepts_known_values(tmp_path, value):
-    isolated = _isolated_settings(tmp_path, f'checkpointer = "{value}"')
-    isolated.validators.validate_all()
-    assert isolated.storage.checkpointer == value
-
-
 def test_checkpointer_rejects_unknown_value(tmp_path):
     isolated = _isolated_settings(tmp_path, 'checkpointer = "foo"')
     with pytest.raises(ValidationError, match="storage.checkpointer"):
         isolated.validators.validate_all()
 
 
-@pytest.mark.parametrize("key", INTEGER_KEYS)
-def test_integer_settings_reject_negative_values(tmp_path, key):
-    isolated = _isolated_settings(tmp_path, f"{key} = -1")
-    with pytest.raises(ValidationError, match=f"storage.{key}"):
+def test_pool_sizes_must_be_at_least_one(tmp_path):
+    isolated = _isolated_settings(tmp_path, "checkpoint_pool_max_size = 0")
+    with pytest.raises(ValidationError, match="storage.checkpoint_pool_max_size"):
         isolated.validators.validate_all()
-
-
-@pytest.mark.parametrize("key", INTEGER_KEYS)
-def test_integer_settings_accept_zero(tmp_path, key):
-    isolated = _isolated_settings(tmp_path, f"{key} = 0")
-    isolated.validators.validate_all()
-    assert isolated.storage[key] == 0

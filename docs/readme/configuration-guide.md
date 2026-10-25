@@ -1109,12 +1109,8 @@ A pending approval is tied to the published agent configuration that created it.
 | `checkpoint_db_path` | `""` | Local mode only. SQLite file for checkpoints; empty means `DBS_DIR/checkpoints.db` |
 | `checkpoint_pool_min_size` | `1` | Prod mode only. Minimum Postgres connection pool size |
 | `checkpoint_pool_max_size` | `10` | Prod mode only. Maximum Postgres connection pool size |
-| `checkpoint_retention_days` | `90` | Prod mode only. Checkpoints older than this are pruned; `0` disables time-based pruning |
-| `checkpoint_prune_interval_minutes` | `60` | How often the prune job runs |
-| `thread_lease_ttl_seconds` | `60` | How long a conversation thread lease is held before it expires |
-| `thread_lease_renew_seconds` | `20` | How often an active run renews its thread lease |
 
-Integer keys must be `0` or greater. These keys are part of the durable session continuity work ([#774](https://github.com/cuga-project/cuga-agent/issues/774)) and have no effect until the checkpointer factory reads them.
+In `prod` mode the checkpoint tables are created at startup, so the database user needs DDL rights.
 
 </details>
 
