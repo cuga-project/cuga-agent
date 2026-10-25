@@ -13,19 +13,12 @@ reviews:
       - "readability: good"
       - "readability: fair"
       - "readability: poor"
+    design-impact:
+      - "design-impact: low"
+      - "design-impact: medium"
+      - "design-impact: high"
 
   labeling_instructions:
-    - label: "ready: maintainer-review"
-      instructions: |
-        Apply when the PR is genuinely ready for a human maintainer. Require ALL of:
-        - Not a draft; nothing in title/description signals WIP or "not ready"
-        - Description links a related issue (e.g. "Closes #123", "Fixes #456", or a github.com/.../issues/ URL)
-        - readability: good applies (clear what/why/how-tested; ≤10 files OR large diff explained)
-        - All critical CodeRabbit review comments are addressed (author replied or code changed;
-          no open blocking/critical findings left unresolved)
-        Do not apply on first open. Remove this label if new critical CodeRabbit comments appear
-        or readability drops below good.
-
     - label: "readability: good"
       instructions: |
         Apply exactly one readability label. Use good when a maintainer can grasp the goal in
@@ -69,6 +62,38 @@ reviews:
         - No linked issue for a non-trivial change (roughly >5 files or non-obvious behavior)
         Use fair instead of poor only when one dimension is weak but the goal is stated plainly
         in the first sentence (e.g. "Fixes login timeout" plus light testing notes).
+
+    # Design impact asks whether the change needs a design decision, not how big the diff is.
+    - label: "design-impact: low"
+      instructions: |
+        Apply exactly one design-impact label. Use low when the diff needs no design decision.
+        Require ALL of:
+        - Follows an existing pattern; adds no new abstraction, extension point, or subsystem
+        - No change to a public contract: API/SDK schemas, config keys, CLI commands,
+          event or streaming protocols, stored data schemas
+        - No new dependency, external service, or storage backend
+        - One concern, easy to revert
+        Examples: a bug fix that restores documented behavior, a new tool or model provider
+        added through the existing interface, a mechanical rename. A large diff can still be low.
+
+    - label: "design-impact: medium"
+      instructions: |
+        Apply exactly one design-impact label. Use medium when the diff adds real logic but
+        stays bounded: new behavior in one or two areas, no new public contract, and no new
+        pattern other features will reuse. Use medium when any low criterion fails and no
+        high criterion applies.
+
+    - label: "design-impact: high"
+      instructions: |
+        Apply exactly one design-impact label. Use high when the diff needs a design decision.
+        ANY of:
+        - New or changed public contract, a breaking change, or a data migration
+        - New subsystem, abstraction, or pattern that other features will reuse
+        - Changes to the agent loop, multi-agent orchestration, events, function calling,
+          or sub-agent spawning
+        - Security, auth, sandboxing, or policy enforcement behavior
+        - Hard to reverse once released
+        A small diff can still be high.
 
     # Area labels may coexist. Classify the actual diff, using paths as hints.
     # They describe scope, not complexity, review requirements, or approval.
@@ -114,7 +139,7 @@ reviews:
         on filenames alone. Ordinary documentation is not automatically a prompt.
         Apply alongside other relevant area labels.
 
-    - label: "area: llm"
+    - label: "area: llm-integrations"
       instructions: |
         Apply when the diff changes model-provider integrations, model selection, inference
         parameters, reasoning settings, token accounting, or model request/response handling.
@@ -233,3 +258,166 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+
+issue_enrichment:
+  auto_enrich:
+    enabled: true
+  labeling:
+    # Suggest only: a person confirms the labels at triage.
+    auto_apply_labels: false
+    # Same design-impact and area labels as PRs, judged from the issue text instead of a
+    # diff. They decide the design path in the development guidelines; the PR labels are
+    # the backup check. File paths, stack traces, and component names are hints.
+    labeling_instructions:
+      - label: "design-impact: low"
+        instructions: |
+          Suggest exactly one design-impact label. Use low when the work needs no design
+          decision. Require ALL of:
+          - Follows an existing pattern; adds no new abstraction, extension point, or subsystem
+          - No change to a public contract: API/SDK schemas, config keys, CLI commands,
+            event or streaming protocols, stored data schemas
+          - No new dependency, external service, or storage backend
+          - One concern, easy to revert
+          Examples: a bug fix that restores documented behavior, a new tool or model provider
+          added through the existing interface, a mechanical rename.
+
+      - label: "design-impact: medium"
+        instructions: |
+          Suggest exactly one design-impact label. Use medium when the work adds real logic
+          but stays bounded: new behavior in one or two areas, no new public contract, and no
+          new pattern other features will reuse. Use medium when any low criterion fails and
+          no high criterion applies, or when the issue is too vague to judge.
+
+      - label: "design-impact: high"
+        instructions: |
+          Suggest exactly one design-impact label. Use high when the work needs a design
+          decision. ANY of:
+          - New or changed public contract, a breaking change, or a data migration
+          - New subsystem, abstraction, or pattern that other features will reuse
+          - Changes to the agent loop, multi-agent orchestration, events, function calling,
+            or sub-agent spawning
+          - Security, auth, sandboxing, or policy enforcement behavior
+          - Hard to reverse once released
+
+      - label: "area: frontend"
+        instructions: |
+          Suggest when the work will change UI components, styling, accessibility, client
+          state, navigation, chat, dashboards, browser-extension UI, or desktop UI, or the
+          issue reports a bug that users see in that UI. Suggest alongside other area labels.
+
+      - label: "area: security"
+        instructions: |
+          Suggest when the work will change authentication, authorization, credential or
+          secret handling, sandboxing, tenant/session isolation, untrusted input handling,
+          or sensitive data exposure or retention. Do not suggest only because the issue
+          mentions security. Suggest alongside other area labels.
+
+      - label: "area: policies"
+        instructions: |
+          Suggest when the work will change guardrails, tool approval rules, policy matching,
+          enforcement, playbooks, or policy administration. Suggest alongside other area
+          labels, including security when applicable.
+
+      - label: "area: orchestration"
+        instructions: |
+          Suggest when the work will change agent graph execution, supervisor routing,
+          delegation, multi-agent orchestration, sub-agent spawning, shared execution state,
+          checkpoints, cancellation, retries, or human-in-the-loop pause/resume behavior.
+          Suggest alongside other area labels.
+
+      - label: "area: prompts"
+        instructions: |
+          Suggest when the work will change LLM prompts, agent instructions, skills, prompt
+          construction, context supplied to a model, or model output requirements.
+          Suggest alongside other area labels.
+
+      - label: "area: llm-integrations"
+        instructions: |
+          Suggest when the work will change model-provider integrations, model selection,
+          inference parameters, reasoning settings, token accounting, or model
+          request/response handling. Prompt wording alone does not qualify.
+          Suggest alongside other area labels.
+
+      - label: "area: tools-integrations"
+        instructions: |
+          Suggest when the work will change tool registration, discovery, invocation, MCP
+          clients or servers, external service adapters, or runtime skill/tool loading.
+          Suggest alongside other area labels.
+
+      - label: "area: browser-automation"
+        instructions: |
+          Suggest when the work will change browser control, page understanding, browser
+          sessions, web navigation, or automated interaction with pages. A browser-extension
+          UI change alone does not qualify. Suggest alongside other area labels.
+
+      - label: "area: api-sdk"
+        instructions: |
+          Suggest when the work will change server endpoints, SDK methods, public
+          request/response schemas, streaming or event protocols, A2A/ACP integration, or
+          API compatibility. Suggest alongside other area labels.
+
+      - label: "area: cli"
+        instructions: |
+          Suggest when the work will change CLI commands, options, terminal output,
+          interactive terminal flows, or command-driven setup.
+          Suggest alongside other area labels.
+
+      - label: "area: knowledge"
+        instructions: |
+          Suggest when the work will change knowledge ingestion, document processing,
+          retrieval, embeddings, indexing, or knowledge profiles.
+          Suggest alongside other area labels.
+
+      - label: "area: memory"
+        instructions: |
+          Suggest when the work will change conversation or agent memory, context
+          summarization, memory retrieval, or retained context across runs.
+          Suggest alongside other area labels.
+
+      - label: "area: storage"
+        instructions: |
+          Suggest when the work will change databases, persistence, data schemas,
+          migrations, storage backends, filesystem read/write behavior, or data
+          import/export. Suggest alongside other area labels.
+
+      - label: "area: configuration"
+        instructions: |
+          Suggest when the work will change application settings, defaults,
+          environment-variable handling, feature flags, or configuration loading and
+          validation. CI-only changes belong to infra. Suggest alongside other area labels.
+
+      - label: "area: observability"
+        instructions: |
+          Suggest when the work will change logs, traces, metrics, activity tracking,
+          telemetry callbacks, or exported execution trajectories.
+          Suggest alongside other area labels.
+
+      - label: "area: testing-evaluation"
+        instructions: |
+          Suggest when the main ask is tests, fixtures, test tooling, evaluation datasets,
+          benchmarks, scoring, or stability checks. Do not suggest only because the work
+          will need tests. Suggest alongside other area labels.
+
+      - label: "area: infra"
+        instructions: |
+          Suggest when the work will change CI workflows, repository automation, containers,
+          deployment, release processes, build tooling, or packaging.
+          Suggest alongside other area labels.
+
+      - label: "area: dependencies"
+        instructions: |
+          Suggest when the issue asks to add, remove, or update a dependency or version
+          constraint, or the work clearly needs a new dependency. Do not suggest only
+          because a library is mentioned. Suggest alongside other area labels.
+
+      - label: "area: docs"
+        instructions: |
+          Suggest when the issue asks for documentation, guides, READMEs, architecture
+          documents, contributor instructions, or documented examples. Runtime prompt or
+          skill Markdown is not documentation. Suggest alongside other area labels.
+
+      - label: "area: licensing"
+        instructions: |
+          Suggest when the work will change licenses, notices, attribution, license policy,
+          dependency license allowlists, or license enforcement.
+          Suggest alongside other area labels.
