@@ -250,8 +250,14 @@ class CombinedToolProvider(ToolProviderInterface):
         else:
             if self.app_names is not None:
                 filtered_apps = [app for app in all_apps if app.name in self.app_names]
-                if not filtered_apps:
-                    logger.warning(f"None of the requested apps found: {self.app_names}")
+                if self.app_names and not filtered_apps:
+                    logger.warning(
+                        f"None of the requested apps found: {self.app_names}. "
+                        f"Agent: {self.agent_id}; available registry/tracker apps: "
+                        f"{sorted({app.name for app in all_apps})}. "
+                        "Check the saved agent tools against MCP_SERVERS_FILE. "
+                        "Legacy `uv run demo` startup reuses saved agent configuration."
+                    )
                 self.apps = [
                     AppDefinition(
                         name=app.name,

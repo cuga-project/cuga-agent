@@ -1,7 +1,7 @@
 """Stored app scopes hold even when a YAML registry returns every application."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 import json
 
 import pytest
@@ -100,3 +100,38 @@ async def test_supervisor_tools_endpoint_does_not_advertise_global_apps(monkeypa
 
     assert json.loads(response.body) == {"tools": [], "apps": []}
     apps.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "config,expected",
+    [
+        ({}, ["digital_sales"]),
+        ({"tools": [{"name": "digital_sales"}]}, ["digital_sales"]),
+        ({"tools": [{"name": "crm"}]}, []),
+        ({"tools": []}, []),
+    ],
+)
+async def test_default_startup_scope_with_external_yaml_registry(monkeypatch, config, expected):
+    """Legacy startup without a stored scope works; saved scopes remain authoritative."""
+    monkeypatch.setattr(
+        combined,
+        "get_apps",
+        AsyncMock(return_value=[AppDefinition(name="digital_sales", url="http://test.invalid", type="api")]),
+    )
+    monkeypatch.setattr(combined.tracker, "apps", [])
+    monkeypatch.setattr(combined.settings.advanced_features, "registry", True)
+    warning = MagicMock()
+    monkeypatch.setattr(combined.logger, "warning", warning)
+    provider = combined.CombinedToolProvider(
+        agent_id="cuga-default", app_names=agent_registry.configured_tool_apps(config)
+    )
+
+    assert [app.name for app in await provider.get_apps()] == expected
+    if config.get("tools") == [{"name": "crm"}]:
+        warning.assert_called_once()
+        message = warning.call_args.args[0]
+        assert "crm" in message and "digital_sales" in message
+        assert "MCP_SERVERS_FILE" in message and "uv run demo" in message
+    else:
+        warning.assert_not_called()
