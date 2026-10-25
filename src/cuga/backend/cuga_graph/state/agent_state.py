@@ -1,9 +1,9 @@
-import inspect
+from typing import Annotated, Dict, List, Optional, Literal, Any
 import json
+import inspect
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from langchain_core.messages import (
     AIMessage,
@@ -13,22 +13,22 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from loguru import logger
 from pydantic import BaseModel, Field, SerializeAsAny, field_validator
+from loguru import logger
 
-from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.api_models import ApiDescription
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.browser_models import NextAgentPlan
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.task_models import (
     AnalyzeTaskOutput,
     TaskDecompositionPlan,
 )
-from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse, FollowUpAction
+from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import FollowUpAction, ActionResponse
 from cuga.backend.cuga_graph.state.api_planner_history import (
     HistoricalAction,
 )
-from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
 from cuga.config import settings
+from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
+from cuga.backend.activity_tracker.tracker import ActivityTracker
 
 
 def keep_highest(current: Optional[int], incoming: Optional[int]) -> int:

@@ -182,36 +182,23 @@ async def build_agents_from_list(
             # notice. Headless callers now ask for it explicitly instead of imposing it on all.
             policy_system = agent_config.get("policy_system")
 
-            # Determine whether this sub-agent should share the parent's saver.
-            # Conversation-scoped agents persist state across restarts; call-scoped
-            # agents keep an ephemeral MemorySaver (unique per invocation).
-            from cuga.config import settings as _settings
+            # Conversation-scoped sub-agents share the parent's saver so their memory survives a
+            # restart. Call-scoped ones keep nothing between calls and stay on their own MemorySaver.
+            from cuga.config import settings
 
-            _scope_raw = agent_config.get("memory_scope")
-            _scope = normalize_memory_scope(
-                _scope_raw
-                if _scope_raw is not None
-                else getattr(getattr(_settings, "supervisor", None), "sub_agent_memory_scope", None)
+            scope = agent_config.get("memory_scope")
+            if scope is None:
+                scope = getattr(getattr(settings, "supervisor", None), "sub_agent_memory_scope", None)
+            shared = normalize_memory_scope(scope) == MEMORY_SCOPE_CONVERSATION
+            agent = CugaAgent(
+                tools=tools,
+                tool_provider=tool_provider,
+                policy_system=policy_system,
+                special_instructions=agent_config.get("special_instructions"),
+                model=model,
+                auto_load_policies=agent_config.get("auto_load_policies", auto_load_policies),
+                checkpointer=checkpointer if shared else None,
             )
-            if checkpointer is not None and _scope == MEMORY_SCOPE_CONVERSATION:
-                agent = CugaAgent(
-                    tools=tools,
-                    tool_provider=tool_provider,
-                    policy_system=policy_system,
-                    special_instructions=agent_config.get("special_instructions"),
-                    model=model,
-                    auto_load_policies=agent_config.get("auto_load_policies", auto_load_policies),
-                    checkpointer=checkpointer,
-                )
-            else:
-                agent = CugaAgent(
-                    tools=tools,
-                    tool_provider=tool_provider,
-                    policy_system=policy_system,
-                    special_instructions=agent_config.get("special_instructions"),
-                    model=model,
-                    auto_load_policies=agent_config.get("auto_load_policies", auto_load_policies),
-                )
             feature_overrides = agent_config.get("feature_overrides") or {}
             agent._feature_overrides = {k: v for k, v in feature_overrides.items() if v is not None}
             memory_scope = agent_config.get("memory_scope")
@@ -303,11 +290,11 @@ async def build_agents_from_stored_subagents(
     """
     import os
 
-    from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
     from cuga.backend.server.config_store import load_config, load_draft
     from cuga.backend.server.manage_routes.helpers import (
         extract_agent_feature_overrides,
     )
+    from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
 
     agent_configs: List[Dict[str, Any]] = []
 
