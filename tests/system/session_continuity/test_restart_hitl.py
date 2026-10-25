@@ -274,3 +274,74 @@ async def test_conversation_scoped_child_agent_retains_history_across_restart_an
         "third message",
         "child answer 3",
     ]
+
+
+@pytest.mark.parametrize("confirmed", [True, False])
+async def test_product_supervisor_plan_approval_resumes_once_after_restart(checkpoints, confirmed):
+    """The entry graph executes its approved plan once after reopening the saver."""
+    from cuga import CugaAgent
+    from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph
+    from cuga.backend.cuga_graph.state.agent_state import default_state
+
+    class SupervisorModel(FakeListChatModel):
+        def with_structured_output(self, schema, **kwargs):
+            return self
+
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+    thread_id = f"plan-approval-restart-{confirmed}"
+    cfg = {"configurable": {"thread_id": thread_id}}
+
+    async def build(saver, responses):
+        child = CugaAgent(
+            tools=[],
+            model=FakeListChatModel(responses=["child answer"]),
+            auto_load_policies=False,
+            enable_knowledge=False,
+            enable_skills=False,
+            checkpointer=saver,
+        )
+        model = SupervisorModel(responses=responses)
+        with patch("cuga.backend.llm.models.LLMManager.get_model", return_value=model):
+            owner = CugaEntryGraph(
+                None,
+                supervisor_agents={"worker": child},
+                supervisor_enabled=True,
+                supervisor_plan_approval=True,
+                supervisor_id="test-supervisor",
+            )
+            await owner.build_graph(checkpointer=saver)
+        return owner.graph, model, child
+
+    saver = (await checkpoints.open()).saver
+    graph, model, _ = await build(saver, ['```python\nprint(await delegate_to_worker(task="lookup"))\n```'])
+    state = default_state(page=None, observation=None, goal="")
+    state.input = "delegate to worker"
+    state.thread_id = thread_id
+    state.supervisor_mode = True
+    with patch("cuga.backend.llm.models.LLMManager.get_model", return_value=model):
+        await graph.ainvoke(state.model_dump(), cfg)
+    paused = await graph.aget_state(cfg)
+    assert paused.next == (WAIT,)
+    assert paused.values["hitl_action"]["action_id"] == "agent_approval"
+    assert paused.values["script"] == 'print(await delegate_to_worker(task="lookup"))'
+
+    saver = (await checkpoints.open()).saver
+    graph, model, child = await build(saver, ["done"])
+    response = ActionResponse(
+        action_id="agent_approval",
+        response_type=ActionType.CONFIRMATION,
+        confirmed=confirmed,
+        timestamp=datetime.now().isoformat(),
+    )
+    with patch("cuga.backend.llm.models.LLMManager.get_model", return_value=model):
+        result = await graph.ainvoke(Command(resume=response.model_dump()), cfg)
+    assert result["final_answer"] == ("done" if confirmed else "Agent execution was cancelled by user.")
+    assert (await graph.aget_state(cfg)).next == ()
+    adapter = SupervisorGraphAdapter(agents={"worker": child}, supervisor_id="test-supervisor")
+    child_id = resolve_child_checkpoint_id(
+        state=state, adapter=adapter, agent_name="worker", agent_or_config=child
+    )
+    child_snapshot = await child.graph.aget_state({"configurable": {"thread_id": child_id}})
+    assert len((child_snapshot.values or {}).get("chat_messages", [])) == (2 if confirmed else 0)
