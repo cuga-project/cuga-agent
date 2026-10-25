@@ -1,4 +1,4 @@
-"""Configuration fingerprint for durable session continuity (#774, W10.1).
+"""Configuration fingerprint for durable session continuity (#774).
 
 A fingerprint is computed from the agent's published config and the CUGA
 runtime version. It replaces the plain ``published_config_version`` integer
@@ -127,7 +127,7 @@ def classify_config_change(
     pending: bool,
     expected_version: Optional[str] = None,
 ) -> ConfigDecision:
-    """Apply the decision table to a checkpoint's ``service_scope`` (#774, W10.3).
+    """Apply the decision table to a checkpoint's ``service_scope`` (#774).
 
     | turn      | agent changed | runtime only changed |
     |-----------|---------------|----------------------|

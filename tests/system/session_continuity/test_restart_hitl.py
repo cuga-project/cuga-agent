@@ -234,7 +234,7 @@ async def _child_messages(agents, adapter, state):
 
 
 async def test_conversation_scoped_child_agent_retains_history_across_restart_and_rebuild(checkpoints):
-    """W17.1 row 2f / W04.4: a conversation-scoped child keeps its history across both events.
+    """A conversation-scoped child keeps its history across both events.
 
     The roster is built by ``build_agents_from_list`` with the shared saver, so the child is a real
     ``CugaAgent`` on it, and each delegation goes through ``create_agent_delegation_func`` and

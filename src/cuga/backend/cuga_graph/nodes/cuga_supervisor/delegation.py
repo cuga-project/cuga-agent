@@ -144,7 +144,7 @@ def create_agent_delegation_func(
                 agent_or_config=agent_or_config,
             )
             # Record durable child IDs in the parent's service_scope so cleanup can find
-            # them even after the child is removed from the roster (#774, W12.6).
+            # them even after the child is removed from the roster.
             if exec_ctx is not None and exec_ctx.state is not None:
                 scope = resolve_memory_scope(agent_or_config, adapter=adapter, agent_name=agent_name)
                 if scope != MEMORY_SCOPE_CALL:

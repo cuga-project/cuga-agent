@@ -266,7 +266,7 @@ async def _delete_child_checkpoints(
     Children come from two sources:
     - The ``child_checkpoint_ids`` list recorded in the parent's final ``service_scope``
       (covers children that were removed, renamed, or switched to call scope since the
-      last delegation — #774, W12.6).
+      last delegation).
     - The current stored ``supervisor.subAgents`` and, for the default agent, the YAML
       roster (covers children that never delegated in a previous turn).
 
@@ -1947,7 +1947,7 @@ async def event_stream(
         return StreamEvent(name=name, data=data).format(app_state.output_format, thread_id=thread_id)
 
     async def _reconcile_config(snapshot: Any, is_resume: bool) -> tuple[Any, List[str], bool]:
-        """Apply the config-change decision table to a loaded checkpoint (#774, W10.3).
+        """Apply the config-change decision table to a loaded checkpoint (#774).
 
         Returns the checkpoint to continue from (re-read after a cancel), the events to send
         before the graph runs, and whether the request ends with those events. The events are

@@ -306,7 +306,7 @@ async def test_stop_sent_to_another_replica_stops_the_running_turn(app_replicas)
 
 
 async def test_retention_sweep_prunes_idle_conversation_on_postgres(dsn, tmp_path, monkeypatch):
-    """W12.3/F9: the retention sweep marks an idle conversation legacy and removes its checkpoint.
+    """The retention sweep marks an idle conversation legacy and removes its checkpoint.
 
     Uses Postgres so the pgvector-integration job exercises the full path. The relational
     store (owner rows) and the checkpointer both point at the CI database.

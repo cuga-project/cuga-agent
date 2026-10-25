@@ -1,4 +1,4 @@
-"""Configuration fingerprint and stale-interrupt decision table (#774, W10.3, W10.4, W09.6)."""
+"""Configuration fingerprint and stale-interrupt decision table (#774)."""
 
 from __future__ import annotations
 
@@ -392,7 +392,7 @@ async def test_pending_interrupt_from_before_an_upgrade_is_cancelled_with_a_noti
     assert {e["event_name"] for e in saved["events"]} == {"UserMessage", "Answer"}
 
 
-# --- in-place policy updates at an unchanged published version (F5) -------------------------
+# --- in-place policy updates at an unchanged published version ----------------------------
 
 
 async def test_same_version_policy_rewrite_cancels_a_pending_approval(monkeypatch):

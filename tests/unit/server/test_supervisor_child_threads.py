@@ -1,4 +1,4 @@
-"""Supervisor child threads on the shared saver — W04.4/W12.6."""
+"""Supervisor child threads on the shared saver (#774)."""
 
 from __future__ import annotations
 
@@ -241,7 +241,7 @@ async def test_delete_child_checkpoints_propagates_saver_errors():
 
 
 async def test_delete_child_checkpoints_propagates_parent_config_lookup_errors():
-    """A failed parent config lookup must not look like "no children" (F3)."""
+    """A failed parent config lookup must not look like "no children"."""
     from cuga.backend.server.main import _delete_child_checkpoints
 
     saver = MagicMock()
@@ -262,7 +262,7 @@ async def test_delete_child_checkpoints_propagates_parent_config_lookup_errors()
 
 
 async def test_delete_child_checkpoints_propagates_child_config_lookup_errors():
-    """A failed sub-agent config lookup must not skip that child's checkpoint (F3)."""
+    """A failed sub-agent config lookup must not skip that child's checkpoint."""
     from cuga.backend.server.main import _delete_child_checkpoints
 
     saver = MagicMock()
@@ -284,7 +284,7 @@ async def test_delete_child_checkpoints_propagates_child_config_lookup_errors():
 
 
 async def test_delete_child_checkpoints_covers_yaml_roster_children(tmp_path, monkeypatch):
-    """The default agent's YAML supervisor children share the saver, so they are deleted too (F2)."""
+    """The default agent's YAML supervisor children share the saver, so they are deleted too."""
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import child_checkpoint_id
     from cuga.backend.server import main as main_mod
     from cuga.config import settings
@@ -358,7 +358,7 @@ async def test_delete_child_checkpoints_ignores_yaml_roster_for_other_agents(tmp
 async def test_delete_child_checkpoints_deletes_recorded_ids_after_roster_removal():
     """Child IDs recorded in service_scope are deleted even when absent from the current roster.
 
-    This covers the W12.6 lifecycle case where a child was removed or renamed since
+    This covers the case where a child was removed or renamed since
     the last delegation.
     """
     from cuga.backend.server.main import _delete_child_checkpoints

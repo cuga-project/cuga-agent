@@ -1,4 +1,4 @@
-"""Tests for the configuration fingerprint module (#774, W10.1)."""
+"""Tests for the configuration fingerprint module (#774)."""
 
 from __future__ import annotations
 

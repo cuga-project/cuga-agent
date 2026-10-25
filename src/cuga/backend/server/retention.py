@@ -37,7 +37,7 @@ async def _prune_batch(
 
     A conversation whose lease is held (a turn is running) or whose prune fails is left
     ``new``/``active`` and is retried by the next sweep.  Conversation-scoped supervisor
-    child checkpoints are deleted before the parent (W12.6).
+    child checkpoints are deleted before the parent.
     """
     from cuga.backend.server.main import _delete_child_checkpoints
 
