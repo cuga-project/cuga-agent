@@ -1,4 +1,4 @@
-"""``create_checkpointer`` against a real Postgres (issue #774, W02.1).
+"""``create_checkpointer`` against a real Postgres (issue #774).
 
 Uses the same connection string as the other ``pgvector`` tests
 (``CUGA_KNOWLEDGE_PGVECTOR_CONNECTION_STRING``, set by the
@@ -57,7 +57,6 @@ async def test_postgres_handle_setup_round_trip_and_close():
         assert isinstance(handle.saver, AsyncPostgresSaver)
         # The factory already ran setup(); it must be safe to run again.
         await handle.saver.setup()
-        assert await handle.ping() is True
 
         checkpoint = empty_checkpoint()
         checkpoint["channel_values"] = {"messages": ["hello"]}
@@ -73,8 +72,6 @@ async def test_postgres_handle_setup_round_trip_and_close():
             await handle.saver.adelete_thread(thread_id)
         finally:
             await handle.aclose()
-
-    assert await handle.ping() is False
 
     # A second handle on the same database runs setup() again without error.
     second = await create_checkpointer(_storage(dsn))

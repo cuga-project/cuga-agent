@@ -183,14 +183,10 @@ postgres_url = ""  # required when mode=prod
 preserve_configs_on_startup = "prod"
 # Execution-state persistence for published agent graphs (issue #774).
 # "durable" = SQLite (local) / Postgres (prod) LangGraph checkpointer; "memory" = in-process MemorySaver (rollback).
-checkpointer = "memory"  # flipped to "durable" in W17.4
+checkpointer = "memory"
 checkpoint_db_path = ""  # local only; default DBS_DIR/checkpoints.db
 checkpoint_pool_min_size = 1  # prod only
 checkpoint_pool_max_size = 10  # prod only
-checkpoint_retention_days = 90  # prod only; 0 disables time-based pruning
-checkpoint_prune_interval_minutes = 60
-thread_lease_ttl_seconds = 60
-thread_lease_renew_seconds = 20
 
 [storage.embedding]
 provider = "local"  # "openai", "local", or "auto" (tries OpenAI, falls back to local)

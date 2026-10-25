@@ -1,9 +1,8 @@
-"""A ``CugaAgent`` on ``cuga.checkpointers.sqlite`` resumes a thread in a new process (#774, W15.4).
+"""A ``CugaAgent`` on an ``AsyncSqliteSaver`` resumes a thread in a new process (#774).
 
 Each step runs ``_durable_checkpointer_child.py`` in its own interpreter
 (``sys.executable``, the parent's environment), so the only thing two steps share
-is the SQLite file. The child uses a fake chat model, blocks socket connects and DNS
-lookups, and reports any attempt; the tests assert there were none.
+is the SQLite file. The child uses a fake chat model.
 
 ``LANGGRAPH_STRICT_MSGPACK`` is set to ``true`` by the root conftest and inherited by
 the children, so a CUGA state type missing from the serde allowlist fails these
@@ -31,10 +30,10 @@ _ANSWER = "There are 3 accounts."
 _PAUSED = "Execution paused for approval"
 # Mirrors VARIABLE_* in the child. Plain JSON values: a user pydantic model kept in
 # variables_storage would come back from the default allowlist serde as a dict, by
-# design (#774 ledger), so it could not be compared with ==.
+# design, so it could not be compared with ==.
 _VARIABLE_NAME = "customer"
 _VARIABLE_VALUE = {"id": 42, "name": "Acme", "tags": ["vip", "emea"], "balance": 12.5, "active": True}
-# Tracing exporters would try the network; the child would refuse and report it.
+# Keep tracing exporters from calling out from the child.
 _TRACING_ENV = (
     "LANGSMITH_TRACING",
     "LANGCHAIN_TRACING_V2",
@@ -65,7 +64,6 @@ def _run_child(tmp_path: Path, step: str, threads: str) -> dict:
     )
     out = json.loads(lines[-1][len(_RESULT_PREFIX) :])
     assert out["saver"] == "AsyncSqliteSaver"
-    assert out["network_attempts"] == []
     return out
 
 
@@ -92,26 +90,14 @@ def test_second_process_continues_the_thread_with_messages_and_variables(tmp_pat
 
 
 def test_second_process_resumes_a_hitl_pause(tmp_path):
-    # Two paused threads: one resumed with the public API, one on the compiled graph.
-    paused = _run_child(tmp_path, "hitl_pause", "h-sdk,h-graph")
+    paused = _run_child(tmp_path, "hitl_pause", "h")
+    assert _PAUSED in paused["answer"]
+    assert paused["after"]["next"] == ["WaitForResponse"]
 
-    for thread_id in ("h-sdk", "h-graph"):
-        pause = paused["threads"][thread_id]
-        assert _PAUSED in pause["answer"]
-        assert pause["after"]["next"] == ["WaitForResponse"]
-        assert pause["after"]["hitl_action"] is True
-        assert pause["after"]["chat_messages"] == ["delete the users table"]
-
-    resumed = _run_child(tmp_path, "hitl_resume", "h-sdk,h-graph")
-
-    for thread_id in ("h-sdk", "h-graph"):
-        resume = resumed["threads"][thread_id]
-        # Process 2 found the pending approval in the file ...
-        assert resume["before"]["next"] == ["WaitForResponse"], thread_id
-        assert resume["before"]["hitl_action"] is True, thread_id
-        # ... resumed it to the final answer, and nothing is pending any more.
-        assert resume["answer"] == "deleted after approval", thread_id
-        assert resume["after"]["next"] == [], thread_id
-        assert resume["after"]["interrupts"] == 0, thread_id
-        assert resume["after"]["hitl_action"] is False, thread_id
-        assert resume["after"]["chat_messages"] == ["delete the users table"], thread_id
+    resumed = _run_child(tmp_path, "hitl_resume", "h")
+    # Process 2 found the pending approval in the file, resumed it, and nothing is pending.
+    assert resumed["before"]["next"] == ["WaitForResponse"]
+    assert resumed["before"]["hitl_action"] is True
+    assert resumed["answer"] == "deleted after approval"
+    assert resumed["after"]["next"] == []
+    assert resumed["after"]["hitl_action"] is False

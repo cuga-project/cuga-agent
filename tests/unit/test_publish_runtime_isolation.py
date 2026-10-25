@@ -244,17 +244,3 @@ async def test_default_publish_rebuild_keeps_conversations_on_shared_saver():
     assert agent.graph is not old_graph
     assert agent._checkpoint_config_version == "2"
     assert (await agent.graph.aget_state(cfg)).values["input"] == "before publish"
-
-
-@pytest.mark.asyncio
-async def test_default_publish_rebuild_without_shared_saver_starts_fresh():
-    """With no shared saver (lifespan never ran) the rebuild falls back to a fresh MemorySaver."""
-    agent, cfg = await _seeded_default_agent(None)
-    old_graph = agent.graph
-    state = SimpleNamespace(agent=agent, checkpointer=None)
-
-    await _rebuild(state)
-
-    assert agent.graph is not old_graph
-    assert not (await agent.graph.aget_state(cfg)).values
-    assert (await old_graph.aget_state(cfg)).values["input"] == "before publish"

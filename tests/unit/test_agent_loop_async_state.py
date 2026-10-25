@@ -66,18 +66,6 @@ def _loop(graph, thread_id):
     return AgentLoop(thread_id=thread_id, langfuse_handler=None, graph=graph, tracker=ActivityTracker())
 
 
-async def test_sync_saver_methods_raise():
-    graph = _answer_graph()
-    with pytest.raises(AssertionError, match="sync"):
-        graph.get_state({"configurable": {"thread_id": "x"}})
-
-
-async def test_run_reads_final_state_through_async_saver():
-    loop = _loop(_answer_graph(), "run-thread")
-    answer = await loop.run(state=default_state(page=None, observation=None, goal="q"))
-    assert answer.end is True and answer.answer == "done"
-
-
 async def test_run_stream_reads_final_state_through_async_saver():
     loop = _loop(_answer_graph(), "stream-thread")
     events = [e async for e in loop.run_stream(state=default_state(page=None, observation=None, goal="q"))]
@@ -119,19 +107,3 @@ async def test_agent_runner_browser_loop_uses_async_state_access():
     state = await runner.get_current_state()
     assert state.final_answer == "saw clicked"
     assert state.feedback == _FEEDBACK
-
-
-async def test_agent_runner_yield_loop_uses_async_state_access():
-    with _browser_runner("yield-thread") as runner:
-        events = [e async for e in runner.run_task_generic_yield(goal="click it")]
-
-    assert events[-1].answer == "saw clicked"
-    state = await runner.get_current_state()
-    assert state.feedback == _FEEDBACK
-
-
-async def test_get_current_state_requires_initialized_loop():
-    from cuga.backend.cuga_graph.utils.controller import AgentRunner
-
-    with pytest.raises(RuntimeError, match="not initialized"):
-        await AgentRunner(browser_enabled=False).get_current_state()

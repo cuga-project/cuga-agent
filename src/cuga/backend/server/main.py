@@ -680,10 +680,9 @@ def format_time_custom():
 
 
 async def _open_checkpointer() -> None:
-    """Create the shared checkpointer handle from ``settings.storage`` (issue #774, W02.3).
+    """Create the shared checkpointer handle from ``settings.storage`` (issue #774).
 
-    Never falls back to memory: a durable saver that cannot be opened fails startup,
-    because silently running on memory would lose every conversation on restart.
+    Never falls back to memory: a durable saver that cannot be opened fails startup.
     """
     from cuga.backend.storage.checkpoint import create_checkpointer
 
@@ -691,25 +690,13 @@ async def _open_checkpointer() -> None:
     try:
         app_state.checkpointer_handle = await create_checkpointer(storage)
     except Exception as exc:
-        checkpointer = getattr(storage, "checkpointer", None)
-        mode = getattr(storage, "mode", None) or "local"
-        if checkpointer == "durable" and mode == "prod":
-            hint = (
-                "check that storage.postgres_url points at a reachable Postgres whose user has "
-                "DDL rights, or set storage.checkpointer=memory"
-            )
-        elif checkpointer == "durable":
-            hint = "check that storage.checkpoint_db_path is writable, or set storage.checkpointer=memory"
-        else:
-            hint = "check the [storage] settings"
         # Type name only: driver errors can echo connection details.
         logger.error(
             "Startup aborted: could not open the checkpointer (storage.checkpointer={}, storage.mode={}): {}. "
-            "Fix: {}.",
-            checkpointer,
-            mode,
+            "Check the [storage] settings, or set storage.checkpointer=memory.",
+            getattr(storage, "checkpointer", None),
+            getattr(storage, "mode", None) or "local",
             type(exc).__name__,
-            hint,
         )
         raise
 
@@ -725,28 +712,6 @@ async def _close_checkpointer() -> None:
         logger.info("Checkpointer closed (kind={})", handle.kind)
     except Exception as exc:
         logger.warning("Closing the checkpointer failed (kind={}): {}", handle.kind, type(exc).__name__)
-
-
-CHECKPOINTER_HEALTH_TIMEOUT_S = 1.0
-
-
-async def _checkpointer_health() -> Dict[str, Any]:
-    """``{"kind", "ok"}`` for the shared checkpointer (issue #774, W02.4); never raises.
-
-    Probes the handle, never ``graph.checkpointer``. With no handle (before
-    startup, after shutdown, or in tests that skip the lifespan) the shape stays
-    the same: ``{"kind": None, "ok": False}``. The response carries no exception
-    text; a failed probe is just ``ok: False``.
-    """
-    handle = app_state.checkpointer_handle
-    if handle is None:
-        return {"kind": None, "ok": False}
-    try:
-        ok = bool(await handle.ping(timeout=CHECKPOINTER_HEALTH_TIMEOUT_S))
-    except Exception as exc:  # noqa: BLE001 - ping() never raises; guard anyway
-        logger.debug("Checkpointer health check failed (kind={}): {}", handle.kind, type(exc).__name__)
-        ok = False
-    return {"kind": handle.kind, "ok": ok}
 
 
 async def _build_published_default_agent(
@@ -2679,15 +2644,7 @@ if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
 
 @app.get("/health")
 async def health():
-    # Informational only: the checkpointer field never changes the status code or
-    # "status", so a checkpoint-DB outage cannot fail a liveness check.
-    return JSONResponse(
-        {
-            "status": "ok",
-            "subsystems": app_state.get_subsystem_statuses(),
-            "checkpointer": await _checkpointer_health(),
-        }
-    )
+    return JSONResponse({"status": "ok", "subsystems": app_state.get_subsystem_statuses()})
 
 
 @app.get("/health/readiness")
@@ -2714,14 +2671,11 @@ async def readiness(subsystem: Optional[str] = Query(None)):
     elif any(state != "ready" for state in active_states):
         overall = "starting"
 
-    # Reported alongside, not folded into "ready": a SQLite probe can time out
-    # behind a busy writer, and this endpoint has always answered 200.
     return JSONResponse(
         {
             "status": overall,
             "ready": overall == "ready",
             "subsystems": statuses,
-            "checkpointer": await _checkpointer_health(),
         }
     )
 

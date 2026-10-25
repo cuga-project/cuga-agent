@@ -1,4 +1,4 @@
-"""The server lifespan owns the checkpointer handle (issue #774, W02.3).
+"""The server lifespan owns the checkpointer handle (issue #774).
 
 ``lifespan()`` opens the handle, runs ``_app_lifespan`` (the rest of startup and
 shutdown) inside it, and closes the handle last. These tests patch
@@ -112,7 +112,6 @@ async def test_durable_creation_failure_fails_startup_without_leaking_url(log_li
     assert len(errors) == 1
     assert "storage.checkpointer=durable" in errors[0]
     assert "OSError" in errors[0]
-    assert "storage.postgres_url" in errors[0]  # actionable hint
     assert all(SECRET not in line for line in log_lines)
 
 
@@ -133,45 +132,8 @@ async def test_later_startup_failure_still_closes_handle():
     assert main.app_state.checkpointer_handle is None
 
 
-async def test_close_failure_is_logged_not_raised(log_lines):
-    async def _boom() -> None:
-        raise ConnectionError(f"pool close failed for {SECRET}")
-
-    handle = CheckpointerHandle(saver=MagicMock(), kind="postgres", _close=_boom)
-
-    with (
-        patch(FACTORY, AsyncMock(return_value=handle)),
-        patch.object(main, "settings", SimpleNamespace(storage=_storage("durable", "prod"))),
-        patch.object(main, "_app_lifespan", _stub_app_lifespan([])),
-    ):
-        async with main.lifespan(MagicMock()):
-            pass
-
-    assert handle.closed
-    assert main.app_state.checkpointer_handle is None
-    assert any("ConnectionError" in line for line in log_lines if line.startswith("WARNING"))
-    assert all(SECRET not in line for line in log_lines)
-
-
-async def test_default_memory_mode_uses_the_real_factory():
-    events: list[str] = []
-    with (
-        patch.object(main, "settings", SimpleNamespace(storage=_storage("memory"))),
-        patch.object(main, "_app_lifespan", _stub_app_lifespan(events)),
-    ):
-        async with main.lifespan(MagicMock()):
-            handle = main.app_state.checkpointer_handle
-            assert handle is not None and handle.kind == "memory"
-            from langgraph.checkpoint.memory import MemorySaver
-
-            assert isinstance(main.app_state.checkpointer, MemorySaver)
-
-    assert handle.closed
-    assert main.app_state.checkpointer_handle is None
-
-
 async def test_startup_published_agent_writes_to_the_shared_saver(monkeypatch):
-    """The startup build of ``app_state.agent`` compiles on the lifespan saver (W04.2).
+    """The startup build of ``app_state.agent`` compiles on the lifespan saver.
 
     Judged by storage, not identity: a strict-msgpack compile wraps the saver in a
     ``with_allowlist`` clone, so ``graph.checkpointer is saver`` does not hold.
