@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Callable, Type
 
 from langgraph.graph import START, StateGraph
+from langgraph.types import Command
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import CoreGraphAdapter
 
@@ -54,11 +55,18 @@ def build_agent_graph(
 
     graph.add_node("prepare", prepare_node)
     graph.add_node("call_model", call_model_node)
-    graph.add_node(adapter.execute_node_name, execute_node)
+
+    async def execute_and_route(state, config):
+        result = await execute_node(state, config)
+        if isinstance(result, Command):
+            return result
+        return Command(update=result, goto="call_model")
+
+    graph.add_node(adapter.execute_node_name, execute_and_route)
 
     graph.add_edge(START, "prepare")
     # prepare returns Command(goto=...) — no static edge (avoids call_model after BLOCK_INTENT).
-    # Execute node returns a state update (not Command); loop back for the NL answer.
-    graph.add_edge(adapter.execute_node_name, "call_model")
+    # A Command from execute can end the turn for approval. Plain state updates
+    # continue through call_model for the natural-language answer.
 
     return graph
