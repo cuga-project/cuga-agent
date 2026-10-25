@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from cuga.backend.server import thread_lease as thread_lease_module
-from cuga.backend.server.thread_lease import ThreadBusy, ThreadLease, keep_lease
+from cuga.backend.server.thread_lease import _STOP_POLL_SECONDS, ThreadBusy, ThreadLease, keep_lease
 from cuga.backend.storage.relational.local import LocalRelationalStore
 
 pytestmark = pytest.mark.unit
@@ -57,3 +57,29 @@ async def test_keep_lease_renews_releases_and_stops_the_turn_when_lost(lease):
         await store.execute("UPDATE thread_leases SET holder_id = 'other' WHERE thread_id = 't1'")
         await store.commit()
         await asyncio.wait_for(stop.wait(), timeout=5.0)
+
+
+async def test_cross_replica_stop_sets_the_holders_stop_event(lease):
+    replica_b = ThreadLease()  # a second replica sharing the same database
+    token = await lease.acquire("t1")
+    stop = asyncio.Event()
+    async with keep_lease(lease, token, stop_event=stop, renew_seconds=30.0):
+        assert not stop.is_set()
+        await replica_b.request_stop("t1")
+        await asyncio.wait_for(stop.wait(), timeout=_STOP_POLL_SECONDS + 3.0)
+
+
+async def test_request_stop_without_a_lease_is_a_no_op(lease):
+    await lease.request_stop("t1")
+    token = await lease.acquire("t1")
+    assert await lease.stop_requested(token) is False
+
+
+async def test_acquire_clears_the_stop_flag(lease):
+    token = await lease.acquire("t1", ttl_seconds=-1.0)
+    await lease.request_stop("t1")
+    assert await lease.stop_requested(token) is True
+
+    new = await lease.acquire("t1")  # takes over the expired lease
+    assert await lease.stop_requested(new) is False
+    assert await lease.stop_requested(token) is False  # not the holder any more
