@@ -214,6 +214,15 @@ class ExecutionResult:
 
 
 async def run_local(code_content: str) -> ExecutionResult:
+    # GHSA-4rj2 / L-5: run_local executes code with the real builtins and every
+    # loaded module in its namespace — no validation at all. It has no non-test
+    # callers on the default paths, so it is gated off behind an explicit opt-in
+    # rather than left reachable as a latent footgun.
+    if os.environ.get("CUGA_ALLOW_UNRESTRICTED_RUN_LOCAL") != "1":
+        raise RuntimeError(
+            "run_local is an unrestricted, unvalidated executor and is disabled. "
+            "Set CUGA_ALLOW_UNRESTRICTED_RUN_LOCAL=1 to enable it (not recommended)."
+        )
     stdout_buffer = StringIO()
     stderr_buffer = StringIO()
     exit_code = 0

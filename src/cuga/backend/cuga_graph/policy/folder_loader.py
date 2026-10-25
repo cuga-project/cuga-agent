@@ -7,7 +7,7 @@ from a folder structure where each policy is defined in a markdown file with fro
 
 import os
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import yaml
 from loguru import logger
 
@@ -341,6 +341,7 @@ async def load_policies_from_folder(
     folder_path: str,
     storage,  # PolicyStorage instance
     clear_existing: bool = False,
+    file_paths: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Load policies from a .cuga folder structure directly to storage.
 
@@ -348,12 +349,23 @@ async def load_policies_from_folder(
         folder_path: Path to .cuga folder
         storage: PolicyStorage instance
         clear_existing: If True, clear existing policies before loading
+        file_paths: Retry only these files; None scans the entire folder.
 
     Returns:
-        Dictionary with count, errors, and files processed
+        Dictionary with count, errors, files processed, and separate storage_errors
+        and io_errors lists for failures that can be retried.
     """
     if not os.path.exists(folder_path):
-        return {"count": 0, "errors": [f"Folder {folder_path} does not exist"], "files": []}
+        # Retryable: the folder may be recreated (e.g. removed mid-load after the caller's check).
+        error_msg = f"Folder {folder_path} does not exist"
+        return {
+            "count": 0,
+            "errors": [error_msg],
+            "storage_errors": [],
+            "io_errors": [error_msg],
+            "files": [],
+            "retry_files": None,
+        }
 
     if clear_existing:
         # Clear all existing policies from storage
@@ -363,8 +375,11 @@ async def load_policies_from_folder(
         logger.info(f"Cleared {len(policies)} existing policies")
 
     errors = []
+    storage_errors = []
+    io_errors = []
     loaded_count = 0
     processed_files = []
+    retry_files = []
 
     # Define subfolder structure
     subfolders = {
@@ -379,46 +394,64 @@ async def load_policies_from_folder(
     for subfolder_name, policy_type in subfolders.items():
         subfolder_path = os.path.join(folder_path, subfolder_name)
 
-        if not os.path.exists(subfolder_path):
-            logger.debug(f"Subfolder {subfolder_path} does not exist, skipping")
-            continue
+        if file_paths is None:
+            if not os.path.exists(subfolder_path):
+                logger.debug(f"Subfolder {subfolder_path} does not exist, skipping")
+                continue
+            filenames = os.listdir(subfolder_path)
+        else:
+            # Do not scan the folder again or pick up policies added by later CRUD calls.
+            filenames = [
+                os.path.basename(path) for path in file_paths if os.path.dirname(path) == subfolder_path
+            ]
 
-        # Find all markdown files in subfolder
-        for filename in os.listdir(subfolder_path):
+        for filename in filenames:
             if not filename.endswith('.md'):
                 continue
 
             file_path = os.path.join(subfolder_path, filename)
             processed_files.append(file_path)
 
+            # Read errors can recover; invalid frontmatter or policy content cannot.
             try:
-                # Parse markdown with frontmatter
                 frontmatter, content = parse_markdown_with_frontmatter(file_path)
-
-                # Override type from frontmatter if specified, otherwise use folder type
                 detected_type = frontmatter.get('type', policy_type)
-
-                # Get creator function
                 creator_func = POLICY_CREATORS.get(detected_type)
                 if not creator_func:
                     raise ValueError(f"Unknown policy type: {detected_type}")
-
-                # Create policy object
                 policy = creator_func(file_path, frontmatter, content)
-
-                # Add to storage
-                await storage.add_policy(policy)
-
-                loaded_count += 1
-                logger.info(f"✅ Loaded {detected_type} '{policy.name}' from {filename}")
-
+            except OSError as e:
+                error_msg = f"Failed to read {file_path}: {str(e)}"
+                errors.append(error_msg)
+                io_errors.append(error_msg)
+                retry_files.append(file_path)
+                logger.error(error_msg)
+                continue
             except Exception as e:
                 error_msg = f"Failed to load {file_path}: {str(e)}"
                 errors.append(error_msg)
                 logger.error(error_msg)
+                continue
+
+            # --- storage phase (transient failures: embedding/DB outage) ---
+            try:
+                await storage.add_policy(policy)
+            except Exception as e:
+                error_msg = f"Failed to store {file_path}: {str(e)}"
+                errors.append(error_msg)
+                storage_errors.append(error_msg)
+                retry_files.append(file_path)
+                logger.error(error_msg)
+                continue
+
+            loaded_count += 1
+            logger.info(f"✅ Loaded {detected_type} '{policy.name}' from {filename}")
 
     return {
         "count": loaded_count,
         "errors": errors,
+        "storage_errors": storage_errors,
+        "io_errors": io_errors,
         "files": processed_files,
+        "retry_files": retry_files,
     }
