@@ -1101,7 +1101,7 @@ instruction_set = "default"  # or any instruction set above
 
 These `[storage]` keys in `settings.toml` control how published agent graphs persist execution state between turns. `checkpointer` defaults to `"memory"`, which keeps the current in-process behavior. Set any key with `DYNACONF_STORAGE__<KEY>`, for example `DYNACONF_STORAGE__CHECKPOINTER=durable`.
 
-A pending approval is tied to the published agent configuration that created it. If the agent is published again before the approval arrives, the server rejects that approval; start a new conversation with the updated agent.
+A pending approval is tied to the agent configuration and CUGA version that created it. If the agent is published again, or CUGA is upgraded, before the approval arrives, the pending approval is cancelled and the client receives a `pending_cancelled` event; the conversation itself continues. When a publish changes the agent, the next turn of a completed conversation starts with a `config_changed` event.
 
 | Key | Default | Description |
 |---|---|---|
@@ -1111,8 +1111,18 @@ A pending approval is tied to the published agent configuration that created it.
 | `checkpoint_pool_max_size` | `10` | Prod mode only. Maximum Postgres connection pool size |
 | `thread_lease_ttl_seconds` | `60` | How long a conversation's turn lease lasts without renewal |
 | `thread_lease_renew_seconds` | `20` | How often a running turn renews its lease |
+| `checkpoint_retention_days` | `90` | Prod mode only. Conversations with no completed turn for this many days lose their checkpoint and become read-only. `0` turns the sweep off |
+| `checkpoint_prune_interval_minutes` | `60` | Prod mode only. How often the retention sweep runs |
 
-In `prod` mode the checkpoint tables are created at startup, so the database user needs DDL rights.
+**Database rights.** In `prod` mode CUGA creates and alters its tables at startup, so the database user needs DDL rights (`CREATE TABLE`, `CREATE INDEX`, `ALTER TABLE`).
+
+**Tables CUGA creates.**
+
+- LangGraph checkpoint tables, created by the checkpointer: `checkpoints`, `checkpoint_blobs`, `checkpoint_writes` and `checkpoint_migrations`. In `local` mode they are in the checkpoint SQLite file.
+- `thread_leases` in the conversation database: one row per running turn, so only one turn runs on a conversation at a time across replicas, and a stop sent to one replica reaches the replica running the turn.
+- `runtime_thread_owners` gains two columns when an existing database is first opened: `status` (`new`, `active`, `legacy` or `deleted`) and `last_turn_at` (the end of the last completed turn, used by the retention sweep).
+
+**What users see.** A conversation created in the UI can be continued by typing into it, after a restart or on another replica, and keeps its ID and its sidebar entry. API clients create a conversation by omitting the thread ID (the response starts with a `thread_created` event) and continue it by sending that ID in the `X-Thread-ID` header. Conversations from before the upgrade, and conversations idle for longer than `checkpoint_retention_days`, stay readable but are read-only.
 
 </details>
 
