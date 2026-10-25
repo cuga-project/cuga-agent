@@ -330,8 +330,11 @@ async def test_stream_cancels_pending_approval_after_published_config_changes(
             yield AgentLoopAnswer(end=True, answer="fresh", tools=[])
 
     _patch_agent_loop(monkeypatch, _ImmediateLoop)
-    load_config = AsyncMock(return_value=({}, "4"))
+    load_config = AsyncMock(return_value=({"agent": {"kind": "single"}}, "4"))
     monkeypatch.setattr("cuga.backend.server.config_store.load_config", load_config)
+    fresh_agent = SimpleNamespace(**vars(run_agent))
+    fresh_agent._checkpoint_config_version = "4"
+    monkeypatch.setattr(main_mod, "_refresh_published_graph", AsyncMock(return_value=fresh_agent))
     monkeypatch.setattr(main_mod, "_assert_run_thread_access", AsyncMock())
     monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", AsyncMock())
     monkeypatch.setattr(main_mod, "_knowledge_enabled_for_app_state", lambda _state: False)
