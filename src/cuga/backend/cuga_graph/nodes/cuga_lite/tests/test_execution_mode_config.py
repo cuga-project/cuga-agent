@@ -260,7 +260,7 @@ def test_build_agent_graph_has_exactly_the_three_shared_nodes():
         execute_node=execute,
     )
     assert set(graph.nodes) - {"__start__"} == {"prepare", "call_model", "sandbox"}
-    assert ("sandbox", "call_model") in graph.edges
+    assert ("sandbox", "call_model") not in graph.edges  # execute routes with a Command
 
 
 def test_cuga_lite_graph_has_no_mode_specific_node():
