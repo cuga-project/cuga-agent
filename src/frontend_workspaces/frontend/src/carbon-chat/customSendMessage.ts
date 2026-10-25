@@ -30,7 +30,8 @@ import { injectCitations, type MessageSource } from "agentic_chat/Citations";
 import type { KnowledgeAttachmentSnapshot } from "../knowledge/useSessionKnowledgeAttachments";
 
 // Import thread ID management from CarbonChat
-import { getOrCreateThreadId, generateUUID, setThreadId } from './CarbonChat';
+import { generateUUID } from './CarbonChat';
+import { adoptIssuedThreadId, getCurrentThreadId, getThreadGeneration } from './threadState';
 
 
 export class StreamHttpError extends Error {
@@ -131,7 +132,6 @@ export async function customSendMessage(
   actionResponse?: any,
   attachmentSnapshot?: KnowledgeAttachmentSnapshot[],
   agentId?: string,
-  threadIdOverride?: string | null,
 ) {
   const userMessage = request.input.text?.trim() ?? "";
   
@@ -140,8 +140,8 @@ export async function customSendMessage(
     return;
   }
 
-  const threadId = threadIdOverride || getOrCreateThreadId();
-  if (threadIdOverride) setThreadId(threadIdOverride);
+  const threadId = getCurrentThreadId();
+  const generation = getThreadGeneration();
   const responseID = generateUUID();
   
   // Listen for abort signal to call /stop endpoint
@@ -294,14 +294,10 @@ export async function customSendMessage(
         break;
       }
 
-      // W14.2 — server-issued thread ID: adopt the server's ID as soon as it arrives
       if (event.name === "thread_created") {
         const serverId = typeof event.data === "string" ? event.data.trim() : null;
-        if (serverId) {
-          setThreadId(serverId);
-          console.log("[thread_created] adopted server thread ID:", serverId);
-        }
-        continue; // thread_created is housekeeping only — no UI output
+        if (serverId) adoptIssuedThreadId(serverId, generation);
+        continue; // housekeeping only — no UI output
       }
 
       // First event means backend is responding — create shell and hide loading indicator

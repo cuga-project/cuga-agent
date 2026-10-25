@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import * as api from "./api";
-import { ensureDraftConversationId, isCurrentDraft, type ConversationCreationRef } from "./conversationIdentity";
 import { useAuth } from "./AuthContext";
 import { ConfigHeader } from "./ConfigHeader";
 import CarbonChat from "./carbon-chat/CarbonChat";
@@ -59,8 +58,7 @@ interface ConversationThread {
   latest_version: number;
   first_message: string;
   updated_at: string;
-  status?: string;  // "new" | "active" | "legacy" | "expired"
-  pending_interrupt?: boolean;
+  status?: string;  // "new" | "active" | "legacy"
 }
 
 interface AppTool {
@@ -134,11 +132,6 @@ interface DraftThreadState {
   hasSentFirstMessage: boolean;
   updatedAt: string;
   agentId: string;
-  /** Monotonically-changing key that identifies this draft instance.
-   *  Changes whenever the user starts a new chat or switches agent.
-   *  Used to scope the in-flight creation promise so a resolved result
-   *  from a previous draft never rebinds the current one. */
-  draftKey: string;
 }
 
 interface KnowledgePreviewModalState {
@@ -275,11 +268,10 @@ const filterJsonUploadFiles = (files: File[]): File[] =>
   files.filter((file) => JSON_UPLOAD_SUFFIXES.some((suffix) => file.name.toLowerCase().endsWith(suffix)));
 
 const createDraftThreadState = (agentId: string): DraftThreadState => ({
-  threadId: null,  // Server will issue the ID via thread_created SSE event
+  threadId: null,  // issued by the server: thread_created on the first send, or created for an upload
   hasSentFirstMessage: false,
   updatedAt: new Date().toISOString(),
   agentId,
-  draftKey: `${agentId}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
 });
 
 const loadDraftThreadState = (agentId: string): DraftThreadState | null => {
@@ -300,10 +292,6 @@ const loadDraftThreadState = (agentId: string): DraftThreadState | null => {
       hasSentFirstMessage: false,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
       agentId,
-      draftKey:
-        typeof parsed.draftKey === "string"
-          ? parsed.draftKey
-          : `${agentId}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
     };
   } catch (error) {
     console.error("Failed to restore draft thread state:", error);
@@ -476,15 +464,17 @@ export function ChatLanding() {
   const prevChatAgentIdRef = useRef(effectiveChatAgentId);
   const chatAgentIdRef = useRef(effectiveChatAgentId);
   chatAgentIdRef.current = effectiveChatAgentId;
-  const draftKeyRef = useRef(draftThread.draftKey);
-  draftKeyRef.current = draftThread.draftKey;
+  // Bumped with every new draft, so a conversation created for an older draft is not applied to this one.
+  const draftGenerationRef = useRef(0);
+  const pendingConversationRef = useRef<Promise<string> | null>(null);
 
   useEffect(() => {
     if (prevChatAgentIdRef.current === effectiveChatAgentId) return;
     prevChatAgentIdRef.current = effectiveChatAgentId;
     const nextDraft =
       loadDraftThreadState(effectiveChatAgentId) ?? createDraftThreadState(effectiveChatAgentId);
-    draftKeyRef.current = nextDraft.draftKey;
+    draftGenerationRef.current += 1;
+    pendingConversationRef.current = null;
     setDraftThread(nextDraft);
     setSelectedThreadId(null);
     setSelectedThreadStatus(null);
@@ -666,7 +656,8 @@ export function ChatLanding() {
 
   const createAndActivateDraftThread = useCallback(() => {
     const nextDraft = createDraftThreadState(effectiveChatAgentId);
-    draftKeyRef.current = nextDraft.draftKey;
+    draftGenerationRef.current += 1;
+    pendingConversationRef.current = null;
     setDraftThread(nextDraft);
     setSelectedThreadId(null);
     setSelectedThreadStatus(null);
@@ -723,7 +714,6 @@ export function ChatLanding() {
             first_message: c.title || c.preview || "",
             updated_at: c.timestamp ? new Date(c.timestamp).toISOString() : new Date().toISOString(),
             status: c.status,
-            pending_interrupt: c.pending_interrupt,
           }))
         );
       }
@@ -944,7 +934,6 @@ export function ChatLanding() {
             first_message: c.title || c.preview || "",
             updated_at: c.timestamp ? new Date(c.timestamp).toISOString() : new Date().toISOString(),
             status: c.status,
-            pending_interrupt: c.pending_interrupt,
           }))
         );
       } catch (err) {
@@ -1091,75 +1080,34 @@ export function ChatLanding() {
     [addToast, effectiveChatThreadId, effectiveChatAgentId],
   );
 
-  // Eager ID allocation for uploads on a new draft (W14.2). Concurrent callers share one request.
-  // The ref is keyed to both agentId and draftKey so a resolved result from a previous
-  // draft (agent switch or New chat) can never rebind the current one.
-  const conversationCreationRef = useRef<ConversationCreationRef["current"]>(null);
-  const ensureConversationId = useCallback(async (): Promise<string | null> => {
-    if (draftThread.agentId !== effectiveChatAgentId) return null;
-    return ensureDraftConversationId(
-      effectiveChatThreadId,
-      { agentId: effectiveChatAgentId, draftKey: draftThread.draftKey },
-      conversationCreationRef,
-      api.createConversation,
-      () => ({ agentId: chatAgentIdRef.current, draftKey: draftKeyRef.current }),
-      (threadId, identity) => {
-        setDraftThread((prev) => {
-          if (!isCurrentDraft(identity, prev)) return prev;
-          if (prev.threadId) return prev; // another create already won
-          return { ...prev, threadId, updatedAt: new Date().toISOString() };
-        });
-        if (isCurrentDraft(
-          identity,
-          { agentId: chatAgentIdRef.current, draftKey: draftKeyRef.current },
-        )) {
-          setActiveThreadId(threadId);
+  // An upload needs a conversation before the first message: create it once per draft.
+  const conversationIdForUpload = useCallback(async (): Promise<string> => {
+    if (effectiveChatThreadId) return effectiveChatThreadId;
+    if (!pendingConversationRef.current) {
+      const generation = draftGenerationRef.current;
+      pendingConversationRef.current = api.createConversation(effectiveChatAgentId).then((created) => {
+        if (generation === draftGenerationRef.current) {
+          setDraftThread((prev) => (prev.threadId ? prev : { ...prev, threadId: created.id }));
+          setActiveThreadId(created.id);
         }
-      },
-    );
-  }, [effectiveChatThreadId, effectiveChatAgentId, draftThread.draftKey]);
-
-  // Clear any in-flight creation that belongs to a different agent or draft when either changes.
-  useEffect(() => {
-    const ref = conversationCreationRef.current;
-    if (
-      ref !== null &&
-      (ref.agentId !== effectiveChatAgentId || ref.draftKey !== draftThread.draftKey)
-    ) {
-      conversationCreationRef.current = null;
+        return created.id;
+      });
+      pendingConversationRef.current.catch(() => {
+        pendingConversationRef.current = null;
+      });
     }
-  }, [effectiveChatAgentId, draftThread.draftKey]);
-
-  // Opening the session knowledge panel on a new draft allocates the thread ID so uploads are enabled.
-  useEffect(() => {
-    if (
-      rightSection === "knowledge" &&
-      rightOpen &&
-      knowledgeEnabled &&
-      sessionKnowledgeEnabled &&
-      selectedThreadId == null &&
-      !draftThread.threadId
-    ) {
-      void ensureConversationId();
-    }
-  }, [
-    rightSection,
-    rightOpen,
-    knowledgeEnabled,
-    sessionKnowledgeEnabled,
-    selectedThreadId,
-    draftThread.threadId,
-    ensureConversationId,
-  ]);
+    return pendingConversationRef.current;
+  }, [effectiveChatThreadId, effectiveChatAgentId]);
 
   const handleWorkspaceUpload = useCallback(
     async (files: File[]) => {
-      const tid = await ensureConversationId();
-      if (!tid) {
+      let uploadThreadId: string;
+      try {
+        uploadThreadId = await conversationIdForUpload();
+      } catch {
         addToast("error", "Upload unavailable", "Could not start a conversation for this upload.");
         return;
       }
-      const uploadThreadId = tid;
       try {
         await Promise.all(
           files.map(async (file) => {
@@ -1182,7 +1130,7 @@ export function ChatLanding() {
         addToast("error", "Upload failed", err instanceof Error ? err.message : "Unknown error");
       }
     },
-    [addToast, ensureConversationId, effectiveChatAgentId, fetchWorkspaceTree],
+    [addToast, conversationIdForUpload, effectiveChatAgentId, fetchWorkspaceTree],
   );
 
   const handleWorkspaceFileInputChange = useCallback(
@@ -1433,7 +1381,7 @@ export function ChatLanding() {
       )}
       {/* Keep the chat instance and its active stream alive while viewing memory. */}
         <div className="chat-content-area" hidden={activeView === "memory" && memoryEnabled} style={{ display: activeView === "memory" && memoryEnabled ? "none" : undefined, position: "relative", height: `calc(100vh - ${headerHeight}px)` }}>
-          {/* W14.5 — legacy conversation notice */}
+          {/* Conversations from before session continuity are read-only */}
           {selectedThreadStatus === "legacy" && (
             <div style={{
               padding: "0.75rem 1rem",
@@ -1445,7 +1393,7 @@ export function ChatLanding() {
               This conversation was created before conversations could be continued. Start a new conversation to keep going.
             </div>
           )}
-          {/* W14.4 — unavailable conversation notice */}
+          {/* The saved state of this conversation cannot be loaded */}
           {selectedThreadUnavailable && (
             <div style={{
               padding: "0.75rem 1rem",
@@ -1468,16 +1416,11 @@ export function ChatLanding() {
           <CarbonChat
             contained={true}
             threadId={effectiveChatThreadId}
-            resolveThreadIdForSend={ensureConversationId}
             agentId={effectiveChatAgentId}
             attachmentScope="session"
             knowledgeEnabled={knowledgeEnabled}
             sessionKnowledgeEnabled={sessionKnowledgeEnabled}
-            isReadonly={
-              selectedThreadStatus === "legacy" ||
-              selectedThreadStatus === "expired" ||
-              selectedThreadUnavailable
-            }
+            isReadonly={selectedThreadStatus === "legacy" || selectedThreadUnavailable}
             onThreadChange={handleThreadChange}
             homescreen={homescreenConfig}
             sessionDocsVersion={sessionDocsVersion}

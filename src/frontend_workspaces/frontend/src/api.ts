@@ -423,8 +423,7 @@ export interface ConversationThread {
   title: string;
   timestamp: number;
   preview: string;
-  status?: string;           // "new" | "active" | "legacy" | "expired"
-  pending_interrupt?: boolean;
+  status?: string;           // "new" | "active" | "legacy"
 }
 
 export async function getConversations(agentId?: string): Promise<ConversationThread[]> {
