@@ -263,9 +263,15 @@ async def _delete_child_checkpoints(
     """Delete conversation-scoped supervisor child checkpoints for one conversation.
 
     Called before the parent checkpoint is deleted, inside the caller's try/except block.
-    Children come from the stored ``supervisor.subAgents`` and, for the default agent, from the
-    YAML roster. Every failure (config lookup, roster read, saver) propagates, so the caller
-    leaves the parent conversation retriable instead of orphaning durable child data.
+    Children come from two sources:
+    - The ``child_checkpoint_ids`` list recorded in the parent's final ``service_scope``
+      (covers children that were removed, renamed, or switched to call scope since the
+      last delegation — #774, W12.6).
+    - The current stored ``supervisor.subAgents`` and, for the default agent, the YAML
+      roster (covers children that never delegated in a previous turn).
+
+    Every failure (config lookup, roster read, saver) propagates, so the caller leaves
+    the parent conversation retriable instead of orphaning durable child data.
     """
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
         MEMORY_SCOPE_CONVERSATION,
@@ -275,7 +281,25 @@ async def _delete_child_checkpoints(
     from cuga.backend.server.config_store import load_config
     from cuga.config import get_tenant_id, settings
 
-    # (child id, explicit memory scope or None) — a lookup failure raises out of this function.
+    checkpoint_key = _checkpoint_thread_id(conversation_id, user_id, agent_id)
+
+    # Collect IDs to delete: start with any historically-recorded IDs from the last
+    # checkpoint's service_scope, then add IDs derived from the current roster.
+    ids_to_delete: set[str] = set()
+
+    try:
+        last = await saver.aget_tuple({"configurable": {"thread_id": checkpoint_key}})
+        if last is not None:
+            channel_values = (last.checkpoint or {}).get("channel_values") or {}
+            scope = channel_values.get("service_scope") or {}
+            if isinstance(scope, dict):
+                for recorded_id in scope.get("child_checkpoint_ids") or []:
+                    if isinstance(recorded_id, str) and recorded_id:
+                        ids_to_delete.add(recorded_id)
+    except Exception as exc:
+        logger.warning("Could not read parent checkpoint for child ID recovery: {}", type(exc).__name__)
+
+    # (child name, explicit memory scope or None) — a lookup failure raises out of this function.
     children: list[tuple[str, Any]] = []
     config, _ = await load_config(None, agent_id)
     for entry in ((config or {}).get("supervisor") or {}).get("subAgents") or []:
@@ -310,8 +334,11 @@ async def _delete_child_checkpoints(
             parent_thread_id=conversation_id,
             sub_agent_id=name,
         )
+        ids_to_delete.add(child_key)
+
+    for child_key in ids_to_delete:
         await saver.adelete_thread(child_key)
-        logger.debug("deleted child checkpoint for sub-agent {}", name)
+        logger.debug("deleted child checkpoint {}", child_key[:28])
 
 
 def _knowledge_config(app_state: "AppState" | None):
@@ -1898,13 +1925,16 @@ async def event_stream(
         """
         expected_version = getattr(run_agent, "_checkpoint_config_version", None)
         pending = bool(getattr(snapshot, "next", None))
-        # A publish may have committed after /stream resolved its graph, and an in-place update
-        # (tool-guard sync, roster seed) rewrites the published version without rebuilding it.
-        # This request holds the turn lease, so read the current published config once and let
-        # it decide: a newer version cancels a pending approval, and a same-version rewrite
-        # moves the graph's fingerprint to the stored config's.
+        # A publish may have committed after /stream resolved its graph. An in-place update
+        # (tool-guard sync, roster seed) rewrites the published version without rebuilding the
+        # graph; load the current stored config once to detect same-version content drift.
+        # On CANCEL_PENDING the graph's fingerprint is advanced to the stored hash so the next
+        # turn does not re-detect the same drift. On NOTICE (completed turn) the fingerprint
+        # is left at the build-time hash so the next publish (which bumps the version) will
+        # trigger a proper rebuild and the hash will be updated then.
         store_unverified = False
         store_version_moved = False
+        stored_fingerprint = None
         if expected_version is not None:
             try:
                 from cuga.backend.server.config_store import load_config
@@ -1914,17 +1944,25 @@ async def event_stream(
                     store_version_moved = True
                 elif stored_config:
                     stored_fingerprint = compute_fingerprint(stored_config)
-                    current = getattr(run_agent, "_config_fingerprint", None)
-                    if current is None or current.agent_hash != stored_fingerprint.agent_hash:
-                        run_agent._config_fingerprint = stored_fingerprint
+                    current_fp = getattr(run_agent, "_config_fingerprint", None)
+                    if current_fp is not None and current_fp.agent_hash != stored_fingerprint.agent_hash:
+                        # Same-version content drift: temporarily surface the stored hash to
+                        # classify_config_change so it can detect the change.  Do NOT apply
+                        # this to run_agent yet; see the CANCEL_PENDING branch below.
+                        pass  # stored_fingerprint carries the new hash for use below
+                    else:
+                        stored_fingerprint = None  # no drift — nothing to do
             except Exception as exc:
                 logger.warning("Could not verify the published configuration: {}", type(exc).__name__)
                 store_unverified = True
         fingerprint = getattr(run_agent, "_config_fingerprint", None)
+        # For same-version drift classification, pretend the current fingerprint is the stored one
+        # so classify_config_change can see the new hash vs the checkpoint's stamped hash.
+        classify_fp = stored_fingerprint if stored_fingerprint is not None else fingerprint
         values = getattr(snapshot, "values", None) or {}
         scope = values.get("service_scope")
         scope = scope if isinstance(scope, dict) else {}
-        decision = classify_config_change(scope, fingerprint, pending, expected_version)
+        decision = classify_config_change(scope, classify_fp, pending, expected_version)
         if decision is ConfigDecision.NONE and pending and (store_version_moved or store_unverified):
             decision = ConfigDecision.CANCEL_PENDING
 
@@ -1932,13 +1970,17 @@ async def event_stream(
             stamped = scope.get(fingerprint_key) or {}
             payload = {
                 "previous_agent_hash": str(stamped.get("agent_hash", ""))[:12],
-                "current_agent_hash": fingerprint.short_hash(),
+                "current_agent_hash": classify_fp.short_hash(),
             }
             return snapshot, [_notice("config_changed", json.dumps(payload))], False
         if decision is not ConfigDecision.CANCEL_PENDING:
             return snapshot, [], False
         if not await _cancel_pending_interrupt(run_agent.graph, checkpoint_thread_id):
             return snapshot, [_notice("Error", stale_approval_message)], True
+        # After a successful cancel, advance the graph's fingerprint to the stored hash so the
+        # next turn does not repeatedly detect the same same-version drift.
+        if stored_fingerprint is not None:
+            run_agent._config_fingerprint = stored_fingerprint
         cancelled = _notice("pending_cancelled", json.dumps({"reason": "config_changed"}))
         if is_resume:
             return snapshot, [cancelled, _notice("Answer", config_changed_message)], True
