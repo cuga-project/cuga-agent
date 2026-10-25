@@ -100,21 +100,33 @@ def test_built_graph_has_prepare_and_call_model_nodes():
     assert "sandbox" in node_names  # adapter.execute_node_name
 
 
-def test_built_graph_has_execute_to_call_model_edge():
-    """Sandbox must loop back to call_model after code execution (regression guard)."""
-    build = _get_builder()
-    adapter = _MinimalAdapter()
+async def test_execute_state_update_loops_back_to_call_model():
+    """Sandbox must loop back to call_model after code execution (regression guard).
 
-    graph = build(
-        adapter=adapter,
-        state_class=_MockState,
-        prepare_node=_noop_node(),
-        call_model_node=_noop_node(),
-        execute_node=_noop_node(),
-    )
+    The loop is a ``Command`` rather than a static edge, so an approval pause can end the turn.
+    """
+    from langgraph.graph import END
+    from langgraph.types import Command
 
-    edges = graph.edges
-    assert ("sandbox", "call_model") in edges
+    async def update_only(state, config=None):
+        return {"variables_storage": {"x": 1}}
+
+    def execute_of(execute_node):
+        graph = _get_builder()(
+            adapter=_MinimalAdapter(),
+            state_class=_MockState,
+            prepare_node=_noop_node(),
+            call_model_node=_noop_node(),
+            execute_node=execute_node,
+        )
+        assert ("sandbox", "call_model") not in graph.edges
+        return graph.nodes["sandbox"].runnable.afunc
+
+    looped = await execute_of(update_only)(_MockState(), {})
+    assert looped.goto == "call_model" and looped.update == {"variables_storage": {"x": 1}}
+
+    paused = await execute_of(_noop_node())(_MockState(), {})
+    assert isinstance(paused, Command) and paused.goto == END
 
 
 def test_built_graph_has_no_prepare_to_call_model_edge():
