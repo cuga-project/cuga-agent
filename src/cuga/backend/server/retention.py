@@ -36,21 +36,33 @@ async def _prune_batch(
     """Prune one batch of idle conversations. Returns the number actually pruned.
 
     A conversation whose lease is held (a turn is running) or whose prune fails is left
-    ``new``/``active`` and is retried by the next sweep.
+    ``new``/``active`` and is retried by the next sweep.  Conversation-scoped supervisor
+    child checkpoints are deleted before the parent (W12.6).
     """
+    from cuga.backend.server.main import _delete_child_checkpoints
+
     rows = await conversation_db.get_idle_before(cutoff_iso, limit=_BATCH_SIZE)
 
     pruned = 0
     for row in rows:
         thread_id = row["thread_id"]
         user_id = row["user_id"]
-        key = checkpoint_thread_id_fn(thread_id, user_id, row["agent_id"])
+        agent_id = row["agent_id"]
+        key = checkpoint_thread_id_fn(thread_id, user_id, agent_id)
         try:
             token = await lease.acquire(key)
         except ThreadBusy:
             logger.debug("retention: thread busy, skipping {}", key[:16])
             continue
         try:
+            # Delete conversation-scoped children first; config-lookup failures are
+            # swallowed inside _delete_child_checkpoints but saver failures propagate.
+            await _delete_child_checkpoints(
+                saver=saver,
+                agent_id=agent_id,
+                conversation_id=thread_id,
+                user_id=user_id,
+            )
             await saver.adelete_thread(key)
             await conversation_db.set_thread_status(thread_id, user_id, "legacy")
             pruned += 1

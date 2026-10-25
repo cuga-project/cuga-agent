@@ -25,17 +25,43 @@ from typing import Any, Mapping, Optional
 # it applies the config at runtime, so the stored and the applied config must hash alike.
 _VOLATILE_KEYS = frozenset({"updated_at", "published_at", "version", "created_at", "knowledge_state"})
 
-# Keys whose values are secrets and must not be hashed. ``embedding_api_key`` is blanked in
-# the stored published snapshot but present in the config applied at publish time.
+# Keys whose *plaintext* values are secrets and must not reach the hash digest.
+# A value in this set is dropped unless it looks like a reference (``vault://``,
+# ``env://``, ``secret://`` …) — references *are* meaningful config and must be hashed
+# so that rotating the reference (e.g. pointing ``api_key`` at a different Vault path)
+# invalidates pending approvals.  ``embedding_api_key`` is blanked in the stored
+# published snapshot but present in the config applied at publish time.
 _SECRET_VALUE_KEYS = frozenset({"api_key", "token", "password", "secret", "key_env_var", "embedding_api_key"})
+
+# URI schemes that indicate a secret *reference* rather than a bare credential.
+# Matching is prefix-based and case-insensitive.
+_REFERENCE_PREFIXES = ("vault://", "env://", "secret://", "arn:", "sm://")
+
+
+def _is_reference(value: Any) -> bool:
+    """Return True when *value* looks like an opaque secret reference, not a bare credential."""
+    if not isinstance(value, str):
+        return False
+    lower = value.lower()
+    return any(lower.startswith(p) for p in _REFERENCE_PREFIXES)
 
 
 def _scrub(obj: Any) -> Any:
-    """Return a copy of *obj* with volatile and secret values removed."""
+    """Return a copy of *obj* with volatile keys and bare secret values removed.
+
+    Secret-named keys whose value is a reference URI are preserved so that changing
+    which secret is referenced is reflected in the hash.
+    """
     if isinstance(obj, dict):
-        return {
-            k: _scrub(v) for k, v in obj.items() if k not in _VOLATILE_KEYS and k not in _SECRET_VALUE_KEYS
-        }
+        result = {}
+        for k, v in obj.items():
+            if k in _VOLATILE_KEYS:
+                continue
+            if k in _SECRET_VALUE_KEYS and not _is_reference(v):
+                # Bare credential (or empty) — drop entirely so it never leaks.
+                continue
+            result[k] = _scrub(v)
+        return result
     if isinstance(obj, list):
         return [_scrub(item) for item in obj]
     return obj

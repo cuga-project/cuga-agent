@@ -109,6 +109,8 @@ class CugaEntryGraph:
 
     async def build_graph(self, checkpointer: Optional["BaseCheckpointSaver"] = None):
         graph = StateGraph(AgentState)
+        # Store the checkpointer so add_nodes can pass it to YAML supervisor children.
+        self._build_checkpointer = checkpointer
         await self.add_nodes(graph)
         self.add_edges(graph)
 
@@ -282,7 +284,12 @@ class CugaEntryGraph:
             config_path = os.path.join(os.getcwd(), supervisor_config_path)
             if os.path.exists(config_path):
                 try:
-                    supervisor_config = await load_supervisor_config(config_path)
+                    # Pass the published saver so conversation-scoped YAML sub-agents
+                    # survive restarts. Draft/None builds keep their own MemorySaver.
+                    supervisor_config = await load_supervisor_config(
+                        config_path,
+                        checkpointer=getattr(self, "_build_checkpointer", None),
+                    )
                     agents = supervisor_config.agents
                     supervisor_special_instructions = supervisor_config.supervisor.get("special_instructions")
                 except Exception as e:

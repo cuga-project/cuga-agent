@@ -173,3 +173,80 @@ async def test_pending_approval_is_resumed_through_stream_after_restart(conversa
     snapshot = await server.graph.aget_state(server.config(thread_id))
     assert snapshot.next == ()
     assert snapshot.values["final_answer"] == APPROVED
+
+
+async def test_conversation_scoped_child_agent_retains_history_across_restart(checkpoints):
+    """W17.1 row 2f: a conversation-scoped sub-agent retains its history after a restart.
+
+    The shared saver is passed to the child CugaAgent (W04.4).  After closing and
+    reopening the saver on the same file, the child's prior checkpoint is still readable
+    so the next delegation can continue the conversation.
+    """
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langgraph.graph import END, START, StateGraph
+
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
+        child_checkpoint_id,
+    )
+    from cuga.config import get_tenant_id
+
+    PARENT_THREAD = "row-2f-parent-thread"
+    SUPERVISOR_ID = "test-supervisor"
+    SUB_AGENT = "child-a"
+    TENANT = get_tenant_id()
+
+    # Deterministic child key for conversation scope (mirrors what the delegation layer uses)
+    child_key = child_checkpoint_id(
+        tenant_id=TENANT,
+        user_id="u1",
+        supervisor_id=SUPERVISOR_ID,
+        parent_thread_id=PARENT_THREAD,
+        sub_agent_id=SUB_AGENT,
+    )
+    child_cfg = {"configurable": {"thread_id": child_key}}
+
+    def _build_child_graph(saver, responses=("child answer 1",)):
+        """A tiny child graph: stores the answer in final_answer and appends chat messages."""
+        model = FakeListChatModel(responses=list(responses))
+
+        async def child_node(state: AgentState):
+            reply = (await model.ainvoke(state.input)).content
+            prior = list(state.chat_messages or [])
+            return {
+                "final_answer": reply,
+                "chat_messages": [*prior, HumanMessage(state.input), AIMessage(reply)],
+            }
+
+        builder = StateGraph(AgentState)
+        builder.add_node("child", child_node)
+        builder.add_edge(START, "child")
+        builder.add_edge("child", END)
+        return builder.compile(checkpointer=saver)
+
+    # --- First "process" ---
+    saver1 = (await checkpoints.open()).saver
+    child_graph = _build_child_graph(saver1, responses=("child answer 1",))
+    result1 = await child_graph.ainvoke({"input": "first message"}, child_cfg)
+    assert result1["final_answer"] == "child answer 1"
+
+    snap = await child_graph.aget_state(child_cfg)
+    chat_before = snap.values.get("chat_messages", [])
+    assert len(chat_before) == 2, "one exchange should be in the checkpoint"
+    assert chat_before[-1].content == "child answer 1"
+
+    # --- Restart: new saver on the same file ---
+    saver2 = (await checkpoints.open()).saver
+    # New graph instance, new model — each restart gets its own FakeListChatModel.
+    child_graph2 = _build_child_graph(saver2, responses=("child answer 2",))
+
+    snap_after = await child_graph2.aget_state(child_cfg)
+    chat_after = snap_after.values.get("chat_messages", [])
+    assert len(chat_after) == 2, "child history must survive the restart"
+    assert chat_after[-1].content == "child answer 1"
+
+    # The second run starts from the restored checkpoint and appends a new exchange.
+    result2 = await child_graph2.ainvoke({"input": "second message"}, child_cfg)
+    assert result2["final_answer"] == "child answer 2"
+    snap_final = await child_graph2.aget_state(child_cfg)
+    assert len(snap_final.values.get("chat_messages", [])) == 4

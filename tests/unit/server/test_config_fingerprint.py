@@ -49,10 +49,24 @@ def test_secret_value_never_reaches_the_digest_input():
     assert agent_config_hash({"llm": {"api_key": "sk-abc"}}) == agent_config_hash({"llm": {}})
 
 
-def test_secret_reference_name_change_changes_the_hash():
-    # A reference name is not a secret value, so it is part of the configuration.
-    base = {"llm": {"provider": "openai", "key_ref": "prod-key"}}
-    changed = {"llm": {"provider": "openai", "key_ref": "staging-key"}}
+def test_api_key_reference_change_changes_the_hash():
+    """Rotating the vault path for api_key must invalidate a pending approval."""
+    base = {"llm": {"provider": "openai", "api_key": "vault://prod/llm-key"}}
+    changed = {"llm": {"provider": "openai", "api_key": "vault://staging/llm-key"}}
+    assert agent_config_hash(base) != agent_config_hash(changed)
+
+
+def test_api_key_plaintext_rotation_does_not_change_the_hash():
+    """Rotating a bare credential must NOT change the hash (the value is stripped)."""
+    base = {"llm": {"provider": "openai", "api_key": "sk-abc123"}}
+    changed = {"llm": {"provider": "openai", "api_key": "sk-xyz789"}}
+    assert agent_config_hash(base) == agent_config_hash(changed)
+
+
+def test_api_key_env_reference_change_changes_the_hash():
+    """Changing the env-var reference for api_key changes the hash."""
+    base = {"llm": {"provider": "openai", "api_key": "env://PROD_OPENAI_KEY"}}
+    changed = {"llm": {"provider": "openai", "api_key": "env://STAGING_OPENAI_KEY"}}
     assert agent_config_hash(base) != agent_config_hash(changed)
 
 

@@ -235,61 +235,68 @@ async def _delete_child_checkpoints(
 ) -> None:
     """Delete conversation-scoped supervisor child checkpoints for one conversation.
 
-    Called from the delete endpoint and the retention sweep so that child threads on the
-    shared saver are removed before (or together with) their parent.  All errors are
-    swallowed after logging so callers remain atomic even when a sub-agent config is missing.
+    Called before the parent checkpoint is deleted, inside the delete endpoint's try/except
+    block.  Saver errors are re-raised so that a transient failure keeps the parent row
+    retriable (the endpoint returns 500 and the client retries).  Config-lookup failures
+    are logged and swallowed — a missing sub-agent config is not a deletion blocker.
     """
-    try:
-        from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
-            MEMORY_SCOPE_CONVERSATION,
-            child_checkpoint_id,
-            normalize_memory_scope,
-        )
-        from cuga.backend.server.config_store import load_config
-        from cuga.config import get_tenant_id, settings
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
+        MEMORY_SCOPE_CONVERSATION,
+        child_checkpoint_id,
+        normalize_memory_scope,
+    )
+    from cuga.backend.server.config_store import load_config
+    from cuga.config import get_tenant_id, settings
 
+    try:
         config, _ = await load_config(None, agent_id)
-        if not config:
-            return
-        supervisor_cfg = config.get("supervisor") or {}
-        sub_agents = supervisor_cfg.get("subAgents") or []
-        tenant_id = get_tenant_id()
-        for entry in sub_agents:
-            if entry.get("kind") != "internal":
-                continue
-            ref = entry.get("ref") or ""
-            if not ref:
-                continue
-            ref_config, _ = await load_config(None, ref)
-            scope_raw = None
-            if ref_config:
-                scope_raw = (
-                    (ref_config.get("feature_flags") or {}).get("sub_agent_memory_scope")
-                    or (ref_config.get("advanced_features") or {}).get("sub_agent_memory_scope")
-                )
-            scope = normalize_memory_scope(
-                scope_raw
-                if scope_raw is not None
-                else getattr(getattr(settings, "supervisor", None), "sub_agent_memory_scope", None)
-            )
-            if scope != MEMORY_SCOPE_CONVERSATION:
-                continue
-            child_key = child_checkpoint_id(
-                tenant_id=tenant_id,
-                user_id=user_id,
-                supervisor_id=agent_id,
-                parent_thread_id=conversation_id,
-                sub_agent_id=ref,
-            )
-            try:
-                await saver.adelete_thread(child_key)
-                logger.debug("deleted child checkpoint for sub-agent {}", ref)
-            except Exception as exc:
-                logger.warning(
-                    "failed to delete child checkpoint for sub-agent {}: {}", ref, type(exc).__name__
-                )
     except Exception as exc:
-        logger.warning("_delete_child_checkpoints failed: {}", type(exc).__name__)
+        logger.warning(
+            "_delete_child_checkpoints: could not load config for {}: {}", agent_id, type(exc).__name__
+        )
+        return
+    if not config:
+        return
+    supervisor_cfg = config.get("supervisor") or {}
+    sub_agents = supervisor_cfg.get("subAgents") or []
+    tenant_id = get_tenant_id()
+    for entry in sub_agents:
+        if entry.get("kind") != "internal":
+            continue
+        ref = entry.get("ref") or ""
+        if not ref:
+            continue
+        try:
+            ref_config, _ = await load_config(None, ref)
+        except Exception as exc:
+            logger.warning(
+                "_delete_child_checkpoints: could not load config for sub-agent {}: {}",
+                ref,
+                type(exc).__name__,
+            )
+            continue
+        scope_raw = None
+        if ref_config:
+            scope_raw = (ref_config.get("feature_flags") or {}).get("sub_agent_memory_scope") or (
+                ref_config.get("advanced_features") or {}
+            ).get("sub_agent_memory_scope")
+        scope = normalize_memory_scope(
+            scope_raw
+            if scope_raw is not None
+            else getattr(getattr(settings, "supervisor", None), "sub_agent_memory_scope", None)
+        )
+        if scope != MEMORY_SCOPE_CONVERSATION:
+            continue
+        child_key = child_checkpoint_id(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            supervisor_id=agent_id,
+            parent_thread_id=conversation_id,
+            sub_agent_id=ref,
+        )
+        # Saver errors propagate so the endpoint returns 500 and the client can retry.
+        await saver.adelete_thread(child_key)
+        logger.debug("deleted child checkpoint for sub-agent {}", ref)
 
 
 def _knowledge_config(app_state: "AppState" | None):

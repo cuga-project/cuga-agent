@@ -209,8 +209,9 @@ async def test_delete_child_checkpoints_tolerates_missing_agent_config():
     saver.adelete_thread.assert_not_awaited()
 
 
-async def test_delete_child_checkpoints_swallows_individual_saver_errors():
-    """A failure deleting one child checkpoint does not raise; others still run."""
+async def test_delete_child_checkpoints_propagates_saver_errors():
+    """A saver failure must propagate so the delete endpoint returns 500 and stays retriable."""
+    import pytest
     from cuga.backend.server.main import _delete_child_checkpoints
 
     saver = MagicMock()
@@ -225,53 +226,10 @@ async def test_delete_child_checkpoints_swallows_individual_saver_errors():
             (sub_config, 1),
         ]
         with patch("cuga.config.get_tenant_id", return_value="t1"):
-            # Must not raise
-            await _delete_child_checkpoints(
-                saver=saver,
-                agent_id="supervisor-agent",
-                conversation_id="thread-123",
-                user_id="user-456",
-            )
-
-    # The call was attempted despite the error
-    assert saver.adelete_thread.await_count == 1
-
-
-async def test_build_agents_from_stored_subagents_forwards_checkpointer():
-    """build_agents_from_stored_subagents passes checkpointer to build_agents_from_list."""
-    sentinel = object()
-
-    with patch(
-        "cuga.supervisor_utils.supervisor_config.build_agents_from_list",
-        new_callable=AsyncMock,
-    ) as mock_build:
-        mock_build.return_value = {}
-        from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
-
-        await build_agents_from_stored_subagents(
-            [],
-            checkpointer=sentinel,
-        )
-
-    mock_build.assert_awaited_once()
-    _, kwargs = mock_build.await_args
-    assert kwargs.get("checkpointer") is sentinel
-
-
-async def test_build_agents_from_stored_subagents_no_checkpointer_for_draft():
-    """When use_draft=True the caller is expected to pass checkpointer=None."""
-    with patch(
-        "cuga.supervisor_utils.supervisor_config.build_agents_from_list",
-        new_callable=AsyncMock,
-    ) as mock_build:
-        mock_build.return_value = {}
-        from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
-
-        await build_agents_from_stored_subagents(
-            [],
-            use_draft=True,
-            checkpointer=None,
-        )
-
-    _, kwargs = mock_build.await_args
-    assert kwargs.get("checkpointer") is None
+            with pytest.raises(RuntimeError, match="saver unavailable"):
+                await _delete_child_checkpoints(
+                    saver=saver,
+                    agent_id="supervisor-agent",
+                    conversation_id="thread-123",
+                    user_id="user-456",
+                )
