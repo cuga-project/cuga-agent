@@ -35,7 +35,7 @@ import {
   type SessionAttachmentItem,
   type KnowledgeAttachmentSnapshot,
 } from "../knowledge/useSessionKnowledgeAttachments";
-import { customSendMessage as customSendMessageImpl, stopCugaAgent, StreamHttpError } from './customSendMessage';
+import { customSendMessage as customSendMessageImpl, stopCugaAgent, StreamHttpError, type ConfigNotice } from './customSendMessage';
 import { getCurrentThreadId, keepThread, showThread } from './threadState';
 import { customLoadHistory } from './customLoadHistory';
 import { useEventsInbox } from '../events/useEventsInbox';
@@ -93,6 +93,8 @@ interface CarbonChatProps {
   onOpenMemoryUsage?: (entityIds: string[], relationship: "used" | "saved") => void;
   onPreviewKnowledgeAttachment?: (attachment: KnowledgeAttachmentSnapshot) => void;
   onStreamError?: (status: number, error?: string) => void;
+  /** Called with a notice when the agent configuration changed, and with null when a new send starts. */
+  onConfigNotice?: (notice: ConfigNotice | null) => void;
 }
 
 interface ConversationMessage {
@@ -247,6 +249,7 @@ const CarbonChat = ({
   onOpenMemoryUsage,
   onPreviewKnowledgeAttachment,
   onStreamError,
+  onConfigNotice,
 }: CarbonChatProps) => {
   const hs = homescreen ?? DEFAULT_HOMESCREEN;
   const starterLabels = (hs.starters ?? DEFAULT_HOMESCREEN.starters ?? []).filter(Boolean).slice(0, 4);
@@ -754,6 +757,7 @@ const CarbonChat = ({
       instance: ChatInstance
     ) => {
       const attachmentSnapshot = createMessageAttachmentSnapshot();
+      onConfigNotice?.(null);
       try {
         const result = await customSendMessageImpl(
           request,
@@ -764,6 +768,7 @@ const CarbonChat = ({
           undefined,
           attachmentScope === "session" ? attachmentSnapshot : undefined,
           agentId,
+          onConfigNotice,
         );
 
         const sentThreadId = getCurrentThreadId();
@@ -784,7 +789,7 @@ const CarbonChat = ({
         }
       }
     },
-    [agentId, attachmentScope, createMessageAttachmentSnapshot, disableHistory, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
+    [agentId, attachmentScope, createMessageAttachmentSnapshot, disableHistory, onConfigNotice, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
   );
 
   const handleChatReady = useCallback((instance: ChatInstance) => {
@@ -843,11 +848,12 @@ const CarbonChat = ({
             signal: new AbortController().signal,
             silent: false,
           };
-          await customSendMessageImpl(request, options, instance, useDraft, disableHistory, actionResponse, undefined, agentId);
+          onConfigNotice?.(null);
+          await customSendMessageImpl(request, options, instance, useDraft, disableHistory, actionResponse, undefined, agentId, onConfigNotice);
         }
       },
     });
-  }, [useDraft, disableHistory, agentId]);
+  }, [useDraft, disableHistory, agentId, onConfigNotice]);
 
   // Load history when threadId changes
   useEffect(() => {
