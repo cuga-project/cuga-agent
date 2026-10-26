@@ -222,7 +222,8 @@ gh issue create \
   --body "Part of #<parent>.\n\n## What you want and why\n..." \
   --label "enhancement" \
   --label "needs-triage" \
-  --label "component: agent"
+  --label "design-impact: medium" \
+  --label "area: orchestration"
 ```
 
 ### Create an epic (REST — supports `type` field)
@@ -234,7 +235,8 @@ gh api repos/cuga-project/cuga-agent/issues \
   -f body="## Summary\n..." \
   -f type="Epic" \
   -f labels[]="type: epic" \
-  -f labels[]="component: agent" \
+  -f labels[]="design-impact: high" \
+  -f labels[]="area: orchestration" \
   --jq '{number, html_url}'
 ```
 
@@ -260,7 +262,8 @@ gh api repos/cuga-project/cuga-agent/issues/168 \
 | `type: epic` | Top-level epic |
 | Feature-family title prefix | Child of an epic |
 | Leaf under feature | Child of a feature (grandchild of epic) |
-| `component: *` | Area label |
+| `component: *` | Component label |
+| `design-impact: *`, `area: *` | Required on every issue; see [labels.md](../cuga-contributor-workflows/labels.md) |
 
 **When to parent**
 
