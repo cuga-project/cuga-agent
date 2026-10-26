@@ -248,7 +248,7 @@ class ProdEmbeddingStore:
             async with pool.acquire() as conn:
                 await conn.execute(f"DELETE FROM {self._collection_name} WHERE {id_col} = $1", id)
 
-    async def list(self, metadata_filter: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
+    async def list(self, metadata_filter: Dict[str, Any], limit: Optional[int]) -> List[Dict[str, Any]]:
         pool = await self._get_pool()
         meta_keys = self._meta_keys()
         aux_keys = self._aux_keys()
@@ -259,11 +259,16 @@ class ProdEmbeddingStore:
             if k in self._schema.metadata_columns:
                 params.append(v)
                 where_parts.append(f"{k} = ${len(params)}")
-        params.append(limit)
         where = (" WHERE " + " AND ".join(where_parts) + " ") if where_parts else " "
+        # ORDER BY keeps a capped listing deterministic; a missing LIMIT means "read all".
+        limit_clause = ""
+        if limit is not None:
+            params.append(limit)
+            limit_clause = f" LIMIT ${len(params)}"
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT {', '.join(cols)} FROM {self._collection_name}{where}LIMIT ${len(params)}",
+                f"SELECT {', '.join(cols)} FROM {self._collection_name}{where}"
+                f"ORDER BY {self._schema.id_column}{limit_clause}",
                 *params,
             )
         return [dict(row) for row in rows]

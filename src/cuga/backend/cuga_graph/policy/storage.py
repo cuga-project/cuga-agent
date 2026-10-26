@@ -416,7 +416,7 @@ class PolicyStorage:
         self,
         policy_type: Optional[PolicyType] = None,
         enabled_only: bool = True,
-        limit: int = 100,
+        limit: Optional[int] = 100,
     ) -> List[Policy]:
         if not self._connected:
             await self.initialize_async()

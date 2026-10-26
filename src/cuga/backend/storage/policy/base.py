@@ -39,6 +39,6 @@ class PolicyStoreBackend(Protocol):
         self,
         policy_type: Optional[PolicyType],
         enabled_only: bool,
-        limit: int,
+        limit: Optional[int],
     ) -> List[Dict[str, Any]]: ...
     async def count_policies(self, policy_type: Optional[PolicyType]) -> int: ...

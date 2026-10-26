@@ -87,7 +87,7 @@ class ProdPolicyStore:
         self,
         policy_type: Optional[PolicyType],
         enabled_only: bool,
-        limit: int,
+        limit: Optional[int],
     ) -> List[Dict[str, Any]]:
         if self._store is None:
             return []

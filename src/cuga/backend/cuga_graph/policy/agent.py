@@ -719,10 +719,10 @@ Provide:
             # Get policies for each type and combine
             all_policies = []
             for policy_type in policy_types:
-                policies = await self.storage.list_policies(policy_type=policy_type, enabled_only=True)
+                policies = await self.storage.list_policies(policy_type=policy_type, enabled_only=True, limit=None)
                 all_policies.extend(policies)
         else:
-            all_policies = await self.storage.list_policies(enabled_only=True)
+            all_policies = await self.storage.list_policies(enabled_only=True, limit=None)
 
         policies_with_keyword_triggers = []
         for policy in all_policies:
@@ -808,10 +808,10 @@ Provide:
             # Get policies for each type and combine
             all_policies = []
             for policy_type in policy_types:
-                policies = await self.storage.list_policies(policy_type=policy_type, enabled_only=True)
+                policies = await self.storage.list_policies(policy_type=policy_type, enabled_only=True, limit=None)
                 all_policies.extend(policies)
         else:
-            all_policies = await self.storage.list_policies(enabled_only=True)
+            all_policies = await self.storage.list_policies(enabled_only=True, limit=None)
 
         policies_with_nl_triggers = []
         for policy in all_policies:
@@ -1076,6 +1076,7 @@ Provide:
                 policies = await self.storage.list_policies(
                     policy_type=policy_type,
                     enabled_only=True,
+                    limit=None,
                 )
 
             matches = []
@@ -1253,7 +1254,7 @@ Based on the conversation, refine this playbook to focus on what the user still 
 
         # Get all ToolGuide policies from storage
         guide_policies = await self.storage.list_policies(
-            policy_type=PolicyType.TOOL_GUIDE, enabled_only=True, limit=100
+            policy_type=PolicyType.TOOL_GUIDE, enabled_only=True, limit=None
         )
 
         logger.debug(f"Found {len(guide_policies)} enabled Tool Guide policies")
@@ -1309,7 +1310,7 @@ Based on the conversation, refine this playbook to focus on what the user still 
 
         # Get all ToolApproval policies from storage
         tool_approval_policies = await self.storage.list_policies(
-            policy_type=PolicyType.TOOL_APPROVAL, enabled_only=True, limit=100
+            policy_type=PolicyType.TOOL_APPROVAL, enabled_only=True, limit=None
         )
 
         logger.debug(f"Found {len(tool_approval_policies)} enabled ToolApproval policies")

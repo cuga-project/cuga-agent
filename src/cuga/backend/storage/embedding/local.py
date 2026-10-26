@@ -207,10 +207,10 @@ class LocalEmbeddingStore:
             conn.execute(f"DELETE FROM {self._collection_name} WHERE {id_col} = ?", (id,))
         conn.commit()
 
-    async def list(self, metadata_filter: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
+    async def list(self, metadata_filter: Dict[str, Any], limit: Optional[int]) -> List[Dict[str, Any]]:
         return await asyncio.to_thread(self._list_sync, metadata_filter, limit)
 
-    def _list_sync(self, metadata_filter: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
+    def _list_sync(self, metadata_filter: Dict[str, Any], limit: Optional[int]) -> List[Dict[str, Any]]:
         conn = self._get_conn()
         meta_keys = self._meta_keys()
         aux_keys = self._aux_keys()
@@ -221,8 +221,11 @@ class LocalEmbeddingStore:
             if k in self._schema.metadata_columns:
                 where_parts.append(f"{k} = ?")
                 params.append(v)
-        params.append(limit)
         where = (" WHERE " + " AND ".join(where_parts) + " ") if where_parts else " "
-        sql = f"SELECT {', '.join(cols)} FROM {self._collection_name}{where}LIMIT ?"
+        # ORDER BY keeps a capped listing deterministic; a missing LIMIT means "read all".
+        limit_clause = " LIMIT ?" if limit is not None else ""
+        if limit is not None:
+            params.append(limit)
+        sql = f"SELECT {', '.join(cols)} FROM {self._collection_name}{where}ORDER BY {self._schema.id_column}{limit_clause}"
         cur = conn.execute(sql, params)
         return [dict(zip(cols, row)) for row in cur.fetchall()]
