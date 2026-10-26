@@ -22,9 +22,13 @@ executors/
 │   ├── __init__.py
 │   └── local_executor.py    # LocalExecutor - restricted local execution
 │
-└── e2b/                     # E2B sandbox mode
+├── e2b/                     # E2B sandbox mode
+│   ├── __init__.py
+│   └── e2b_executor.py      # E2BExecutor - remote sandbox execution
+│
+└── monty/                   # Monty sandbox mode (optional extra: cuga[monty])
     ├── __init__.py
-    └── e2b_executor.py      # E2BExecutor - remote sandbox execution
+    └── monty_executor.py    # MontyExecutor - runs code in Pydantic Monty
 ```
 
 ## Architecture
@@ -125,6 +129,30 @@ Executes code in E2B remote sandbox.
 - `single`: One global sandbox (reused)
 - `ephemeral`: New sandbox per execution (no caching)
 
+#### Monty Mode (`monty/`)
+
+**`MontyExecutor`** (monty_executor.py)
+Runs the code that local mode would run in [Pydantic Monty](https://pydantic.dev/docs/monty/),
+a Python interpreter written in Rust, in a worker process instead of the CUGA process.
+Turn it on with `advanced_features.monty_sandbox = true` and install `pip install "cuga[monty]"`.
+
+**Features:**
+- No access to files, environment variables, the network or processes: the code can only
+  call the tools it is given, which are passed in as Monty host functions
+- Variables from earlier blocks are passed in; the block's variables (including inputs it
+  changed in place) are read back after it runs, so the code never runs twice
+- Same error text as local mode: `NameError` keeps the tool-name correction, tool-budget
+  errors keep their type, `exit()` ends the block and keeps its variables
+- Memory cap (512 MB) and the usual `sandbox_execution_timeout`
+
+**Limits:**
+- A subset of Python: no third-party packages (pandas, numpy), no generators, no class
+  inheritance, a partial standard library, and `asyncio.sleep` does not wait
+- Values Monty cannot represent (custom objects, modules, values that contain themselves)
+  are not passed in; a self-referencing value comes back with a `'[...]'` placeholder
+- Runs with skills enabled keep the local executor (skill flows need helpers Monty cannot
+  receive), and benchmark mode's frozen clock is refused with a clear error
+
 ## Usage Examples
 
 ### Basic Usage
@@ -218,6 +246,13 @@ code runs). Env override: `DYNACONF_EXECUTION__ENFORCE_CODE_SECURITY=false`.
 3. **Tool Serialization**: Only safe tool definitions sent
 4. **HTTP-based Tools**: Registry tools accessed via HTTP (no direct system access)
 
+### Monty Mode
+1. **Same pre-execution checks** as local mode (import validation, AST checks)
+2. **Separate interpreter**: code runs in a Monty worker process, not in the CUGA process
+3. **No ambient access**: no files, environment variables, network or processes
+4. **Tools are the only way out**: host functions run with full authority, so tools must
+   validate their own inputs. This is a language-level sandbox, not an OS-level one
+
 ### Allowed Modules
 - `asyncio`, `json`, `pandas`, `numpy`, `statistics`
 - `datetime`, `math`, `collections`, `itertools`
@@ -237,6 +272,7 @@ Execution mode is controlled by settings:
 [advanced_features]
 e2b_sandbox = true  # Enable E2B mode
 e2b_sandbox_mode = "per-session"  # or "single" or "ephemeral"
+monty_sandbox = true  # Run local-mode code in Pydantic Monty (pip install "cuga[monty]")
 
 [server_ports]
 function_call_host = "http://your-registry-url:8001"  # For E2B registry tools
