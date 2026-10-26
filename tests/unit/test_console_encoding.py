@@ -1,6 +1,8 @@
 import io
-
+import pytest
 from cuga.cli.main import _configure_stream_encoding
+
+pytestmark = pytest.mark.unit
 
 
 def test_gbk_stream_supports_unicode_output():
