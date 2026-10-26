@@ -250,6 +250,8 @@ cuga start demo_skills
 
 That preset turns on skills for the run and uses **`[advanced_features] sandbox_mode`** in [`settings.toml`](../../src/cuga/settings.toml) (default **`native`**). For **`opensandbox`**, run **`uv sync --extra opensandbox`** first so the client deps are installed and OpenSandbox can be reached.
 
+Skills do not turn off the security checks on generated code. Those checks have their own setting, **`[execution] enforce_code_security`** (default **`true`**), which is separate from `sandbox_mode`: `sandbox_mode` picks where code runs, and `enforce_code_security` picks whether the import allowlist, AST checks and restricted builtins apply. Set it to `false` only for trusted runs such as AppWorld benchmarks.
+
 For Docker/Podman isolation instead, use **`uv sync --group sandbox`** then **`cuga start demo --sandbox`** and enable **`[skills]`**—see [Configurations](#configurations).
 
 For settings you keep beyond a one-off run, configure `[skills]` and `[advanced_features]` in [`settings.toml`](../../src/cuga/settings.toml) (Dynaconf env overrides apply as documented there).

@@ -1,0 +1,914 @@
+import asyncio
+import os
+from unittest.mock import MagicMock, patch
+
+import pytest
+from langchain_core.tools import tool
+
+from cuga.backend.cuga_graph.policy import folder_loader
+from cuga.backend.cuga_graph.policy.filesystem_sync import PolicyFilesystemSync
+from cuga.backend.cuga_graph.policy.models import (
+    IntentGuard,
+    IntentGuardResponse,
+    KeywordTrigger,
+)
+from cuga.sdk import CugaAgent
+
+pytestmark = pytest.mark.unit
+
+
+class _FakeStorage:
+    def __init__(self):
+        self._policies = {}
+        self.embedding_generations = 0
+
+    async def add_policy(self, policy, embedding=None):
+        if embedding is None:
+            self.embedding_generations += 1
+        self._policies[policy.id] = policy
+
+    async def list_policies(self, enabled_only=True):
+        return list(self._policies.values())
+
+    async def delete_policy(self, id):
+        self._policies.pop(id, None)
+
+    async def get_policy(self, policy_id):
+        return self._policies.get(policy_id)
+
+    async def update_policy(self, policy):
+        self._policies[policy.id] = policy
+
+
+class _FakePolicyConfigurable:
+    instances: list = []
+
+    def __init__(self, *a, **k):
+        self.storage = _FakeStorage()
+        type(self).instances.append(self)
+
+    async def initialize(self, *a, **k):
+        await asyncio.sleep(0)
+
+
+@pytest.fixture(autouse=True)
+def _reset_instances():
+    _FakePolicyConfigurable.instances.clear()
+    yield
+    _FakePolicyConfigurable.instances.clear()
+
+
+@pytest.fixture(autouse=True)
+def fake_policy_configurable():
+    with patch(
+        "cuga.backend.cuga_graph.policy.configurable.PolicyConfigurable",
+        _FakePolicyConfigurable,
+    ):
+        yield
+
+
+@pytest.fixture
+def cuga_folder(tmp_path):
+    folder = tmp_path / ".cuga"
+    folder.mkdir()
+    sync = PolicyFilesystemSync(cuga_folder=str(folder))
+    seed1 = IntentGuard(
+        id="seed_1",
+        name="Seed Policy 1",
+        description="Seed policy 1",
+        triggers=[KeywordTrigger(value=["block1"])],
+        response=IntentGuardResponse(response_type="natural_language", content="blocked"),
+    )
+    seed2 = IntentGuard(
+        id="seed_2",
+        name="Seed Policy 2",
+        description="Seed policy 2",
+        triggers=[KeywordTrigger(value=["block2"])],
+        response=IntentGuardResponse(response_type="natural_language", content="blocked"),
+    )
+    sync.save_policy_to_file(seed1)
+    sync.save_policy_to_file(seed2)
+    return str(folder)
+
+
+@pytest.fixture
+def load_calls(monkeypatch):
+    counter = {"count": 0}
+    real_fn = folder_loader.load_policies_from_folder
+
+    async def counting_wrapper(*args, **kwargs):
+        counter["count"] += 1
+        return await real_fn(*args, **kwargs)
+
+    monkeypatch.setattr(folder_loader, "load_policies_from_folder", counting_wrapper)
+    yield counter
+
+
+@tool
+def noop_tool(x: str) -> str:
+    """No-op tool for testing"""
+    return x
+
+
+def _make_agent(cuga_folder_path, **kwargs):
+    # Pass model=MagicMock() to avoid the LLM manager initialization, which
+    # can fail when other tests have polluted settings with provider credentials.
+    return CugaAgent(
+        tools=[noop_tool],
+        model=MagicMock(),
+        cuga_folder=cuga_folder_path,
+        auto_load_policies=True,
+        filesystem_sync=True,
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sequential_adds_auto_load_folder_only_once(cuga_folder, load_calls):
+    agent = _make_agent(cuga_folder)
+    for i in range(4):
+        await agent.policies.add_intent_guard(
+            policy_id=f"guard_{i}",
+            name=f"Guard {i}",
+            keywords=[f"kw{i}"],
+            response="blocked",
+        )
+    assert load_calls["count"] == 1
+    assert len(agent._policy_system.storage._policies) == 6
+    assert agent._policy_system.storage.embedding_generations == 6
+
+
+@pytest.mark.asyncio
+async def test_concurrent_ensure_initializes_and_auto_loads_once(cuga_folder, load_calls):
+    agent = _make_agent(cuga_folder)
+    results = await asyncio.gather(*[agent.policies._ensure_policy_system() for _ in range(5)])
+    assert len(_FakePolicyConfigurable.instances) == 1
+    assert all(r is results[0] for r in results)
+    assert load_calls["count"] == 1
+    assert agent._policy_system.storage.embedding_generations == 2
+
+
+@pytest.mark.asyncio
+async def test_explicit_reload_and_sync_bypass_latch(cuga_folder, load_calls):
+    agent = _make_agent(cuga_folder)
+    await agent.policies.add_intent_guard(
+        policy_id="guard_1",
+        name="Guard 1",
+        keywords=["kw1"],
+        response="blocked",
+    )
+    assert load_calls["count"] == 1
+
+    await agent.policies.load_from_folder(cuga_folder)
+    assert load_calls["count"] == 2
+
+    await agent.policies.sync_from_filesystem()
+    assert load_calls["count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_failed_auto_load_is_retried_on_next_call(cuga_folder, monkeypatch):
+    # Use a standalone counter so double-patching via the load_calls fixture is avoided.
+    from cuga.backend.cuga_graph.policy import folder_loader as _fl
+
+    real_fn = _fl.load_policies_from_folder
+    call_counter = {"count": 0}
+    first = True
+
+    async def failing_wrapper(*args, **kwargs):
+        nonlocal first
+        call_counter["count"] += 1
+        if first:
+            first = False
+            raise RuntimeError("load failed")
+        return await real_fn(*args, **kwargs)
+
+    monkeypatch.setattr(_fl, "load_policies_from_folder", failing_wrapper)
+
+    agent = _make_agent(cuga_folder)
+    with pytest.raises(RuntimeError):
+        await agent.policies._ensure_policy_system()
+
+    # Latch not set (load failed) → second call retries and succeeds → sets latch
+    await agent.policies._ensure_policy_system()
+    # Latch is now set → third call skips the load entirely
+    await agent.policies._ensure_policy_system()
+
+    assert call_counter["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_storage_error_is_retried_on_next_call(cuga_folder, load_calls):
+    """Storage errors (e.g. embedding outage) are transient: the loader catches them
+    and returns them in storage_errors. The latch must stay unset so the next call
+    retries. Patches _FakeStorage.add_policy at the class level before the agent is
+    created, so the raising behaviour applies from the very first store call."""
+    first_store = True
+    original_class_add = _FakeStorage.add_policy
+
+    async def raising_add(self_storage, policy, embedding=None):
+        nonlocal first_store
+        if first_store:
+            first_store = False
+            raise RuntimeError("Embedding service unavailable")
+        await original_class_add(self_storage, policy, embedding=embedding)
+
+    _FakeStorage.add_policy = raising_add
+    try:
+        agent = _make_agent(cuga_folder)
+
+        # First call: storage raises for the first policy → storage_errors non-empty →
+        # latch must NOT be set
+        await agent.policies._ensure_policy_system()
+        assert load_calls["count"] == 1
+        assert agent.policies._auto_load_done is False, "latch must stay unset after storage error"
+
+        # Second call: all policies store cleanly → latch IS set
+        await agent.policies._ensure_policy_system()
+        assert load_calls["count"] == 2
+        assert agent.policies._auto_load_done is True
+
+        # Third call: latch set → loader skipped
+        await agent.policies._ensure_policy_system()
+        assert load_calls["count"] == 2
+
+        # Seeds present in storage after the clean second load
+        assert "seed_1" in agent._policy_system.storage._policies
+        assert "seed_2" in agent._policy_system.storage._policies
+    finally:
+        _FakeStorage.add_policy = original_class_add
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_error_is_retried_on_next_call(cuga_folder, load_calls, monkeypatch):
+    real_get_ids = PolicyFilesystemSync.get_filesystem_policy_ids
+    sync_calls = 0
+
+    def fail_once(self):
+        nonlocal sync_calls
+        sync_calls += 1
+        if sync_calls == 1:
+            raise OSError("Filesystem temporarily unavailable")
+        return real_get_ids(self)
+
+    monkeypatch.setattr(PolicyFilesystemSync, "get_filesystem_policy_ids", fail_once)
+    agent = _make_agent(cuga_folder)
+
+    await agent.policies._ensure_policy_system()
+    assert sync_calls == 1
+    assert agent.policies._auto_load_done is False
+
+    await agent.policies._ensure_policy_system()
+    assert sync_calls == 2
+    assert agent.policies._auto_load_done is True
+    assert set(agent._policy_system.storage._policies) == {"seed_1", "seed_2"}
+
+    await agent.policies._ensure_policy_system()
+    assert sync_calls == 2
+    assert load_calls["count"] == 1
+    assert agent._policy_system.storage.embedding_generations == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_error", [BlockingIOError, PermissionError])
+async def test_file_read_error_is_retried_on_next_call(cuga_folder, load_calls, monkeypatch, read_error):
+    real_open = open
+    read_attempts = 0
+
+    def fail_once(file_path, *args, **kwargs):
+        nonlocal read_attempts
+        if os.path.basename(file_path) == "seed_1.md":
+            read_attempts += 1
+            if read_attempts == 1:
+                raise read_error("File temporarily unavailable")
+        return real_open(file_path, *args, **kwargs)
+
+    monkeypatch.setattr(folder_loader, "open", fail_once, raising=False)
+    agent = _make_agent(cuga_folder)
+
+    await agent.policies._ensure_policy_system()
+    assert agent.policies._auto_load_done is False
+    assert set(agent._policy_system.storage._policies) == {"seed_2"}
+
+    await agent.policies._ensure_policy_system()
+    assert agent.policies._auto_load_done is True
+    assert set(agent._policy_system.storage._policies) == {"seed_1", "seed_2"}
+
+    await agent.policies._ensure_policy_system()
+    assert read_attempts == 2
+    assert load_calls["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_permanent_file_error_latches_and_does_not_retry(cuga_folder, load_calls):
+    """Parse errors (bad frontmatter, unknown type) are permanent. The latch IS set
+    after the first load so the reload loop from #804 does not come back."""
+    import os
+
+    # Write a broken policy file with an unknown type
+    broken_path = os.path.join(cuga_folder, "playbooks", "broken.md")
+    os.makedirs(os.path.dirname(broken_path), exist_ok=True)
+    with open(broken_path, "w") as f:
+        f.write("---\nname: Broken Policy\ntype: not_a_type\n---\n\nContent.\n")
+
+    agent = _make_agent(cuga_folder)
+
+    # First call: broken file causes a parse error but load_from_folder does not raise.
+    # No storage_errors → latch IS set despite the file error.
+    await agent.policies._ensure_policy_system()
+    assert load_calls["count"] == 1
+    assert agent.policies._auto_load_done is True, "latch must be set even with a bad file"
+
+    # Second and third calls: latch held → loader is not called again
+    await agent.policies._ensure_policy_system()
+    await agent.policies._ensure_policy_system()
+    assert load_calls["count"] == 1
+
+    # The two valid seeds are still in storage
+    assert "seed_1" in agent._policy_system.storage._policies
+    assert "seed_2" in agent._policy_system.storage._policies
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["load_from_json", "generate_tool_guards_from_json"])
+async def test_json_import_persists_to_filesystem_and_survives_restart(
+    cuga_folder, tmp_path, monkeypatch, method
+):
+    """With the auto-load latch, no later call re-syncs storage to .cuga, so JSON imports
+    must write their files directly; otherwise the next start drops them from storage."""
+    import json
+
+    from cuga.backend.server import tool_guard_generation
+
+    async def fake_generate(*, policy_system, policy_ids, generation_agent):
+        return {"status": "ok", "generated": {}, "skipped": [], "errors": []}
+
+    monkeypatch.setattr(tool_guard_generation, "generate_tool_guards_for_policies", fake_generate)
+    monkeypatch.setattr(tool_guard_generation, "build_tool_guard_generation_agent", lambda **_: None)
+
+    json_path = tmp_path / "policies.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "policies": [
+                    {
+                        "id": "imported_guide",
+                        "policy_type": "tool_guide",
+                        "name": "Imported Guide",
+                        "description": "Imported guide",
+                        "triggers": [{"type": "always"}],
+                        "target_tools": ["noop_tool"],
+                        "guide_content": "Imported content.",
+                        "enabled": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    agent = _make_agent(cuga_folder)
+    await getattr(agent.policies, method)(str(json_path))
+    assert "imported_guide" in agent._policy_system.storage._policies
+    assert os.path.exists(os.path.join(cuga_folder, "tool_guides", "imported_guide.md"))
+
+    restarted = _make_agent(cuga_folder)
+    await restarted.policies._ensure_policy_system()
+    assert "imported_guide" in restarted._policy_system.storage._policies
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True])
+async def test_generated_guards_survive_reload_and_restart(cuga_folder, tmp_path, monkeypatch, partial):
+    import json
+
+    from cuga.sdk import PoliciesManager
+
+    async def generate_examples(self, policy_id, target_tool):
+        return ["forbidden input"], ["allowed input"]
+
+    async def generate_code(self, policy_id, target_tool):
+        if partial and policy_id == "second_guide":
+            raise RuntimeError("Generation temporarily unavailable")
+        return "def check(input):\n    return True"
+
+    # Exercise the real batch workflow and update_tool_guard; only generation is mocked.
+    monkeypatch.setattr(PoliciesManager, "generate_tool_guard_examples", generate_examples)
+    monkeypatch.setattr(PoliciesManager, "generate_tool_guard_code", generate_code)
+    json_path = tmp_path / "guides.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "policies": [
+                    {
+                        "id": policy_id,
+                        "policy_type": "tool_guide",
+                        "name": policy_id,
+                        "description": "Test guide",
+                        "triggers": [{"type": "always"}],
+                        "target_tools": ["noop_tool"],
+                        "guide_content": "Only allow approved input.",
+                        "enabled": True,
+                    }
+                    for policy_id in ["first_guide", "second_guide"]
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    agent = _make_agent(cuga_folder)
+    result = await agent.policies.generate_tool_guards_from_json(str(json_path))
+    assert result["status"] == ("partial" if partial else "ok")
+    expected = {
+        policy_id: (await agent._policy_system.storage.get_policy(policy_id)).tool_guards
+        for policy_id in ["first_guide", "second_guide"]
+    }
+    assert expected["first_guide"]["noop_tool"].policy_code == "def check(input):\n    return True"
+    for guards in expected.values():
+        assert guards["noop_tool"].violating_examples == ["forbidden input"]
+        assert guards["noop_tool"].compliance_examples == ["allowed input"]
+
+    await agent.policies.load_from_folder(cuga_folder)
+    restarted = _make_agent(cuga_folder)
+    await restarted.policies._ensure_policy_system()
+    for current in [agent, restarted]:
+        for policy_id, guards in expected.items():
+            reloaded = await current._policy_system.storage.get_policy(policy_id)
+            assert reloaded.tool_guards == guards
+
+
+@pytest.mark.asyncio
+async def test_generated_guard_save_failure_is_reported(cuga_folder, tmp_path, monkeypatch):
+    import json
+
+    from cuga.backend.server import tool_guard_generation
+
+    real_save = PolicyFilesystemSync.save_policy_to_file
+    generation_done = False
+
+    def save_fails_after_generation(self, policy):
+        if generation_done:
+            raise OSError("Disk temporarily unavailable")
+        return real_save(self, policy)
+
+    async def fake_generate(*, policy_system, policy_ids, generation_agent):
+        nonlocal generation_done
+        generation_done = True
+        return {
+            "status": "ok",
+            "generated": {pid: {"status": "ok"} for pid in policy_ids},
+            "skipped": [],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(PolicyFilesystemSync, "save_policy_to_file", save_fails_after_generation)
+    monkeypatch.setattr(tool_guard_generation, "generate_tool_guards_for_policies", fake_generate)
+    monkeypatch.setattr(tool_guard_generation, "build_tool_guard_generation_agent", lambda **_: None)
+
+    json_path = tmp_path / "guide.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "policies": [
+                    {
+                        "id": "unsaved_guide",
+                        "policy_type": "tool_guide",
+                        "name": "Unsaved Guide",
+                        "description": "Test guide",
+                        "triggers": [{"type": "always"}],
+                        "target_tools": ["noop_tool"],
+                        "guide_content": "Only allow approved input.",
+                        "enabled": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    agent = _make_agent(cuga_folder)
+    result = await agent.policies.generate_tool_guards_from_json(str(json_path))
+
+    assert result["status"] != "ok"
+    assert any("unsaved_guide" in e and "Disk temporarily unavailable" in e for e in result["errors"])
+
+
+@pytest.mark.asyncio
+async def test_folder_removed_during_load_is_not_latched(cuga_folder, monkeypatch):
+    import shutil
+
+    real_fn = folder_loader.load_policies_from_folder
+    calls = 0
+
+    async def remove_folder_first(folder_path, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # Simulate the folder vanishing after the SDK's existence check.
+            shutil.rmtree(folder_path)
+        return await real_fn(folder_path, *args, **kwargs)
+
+    monkeypatch.setattr(folder_loader, "load_policies_from_folder", remove_folder_first)
+    agent = _make_agent(cuga_folder)
+
+    await agent.policies._ensure_policy_system()
+    assert agent.policies._auto_load_done is False
+
+    os.makedirs(os.path.join(cuga_folder, "intent_guards"), exist_ok=True)
+    PolicyFilesystemSync(cuga_folder=cuga_folder).save_policy_to_file(_intent_guard("seed_recreated"))
+
+    await agent.policies._ensure_policy_system()
+    assert calls == 2
+    assert agent.policies._auto_load_done is True
+    assert "seed_recreated" in agent._policy_system.storage._policies
+
+
+@pytest.mark.asyncio
+async def test_missing_folder_is_not_latched(tmp_path, load_calls):
+    missing_folder = str(tmp_path / "does_not_exist")
+    agent = _make_agent(missing_folder)
+
+    await agent.policies._ensure_policy_system()
+    assert load_calls["count"] == 0
+
+    os.makedirs(os.path.join(missing_folder, "intent_guards"), exist_ok=True)
+    sync = PolicyFilesystemSync(cuga_folder=missing_folder)
+    seed = IntentGuard(
+        id="seed_new",
+        name="New Seed",
+        description="New seed policy",
+        triggers=[KeywordTrigger(value=["block_new"])],
+        response=IntentGuardResponse(response_type="natural_language", content="blocked"),
+    )
+    sync.save_policy_to_file(seed)
+
+    await agent.policies._ensure_policy_system()
+    assert load_calls["count"] == 1
+    assert "seed_new" in agent._policy_system.storage._policies
+
+
+@pytest.mark.asyncio
+async def test_auto_load_disabled_never_loads(cuga_folder, load_calls):
+    agent = CugaAgent(
+        tools=[noop_tool],
+        model=MagicMock(),
+        cuga_folder=cuga_folder,
+        auto_load_policies=False,
+        filesystem_sync=False,
+    )
+    for i in range(3):
+        await agent.policies.add_intent_guard(
+            policy_id=f"guard_{i}",
+            name=f"Guard {i}",
+            keywords=[f"kw{i}"],
+            response="blocked",
+        )
+    assert load_calls["count"] == 0
+
+
+def _intent_guard(policy_id):
+    return IntentGuard(
+        id=policy_id,
+        name=f"Guard {policy_id}",
+        description=f"Guard {policy_id}",
+        triggers=[KeywordTrigger(value=["kw"])],
+        response=IntentGuardResponse(response_type="natural_language", content="blocked"),
+    )
+
+
+@pytest.mark.parametrize("bad_id", ["../escaped", "../../escaped", "nested/escaped"])
+def test_save_policy_rejects_ids_outside_subfolder(tmp_path, bad_id):
+    """Policy IDs come from caller-supplied JSON; they must not write outside .cuga/<subfolder>."""
+    folder = tmp_path / ".cuga"
+    sync = PolicyFilesystemSync(cuga_folder=str(folder))
+
+    with pytest.raises(ValueError, match="Policy ID"):
+        sync.save_policy_to_file(_intent_guard(bad_id))
+
+    written = [p for p in tmp_path.rglob("*.md")]
+    assert written == []
+
+
+@pytest.mark.parametrize("bad_id", ["unused/../foo", "./foo", r"unused\..\foo", r".\foo", ".", ".."])
+def test_save_policy_rejects_filename_aliases_without_overwriting(tmp_path, bad_id):
+    """Reject path components before they can alias an existing policy filename."""
+    folder = tmp_path / ".cuga"
+    sync = PolicyFilesystemSync(cuga_folder=str(folder))
+    original_path = sync.save_policy_to_file(_intent_guard("foo"))
+    with open(original_path, encoding="utf-8") as original:
+        original_content = original.read()
+
+    with pytest.raises(ValueError, match="Policy ID"):
+        sync.save_policy_to_file(_intent_guard(bad_id))
+
+    assert list(folder.rglob("*.md")) == [folder / "intent_guards" / "foo.md"]
+    assert (folder / "intent_guards" / "foo.md").read_text(encoding="utf-8") == original_content
+    fresh_sync = PolicyFilesystemSync(cuga_folder=str(folder))
+    assert fresh_sync.delete_policy_file(bad_id) is False
+    assert fresh_sync.delete_policy_file("foo") is True
+
+
+@pytest.mark.parametrize("policy_id", ["foo", "foo.bar", "foo-bar_123", "policy..v2"])
+def test_save_policy_preserves_valid_filename_ids(tmp_path, policy_id):
+    """Valid IDs retain their exact filename and remain discoverable after restart."""
+    folder = tmp_path / ".cuga"
+    sync = PolicyFilesystemSync(cuga_folder=str(folder))
+    saved_path = sync.save_policy_to_file(_intent_guard(policy_id))
+    assert os.path.basename(saved_path) == f"{policy_id}.md"
+    assert PolicyFilesystemSync(cuga_folder=str(folder)).delete_policy_file(policy_id) is True
+
+
+def test_delete_policy_file_matches_exact_id_only(tmp_path):
+    folder = tmp_path / ".cuga"
+    PolicyFilesystemSync(cuga_folder=str(folder)).save_policy_to_file(_intent_guard("foo_bar"))
+
+    # Fresh instance -> no cached path, so the lookup falls back to scanning the folder.
+    assert PolicyFilesystemSync(cuga_folder=str(folder)).delete_policy_file("foo") is False
+    assert (folder / "intent_guards" / "foo_bar.md").exists()
+
+
+def _write_json(path, policy_ids):
+    import json
+
+    path.write_text(
+        json.dumps(
+            {
+                "policies": [
+                    {
+                        "id": pid,
+                        "policy_type": "intent_guard",
+                        "name": f"Guard {pid}",
+                        "description": f"Guard {pid}",
+                        "triggers": [{"type": "keyword", "value": ["kw"]}],
+                        "response": {"response_type": "natural_language", "content": "blocked"},
+                        "enabled": True,
+                    }
+                    for pid in policy_ids
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_load_from_json_clear_existing_prunes_stale_files_across_restart(cuga_folder, tmp_path):
+    """A replacement import must not be undone by the next start's folder auto-load."""
+    json_path = tmp_path / "replace.json"
+    # "seed_1" is kept, "seed_2" is dropped, "seed_10" shares a prefix with "seed_1".
+    _write_json(json_path, ["seed_1", "seed_10"])
+
+    agent = _make_agent(cuga_folder)
+    result = await agent.policies.load_from_json(str(json_path), clear_existing=True)
+    assert result["errors"] == []
+
+    guards_dir = os.path.join(cuga_folder, "intent_guards")
+    assert sorted(os.listdir(guards_dir)) == ["seed_1.md", "seed_10.md"]
+
+    restarted = _make_agent(cuga_folder)
+    await restarted.policies._ensure_policy_system()
+    assert sorted(restarted._policy_system.storage._policies) == ["seed_1", "seed_10"]
+
+
+@pytest.mark.asyncio
+async def test_load_from_json_without_clear_keeps_existing_files(cuga_folder, tmp_path):
+    json_path = tmp_path / "add.json"
+    _write_json(json_path, ["extra"])
+
+    agent = _make_agent(cuga_folder)
+    await agent.policies.load_from_json(str(json_path))
+
+    guards_dir = os.path.join(cuga_folder, "intent_guards")
+    assert sorted(os.listdir(guards_dir)) == ["extra.md", "seed_1.md", "seed_2.md"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["read", "storage", "sync"])
+async def test_persistent_failures_do_not_reload_successful_policies(cuga_folder, monkeypatch, failure):
+    attempts = []
+    real_add = _FakeStorage.add_policy
+    real_open = open
+    failing = True
+
+    async def add_policy(self, policy, embedding=None):
+        attempts.append(policy.id)
+        if failing and failure == "storage" and policy.id == "seed_1":
+            raise OSError("Storage unavailable")
+        await real_add(self, policy, embedding)
+
+    def read_policy(path, *args, **kwargs):
+        if failing and failure == "read" and os.path.basename(path) == "seed_1.md":
+            raise PermissionError("File unavailable")
+        return real_open(path, *args, **kwargs)
+
+    real_get_ids = PolicyFilesystemSync.get_filesystem_policy_ids
+
+    def get_ids(self):
+        if failing and failure == "sync":
+            raise OSError("Reconciliation unavailable")
+        return real_get_ids(self)
+
+    monkeypatch.setattr(_FakeStorage, "add_policy", add_policy)
+    monkeypatch.setattr(folder_loader, "open", read_policy, raising=False)
+    monkeypatch.setattr(PolicyFilesystemSync, "get_filesystem_policy_ids", get_ids)
+    agent = _make_agent(cuga_folder)
+
+    await agent.policies._ensure_policy_system()
+
+    # A successful file must never be read again during implicit retry.
+    def no_rescan(_):
+        raise AssertionError("Implicit retry must not scan directories")
+
+    monkeypatch.setattr(folder_loader.os, "listdir", no_rescan)
+
+    # Reconciliation also lists files, so use its already-known IDs for this test.
+    def known_ids(self):
+        if failing and failure == "sync":
+            raise OSError("Reconciliation unavailable")
+        return {"seed_1", "seed_2", *[f"new_{i}" for i in range(4)]}
+
+    monkeypatch.setattr(PolicyFilesystemSync, "get_filesystem_policy_ids", known_ids)
+    for i in range(4):
+        await agent.policies.add_intent_guard(
+            policy_id=f"new_{i}", name=f"New {i}", keywords=["block"], response="blocked"
+        )
+        assert agent.policies._auto_load_done is False
+
+    assert attempts.count("seed_2") == 1
+    assert all(attempts.count(f"new_{i}") == 1 for i in range(4))
+    if failure == "sync":
+        assert attempts.count("seed_1") == 1
+
+    failing = False
+    await agent.policies._ensure_policy_system()
+    assert agent.policies._auto_load_done is True
+    assert "seed_1" in agent._policy_system.storage._policies
+    assert attempts.count("seed_2") == 1
+
+    # Explicit reload must bypass selective retry state and reprocess every file.
+    monkeypatch.undo()
+    before_reload = agent._policy_system.storage.embedding_generations
+    await agent.policies.load_from_folder(cuga_folder)
+    assert agent._policy_system.storage.embedding_generations == before_reload + 6
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_successful_empty_replacement_prunes_all_files(cuga_folder):
+    from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+    sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+    result = await apply_policies_data_to_storage(
+        _FakeStorage(), [], clear_existing=True, filesystem_sync=sync, prune_filesystem=True
+    )
+    assert result == {"count": 0, "errors": []}
+    assert sync.get_filesystem_policy_ids() == set()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["validation", "storage", "save"])
+async def test_failed_replacement_preserves_recovery_files(cuga_folder, tmp_path, monkeypatch, failure):
+    import json
+
+    from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+    json_path = tmp_path / "replacement.json"
+    _write_json(json_path, ["replacement"])
+    policies = json.loads(json_path.read_text())["policies"]
+    storage = _FakeStorage()
+    sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+    if failure == "validation":
+        policies[0]["policy_type"] = "invalid_type"
+    elif failure == "storage":
+
+        async def fail_add(*args, **kwargs):
+            raise OSError("Storage unavailable")
+
+        monkeypatch.setattr(storage, "add_policy", fail_add)
+    else:
+
+        def fail_save(*args, **kwargs):
+            raise OSError("Disk unavailable")
+
+        monkeypatch.setattr(sync, "save_policy_to_file", fail_save)
+
+    result = await apply_policies_data_to_storage(
+        storage, policies, clear_existing=True, filesystem_sync=sync, prune_filesystem=True
+    )
+    assert result["errors"]
+    if failure == "save":
+        assert any("replacement" in error and "Disk unavailable" in error for error in result["errors"])
+    assert {"seed_1", "seed_2"} <= sync.get_filesystem_policy_ids()
+
+    restarted = _make_agent(cuga_folder)
+    await restarted.policies._ensure_policy_system()
+    assert {"seed_1", "seed_2"} <= set(restarted._policy_system.storage._policies)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["load_from_json", "generate_tool_guards_from_json"])
+@pytest.mark.parametrize(
+    "invalid_entry, expected_error",
+    [
+        ({"name": "missing id"}, "Policy at index 0 is missing required field 'id'"),
+        ("not an object", "Policy at index 0 must be an object"),
+    ],
+)
+@pytest.mark.parametrize("include_valid", [False, True])
+async def test_replacement_extraction_errors_preserve_storage_and_files(
+    cuga_folder, tmp_path, monkeypatch, method, invalid_entry, expected_error, include_valid
+):
+    import json
+    from pathlib import Path
+    from unittest.mock import AsyncMock
+
+    from cuga.backend.server import tool_guard_generation
+
+    build_generation = MagicMock(return_value=None)
+    generate = AsyncMock(return_value={"status": "ok", "generated": {}, "skipped": [], "errors": []})
+    monkeypatch.setattr(tool_guard_generation, "build_tool_guard_generation_agent", build_generation)
+    monkeypatch.setattr(tool_guard_generation, "generate_tool_guards_for_policies", generate)
+
+    json_path = tmp_path / "replacement.json"
+    _write_json(json_path, ["replacement"] if include_valid else [])
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    data["enablePolicies"] = False
+    data["policies"].insert(0, invalid_entry)
+    json_path.write_text(json.dumps(data), encoding="utf-8")
+
+    agent = _make_agent(cuga_folder)
+    await agent.policies._ensure_policy_system()
+    storage = agent._policy_system.storage
+    original_policies = dict(storage._policies)
+    original_files = {p: p.read_bytes() for p in Path(cuga_folder).rglob("*.md")}
+    delete = AsyncMock(wraps=storage.delete_policy)
+    monkeypatch.setattr(storage, "delete_policy", delete)
+
+    result = await getattr(agent.policies, method)(str(json_path), clear_existing=True)
+
+    summary = result if method == "load_from_json" else result["import"]
+    assert summary == {"count": 0, "enabled": False, "errors": [expected_error]}
+    if method == "generate_tool_guards_from_json":
+        assert result["status"] == "error"
+        assert result["errors"] == [expected_error]
+        assert result["source_policy_ids"] == (["replacement"] if include_valid else [])
+        assert result["generated"] == {}
+        assert result["skipped"] == []
+    build_generation.assert_not_called()
+    generate.assert_not_awaited()
+    delete.assert_not_awaited()
+    assert storage._policies == original_policies
+    assert {p: p.read_bytes() for p in Path(cuga_folder).rglob("*.md")} == original_files
+
+    restarted = _make_agent(cuga_folder)
+    await restarted.policies._ensure_policy_system()
+    assert restarted._policy_system.storage._policies == original_policies
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["load_from_json", "generate_tool_guards_from_json"])
+@pytest.mark.parametrize("frontend_format", [False, True])
+async def test_json_empty_replacement_clears_storage_and_files(
+    cuga_folder, tmp_path, monkeypatch, method, frontend_format
+):
+    from cuga.backend.server import tool_guard_generation
+
+    async def fake_generate(*, policy_system, policy_ids, generation_agent):
+        assert policy_ids == []
+        return {"status": "ok", "generated": {}, "skipped": [], "errors": []}
+
+    monkeypatch.setattr(tool_guard_generation, "build_tool_guard_generation_agent", lambda **_: None)
+    monkeypatch.setattr(tool_guard_generation, "generate_tool_guards_for_policies", fake_generate)
+    json_path = tmp_path / "empty.json"
+    json_path.write_text('{"policies": []}' if frontend_format else "[]", encoding="utf-8")
+    agent = _make_agent(cuga_folder)
+
+    result = await getattr(agent.policies, method)(str(json_path), clear_existing=True)
+
+    summary = result if method == "load_from_json" else result["import"]
+    assert summary == {"count": 0, "enabled": True, "errors": []}
+    if method == "generate_tool_guards_from_json":
+        assert result["status"] == "ok"
+    assert agent._policy_system.storage._policies == {}
+    assert agent.policies._fs_sync.get_filesystem_policy_ids() == set()
+    restarted = _make_agent(cuga_folder)
+    await restarted.policies._ensure_policy_system()
+    assert restarted._policy_system.storage._policies == {}
+
+
+@pytest.mark.asyncio
+async def test_server_style_apply_does_not_prune_by_default(cuga_folder):
+    """Server callers (shared draft/live .cuga) keep the old behaviour unless they opt in."""
+    from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+    storage = _FakeStorage()
+    sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+    await apply_policies_data_to_storage(storage, [], clear_existing=True, filesystem_sync=sync)
+
+    guards_dir = os.path.join(cuga_folder, "intent_guards")
+    assert sorted(os.listdir(guards_dir)) == ["seed_1.md", "seed_2.md"]
