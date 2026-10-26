@@ -1004,7 +1004,7 @@ By default CUGA Lite works in **CodeAct**: the model writes a Python block and t
 
 **Step discipline** (`cuga_lite_step_discipline = "one_tool_per_step"`) works in both modes: only the first tool call of a step is attempted — success or error, that is the result the model reads before it decides the next call. CodeAct keeps the block's variables (including that first result); function-calling answers the extra calls with a "deferred" reply.
 
-For the built-in CodeAct prompt, step discipline also requests a numbered plan of at most four short steps and code for only the first step. Reflection names one next action. The executor must verify required actions before claiming completion, or report a failure or blocker with the unfinished actions identified. Corrected arguments and bounded retries for transient errors remain allowed. Bundled few-shot examples are withheld because they demonstrate multiple calls per block; caller-supplied examples remain available and should follow the selected discipline. With `off` (the default), these prompt rules are omitted. Custom static prompts retain their supplied text.
+**Plan then step** (`cuga_lite_plan_then_step = true`, the default) changes only the built-in CodeAct prompts: each code reply starts with a numbered plan of at most four short steps and implements only step 1 (one step may still loop over pages or items); reflection names one next action; the executor does not claim completion while a planned action has no execution result. Bundled few-shots switch to a version written in the same shape. It is independent of step discipline: it does not cap tool calls per block. Set `false` to restore the previous prompts and few-shots. Custom static prompts keep their supplied text.
 
 ## Configuration
 
@@ -1012,6 +1012,7 @@ For the built-in CodeAct prompt, step discipline also requests a numbered plan o
 |---|---|---|
 | `cuga_lite_execution_mode` | `"codeact"` | `codeact` \| `function_calling` (alias `fc`) |
 | `cuga_lite_step_discipline` | `"off"` | `off` \| `one_tool_per_step` |
+| `cuga_lite_plan_then_step` | `true` | CodeAct prompts: numbered plan, code for step 1 only, one next action in reflection |
 | `cuga_lite_fc_prompt_fragments` | `[]` | Opt-in prompt lines for function-calling mode. `evidence_first`: call a tool before answering, never answer from prior knowledge |
 
 Precedence, highest first: raw keys in `configurable` → per-invoke `invoke(..., execution_mode=..., step_discipline=...)` → constructor `CugaAgent(execution_mode=..., step_discipline=...)` → per-model runtime profile → `[advanced_features]` in `settings.toml` (also where `DYNACONF_ADVANCED_FEATURES__CUGA_LITE_EXECUTION_MODE` lands). An unknown value falls back to the default with a warning.
