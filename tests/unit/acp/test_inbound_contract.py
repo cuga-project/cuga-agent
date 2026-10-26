@@ -36,13 +36,35 @@ async def test_initialize_advertises_truthful_text_only_capabilities() -> None:
     assert response.protocol_version == PROTOCOL_VERSION
     assert response.agent_info.name == "cuga"
     capabilities = response.agent_capabilities
-    assert capabilities.load_session is False
+    assert capabilities.load_session is True
     assert capabilities.prompt_capabilities.image is False
     assert capabilities.prompt_capabilities.audio is False
     assert capabilities.prompt_capabilities.embedded_context is False
-    assert capabilities.mcp_capabilities.http is False
-    assert capabilities.mcp_capabilities.sse is False
+    assert capabilities.mcp_capabilities.http is True
+    assert capabilities.mcp_capabilities.sse is True
     assert capabilities.mcp_capabilities.acp is False
+    assert capabilities.session_capabilities.list is not None
+
+
+@pytest.mark.asyncio
+async def test_real_pipe_lists_and_loads_session_after_process_restart(tmp_path: Path) -> None:
+    store_folder = tmp_path / ".cuga"
+    async with spawn_cuga_agent(store_folder=store_folder) as (_client, connection, _process):
+        await _initialize(connection)
+        session_id = await _session(connection, tmp_path)
+        await connection.prompt(session_id, [TextContentBlock(type="text", text="hello")])
+
+    async with spawn_cuga_agent(store_folder=store_folder) as (client, connection, _process):
+        await _initialize(connection)
+        listed = await connection.list_sessions(cwd=".")
+        assert session_id in [item.session_id for item in listed.sessions]
+        await connection.load_session(cwd=str(tmp_path), session_id=session_id, mcp_servers=[])
+        assert [update.session_update for update in client.updates[session_id]] == [
+            "user_message_chunk",
+            "agent_message_chunk",
+            "agent_message_chunk",
+        ]
+        assert client.text(session_id) == "first:turn-1:hello"
 
 
 @pytest.mark.asyncio

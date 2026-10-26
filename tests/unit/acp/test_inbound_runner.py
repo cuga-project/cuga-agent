@@ -16,7 +16,8 @@ class _FakeAgent:
     result = SimpleNamespace(answer="answer", error=None)
     snapshot = SimpleNamespace(next=(), values={})
 
-    def __init__(self) -> None:
+    def __init__(self, **_kwargs: Any) -> None:
+        self.kwargs = _kwargs
         self.calls: list[dict[str, Any]] = []
         self.closed = 0
         self.initialize_calls = 0
@@ -69,6 +70,95 @@ async def test_runner_constructs_direct_agent_lazily_and_reuses_context(
 
 
 @pytest.mark.unit
+async def test_runner_registers_dam_mcp_tools_for_configured_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import cuga.sdk
+    from acp.schema import HttpMcpServer
+    import cuga.backend.server.acp.mcp_tools as mcp_tools
+    from cuga.backend.server.acp.runner import StdioCugaRunner
+
+    tool = object()
+
+    async def fake_load(_servers):
+        return [tool], "Use the outbound reply tool."
+
+    monkeypatch.setattr(cuga.sdk, "CugaAgent", _FakeAgent)
+    monkeypatch.setattr(mcp_tools, "load_mcp_tools", fake_load)
+    runner = StdioCugaRunner()
+    runner.configure_session(
+        "slack-context",
+        [HttpMcpServer(type="http", name="platform-outbound", url="http://platform.local/mcp", headers=[])],
+    )
+
+    events = [event async for event in runner.run("@DAM hello", context_id="slack-context")]
+
+    assert events[0].name == "final_answer"
+    assert len(_FakeAgent.instances) == 1
+    assert _FakeAgent.instances[0].kwargs["tools"] == [tool]
+    assert _FakeAgent.instances[0].kwargs["special_instructions"] == "Use the outbound reply tool."
+    await runner.shutdown()
+
+
+@pytest.mark.unit
+async def test_runner_registers_managed_outbound_tool_when_acp_session_omits_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import json
+
+    import cuga.sdk
+    import cuga.backend.server.acp.mcp_tools as mcp_tools
+    from cuga.backend.server.acp.runner import StdioCugaRunner
+
+    config = tmp_path / ".mcp.json"
+    config.write_text(
+        json.dumps(
+            {"mcpServers": {"platform-outbound": {"type": "http", "url": "http://platform.local/mcp"}}}
+        ),
+        encoding="utf-8",
+    )
+    original_effective = mcp_tools.effective_mcp_servers
+    monkeypatch.setattr(
+        mcp_tools, "effective_mcp_servers", lambda servers: original_effective(servers, config)
+    )
+    tool = object()
+    loaded = []
+
+    async def fake_load(servers):
+        loaded.extend(servers)
+        return [tool], "Call the platform outbound reply tool for Slack turns."
+
+    monkeypatch.setattr(cuga.sdk, "CugaAgent", _FakeAgent)
+    monkeypatch.setattr(mcp_tools, "load_mcp_tools", fake_load)
+    runner = StdioCugaRunner()
+    runner.configure_session("slack-context", [])
+
+    events = [event async for event in runner.run("@DAM hello", context_id="slack-context")]
+
+    assert events[0].name == "final_answer"
+    assert [server.name for server in loaded] == ["platform-outbound"]
+    assert _FakeAgent.instances[0].kwargs["tools"] == [tool]
+    assert "outbound reply tool" in _FakeAgent.instances[0].kwargs["special_instructions"]
+    await runner.shutdown()
+
+
+@pytest.mark.unit
+async def test_runner_uses_persistent_sqlite_checkpointer(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    import cuga.sdk
+    from cuga.backend.server.acp.runner import StdioCugaRunner
+
+    monkeypatch.setenv("CUGA_FOLDER", str(tmp_path))
+    monkeypatch.setattr(cuga.sdk, "CugaAgent", _FakeAgent)
+    runner = StdioCugaRunner()
+
+    await anext(runner.run("hello", context_id="persistent-context"))
+
+    assert (tmp_path / "acp-checkpoints.sqlite3").is_file()
+    assert _FakeAgent.instances[0].kwargs["checkpointer"] is not None
+    await runner.shutdown()
+
+
+@pytest.mark.unit
 async def test_runner_initializes_once_before_concurrent_distinct_context_invocations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -103,13 +193,23 @@ async def test_runner_maps_pending_hitl_and_structured_resume(monkeypatch: pytes
     monkeypatch.setattr(cuga.sdk, "CugaAgent", _FakeAgent)
     _FakeAgent.snapshot = SimpleNamespace(
         next=("WaitForResponse",),
-        values={"hitl_action": {"action_id": "action-1", "description": "Approve operation"}},
+        values={
+            "hitl_action": {
+                "action_id": "action-1",
+                "description": "Approve operation",
+                "additional_data": {"tool": {"full_code": 'result = await run_command("pwd")'}},
+            }
+        },
     )
     runner = StdioCugaRunner()
 
     events = [event async for event in runner.run("do it", context_id="ctx")]
     assert events[0].name == "input_required"
-    assert events[0].data == {"text": "Approve operation", "action_id": "action-1"}
+    assert events[0].data == {
+        "text": "Approve operation",
+        "action_id": "action-1",
+        "approval_code": 'result = await run_command("pwd")',
+    }
 
     resumed = [
         event
@@ -206,8 +306,8 @@ async def test_runner_fails_closed_when_state_inspection_raises(monkeypatch: pyt
     from cuga.backend.server.acp.runner import StdioCugaRunner
 
     class _BrokenAgent(_FakeAgent):
-        def __init__(self) -> None:
-            super().__init__()
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
             self.graph = SimpleNamespace(
                 get_state=lambda _config: (_ for _ in ()).throw(RuntimeError("secret"))
             )

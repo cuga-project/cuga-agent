@@ -74,6 +74,9 @@ def _tool_param_names(tool: Any) -> List[str]:
     args_schema = getattr(tool, "args_schema", None)
     if args_schema is None:
         return []
+    if isinstance(args_schema, dict):
+        properties = args_schema.get("properties", {})
+        return list(properties) if isinstance(properties, dict) else []
     model_fields = getattr(args_schema, "model_fields", None)
     if model_fields:
         return list(model_fields.keys())
