@@ -14,7 +14,7 @@ By default, all issues are **team only**. External contributors may work on issu
 Notes:
 - All PRs are merged using "Squash and merge". The PR title will become the final commit message — write it carefully using the Conventional Commits format.
 - Prefer one topic per PR. If your changes touch many areas, split into multiple PRs.
-- Contributors without write access can have at most 3 open pull requests at a time, drafts included. GitHub blocks new pull requests above this limit; get one merged or close it before you open another.
+- Contributors without write access can have at most 2 open pull requests at a time, drafts included. GitHub blocks new pull requests above this limit; get one merged or close it before you open another.
 
 ## DCO
 

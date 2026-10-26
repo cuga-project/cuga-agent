@@ -15,6 +15,18 @@ from typing import Any, AsyncIterator, Callable, List, Optional
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_runtime_ownership_db(tmp_path, monkeypatch):
+    """Protocol runner ownership checks must not write to the developer's database."""
+    from cuga.backend.storage import facade
+
+    monkeypatch.setattr(facade, "_local_db_path", lambda: str(tmp_path / "cuga.db"))
+    monkeypatch.setattr(facade, "_storage_mode", lambda: "local")
+    facade.get_storage().invalidate_relational_stores()
+    yield
+    facade.get_storage().invalidate_relational_stores()
+
+
 @dataclass
 class FakeStreamEvent:
     """Stand-in for cuga's internal StreamEvent.

@@ -10,6 +10,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from loguru import logger
 
+from cuga.backend.cuga_graph.utils.thread_ids import logical_thread_id, workspace_thread_id
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.arg_warning import make_arg_warning_callable
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import create_update_todos_tool
@@ -487,9 +488,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             cfg = config.get("configurable", {}) if config else {}
             # Spawn may set workspace_thread_id to the parent thread while keeping a
             # fresh conversation thread_id for checkpointer/chat isolation.
-            runtime_thread_id = cfg.get("workspace_thread_id") or (
-                cfg["thread_id"] if "thread_id" in cfg else (state.thread_id or adapter._thread_id)
-            )
+            runtime_thread_id = workspace_thread_id(cfg, state.thread_id or adapter._thread_id)
         else:
             runtime_thread_id = None
 
@@ -519,11 +518,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 list(tools_for_execution) + _skill_callable_tools + list(_runtime_bundle.prompt_tools)
             )
 
-            _spawn_thread_id = (
-                (config or {}).get("configurable", {}).get("thread_id")
-                or getattr(state, "thread_id", None)
-                or adapter._thread_id
-                or ""
+            _spawn_thread_id = logical_thread_id(
+                (config or {}).get("configurable", {}),
+                getattr(state, "thread_id", None) or adapter._thread_id or "",
             )
             agent_spawn_tools = create_spawn_tools(
                 spawn_futures=thread_spawn_futures(_spawn_thread_id),
@@ -559,7 +556,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             special_instructions_final = (special_instructions_final or "") + evolve_extension
 
         cfg = config.get("configurable", {}) if config else {}
-        _thread_id = cfg.get("thread_id") or ""
+        _thread_id = logical_thread_id(cfg, "")
         _knowledge_engine = cfg.get("knowledge_engine")
         if _knowledge_engine is None:
             try:
