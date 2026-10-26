@@ -117,10 +117,17 @@ async def apply_policies_data_to_storage(
     policies_data: List[Dict[str, Any]],
     clear_existing: bool = True,
     filesystem_sync: Optional[Any] = None,
+    prune_filesystem: bool = False,
 ) -> Dict[str, Any]:
     """
     Apply a list of policy dicts (frontend/manage-config format) to storage.
     Used by load_policies_from_json, POST /api/config/policies, and manager config.
+
+    When *prune_filesystem* is True (together with *clear_existing* and a
+    *filesystem_sync*), policy files in the .cuga folder whose IDs are absent from
+    *policies_data* are deleted too, so a replacement import is not undone by the
+    next folder load. Off by default: server callers share one .cuga folder
+    between draft and live state.
     """
     errors: List[str] = []
     count = 0
@@ -300,11 +307,27 @@ async def apply_policies_data_to_storage(
                 try:
                     filesystem_sync.save_policy_to_file(policy)
                 except Exception as e:
-                    logger.warning(f"Failed to save policy to filesystem: {e}")
+                    error_msg = f"Failed to save policy '{policy.id}' to filesystem: {e}"
+                    logger.warning(error_msg)
+                    errors.append(error_msg)
         except Exception as e:
             error_msg = f"Failed to load policy '{policy_data.get('name', 'unknown')}': {e}"
             logger.error(error_msg)
             errors.append(error_msg)
+
+    # Preserve recovery files unless every replacement policy was processed and saved.
+    if clear_existing and prune_filesystem and filesystem_sync and not errors:
+        imported_ids = {
+            str(policy_data["id"])
+            for policy_data in (policies_data or [])
+            if isinstance(policy_data, dict) and policy_data.get("id")
+        }
+        stale_ids = {str(pid) for pid in filesystem_sync.get_filesystem_policy_ids()} - imported_ids
+        for stale_id in sorted(stale_ids):
+            filesystem_sync.delete_policy_file(stale_id)
+        if stale_ids:
+            logger.info(f"Removed {len(stale_ids)} stale policy file(s) from filesystem")
+
     return {"count": count, "errors": errors}
 
 
@@ -369,6 +392,8 @@ async def load_policies_from_json(
     file_path: str,
     storage: PolicyStorage,
     clear_existing: bool = False,
+    filesystem_sync: Optional[Any] = None,
+    prune_filesystem: bool = False,
 ) -> Dict[str, Any]:
     """
     Load policies from a JSON file into storage.
@@ -381,7 +406,12 @@ async def load_policies_from_json(
     Args:
         file_path: Path to JSON file containing policies
         storage: PolicyStorage instance
-        clear_existing: If True, clear all existing policies before loading
+        clear_existing: If True, clear all existing policies before loading.
+            Extraction errors abort replacement without changing storage or files.
+        filesystem_sync: Optional PolicyFilesystemSync; when given, each imported
+            policy is also written to the .cuga folder
+        prune_filesystem: With *clear_existing* and *filesystem_sync*, also delete
+            .cuga policy files whose IDs are not in the JSON file
 
     Returns:
         Dictionary with:
@@ -391,11 +421,17 @@ async def load_policies_from_json(
     """
     try:
         extracted = extract_policies_data_from_json(file_path)
+        # An invalid export is not an intentional empty (or partial) replacement.
+        # Reject it before the apply phase can clear storage or prune recovery files.
+        if clear_existing and extracted["errors"]:
+            logger.warning("Aborting policy replacement due to extraction errors")
+            return {"count": 0, "enabled": extracted["enabled"], "errors": extracted["errors"]}
         result = await apply_policies_data_to_storage(
             storage,
             extracted["policies"],
             clear_existing=clear_existing,
-            filesystem_sync=None,
+            filesystem_sync=filesystem_sync,
+            prune_filesystem=prune_filesystem,
         )
         count = result["count"]
         errors = [*extracted["errors"], *result["errors"]]

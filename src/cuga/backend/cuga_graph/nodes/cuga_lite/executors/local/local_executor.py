@@ -10,7 +10,7 @@ from typing import Any, Optional
 from ..base_executor import BaseExecutor
 from ..common.restricted_environment import RestrictedEnvironment
 from ..common.security import CodeSyntaxError, SecurityValidator
-from ..common.benchmark_mode import is_relaxed_execution
+from ..common.benchmark_mode import is_relaxed_execution, warn_if_relaxed
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
     BlockToolCallCounter,
     ToolCallBudgetExceeded,
@@ -40,6 +40,7 @@ class LocalExecutor(BaseExecutor):
         'pydantic',
         'datetime',
         '_strptime',
+        'calendar',
         'time',
         'math',
         'collections',
@@ -73,14 +74,15 @@ class LocalExecutor(BaseExecutor):
         stdout_buf = io.StringIO()
         try:
             with contextlib.redirect_stdout(stdout_buf):
-                benchmark_mode = is_relaxed_execution()
+                warn_if_relaxed()
+                relaxed = is_relaxed_execution()
 
                 restricted_import = RestrictedEnvironment.create_restricted_import(self.ALLOWED_MODULES)
 
                 safe_builtins = RestrictedEnvironment.create_safe_builtins(restricted_import)
 
-                # In benchmark mode, don't filter locals
-                if benchmark_mode:
+                # Relaxed execution: don't filter locals
+                if relaxed:
                     safe_locals = context_locals
                 else:
                     safe_locals = SecurityValidator.filter_safe_locals(context_locals)
