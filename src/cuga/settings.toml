@@ -32,6 +32,7 @@ pre_execute_verify_enabled = false  # Independent of reflection; eval can hold V
 enable_filesystem_tools = false  # Enable workspace filesystem tools (read_file, write_file, etc.)
 e2b_sandbox = false           # use E2B cloud sandbox for code execution
 opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; requires Docker + opensandbox SDK
+monty_sandbox = false        # run model-written Python in Pydantic Monty instead of the CUGA process: no file, env, network or process access; Python subset (no pandas/numpy). Install with: pip install "cuga[monty]". Skills runs and E2B keep their own executor.
 e2b_sandbox_mode = "per-session"  # E2B sandbox lifecycle: "per-session" = cache per thread_id (default), "single" = shared sandbox for all threads, "per-call" = new sandbox each call
 e2b_sandbox_idle_ttl = 600  # Idle timeout in seconds (default: 10 min) - sandbox expires after this much idle time
 e2b_sandbox_max_age = 86400  # Max age for "single" mode in seconds (24h, 0 = disabled) - prevents week-old sandboxes
