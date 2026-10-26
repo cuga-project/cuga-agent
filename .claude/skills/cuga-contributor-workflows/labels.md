@@ -1,10 +1,47 @@
 # Labels
 
+## Start with what changes and its impact (MUST)
+
+Assess the work before choosing labels. Labels summarize this assessment; they do not replace it.
+
+1. Read the full PR diff against `main`, relevant code, and validation evidence. For an issue, read the requested
+   behavior, requirements, and available evidence; distinguish proposed work from implemented behavior.
+2. Summarize the concrete change in each affected area and its user-visible or operational consequence. Distinguish
+   substantial changes from bounded fixes and supporting edits. Do not infer impact from line count or label count.
+3. Infer `area:` labels from the behavior actually changed, using the definitions below. A small behavior change can
+   warrant a label. A supporting edit does not warrant another label unless it independently meets that area's
+   definition. Do not repeat the same explanation under several areas; group related areas when useful.
+4. Choose one overall `design-impact:` label using the criteria below. Explain which criterion applies in one short
+   sentence. This is design significance, not a claim that every affected area has a major change.
+5. Update the PR or issue description with the assessment before creating it or applying labels. Preserve the
+   existing template sections, requirements, links, and useful context; update an existing assessment rather than
+   appending duplicates. For an existing PR, refresh it before each push when scope or impact changes. For an
+   existing issue, refresh it when updating its scope or labels.
+
+For a **PR**, add a concise table under `What changed and impact`:
+
+| Area | What changed | Impact |
+|---|---|---|
+| <affected area or related areas> | <concrete before/after behavior> | <consequence and extent of the change> |
+
+Keep validation in the PR's testing section and distinguish verified behavior from assumptions or checks not run.
+For an **issue**, use `Proposed change and expected impact` instead:
+
+| Area | Proposed change | Expected impact |
+|---|---|---|
+| <affected area or related areas> | <requested behavior> | <expected consequence; note uncertainty> |
+
+Keep small changes to one short row. Below either table, add `Design impact: <low|medium|high> — <reason>`.
+Do not invent affected areas, implementation details, or validation results to fill the table. If description edits
+are unavailable, provide the proposed text to the user and state that it was not saved.
+
+## Required labels
+
 **Required step (MUST).** Set or update the labels in this file:
 
 - before **every push** to a branch that has, or will get, a pull request;
 - before **opening a pull request**;
-- when **creating an issue**.
+- when **creating an issue** or updating its scope or labels.
 
 These labels are set by contributors and their agents, not by CodeRabbit. The development guidelines use
 `design-impact:` and `area:` to choose the design path, and `design-impact:` to choose the PR review format.
@@ -81,7 +118,8 @@ git diff --stat origin/main...HEAD   # files the pull request changes
 git diff origin/main...HEAD          # read the changes; tests, mocks, and comments do not count toward areas
 ```
 
-1. Choose the labels with the rules above.
+1. Complete the assessment above, infer the labels, and prepare or update the PR description with the table and
+   design-impact reason. Then choose `readability:` based on the resulting description.
 2. **Opening a pull request:** pass every chosen label to `gh pr create` with `--label` (see [create-pr.md](create-pr.md)).
 3. **Pushing:** find the open pull request for the branch. If there is none yet, keep the chosen labels and pass
    them when you open the pull request (step 2); there is nothing to update. If there is one, compare with its
@@ -96,10 +134,15 @@ git diff origin/main...HEAD          # read the changes; tests, mocks, and comme
    gh pr edit "$pr" --repo "$origin_repo" --add-label "<label to add>" --remove-label "<label to remove>"
    ```
 
-4. Tell the user which labels you set, added, or removed.
+4. Verify the saved description and labels. Tell the user which labels you set, added, or removed and whether
+   the description was updated.
 
-### Issue: when creating it
+### Issue: when creating it or updating its scope or labels
 
-1. Choose one `design-impact:` label and the `area:` labels from the work the issue asks for. Add the type labels
-   that the issue skill requires (`bug`, `enhancement`, `needs-triage`, `type: epic`).
-2. Pass them with `--label` on `gh issue create`, or as `labels[]` in the REST call.
+1. Complete the assessment above, infer one `design-impact:` label and the `area:` labels, and prepare or update
+   the issue description with the proposed-change table and design-impact reason. Add the type labels that the
+   issue skill requires (`bug`, `enhancement`, `needs-triage`, `type: epic`).
+2. On creation, pass them with `--label` on `gh issue create`, or as `labels[]` in the REST call. For an existing
+   issue, read its current body first, preserve useful context, and apply the updated body and labels with
+   `gh issue edit`. Use `--body-file` for description updates, including `gh pr edit`, to preserve Markdown.
+3. Verify the saved description and labels, then tell the user what changed.
