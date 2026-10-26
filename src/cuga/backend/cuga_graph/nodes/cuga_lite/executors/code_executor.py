@@ -13,6 +13,7 @@ from .e2b import E2BExecutor
 from .docker import DockerExecutor
 from .opensandbox import OpenSandboxExecutor
 from .native import NativeSandboxExecutor
+from .monty import MontyExecutor
 from .base_executor import BaseExecutor, RemoteExecutor
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionPlan
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker, counted_tool_call
@@ -66,12 +67,37 @@ class CodeExecutor:
     _docker_executor: RemoteExecutor = None
     _opensandbox_executor: RemoteExecutor = None
     _native_executor: NativeSandboxExecutor = None
+    _monty_executor: Optional[MontyExecutor] = None
+    _warned_monty_skills: bool = False
 
     @classmethod
     def _get_local_executor(cls) -> BaseExecutor:
         if cls._local_executor is None:
             cls._local_executor = LocalExecutor()
         return cls._local_executor
+
+    @classmethod
+    def _get_monty_executor(cls) -> MontyExecutor:
+        if cls._monty_executor is None:
+            cls._monty_executor = MontyExecutor()
+        return cls._monty_executor
+
+    @classmethod
+    def _get_code_executor(cls, skills_on: bool = False) -> BaseExecutor:
+        """Executor for model-written code that runs on this host (not E2B / Docker / OpenSandbox).
+
+        With ``advanced_features.monty_sandbox`` on, the code runs in Pydantic Monty. Runs with skills
+        enabled stay on the local executor: skill flows read skill files and use helpers Monty cannot receive.
+        """
+        if getattr(settings.advanced_features, 'monty_sandbox', False):
+            if not skills_on:
+                return cls._get_monty_executor()
+            if not cls._warned_monty_skills:
+                cls._warned_monty_skills = True
+                logger.warning(
+                    "monty_sandbox is on, but skills need the local executor; skills runs use the local executor"
+                )
+        return cls._get_local_executor()
 
     @classmethod
     def _get_local_sandbox_executor(cls) -> LocalSandboxExecutor:
@@ -255,7 +281,7 @@ class CodeExecutor:
                 )
                 _locals.update(parsed_locals)
             else:
-                executor = cls._get_local_executor()
+                executor = cls._get_code_executor(skills_on)
                 result = await executor.execute(
                     wrapped_code=wrapped_code,
                     context_locals=_locals,
@@ -371,11 +397,11 @@ class CodeExecutor:
 
     @classmethod
     async def _execute_locally_for_code_agent(
-        cls, wrapped_code: str, context_locals: dict[str, Any]
+        cls, wrapped_code: str, context_locals: dict[str, Any], skills_on: bool = False
     ) -> tuple[str, dict[str, Any]]:
         """Execute wrapped code locally for CodeAgent."""
         try:
-            executor = cls._get_local_executor()
+            executor = cls._get_code_executor(skills_on)
             result = await executor.execute(
                 wrapped_code=wrapped_code,
                 context_locals=context_locals,
@@ -447,4 +473,4 @@ class CodeExecutor:
             if mode in ('e2b', 'docker'):
                 return await cls._execute_remotely_for_code_agent(wrapped_code, state, mode)
         context_locals = cls._prepare_locals_for_code_agent(state)
-        return await cls._execute_locally_for_code_agent(wrapped_code, context_locals)
+        return await cls._execute_locally_for_code_agent(wrapped_code, context_locals, skills_on=skills_on)
