@@ -752,7 +752,7 @@ def format_apps_for_prompt(apps) -> list:
     if not apps:
         return processed_apps
     for app in apps:
-        description = getattr(app, 'description', 'No description available')
+        description = getattr(app, 'description', None) or 'No description available'
         max_length = 1000
         if len(description) > max_length:
             description = description[:max_length] + '...'
