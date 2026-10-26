@@ -289,7 +289,9 @@ const loadDraftThreadState = (agentId: string): DraftThreadState | null => {
       return null;
     }
     return {
-      threadId: typeof parsed.threadId === "string" ? parsed.threadId : null,
+      // Never restore a stored ID: older builds saved client-generated IDs, which /stream now
+      // rejects with 404. A null ID lets the server issue one on the first send (#774).
+      threadId: null,
       hasSentFirstMessage: false,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
       agentId,
