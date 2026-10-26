@@ -91,6 +91,18 @@ enable_shell_tool = false
 #   "local"       — no sandbox (runs directly on host; always pairs with run_command tool approval)
 sandbox_mode = "native"
 
+[execution]
+# Enforce the security checks on model-generated Python (true) or relax them (false).
+# When true: the import allowlist, the AST checks on the wrapped code (blocked modules,
+# dunder access, eval/exec), a restricted __import__, safe builtins, filtered locals and
+# globals without os/sys/subprocess, and the "code must use a tool or variable" check.
+# When false, all of these are off: generated code gets real builtins, os and sys.
+# The syntax check and code wrapping run either way. This is separate from
+# advanced_features.sandbox_mode (where code runs), and neither changes the other.
+# Skills and benchmark profiles do not turn it off; to reproduce relaxed benchmark runs
+# (for example AppWorld), set it to false (DYNACONF_EXECUTION__ENFORCE_CODE_SECURITY=false).
+enforce_code_security = true
+
 [shortlister]
 # How CugaLite shrinks a large tool set before the model sees it.
 # Applies to both find_tools (runtime discovery) and the bind_tools provider cap.

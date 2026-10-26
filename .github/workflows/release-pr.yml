@@ -1,3 +1,17 @@
+# Release flow (maintainers only: admin or maintain role):
+#   1. Actions -> Release PR -> Run workflow, pick patch, minor or major.
+#      The workflow bumps the version in pyproject.toml and uv.lock and opens
+#      PR "chore: release vX.Y.Z" from branch release/vX.Y.Z.
+#   2. Merge that PR. The workflow pushes tag vX.Y.Z on the merge commit and
+#      creates a GitHub Release with generated notes. release.yml then
+#      publishes the package to PyPI.
+#   To cancel a release, close the PR without merging.
+#
+# Optional GitHub App (variable RELEASE_APP_ID, secret RELEASE_APP_PRIVATE_KEY):
+#   With the App, CI runs on the release PR and the tag push starts release.yml.
+#   Without it, the workflow uses GITHUB_TOKEN. GitHub starts no workflows from
+#   events that GITHUB_TOKEN creates (except workflow_dispatch), so CI does not
+#   run on the release PR and this workflow starts release.yml itself.
 name: Release PR
 
 on:
@@ -12,19 +26,48 @@ on:
           - patch
           - minor
           - major
+  pull_request:
+    types: [closed]
+    branches: [main]
 
 jobs:
   release-pr:
     name: Create release PR
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    concurrency:
+      group: release
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - name: Checkout
+      - name: Check that the actor is a maintainer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          ROLE=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .role_name)
+          case "$ROLE" in
+            admin|maintain) echo "$ACTOR has role $ROLE." ;;
+            *) echo "::error::Only maintainers (admin or maintain role) can release. $ACTOR has role $ROLE."; exit 1 ;;
+          esac
+
+      - name: Get GitHub App token
+        id: app-token
+        if: vars.RELEASE_APP_ID != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Checkout main
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          ref: main
+          token: ${{ steps.app-token.outputs.token || github.token }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -34,35 +77,125 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Configure Git
-        run: |
-          git config user.name "cuga-agent[bot]"
-          git config user.email "cuga-agent[bot]@users.noreply.github.com"
-
-      - name: Create release branch and PR
+      - name: Bump version
+        id: bump
         env:
-          GH_TOKEN: ${{ github.token }}
           BUMP: ${{ inputs.bump }}
         run: |
-          git fetch origin main
-          git checkout main
-          git pull origin main
-          CURRENT=$(grep '^version' pyproject.toml | sed -n 's/version = "\(.*\)"/\1/p')
-          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
-          MINOR=$(echo "$CURRENT" | cut -d. -f2)
-          PATCH=$(echo "$CURRENT" | cut -d. -f3)
-          case "$BUMP" in
-            major) NEW_VERSION=$((MAJOR+1)).0.0 ;;
-            minor) NEW_VERSION=$MAJOR.$((MINOR+1)).0 ;;
-            patch) NEW_VERSION=$MAJOR.$MINOR.$((PATCH+1)) ;;
-            *) echo "Invalid bump: $BUMP"; exit 1 ;;
-          esac
-          BRANCH="release/v$NEW_VERSION"
-          git checkout -b "$BRANCH"
-          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" pyproject.toml
-          uv sync
+          set -euo pipefail
+          # Changes only [project].version and the cuga entry in uv.lock.
+          uv version --bump "$BUMP" --no-sync
+          VERSION=$(uv version --short)
+          if git ls-remote --exit-code origin "refs/tags/v$VERSION" "refs/heads/release/v$VERSION" > /dev/null; then
+            echo "::error::Tag v$VERSION or branch release/v$VERSION already exists."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Commit, push and open PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          USES_APP: ${{ steps.app-token.outputs.token != '' }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          BRANCH="release/v$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
           git add pyproject.toml uv.lock
-          git commit -m "chore: release v$NEW_VERSION"
+          git commit -m "chore: release v$VERSION"
           git push origin "$BRANCH"
-          gh pr create --base main --head "$BRANCH" --title "chore: release v$NEW_VERSION" --body "Release v$NEW_VERSION. Merge to complete release, then run the Release Tag workflow."
-          echo "Created PR for v$NEW_VERSION"
+          BODY="Bumps the version to \`$VERSION\` ($BUMP).
+
+          Merging this PR pushes tag \`v$VERSION\`, creates a GitHub Release, and publishes the package to PyPI.
+          To cancel the release, close this PR without merging and delete the branch."
+          if [ "$USES_APP" != "true" ]; then
+            BODY="$BODY
+
+          This PR was opened with \`GITHUB_TOKEN\`, so CI checks do not start on it."
+          fi
+          gh pr create --base main --head "$BRANCH" --title "chore: release v$VERSION" --body "$BODY"
+
+  release-tag:
+    name: Tag merged release
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.merged == true
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && startsWith(github.event.pull_request.head.ref, 'release/v')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Check that the actor is a maintainer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          ROLE=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .role_name)
+          case "$ROLE" in
+            admin|maintain) echo "$ACTOR has role $ROLE." ;;
+            *) echo "::error::Only maintainers (admin or maintain role) can release. $ACTOR has role $ROLE."; exit 1 ;;
+          esac
+
+      - name: Get GitHub App token
+        id: app-token
+        if: vars.RELEASE_APP_ID != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Checkout merge commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          token: ${{ steps.app-token.outputs.token || github.token }}
+
+      - name: Read version
+        id: version
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          if [ "$HEAD_REF" != "release/v$VERSION" ]; then
+            echo "::error::Branch $HEAD_REF does not match version $VERSION in pyproject.toml."
+            exit 1
+          fi
+          if git ls-remote --exit-code origin "refs/tags/v$VERSION" > /dev/null; then
+            echo "::error::Tag v$VERSION already exists."
+            exit 1
+          fi
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Push tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          git tag "$TAG" "$SHA"
+          git push origin "refs/tags/$TAG"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh release create "$TAG" --verify-tag --generate-notes
+
+      - name: Start PyPI publish
+        # With the App token, the tag push above already started release.yml.
+        if: steps.app-token.outputs.token == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh workflow run release.yml --ref "$TAG"
