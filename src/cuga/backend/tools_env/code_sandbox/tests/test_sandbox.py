@@ -1,6 +1,15 @@
 import pytest
 from cuga.backend.tools_env.code_sandbox.sandbox import run_local, ExecutionResult
 
+pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _enable_run_local(monkeypatch):
+    # run_local is gated off by default (GHSA-4rj2 / L-5: unrestricted, unvalidated
+    # executor). This suite exercises it directly, so opt in explicitly per test.
+    monkeypatch.setenv("CUGA_ALLOW_UNRESTRICTED_RUN_LOCAL", "1")
+
 
 class TestRunLocal:
     """Test suite for run_local function exception handling."""

@@ -1,18 +1,8 @@
-import contextvars
+from loguru import logger
 
 from cuga.config import settings
 
-_skills_relaxed: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
-    "skills_relaxed_execution", default=None
-)
-
-
-def set_skills_relaxed_execution(enabled: bool) -> contextvars.Token:
-    return _skills_relaxed.set(enabled)
-
-
-def reset_skills_relaxed_execution(token: contextvars.Token) -> None:
-    _skills_relaxed.reset(token)
+_warned_relaxed = False
 
 
 def is_benchmark_mode() -> bool:
@@ -24,12 +14,22 @@ def is_benchmark_mode() -> bool:
     return settings.advanced_features.benchmark != "default"
 
 
-def is_skills_relaxed_execution() -> bool:
-    """Per-run skills flag only — set via set_skills_relaxed_execution during code execution."""
-    value = _skills_relaxed.get()
-    return bool(value) if value is not None else False
-
-
 def is_relaxed_execution() -> bool:
-    """Benchmark or skills mode: no SecurityValidator / restricted-import gates."""
-    return is_benchmark_mode() or is_skills_relaxed_execution()
+    """Relaxed execution, only when the operator sets ``execution.enforce_code_security = false``.
+
+    Neither Skills nor a benchmark profile implies it (GHSA-4rj2): both used to
+    silently disable every validator and inject real ``os``/``sys`` for the whole run.
+    """
+    return not settings.execution.enforce_code_security
+
+
+def warn_if_relaxed() -> None:
+    """Emit one loud warning per process when code security is relaxed (GHSA-4rj2 / L-2)."""
+    global _warned_relaxed
+    if is_relaxed_execution() and not _warned_relaxed:
+        _warned_relaxed = True
+        logger.warning(
+            "SECURITY: execution.enforce_code_security is false. Code security checks are OFF — "
+            "model-generated Python runs with real builtins and modules (os, sys, subprocess "
+            "reachable). Do not use with untrusted input."
+        )
