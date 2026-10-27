@@ -189,7 +189,7 @@ override-dependencies = [
 [tool.uv.sources]
 # Draft-only validation source for AgentToolkit/altk-evolve#455. Replace with a
 # published compatible minimum version and regenerate uv.lock before merging.
-altk-evolve-core = { git = "https://github.com/AgentToolkit/altk-evolve", rev = "57b93e2c3546ae0e1b26f65247098b22265eda5b" }
+altk-evolve-core = { git = "https://github.com/AgentToolkit/altk-evolve", rev = "8fc6f92a342c39f7fae926e56278869de3d289fd" } # pragma: allowlist secret -- public commit SHA
 torch                 = { index = "pytorch-cpu" }
 torchvision           = { index = "pytorch-cpu" }
 torchaudio            = { index = "pytorch-cpu" }
