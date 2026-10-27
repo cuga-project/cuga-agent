@@ -34,11 +34,11 @@ _CODE_ENGINE = "https://cuga-apps-mcp-{app}.1gxwxi8kos9y.us-east.codeengine.appd
 # One-line hint per server for the concierge's list_capabilities.
 HINTS = {
     "cuga_finance": "get_stock_quote / get_crypto_price",
-    "cuga_knowledge": "search_arxiv (recent papers)",
-    "cuga_geo": "country capital / population / region",
-    "cuga_web": "web search / browse / weather / wiki",
-    "cuga_text": "summarize / translate / text utilities",
-    "cuga_code": "explain / analyze code",
+    "cuga_knowledge": "Wikipedia / arXiv / Semantic Scholar lookup",
+    "cuga_geo": "geocoding / hikes / attractions / weather",
+    "cuga_web": "web search / fetch pages & links / RSS feeds / YouTube info & transcripts",
+    "cuga_text": "text chunking / token counting / document-to-text extraction",
+    "cuga_code": "Python syntax check / code metrics / language detection",
     "cuga_local": "local/system operations",
 }
 

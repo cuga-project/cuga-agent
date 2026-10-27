@@ -184,14 +184,24 @@ class PolicyFilesystemSync:
             Path to saved file
         """
         try:
+            # Reject path syntax on either platform before normalization can alias IDs.
+            if policy.id in {".", ".."} or "/" in policy.id or "\\" in policy.id:
+                raise ValueError(f"Policy ID '{policy.id}' must not contain path components")
+
             self._ensure_folder_structure()
 
             # Determine subfolder
             subfolder = self._get_subfolder_for_policy(policy)
 
-            # Create filename from policy ID (sanitize for filesystem)
+            # Create filename from policy ID; the resolved file must sit directly in
+            # <cuga_folder>/<subfolder>/ so IDs like "../x" or "a/b" cannot escape it.
             filename = f"{policy.id}.md"
-            file_path = os.path.join(self.cuga_folder, subfolder, filename)
+            subfolder_dir = os.path.realpath(os.path.join(self.cuga_folder, subfolder))
+            file_path = os.path.realpath(os.path.join(subfolder_dir, filename))
+            if os.path.dirname(file_path) != subfolder_dir:
+                raise ValueError(
+                    f"Policy ID '{policy.id}' resolves outside {os.path.join(self.cuga_folder, subfolder)}"
+                )
 
             # Convert policy to markdown
             markdown_content = self._policy_to_markdown(policy)
@@ -254,10 +264,11 @@ class PolicyFilesystemSync:
         if not os.path.exists(self.cuga_folder):
             return None
 
-        # Search all subfolders
+        # Search all subfolders (exact match: deleting "foo" must not remove "foo_bar.md")
+        target = f"{policy_id}.md"
         for root, dirs, files in os.walk(self.cuga_folder):
             for filename in files:
-                if filename.endswith('.md') and filename.startswith(policy_id):
+                if filename == target:
                     return os.path.join(root, filename)
 
         return None

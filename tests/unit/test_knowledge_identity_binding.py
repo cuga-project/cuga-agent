@@ -216,6 +216,72 @@ async def test_wrapper_replaces_model_supplied_identity():
     assert seen["agent_id"] == VICTIM_AGENT
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("positional", [False, True])
+async def test_prepared_guarded_tool_discards_thread_id_without_runtime_thread(positional):
+    """A no-thread run cannot select another citation ledger through ToolGuard."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import (
+        create_prepare_tools_and_apps_node,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ToolGuardingToolProvider
+    from cuga.backend.knowledge.client import KnowledgeClient
+    from cuga.backend.knowledge.run_context import current_run_token, verify_run_token
+
+    engine = _knowledge_engine()
+    engine._config.default_limit = 5
+    engine._config.default_score_threshold = 0.5
+    client = KnowledgeClient(engine)
+    contexts = []
+
+    async def search(*args, **kwargs):
+        contexts.append(verify_run_token(current_run_token.get()))
+        return {"results": []}
+
+    client.search_envelope = AsyncMock(side_effect=search)
+    tools = client.get_langchain_tools()
+    provider = ToolGuardingToolProvider(DirectLangChainToolsProvider(tools), policy_storage=None)
+    runtime = SimpleNamespace(guard_tool_call=AsyncMock(return_value=None))
+    provider._get_or_create_toolguard_runtime = AsyncMock(return_value=runtime)
+    raw = next(tool for tool in tools if tool.name == "knowledge_search_knowledge")
+    guarded = provider._wrap_tool(raw, "runtime_tools")
+    tools_context = {}
+    adapter = _build_mock_adapter([guarded], tools_context)
+    adapter._thread_id = None
+    state = _make_state()
+    state.thread_id = None
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.settings.policy.enabled",
+        new=False,
+    ):
+        node = create_prepare_tools_and_apps_node(adapter, {})
+        await node(
+            state,
+            config={
+                "configurable": {
+                    "enable_todos": False,
+                    "shortlisting_tool_threshold": 35,
+                    "knowledge_agent_id": "selected-agent",
+                    "knowledge_engine": engine,
+                }
+            },
+        )
+
+    wrapped = tools_context[raw.name]
+    if positional:
+        result = await wrapped("q", "agent", VICTIM_THREAD)
+    else:
+        result = await wrapped(query="q", thread_id=VICTIM_THREAD)
+
+    assert result == {"results": []}
+    assert client.search_envelope.await_args.kwargs["thread_id"] == ""
+    assert runtime.guard_tool_call.await_args.kwargs["arguments"]["thread_id"] == ""
+    assert contexts[0].agent_id == "selected-agent"
+    assert contexts[0].thread_id is None
+    assert current_run_token.get() is None
+
+
 # --------------------------------------------------------------------------
 # Layer 3 — the E2B sandbox stubs, which run model-written Python
 # --------------------------------------------------------------------------
