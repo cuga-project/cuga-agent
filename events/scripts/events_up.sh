@@ -45,7 +45,7 @@ start_events_service() {
 #     the flapping quick-tunnel. We start ngrok (not cloudflared) for :7860 and pin the URL.
 #   • unset → a cloudflared quick-tunnel (random per run); we auto-detect + feed the live one in.
 env_val() { grep -E "^$1=" "$REPO/.env" 2>/dev/null | tail -1 | cut -d= -f2- \
-  | sed -e 's/ *#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//'; }
+  | sed -e 's/ *#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//' || true; }
 NGROK_DOMAIN="$(env_val EVENTS_NGROK_DOMAIN)"
 
 cuga_tunnel_url() {
