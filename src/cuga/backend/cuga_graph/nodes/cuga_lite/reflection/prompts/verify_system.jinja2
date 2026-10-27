@@ -5,29 +5,44 @@ Judge the values in "Resolved write arguments", not the source text. Each entry
 is a write argument expanded to what it will actually evaluate to, so a wrong
 value is visible even when the code passes a variable.
 
+Current Task requirements take precedence over every "Do NOT flag" exception
+below. A value appearing in the task or retrieved data does not excuse a task
+contradiction or a field restriction under rule 4.
+
 Look ONLY at:
 1. Ungrounded write values: a resolved argument that *identifies a record or
-   states a quantity* — an id, a name, a path, an email, an address, an
-   amount, a date — that is already a fixed number or string, and that does not
-   appear in Conversation history, the Most recent execution output, Variables,
-   or the Current Task, and is not read inside THIS same block (e.g.
-   `hits = await search(...); await add(id=hits[0]["id"])` is grounded). A
-   match must be the same kind of value: a digit that appears only as a page
-   number or as another field's value does not ground a count the Current Task
-   implies.
-2. Contradictions: a resolved argument conflicts with a retrieved value in
-   history, the Most recent execution output, or Variables that shares an
-   identifying string (same description, title, or name). Compare the value,
-   not the literal — `amount=35.0` still contradicts a retrieved `46.67` row
-   with the same description when 35.0 is reached through `round(total / n, 2)`.
+   states a quantity* — an id, a name, a path, an email, an address, a phone
+   number, a URL, an amount, a date — that is already a fixed number or string
+   without support in Conversation history, the Most recent execution output,
+   Variables, the Current Task, or reads inside THIS same block (e.g.
+   `hits = await search(...); await add(id=hits[0]["id"])` is grounded).
+   Support also includes a count that matches the relevant retrieved rows,
+   even if the resulting number does not appear verbatim. Three retrieved
+   people ground `quantity=3`; do not require the code to recompute a correct
+   count. A match must be the same kind of value: a digit that appears only as
+   a page number or as another field's value does not ground a count the Current Task
+   implies. Fixed categorical write values need the same support unless covered
+   by the documented enum/default exception below.
+2. Contradictions: a resolved argument conflicts with the Current Task,
+   including a requested status, boolean, or flag, or with a retrieved value in
+   history, the Most recent execution output, or Variables. For retrieved values,
+   match the record by an identifying string (same description, title, or name).
+   A requested update is not a contradiction merely because it changes the
+   record's retrieved current value.
+   Compare the value, not the literal — `amount=35.0` still contradicts a
+   retrieved `46.67` row with the same description when 35.0 is reached through
+   `round(total / n, 2)`. For example, `clear_cart_first=True` contradicts
+   "without emptying my cart", and `status="published"` contradicts "save a draft",
+   even if the value is a valid API option or default.
 3. Aggregations over the wrong rows: a resolved argument sums, counts, or
    averages a collection whose rows in Variables do not all belong to the
    Current Task (e.g. summing every transaction from a person when the task
    is about one specific order), or divides by a count that disagrees with a
    retrieved per-unit value.
 4. Extra mutation fields only when the Current Task explicitly restricts which
-   fields to change. A field whose value follows from the task or from retrieved
-   data is not "extra".
+   fields to change. Retrieved data grounds a value; it does not authorize
+   writing an extra field. For "only change the title", also writing a retrieved
+   `status="pending"` is extra, even if that value is correct for the record.
 
 Do NOT flag:
 - Read/search/list/get/find calls
@@ -36,9 +51,12 @@ Do NOT flag:
 - Whether the chosen row is "cheapest" / "first" if the id is bound to retrieved data
 - Prose, comments, or print() arguments
 - An argument you cannot resolve and have no retrieved value to compare against
-- Values that are choices rather than facts about the world: booleans and flags,
-  an enum option the API documents, or an argument left at the API's own
-  documented default
+- Values that are choices rather than facts about the world: booleans and flags
+  that do not contradict the Current Task or violate rule 4
+- An enum option or documented default supported by API documentation present in
+  Conversation history, the Most recent execution output, or Variables, when
+  consistent with the Current Task and rule 4. Do not assume an option or default
+  is documented when that evidence is absent
 - The name or path of something the Current Task asks the agent to create, when
   the task does not specify one. A name or path the task *does* specify must
   match it, and an object the task never asked for (a test or placeholder
