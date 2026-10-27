@@ -131,15 +131,39 @@ async def test_sandbox_verify_sees_newest_history_beyond_30k_chars():
 async def test_sandbox_verify_budget_follows_the_context_fraction_setting():
     chain, captured = _capturing_chain("GATE: ok")
     with patch(
-        f"{SANDBOX}.settings.advanced_features.pre_execute_verify_context_fraction", 0.02, create=True
+        f"{SANDBOX}.settings.advanced_features.pre_execute_verify_context_fraction", 0.27, create=True
     ):
         await _run_node(reflection=False, verify=True, verify_chain=chain)
 
     history = captured["agent_history"]
-    # 131,072 × 0.02 tokens leaves only the 2,000-char floor: the newest message still wins.
-    assert len(history) < 3_000
+    # After the default 25% completion reserve, this leaves a small input budget.
+    assert len(history) < 8_000
     assert "NEWEST" in history
     assert "earlier messages omitted to fit the context budget]" in history
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reflection", [False, True])
+async def test_cold_budget_lookup_runs_outside_the_event_loop_thread(reflection):
+    import threading
+
+    event_loop_thread = threading.get_ident()
+    lookup_threads = []
+
+    def budget(*args, **kwargs):
+        lookup_threads.append(threading.get_ident())
+        return 200_000
+
+    target = SANDBOX if reflection else "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute"
+    chain, captured = _capturing_chain("STATUS: ok" if reflection else "GATE: ok")
+    with patch(f"{target}.model_input_budget_chars", side_effect=budget):
+        await _run_node(
+            reflection=reflection, verify=not reflection, reflection_chain=chain, verify_chain=chain
+        )
+
+    assert captured, "the prompt must reach the model after sizing"
+    assert lookup_threads
+    assert all(thread != event_loop_thread for thread in lookup_threads)
 
 
 def test_ordered_variables_summary_lists_read_variables_first_then_newest():
