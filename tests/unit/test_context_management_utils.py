@@ -46,10 +46,10 @@ def test_truncate_text_for_context_noop_when_short():
 
 
 def test_truncate_text_for_context_adds_marker():
-    text = "x" * 100
-    result = truncate_text_for_context(text, 20, label="Execution output")
-    assert result.startswith("x" * 20)
-    assert "[Execution output trimmed to 20 chars]" in result
+    result = truncate_text_for_context("x" * 200, 100, label="Execution output")
+    assert result.startswith("x")
+    assert "[Execution output trimmed to 100 chars]" in result
+    assert len(result) <= 100
 
 
 def test_messages_to_history_text_formats_roles():
@@ -175,10 +175,52 @@ def test_model_input_budget_follows_context_window():
     assert model_input_budget_chars(large, 20_000, context_fraction=0.70) == 207_250
 
 
-def test_model_input_budget_caps_completion_reserve_at_a_quarter_of_the_window():
-    model = _FakeModel("unit-test-32k-model", profile={"max_input_tokens": 32_000}, max_tokens=32_000)
-    # reserve = min(32,000, 8,000): (22,400 − 8,000) × 3
-    assert model_input_budget_chars(model, 0, context_fraction=0.70) == 43_200
+def test_model_input_budget_reserves_the_completion_limit_sent_to_the_provider():
+    from langchain_openai import ChatOpenAI
+
+    model = ChatOpenAI(
+        model="unit-test-32k-model",
+        api_key="test",
+        max_tokens=16_000,
+        profile={"max_input_tokens": 32_000},
+    )
+    budget = model_input_budget_chars(model, 0, context_fraction=1.0)
+    payload = model._get_request_payload([HumanMessage(content="test")])
+    completion = payload.get("max_completion_tokens", payload.get("max_tokens"))
+    assert completion == 16_000
+    assert budget == 48_000
+    assert budget // 3 + completion == 32_000
+
+
+def test_model_input_budget_uses_bound_completion_kwargs_before_model_fields():
+    from langchain_openai import ChatOpenAI
+
+    model = ChatOpenAI(
+        model="unit-test-32k-model",
+        api_key="test",
+        max_tokens=1_000,
+        profile={"max_input_tokens": 32_000},
+    ).bind(max_tokens=6_000)
+    assert model_input_budget_chars(model, 0, context_fraction=1.0) == 78_000
+
+
+def test_model_input_budget_covers_conflicting_bound_completion_aliases():
+    from langchain_openai import ChatOpenAI
+
+    model = (
+        ChatOpenAI(
+            model="unit-test-32k-model",
+            api_key="test",
+            max_tokens=1_000,
+            profile={"max_input_tokens": 32_000},
+        )
+        .bind(max_tokens=6_000)
+        .bind(max_completion_tokens=2_000)
+    )
+    payload = model.bound._get_request_payload([HumanMessage(content="test")], **model.kwargs)
+    assert payload["max_completion_tokens"] == 6_000
+    budget = model_input_budget_chars(model, 0, context_fraction=1.0)
+    assert budget // 3 + payload["max_completion_tokens"] <= 32_000
 
 
 def test_model_input_budget_reads_watsonx_style_params():
@@ -213,9 +255,61 @@ def test_model_input_budget_lower_fraction_gives_smaller_budget():
     )
 
 
-def test_model_input_budget_has_a_floor():
-    tiny = _FakeModel("unit-test-4k-model", profile={"max_input_tokens": 4_000}, max_tokens=4_000)
-    assert model_input_budget_chars(tiny, 50_000, context_fraction=0.70) == 2_000
+def test_model_input_budget_does_not_allocate_more_than_remaining_space():
+    tiny = _FakeModel("unit-test-4k-model", profile={"max_input_tokens": 4_000}, max_tokens=1_000)
+    assert model_input_budget_chars(tiny, 8_500, context_fraction=1.0) == 500
+
+
+def test_model_input_budget_rejects_fixed_text_and_completion_that_leave_no_space():
+    tiny = _FakeModel("unit-test-4k-model", profile={"max_input_tokens": 4_000}, max_tokens=1_000)
+    with pytest.raises(ValueError, match="No context space remains"):
+        model_input_budget_chars(tiny, 8_500, context_fraction=0.70)
+
+
+@pytest.mark.parametrize("budget", [0, 1, 10, 100, 250])
+def test_truncation_and_shared_fields_obey_even_tiny_budgets(budget):
+    messages = [HumanMessage(content="task"), AIMessage(content="x" * 1_000)]
+    variables = "# Variables\n\n## first\n" + "v" * 1_000
+    assert len(truncate_text_for_context("s" * 1_000, budget)) <= budget
+    assert len(truncate_head_tail("s" * 1_000, budget)) <= budget
+    assert len(truncate_variables_summary(variables, budget)) <= budget
+    assert len(history_text_keep_recent(messages, budget)) <= budget
+    fields = prepare_verify_context(messages, variables, "code" * 1_000, max_chars=budget)
+    assert sum(map(len, fields)) <= budget
+
+
+def test_empty_history_retains_the_sentinel_within_its_budget():
+    sentinel = "No previous conversation history"
+    assert history_text_keep_recent([], 100) == sentinel
+    assert history_text_keep_recent([], 1) == sentinel[:1]
+    assert history_text_keep_recent([], 0) == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("budget", [0, 1, 100, 500])
+async def test_reflection_fields_share_a_strict_budget_including_markers(budget):
+    from unittest.mock import AsyncMock
+
+    messages = [HumanMessage(content="task"), AIMessage(content="x" * 1_000)]
+    with patch(
+        "cuga.backend.cuga_graph.utils.context_management_utils.apply_context_summarization",
+        AsyncMock(return_value=messages),
+    ):
+        fields = await prepare_reflection_context(
+            messages, "output" * 1_000, None, budget_chars=budget, skills_prompt_section="skill" * 1_000
+        )
+    assert sum(map(len, fields)) <= budget
+
+
+def test_rendered_prompt_fallback_is_visible_at_warning_level():
+    from unittest.mock import Mock
+    from cuga.backend.cuga_graph.utils.context_management_utils import rendered_prompt_chars
+
+    prompt = Mock()
+    prompt.format_messages.side_effect = KeyError("new_template_variable")
+    with patch("cuga.backend.cuga_graph.utils.context_management_utils.logger.warning") as warning:
+        assert rendered_prompt_chars(prompt, {"current_task": "task"}) == 4
+    warning.assert_called_once()
 
 
 @pytest.mark.parametrize("value", [0, -0.5, 1.5, "abc", True, float("nan")])
