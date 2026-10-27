@@ -24,7 +24,6 @@ from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 CHARS_PER_TOKEN = 3
 DEFAULT_CONTEXT_FRACTION = 0.70  # same as context_summarization.trigger_fraction
 COMPLETION_RESERVE_FRACTION = 0.25
-MIN_INPUT_BUDGET_CHARS = 2_000
 # Each field takes at most its share; history gets the rest of the budget.
 REFLECTION_OUTPUT_SHARE = 0.40
 REFLECTION_SKILLS_SHARE = 0.15
@@ -36,17 +35,27 @@ _MARKER_ROOM = 120
 def truncate_text_for_context(text: str, max_chars: int, *, label: str = "content") -> str:
     """Trim long prompt sections so downstream LLM calls stay within context."""
     trimmed = (text or "").strip()
-    if max_chars <= 0 or len(trimmed) <= max_chars:
+    if max_chars <= 0:
+        return ""
+    if len(trimmed) <= max_chars:
         return trimmed
-    return f"{trimmed[:max_chars]}...\n\n[{label} trimmed to {max_chars} chars]"
+    marker = f"...\n\n[{label} trimmed to {max_chars} chars]"
+    if len(marker) >= max_chars:
+        return trimmed[:max_chars]
+    return trimmed[: max_chars - len(marker)] + marker
 
 
 def truncate_head_tail(text: str, max_chars: int, *, label: str = "content") -> str:
     """Keep the start and the end of *text*; errors and final results are at the end."""
     trimmed = (text or "").strip()
-    if max_chars <= 0 or len(trimmed) <= max_chars:
+    if max_chars <= 0:
+        return ""
+    if len(trimmed) <= max_chars:
         return trimmed
-    keep = max(0, max_chars - _MARKER_ROOM)
+    marker = f"\n\n[... {len(trimmed)} chars of {label} omitted ...]\n\n"
+    if len(marker) >= max_chars:
+        return trimmed[-max_chars:]
+    keep = max_chars - len(marker)
     head = keep // 3
     tail = keep - head
     omitted = len(trimmed) - head - tail
@@ -79,8 +88,14 @@ def history_text_keep_recent(messages: List[BaseMessage], max_chars: int) -> str
     cut, head and tail.
     """
     full = messages_to_history_text(messages)
-    if max_chars <= 0 or len(full) <= max_chars:
+    if max_chars <= 0:
+        return ""
+    if not messages:
+        return full[:max_chars]
+    if len(full) <= max_chars:
         return full
+    if max_chars < 2 * _MARKER_ROOM:
+        return truncate_head_tail(full, max_chars, label="Agent history")
     lines = [_message_line(msg) for msg in messages]
     first_idx = next((i for i, m in enumerate(messages) if isinstance(m, HumanMessage)), None)
     if first_idx == len(lines) - 1:
@@ -112,7 +127,7 @@ def history_text_keep_recent(messages: List[BaseMessage], max_chars: int) -> str
     if omitted > 0:
         parts.append(f"[{omitted} earlier messages omitted to fit the context budget]")
     parts.extend(kept)
-    return "\n".join(parts)
+    return truncate_head_tail("\n".join(parts), max_chars, label="Agent history")
 
 
 _VARIABLE_SECTION_RE = re.compile(r"(?m)^(?=## )")
@@ -125,7 +140,9 @@ def truncate_variables_summary(summary: str, max_chars: int) -> str:
     least relevant ones.
     """
     text = (summary or "").strip()
-    if max_chars <= 0 or len(text) <= max_chars:
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
         return text
     header, *sections = _VARIABLE_SECTION_RE.split(text)
     if not sections:
@@ -146,18 +163,34 @@ def truncate_variables_summary(summary: str, max_chars: int) -> str:
     omitted = len(sections) - kept
     if omitted:
         out = f"{out.rstrip()}\n\n[{omitted} more variables omitted to fit the context budget]"
-    return out
+    return out[:max_chars]
 
 
 def _model_completion_tokens(model: Any) -> Optional[int]:
     """Configured completion budget of *model*, if it exposes one as an int."""
     llm = model
+    keys = ("max_completion_tokens", "max_new_tokens", "max_tokens")
+    candidates = []
+    bound_kwargs = {}
     for _ in range(5):  # RunnableBinding wraps the chat model in .bound
+        kwargs = getattr(llm, "kwargs", None)
+        if isinstance(kwargs, Mapping):
+            # Outer bindings override inner ones for the same keyword.
+            bound_kwargs = {**kwargs, **bound_kwargs}
         inner = getattr(llm, "bound", None)
-        if inner is None:
+        if inner is None or inner is llm:
             break
         llm = inner
-    candidates = [getattr(llm, "max_completion_tokens", None), getattr(llm, "max_tokens", None)]
+    # Providers normalize legacy aliases differently. If several are bound, reserve
+    # the largest allowance rather than assuming which alias the provider sends.
+    bound_limits = [bound_kwargs.get(k) for k in keys]
+    bound_limits = [v for v in bound_limits if isinstance(v, int) and not isinstance(v, bool) and v > 0]
+    if bound_limits:
+        return max(bound_limits)
+    candidates.extend(getattr(llm, k, None) for k in keys)
+    model_kwargs = getattr(llm, "model_kwargs", None)
+    if isinstance(model_kwargs, Mapping):
+        candidates.extend(model_kwargs.get(k) for k in keys)
     params = getattr(llm, "params", None)
     if isinstance(params, Mapping):
         candidates += [params.get(k) for k in ("max_completion_tokens", "max_new_tokens", "max_tokens")]
@@ -171,7 +204,7 @@ def model_input_budget_chars(model: Any, fixed_prompt_chars: int, *, context_fra
     """Characters left for the trimmed prompt fields of one call to *model*.
 
     ``context_size × context_fraction`` minus a completion reserve (the model's
-    configured completion budget, at most a quarter of the window), converted at
+    full configured completion budget, or a quarter when unknown), converted at
     ``CHARS_PER_TOKEN``, minus the prompt text that is never trimmed. Unknown models
     use ``DEFAULT_CONTEXT_SIZE``, as context summarization does.
     """
@@ -181,10 +214,15 @@ def model_input_budget_chars(model: Any, fixed_prompt_chars: int, *, context_fra
     context_tokens = TokenCounter(model=model, model_name=model_name).get_model_context_size(model)
     reserve_cap = int(context_tokens * COMPLETION_RESERVE_FRACTION)
     completion = _model_completion_tokens(model)
-    reserve = min(completion, reserve_cap) if completion else reserve_cap
+    reserve = completion if completion else reserve_cap
     available_tokens = int(context_tokens * context_fraction) - reserve
     budget = available_tokens * CHARS_PER_TOKEN - max(0, fixed_prompt_chars)
-    return max(MIN_INPUT_BUDGET_CHARS, budget)
+    if budget <= 0:
+        raise ValueError(
+            f"No context space remains for reflection/VERIFY inputs "
+            f"(window={context_tokens}, completion={reserve}, fixed_prompt_chars={fixed_prompt_chars})"
+        )
+    return budget
 
 
 def context_fraction_setting(name: str) -> float:
@@ -209,7 +247,7 @@ def rendered_prompt_chars(prompt: Any, inputs: dict) -> int:
     try:
         return sum(len(str(m.content)) for m in prompt.format_messages(**inputs))
     except Exception as e:
-        logger.debug("Could not render prompt to size it: {}", e)
+        logger.warning("Could not render prompt to size it: {}", e)
         return sum(len(v) for v in inputs.values() if isinstance(v, str))
 
 
@@ -238,7 +276,7 @@ def prepare_verify_context(
     raw_variables = variables_snapshot or "(no variables)"
     code = truncate_head_tail(raw_code, int(max_chars * VERIFY_CODE_SHARE), label="Proposed code")
     variables = truncate_variables_summary(raw_variables, int(max_chars * VERIFY_VARIABLES_SHARE))
-    history = history_text_keep_recent(messages, max(1, max_chars - len(code) - len(variables)))
+    history = history_text_keep_recent(messages, max(0, max_chars - len(code) - len(variables)))
     _log_input_budget(
         "Pre-execute VERIFY",
         max_chars,
@@ -283,7 +321,7 @@ async def prepare_reflection_context(
         int(budget_chars * REFLECTION_SKILLS_SHARE),
         label="Skills prompt section",
     )
-    history = history_text_keep_recent(summarized, max(1, budget_chars - len(output) - len(skills)))
+    history = history_text_keep_recent(summarized, max(0, budget_chars - len(output) - len(skills)))
     _log_input_budget(
         "Reflection",
         budget_chars,
