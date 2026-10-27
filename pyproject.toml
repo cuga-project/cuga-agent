@@ -100,7 +100,7 @@ knowledge = []  # knowledge is now built-in, no extra dependencies needed
 health = ["cuga-oak-health; python_version>='3.12'"]  # kept for backward compat, now also in core deps
 opensandbox = ["opensandbox", "opensandbox-code-interpreter"]
 # Core keeps Phoenix optional; explicitly include the server, storage and PII integrations CUGA uses.
-evolve = ["altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]>=1.7.1,<2; python_version>='3.12'", "einops==0.8.1; python_version>='3.12'"]
+evolve = ["altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]>=1.8.0,<2; python_version>='3.12'", "einops==0.8.1; python_version>='3.12'"]
 # wxO SDK requires Python >=3.11; keep it an extra so 3.10 installs are unaffected.
 wxo = ["ibm-watsonx-orchestrate-sdk>=2.15.0; python_version>='3.11'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
@@ -187,9 +187,6 @@ override-dependencies = [
 ]
 
 [tool.uv.sources]
-# Draft-only validation source for AgentToolkit/altk-evolve#455. Replace with a
-# published compatible minimum version and regenerate uv.lock before merging.
-altk-evolve-core = { git = "https://github.com/AgentToolkit/altk-evolve", rev = "8fc6f92a342c39f7fae926e56278869de3d289fd" } # pragma: allowlist secret -- public commit SHA
 torch                 = { index = "pytorch-cpu" }
 torchvision           = { index = "pytorch-cpu" }
 torchaudio            = { index = "pytorch-cpu" }
@@ -282,7 +279,7 @@ test_llm = "scripts.commands:test_llm"
 # Image-only dependencies: uv applies the READI compatibility overrides above.
 # Keep these out of the published evolve extra, whose pip consumers do not use uv overrides.
 evolve-image = [
-    "altk-evolve-core[pii-semantic]>=1.7.1,<2; python_version>='3.12'",
+    "altk-evolve-core[pii-semantic]>=1.8.0,<2; python_version>='3.12'",
     "readi-privacy==0.1.7; python_version>='3.12'",
     "en-core-web-trf @ https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl ; python_version>='3.12'",
 ]

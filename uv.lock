@@ -322,8 +322,8 @@ wheels = [
 
 [[package]]
 name = "altk-evolve-core"
-version = "1.7.1"
-source = { git = "https://github.com/AgentToolkit/altk-evolve?rev=8fc6f92a342c39f7fae926e56278869de3d289fd#8fc6f92a342c39f7fae926e56278869de3d289fd" }
+version = "1.8.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio", marker = "python_full_version >= '3.12'" },
     { name = "croniter", marker = "python_full_version >= '3.12'" },
@@ -335,6 +335,10 @@ dependencies = [
     { name = "pydantic-settings", marker = "python_full_version >= '3.12'" },
     { name = "pyyaml", marker = "python_full_version >= '3.12'" },
     { name = "tzdata", marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/82/45/0ebd190ad1008945168327190c4ab5bf906bd44826a35c1c2a0690988db0/altk_evolve_core-1.8.0.tar.gz", hash = "sha256:79a57031efb539c95e684c989f15257ce0d7cad053e061166032881864880fb5", size = 493382, upload-time = "2026-10-27T21:59:18.796Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4b/b8/8b326e9a85d8a13ebb3fbb70d9890a7391211d9ef9d53634fb2f4714e216/altk_evolve_core-1.8.0-py3-none-any.whl", hash = "sha256:32d6bd3a61e1cf79f699b82191005b7f1d6a011fac483fe42f895bc89ec11ab5", size = 523973, upload-time = "2026-10-27T21:59:17.278Z" },
 ]
 
 [package.optional-dependencies]
@@ -1457,7 +1461,7 @@ requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.12.1,<0.13" },
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "aiosmtpd" },
-    { name = "altk-evolve-core", extras = ["server", "cli", "fastembed", "pgvector", "pii-regex"], marker = "python_full_version >= '3.12' and extra == 'evolve'", git = "https://github.com/AgentToolkit/altk-evolve?rev=8fc6f92a342c39f7fae926e56278869de3d289fd" },
+    { name = "altk-evolve-core", extras = ["server", "cli", "fastembed", "pgvector", "pii-regex"], marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = ">=1.8.0,<2" },
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "boto3", specifier = ">=1.34.0" },
@@ -1535,7 +1539,7 @@ dev = [
     { name = "termcolor" },
 ]
 evolve-image = [
-    { name = "altk-evolve-core", extras = ["pii-semantic"], marker = "python_full_version >= '3.12'", git = "https://github.com/AgentToolkit/altk-evolve?rev=8fc6f92a342c39f7fae926e56278869de3d289fd" },
+    { name = "altk-evolve-core", extras = ["pii-semantic"], marker = "python_full_version >= '3.12'", specifier = ">=1.8.0,<2" },
     { name = "en-core-web-trf", marker = "python_full_version >= '3.12'", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl" },
     { name = "readi-privacy", marker = "python_full_version >= '3.12'", specifier = "==0.1.7" },
 ]
