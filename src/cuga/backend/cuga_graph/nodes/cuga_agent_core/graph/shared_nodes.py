@@ -41,6 +41,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
 from cuga.backend.cuga_graph.utils.harmony import contains_harmony_tokens
+from cuga.backend.cuga_graph.utils.surrogates import repair_message, repair_messages
 from cuga.backend.cuga_graph.utils.context_management_utils import (
     apply_context_summarization,
     truncate_text_for_context,
@@ -264,7 +265,11 @@ def create_call_model_node(
         if fc_command is not None:
             return fc_command
 
-        response = await adapter.ainvoke_model(bound, messages_for_model, invoke_config)
+        # A lone surrogate (half an emoji) cannot be encoded as UTF-8: it breaks the
+        # request body, compile() and every later serializer. Repair the request,
+        # and the reply before anything reads it, so the history stays encodable (#963).
+        response = await adapter.ainvoke_model(bound, repair_messages(messages_for_model), invoke_config)
+        response = repair_message(response)
 
         # ── Normalise response ─────────────────────────────────────────────
         content, reasoning = adapter.normalize_response(response)

@@ -4740,11 +4740,14 @@ def validate_input_length(text: str) -> None:
 async def get_query(request: Request) -> Union[str, ActionResponse]:
     """Parses the incoming request to extract the user query or action."""
     from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+    from cuga.backend.cuga_graph.utils.surrogates import repair_surrogates_in
 
     try:
         data = await request.json()
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Request body was not valid JSON.")
+    # JSON can carry half an emoji as a "\udXXX" escape; repair it once for every branch (#963).
+    data = repair_surrogates_in(data)
 
     if (
         isinstance(data, dict)

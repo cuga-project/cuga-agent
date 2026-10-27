@@ -20,6 +20,7 @@ from cuga.backend.cuga_graph.utils.token_counter import (
     resolve_model_identifier,
 )
 from cuga.backend.cuga_graph.utils.message_utils import convert_to_proper_message_type
+from cuga.backend.cuga_graph.utils.surrogates import repair_message
 
 # Optional imports for middleware invocation (may not be available in all LangChain versions)
 try:
@@ -391,8 +392,10 @@ class ContextSummarizer:
         """
         typed_messages = []
         for msg in messages:
-            # Convert to proper type using shared utility
-            converted_msg = convert_to_proper_message_type(msg)
+            # Convert to proper type using shared utility. Repair lone surrogates
+            # (content and tool-call arguments): one makes the summary request
+            # unencodable, and the summary becomes "Error generating summary: ..." (#963).
+            converted_msg = repair_message(convert_to_proper_message_type(msg))
             # Sanitize content before adding to list
             sanitized_content = self._sanitize_content(converted_msg.content)
             # Preserve all existing fields/tool metadata while only normalizing content.
@@ -501,7 +504,8 @@ class ContextSummarizer:
         for msg in result.get("messages", []):
             if hasattr(msg, '__class__') and msg.__class__.__name__ == 'RemoveMessage':
                 continue
-            new_messages.append(msg)
+            # The summary is model output: repair it like any other reply (#963).
+            new_messages.append(repair_message(msg))
 
         if not new_messages:
             logger.warning("Middleware returned no messages, using fallback")

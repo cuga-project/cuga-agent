@@ -21,6 +21,7 @@ from langgraph.graph import END
 from langgraph.types import Command
 from loguru import logger
 from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
+from cuga.backend.cuga_graph.utils.surrogates import repair_messages
 
 EMPTY_RESPONSE_CORRECTION_KEY = "_empty_response_correction"
 EMPTY_RESPONSE_CORRECTION = (
@@ -243,6 +244,9 @@ def append_chat_messages_with_step_limit(
     limit = adapter.resolve_max_steps(state, max_steps)
     new_step_count = state.step_count + 1
     base = adapter.get_messages(state)
+    # Execution output, tool replies and VERIFY notes all join the history here.
+    # Repair lone surrogates (half an emoji) so every later request encodes (#963).
+    new_messages = repair_messages(new_messages)
 
     if new_step_count > limit:
         error_msg = (
