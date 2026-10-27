@@ -39,6 +39,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
     STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
     resolve_execution_mode,
     resolve_fc_prompt_fragments,
+    resolve_plan_then_step,
     resolve_step_discipline,
     resolved_runtime_model_name,
 )
@@ -97,7 +98,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         list of dicts with ``role`` and ``content``. If absent (or explicitly ``None``) and
         ``find_tools`` is enabled, ``prompts/find_tools_few_shot_examples.json`` (bundled next to the
         MCP template) is loaded, with optional fallback to repo ``samples/cuga_lite/mcp_few_shot_examples.json``.
-        Bundled few-shots only apply when ``find_tools`` shortlisting is active
+        With ``cuga_lite_plan_then_step`` on (the default), the bundled file is
+        ``prompts/find_tools_few_shot_examples_plan_then_step.json`` instead, whose turns follow
+        the plan-then-step prompt. Bundled few-shots only apply when ``find_tools`` shortlisting is active
         (``total_tool_count > shortlisting_tool_threshold``, see settings configurable).
 
         Disable few-shots entirely via ``advanced_features.cuga_lite_enable_few_shots`` in settings.toml
@@ -138,6 +141,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             model_name=_runtime_model_name,
         )
         _execution_mode = resolve_execution_mode(configurable, _runtime_model_name)
+        _plan_then_step = resolve_plan_then_step(configurable, _runtime_model_name)
         logger.debug(
             f"[APPROVAL DEBUG] prepare_tools_and_apps received cuga_lite_metadata: {state.cuga_lite_metadata}"
         )
@@ -282,11 +286,13 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 if raw_fs is not None:
                     few_shot_examples = normalize_mcp_few_shot_examples(raw_fs)
                 elif enable_find_tools:
-                    few_shot_examples = _load_default_find_tools_few_shot_examples()
+                    few_shot_examples = _load_default_find_tools_few_shot_examples(
+                        plan_then_step=_plan_then_step
+                    )
                 else:
                     few_shot_examples = []
             elif enable_find_tools:
-                few_shot_examples = _load_default_find_tools_few_shot_examples()
+                few_shot_examples = _load_default_find_tools_few_shot_examples(plan_then_step=_plan_then_step)
             else:
                 few_shot_examples = []
                 logger.debug(
@@ -857,11 +863,13 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 few_shots_enabled=few_shots_enabled,
                 agents_enabled=agents_enabled,
                 agents_prompt_section=agents_prompt_section,
+                plan_then_step=_plan_then_step,
             )
             logger.info(
-                "Prepared CugaLite prompt: enable_find_tools={} few_shot_message_turns={} "
+                "Prepared CugaLite prompt: enable_find_tools={} plan_then_step={} few_shot_message_turns={} "
                 "few_shots_as_messages={} prompt_chars={}",
                 enable_find_tools,
+                _plan_then_step,
                 len(few_shot_examples),
                 bool(few_shot_examples),
                 len(dynamic_prompt),

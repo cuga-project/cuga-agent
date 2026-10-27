@@ -34,6 +34,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
     STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
+    resolve_plan_then_step,
     resolve_step_discipline,
     resolved_runtime_model_name,
 )
@@ -275,15 +276,12 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             # existing per-block budget, so the second call is refused by
             # enforce_call_budget with the one-tool message and the executor
             # keeps the block's variables (see LocalExecutor).
+            runtime_model_name = resolved_runtime_model_name(
+                configurable_llm=configurable.get("llm"),
+                graph_default_model=getattr(adapter, "_model", None),
+            )
             one_tool_per_step = (
-                resolve_step_discipline(
-                    configurable,
-                    resolved_runtime_model_name(
-                        configurable_llm=configurable.get("llm"),
-                        graph_default_model=getattr(adapter, "_model", None),
-                    ),
-                )
-                == STEP_DISCIPLINE_ONE_TOOL_PER_STEP
+                resolve_step_discipline(configurable, runtime_model_name) == STEP_DISCIPLINE_ONE_TOOL_PER_STEP
             )
             cap_token = ToolCallTracker.set_block_cap_override(1) if one_tool_per_step else None
             try:
@@ -389,6 +387,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                             "skills_enabled": state.reflection_skills_enabled,
                             "skills_prompt_section": skills_prompt_section,
                             "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
+                            "plan_then_step": resolve_plan_then_step(configurable, runtime_model_name),
                         },
                         config=config or {},
                     )

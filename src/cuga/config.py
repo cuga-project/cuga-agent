@@ -225,6 +225,7 @@ validators = [
     Validator("advanced_features.cuga_lite_execution_mode", default="codeact"),
     Validator("advanced_features.cuga_lite_step_discipline", default="off"),
     Validator("advanced_features.cuga_lite_fc_prompt_fragments", default=[]),
+    Validator("advanced_features.cuga_lite_plan_then_step", default=True),
     # Read at prepare_node without a getattr guard; without this a settings.toml
     # missing the key raises AttributeError mid-run instead of using the default.
     Validator("advanced_features.shortlisting_tool_threshold", default=35),
