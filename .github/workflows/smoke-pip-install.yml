@@ -49,4 +49,6 @@ jobs:
           python-version: "3.12"
 
       - name: Isolated wheel smoke (demo_crm → OpenAPI)
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: bash scripts/smoke_pip_install_isolated.sh
