@@ -1,3 +1,4 @@
+import re
 import types
 from typing import Any, Optional, Set
 
@@ -291,6 +292,76 @@ class VariableUtils:
         return False
 
     @staticmethod
+    def _is_data_variable(name: str, value: Any) -> bool:
+        """True for agent data; False for tools, modules, classes and internal names."""
+        return not (name.startswith('_') or callable(value) or isinstance(value, types.ModuleType))
+
+    @staticmethod
+    def _fingerprint(value: Any) -> Optional[str]:
+        """JSON form of ``value`` for change detection, or None if it cannot be serialized.
+
+        Keys are not sorted: both fingerprints of a value are taken in the same
+        process, so dict order is stable. Dicts whose keys JSON cannot hold (e.g.
+        ``{(2023, 5): 1.0, "note": "x"}``) are compared by their ``repr``. Any other
+        failure, such as RecursionError for a value that contains itself, returns None.
+        Known limit: values with the same JSON form share a fingerprint, so a
+        reassignment between e.g. ``(1, 2)`` and ``[1, 2]``, or ``{1: 'a'}`` and
+        ``{'1': 'a'}``, is not detected.
+        """
+        import json
+
+        try:
+            sanitized = VariableUtils.sanitize_value(value)
+        except Exception:
+            return None
+        try:
+            return json.dumps(sanitized, default=repr)
+        except TypeError:
+            try:
+                return "repr:" + repr(sanitized)
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+    @staticmethod
+    def snapshot_values(
+        all_locals: dict[str, Any], keys: Set[str], code: Optional[str] = None
+    ) -> dict[str, Optional[str]]:
+        """Fingerprint the data variables among ``keys`` before a code block runs.
+
+        With ``code``, only variables the block names are fingerprinted: a block can
+        only reassign or change a variable it refers to, so each block's cost does
+        not grow with everything stored so far.
+        """
+        if code is not None:
+            keys = set(keys) & set(re.findall(r"[^\W\d]\w*", code))
+        return {
+            key: VariableUtils._fingerprint(all_locals[key])
+            for key in keys
+            if key in all_locals and VariableUtils._is_data_variable(key, all_locals[key])
+        }
+
+    @staticmethod
+    def changed_keys(all_locals: dict[str, Any], snapshot: dict[str, Optional[str]]) -> Set[str]:
+        """Names from ``snapshot`` whose value the block reassigned or changed in place.
+
+        A value that cannot be serialized after the block (e.g. it now contains
+        itself) is not reported, since it could not be saved. In-place changes are
+        seen only when the block works on the stored object itself, as the local
+        executor does; a remote sandbox that sends back only the block's own
+        locals reports reassignment, not in-place changes.
+        """
+        changed = set()
+        for key, before in snapshot.items():
+            if key not in all_locals:
+                continue
+            after = VariableUtils._fingerprint(all_locals[key])
+            if after is not None and after != before:
+                changed.add(key)
+        return changed
+
+    @staticmethod
     def filter_new_variables(
         all_locals: dict[str, Any], original_keys: Set[str], always_include_keys: Set[str] | None = None
     ) -> dict[str, Any]:
@@ -318,7 +389,11 @@ class VariableUtils:
             if key.startswith('_'):
                 continue
 
-            value = VariableUtils.sanitize_value(all_locals[key])
+            try:
+                value = VariableUtils.sanitize_value(all_locals[key])
+            except RecursionError:
+                logger.debug(f"Skipping self-referencing variable '{key}'")
+                continue
             if VariableUtils.is_serializable(value):
                 new_vars[key] = value
             else:

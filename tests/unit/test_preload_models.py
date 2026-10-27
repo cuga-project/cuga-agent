@@ -2,10 +2,145 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, call, patch
 
 import pytest
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.unit
+def test_airgap_verification_rejects_stanza(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import verify_airgap
+
+    monkeypatch.setattr(verify_airgap, "find_spec", lambda name: object() if name == "stanza" else None)
+    with pytest.raises(RuntimeError, match="Stanza must not be installed"):
+        verify_airgap.main()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "package", ["altk-evolve", "arize-phoenix", "arize-phoenix-otel", "stanza", "udtools", "udapi"]
+)
+def test_airgap_verification_rejects_excluded_distributions(package, monkeypatch) -> None:
+    from scripts import verify_airgap
+
+    monkeypatch.setattr(verify_airgap, "find_spec", lambda name: None)
+    monkeypatch.setattr(verify_airgap, "distributions", lambda: [SimpleNamespace(metadata={"Name": package})])
+    with pytest.raises(RuntimeError, match="Excluded image packages"):
+        verify_airgap.main()
+
+
+@pytest.mark.unit
+def test_supported_image_bakes_evolve_for_offline_runtime() -> None:
+    dockerfile = (REPO_ROOT / "Dockerfile.ubi").read_text()
+    entrypoint = (REPO_ROOT / "scripts/docker-entrypoint.sh").read_text()
+
+    project = (REPO_ROOT / "pyproject.toml").read_text()
+    assert "altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]" in project
+    assert "altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]>=1.8.0,<2" in project
+    assert 'altk-evolve-core = { git =' not in project
+    assert "github.com/AgentToolkit/altk-evolve/archive/" not in project
+    assert "--frozen --no-editable --no-dev" in dockerfile
+    assert "--group evolve-image" in dockerfile
+    for package in ("stanza", "udtools", "udapi"):
+        assert f"--no-install-package {package}" in dockerfile
+    assert "uv pip install" not in dockerfile
+    assert "SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers" in dockerfile
+    assert "uv run --no-sync playwright install" in dockerfile
+    assert "RUN uv run --no-sync python src/scripts/preload_models.py" in dockerfile
+    assert "MODEL_PRELOAD_STRICT=1" in dockerfile
+    assert "RUN --network=none /app/.venv/bin/python /app/src/scripts/verify_airgap.py" in dockerfile
+    assert "TRANSFORMERS_OFFLINE=1" in dockerfile
+    assert "UV_OFFLINE=1" in dockerfile
+    assert "CUGA_EMBEDDED_EVOLVE=false" in dockerfile
+    assert "embedded-evolve-supervisor.py" not in dockerfile
+    assert "container_services.py" in entrypoint
+    assert not (REPO_ROOT / "Dockerfile.memory").exists()
+
+
+@pytest.mark.unit
+def test_slim_image_excludes_docling_and_evolve_stack() -> None:
+    """The slim image must stay torch-free: no docling, no Evolve/READI, and
+    none of the orphaned transitive deps found via `uv tree --invert` when
+    both are excluded. Dockerfile.ubi itself must stay untouched — the full
+    image's dependency set must never depend on Dockerfile.ubi.slim existing.
+    """
+    slim_dockerfile = (REPO_ROOT / "Dockerfile.ubi.slim").read_text()
+    full_dockerfile = (REPO_ROOT / "Dockerfile.ubi").read_text()
+
+    # Full image is untouched by the slim addition.
+    assert "--group evolve-image" in full_dockerfile
+    assert "--extra evolve" in full_dockerfile
+    assert "MODEL_PRELOAD_STRICT=1" in full_dockerfile
+    assert "verify_airgap.py" in full_dockerfile
+
+    # Slim excludes the whole Evolve subsystem and never sets strict mode —
+    # docling/evolve/readi preload failures must degrade, not fail the build.
+    assert "--extra evolve" not in slim_dockerfile
+    assert "--group evolve-image" not in slim_dockerfile
+    assert "MODEL_PRELOAD_STRICT=1" not in slim_dockerfile
+
+    # The document-processing + Evolve stack, and everything only reachable
+    # through it (found via `uv tree --invert`, since `uv sync
+    # --no-install-package` doesn't prune a now-orphaned dependent on its own).
+    excluded_packages = [
+        "torch",
+        "torchvision",
+        "easyocr",
+        "docling",
+        "docling-core",
+        "docling-ibm-models",
+        "docling-parse",
+        "docling-slim",
+        "langchain-docling",
+        "transformers",
+        "opencv-python",
+        "opencv-python-headless",
+        "scikit-image",
+        "scipy",
+        "saxonche",
+        "sympy",
+        "rapidocr",
+        "faker",
+        "networkx",
+        "pypdfium2",
+        "shapely",
+        "tree-sitter",
+        "python-docx",
+        "python-pptx",
+        "accelerate",
+        "rtree",
+        "openpyxl",
+        "pyclipper",
+        "pylatexenc",
+        "latex2mathml",
+        "polyfactory",
+        "marko",
+        "doclang",
+        "mail-parser",
+        "defusedxml",
+    ]
+    for pkg in excluded_packages:
+        assert f"--no-install-package {pkg}" in slim_dockerfile, f"missing exclusion for {pkg!r}"
+
+    # fastembed-backed features (shortlisting, policy similarity, knowledge
+    # embeddings) and playwright are NOT excluded — only docling/Evolve are.
+    assert "--extra observability" in slim_dockerfile
+    assert "uv run --no-sync playwright install --only-shell chromium" in slim_dockerfile
+
+    # Slim gets its own airgap check (no docling/Evolve to verify) and its
+    # own entrypoint dependency — docker-entrypoint.sh always invokes
+    # container_services.py, so slim must ship it too.
+    assert (
+        "RUN --network=none /app/.venv/bin/python /app/src/scripts/verify_airgap_slim.py" in slim_dockerfile
+    )
+    assert "RUN --network=none /app/.venv/bin/python /app/src/scripts/verify_airgap.py" not in slim_dockerfile
+    assert "container_services.py" in slim_dockerfile
 
 
 @pytest.mark.unit
@@ -27,11 +162,21 @@ def test_preload_docling_downloads_onnx_layout_model(tmp_path: Path, monkeypatch
         output_dir=tmp_path,
         with_code_formula=False,
         with_picture_classifier=False,
+        with_easyocr=True,
     )
     mock_download_hf.assert_called_once_with(
         repo_id=onnx_repo,
         local_dir=tmp_path / onnx_repo.replace("/", "--"),
     )
+
+
+@pytest.mark.unit
+def test_preload_docling_fails_build_when_download_fails() -> None:
+    from scripts.preload_models import preload_docling
+
+    with patch("docling.utils.model_downloader.download_models", side_effect=RuntimeError("download failed")):
+        with pytest.raises(RuntimeError, match="download failed"):
+            preload_docling()
 
 
 def _required_layout_repo_ids_for_cuga() -> set[str]:
@@ -82,3 +227,139 @@ def test_airgap_preload_covers_cuga_layout_engine_repos() -> None:
         f"Airgap preload missing layout repos required at runtime: {sorted(missing)}. "
         f"required={sorted(required)} preloaded={sorted(preloaded)}"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("override", [None, "custom-consistency-model"])
+def test_preload_evolve_uses_configured_models_without_extra_defaults(override) -> None:
+    from scripts.preload_models import preload_evolve
+
+    loader = MagicMock()
+    export = MagicMock()
+    modules = {
+        "altk_evolve.config.guidelines": SimpleNamespace(
+            guidelines_settings=SimpleNamespace(
+                consistency_embedding_model_small=override or "BAAI/bge-small-en-v1.5",
+                consistency_embedding_trust_remote_code=False,
+            )
+        ),
+        "altk_evolve.config.milvus": SimpleNamespace(
+            milvus_other_settings=SimpleNamespace(embedding_model="BAAI/bge-small-en-v1.5")
+        ),
+        "altk_evolve.config.postgres": SimpleNamespace(
+            postgres_db_settings=SimpleNamespace(embedding_model="BAAI/bge-small-en-v1.5")
+        ),
+        "altk_evolve.embeddings": SimpleNamespace(
+            get_embedding_model=loader,
+            EmbeddingSettings=lambda: SimpleNamespace(embedding_provider="fastembed"),
+            MINILM_MODEL="sentence-transformers/all-MiniLM-L6-v2",
+        ),
+        "altk_evolve.export_embeddings": SimpleNamespace(export_coderank=export),
+    }
+    with patch.dict(sys.modules, modules):
+        preload_evolve()
+    export.assert_not_called()
+
+    expected = sorted({"BAAI/bge-small-en-v1.5", override or "BAAI/bge-small-en-v1.5"})
+    assert loader.call_args_list == [call(model, trust_remote_code=False) for model in expected]
+    assert loader.return_value.encode.call_count == len(expected)
+
+
+@pytest.mark.unit
+def test_strict_preload_turns_optional_failure_into_build_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.preload_models import handle_preload_error
+
+    monkeypatch.setenv("MODEL_PRELOAD_STRICT", "1")
+
+    with pytest.raises(RuntimeError, match="docling preload failed"):
+        handle_preload_error("docling", ValueError("download unavailable"))
+
+
+@pytest.mark.unit
+def test_run_preloads_degrades_gracefully_in_non_strict_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The slim image's whole build depends on this: when docling/evolve/
+    readi aren't installed (non-strict, the default), run_preloads() must
+    swallow every failure and finish normally rather than raising. This is
+    the actual __main__ wiring, not just handle_preload_error in isolation —
+    the __main__ loop used to call every preload_* function unguarded."""
+    import scripts.preload_models as preload_models
+
+    monkeypatch.delenv("MODEL_PRELOAD_STRICT", raising=False)
+    for name in ("preload_docling", "preload_evolve", "preload_readi"):
+        monkeypatch.setattr(preload_models, name, MagicMock(side_effect=ModuleNotFoundError(name)))
+    monkeypatch.setattr(preload_models, "preload_fastembed", MagicMock())
+    monkeypatch.setattr(preload_models, "preload_fastembed_tokenizer", MagicMock())
+    monkeypatch.setattr(preload_models, "preload_tiktoken", MagicMock())
+
+    preload_models.run_preloads()  # must not raise
+
+
+@pytest.mark.unit
+def test_run_preloads_raises_in_strict_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The full image's safety net: with MODEL_PRELOAD_STRICT=1, the same
+    failure must still fail the build, through the real __main__ wiring."""
+    import scripts.preload_models as preload_models
+
+    monkeypatch.setenv("MODEL_PRELOAD_STRICT", "1")
+    monkeypatch.setattr(preload_models, "preload_fastembed", MagicMock())
+    monkeypatch.setattr(
+        preload_models, "preload_fastembed_tokenizer", MagicMock(side_effect=RuntimeError("boom"))
+    )
+
+    with pytest.raises(RuntimeError, match="fastembed tokenizer preload failed"):
+        preload_models.run_preloads()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stage", ["builder", "runtime"])
+def test_image_evolve_embedding_settings_match_preloaded_bge(stage, monkeypatch) -> None:
+    """Read each image stage's defaults through Evolve's real settings classes."""
+    import shlex
+
+    milvus = pytest.importorskip("altk_evolve.config.milvus")
+    postgres = pytest.importorskip("altk_evolve.config.postgres")
+    guidelines = pytest.importorskip("altk_evolve.config.guidelines")
+
+    dockerfile = (REPO_ROOT / "Dockerfile.ubi").read_text()
+    stages = dockerfile.split("FROM ${BASE_IMAGE}")
+    source = stages[1 if stage == "builder" else 2].replace(chr(92) + "\n", " ")
+    env = {}
+    for line in source.splitlines():
+        if line.startswith("ENV "):
+            for assignment in shlex.split(line[4:]):
+                if "=" in assignment:
+                    key, value = assignment.split("=", 1)
+                    env[key] = value
+    for key in (
+        "EVOLVE_EMBEDDING_MODEL",
+        "EVOLVE_PG_EMBEDDING_MODEL",
+        "EVOLVE_CONSISTENCY_EMBEDDING_MODEL_SMALL",
+        "EVOLVE_CONSISTENCY_EMBEDDING_MODEL_LARGE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+        if key in env:
+            monkeypatch.setenv(key, env[key])
+
+    assert env["EVOLVE_EMBEDDING_PROVIDER"] == "fastembed"
+    expected = "BAAI/bge-small-en-v1.5"
+    milvus_settings = milvus.MilvusOtherSettings(_env_file=None)
+    assert milvus_settings.embedding_model == expected
+    assert milvus.MilvusDBSettings(_env_file=None).embedding_model == expected
+    assert postgres.PostgresDBSettings(_env_file=None).embedding_model == expected
+    settings = guidelines.GuidelinesSettings(_env_file=None)
+    assert settings.consistency_embedding_model_small == expected
+    assert "EVOLVE_CONSISTENCY_EMBEDDING_MODEL_LARGE" not in env
+
+    # Exercise the preload consumer with the installed Evolve API/settings,
+    # replacing only model loading so this contract check needs no download.
+    from altk_evolve import embeddings
+    from scripts.preload_models import preload_evolve
+
+    monkeypatch.setattr(milvus, "milvus_other_settings", milvus_settings)
+    monkeypatch.setattr(postgres, "postgres_db_settings", postgres.PostgresDBSettings(_env_file=None))
+    monkeypatch.setattr(guidelines, "guidelines_settings", settings)
+    loader = MagicMock()
+    monkeypatch.setattr(embeddings, "get_embedding_model", loader)
+    preload_evolve()
+    loader.assert_called_once_with(expected, trust_remote_code=False)
+    loader.return_value.encode.assert_called_once_with(["airgap warmup"])

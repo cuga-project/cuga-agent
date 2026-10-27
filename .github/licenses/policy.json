@@ -1,0 +1,58 @@
+{
+  "approved_expressions": [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSD-0-Clause",
+    "ISC",
+    "0BSD",
+    "CC0-1.0",
+    "Unlicense",
+    "Zlib",
+    "BSL-1.0",
+    "OFL-1.1",
+    "BlueOak-1.0.0",
+    "PSF-2.0",
+    "Python-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT-CMU"
+  ],
+  "exceptions": [
+    {
+      "name": "cuga-oak-health",
+      "version": "1.3.0",
+      "scope": "*",
+      "issue": "missing-license",
+      "reviewer": "sami-marreed",
+      "reason": "Explicitly accepted by the user during the 2026-10-16 audit; this does not assert an SPDX license.",
+      "expires": "2027-01-16"
+    },
+    {
+      "name": "cuga-oak-health",
+      "version": "1.3.0",
+      "scope": "*",
+      "issue": "missing-license-files",
+      "reviewer": "sami-marreed",
+      "reason": "Explicitly accepted by the user during the 2026-10-16 audit; revisit when upstream evidence is available.",
+      "expires": "2027-01-16"
+    }
+  ],
+  "forbidden_packages": {
+    "python-full": [
+      "stanza",
+      "udtools",
+      "udapi"
+    ],
+    "image-full-amd64": [
+      "stanza",
+      "udtools",
+      "udapi"
+    ],
+    "image-full-arm64": [
+      "stanza",
+      "udtools",
+      "udapi"
+    ]
+  }
+}

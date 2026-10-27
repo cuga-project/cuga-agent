@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -264,3 +265,95 @@ async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
 
     assert saved["agent_id"] == "sales-east"
     assert any(chunks)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wxo", [False, True])
+@pytest.mark.parametrize("turn_id", ["interrupted-turn", ""])
+async def test_resumed_stream_uses_checkpoint_memory_disclosure(monkeypatch, wxo, turn_id):
+    from cuga.backend.cuga_graph.state.agent_state import default_state
+    from cuga.backend.evolve import memory_store
+
+    checkpoint = default_state(page=None, observation=None, goal="")
+    checkpoint.service_scope["memory_turn_id"] = turn_id
+    checkpoint.thread_id = "thread-1"
+    saved: dict = {}
+    usage = AsyncMock(return_value={"count": 1, "entity_ids": ["fact-a"]})
+    monkeypatch.setattr(memory_store, "get_turn_memory_usage", usage)
+    monkeypatch.setattr(main_mod.settings.evolve, "enabled", True)
+    monkeypatch.setattr(main_mod.settings.advanced_features, "wxo_integration", wxo)
+
+    async def fake_save(**kwargs):
+        saved.update(kwargs)
+
+    class _ImmediateLoop:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def get_langfuse_trace_id(self):
+            return None
+
+        async def run_stream(self, **_kwargs):
+            assert _kwargs["state"] is None
+            assert _kwargs["resume"] is not None
+            from cuga.backend.cuga_graph.utils.agent_loop import AgentLoopAnswer
+
+            yield AgentLoopAnswer(end=True, answer="done", tools=[])
+
+    graph = MagicMock()
+    graph.get_state.return_value = SimpleNamespace(values=checkpoint.model_dump())
+    run_agent = SimpleNamespace(
+        graph=graph,
+        policy_system=None,
+        enable_todos=None,
+        reflection_enabled=None,
+        shortlisting_tool_threshold=None,
+        cuga_lite_max_steps=None,
+        enable_filesystem_tools=None,
+        special_instructions=None,
+        chat=None,
+    )
+
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.utils.agent_loop.AgentLoop",
+        _ImmediateLoop,
+    )
+    monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", fake_save)
+    monkeypatch.setattr(main_mod, "_knowledge_enabled_for_app_state", lambda _state: False)
+    monkeypatch.setattr(main_mod, "_rehydrate_citation_ledger", AsyncMock())
+    monkeypatch.setattr(main_mod, "_dispatch_slash_for_stream", AsyncMock(return_value=None))
+    monkeypatch.setattr(main_mod.app_state, "agent_id", "cuga-default")
+    monkeypatch.setattr(main_mod.app_state, "current_llm", "default-llm")
+    monkeypatch.setattr(main_mod.app_state, "stop_events", {})
+    monkeypatch.setattr(main_mod.app_state, "output_format", None)
+    monkeypatch.setattr(main_mod.app_state, "knowledge_provider", None)
+
+    chunks = []
+    async for chunk in main_mod.event_stream(
+        "hello",
+        api_mode=True,
+        resume=SimpleNamespace(model_dump_json=lambda: "{}"),
+        user_id="alice",
+        thread_id="thread-1",
+        agent=run_agent,
+        agent_id="sales-east",
+        current_llm=None,
+    ):
+        chunks.append(chunk)
+
+    assert saved["agent_id"] == "sales-east"
+    persisted = next(event["event_data"] for event in saved["events"] if event["event_name"] == "Answer")
+    if wxo and not turn_id:
+        assert persisted == "done"
+    else:
+        payload = json.loads(persisted)
+        assert payload["data"] == "done"
+        assert payload.get("memory_turn_id", "") == turn_id
+    if wxo:
+        assert any("done" in chunk for chunk in chunks)
+        assert all("memory_turn_id" not in chunk for chunk in chunks)
+    if not wxo and turn_id:
+        usage.assert_awaited_once_with(turn_id=turn_id, agent_id="sales-east", user_id="alice")
+        assert any("memory_usage" in chunk and "fact-a" in chunk for chunk in chunks)
+    else:
+        usage.assert_not_awaited()

@@ -71,13 +71,13 @@ uv run python test_e2e_api_registry.py
 ### Run with Pytest
 ```bash
 # Run all pytest tests
-pytest cuga/backend/tools_env/registry/tests/
+uv run pytest src/cuga/backend/tools_env/registry/tests/
 
 # Run specific test file
-pytest cuga/backend/tools_env/registry/tests/test_legacy_openapi.py
+uv run pytest src/cuga/backend/tools_env/registry/tests/test_legacy_openapi.py
 
 # Run with verbose output
-pytest -v cuga/backend/tools_env/registry/tests/
+uv run pytest -v src/cuga/backend/tools_env/registry/tests/
 ```
 
 ## Prerequisites

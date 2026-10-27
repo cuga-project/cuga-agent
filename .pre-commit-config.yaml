@@ -22,7 +22,7 @@ repos:
     hooks:
       - id: check-added-large-files
         args: ['--maxkb=2000']
-        exclude: '^src/cuga/frontend/dist/'
+        exclude: '^(src/cuga/frontend/dist/|src/frontend_workspaces/extension/releases/chrome-mv3/)'
 
   # Conventional Commits - validate commit message format
   - repo: https://github.com/compilerla/conventional-pre-commit

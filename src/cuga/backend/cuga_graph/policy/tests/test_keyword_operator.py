@@ -6,6 +6,8 @@ from cuga.backend.cuga_graph.policy.models import IntentGuard, IntentGuardRespon
 from cuga.backend.cuga_graph.policy.agent import PolicyAgent, PolicyContext
 from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.asyncio
 async def test_keyword_trigger_and_operator():
@@ -265,6 +267,66 @@ async def test_keyword_operator_case_sensitivity():
     print("\n" + "=" * 80)
     print("✅ Case Sensitivity Test Passed")
     print("=" * 80)
+
+
+@pytest.mark.asyncio
+async def test_keyword_trigger_empty_keywords_does_not_match():
+    """Test that a KeywordTrigger with empty keywords never matches (issue #766)."""
+    policy_and = IntentGuard(
+        id="test_empty_and",
+        name="Empty AND Policy",
+        description="Test empty keywords with AND",
+        triggers=[
+            KeywordTrigger(
+                value=[],
+                target="intent",
+                case_sensitive=False,
+                operator="and",
+            )
+        ],
+        response=IntentGuardResponse(
+            response_type="natural_language",
+            content="Blocked",
+        ),
+        enabled=True,
+    )
+    policy_or = IntentGuard(
+        id="test_empty_or",
+        name="Empty OR Policy",
+        description="Test empty keywords with OR",
+        triggers=[
+            KeywordTrigger(
+                value=[],
+                target="intent",
+                case_sensitive=False,
+                operator="or",
+            )
+        ],
+        response=IntentGuardResponse(
+            response_type="natural_language",
+            content="Blocked",
+        ),
+        enabled=True,
+    )
+
+    storage = PolicyStorage(collection_name="test_keyword_empty")
+    await storage.initialize_async()
+    agent = PolicyAgent(storage=storage)
+
+    context = PolicyContext(
+        user_input="Hello world, any arbitrary message",
+        chat_messages=[],
+        sub_task="",
+        agent_response="",
+    )
+
+    matched_and, conf_and, _ = await agent._check_trigger(policy_and.triggers[0], context)
+    assert not matched_and
+    assert conf_and == 0.0
+
+    matched_or, conf_or, _ = await agent._check_trigger(policy_or.triggers[0], context)
+    assert not matched_or
+    assert conf_or == 0.0
 
 
 if __name__ == "__main__":

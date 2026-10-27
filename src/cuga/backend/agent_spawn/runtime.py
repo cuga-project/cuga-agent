@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from langchain_core.tools import StructuredTool
 from loguru import logger
+from cuga.backend.cuga_graph.utils.thread_ids import logical_thread_id
 from cuga.backend.cuga_graph.utils.langfuse_tracing import (
     get_langfuse_invoke_config,
     sync_langfuse_callbacks_from_config,
@@ -193,7 +194,8 @@ class SpawnAgentRuntime:
         return f"sub_cuga_{uuid4().hex[:8]}"
 
     def _parent_thread_id(self) -> str:
-        return self._parent_config.get("configurable", {}).get("thread_id", "") or ""
+        cfg = self._parent_config.get("configurable", {})
+        return logical_thread_id(cfg, "")
 
     def _resolve_thread_ids(self, share_workspace: bool) -> tuple[str, str]:
         """Return (conversation_thread_id, workspace_thread_id).
@@ -222,7 +224,7 @@ class SpawnAgentRuntime:
         cfg = get_langfuse_invoke_config()
         configurable = dict(cfg.get("configurable") or {})
         parent_cfg = dict((self._parent_config or {}).get("configurable") or {})
-        for key in ("skills_enabled", "skills_folder"):
+        for key in ("skills_enabled", "skills_folder", "knowledge_agent_id", "knowledge_user_id"):
             if key in parent_cfg:
                 configurable[key] = parent_cfg[key]
         if workspace_thread_id:

@@ -1,5 +1,5 @@
 import json
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 from cuga.backend.tools_env.registry.registry.authentication.base_auth_manager import BaseAuthManager
@@ -84,10 +84,24 @@ class TokenFetchError(Exception):
                 self.detailed_message = response_body["detail"]
 
 
+def get_appworld_apis_base_url() -> str:
+    """Base URL of the AppWorld APIs server, without a trailing slash.
+
+    ``server_ports.apis_host`` wins when set, for an APIs server on another host
+    (e.g. ``http://appworld:9000`` from a container); otherwise
+    ``http://localhost:{server_ports.apis_url}``. Read at call time so a runtime
+    override of either setting is honoured.
+    """
+    host = getattr(settings.server_ports, "apis_host", None)
+    if host:
+        return str(host).rstrip("/")
+    return f"http://localhost:{settings.server_ports.apis_url}"
+
+
 class AppWorldAuthManager(BaseAuthManager):
-    def __init__(self, base_url="http://localhost:" + str(settings.server_ports.apis_url)):
+    def __init__(self, base_url: Optional[str] = None):
         super().__init__()
-        self.base_url = base_url.rstrip("/")
+        self.base_url = (base_url or get_appworld_apis_base_url()).rstrip("/")
         self._profile = None
         self._account_passwords = None
         self._profile_loaded = False

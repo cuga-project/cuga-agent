@@ -84,13 +84,13 @@ from cuga.backend.server.workspace_sandbox import (
     workspace_tree_is_sandbox_backed,
 )
 from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
-from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled
+from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled, has_manage_access
 from cuga.backend.server.auth.models import TokenResponse, UserInfo
 from cuga.backend.server.tool_guard_generation import (
     build_tool_guard_generation_agent,
     generate_tool_guards_for_policy,
 )
-from cuga.backend.server.conversation_history import get_conversation_db
+from cuga.backend.server.conversation_history import ThreadOwnershipError, get_conversation_db
 
 # Default user ID for conversation history
 DEFAULT_USER_ID = "default_user"
@@ -102,17 +102,66 @@ def _workspace_thread_id(request: Request, query_thread_id: Optional[str]) -> Op
     return tid or None
 
 
-async def _assert_thread_access(thread_id: str, user_id: str) -> None:
-    """Reject access when thread_id is owned by a different user."""
-    conversation_db = get_conversation_db()
-    rows = await conversation_db.get_thread_history(thread_id)
-    for row in rows:
-        if row.user_id and row.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Access denied: thread belongs to another user")
+def _canonical_thread_id(thread_id: str) -> str:
+    if not isinstance(thread_id, str) or not thread_id.strip():
+        raise HTTPException(status_code=400, detail="thread_id is required")
+    return thread_id.strip()
+
+
+def _runtime_agent_id(request: Request) -> Optional[str]:
+    """Normalize explicit agent IDs while allowing controls to use the bound agent."""
+    if not agent_registry.is_agent_registry_enabled():
+        return "cuga-default"
+    return request.headers.get("X-Agent-ID") or None
+
+
+async def _assert_thread_access(
+    thread_id: str, user_id: str, agent_id: Optional[str] = None, *, create: bool = True
+) -> Optional[str]:
+    """Check ownership; only mutations reserve unused thread IDs."""
+    thread_id = _canonical_thread_id(thread_id)
+    try:
+        return await get_conversation_db().claim_thread(thread_id, user_id, agent_id, create=create)
+    except ThreadOwnershipError as exc:
+        raise HTTPException(
+            status_code=403, detail="Access denied: thread belongs to another user or agent"
+        ) from exc
+    except Exception as exc:
+        logger.error(f"Thread ownership unavailable: {exc}")
+        raise HTTPException(status_code=503, detail="Thread ownership unavailable") from exc
+
+
+def _checkpoint_thread_id(thread_id: str, user_id: str, agent_id: str) -> str:
+    from cuga.backend.server.thread_scope import checkpoint_thread_id
+
+    return checkpoint_thread_id(thread_id, user_id, agent_id)
 
 
 def _workspace_user_id(current_user: Optional[UserInfo]) -> str:
     return current_user.sub if current_user else DEFAULT_USER_ID
+
+
+async def _assert_run_thread_access(thread_id: str, user_id: str, agent_id: Optional[str] = None) -> None:
+    """Authorize the source thread before loading state or issuing capabilities."""
+    provider = getattr(app_state, "knowledge_provider", None)
+    if user_id and user_id != DEFAULT_USER_ID and provider is not None:
+        # Do not reserve runtime ownership for a caller denied by existing
+        # knowledge ownership, or the real owner could be locked out.
+        if not provider.check_session_access(thread_id.strip(), user_id):
+            raise HTTPException(status_code=403, detail="access denied to session")
+    if agent_id is not None:
+        await _assert_thread_access(thread_id, user_id, agent_id)
+    if not user_id or user_id == DEFAULT_USER_ID:
+        return
+    thread_id = thread_id.strip()
+    if agent_id is None:
+        await _assert_thread_access(thread_id, user_id)
+    # Disabling knowledge must not release existing ownership: conversation
+    # cleanup still reaches its collections and remaining workspace data.
+    if provider is not None or _knowledge_enabled_for_app_state(app_state):
+        from cuga.backend.knowledge.auth import ensure_session_access
+
+        ensure_session_access(thread_id, user_id, provider)
 
 
 async def _require_workspace_thread_access(
@@ -122,7 +171,9 @@ async def _require_workspace_thread_access(
 ) -> Optional[str]:
     tid = _workspace_thread_id(request, thread_id)
     if tid:
-        await _assert_thread_access(tid, _workspace_user_id(current_user))
+        owner_agent = await _assert_thread_access(tid, _workspace_user_id(current_user), create=False)
+        if owner_agent is None:
+            raise HTTPException(status_code=404, detail="Thread not found")
     return tid
 
 
@@ -154,7 +205,9 @@ def _resolve_path_under_cuga_workspace(user_path: str) -> Path:
 
 
 def _session_knowledge_collection(thread_id: str) -> str:
-    return f"kb_sess_{re.sub(r'[^a-zA-Z0-9_]', '_', thread_id)}"
+    from cuga.backend.knowledge.session_provider import session_collection_name
+
+    return session_collection_name(thread_id)
 
 
 async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id: str) -> None:
@@ -171,7 +224,7 @@ async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id:
 
     provider = getattr(app_state, "knowledge_provider", None)
     if provider:
-        provider.delete_session(thread_id)
+        provider.clear_session(thread_id)
 
 
 def _knowledge_config(app_state: "AppState" | None):
@@ -349,6 +402,37 @@ async def _rehydrate_citation_ledger(
 
 def _skills_effective_enabled() -> bool:
     return getattr(settings.skills, "enabled", False)
+
+
+async def _initialize_default_draft_policy_system():
+    from cuga.backend.cuga_graph.policy.configurable import (
+        PolicyConfigurable,
+        get_agent_policy_collection_name,
+    )
+    from cuga.backend.cuga_graph.policy.storage import PolicyStorage
+    from cuga.backend.storage.embedding import get_embedding_config
+
+    draft_collection = get_agent_policy_collection_name(draft=True)
+    emb_cfg = get_embedding_config()
+    draft_storage = PolicyStorage(
+        collection_name=draft_collection,
+        embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
+        or os.getenv("POLICY_EMBEDDING_PROVIDER")
+        or emb_cfg["provider"],
+        embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
+        or os.getenv("POLICY_EMBEDDING_MODEL")
+        or emb_cfg["model"],
+        embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
+        or os.getenv("POLICY_EMBEDDING_BASE_URL")
+        or emb_cfg["base_url"],
+        embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
+        or os.getenv("POLICY_EMBEDDING_API_KEY")
+        or emb_cfg["api_key"],
+    )
+    await draft_storage.initialize_async()
+    policy_system = PolicyConfigurable(storage=draft_storage)
+    await policy_system.initialize()
+    return policy_system, draft_collection
 
 
 try:
@@ -609,46 +693,40 @@ async def lifespan(app: FastAPI):
                 if not filesystem_sync_enabled:
                     logger.info("Filesystem sync disabled in settings")
                     app_state.policy_filesystem_sync = None
-                elif not auto_load_enabled:
-                    logger.info("Auto-load policies disabled in settings")
-                    # Initialize sync but don't load
-                    app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
-                    logger.info(f"✅ Filesystem sync enabled for {cuga_folder} (auto-load disabled)")
-                # Load policies from filesystem if folder exists and auto-load is enabled
-                elif os.path.exists(cuga_folder):
-                    logger.info(f"Loading policies from {cuga_folder}...")
-                    try:
-                        result = await load_policies_from_folder(
-                            folder_path=cuga_folder,
-                            storage=app_state.policy_system.storage,
-                            clear_existing=False,
-                        )
-                        await app_state.policy_system.initialize()  # Reinitialize after loading
-                        logger.info(f"✅ Loaded {result['count']} policies from {cuga_folder}")
-
-                        # Initialize filesystem sync for automatic saving
-                        app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
-                        logger.info(f"✅ Filesystem sync enabled for {cuga_folder}")
-
-                        # Validate and sync: ensure filesystem and storage are in sync
-                        try:
-                            sync_result = await validate_and_sync_policies(
-                                app_state.policy_system.storage, app_state.policy_filesystem_sync
-                            )
-                            if sync_result['removed'] or sync_result['added_to_filesystem']:
-                                logger.info(
-                                    f"📊 Sync validation: "
-                                    f"removed from storage={sync_result['removed']}, "
-                                    f"added to filesystem={sync_result['added_to_filesystem']}"
-                                )
-                        except Exception as e:
-                            logger.warning(f"Failed to validate and sync policies: {e}")
-                    except Exception as e:
-                        logger.error(f"Failed to load policies from {cuga_folder}: {e}")
-                        app_state.policy_filesystem_sync = None
                 else:
-                    logger.info(f"Policy folder {cuga_folder} not found, skipping auto-load")
-                    app_state.policy_filesystem_sync = None
+                    app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+                    logger.info(f"✅ Filesystem sync enabled for {cuga_folder}")
+
+                    if not auto_load_enabled:
+                        logger.info("Auto-load policies disabled in settings")
+                    elif os.path.exists(cuga_folder):
+                        logger.info(f"Loading policies from {cuga_folder}...")
+                        try:
+                            result = await load_policies_from_folder(
+                                folder_path=cuga_folder,
+                                storage=app_state.policy_system.storage,
+                                clear_existing=False,
+                            )
+                            await app_state.policy_system.initialize()  # Reinitialize after loading
+                            logger.info(f"✅ Loaded {result['count']} policies from {cuga_folder}")
+
+                            # Validate and sync: ensure filesystem and storage are in sync
+                            try:
+                                sync_result = await validate_and_sync_policies(
+                                    app_state.policy_system.storage, app_state.policy_filesystem_sync
+                                )
+                                if sync_result['removed'] or sync_result['added_to_filesystem']:
+                                    logger.info(
+                                        f"📊 Sync validation: "
+                                        f"removed from storage={sync_result['removed']}, "
+                                        f"added to filesystem={sync_result['added_to_filesystem']}"
+                                    )
+                            except Exception as e:
+                                logger.warning(f"Failed to validate and sync policies: {e}")
+                        except Exception as e:
+                            logger.error(f"Failed to load policies from {cuga_folder}: {e}")
+                    else:
+                        logger.info(f"Policy folder {cuga_folder} not found, skipping auto-load")
 
                 app_state.set_subsystem_status("policy", "ready", "Policy subsystem ready")
 
@@ -694,7 +772,13 @@ async def lifespan(app: FastAPI):
         from cuga.backend.knowledge.session_provider import PersistentSessionProvider
 
         if not getattr(app_state, "knowledge_provider", None):
-            _kb_state_path = Path.cwd() / ".cuga" / "session_knowledge.json"
+            # Session ownership lives in this file, so it must survive restarts.
+            # Deployments that mount persistent storage set CUGA_DBS_DIR (the
+            # Helm chart points it at the PVC); local runs keep using .cuga/.
+            _kb_state_dir = os.environ.get("CUGA_DBS_DIR")
+            _kb_state_path = (
+                Path(_kb_state_dir) if _kb_state_dir else Path.cwd() / ".cuga"
+            ) / "session_knowledge.json"
             app_state.knowledge_provider = PersistentSessionProvider(_kb_state_path)
 
         # Wire per-session citation overrides into the knowledge sources module
@@ -1011,6 +1095,7 @@ async def lifespan(app: FastAPI):
         cuga_lite_max_steps=_prod_overrides.get("cuga_lite_max_steps"),
         enable_filesystem_tools=_prod_overrides.get("enable_filesystem_tools"),
         special_instructions=(_startup_config or {}).get("special_instructions") or None,
+        supervisor_id=app_state.agent_id,
     )
     await app_state.agent.build_graph()
 
@@ -1042,33 +1127,8 @@ async def lifespan(app: FastAPI):
         )
 
     if settings.policy.enabled and app_state.policy_system:
-        from cuga.backend.cuga_graph.policy.storage import PolicyStorage
-        from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
-
-        policy_config = getattr(settings, "policy", None)
-        base_name = policy_config.collection_name if policy_config else "cuga_policies"
-        draft_collection = f"{base_name}_draft"
-        from cuga.backend.storage.embedding import get_embedding_config
-
-        emb_cfg = get_embedding_config()
-        draft_storage = PolicyStorage(
-            collection_name=draft_collection,
-            embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
-            or os.getenv("POLICY_EMBEDDING_PROVIDER")
-            or emb_cfg["provider"],
-            embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
-            or os.getenv("POLICY_EMBEDDING_MODEL")
-            or emb_cfg["model"],
-            embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
-            or os.getenv("POLICY_EMBEDDING_BASE_URL")
-            or emb_cfg["base_url"],
-            embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
-            or os.getenv("POLICY_EMBEDDING_API_KEY")
-            or emb_cfg["api_key"],
-        )
-        await draft_storage.initialize_async()
-        draft_app_state.policy_system = PolicyConfigurable(storage=draft_storage)
-        await draft_app_state.policy_system.initialize()
+        draft_app_state.policy_system, draft_collection = await _initialize_default_draft_policy_system()
+        draft_app_state.policy_filesystem_sync = app_state.policy_filesystem_sync
         logger.info(f"Draft policy system initialized (collection: {draft_collection})")
 
     draft_tool_provider = CombinedToolProvider(
@@ -1098,6 +1158,7 @@ async def lifespan(app: FastAPI):
         enable_filesystem_tools=draft_overrides.get("enable_filesystem_tools"),
         llm_config=_draft_llm_cfg or None,
         special_instructions=(draft_config or {}).get("special_instructions") or None,
+        supervisor_id=draft_agent_id,
     )
     await draft_app_state.agent.build_graph()
 
@@ -1140,8 +1201,32 @@ async def lifespan(app: FastAPI):
     # never blocks startup on failure.
     await warm_shortlister_catalogue()
 
+    from cuga.backend.evolve.deleted_sources import source_deletion_delivery_loop
+
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    if await EvolveIntegration.is_configured():
+        app_state.background_tasks.append(asyncio.create_task(source_deletion_delivery_loop()))
+
     yield
+
     logger.info("Application is shutting down...")
+
+    from cuga.backend.server.run_routes import close_cached_supervisors, close_graph_owners
+
+    try:
+        await close_cached_supervisors()
+    except Exception:
+        logger.exception("close_cached_supervisors failed during shutdown (non-fatal)")
+    try:
+        await close_graph_owners(
+            app_state.agent,
+            draft_app_state.agent,
+            *app_state.agent_graphs_cache.values(),
+        )
+    except Exception:
+        logger.exception("close_graph_owners failed during shutdown (non-fatal)")
+    app_state.agent_graphs_cache.clear()
 
     for task in app_state.background_tasks:
         task.cancel()
@@ -1550,8 +1635,23 @@ async def event_stream(
     from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
     from langchain_core.messages import AIMessage
 
+    memory_turn_id = str(uuid.uuid4()) if not resume else ""
     run_agent = agent if agent is not None else app_state.agent
     runtime_agent_id = agent_id or app_state.agent_id
+    thread_id = _canonical_thread_id(thread_id or str(uuid.uuid4()))
+    try:
+        await _assert_run_thread_access(thread_id, user_id, runtime_agent_id)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            yield StreamEvent(
+                name="Error", data="Access denied: thread belongs to another user or agent"
+            ).format(app_state.output_format, thread_id=thread_id)
+        else:
+            yield StreamEvent(name="Error", data="Thread ownership unavailable").format(
+                app_state.output_format, thread_id=thread_id
+            )
+        return
+    checkpoint_thread_id = _checkpoint_thread_id(thread_id, user_id, runtime_agent_id)
     if current_llm is _RUNTIME_LLM_UNSET:
         runtime_llm = (
             app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None)
@@ -1584,7 +1684,7 @@ async def event_stream(
         if thread_id:
             try:
                 latest_state_values = run_agent.graph.get_state(
-                    {"configurable": {"thread_id": thread_id}}
+                    {"configurable": {"thread_id": checkpoint_thread_id}}
                 ).values
                 if latest_state_values:
                     # Load existing state for followup questions
@@ -1618,13 +1718,18 @@ async def event_stream(
     else:
         # For resume, fetch state from LangGraph
         if thread_id:
-            latest_state_values = run_agent.graph.get_state({"configurable": {"thread_id": thread_id}}).values
+            latest_state_values = run_agent.graph.get_state(
+                {"configurable": {"thread_id": checkpoint_thread_id}}
+            ).values
             if latest_state_values:
                 local_state = AgentState(**latest_state_values)
                 local_state.thread_id = thread_id
 
     if local_state:
+        if resume:
+            memory_turn_id = str((local_state.service_scope or {}).get("memory_turn_id") or "")
         apply_request_user_context(local_state, user_id)
+        local_state.service_scope.update({"agent_id": runtime_agent_id, "memory_turn_id": memory_turn_id})
         # Route this run to the CugaSupervisor node when the resolved agent is a supervisor
         # graph (issue #101). Only override when True so non-supervisor agents keep falling
         # back to the global settings.supervisor.enabled default.
@@ -1701,6 +1806,10 @@ async def event_stream(
         # The trace ID will be available after the first LLM call
         print("Note: Trace ID will be available after the first LLM operation")
 
+    # Authenticated user for knowledge session ownership. DEFAULT_USER_ID is
+    # the placeholder used when auth is disabled, where ownership stays off.
+    _knowledge_user_id = user_id if user_id and user_id != DEFAULT_USER_ID else None
+
     # Build knowledge context for agent prompt injection
     _knowledge_ctx = {}
     if _knowledge_enabled_for_app_state(app_state) and app_state.knowledge_provider and thread_id:
@@ -1721,6 +1830,8 @@ async def event_stream(
             _knowledge_scope_enabled_for_app_state(app_state, "session")
             and _session_kb
             and _session_kb.filenames
+            # Never list another user's session files in this user's prompt.
+            and (not _knowledge_user_id or _session_kb.user_id in ("", _knowledge_user_id))
         ):
             from cuga.backend.knowledge.session_provider import session_prefix as _sess_prefix
 
@@ -1741,6 +1852,7 @@ async def event_stream(
         graph=run_agent.graph,
         langfuse_handler=langfuse_handler,
         thread_id=thread_id,
+        checkpoint_thread_id=checkpoint_thread_id,
         tracker=local_tracker,
         policy_system=run_agent.policy_system,
         enable_todos=getattr(run_agent, "enable_todos", None),
@@ -1750,6 +1862,8 @@ async def event_stream(
         enable_filesystem_tools=getattr(run_agent, "enable_filesystem_tools", None),
         current_llm=runtime_llm,
         knowledge_context=_knowledge_ctx or None,
+        agent_id=runtime_agent_id,
+        knowledge_user_id=_knowledge_user_id,
         upload_context=_upload_ctx,
         special_instructions=getattr(run_agent, "special_instructions", None),
     )
@@ -1789,7 +1903,7 @@ async def event_stream(
                         # Update local state from graph
                         if thread_id:
                             latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": thread_id}}
+                                {"configurable": {"thread_id": checkpoint_thread_id}}
                             ).values
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
@@ -1817,7 +1931,7 @@ async def event_stream(
                         active_policies = []
                         if thread_id:
                             latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": thread_id}}
+                                {"configurable": {"thread_id": checkpoint_thread_id}}
                             ).values
 
                             if latest_state_values:
@@ -1871,9 +1985,29 @@ async def event_stream(
                             }
                             if event.sources:
                                 answer_payload["sources"] = event.sources
+                            if memory_turn_id:
+                                answer_payload["memory_turn_id"] = memory_turn_id
+                                from cuga.backend.evolve.memory_store import get_turn_memory_usage
+
+                                try:
+                                    memory_usage = await get_turn_memory_usage(
+                                        turn_id=memory_turn_id,
+                                        agent_id=runtime_agent_id,
+                                        user_id=user_id,
+                                    )
+                                    if memory_usage["count"]:
+                                        answer_payload["memory_usage"] = memory_usage
+                                except Exception as exc:
+                                    logger.warning(f"Memory usage disclosure unavailable (non-fatal): {exc}")
                             final_answer_text = json.dumps(answer_payload)
                         else:
                             final_answer_text = "Done."
+                        # Preserve WXO's raw response while retaining the turn ID for history enrichment.
+                        persisted_answer_text = (
+                            json.dumps({"data": final_answer_text, "memory_turn_id": memory_turn_id})
+                            if settings.advanced_features.wxo_integration and memory_turn_id
+                            else final_answer_text
+                        )
                         logger.info("=" * 80)
                         logger.info("FINAL ANSWER")
                         logger.info("=" * 80)
@@ -1885,7 +2019,7 @@ async def event_stream(
                             stream_events_buffer.append(
                                 {
                                     "event_name": "Answer",
-                                    "event_data": final_answer_text,
+                                    "event_data": persisted_answer_text,
                                     "timestamp": datetime.datetime.utcnow().isoformat(),
                                     "sequence": event_sequence,
                                 }
@@ -1937,7 +2071,7 @@ async def event_stream(
 
                         if thread_id:
                             latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": thread_id}}
+                                {"configurable": {"thread_id": checkpoint_thread_id}}
                             ).values
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
@@ -1954,7 +2088,7 @@ async def event_stream(
                     elif event.has_tools:
                         if thread_id:
                             latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": thread_id}}
+                                {"configurable": {"thread_id": checkpoint_thread_id}}
                             ).values
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
@@ -1990,7 +2124,8 @@ async def event_stream(
 
                         if thread_id and local_state:
                             run_agent.graph.update_state(
-                                {"configurable": {"thread_id": thread_id}}, local_state.model_dump()
+                                {"configurable": {"thread_id": checkpoint_thread_id}},
+                                local_state.model_dump(),
                             )
                             # Conversation history will be saved at the end with stream events
                         agent_stream_gen = agent_loop_obj.run_stream(state=None)
@@ -1999,7 +2134,7 @@ async def event_stream(
                     logger.debug("Yield {}".format(event))
                     if thread_id:
                         latest_state_values = run_agent.graph.get_state(
-                            {"configurable": {"thread_id": thread_id}}
+                            {"configurable": {"thread_id": checkpoint_thread_id}}
                         ).values
                         if latest_state_values:
                             local_state = AgentState(**latest_state_values)
@@ -2068,8 +2203,10 @@ app.state.draft_app_state = draft_app_state
 # Register knowledge routes at module level (engine initialized in lifespan).
 # _get_engine() in routes.py returns 503 if engine isn't initialized yet.
 from cuga.backend.knowledge.routes import knowledge_router  # noqa: E402
+from cuga.backend.server.memory_routes import router as memory_router  # noqa: E402
 
 app.include_router(knowledge_router)
+app.include_router(memory_router)
 _cors_origins = (
     ["https://localhost:7860", "https://localhost:3002"]
     if (getattr(settings, "auth", None) and getattr(settings.auth, "enabled", False))
@@ -2185,6 +2322,8 @@ async def auth_config():
 @app.get("/api/ui/config")
 async def ui_config():
     """Return UI configuration flags from settings."""
+    from cuga.backend.evolve.integration import EvolveIntegration
+
     hide_logo = settings.ui.hide_cuga_logo
     brand_name = getattr(settings.ui, "brand_name", "CUGA Agent") or "CUGA Agent"
     # SPLIT TOPOLOGY: this server may serve the UI while the eventing layer runs as its own
@@ -2205,6 +2344,7 @@ async def ui_config():
                 else ""
             ),
             "agent_registry": agent_registry.is_agent_registry_enabled(),
+            "evolve_memory_enabled": await EvolveIntegration.is_configured(),
         }
     )
 
@@ -2419,8 +2559,8 @@ async def auth_userinfo(request: Request):
     if _auth_enabled() and user is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     if user is None:
-        return JSONResponse({"sub": DEFAULT_USER_ID})
-    return JSONResponse(user.model_dump())
+        return JSONResponse({"sub": DEFAULT_USER_ID, "can_manage": True})
+    return JSONResponse(user.model_dump() | {"can_manage": has_manage_access(user)})
 
 
 if getattr(settings.advanced_features, "use_extension", False):
@@ -2458,70 +2598,78 @@ if getattr(settings.advanced_features, "use_extension", False):
         comm.resolve_request(req_id, data)
         return JSONResponse({"status": "ok"})
 
-    @app.post("/extension/agent_query")
-    async def extension_agent_query(request: Request):
-        from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
 
-        body = await request.json()
-        query = body.get("query", "")
-        request_id = body.get("request_id", None)
-        if not query:
-            return JSONResponse({"type": "agent_error", "message": "Missing query"}, status_code=400)
+async def extension_agent_query(
+    request: Request, current_user: Optional[UserInfo] = Depends(require_chat_access)
+):
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
 
+    body = await request.json()
+    query = body.get("query", "")
+    request_id = _canonical_thread_id(body.get("request_id") or str(uuid.uuid4()))
+    user_id = _workspace_user_id(current_user)
+    if not query:
+        return JSONResponse({"type": "agent_error", "message": "Missing query"}, status_code=400)
+
+    try:
+        validate_input_length(query)
+    except HTTPException as e:
+        return JSONResponse({"type": "agent_error", "message": e.detail}, status_code=e.status_code)
+
+    await _assert_thread_access(request_id, user_id, app_state.agent_id)
+
+    async def event_gen():
+        # Initial processing message
+        yield (
+            json.dumps(
+                {
+                    "type": "agent_response",
+                    "content": f"Processing query: {query}\n\n",
+                    "request_id": request_id,
+                }
+            )
+            + "\n"
+        )
         try:
-            validate_input_length(query)
-        except HTTPException as e:
-            return JSONResponse({"type": "agent_error", "message": e.detail}, status_code=e.status_code)
-
-        async def event_gen():
-            # Initial processing message
+            async for chunk in event_stream(
+                query,
+                api_mode=settings.advanced_features.mode == "api",
+                resume=query if isinstance(query, ActionResponse) else None,
+                thread_id=request_id,
+                user_id=user_id,
+            ):
+                if chunk.strip():
+                    # Remove 'data: ' prefix if present
+                    if chunk.startswith("data: "):
+                        chunk = chunk[6:]
+                    try:
+                        chunk_data = json.loads(chunk)
+                        content = chunk_data.get("data", chunk)
+                    except Exception:
+                        content = chunk
+                    yield (
+                        json.dumps({"type": "agent_response", "content": content, "request_id": request_id})
+                        + "\n"
+                    )
+            # Completion message
+            yield json.dumps({"type": "agent_complete", "request_id": request_id}) + "\n"
+        except Exception as e:
             yield (
                 json.dumps(
                     {
-                        "type": "agent_response",
-                        "content": f"Processing query: {query}\n\n",
+                        **safe_error_payload(e, message="Agent request failed"),
+                        "type": "agent_error",
                         "request_id": request_id,
                     }
                 )
                 + "\n"
             )
-            try:
-                async for chunk in event_stream(
-                    query,
-                    api_mode=settings.advanced_features.mode == "api",
-                    resume=query if isinstance(query, ActionResponse) else None,
-                    thread_id=request_id or str(uuid.uuid4()),  # Use request_id as thread_id if available
-                ):
-                    if chunk.strip():
-                        # Remove 'data: ' prefix if present
-                        if chunk.startswith("data: "):
-                            chunk = chunk[6:]
-                        try:
-                            chunk_data = json.loads(chunk)
-                            content = chunk_data.get("data", chunk)
-                        except Exception:
-                            content = chunk
-                        yield (
-                            json.dumps(
-                                {"type": "agent_response", "content": content, "request_id": request_id}
-                            )
-                            + "\n"
-                        )
-                # Completion message
-                yield json.dumps({"type": "agent_complete", "request_id": request_id}) + "\n"
-            except Exception as e:
-                yield (
-                    json.dumps(
-                        {
-                            **safe_error_payload(e, message="Agent request failed"),
-                            "type": "agent_error",
-                            "request_id": request_id,
-                        }
-                    )
-                    + "\n"
-                )
 
-        return StreamingResponse(event_gen(), media_type="application/jsonlines")
+    return StreamingResponse(event_gen(), media_type="application/jsonlines")
+
+
+if getattr(settings.advanced_features, "use_extension", False):
+    app.add_api_route("/extension/agent_query", extension_agent_query, methods=["POST"])
 
 
 async def _resolve_stream_agent(
@@ -2582,17 +2730,26 @@ async def _resolve_stream_agent(
             from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
             from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
 
+            from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
+
             agent_meta = config.get("agent") or {}
             kind = agent_meta.get("kind") or "single"
-            policy_system = (
-                getattr(draft_state, "policy_system", None) if use_draft else None
-            ) or app_state.policy_system
+
+            # Graph construction is read-only w.r.t. policy storage: do not pass policies_data
+            # here, or the config-snapshot would overwrite any newer save from POST /api/config/policies.
+            policy_system = await create_agent_policy_system(
+                agent_id=agent_id,
+                draft=use_draft,
+            )
 
             if kind == "supervisor":
                 from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
 
                 supervisor_cfg = config.get("supervisor") or {}
-                agents_dict = await build_agents_from_stored_subagents(supervisor_cfg.get("subAgents") or [])
+                agents_dict = await build_agents_from_stored_subagents(
+                    supervisor_cfg.get("subAgents") or [],
+                    use_draft=use_draft,
+                )
 
                 # Supervisors have no LLM UI section (that panel is hidden for kind=supervisor), so a
                 # stored ``llm`` block is only ever the create-agent default (provider=openai, empty
@@ -2615,6 +2772,7 @@ async def _resolve_stream_agent(
                     supervisor_agents=agents_dict,
                     supervisor_enabled=True,
                     supervisor_plan_approval=bool(supervisor_cfg.get("planApproval")),
+                    supervisor_id=agent_id,
                 )
             else:
                 # Single agent with its own tools/LLM/special_instructions — built the same way
@@ -2677,13 +2835,19 @@ async def stream(
 
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     query = await get_query(request)
-    user_attachments = await get_attachment_snapshot(request)
-    thread_id = request.headers.get("X-Thread-ID")
+    thread_id = (request.headers.get("X-Thread-ID") or "").strip()
     if not thread_id:
         thread_id = str(uuid.uuid4())
         logger.info(f"No X-Thread-ID header found, generated new thread_id: {thread_id}")
     else:
         logger.info(f"Using provided thread_id: {thread_id}")
+
+    thread_id = _canonical_thread_id(thread_id)
+    agent_id_header = _runtime_agent_id(request) or "cuga-default"
+    # Reject before StreamingResponse sends headers; event_stream also guards
+    # other entry points before reading checkpoints, previews or workspace data.
+    await _assert_run_thread_access(thread_id, user_id, agent_id_header)
+    user_attachments = await get_attachment_snapshot(request)
 
     # User message will be saved as part of the event stream buffer
     # No need to save it separately here to avoid race conditions
@@ -2725,9 +2889,6 @@ async def stream(
     if disable_history:
         logger.info(f"History saving disabled for thread_id: {thread_id}")
 
-    agent_id_header = request.headers.get("X-Agent-ID") or "cuga-default"
-    if not agent_registry.is_agent_registry_enabled():
-        agent_id_header = "cuga-default"
     if agent_id_header == "cuga-default":
         run_agent = None
         runtime_llm = app_state.current_llm
@@ -2769,7 +2930,14 @@ async def stream(
 from cuga.backend.server.run_routes import build_run_router, run_api_enabled  # noqa: E402
 
 if run_api_enabled():
-    app.include_router(build_run_router(event_stream=event_stream, default_user_id=DEFAULT_USER_ID))
+    app.include_router(
+        build_run_router(
+            event_stream=event_stream,
+            default_user_id=DEFAULT_USER_ID,
+            assert_thread_access=_assert_thread_access,
+            runtime_agent_id=lambda: app_state.agent_id,
+        )
+    )
     logger.info("/run and /run/agents mounted (machine seam)")
 
 
@@ -2785,6 +2953,12 @@ async def stop(request: Request, current_user: Optional[UserInfo] = Depends(requ
         except Exception:
             pass
 
+    thread_id = _canonical_thread_id(thread_id)
+    owner_agent = await _assert_thread_access(
+        thread_id, _workspace_user_id(current_user), _runtime_agent_id(request), create=False
+    )
+    if owner_agent is None:
+        return {"status": "success", "message": f"Stop request received for thread_id: {thread_id}"}
     if thread_id:
         logger.info(f"Received stop request for thread_id: {thread_id}")
         # Create event if it doesn't exist, then set it
@@ -2798,18 +2972,6 @@ async def stop(request: Request, current_user: Optional[UserInfo] = Depends(requ
         except Exception as e:
             logger.warning(f"Failed to clear spawn caches on stop for {thread_id}: {e}")
         return {"status": "success", "message": f"Stop request received for thread_id: {thread_id}"}
-    else:
-        logger.warning("Received stop request without thread_id, stopping all threads")
-        # Fallback: stop all threads (for backward compatibility)
-        for event in app_state.stop_events.values():
-            event.set()
-        try:
-            from cuga.backend.agent_spawn import clear_runtime_caches
-
-            clear_runtime_caches()
-        except Exception as e:
-            logger.warning(f"Failed to clear spawn caches on stop-all: {e}")
-        return {"status": "success", "message": "Stop request received for all threads"}
 
 
 @app.post("/reset")
@@ -2831,6 +2993,12 @@ async def reset_agent_state(
             except Exception:
                 pass
 
+        thread_id = _canonical_thread_id(thread_id)
+        owner_agent = await _assert_thread_access(
+            thread_id, _workspace_user_id(current_user), _runtime_agent_id(request), create=False
+        )
+        if owner_agent is None:
+            return {"status": "success", "message": "Agent state reset successfully"}
         if thread_id:
             logger.info(f"Resetting state for thread_id: {thread_id}")
             # Clear stop event for this thread
@@ -2852,18 +3020,6 @@ async def reset_agent_state(
             # for a fresh start. If we need to clear the thread state, we would need to delete it from
             # the checkpointer, but for now we'll just clear the stop flag.
             # The LangGraph state will remain but won't be accessed if client uses a new thread_id.
-        else:
-            logger.info("No thread_id provided for reset, clearing all thread stop events")
-            # Clear all stop events (for backward compatibility)
-            for event in app_state.stop_events.values():
-                event.clear()
-            try:
-                from cuga.backend.agent_spawn import clear_runtime_caches
-
-                clear_runtime_caches()
-            except Exception as e:
-                logger.warning(f"Failed to clear spawn caches on reset-all: {e}")
-
         # Note: We don't reset the agent graph or environment as they are shared resources.
         # State is managed per-thread via LangGraph's checkpointer.
 
@@ -2873,6 +3029,8 @@ async def reset_agent_state(
         # var_manger.reset()
         logger.info("Agent state reset successfully")
         return {"status": "success", "message": "Agent state reset successfully"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to reset agent state: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to reset agent state: {str(e)}")
@@ -2943,6 +3101,12 @@ async def get_conversation_stream_events(
             event.model_dump() if hasattr(event, 'model_dump') else dict(event)
             for event in stream_history.events
         ]
+        from cuga.backend.evolve.saved_memory_tracking import enrich_saved_memories
+
+        try:
+            events_dict = await enrich_saved_memories(events_dict, agent_id=agent_id, user_id=user_id)
+        except Exception:
+            logger.warning("Saved-memory tracking unavailable; returning conversation history")
         return JSONResponse({"events": events_dict})
     except Exception as e:
         logger.error(f"Failed to get conversation stream events: {e}")
@@ -3092,6 +3256,10 @@ async def delete_conversation(
 ):
     """Delete a conversation thread and its stream events."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
+    conversation_id = conversation_id.strip()
+    # A user-scoped DB delete can succeed without matching rows. Authorize
+    # before it triggers unscoped knowledge, ownership and upload cleanup.
+    await _assert_run_thread_access(conversation_id, user_id)
     try:
         conversation_db = get_conversation_db()
         success = await conversation_db.delete_thread(agent_id, conversation_id, user_id)
@@ -3237,21 +3405,45 @@ async def _sync_policy_to_config_store(
     return True, None
 
 
+async def _resolve_policy_agent_id(requested_agent_id: Optional[str]) -> str:
+    """Resolve an external policy-route agent ID to a server-owned registry value."""
+    if not agent_registry.is_agent_registry_enabled():
+        return "cuga-default"
+    if not requested_agent_id or requested_agent_id == "cuga-default":
+        return "cuga-default"
+
+    from cuga.backend.server.config_store import list_agents_with_configs
+
+    for row in await list_agents_with_configs():
+        registered_agent_id = row["agent_id"]
+        if registered_agent_id == requested_agent_id:
+            return registered_agent_id
+
+    raise HTTPException(status_code=404, detail=f"Agent '{requested_agent_id}' not found")
+
+
 @app.get("/api/config/policies")
 async def get_policies_config(
     request: Request,
+    agent_id: Optional[str] = None,
     current_user: Optional[UserInfo] = Depends(require_auth),
 ):
     """Endpoint to retrieve policies configuration. Use draft collection when X-Use-Draft header is set."""
     if not settings.policy.enabled:
         return JSONResponse({"enablePolicies": False, "policies": []})
 
+    requested_agent_id = agent_id or request.headers.get("X-Agent-ID")
+    resolved_agent_id = await _resolve_policy_agent_id(requested_agent_id)
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
+
     try:
+        from cuga.backend.cuga_graph.policy.configurable import get_agent_policy_collection_name
         from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 
         need_disconnect = False
-        if use_draft:
+        is_default = not resolved_agent_id or resolved_agent_id == "cuga-default"
+
+        if use_draft and is_default:
             draft_state = getattr(request.app.state, "draft_app_state", None)
             if (
                 draft_state
@@ -3262,21 +3454,19 @@ async def get_policies_config(
                 logger.info("Using draft policy storage for GET")
             else:
                 need_disconnect = True
-                policy_config = getattr(settings, "policy", None)
-                base_name = policy_config.collection_name if policy_config else "cuga_policies"
-                draft_collection = f"{base_name}_draft"
+                draft_collection = get_agent_policy_collection_name(resolved_agent_id, draft=True)
                 storage = PolicyStorage(collection_name=draft_collection)
                 await storage.initialize_async()
                 logger.info(f"Created draft storage for GET (collection: {draft_collection})")
-        elif app_state.policy_system and app_state.policy_system.storage:
+        elif not use_draft and is_default and app_state.policy_system and app_state.policy_system.storage:
             storage = app_state.policy_system.storage
             logger.info("Using existing policy system storage for GET")
         else:
             need_disconnect = True
-            collection_name = settings.policy.collection_name
+            collection_name = get_agent_policy_collection_name(resolved_agent_id, draft=use_draft)
             storage = PolicyStorage(collection_name=collection_name)
             await storage.initialize_async()
-            logger.info(f"Created new storage instance for GET (collection: {collection_name})")
+            logger.info(f"Created storage instance for GET (collection: {collection_name})")
 
         # List all policies (this IS async)
         policies_objs = await storage.list_policies(enabled_only=False)
@@ -3300,6 +3490,7 @@ async def get_policies_config(
 @app.post("/api/config/policies")
 async def save_policies_config(
     request: Request,
+    agent_id: Optional[str] = None,
     current_user: Optional[UserInfo] = Depends(require_auth),
 ):
     """Endpoint to save policies configuration. Use draft collection when X-Use-Draft header is set."""
@@ -3309,16 +3500,24 @@ async def save_policies_config(
             status_code=403,
         )
 
+    requested_agent_id = agent_id or request.headers.get("X-Agent-ID")
+    resolved_agent_id = await _resolve_policy_agent_id(requested_agent_id)
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
+
     try:
+        from cuga.backend.cuga_graph.policy.configurable import get_agent_policy_collection_name
         from cuga.backend.cuga_graph.policy.storage import PolicyStorage
         from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+        from cuga.backend.storage.embedding import get_embedding_config
 
         data = await request.json()
-        logger.info(f"Received policy save request with {len(data.get('policies', []))} policies")
+        logger.info(
+            f"Received policy save request with {len(data.get('policies', []))} policies for {resolved_agent_id}"
+        )
         policies = data.get("policies", [])
+        is_default = not resolved_agent_id or resolved_agent_id == "cuga-default"
 
-        if use_draft:
+        if use_draft and is_default:
             draft_state = getattr(request.app.state, "draft_app_state", None)
             draft_need_disconnect = False
             if (
@@ -3330,11 +3529,7 @@ async def save_policies_config(
                 logger.info("Saving to draft policy storage")
             else:
                 draft_need_disconnect = True
-                policy_config = getattr(settings, "policy", None)
-                base_name = policy_config.collection_name if policy_config else "cuga_policies"
-                draft_collection = f"{base_name}_draft"
-                from cuga.backend.storage.embedding import get_embedding_config
-
+                draft_collection = get_agent_policy_collection_name(resolved_agent_id, draft=True)
                 emb_cfg = get_embedding_config()
                 storage = PolicyStorage(
                     collection_name=draft_collection,
@@ -3357,52 +3552,48 @@ async def save_policies_config(
                 storage,
                 policies,
                 clear_existing=True,
-                filesystem_sync=None,
+                filesystem_sync=getattr(draft_state, "policy_filesystem_sync", None) if draft_state else None,
             )
             if draft_need_disconnect:
                 await storage.disconnect()
-        else:
-            if app_state.policy_system and app_state.policy_system.storage:
-                storage = app_state.policy_system.storage
-                logger.info("Using existing policy system storage")
-            else:
-                collection_name = settings.policy.collection_name
-                from cuga.backend.storage.embedding import get_embedding_config
-
-                emb_cfg = get_embedding_config()
-                storage = PolicyStorage(
-                    collection_name=collection_name,
-                    embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
-                    or os.getenv("POLICY_EMBEDDING_PROVIDER")
-                    or emb_cfg["provider"],
-                    embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
-                    or os.getenv("POLICY_EMBEDDING_MODEL")
-                    or emb_cfg["model"],
-                    embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
-                    or os.getenv("POLICY_EMBEDDING_BASE_URL")
-                    or emb_cfg["base_url"],
-                    embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
-                    or os.getenv("POLICY_EMBEDDING_API_KEY")
-                    or emb_cfg["api_key"],
-                )
-                await storage.initialize_async()
-                logger.info(
-                    f"Created new storage instance from settings (collection: {collection_name}, "
-                    f"embedding: {storage.embedding_provider}, dim: {storage.embedding_dim})"
-                )
-
+        elif not use_draft and is_default and app_state.policy_system and app_state.policy_system.storage:
             await apply_policies_data_to_storage(
-                storage,
+                app_state.policy_system.storage,
                 policies,
                 clear_existing=True,
                 filesystem_sync=app_state.policy_filesystem_sync,
             )
-
-            if not (app_state.policy_system and app_state.policy_system.storage):
-                await storage.disconnect()
-                logger.info("Storage disconnected")
-            else:
-                logger.info("Keeping policy system storage connected")
+        else:
+            collection_name = get_agent_policy_collection_name(resolved_agent_id, draft=use_draft)
+            emb_cfg = get_embedding_config()
+            storage = PolicyStorage(
+                collection_name=collection_name,
+                embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
+                or os.getenv("POLICY_EMBEDDING_PROVIDER")
+                or emb_cfg["provider"],
+                embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
+                or os.getenv("POLICY_EMBEDDING_MODEL")
+                or emb_cfg["model"],
+                embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
+                or os.getenv("POLICY_EMBEDDING_BASE_URL")
+                or emb_cfg["base_url"],
+                embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
+                or os.getenv("POLICY_EMBEDDING_API_KEY")
+                or emb_cfg["api_key"],
+            )
+            await storage.initialize_async()
+            logger.info(
+                f"Created storage instance from settings (collection: {collection_name}, "
+                f"embedding: {storage.embedding_provider}, dim: {storage.embedding_dim})"
+            )
+            await apply_policies_data_to_storage(
+                storage,
+                policies,
+                clear_existing=True,
+                filesystem_sync=None,
+            )
+            await storage.disconnect()
+            logger.info("Storage disconnected")
 
         logger.info(f"Policies configuration saved: {len(policies)} policies")
         return JSONResponse({"status": "success", "message": f"Saved {len(policies)} policies successfully"})
@@ -3787,11 +3978,22 @@ async def get_agent_state(
                 detail="thread_id is required (provide via X-Thread-ID header or thread_id query parameter)",
             )
 
-        if not app_state.agent or not app_state.agent.graph:
+        user_id = _workspace_user_id(current_user)
+        thread_id = _canonical_thread_id(thread_id)
+        agent_id = await _assert_thread_access(thread_id, user_id, _runtime_agent_id(request), create=False)
+        agent_id = agent_id or "cuga-default"
+        use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
+        run_agent = app_state.agent
+        if agent_id != "cuga-default" or use_draft:
+            resolved = await _resolve_stream_agent(request, agent_id, use_draft)
+            run_agent = resolved or run_agent
+        if not run_agent or not run_agent.graph:
             raise HTTPException(status_code=503, detail="Agent graph not initialized")
 
         try:
-            state_snapshot = app_state.agent.graph.get_state({"configurable": {"thread_id": thread_id}})
+            state_snapshot = run_agent.graph.get_state(
+                {"configurable": {"thread_id": _checkpoint_thread_id(thread_id, user_id, agent_id)}}
+            )
 
             if not state_snapshot or not state_snapshot.values:
                 return JSONResponse(
@@ -4128,7 +4330,12 @@ async def get_workspace_tree(
 ):
     """Endpoint to retrieve the workspace folder tree."""
     try:
-        tid = await _require_workspace_thread_access(request, thread_id, current_user)
+        try:
+            tid = await _require_workspace_thread_access(request, thread_id, current_user)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return JSONResponse({"tree": []})
+            raise
         if workspace_tree_is_native_backed():
             tree = fetch_native_workspace_tree(tid)
             return JSONResponse({"tree": tree})

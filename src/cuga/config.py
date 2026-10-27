@@ -140,6 +140,7 @@ validators = [
     Validator("observability.pricing_json", default=""),
     Validator("observability.litellm_local_model_cost_map", default=True),
     Validator("advanced_features.benchmark", default="default"),
+    Validator("execution.enforce_code_security", default=True),
     Validator("advanced_features.appworld_final_answer_plain", default=False),
     # No is_type_of here: strict validators raise at import time for malformed
     # DYNACONF_FINAL_ANSWER__* env values (outside the ValidationError catch
@@ -168,6 +169,7 @@ validators = [
     Validator("features.chat", default=True),
     Validator("playwright_args", default=[]),
     Validator("server_ports.registry_host", default=None),
+    Validator("server_ports.apis_host", default=None),
     Validator("server_ports.demo_server_startup_max_retries", default=360),
     Validator("storage.mode", default="local"),
     Validator("storage.local_db_path", default=""),
@@ -219,6 +221,10 @@ validators = [
     Validator("advanced_features.cuga_lite_bind_tools_tool_names", default=[]),
     Validator("advanced_features.cuga_lite_bind_tools_max_count", default=128),
     Validator("advanced_features.cuga_lite_bind_tools_pad_to_cap", default=False),
+    # Native function-calling execution mode + step discipline (both default off).
+    Validator("advanced_features.cuga_lite_execution_mode", default="codeact"),
+    Validator("advanced_features.cuga_lite_step_discipline", default="off"),
+    Validator("advanced_features.cuga_lite_fc_prompt_fragments", default=[]),
     # Read at prepare_node without a getattr guard; without this a settings.toml
     # missing the key raises AttributeError mid-run instead of using the default.
     Validator("advanced_features.shortlisting_tool_threshold", default=35),
@@ -255,6 +261,7 @@ validators = [
     ),
     Validator("supervisor.enabled", default=False),
     Validator("supervisor.registry_enabled", default=False),
+    Validator("supervisor.sub_agent_memory_scope", default="conversation"),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")

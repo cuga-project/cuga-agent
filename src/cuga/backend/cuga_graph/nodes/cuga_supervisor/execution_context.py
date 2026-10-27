@@ -19,6 +19,9 @@ SUPERVISOR_EXEC_KEY = "__supervisor_exec__"
 class SupervisorExecutionContext:
     state: Any
     variable_manager: Any = None
+    thread_id: str | None = None
+    interactive: bool = True
+    pending_acp_registry: Any = None
 
 
 def resolve_supervisor_execution_context() -> Optional[SupervisorExecutionContext]:

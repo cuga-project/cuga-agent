@@ -10,8 +10,11 @@ from typing import Any, Optional
 from ..base_executor import BaseExecutor
 from ..common.restricted_environment import RestrictedEnvironment
 from ..common.security import CodeSyntaxError, SecurityValidator
-from ..common.benchmark_mode import is_relaxed_execution
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import BlockToolCallCounter
+from ..common.benchmark_mode import is_relaxed_execution, warn_if_relaxed
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
+    BlockToolCallCounter,
+    ToolCallBudgetExceeded,
+)
 
 
 class _BlockSystemExit:
@@ -37,6 +40,7 @@ class LocalExecutor(BaseExecutor):
         'pydantic',
         'datetime',
         '_strptime',
+        'calendar',
         'time',
         'math',
         'collections',
@@ -70,14 +74,15 @@ class LocalExecutor(BaseExecutor):
         stdout_buf = io.StringIO()
         try:
             with contextlib.redirect_stdout(stdout_buf):
-                benchmark_mode = is_relaxed_execution()
+                warn_if_relaxed()
+                relaxed = is_relaxed_execution()
 
                 restricted_import = RestrictedEnvironment.create_restricted_import(self.ALLOWED_MODULES)
 
                 safe_builtins = RestrictedEnvironment.create_safe_builtins(restricted_import)
 
-                # In benchmark mode, don't filter locals
-                if benchmark_mode:
+                # Relaxed execution: don't filter locals
+                if relaxed:
                     safe_locals = context_locals
                 else:
                     safe_locals = SecurityValidator.filter_safe_locals(context_locals)
@@ -180,6 +185,11 @@ class LocalExecutor(BaseExecutor):
             captured = stdout_buf.getvalue()
             if captured:
                 e.captured_stdout = captured  # type: ignore[attr-defined]
+            if isinstance(e, ToolCallBudgetExceeded):
+                # A refused tool call is not a bug in the block: keep what it
+                # computed before the refusal (same as a timeout / exit()), so
+                # under step discipline the one call that did run is not lost.
+                context_locals.update(self._locals_from_frame(e, "_async_main"))
             raise
 
         result = stdout_buf.getvalue()

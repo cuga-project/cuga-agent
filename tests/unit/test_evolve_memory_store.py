@@ -1,0 +1,54 @@
+import asyncio
+
+import pytest
+
+from cuga.backend.evolve import memory_store
+from cuga.backend.storage.facade import get_storage
+
+pytestmark = pytest.mark.unit
+
+
+@pytest.mark.asyncio
+async def test_usage_is_idempotent_and_service_scoped(tmp_path, monkeypatch):
+    import cuga.backend.storage.facade as storage_facade
+
+    db_path = str(tmp_path / "memory.db")
+    monkeypatch.setattr(storage_facade, "_local_db_path", lambda: db_path)
+    get_storage().invalidate_relational_stores()
+    monkeypatch.setattr(memory_store, "_scope", lambda: ("tenant-a", "instance-a"))
+    try:
+        payload = {
+            "turn_id": "turn-a",
+            "agent_id": "agent-a",
+            "user_id": "user-a",
+            "entity_ids": ["entity-a", "entity-a"],
+            "entity_revisions": {"entity-a": 2},
+            "thread_id": "thread-a",
+            "conversation_label": "A conversation",
+            "used_at": "2026-08-01T00:00:00+00:00",
+        }
+        await asyncio.gather(
+            memory_store.record_memory_usage(**payload),
+            memory_store.record_memory_usage(**payload),
+        )
+
+        await memory_store.record_memory_usage(**{**payload, "entity_revisions": {"entity-a": 3}})
+        same_scope = await memory_store.get_turn_memory_usage(
+            turn_id="turn-a", agent_id="agent-a", user_id="user-a"
+        )
+        summaries = await memory_store.get_memory_usage_summaries(
+            agent_id="agent-a", user_id="user-a", entity_ids=["entity-a"], available_thread_ids={"thread-a"}
+        )
+        assert summaries["entity-a"]["recent"][0]["revision"] == 2
+        monkeypatch.setattr(memory_store, "_scope", lambda: ("tenant-a", "instance-b"))
+        other_instance = await memory_store.get_turn_memory_usage(
+            turn_id="turn-a", agent_id="agent-a", user_id="user-a"
+        )
+    finally:
+        get_storage().invalidate_relational_stores()
+
+    assert same_scope["entity_ids"] == ["entity-a"]
+    assert same_scope["count"] == 1
+    assert other_instance["entity_ids"] == []
+
+    assert same_scope["entity_revisions"] == {"entity-a": 2}

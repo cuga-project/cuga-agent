@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -18,6 +19,10 @@ def _registry_on(monkeypatch):
     monkeypatch.setattr(
         "cuga.backend.server.agent_registry.is_agent_registry_enabled",
         lambda: True,
+    )
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.list_agents_with_configs",
+        AsyncMock(return_value=[{"agent_id": "trip-supervisor"}]),
     )
 
 

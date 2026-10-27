@@ -117,6 +117,15 @@ async def _seed_db(path, monkeypatch):
         """,
         ("account-a", "instance-2", "*", "*", "secret-2", "user", b"value", None, "[]"),
     )
+    for instance in ("instance-1", "instance-2"):
+        await store.execute(
+            "INSERT INTO conversation_deletion_outbox VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (instance, "account-a", instance, "agent", "thread", "user", "now"),
+        )
+        await store.execute(
+            "INSERT INTO runtime_thread_owners VALUES (?, ?, ?, ?, ?, ?)",
+            ("account-a", instance, "thread", "user", "agent", "now"),
+        )
     await store.commit()
 
     vectors = LocalEmbeddingStore(str(path), "kb_agent_test", knowledge_embedding_schema(4))
@@ -203,22 +212,26 @@ def test_delete_service_instance_records_removes_all_matching_sqlite_rows(monkey
     result = asyncio.run(service_instance_cleanup.delete_service_instance_records("instance-1"))
 
     assert result.service_instance_id == "instance-1"
-    assert result.deleted_records == 6
+    assert result.deleted_records == 8
     assert result.tables == {
         "agent_configs": 2,
         "conversation_history": 1,
+        "conversation_deletion_outbox": 1,
         "kb_agent_test": 1,
         "secrets": 1,
         "stream_events": 1,
+        "runtime_thread_owners": 1,
     }
     assert _count(db_path, "agent_configs") == 1
     assert _count(db_path, "conversation_history") == 1
     assert _count(db_path, "secrets") == 1
     assert _count(db_path, "stream_events") == 1
     assert _instance_ids(db_path, "agent_configs") == ["instance-2"]
+    assert _instance_ids(db_path, "conversation_deletion_outbox") == ["instance-2"]
     assert _instance_ids(db_path, "conversation_history") == ["instance-2"]
     assert _instance_ids(db_path, "secrets") == ["instance-2"]
     assert _instance_ids(db_path, "stream_events") == ["instance-2"]
+    assert _instance_ids(db_path, "runtime_thread_owners") == ["instance-2"]
     assert asyncio.run(_vector_instance_ids(db_path, "kb_agent_test")) == ["instance-2"]
     assert _count(db_path, "account_only_records") == 1
     assert _count(db_path, "documents") == 1
@@ -237,22 +250,26 @@ def test_delete_service_instance_records_dry_run_counts_without_deleting(monkeyp
     result = asyncio.run(service_instance_cleanup.delete_service_instance_records("instance-1", dry_run=True))
 
     assert result.dry_run is True
-    assert result.deleted_records == 6
+    assert result.deleted_records == 8
     assert result.tables == {
         "agent_configs": 2,
         "conversation_history": 1,
+        "conversation_deletion_outbox": 1,
         "kb_agent_test": 1,
         "secrets": 1,
         "stream_events": 1,
+        "runtime_thread_owners": 1,
     }
     assert _count(db_path, "agent_configs") == 3
     assert _count(db_path, "conversation_history") == 2
     assert _count(db_path, "secrets") == 2
     assert _count(db_path, "stream_events") == 2
     assert _instance_ids(db_path, "agent_configs") == ["instance-1", "instance-1", "instance-2"]
+    assert _instance_ids(db_path, "conversation_deletion_outbox") == ["instance-1", "instance-2"]
     assert _instance_ids(db_path, "conversation_history") == ["instance-1", "instance-2"]
     assert _instance_ids(db_path, "secrets") == ["instance-1", "instance-2"]
     assert _instance_ids(db_path, "stream_events") == ["instance-1", "instance-2"]
+    assert _instance_ids(db_path, "runtime_thread_owners") == ["instance-1", "instance-2"]
     assert asyncio.run(_vector_instance_ids(db_path, "kb_agent_test")) == ["instance-1", "instance-2"]
     assert _count(db_path, "documents") == 1
     assert _count(db_path, "kb_agent_test__fts") == 1

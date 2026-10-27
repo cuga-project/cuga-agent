@@ -193,6 +193,25 @@ result, new_vars = await CodeExecutor.eval_with_tools_async(
 4. **Filtered Locals**: Dangerous modules removed from context
 5. **Assertion Checks**: Final validation before execution
 
+### Enforcing or relaxing the checks
+One setting turns the security checks above on or off:
+
+```toml
+[execution]
+enforce_code_security = true  # default
+```
+
+- `true` (default): import allowlist, AST checks on the wrapped code (blocked modules,
+  dunder access, `eval`/`exec`), restricted `__import__`, safe builtins, filtered locals,
+  globals without `os`/`sys`/`subprocess`, and the check that code uses a tool or variable.
+- `false`: all of the above are off. Generated code gets real builtins, `os` and `sys`.
+  A warning is logged once per process. Use it only for trusted runs, such as
+  reproducing AppWorld benchmark scores.
+
+The syntax check and code wrapping run either way. Skills and benchmark profiles do not
+change this setting, and it does not change `[advanced_features] sandbox_mode` (where
+code runs). Env override: `DYNACONF_EXECUTION__ENFORCE_CODE_SECURITY=false`.
+
 ### E2B Mode
 1. **Import Validation**: Same pre-execution scan
 2. **Remote Sandbox**: Code runs in isolated E2B container
@@ -262,7 +281,7 @@ Example output:
 
 Run tests with:
 ```bash
-pytest src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/test_code_executor.py -v
+uv run pytest src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/tests/test_code_executor.py -v
 ```
 
 All tests include:

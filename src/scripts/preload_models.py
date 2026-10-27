@@ -9,6 +9,19 @@ Set HF_HUB_OFFLINE=1 at runtime to prevent any accidental network access.
 
 import os
 import sys
+from pathlib import Path
+
+
+def strict_preload_enabled() -> bool:
+    """Return whether a missing model should fail the preload process."""
+    return os.environ.get("MODEL_PRELOAD_STRICT", "0") == "1"
+
+
+def handle_preload_error(component: str, error: Exception) -> None:
+    """Report an optional preload failure, or make it fatal in strict mode."""
+    if strict_preload_enabled():
+        raise RuntimeError(f"{component} preload failed") from error
+    print(f"  ! {component} preload skipped: {error}")
 
 
 def docling_transformers_layout_repo_id() -> str:
@@ -46,75 +59,130 @@ def docling_airgap_layout_repo_ids() -> frozenset[str]:
 
 def preload_fastembed() -> None:
     print("→ Preloading fastembed models...")
-    try:
-        from fastembed import TextEmbedding
+    from fastembed import TextEmbedding
 
-        cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
-        models = [
-            "BAAI/bge-small-en-v1.5",  # default embedding model
-        ]
-        for model_name in models:
-            print(f"  Downloading {model_name}...")
-            model = TextEmbedding(model_name, cache_dir=cache_dir)
-            # Run one inference pass to ensure ONNX runtime initializes
-            list(model.embed(["warmup"]))
-            print(f"  ✓ {model_name}")
-    except ImportError:
-        print("  ✗ fastembed not installed, skipping")
+    cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
+    models = [
+        "BAAI/bge-small-en-v1.5",  # default embedding model
+    ]
+    for model_name in models:
+        print(f"  Downloading {model_name}...")
+        model = TextEmbedding(model_name, cache_dir=cache_dir)
+        # Run one inference pass to ensure ONNX runtime initializes
+        list(model.embed(["warmup"]))
+        print(f"  ✓ {model_name}")
 
 
 def preload_docling() -> None:
-    from pathlib import Path
-
     print("→ Preloading docling models...")
-    try:
-        from docling.models.utils.hf_model_download import download_hf_model
-        from docling.utils.model_downloader import download_models
+    from docling.models.utils.hf_model_download import download_hf_model
+    from docling.utils.model_downloader import download_models
 
-        output_dir = Path(os.environ.get("DOCLING_ARTIFACTS_PATH", Path.home() / ".cache" / "docling"))
-        # Skip heavy/optional models by default (saves ~700MB). Override with env flags.
-        with_code_formula = os.environ.get("DOCLING_WITH_CODE_FORMULA", "0") == "1"
-        with_picture_classifier = os.environ.get("DOCLING_WITH_PICTURE_CLASSIFIER", "0") == "1"
-        print(
-            f"  Downloading models to {output_dir} (code_formula={with_code_formula}, picture_classifier={with_picture_classifier})..."
-        )
-        download_models(
-            output_dir=output_dir,
-            with_code_formula=with_code_formula,
-            with_picture_classifier=with_picture_classifier,
-        )
-        onnx_repo = docling_onnx_layout_repo_id()
-        onnx_dir = output_dir / onnx_repo.replace("/", "--")
-        print(f"  Downloading ONNX layout model {onnx_repo}...")
-        download_hf_model(
-            repo_id=onnx_repo,
-            local_dir=onnx_dir,
-        )
-        print("  ✓ docling models ready")
-    except ImportError:
-        print("  ✗ docling not installed, skipping")
-    except Exception as e:
-        print(f"  ✗ docling download failed: {e}")
+    output_dir = Path(os.environ.get("DOCLING_ARTIFACTS_PATH", Path.home() / ".cache" / "docling"))
+    # Skip heavy/optional models by default (saves ~700MB). Override with env flags.
+    with_code_formula = os.environ.get("DOCLING_WITH_CODE_FORMULA", "0") == "1"
+    with_picture_classifier = os.environ.get("DOCLING_WITH_PICTURE_CLASSIFIER", "0") == "1"
+    print(
+        f"  Downloading models to {output_dir} (code_formula={with_code_formula}, picture_classifier={with_picture_classifier})..."
+    )
+    download_models(
+        output_dir=output_dir,
+        with_code_formula=with_code_formula,
+        with_picture_classifier=with_picture_classifier,
+        with_easyocr=True,
+    )
+    onnx_repo = docling_onnx_layout_repo_id()
+    onnx_dir = output_dir / onnx_repo.replace("/", "--")
+    print(f"  Downloading ONNX layout model {onnx_repo}...")
+    download_hf_model(
+        repo_id=onnx_repo,
+        local_dir=onnx_dir,
+    )
+    print("  ✓ docling models ready")
 
 
 def preload_fastembed_tokenizer() -> None:
     """Pre-warm the fastembed Rust tokenizer used by docling HybridChunker."""
     print("→ Preloading fastembed tokenizer (for docling HybridChunker)...")
-    try:
-        from fastembed.text.onnx_embedding import OnnxTextEmbedding  # type: ignore[import]
+    from fastembed.text.onnx_embedding import OnnxTextEmbedding  # type: ignore[import]
 
-        cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
-        model = OnnxTextEmbedding(model_name="BAAI/bge-small-en-v1.5", cache_dir=cache_dir)
-        _ = model.tokenizer
-        print("  ✓ tokenizer ready")
-    except Exception as e:
-        print(f"  ! tokenizer pre-warm skipped: {e}")
+    cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
+    model = OnnxTextEmbedding(model_name="BAAI/bge-small-en-v1.5", cache_dir=cache_dir)
+    _ = model.tokenizer
+    print("  ✓ tokenizer ready")
+
+
+def preload_evolve() -> None:
+    """Cache Evolve's default embedding model and configured alternatives."""
+    from altk_evolve.config.guidelines import guidelines_settings
+    from altk_evolve.config.milvus import milvus_other_settings
+    from altk_evolve.config.postgres import postgres_db_settings
+    from altk_evolve.embeddings import MINILM_MODEL, get_embedding_model
+
+    models = {
+        (milvus_other_settings.embedding_model, False),
+        (postgres_db_settings.embedding_model, False),
+        (
+            guidelines_settings.consistency_embedding_model_small or MINILM_MODEL,
+            guidelines_settings.consistency_embedding_trust_remote_code,
+        ),
+    }
+    for model_name, trust_remote_code in sorted(models):
+        print(f"→ Preloading Evolve embedding model {model_name}...")
+        model = get_embedding_model(model_name, trust_remote_code=trust_remote_code)
+        model.encode(["airgap warmup"])
+
+
+def preload_readi() -> None:
+    """Warm the installed READI model without invoking runtime model downloads."""
+    import importlib.util
+
+    from altk_evolve.hooks.plugins.readi import build_readi_detector, redact_text
+
+    if importlib.util.find_spec("en_core_web_trf") is None:
+        raise RuntimeError(
+            "READI requires the en_core_web_trf model installed by the evolve-image dependency group"
+        )
+    detector = build_readi_detector(extractor="spacy", model="en_core_web_trf")
+    redacted = redact_text("John Smith lives in London.", detector)
+    if "John Smith" in redacted or "[REDACTED]" not in redacted:
+        raise RuntimeError("READI did not redact the model warmup name")
+    print("READI spaCy model loaded and name redaction verified")
+
+
+def preload_tiktoken() -> None:
+    """Cache every registered encoding, including the GPT-2 vocabulary."""
+    import tiktoken
+
+    for name in tiktoken.list_encoding_names():
+        print(f"→ Preloading tokenizer {name}...")
+        tiktoken.get_encoding(name).encode("airgap warmup")
+
+
+def run_preloads() -> None:
+    """Run every preload step, routing failures through ``handle_preload_error``.
+
+    Non-strict (default): a missing optional dependency (docling absent in
+    the slim image, Evolve/READI absent, a flaky model download) prints a
+    skip message and the build continues. Strict (``MODEL_PRELOAD_STRICT=1``,
+    the full image): the same failure raises and fails the build.
+    """
+    for component, fn in (
+        ("fastembed", preload_fastembed),
+        ("fastembed tokenizer", preload_fastembed_tokenizer),
+        ("docling", preload_docling),
+        ("evolve", preload_evolve),
+        ("readi", preload_readi),
+        ("tiktoken", preload_tiktoken),
+    ):
+        try:
+            fn()
+        except Exception as e:
+            handle_preload_error(component, e)
 
 
 if __name__ == "__main__":
     print("Preloading models for airgapped operation...\n")
-    preload_fastembed()
-    preload_fastembed_tokenizer()
-    preload_docling()
+    run_preloads()
     print("\nDone. Set HF_HUB_OFFLINE=1 at runtime to enforce airgap.")
     sys.exit(0)

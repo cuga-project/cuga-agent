@@ -18,11 +18,13 @@ class _SecurityAstVisitor(ast.NodeVisitor):
         forbidden_modules: FrozenSet[str],
         forbidden_calls: FrozenSet[str],
         forbidden_attrs: FrozenSet[str],
+        forbidden_io_attrs: FrozenSet[str] = frozenset(),
         strict: bool,
     ) -> None:
         self.forbidden_modules = forbidden_modules
         self.forbidden_calls = forbidden_calls
         self.forbidden_attrs = forbidden_attrs
+        self.forbidden_io_attrs = forbidden_io_attrs
         self.strict = strict
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -63,6 +65,23 @@ class _SecurityAstVisitor(ast.NodeVisitor):
                 raise PermissionError(
                     f"Security violation: Suspicious pattern detected - "
                     f"forbidden module '{root}' in wrapped code"
+                )
+            # Reach-through: an allowlisted module (e.g. ``typing``, ``asyncio``) holds a
+            # forbidden module as a plain attribute, so ``typing.sys.modules['os']`` has an
+            # allowed root but reaches ``sys``. ``_root_name`` only inspects the leftmost
+            # name, so check every link in the chain, not just the root.
+            if attr in self.forbidden_modules:
+                raise PermissionError(
+                    f"Security violation: Suspicious pattern detected - "
+                    f"forbidden module '{attr}' reached via attribute access in wrapped code"
+                )
+            # Allowlisted data libraries (pandas, numpy) expose file/URL/pickle I/O that
+            # escapes the sandbox (read_pickle -> __reduce__ RCE, read_csv host read,
+            # to_csv host write). Block those methods wherever they appear.
+            if attr in self.forbidden_io_attrs:
+                raise PermissionError(
+                    f"Security violation: Suspicious pattern detected - "
+                    f"forbidden I/O method '{attr}' in wrapped code"
                 )
         self.generic_visit(node)
 
@@ -112,6 +131,7 @@ class SecurityValidator:
         'statistics',
         'datetime',
         '_strptime',
+        'calendar',
         'time',
         'math',
         'collections',
@@ -184,6 +204,73 @@ class SecurityValidator:
             'f_globals',
             'f_back',
             'f_code',
+            # Reach-through to forbidden state via an allowlisted module's attributes
+            # (GHSA-4rj2): e.g. ``typing.sys.modules['os'].environ``. ``sys`` is already
+            # rejected as a forbidden module in the chain, but block the registry and the
+            # environment mapping by name too, so a chain that reaches them another way
+            # (``<any>.modules[...]``, ``<any>.environ``) is caught.
+            'modules',
+            'environ',
+        }
+    )
+
+    # File / URL / pickle I/O on the allowlisted data libraries (pandas, numpy). These
+    # escape the sandbox even though the module import is allowed: read_pickle unpickles
+    # attacker data (__reduce__ -> RCE), read_* give arbitrary host file read, to_* give
+    # arbitrary file write, numpy load/save carry the pickle primitive. The set is
+    # deliberately broad; model code in the executor has no need for file/URL I/O (use
+    # the provided tools instead).
+    FORBIDDEN_IO_ATTRS: FrozenSet[str] = frozenset(
+        {
+            # pandas readers
+            'read_pickle',
+            'read_csv',
+            'read_table',
+            'read_fwf',
+            'read_excel',
+            'read_json',
+            'read_html',
+            'read_xml',
+            'read_parquet',
+            'read_orc',
+            'read_feather',
+            'read_hdf',
+            'read_sql',
+            'read_sql_query',
+            'read_sql_table',
+            'read_stata',
+            'read_sas',
+            'read_spss',
+            'read_gbq',
+            'read_clipboard',
+            # pandas writers
+            'to_pickle',
+            'to_csv',
+            'to_excel',
+            'to_json',
+            'to_html',
+            'to_xml',
+            'to_parquet',
+            'to_orc',
+            'to_feather',
+            'to_hdf',
+            'to_sql',
+            'to_stata',
+            'to_gbq',
+            'to_clipboard',
+            # numpy I/O
+            'load',
+            'loadtxt',
+            'genfromtxt',
+            'fromfile',
+            'fromregex',
+            'save',
+            'savez',
+            'savez_compressed',
+            'savetxt',
+            'tofile',
+            'memmap',
+            'DataSource',
         }
     )
 
@@ -281,6 +368,7 @@ class SecurityValidator:
             forbidden_modules=forbidden_modules,
             forbidden_calls=SecurityValidator.FORBIDDEN_CALLS,
             forbidden_attrs=SecurityValidator.FORBIDDEN_ATTRS,
+            forbidden_io_attrs=SecurityValidator.FORBIDDEN_IO_ATTRS if strict else frozenset(),
             strict=strict,
         )
         visitor.visit(tree)
@@ -330,7 +418,7 @@ class SecurityValidator:
             locals_dict: Dictionary of local variables
 
         Returns:
-            Filtered dictionary with dangerous modules removed, or original dict if benchmark mode
+            Filtered dictionary with dangerous modules removed, or original dict if execution is relaxed
         """
         if is_relaxed_execution():
             return locals_dict

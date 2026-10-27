@@ -133,13 +133,42 @@ class CoreGraphAdapter(ABC):
         """
         return await bound.ainvoke(messages, config=invoke_config)
 
+    async def execute_call_model_fc(
+        self,
+        *,
+        state: Any,
+        config: Any,
+        configurable: dict,
+        active_model: Any,
+        bound: Any,
+        invoke_config: dict,
+        system_content: str,
+        modified_messages: list,
+        budget_exhausted: bool,
+        playbook_fired: bool,
+        variables_addendum: str = "",
+    ) -> Optional[Command]:
+        """Native function-calling seam.
+
+        Called by the shared ``call_model`` after the bound model is resolved and
+        before it is invoked. Returning ``None`` means "not my turn": the CodeAct
+        path below runs exactly as before. Returning a ``Command`` short-circuits
+        ``call_model`` entirely.
+
+        The base returns ``None``, so the Supervisor graph and every CodeAct run
+        never enter function-calling code. CugaLite overrides this to run the
+        native ``tool_calls`` -> ``ToolMessage`` loop when
+        ``cuga_lite_execution_mode`` resolves to ``function_calling``.
+        """
+        return None
+
     # ── Post-invocation hooks ──────────────────────────────────────────────
 
     def normalize_response(self, response: Any) -> Tuple[str, Optional[str]]:
         """Extract ``(content, reasoning)`` from the model response.
 
         Default passes through ``response.content`` and the
-        ``reasoning_content`` additional kwarg.
+        ``reasoning_content`` or ``reasoning`` additional kwarg.
         Lite overrides to run ``normalize_assistant_text`` and recover
         tool-call code from proxy responses.
 
@@ -151,7 +180,8 @@ class CoreGraphAdapter(ABC):
         framing from a real answer when visible content is empty.
         """
         content = strip_harmony_tokens(response.content or "")
-        reasoning = (getattr(response, "additional_kwargs", None) or {}).get("reasoning_content")
+        additional_kwargs = getattr(response, "additional_kwargs", None) or {}
+        reasoning = additional_kwargs.get("reasoning_content") or additional_kwargs.get("reasoning")
         return content, reasoning
 
     def get_tools_needing_probing(self) -> frozenset[str]:

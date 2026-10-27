@@ -9,6 +9,8 @@ whenever the dev app is up. Integration tests already isolate via ``tmp_path``;
 this does the same, automatically, for every unit test.
 """
 
+import os
+
 import pytest
 
 
@@ -21,11 +23,17 @@ def _isolate_local_storage_db(tmp_path, monkeypatch):
     store cached against the real path, so the next access reopens against the
     isolated temp DB. Restores + re-invalidates on teardown so no temp-path
     store leaks into the next test.
+
+    Also forces ``_storage_mode`` to ``"local"`` so that unit tests running
+    against a prod-mode settings file (``settings.storage.mode = "prod"``) do
+    not route ``PolicyStorage`` (or any other store) to ``ProdPolicyStore`` and
+    inadvertently clear or write real collections.
     """
     import cuga.backend.storage.facade as facade
 
     db_path = str(tmp_path / "cuga.db")
     monkeypatch.setattr(facade, "_local_db_path", lambda: db_path)
+    monkeypatch.setattr(facade, "_storage_mode", lambda: "local")
     try:
         facade.get_storage().invalidate_relational_stores()
     except Exception:
@@ -35,3 +43,11 @@ def _isolate_local_storage_db(tmp_path, monkeypatch):
         facade.get_storage().invalidate_relational_stores()
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _dummy_openai_key(monkeypatch):
+    """Some unit tests build a real OpenAI client object (they never call the API). Give them a
+    dummy key so the suite passes on a machine without OPENAI_API_KEY. A real key is left as is."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-dummy")

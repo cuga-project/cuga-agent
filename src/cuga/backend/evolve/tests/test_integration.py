@@ -125,7 +125,9 @@ class TestUserFacts:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_retrieve_user_facts_returns_none_when_disabled(self, mock_settings):
         mock_settings.evolve.enabled = False
-        result = await EvolveIntegration.retrieve_user_facts("user-123", "How should I answer?")
+        result = await EvolveIntegration.retrieve_user_facts(
+            "user-123", "How should I answer?", namespace_id="instance-a", agent_id="agent-a"
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -139,13 +141,21 @@ class TestUserFacts:
             "categories": {"style": [{"content": "Prefers concise answers"}]},
         }
 
-        result = await EvolveIntegration.retrieve_user_facts("user-123", "How should I answer?")
+        result = await EvolveIntegration.retrieve_user_facts(
+            "user-123", "How should I answer?", namespace_id="instance-a", agent_id="agent-a"
+        )
 
         assert result is not None
         assert result["matched_count"] == 1
         mock_call_tool.assert_called_once_with(
             "retrieve_user_facts",
-            {"user_id": "user-123", "query": "How should I answer?", "limit": 5},
+            {
+                "user_id": "user-123",
+                "query": "How should I answer?",
+                "limit": 5,
+                "namespace_id": "instance-a",
+                "agent_id": "agent-a",
+            },
         )
 
     @pytest.mark.asyncio
@@ -155,7 +165,9 @@ class TestUserFacts:
         mock_settings.evolve.enabled = True
         mock_call_tool.side_effect = ConnectionError("Unable to connect")
 
-        result = await EvolveIntegration.retrieve_user_facts("user-123", "How should I answer?")
+        result = await EvolveIntegration.retrieve_user_facts(
+            "user-123", "How should I answer?", namespace_id="instance-a", agent_id="agent-a"
+        )
 
         assert result is None
 
@@ -226,6 +238,15 @@ class TestUserFacts:
 class TestToolDispatch:
     """Test transport selection and fallback behavior."""
 
+    @pytest.fixture(autouse=True)
+    def enabled_preferences(self, monkeypatch):
+        monkeypatch.setenv("DYNACONF_SERVICE__INSTANCE_ID", "service-a")
+        with patch(
+            "cuga.backend.evolve.preferences.get_preferences",
+            new=AsyncMock(return_value={"instance_enabled": True, "effective_enabled": True}),
+        ):
+            yield
+
     @pytest.mark.asyncio
     @patch.object(EvolveIntegration, "_call_tool_direct", new_callable=AsyncMock)
     @patch.object(EvolveIntegration, "_call_tool_via_registry", new_callable=AsyncMock)
@@ -239,7 +260,9 @@ class TestToolDispatch:
         result = await EvolveIntegration._call_tool("get_guidelines", {"task": "demo"})
 
         assert result == "guideline"
-        mock_registry_call.assert_called_once_with("get_guidelines", {"task": "demo"})
+        mock_registry_call.assert_called_once_with(
+            "get_guidelines", {"task": "demo", "namespace_id": "service-a"}
+        )
         mock_direct_call.assert_not_called()
 
     @pytest.mark.asyncio
@@ -256,7 +279,9 @@ class TestToolDispatch:
         result = await EvolveIntegration._call_tool("get_guidelines", {"task": "demo"})
 
         assert result == "guideline"
-        mock_direct_call.assert_called_once_with("get_guidelines", {"task": "demo"})
+        mock_direct_call.assert_called_once_with(
+            "get_guidelines", {"task": "demo", "namespace_id": "service-a"}
+        )
 
     @pytest.mark.asyncio
     @patch.object(EvolveIntegration, "_call_tool_direct", new_callable=AsyncMock)

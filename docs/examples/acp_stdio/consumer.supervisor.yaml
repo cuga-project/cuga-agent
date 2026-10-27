@@ -1,0 +1,15 @@
+supervisor:
+  description: "CUGA supervisor delegating coding work to a local ACP agent process."
+
+agents:
+  - name: coding-agent
+    description: "External coding agent connected over Agent Client Protocol stdio."
+    acp_protocol:
+      enabled: true
+      command: your-acp-agent
+      args: ["--acp"]
+      cwd: .
+      env: [YOUR_API_KEY]
+      startup_timeout: 15
+      prompt_timeout: 120
+      shutdown_grace_period: 5

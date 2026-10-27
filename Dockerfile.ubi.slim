@@ -1,0 +1,197 @@
+# Multi-stage: builder installs deps, runtime keeps only what's needed
+#
+# Slim variant of Dockerfile.ubi: torch-free. Excludes the whole document-processing stack
+# (docling + its sub-packages, easyocr, torch, torchvision) and the whole Evolve memory/PII
+# subsystem (the `evolve` extra, `evolve-image` group) plus everything only reachable through
+# either of those (transformers, opencv, scikit-image, scipy, saxon, rapidocr, sympy, networkx,
+# pypdfium2, shapely, tree-sitter, python-docx/pptx, accelerate, rtree, openpyxl, and more —
+# found via `uv tree --invert`, since `uv sync --no-install-package` only drops the named
+# package, not its now-orphaned dependents).
+#
+# Dockerfile.ubi itself is intentionally untouched by this — pyproject.toml, uv.lock and
+# Dockerfile.ubi stay identical to main, so the full image's dependency set never depends on
+# this file existing.
+#
+# What still works: the core web/API agent, action shortlisting, policy similarity, and
+# knowledge/RAG embedding (all fastembed/ONNX-based, not torch). Plain text and Markdown
+# knowledge ingestion both work (Markdown degrades to plain-text chunking when docling is
+# absent). PDF/DOCX/PPTX/XLSX/HTML/image document ingestion fails with a clear
+# "Use the full CUGA image instead of the slim one" error instead of crashing the server. Evolve
+# (memory, PII redaction, READI) is unavailable — `container_services.py` already no-ops it
+# cleanly when the `evolve` extra isn't installed, unless CUGA_EMBEDDED_EVOLVE is forced true.
+ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312-minimal:latest
+
+FROM ${BASE_IMAGE} AS builder
+
+# Use official uv image to avoid curl+tar dance
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uvx /usr/local/bin/uvx
+
+ENV PATH="/usr/local/bin:$PATH"
+
+USER root
+WORKDIR /app
+
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
+COPY src/ ./src/
+COPY docs/ ./docs/
+
+# Torch-free: observability only, no evolve, and explicitly exclude the docling/evolve stack
+# plus everything orphaned once they're gone (uv doesn't prune a dependent of an excluded
+# package on its own — each had to be found via `uv tree --invert` and listed by name).
+RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + \
+    && uv sync --frozen --no-editable --no-dev --extra observability \
+       --no-install-package torch \
+       --no-install-package torchvision \
+       --no-install-package easyocr \
+       --no-install-package docling \
+       --no-install-package docling-core \
+       --no-install-package docling-ibm-models \
+       --no-install-package docling-parse \
+       --no-install-package docling-slim \
+       --no-install-package langchain-docling \
+       --no-install-package transformers \
+       --no-install-package opencv-python \
+       --no-install-package opencv-python-headless \
+       --no-install-package scikit-image \
+       --no-install-package scipy \
+       --no-install-package saxonche \
+       --no-install-package sympy \
+       --no-install-package rapidocr \
+       --no-install-package faker \
+       --no-install-package networkx \
+       --no-install-package pypdfium2 \
+       --no-install-package shapely \
+       --no-install-package tree-sitter \
+       --no-install-package tree-sitter-c \
+       --no-install-package tree-sitter-javascript \
+       --no-install-package tree-sitter-python \
+       --no-install-package tree-sitter-typescript \
+       --no-install-package python-docx \
+       --no-install-package python-pptx \
+       --no-install-package accelerate \
+       --no-install-package rtree \
+       --no-install-package openpyxl \
+       --no-install-package pyclipper \
+       --no-install-package pylatexenc \
+       --no-install-package latex2mathml \
+       --no-install-package polyfactory \
+       --no-install-package marko \
+       --no-install-package doclang \
+       --no-install-package mail-parser \
+       --no-install-package defusedxml
+
+# Strip debug symbols from native .so files (saves 100-300MB, pure size optimization)
+RUN find /app/.venv -type f \( -name "*.so" -o -name "*.so.*" \) -exec strip --strip-unneeded {} \; 2>/dev/null || true
+
+# Download only the headless_shell binary (no full Chromium, no ffmpeg) — ~3x smaller than default.
+RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright uv run --no-sync playwright install --only-shell chromium
+
+# Bake ML model weights into the image for airgapped operation. No MODEL_PRELOAD_STRICT here —
+# docling/evolve/readi preload is expected to fail (not installed) and the __main__ wiring in
+# preload_models.py degrades that to a skip message rather than failing the build.
+ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
+    HF_HOME=/app/.cache/huggingface \
+    TIKTOKEN_CACHE_DIR=/app/.cache/tiktoken \
+    LITELLM_LOCAL_MODEL_COST_MAP=True
+RUN uv run --no-sync python src/scripts/preload_models.py
+
+# Remove Python bytecode cache — regenerated on first run, adds nothing at build time
+RUN find /app/.venv -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+# Runtime stage - slimmer base, copy only built artifacts
+FROM ${BASE_IMAGE}
+
+USER root
+# Libs required by Chromium headless_shell on UBI9/RHEL9
+# gtk3 and cups-libs intentionally omitted — not needed by headless_shell (--only-shell skips full browser stack)
+RUN microdnf install -y \
+        alsa-lib \
+        at-spi2-atk \
+        at-spi2-core \
+        atk \
+        cairo \
+        dbus-libs \
+        expat \
+        glib2 \
+        libdrm \
+        libgbm \
+        libX11 \
+        libXcomposite \
+        libXdamage \
+        libXext \
+        libXfixes \
+        libXrandr \
+        libxcb \
+        libxkbcommon \
+        mesa-libgbm \
+        mesa-libGL \
+        nspr \
+        nss \
+        nss-util \
+        pango \
+        --setopt=install_weak_deps=0 && \
+    microdnf clean all
+
+# Use official uv image — no tar/gzip/curl needed
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uvx /usr/local/bin/uvx
+
+ENV PATH="/app/.venv/bin:/usr/local/bin:$PATH"
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
+
+# 1001:0 matches USER 1001; g+rwX lets OpenShift's arbitrary UID run with GID 0 (typical restricted SCC).
+RUN mkdir -p /app/cuga_workspace /app/crm_tmp /app/.cuga/knowledge /data/dbs && \
+    chown -R 1001:0 /data /app/.cuga && \
+    chmod -R g+rwX /app/.cuga
+
+COPY --from=builder --chown=1001:0 --chmod=0775 /app/.venv /app/.venv
+COPY --from=builder --chown=1001:0 --chmod=0775 /app/.playwright /app/.playwright
+COPY --from=builder --chown=1001:0 --chmod=0775 /app/.cache /app/.cache
+COPY --from=builder --chown=1001:0 --chmod=0775 /app/src /app/src
+COPY --from=builder --chown=1001:0 --chmod=0775 /app/docs /app/docs
+COPY --chown=1001:0 --chmod=0775 \
+  src/cuga/demo_tools/huggingface/contacts.txt \
+  src/cuga/demo_tools/huggingface/cuga_knowledge.md \
+  src/cuga/demo_tools/huggingface/cuga_playbook.md \
+  src/cuga/demo_tools/huggingface/email_template.md \
+  src/cuga/demo_tools/huggingface/sovereign_core_overview.pdf \
+  /app/cuga_workspace/
+COPY --chown=1001:0 --chmod=0775 scripts/docker-entrypoint.sh /app/scripts/docker-entrypoint.sh
+COPY --chown=1001:0 --chmod=0775 scripts/container_services.py /app/scripts/container_services.py
+
+USER 1001
+
+EXPOSE 7860
+
+ENV USER=cuga
+ENV LOGNAME=cuga
+ENV CUGA_HOST=0.0.0.0
+ENV DYNACONF_SERVER_PORTS__DEMO=7860
+ENV CUGA_DEMO_MODE=default
+ENV CUGA_EMBEDDED_EVOLVE=false
+ENV HOME=/tmp
+ENV UV_CACHE_DIR=/tmp/uv-cache
+ENV UV_TOOL_DIR=/tmp/uv-tools
+ENV CUGA_LOGGING_DIR=/tmp/cuga-logging
+ENV CUGA_DBS_DIR=/data/dbs
+ENV DYNACONF_CRM_DB_PATH=/tmp/crm_tmp/crm_db_default
+ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
+ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
+    HF_HOME=/app/.cache/huggingface \
+    TIKTOKEN_CACHE_DIR=/app/.cache/tiktoken \
+    CUSTOM_TIKTOKEN_CACHE_DIR=/app/.cache/tiktoken \
+    LITELLM_LOCAL_MODEL_COST_MAP=True \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    UV_OFFLINE=1
+
+# Exercise the copied assets as the runtime user without network access. Slim variant: no
+# Evolve/Docling checks (verify_airgap.py), just fastembed + tiktoken.
+RUN --network=none /app/.venv/bin/python /app/src/scripts/verify_airgap_slim.py
+
+ENTRYPOINT ["/bin/sh", "/app/scripts/docker-entrypoint.sh"]
+CMD []
