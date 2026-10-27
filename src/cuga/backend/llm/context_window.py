@@ -17,22 +17,30 @@ Sources, first answer wins:
 
 The endpoint knows the window the deployment actually serves (Bedrock serves gpt-oss-120b
 at 128,000; a self-hosted server may cap a model below its native window), so it comes
-before the generic maps. Endpoint lookups are time-boxed, cached (failures too), never
+before the generic maps. Endpoint lookups have a per-phase timeout and are cached, never
 raise, and are skipped when ``advanced_features.context_window_discovery`` is false.
+Failed lookups and their fallback resolutions are retried after 30 seconds.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import sys
+import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Optional
 from urllib.parse import urlparse
 
 from loguru import logger
 
 OVERRIDE_ATTR = "_cuga_context_window"
+TLS_VERIFY_ATTR = "_cuga_context_window_tls_verify"
 DISCOVERY_TIMEOUT_SECONDS = 3.0
+DISCOVERY_RETRY_SECONDS = 30.0
 WATSONX_SPECS_VERSION = "2024-05-01"
 # Public provider APIs whose model listings carry no context window: do not probe them.
 _NO_WINDOW_HOSTS = (
@@ -61,12 +69,14 @@ class ContextWindow:
 class _Endpoint:
     kind: str  # "openrouter" | "watsonx" | "openai-compatible"
     base_url: str
-    api_key: Optional[str] = None
     model_id: Optional[str] = None
+    auth_headers: tuple = field(default=(), repr=False, compare=False, hash=False)
+    auth_scope: str = ""
+    verify: Any = True
 
 
-_resolved: dict[tuple, ContextWindow] = {}
-_responses: dict[tuple, Any] = {}
+_resolved: dict[tuple, tuple[ContextWindow, float]] = {}
+_responses: dict[tuple, tuple[Any, float]] = {}
 
 
 def clear_context_window_cache() -> None:
@@ -87,6 +97,15 @@ def set_context_window_override(model: Any, tokens: Any) -> None:
     object.__setattr__(_unwrap(model), OVERRIDE_ATTR, value)
 
 
+def set_context_window_tls(model: Any, verify: Any) -> None:
+    """Use the same effective TLS configuration for discovery and model calls."""
+    try:
+        object.__setattr__(_unwrap(model), TLS_VERIFY_ATTR, verify)
+    except (AttributeError, TypeError):
+        # Context discovery is optional; immutable adapters must remain usable.
+        logger.debug("Cannot attach context discovery TLS settings to {}", type(model).__name__)
+
+
 def resolve_context_window(model: Any = None, model_name: Optional[str] = None) -> ContextWindow:
     """Context window of *model* in tokens, and which source gave it. Never raises."""
     llm = _unwrap(model)
@@ -94,15 +113,17 @@ def resolve_context_window(model: Any = None, model_name: Optional[str] = None) 
     endpoint = _endpoint(llm)
     key = (
         type(llm).__name__,
-        endpoint,
+        (endpoint.kind, endpoint.base_url, endpoint.model_id, endpoint.auth_scope, endpoint.verify)
+        if endpoint is not None
+        else None,
         name,
         _override(llm),
         _profile_tokens(llm),
         _discovery_enabled(),
     )
     cached = _resolved.get(key)
-    if cached is not None:
-        return cached
+    if cached is not None and time.monotonic() < cached[1]:
+        return cached[0]
     try:
         result = _resolve(llm, name, endpoint)
     except Exception as e:  # a lookup bug must not break the LLM call
@@ -110,7 +131,14 @@ def resolve_context_window(model: Any = None, model_name: Optional[str] = None) 
 
         logger.warning("Context window lookup failed for {}: {}", name or "unknown model", e)
         result = ContextWindow(DEFAULT_CONTEXT_SIZE, "default")
-    _resolved[key] = result
+    # A fallback must not permanently hide a deployment that was temporarily down.
+    fallback = (
+        endpoint is not None
+        and _discovery_enabled()
+        and result.source in ("litellm-map", "table", "profile", "default")
+    )
+    expires = time.monotonic() + DISCOVERY_RETRY_SECONDS if fallback else float("inf")
+    _resolved[key] = (result, expires)
     log = logger.warning if result.source == "default" else logger.info
     log(
         "Context window for {}: {} tokens (source: {})",
@@ -199,11 +227,14 @@ def _profile_tokens(llm: Any) -> Optional[int]:
 def _endpoint(llm: Any) -> Optional[_Endpoint]:
     if llm is None:
         return None
+    verify = getattr(llm, TLS_VERIFY_ATTR, None)
+    if verify is None:
+        verify = _ssl_verify()
     if _is_watsonx(llm):
         url = _secret(getattr(llm, "url", None))
         model_id = getattr(llm, "model_id", None)
         if url and isinstance(model_id, str) and model_id:
-            return _Endpoint("watsonx", url.rstrip("/"), model_id=model_id)
+            return _Endpoint("watsonx", url.rstrip("/"), model_id=model_id, verify=verify)
         return None  # deployment_id models are not in foundation_model_specs
     base_url = None
     for attr in ("openai_api_base", "api_base", "base_url"):
@@ -218,11 +249,23 @@ def _endpoint(llm: Any) -> Optional[_Endpoint]:
         api_key = _secret(getattr(llm, attr, None))
         if api_key:
             break
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    configured = getattr(llm, "default_headers", None)
+    if isinstance(configured, Mapping):
+        for key, value in configured.items():
+            if value is not None:
+                headers = {k: v for k, v in headers.items() if k.lower() != str(key).lower()}
+                headers[str(key)] = str(value)
+    options = {
+        "auth_headers": tuple(headers.items()),
+        "auth_scope": _auth_scope(headers),
+        "verify": verify,
+    }
     if host.endswith("openrouter.ai"):
-        return _Endpoint("openrouter", base_url.rstrip("/"), api_key)
+        return _Endpoint("openrouter", base_url.rstrip("/"), **options)
     if any(host == h or host.endswith("." + h) for h in _NO_WINDOW_HOSTS):
         return None
-    return _Endpoint("openai-compatible", base_url.rstrip("/"), api_key)
+    return _Endpoint("openai-compatible", base_url.rstrip("/"), **options)
 
 
 # ── endpoint lookups ──────────────────────────────────────────────────────────
@@ -245,21 +288,50 @@ def _ssl_verify() -> Any:
         return False
     if os.environ.get("OPENAI_SSL_VERIFY", "true").lower() in ("false", "0", "no"):
         return False
-    return os.environ.get("CUGA_SSL_CA_BUNDLE") or True
+    bundle = os.environ.get("CUGA_SSL_CA_BUNDLE", "").strip()
+    if bundle:
+        return bundle
+    try:
+        from cuga.config import settings
+
+        bundle = settings.connections.ssl_ca_bundle
+        if bundle and str(bundle).strip():
+            return str(bundle).strip()
+    except Exception:
+        pass
+    return True
 
 
-def _get_json(url: str, *, api_key: Optional[str] = None, params: Optional[dict] = None) -> Any:
-    """GET *url* once per process; ``None`` on any failure (which is cached too)."""
-    key = (url, tuple(sorted((params or {}).items())), api_key is not None)
-    if key in _responses:
-        return _responses[key]
+def _auth_scope(headers: Mapping) -> str:
+    """Non-secret cache identity for the effective, case-insensitive headers."""
+    normalized = sorted((str(k).lower(), str(v)) for k, v in headers.items())
+    return hashlib.sha256(json.dumps(normalized).encode()).hexdigest()
+
+
+def _get_json(
+    url: str,
+    *,
+    api_key: Optional[str] = None,
+    headers: Optional[Mapping] = None,
+    params: Optional[dict] = None,
+    verify: Any = None,
+) -> Any:
+    """Cache listings briefly so a successful but incomplete inventory can recover too."""
+    request_headers = (
+        dict(headers) if headers is not None else ({"Authorization": f"Bearer {api_key}"} if api_key else {})
+    )
+    if verify is None:
+        verify = _ssl_verify()
+    key = (url, tuple(sorted((params or {}).items())), _auth_scope(request_headers), verify)
+    cached = _responses.get(key)
+    if cached is not None and time.monotonic() < cached[1]:
+        return cached[0]
     data = None
     try:
         import httpx
 
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         response = httpx.get(
-            url, params=params, headers=headers, timeout=DISCOVERY_TIMEOUT_SECONDS, verify=_ssl_verify()
+            url, params=params, headers=request_headers, timeout=DISCOVERY_TIMEOUT_SECONDS, verify=verify
         )
         if response.status_code == 200:
             data = response.json()
@@ -267,7 +339,8 @@ def _get_json(url: str, *, api_key: Optional[str] = None, params: Optional[dict]
             logger.debug("Context window lookup {} returned HTTP {}", url, response.status_code)
     except Exception as e:
         logger.debug("Context window lookup {} failed: {}", url, e)
-    _responses[key] = data
+    expires = time.monotonic() + DISCOVERY_RETRY_SECONDS
+    _responses[key] = (data, expires)
     return data
 
 
@@ -300,7 +373,9 @@ def _from_endpoint(endpoint: _Endpoint, name: str) -> Optional[ContextWindow]:
 
 
 def _openrouter_tokens(endpoint: _Endpoint, name: str) -> Optional[int]:
-    for item in _items(_get_json(f"{endpoint.base_url}/models")):
+    for item in _items(
+        _get_json(f"{endpoint.base_url}/models", headers=dict(endpoint.auth_headers), verify=endpoint.verify)
+    ):
         if item.get("id") != name:
             continue
         top = item.get("top_provider") if isinstance(item.get("top_provider"), Mapping) else {}
@@ -318,6 +393,7 @@ def _watsonx_tokens(endpoint: _Endpoint) -> Optional[int]:
     data = _get_json(
         f"{endpoint.base_url}/ml/v1/foundation_model_specs",
         params={"version": WATSONX_SPECS_VERSION, "filters": f"modelid_{endpoint.model_id}"},
+        verify=endpoint.verify,
     )
     resources = data.get("resources") if isinstance(data, Mapping) else None
     for item in resources or []:
@@ -338,7 +414,9 @@ def _proxy_names(name: str) -> set[str]:
 def _litellm_proxy_window(endpoint: _Endpoint, name: str) -> Optional[ContextWindow]:
     root = endpoint.base_url[: -len("/v1")] if endpoint.base_url.endswith("/v1") else endpoint.base_url
     names = _proxy_names(name)
-    for item in _items(_get_json(f"{root}/model/info", api_key=endpoint.api_key)):
+    for item in _items(
+        _get_json(f"{root}/model/info", headers=dict(endpoint.auth_headers), verify=endpoint.verify)
+    ):
         if item.get("model_name") not in names:
             continue
         info = item.get("model_info") if isinstance(item.get("model_info"), Mapping) else {}
@@ -355,7 +433,9 @@ def _litellm_proxy_window(endpoint: _Endpoint, name: str) -> Optional[ContextWin
 
 
 def _vllm_tokens(endpoint: _Endpoint, name: str) -> Optional[int]:
-    for item in _items(_get_json(f"{endpoint.base_url}/models", api_key=endpoint.api_key)):
+    for item in _items(
+        _get_json(f"{endpoint.base_url}/models", headers=dict(endpoint.auth_headers), verify=endpoint.verify)
+    ):
         if item.get("id") in _proxy_names(name):
             return _positive_int(item.get("max_model_len"))
     return None
@@ -364,20 +444,27 @@ def _vllm_tokens(endpoint: _Endpoint, name: str) -> Optional[int]:
 # ── LiteLLM's bundled map ─────────────────────────────────────────────────────
 
 
+@lru_cache(maxsize=1)
+def _bundled_model_map() -> Mapping:
+    """Read package data without importing LiteLLM and its provider integrations."""
+    from importlib.metadata import distribution
+
+    try:
+        path = distribution("litellm").locate_file("litellm/model_prices_and_context_window_backup.json")
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, Mapping) else {}
+    except (OSError, ValueError, ImportError):
+        return {}
+
+
 def litellm_map_tokens(name: Optional[str]) -> Optional[int]:
     """``max_input_tokens`` for an exact LiteLLM model-map key (case-insensitive)."""
     if not name:
         return None
-    try:
-        # cuga.config sets LITELLM_LOCAL_MODEL_COST_MAP first, so LiteLLM reads its
-        # bundled map instead of fetching one.
-        import cuga.config  # noqa: F401
-        import litellm  # heavy; imported on first lookup only
-    except Exception:
-        return None
-    cost_map = getattr(litellm, "model_cost", None)
+    cost_map = getattr(sys.modules.get("litellm"), "model_cost", None)
     if not isinstance(cost_map, Mapping):
-        return None
+        cost_map = _bundled_model_map()
     for candidate in dict.fromkeys((name, name.lower())):
         info = cost_map.get(candidate)
         if isinstance(info, Mapping):
