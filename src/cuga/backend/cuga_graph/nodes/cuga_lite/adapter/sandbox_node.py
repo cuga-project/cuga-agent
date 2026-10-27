@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Callable, Optional
 
@@ -362,7 +363,8 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                             "skills_prompt_section": "",
                         },
                     )
-                    reflection_budget = model_input_budget_chars(
+                    reflection_budget = await asyncio.to_thread(
+                        model_input_budget_chars,
                         active_model,
                         fixed_prompt_chars,
                         context_fraction=context_fraction_setting("reflection_context_fraction"),
