@@ -193,7 +193,7 @@ def test_vllm_models_listing_gives_max_model_len():
     assert window == cw.ContextWindow(131_072, "vllm")
 
 
-def test_failed_endpoint_falls_back_to_litellm_map_and_is_not_retried():
+def test_failed_endpoint_is_not_retried_during_the_cooldown():
     http = _FakeHTTP(
         {
             "https://gw.example/model/info": ConnectionError("down"),
@@ -205,7 +205,7 @@ def test_failed_endpoint_falls_back_to_litellm_map_and_is_not_retried():
         calls_after_first = len(http.calls)
         cw.resolve_context_window(_openai_model("deepseek/deepseek-chat", "https://gw.example"))
     assert first == cw.ContextWindow(65_536, "litellm-map"), "LiteLLM's exact key beats the table's 64,000"
-    assert len(http.calls) == calls_after_first, "a failed endpoint is asked once per process"
+    assert len(http.calls) == calls_after_first, "failed endpoints have a short retry cooldown"
 
 
 def test_one_listing_serves_every_model_on_the_endpoint():
@@ -284,3 +284,139 @@ def test_llm_manager_pins_the_context_window_setting(monkeypatch):
     )
     assert cw.resolve_context_window(model) == cw.ContextWindow(42_000, "settings")
     assert model.profile["max_input_tokens"] == 42_000
+
+
+def test_pre_instantiated_model_honors_the_context_window_setting():
+    from langchain_openai import ChatOpenAI
+    from cuga.backend.llm.models import LLMManager
+
+    manager = LLMManager()
+    model = ChatOpenAI(model="gateway-alias", api_key="test")
+    with (
+        patch.object(manager, "_pre_instantiated_model", None),
+        patch("cuga.backend.llm.models.is_mock_llm_enabled", return_value=False),
+    ):
+        manager.set_llm(model)
+        returned = manager.get_model({"max_tokens": 1_000, "context_window": 8_192})
+    assert returned is model
+    assert cw.resolve_context_window(returned) == cw.ContextWindow(8_192, "settings")
+    assert returned.profile["max_input_tokens"] == 8_192
+
+
+@pytest.mark.parametrize("header", ["RITS_API_KEY", "Authorization", "authorization"])
+def test_discovery_uses_configured_auth_headers_instead_of_dummy_credentials(header):
+    from langchain_openai import ChatOpenAI
+
+    model = ChatOpenAI(
+        model="gateway-alias",
+        api_key="dummy",  # pragma: allowlist secret -- mirrors the gateway's placeholder key
+        base_url="https://gw.example/v1",
+        default_headers={header: "test-custom-credential"},
+    )
+
+    def get(url, **kwargs):
+        headers = {k.lower(): v for k, v in kwargs["headers"].items()}
+        assert headers[header.lower()] == "test-custom-credential"
+        return _Response(
+            {"data": [{"model_name": "gateway-alias", "model_info": {"max_input_tokens": 8_192}}]}
+        )
+
+    with patch("httpx.get", side_effect=get):
+        assert cw.resolve_context_window(model) == cw.ContextWindow(8_192, "litellm-proxy")
+    assert "test-custom-credential" not in repr(cw._resolved)
+    assert "test-custom-credential" not in repr(cw._responses)
+
+
+@pytest.mark.parametrize("custom_header", [False, True])
+def test_discovery_caches_are_separate_for_each_credential(custom_header):
+    def get(url, **kwargs):
+        headers = kwargs["headers"]
+        credential = headers.get("RITS_API_KEY") if custom_header else headers.get("Authorization")
+        size = 32_000 if "first" in credential else 8_000
+        return _Response({"data": [{"model_name": "alias", "model_info": {"max_input_tokens": size}}]})
+
+    with patch("httpx.get", side_effect=get) as http:
+        for credential, expected in [("first", 32_000), ("second", 8_000)]:
+            model = _openai_model("alias", "https://gw.example/v1", "dummy" if custom_header else credential)
+            if custom_header:
+                model.default_headers = {"RITS_API_KEY": credential}
+            assert cw.resolve_context_window(model).tokens == expected
+    assert http.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "initial",
+    [
+        _Response(None, 503),
+        _Response({"data": []}),
+        _Response({"data": [{"model_name": "deepseek/deepseek-v3", "model_info": {}}]}),
+    ],
+)
+def test_failed_discovery_and_fallback_resolution_recover_after_cooldown(initial):
+    model = _openai_model("deepseek/deepseek-v3", "https://gw.example/v1")
+    with (
+        patch.object(cw.time, "monotonic", return_value=100),
+        patch("httpx.get", return_value=initial),
+    ):
+        assert cw.resolve_context_window(model).source == "litellm-map"
+    recovered = {"data": [{"model_name": "deepseek/deepseek-v3", "model_info": {"max_input_tokens": 8_000}}]}
+    with (
+        patch.object(cw.time, "monotonic", return_value=100 + cw.DISCOVERY_RETRY_SECONDS + 1),
+        patch("httpx.get", return_value=_Response(recovered)) as http,
+    ):
+        assert cw.resolve_context_window(model) == cw.ContextWindow(8_000, "litellm-proxy")
+    http.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "config, expected", [({"disable_ssl": True}, False), ({"ssl_ca_bundle": "/test/ca.pem"}, "/test/ca.pem")]
+)
+def test_discovery_uses_the_effective_per_model_tls_setting(config, expected):
+    from cuga.backend.llm.models import LLMManager
+
+    model = _openai_model("alias", "https://gw.example/v1")
+    LLMManager()._configure_context_window(model, config)
+    with patch("httpx.get", return_value=_Response({"data": []})) as http:
+        cw.resolve_context_window(model)
+    assert all(call.kwargs["verify"] == expected for call in http.call_args_list)
+
+
+def test_discovery_honors_global_toml_ca_bundle(monkeypatch):
+    for key in ("CUGA_DISABLE_SSL", "OPENAI_SSL_VERIFY", "CUGA_SSL_CA_BUNDLE"):
+        monkeypatch.delenv(key, raising=False)
+    with patch("cuga.config.settings.connections.ssl_ca_bundle", "/test/global-ca.pem", create=True):
+        assert cw._ssl_verify() == "/test/global-ca.pem"
+
+
+def test_tls_configuration_is_part_of_the_cache_identity():
+    model = _openai_model("alias", "https://gw.example/v1")
+    with patch("httpx.get", return_value=_Response({"data": []})) as http:
+        cw.set_context_window_tls(model, True)
+        cw.resolve_context_window(model)
+        cw.set_context_window_tls(model, False)
+        cw.resolve_context_window(model)
+    assert http.call_count == 4
+
+
+def test_optional_tls_metadata_does_not_break_immutable_adapters():
+    cw.set_context_window_tls(object(), True)
+
+
+def test_exact_map_entry_still_precedes_the_curated_table():
+    with patch.object(cw, "litellm_map_tokens", return_value=1_000_000):
+        assert cw.resolve_context_window(_openai_model("claude-sonnet-4-6")) == cw.ContextWindow(
+            1_000_000, "litellm-map"
+        )
+
+
+def test_bundled_map_lookup_does_not_import_litellm():
+    import os
+    import subprocess
+    import sys
+
+    script = (
+        "import sys; from cuga.backend.llm.context_window import litellm_map_tokens; "
+        "assert litellm_map_tokens('gpt-4.1') == 1047576; "
+        "assert 'litellm' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", script], check=True, env=os.environ.copy(), timeout=20)
