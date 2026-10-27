@@ -151,7 +151,8 @@ async def decide_pre_execute_verify(
                     "write_arguments": write_arguments,
                 },
             )
-            max_chars = model_input_budget_chars(
+            max_chars = await asyncio.to_thread(
+                model_input_budget_chars,
                 active_model,
                 fixed_prompt_chars,
                 context_fraction=context_fraction_setting("pre_execute_verify_context_fraction"),
