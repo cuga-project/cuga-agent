@@ -19,6 +19,8 @@ def run_verification(config):
     # Match the CPU-only Linux image on Apple hosts too. READI otherwise picks
     # MPS, whose spaCy tensors cannot cross the hook dispatcher's worker threads.
     bootstrap = "import runpy, sys; "
+    # Match the image: no Stanza or its unused GPL dependencies.
+    bootstrap += "sys.modules.update(dict.fromkeys(('stanza', 'udtools', 'udapi'))); "
     if sys.platform == "darwin" and importlib.util.find_spec("spacy") is not None:
         bootstrap += "import spacy; spacy.prefer_gpu = lambda *a, **k: False; spacy.require_cpu(); "
     bootstrap += "runpy.run_path(sys.argv[1], run_name='__main__')"

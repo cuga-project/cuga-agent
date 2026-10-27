@@ -20,3 +20,5 @@ EOF
 ```
 
 Do not update git config. Do not skip hooks unless the user explicitly asks. Do not push unless asked.
+
+When the user asks to push: **MUST** run [labels.md](labels.md) for the branch first, then push.

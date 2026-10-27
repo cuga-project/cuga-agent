@@ -54,6 +54,17 @@ cuga_lite_bind_tools_include_find_tools = false  # Also bind find_tools alongsid
 cuga_lite_bind_tools_max_count = 128
 # Pad shortlister output to fill the cap. Off by default for code-execution mode.
 cuga_lite_bind_tools_pad_to_cap = false
+# Execution mode: codeact (write Python, run it in the sandbox — default) | function_calling (the model
+# issues native tool_calls, the sandbox runs them and replies with ToolMessages). Alias: fc.
+# Per-invoke: config["configurable"]["cuga_lite_execution_mode"]. Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_EXECUTION_MODE
+cuga_lite_execution_mode = "codeact"
+# Step discipline, both modes: off (default) | one_tool_per_step — observe one result before the next call.
+# codeact: only the first tool call in a generated block runs (per-block cap becomes 1). function_calling: only
+# the first tool_call of a turn is attempted; the rest are answered with a "deferred" ToolMessage. Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_STEP_DISCIPLINE
+cuga_lite_step_discipline = "off"
+# Opt-in prompt fragments for function_calling mode. Known: "evidence_first" (call a tool before answering; never
+# answer from prior knowledge). Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_FC_PROMPT_FRAGMENTS='["evidence_first"]'
+cuga_lite_fc_prompt_fragments = []
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 cuga_lite_blocked_claim_retry = true  # When an NL turn claims tools/data are unavailable but no code has executed and tools ARE bound, retry once with a corrective message instead of finalizing the false refusal (issue #610). Only active when cuga_lite_nl_auto_continue is on.
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
@@ -79,6 +90,18 @@ enable_shell_tool = false
 #   "e2b"         — E2B cloud sandbox (requires e2b_sandbox = true)
 #   "local"       — no sandbox (runs directly on host; always pairs with run_command tool approval)
 sandbox_mode = "native"
+
+[execution]
+# Enforce the security checks on model-generated Python (true) or relax them (false).
+# When true: the import allowlist, the AST checks on the wrapped code (blocked modules,
+# dunder access, eval/exec), a restricted __import__, safe builtins, filtered locals and
+# globals without os/sys/subprocess, and the "code must use a tool or variable" check.
+# When false, all of these are off: generated code gets real builtins, os and sys.
+# The syntax check and code wrapping run either way. This is separate from
+# advanced_features.sandbox_mode (where code runs), and neither changes the other.
+# Skills and benchmark profiles do not turn it off; to reproduce relaxed benchmark runs
+# (for example AppWorld), set it to false (DYNACONF_EXECUTION__ENFORCE_CODE_SECURITY=false).
+enforce_code_security = true
 
 [shortlister]
 # How CugaLite shrinks a large tool set before the model sees it.

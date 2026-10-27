@@ -69,6 +69,7 @@ Tool Approval Example (with HITL):
 """
 
 from typing import Callable, List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
+import asyncio
 import time
 import uuid
 from loguru import logger
@@ -234,6 +235,10 @@ class PoliciesManager:
         """Initialize policies manager with reference to agent or supervisor."""
         self._agent = agent
         self._fs_sync = None
+        self._auto_load_done = False
+        self._auto_load_files_done = False
+        self._auto_load_retry_files = None
+        self._ensure_lock = asyncio.Lock()
 
     def _agent_tool_provider(self) -> "Optional[ToolProviderInterface]":
         """Return tool_provider when the host exposes one (CugaAgent, optional CugaSupervisor)."""
@@ -267,6 +272,13 @@ class PoliciesManager:
     async def _ensure_policy_system(self) -> "Optional[PolicyConfigurable]":
         """Ensure policy system is initialized if enabled.
 
+        The implicit folder auto-load (triggered when *auto_load_policies* is True)
+        scans the folder once per policy-system instance. Retryable file/storage
+        failures retry only failed files; reconciliation failures retry reconciliation
+        without reloading successful policies. After success, later calls skip both.
+        Use :meth:`load_from_folder` or :meth:`sync_from_filesystem` to force a
+        full reload at any time.
+
         Returns:
             PolicyConfigurable if enabled, None if disabled via settings.policy.enabled
         """
@@ -276,82 +288,124 @@ class PoliciesManager:
         if not settings.policy.enabled:
             return None
 
-        if not hasattr(self._agent, '_policy_system') or self._agent._policy_system is None:
-            self._agent._policy_system = PolicyConfigurable()
-            await self._agent._policy_system.initialize()
+        # Not re-entrant: code called from here must not call _ensure_policy_system()
+        # unconditionally (clear() / load_from_folder() only do so when _policy_system is None).
+        async with self._ensure_lock:
+            if not hasattr(self._agent, '_policy_system') or self._agent._policy_system is None:
+                self._agent._policy_system = PolicyConfigurable()
+                await self._agent._policy_system.initialize()
+                self._auto_load_done = False
+                self._auto_load_files_done = False
+                self._auto_load_retry_files = None
 
-            # Initialize filesystem sync if enabled and .cuga folder is configured
-            # Initialize filesystem sync if enabled
-            import os
-
-            if self._agent._filesystem_sync and self._agent.cuga_folder:
-                from cuga.backend.cuga_graph.policy.filesystem_sync import PolicyFilesystemSync
-
-                self._fs_sync = PolicyFilesystemSync(cuga_folder=self._agent.cuga_folder)
-                logger.debug(f"Initialized filesystem sync for {self._agent.cuga_folder}")
-
-        # Reset/clear all existing policies if requested (must be outside the init block)
-        # This ensures reset works even when policy system is already initialized
-        # Only reset ONCE during initialization, then clear the flag
-        if self._agent._reset_policy_storage:
-            try:
-                logger.info("Resetting policy storage - clearing all existing policies")
-                await self.clear()
-                logger.info("✅ Policy storage reset complete")
-                # Clear the flag so we don't reset again on subsequent calls
-                self._agent._reset_policy_storage = False
-            except Exception as e:
-                logger.error(f"Failed to reset policy storage: {e}")
-                raise e
-
-        # Auto-load policies from .cuga folder if enabled
-        # BUT skip auto-load if we just reset the storage (to keep it clean)
-        if self._agent._auto_load_policies and not self._agent._reset_policy_storage:
-            try:
-                # Resolve to absolute path for clarity in logs
+                # Initialize filesystem sync if enabled and .cuga folder is configured
+                # Initialize filesystem sync if enabled
                 import os
 
-                folder_path = os.path.abspath(self._agent.cuga_folder)
-                cwd = os.getcwd()
+                if self._agent._filesystem_sync and self._agent.cuga_folder:
+                    from cuga.backend.cuga_graph.policy.filesystem_sync import PolicyFilesystemSync
 
-                logger.debug(f"Checking for policy folder: {self._agent.cuga_folder}")
-                logger.debug(f"  Current working directory: {cwd}")
-                logger.debug(f"  Resolved absolute path: {folder_path}")
+                    self._fs_sync = PolicyFilesystemSync(cuga_folder=self._agent.cuga_folder)
+                    logger.debug(f"Initialized filesystem sync for {self._agent.cuga_folder}")
 
-                if os.path.exists(folder_path):
-                    await self.load_from_folder(self._agent.cuga_folder)
-                    logger.info(
-                        f"Auto-loaded policies from {self._agent.cuga_folder} (resolved: {folder_path})"
-                    )
+            # Reset/clear all existing policies if requested (must be outside the init block)
+            # This ensures reset works even when policy system is already initialized
+            # Only reset ONCE during initialization, then clear the flag
+            if self._agent._reset_policy_storage:
+                try:
+                    logger.info("Resetting policy storage - clearing all existing policies")
+                    await self.clear()
+                    logger.info("✅ Policy storage reset complete")
+                    # Clear the flag so we don't reset again on subsequent calls
+                    self._agent._reset_policy_storage = False
+                except Exception as e:
+                    logger.error(f"Failed to reset policy storage: {e}")
+                    raise e
 
-                    # Validate and sync: ensure filesystem and storage are in sync
-                    if self._fs_sync:
-                        sync_result = await self._validate_and_sync(
-                            self._agent._policy_system.storage, folder_path
-                        )
-                        if (
-                            sync_result['removed']
-                            or sync_result['added_to_storage']
-                            or sync_result['added_to_filesystem']
-                        ):
+            # Auto-load policies from .cuga folder if enabled
+            # BUT skip auto-load if we just reset the storage (to keep it clean)
+            if self._agent._auto_load_policies and not self._agent._reset_policy_storage:
+                if not self._auto_load_done:
+                    try:
+                        # Resolve to absolute path for clarity in logs
+                        import os
+
+                        folder_path = os.path.abspath(self._agent.cuga_folder)
+                        cwd = os.getcwd()
+
+                        logger.debug(f"Checking for policy folder: {self._agent.cuga_folder}")
+                        logger.debug(f"  Current working directory: {cwd}")
+                        logger.debug(f"  Resolved absolute path: {folder_path}")
+
+                        if os.path.exists(folder_path):
+                            load_result = {"errors": [], "storage_errors": [], "io_errors": []}
+                            if not self._auto_load_files_done:
+                                load_result = await self.load_from_folder(
+                                    self._agent.cuga_folder,
+                                    _retry_files=self._auto_load_retry_files,
+                                )
+                                self._auto_load_retry_files = load_result.get("retry_files")
+                                self._auto_load_files_done = not (
+                                    load_result.get("storage_errors") or load_result.get("io_errors")
+                                )
                             logger.info(
-                                f"Sync validation complete: "
-                                f"removed={sync_result['removed']}, "
-                                f"added_to_storage={sync_result['added_to_storage']}, "
-                                f"added_to_filesystem={sync_result['added_to_filesystem']}"
+                                f"Auto-loaded policies from {self._agent.cuga_folder} (resolved: {folder_path})"
                             )
-                else:
-                    logger.warning(
-                        f"Policy folder not found: {self._agent.cuga_folder} (resolved: {folder_path})"
-                    )
-                    logger.warning(f"  Current directory: {cwd}")
-                    logger.warning("  Skipping auto-load")
-            except Exception as e:
-                logger.error(f"Failed to auto-load policies from {self._agent.cuga_folder}: {e}")
-                raise e
 
-        self._attach_policy_storage_to_toolguard()
-        return self._agent._policy_system
+                            # Validate and sync: ensure filesystem and storage are in sync
+                            sync_errors = []
+                            if self._fs_sync:
+                                sync_result = await self._validate_and_sync(
+                                    self._agent._policy_system.storage, folder_path
+                                )
+                                sync_errors = sync_result.get("errors", [])
+                                if (
+                                    sync_result['removed']
+                                    or sync_result['added_to_storage']
+                                    or sync_result['added_to_filesystem']
+                                ):
+                                    logger.info(
+                                        f"Sync validation complete: "
+                                        f"removed={sync_result['removed']}, "
+                                        f"added_to_storage={sync_result['added_to_storage']}, "
+                                        f"added_to_filesystem={sync_result['added_to_filesystem']}"
+                                    )
+
+                            # Permanent parse errors (bad frontmatter, unknown type) do not
+                            # block the latch — retrying them recreates #804. File-access,
+                            # storage or sync errors leave it unset so the next call retries.
+                            retry_errors = [
+                                *load_result.get("storage_errors", []),
+                                *load_result.get("io_errors", []),
+                                *sync_errors,
+                            ]
+                            if retry_errors:
+                                logger.warning(
+                                    f"Policy auto-load encountered {len(retry_errors)} retryable error(s); "
+                                    "will retry on next call"
+                                )
+                            else:
+                                self._auto_load_done = True
+                                if load_result.get("errors"):
+                                    logger.warning(
+                                        f"Policy auto-load skipped "
+                                        f"{len(load_result['errors'])} invalid file(s); "
+                                        "fix them and call load_from_folder() to reload"
+                                    )
+                        else:
+                            logger.warning(
+                                f"Policy folder not found: {self._agent.cuga_folder} (resolved: {folder_path})"
+                            )
+                            logger.warning(f"  Current directory: {cwd}")
+                            logger.warning("  Skipping auto-load")
+                    except Exception as e:
+                        logger.error(f"Failed to auto-load policies from {self._agent.cuga_folder}: {e}")
+                        raise e
+                else:
+                    logger.debug("Policy folder auto-load already completed for this agent; skipping")
+
+            self._attach_policy_storage_to_toolguard()
+            return self._agent._policy_system
 
     async def add_intent_guard(
         self,
@@ -1160,10 +1214,17 @@ class PoliciesManager:
             logger.warning("Policy system is disabled - skipping load_from_json")
             return {"count": 0, "enabled": 0, "errors": ["Policy system is disabled"]}
 
+        # Persist imported policies to .cuga (like add_*). Since the implicit auto-load
+        # runs only once (#804), nothing else writes them to disk during the session,
+        # and the next start's filesystem validation would drop storage-only policies.
+        # With clear_existing, stale .cuga files are pruned too so a replacement import
+        # is not undone by the next start's folder load.
         result = await load_policies_from_json(
             file_path=file_path,
             storage=policy_system.storage,
             clear_existing=clear_existing,
+            filesystem_sync=self._fs_sync,
+            prune_filesystem=True,
         )
 
         # Reload policies in the system
@@ -1184,6 +1245,8 @@ class PoliciesManager:
 
         Generation is scoped to policy IDs present in the JSON file. Existing policies
         already in storage are not generated unless their IDs are also present in the file.
+        Replacement imports with extraction errors are rejected before changing storage
+        or files and do not run generation. Intentional empty replacements are allowed.
 
         Args:
             file_path: Path to JSON file containing policies
@@ -1222,13 +1285,27 @@ class PoliciesManager:
                 "errors": [error_msg],
             }
 
+        # Fail closed before replacement clears storage or prunes recovery files.
+        if clear_existing and extracted["errors"]:
+            logger.warning("Aborting policy replacement due to extraction errors")
+            return {
+                "status": "error",
+                "import": {"count": 0, "enabled": extracted["enabled"], "errors": extracted["errors"]},
+                "source_policy_ids": extracted["policy_ids"],
+                "generated": {},
+                "skipped": [],
+                "errors": extracted["errors"],
+            }
+
         from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
 
+        # Persist imported policies to .cuga and prune stale files (see load_from_json).
         apply_result = await apply_policies_data_to_storage(
             policy_system.storage,
             extracted["policies"],
             clear_existing=clear_existing,
-            filesystem_sync=None,
+            filesystem_sync=self._fs_sync,
+            prune_filesystem=True,
         )
         import_result = {
             "count": apply_result["count"],
@@ -1275,6 +1352,20 @@ class PoliciesManager:
         )
 
         result_errors = [*import_result.get("errors", []), *batch_result.get("errors", [])]
+
+        # The generation agent updates shared storage with filesystem sync disabled.
+        # Persist even failed attempts: examples or guards for some tools may exist.
+        if self._fs_sync:
+            for policy_id in batch_result.get("generated", {}):
+                try:
+                    policy = await policy_system.storage.get_policy(policy_id)
+                    if policy is not None:
+                        self._fs_sync.save_policy_to_file(policy)
+                except Exception as exc:
+                    error_msg = f"Failed to save generated ToolGuards for policy '{policy_id}': {exc}"
+                    logger.warning(error_msg)
+                    result_errors.append(error_msg)
+
         status = batch_result.get("status", "error")
         if result_errors and status == "ok":
             status = "partial"
@@ -1329,6 +1420,8 @@ class PoliciesManager:
         self,
         folder_path: str = ".cuga",
         clear_existing: bool = False,
+        *,
+        _retry_files: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Load policies from a .cuga folder structure containing markdown files.
@@ -1416,6 +1509,7 @@ class PoliciesManager:
             folder_path=folder_path,
             storage=policy_system.storage,  # Pass storage directly
             clear_existing=clear_existing,
+            file_paths=_retry_files,
         )
 
         # Reinitialize policy system after loading
@@ -1512,6 +1606,8 @@ class PoliciesManager:
         This will:
         1. Load new policies from .cuga folder
         2. Remove policies from storage that are no longer in filesystem
+
+        Use this to pick up ``.cuga`` files edited on disk while the agent is running.
 
         Returns:
             Dictionary with sync statistics
@@ -1855,6 +1951,8 @@ class CugaAgent:
         skills_folder: Optional[str] = None,
         shortlister: Optional["Shortlister"] = None,
         final_answer: "Optional[Union[str, Callable[[str], str], FinalAnswerConfig]]" = None,
+        execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -1877,6 +1975,13 @@ class CugaAgent:
             shortlister: How to shrink a large tool set before the model sees it, e.g.
                 `Shortlister(strategy="hybrid")`. None = use `[shortlister]` settings
                 (default `"llm"`, i.e. unchanged behavior). Overridable per invoke()/stream().
+            execution_mode: How the model drives tools — `"codeact"` (default: the model writes
+                Python that calls tools in the sandbox) or `"function_calling"` (the model emits
+                native tool calls, executed one round-trip at a time). None = use
+                `advanced_features.cuga_lite_execution_mode`. Overridable per invoke()/stream().
+            step_discipline: `"one_tool_per_step"` lets the model run only one tool per step
+                (in both execution modes); `"off"` (default) allows any number. None = use
+                `advanced_features.cuga_lite_step_discipline`. Overridable per invoke()/stream().
             final_answer: How the final answer is shaped. A `str` adds guidance for the
                 answer-composing LLM; a callable `(str) -> str` deterministically
                 post-processes the composed answer before delivery (must be pure;
@@ -1983,6 +2088,11 @@ class CugaAgent:
         # Tool shortlisting. None => [shortlister] settings, whose default ("llm")
         # is the pre-feature behavior.
         self._shortlister = shortlister
+
+        # Execution mode / step discipline. None => settings.toml (defaults:
+        # "codeact" / "off", i.e. the pre-feature behavior).
+        self._execution_mode = execution_mode
+        self._step_discipline = step_discipline
 
         # Setup tool provider. ToolGuard is installed immediately as a transparent
         # provider-level decorator so create-agent-first, add-guard-later flows work.
@@ -2124,6 +2234,27 @@ class CugaAgent:
                 configurable.setdefault(key, value)
         except Exception as e:
             logger.warning(f"Applying Shortlister config failed; using default shortlisting: {e}")
+
+    def _apply_execution_mode(
+        self,
+        run_config: dict,
+        execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
+    ) -> None:
+        """Merge execution mode / step discipline into ``run_config['configurable']``.
+
+        Per-invoke values override the constructor defaults. Raw
+        ``cuga_lite_execution_mode`` / ``cuga_lite_step_discipline`` keys already
+        set by the caller win over both — we ``setdefault`` rather than overwrite.
+        No-op when nothing is configured, so settings.toml decides.
+        """
+        configurable = run_config["configurable"]
+        mode = execution_mode if execution_mode is not None else self._execution_mode
+        if mode is not None:
+            configurable.setdefault("cuga_lite_execution_mode", mode)
+        discipline = step_discipline if step_discipline is not None else self._step_discipline
+        if discipline is not None:
+            configurable.setdefault("cuga_lite_step_discipline", discipline)
 
     def _apply_callbacks(
         self, run_config: dict, extra_callbacks: Optional[List[BaseCallbackHandler]] = None
@@ -2583,6 +2714,8 @@ class CugaAgent:
         track_tool_calls: bool = False,
         variables: Optional[Dict[str, Any]] = None,
         shortlister: Optional["Shortlister"] = None,
+        execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
     ) -> InvokeResult:
         """
         Invoke the agent with a message and get the response.
@@ -2601,6 +2734,10 @@ class CugaAgent:
                 Used when delegating from a supervisor to pass context to sub-agents.
             shortlister: Overrides the agent's shortlister for this call only, e.g.
                 `Shortlister(strategy="hybrid")`. None = use the agent default.
+            execution_mode: `"codeact"` or `"function_calling"` for this call only.
+                None = use the agent default.
+            step_discipline: `"off"` or `"one_tool_per_step"` for this call only.
+                None = use the agent default.
 
         Returns:
             InvokeResult containing:
@@ -2676,6 +2813,7 @@ class CugaAgent:
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
         self._apply_shortlister(run_config, shortlister)
+        self._apply_execution_mode(run_config, execution_mode, step_discipline)
 
         # Pass track_tool_calls flag via configurable
         run_config["configurable"]["track_tool_calls"] = track_tool_calls
@@ -3105,6 +3243,8 @@ class CugaAgent:
         config: Optional[Dict[str, Any]] = None,
         action_response: Optional[Any] = None,  # ActionResponse for resuming after HITL
         shortlister: Optional["Shortlister"] = None,
+        execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
     ):
         """
         Stream the agent's execution step by step.
@@ -3120,6 +3260,10 @@ class CugaAgent:
             action_response: Optional ActionResponse for resuming after approval/interruption
             shortlister: Overrides the agent's shortlister for this call only, e.g.
                 `Shortlister(strategy="hybrid")`. None = use the agent default.
+            execution_mode: `"codeact"` or `"function_calling"` for this call only.
+                None = use the agent default.
+            step_discipline: `"off"` or `"one_tool_per_step"` for this call only.
+                None = use the agent default.
 
         Yields:
             State updates as the agent executes
@@ -3152,6 +3296,7 @@ class CugaAgent:
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
         self._apply_shortlister(run_config, shortlister)
+        self._apply_execution_mode(run_config, execution_mode, step_discipline)
 
         # Pass skills configuration via configurable (overrides settings when set)
         if self._enable_skills is not None:
@@ -3659,6 +3804,7 @@ class CugaSupervisor:
         action_response: Optional[Any] = None,
         user_id: Optional[str] = None,
         tenant_id: Optional[str] = None,
+        checkpoint_thread_id: Optional[str] = None,
     ) -> InvokeResult:
         """
         Invoke the supervisor with a message.
@@ -3669,6 +3815,7 @@ class CugaSupervisor:
             action_response: Optional ActionResponse for resuming after approval/interruption
             user_id: Caller identity mixed into child sub-agent checkpoint keys
             tenant_id: Optional tenant override; defaults to the process service tenant
+            checkpoint_thread_id: Optional scoped storage key; thread_id remains the resource identity
 
         Returns:
             InvokeResult containing answer and metadata
@@ -3700,7 +3847,10 @@ class CugaSupervisor:
 
         # Handle resume case
         if is_resume:
-            config["configurable"]["thread_id"] = thread_id
+            config["configurable"]["thread_id"] = checkpoint_thread_id or thread_id
+            if checkpoint_thread_id:
+                config["configurable"]["logical_thread_id"] = thread_id
+                config["configurable"]["workspace_thread_id"] = thread_id
 
             # Set session.id for OpenLit observability (if enabled)
             set_session_attribute(thread_id)
@@ -3722,7 +3872,10 @@ class CugaSupervisor:
                 thread_id = f"supervisor_{uuid.uuid4().hex[:8]}"
                 logger.debug(f"Auto-generated thread_id: {thread_id}")
 
-            config["configurable"]["thread_id"] = thread_id
+            config["configurable"]["thread_id"] = checkpoint_thread_id or thread_id
+            if checkpoint_thread_id:
+                config["configurable"]["logical_thread_id"] = thread_id
+                config["configurable"]["workspace_thread_id"] = thread_id
 
             # Normal invocation
             from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import (

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Optional
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from cuga.backend.cuga_graph.utils.thread_ids import logical_thread_id
 from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime, cancel_spawn_future, pop_spawn_future
 
 
@@ -51,7 +52,8 @@ def create_spawn_tools(
 ) -> list[StructuredTool]:
     """Factory: returns [spawn_agent_tool, get_agent_result_tool]."""
 
-    parent_thread_id = (parent_config or {}).get("configurable", {}).get("thread_id", "") or ""
+    cfg = (parent_config or {}).get("configurable", {})
+    parent_thread_id = logical_thread_id(cfg, "")
 
     async def spawn_agent(
         task: str = "",

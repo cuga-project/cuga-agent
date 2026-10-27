@@ -14,16 +14,40 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.unit
+def test_airgap_verification_rejects_stanza(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import verify_airgap
+
+    monkeypatch.setattr(verify_airgap, "find_spec", lambda name: object() if name == "stanza" else None)
+    with pytest.raises(RuntimeError, match="Stanza must not be installed"):
+        verify_airgap.main()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "package", ["altk-evolve", "arize-phoenix", "arize-phoenix-otel", "stanza", "udtools", "udapi"]
+)
+def test_airgap_verification_rejects_excluded_distributions(package, monkeypatch) -> None:
+    from scripts import verify_airgap
+
+    monkeypatch.setattr(verify_airgap, "find_spec", lambda name: None)
+    monkeypatch.setattr(verify_airgap, "distributions", lambda: [SimpleNamespace(metadata={"Name": package})])
+    with pytest.raises(RuntimeError, match="Excluded image packages"):
+        verify_airgap.main()
+
+
+@pytest.mark.unit
 def test_supported_image_bakes_evolve_for_offline_runtime() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile.ubi").read_text()
     entrypoint = (REPO_ROOT / "scripts/docker-entrypoint.sh").read_text()
 
     project = (REPO_ROOT / "pyproject.toml").read_text()
-    assert "altk-evolve[pii-regex]" in project
-    assert "altk-evolve[pii-regex]>=1.5.2,<2" in project
+    assert "altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]" in project
+    assert "altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]>=1.7.1,<2" in project
     assert "github.com/AgentToolkit/altk-evolve/archive/" not in project
     assert "--frozen --no-editable --no-dev" in dockerfile
     assert "--group evolve-image" in dockerfile
+    for package in ("stanza", "udtools", "udapi"):
+        assert f"--no-install-package {package}" in dockerfile
     assert "uv pip install" not in dockerfile
     assert "SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers" in dockerfile
     assert "uv run --no-sync playwright install" in dockerfile
@@ -209,12 +233,13 @@ def test_airgap_preload_covers_cuga_layout_engine_repos() -> None:
 def test_preload_evolve_uses_configured_models_without_extra_defaults(override) -> None:
     from scripts.preload_models import preload_evolve
 
-    sentence_transformer = MagicMock()
+    loader = MagicMock()
+    export = MagicMock()
     modules = {
         "altk_evolve.config.guidelines": SimpleNamespace(
             guidelines_settings=SimpleNamespace(
-                consistency_embedding_model_small=None,
-                consistency_embedding_model_large=override,
+                consistency_embedding_model_small="BAAI/bge-small-en-v1.5",
+                consistency_embedding_model_large=override or "BAAI/bge-small-en-v1.5",
                 consistency_embedding_trust_remote_code=False,
             )
         ),
@@ -224,16 +249,23 @@ def test_preload_evolve_uses_configured_models_without_extra_defaults(override) 
         "altk_evolve.config.postgres": SimpleNamespace(
             postgres_db_settings=SimpleNamespace(embedding_model="BAAI/bge-small-en-v1.5")
         ),
-        "sentence_transformers": SimpleNamespace(SentenceTransformer=sentence_transformer),
+        "altk_evolve.embeddings": SimpleNamespace(
+            get_embedding_model=loader,
+            EmbeddingSettings=lambda: SimpleNamespace(embedding_provider="fastembed"),
+        ),
+        "altk_evolve.export_embeddings": SimpleNamespace(export_coderank=export),
+        "altk_evolve.embedding_assets": SimpleNamespace(
+            CODERANK_MODEL="nomic-ai/CodeRankEmbed",
+            MINILM_MODEL="sentence-transformers/all-MiniLM-L6-v2",
+        ),
     }
     with patch.dict(sys.modules, modules):
         preload_evolve()
+    export.assert_not_called()
 
-    expected = ["BAAI/bge-small-en-v1.5"] + ([override] if override else [])
-    assert sentence_transformer.call_args_list == [
-        call(model, device="cpu", trust_remote_code=False) for model in expected
-    ]
-    assert sentence_transformer.return_value.encode.call_count == len(expected)
+    expected = sorted({"BAAI/bge-small-en-v1.5", override or "BAAI/bge-small-en-v1.5"})
+    assert loader.call_args_list == [call(model, trust_remote_code=False) for model in expected]
+    assert loader.return_value.encode.call_count == len(expected)
 
 
 @pytest.mark.unit
@@ -279,3 +311,44 @@ def test_run_preloads_raises_in_strict_mode(monkeypatch: pytest.MonkeyPatch) -> 
 
     with pytest.raises(RuntimeError, match="fastembed tokenizer preload failed"):
         preload_models.run_preloads()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stage", ["builder", "runtime"])
+def test_image_evolve_embedding_settings_match_preloaded_bge(stage, monkeypatch) -> None:
+    """Read each image stage's defaults through Evolve's real settings classes."""
+    import shlex
+
+    milvus = pytest.importorskip("altk_evolve.config.milvus")
+    postgres = pytest.importorskip("altk_evolve.config.postgres")
+    guidelines = pytest.importorskip("altk_evolve.config.guidelines")
+
+    dockerfile = (REPO_ROOT / "Dockerfile.ubi").read_text()
+    stages = dockerfile.split("FROM ${BASE_IMAGE}")
+    source = stages[1 if stage == "builder" else 2].replace(chr(92) + "\n", " ")
+    env = {}
+    for line in source.splitlines():
+        if line.startswith("ENV "):
+            for assignment in shlex.split(line[4:]):
+                if "=" in assignment:
+                    key, value = assignment.split("=", 1)
+                    env[key] = value
+    for key in (
+        "EVOLVE_EMBEDDING_MODEL",
+        "EVOLVE_PG_EMBEDDING_MODEL",
+        "EVOLVE_CONSISTENCY_EMBEDDING_MODEL_SMALL",
+        "EVOLVE_CONSISTENCY_EMBEDDING_MODEL_LARGE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+        if key in env:
+            monkeypatch.setenv(key, env[key])
+
+    assert env["EVOLVE_EMBEDDING_PROVIDER"] == "fastembed"
+    expected = "BAAI/bge-small-en-v1.5"
+    milvus_settings = milvus.MilvusOtherSettings(_env_file=None)
+    assert milvus_settings.embedding_model == expected
+    assert milvus.MilvusDBSettings(_env_file=None).embedding_model == expected
+    assert postgres.PostgresDBSettings(_env_file=None).embedding_model == expected
+    settings = guidelines.GuidelinesSettings(_env_file=None)
+    assert settings.consistency_embedding_model_small == expected
+    assert settings.consistency_embedding_model_large == expected

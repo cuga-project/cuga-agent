@@ -24,7 +24,7 @@ class RestrictedEnvironment:
             allowed_modules: Set of allowed module names
 
         Returns:
-            Restricted import function, or original import if benchmark mode is enabled
+            Restricted import function, or original import if execution is relaxed
         """
         if is_relaxed_execution():
             return __builtins__['__import__'] if isinstance(__builtins__, dict) else __builtins__.__import__
@@ -48,10 +48,10 @@ class RestrictedEnvironment:
             restricted_import_func: The restricted import function to use
 
         Returns:
-            Dictionary of safe builtins, or full builtins if benchmark mode is enabled
+            Dictionary of safe builtins, or full builtins if execution is relaxed
         """
         if is_relaxed_execution():
-            # Return full builtins in benchmark mode
+            # Relaxed execution: return full builtins
             if isinstance(__builtins__, dict):
                 return __builtins__.copy()
             else:
@@ -92,10 +92,10 @@ class RestrictedEnvironment:
             'isinstance': isinstance,
             'issubclass': issubclass,
             'type': type,
-            'hasattr': hasattr,
-            'getattr': getattr,
-            'setattr': setattr,
-            'delattr': delattr,
+            # getattr/hasattr/setattr/delattr are intentionally NOT exposed (GHSA-4rj2):
+            # they fetch an attribute by a runtime string, which defeats the AST name
+            # checks in SecurityValidator (e.g. ``g = getattr; g(mod, 'envi'+'ron')``
+            # reaches os.environ with no forbidden attribute ever appearing in the source).
             'iter': iter,
             'next': next,
             'slice': slice,
@@ -114,8 +114,12 @@ class RestrictedEnvironment:
             'None': None,
             'True': True,
             'False': False,
+            # locals() is required by the code wrapper (it returns locals() to capture
+            # new variables); vars() is NOT exposed — vars(module) hands back the
+            # module's __dict__, so ``vars(sys)['modules']['os']`` or
+            # ``vars(os_mod)['environ']`` reaches forbidden state with no forbidden
+            # attribute in the source for the AST visitor to catch (GHSA-4rj2).
             'locals': locals,
-            'vars': vars,
             'staticmethod': staticmethod,
             '__name__': '__restricted__',
             '__build_class__': __build_class__,
@@ -131,10 +135,10 @@ class RestrictedEnvironment:
             safe_locals: Dictionary of safe local variables/tools
 
         Returns:
-            Dictionary of restricted globals, or unrestricted globals if benchmark mode is enabled
+            Dictionary of restricted globals, or unrestricted globals if execution is relaxed
         """
         if is_relaxed_execution():
-            # In benchmark mode, return unrestricted globals
+            # Relaxed execution: return unrestricted globals
             unrestricted_globals = {
                 "__builtins__": safe_builtins,
             }
