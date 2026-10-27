@@ -92,7 +92,7 @@ def test_no_mcp_tool_accepts_an_agent_id():
 def test_identity_headers_resolve_the_agent_server_side():
     from cuga.backend.knowledge import mcp_server
 
-    ctx = SimpleNamespace(request_context=SimpleNamespace(meta=SimpleNamespace(**{RUN_TOKEN_META: "cap"})))
+    ctx = SimpleNamespace(request_context=SimpleNamespace(meta={RUN_TOKEN_META: "cap"}))
     headers = mcp_server._identity_headers(ctx)
     assert headers == {RUN_TOKEN_HEADER: "cap"}
 
