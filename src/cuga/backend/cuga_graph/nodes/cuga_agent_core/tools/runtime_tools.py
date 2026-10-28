@@ -161,7 +161,11 @@ def build_runtime_tools(*, thread_id: Optional[str], backends: RuntimeBackends) 
         for st in run_cmd_tools:
             fn = st.coroutine or st.func
             if fn:
-                bundle.execution_callables[st.name] = make_tool_awaitable(fn)
+                awaitable = make_tool_awaitable(fn)
+                # The execd sandbox runs the shell tool in its kernel; it finds it by this tag,
+                # so an MCP or SDK tool that happens to be named run_command stays itself.
+                awaitable._cuga_app_name = "shell"
+                bundle.execution_callables[st.name] = awaitable
         bundle.prompt_tools.extend(run_cmd_tools)
         logger.info(f"[{sandbox_label}] Injected run_command (thread_id={thread_id!r})")
 

@@ -9,11 +9,14 @@ command's stdout.
 from __future__ import annotations
 
 import base64
+import contextlib
+import io
 import json
 
 import pytest
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd.filesystem_backend import (
+    _HELPER,
     _INVOKE,
     _MAX_WRITE_CHUNK,
     ExecdFilesystemBackend,
@@ -183,3 +186,23 @@ async def test_writing_to_a_thread_without_a_kernel_still_reaches_the_sandbox():
 
     await backend.write_text("/workspace/x", "data", operation="write_file")
     assert len(fake.calls) == 1
+
+
+def test_the_in_sandbox_walk_skips_hidden_entries(tmp_path, monkeypatch):
+    """The thread's .venv holds thousands of files; the tree poll must not ship them."""
+    (tmp_path / ".venv" / "lib").mkdir(parents=True)
+    (tmp_path / ".venv" / "lib" / "x.py").write_text("")
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "b.txt").write_text("")
+    (tmp_path / "a" / ".hidden").write_text("")
+    spec = {"root": str(tmp_path), "op": "walk", "args": {}}
+    monkeypatch.setenv("CUGA_FS_OP", base64.b64encode(json.dumps(spec).encode()).decode())
+
+    namespace: dict = {}
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        exec(_HELPER, namespace)
+    line = out.getvalue().strip().split("CUGA_FS_RESULT:", 1)[1]
+    payload = json.loads(base64.b64decode(line))
+
+    assert payload == {"ok": True, "result": {"dirs": ["/workspace/a"], "files": ["/workspace/a/b.txt"]}}

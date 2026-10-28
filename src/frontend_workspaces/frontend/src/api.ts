@@ -795,28 +795,22 @@ export * from "./events/api";
 export interface SandboxSettingsStatus {
   enabled: boolean;
   required_by_config: boolean;
-  overridden: boolean;
-  connection: "secret" | "manual";
-  secret: { dir: string | null; available: boolean; found?: boolean; has_url?: boolean; has_api_key?: boolean };
-  manual: { url: string; api_key_set: boolean };
+  // A sandbox is configured (the binding is mounted), so it can be switched on.
+  available: boolean;
+  connection: "secret" | "settings";
   effective_url?: string | null;
+  // Configuration problem (no URL, no callback URL), or null.
   error: string | null;
   reachable?: boolean | null;
-  status_code?: number;
+  // Short reason the sandbox did not answer properly; details are in the server log.
   probe_error?: string;
-  auth_error?: string;
 }
 
 export async function getSandboxSettings(): Promise<Response> {
   return apiFetch(`/api/manage/sandbox`);
 }
 
-export async function putSandboxSettings(body: {
-  enabled: boolean;
-  url?: string;
-  api_key?: string;
-  clear_api_key?: boolean;
-}): Promise<Response> {
+export async function putSandboxSettings(body: { enabled: boolean }): Promise<Response> {
   return apiFetch(`/api/manage/sandbox`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },

@@ -229,10 +229,12 @@ class CodeExecutor:
                 mode = 'local'
                 forced_local = True
 
-        logger.info(
+        # INFO only under execd, where the route is worth seeing; every local block would flood the log.
+        logger.log(
+            "INFO" if mode == 'execd' else "DEBUG",
             f"[execd:route] eval_with_tools_async mode={mode} thread={thread_id} "
             f"code_lines={len(code_lines)}"
-            + (" (forced local: find_tools/load_skill)" if forced_local else "")
+            + (" (forced local: find_tools/load_skill)" if forced_local else ""),
         )
 
         # opensandbox: Python runs locally with run_command in context (forwarded to sandbox)

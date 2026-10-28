@@ -56,22 +56,26 @@ def test_ui_cannot_switch_off_a_sandbox_the_config_requires(monkeypatch):
     assert connection.status()["required_by_config"] is True
 
 
-def test_ui_switch_and_url_override_env(monkeypatch):
+def test_ui_switch_uses_the_settings_url(monkeypatch):
     monkeypatch.setattr(settings.advanced_features, "execd_url", "http://env:1", raising=False)
     connection.set_runtime_config({"enabled": True})
     assert connection.resolve().url == "http://env:1"
-
-    connection.set_runtime_config({"enabled": True, "url": "http://ui:2", "api_key_ref": ""})
-    assert connection.resolve().url == "http://ui:2"
     assert connection.effective_sandbox_mode("local") == "execd"
 
-    connection.set_runtime_config({"enabled": False, "url": "http://ui:2"})
+    connection.set_runtime_config({"enabled": False})
     assert connection.resolve() is None
     assert connection.effective_sandbox_mode("local") == "local"
 
 
+def test_url_and_key_stored_by_an_older_ui_are_ignored(monkeypatch):
+    monkeypatch.setattr(settings.advanced_features, "execd_url", "http://env:1", raising=False)
+    connection.set_runtime_config({"enabled": True, "url": "http://ui:2", "api_key_ref": "db://old"})
+
+    assert connection.resolve() == connection.SandboxConnection("http://env:1", "")
+
+
 def test_rows_saved_with_the_old_source_field_still_load():
-    connection.set_runtime_config({"source": "manual", "url": "http://ui:2"})
+    connection.set_runtime_config({"source": "manual"})
     assert connection.is_enabled()
     connection.set_runtime_config({"source": "off"})
     assert not connection.is_enabled()
@@ -79,7 +83,8 @@ def test_rows_saved_with_the_old_source_field_still_load():
 
 def test_mounted_secret_wins_over_url_and_picks_up_rotation(monkeypatch, tmp_path):
     secret = _mount_secret(monkeypatch, tmp_path)
-    connection.set_runtime_config({"enabled": True, "url": "http://ui:2", "api_key_ref": "ignored"})
+    monkeypatch.setattr(settings.advanced_features, "execd_url", "http://env:1", raising=False)
+    connection.set_runtime_config({"enabled": True})
 
     assert connection.status()["connection"] == "secret"
     assert connection.resolve() == connection.SandboxConnection("http://execd.ns.svc:44772", "k1")
@@ -91,26 +96,28 @@ def test_mounted_secret_wins_over_url_and_picks_up_rotation(monkeypatch, tmp_pat
     assert connection.resolve().api_key == "k2"
 
 
-def test_incomplete_secret_falls_back_to_url_and_key(monkeypatch, tmp_path):
+def test_incomplete_secret_falls_back_to_the_settings(monkeypatch, tmp_path):
     _mount_secret(monkeypatch, tmp_path, key=None)
-    connection.set_runtime_config({"enabled": True, "url": "http://ui:2", "api_key_ref": "K"})
+    assert connection.secret_status()["has_url"] and not connection.uses_secret()
+    assert connection.status()["available"] is False
 
-    status = connection.status()
-    assert status["connection"] == "manual"
-    assert status["secret"]["has_url"] and not status["secret"]["available"]
-    assert connection.resolve() == connection.SandboxConnection("http://ui:2", "K")
+    monkeypatch.setattr(settings.advanced_features, "execd_url", "http://env:1", raising=False)
+    monkeypatch.setattr(settings.advanced_features, "execd_api_key", "K", raising=False)
+    connection.set_runtime_config({"enabled": True})
+    assert connection.status()["connection"] == "settings"
+    assert connection.resolve() == connection.SandboxConnection("http://env:1", "K")
 
 
 def test_secret_layout_of_the_sandbox_operator(monkeypatch, tmp_path):
     secret = tmp_path / "cuga-sandbox"
     monkeypatch.setattr(settings.advanced_features, "sandbox_secret_dir", str(secret), raising=False)
-    assert connection.status()["secret"]["available"] is False
+    assert connection.status()["available"] is False
 
     secret.mkdir()
     (secret / "SANDBOX_URL").write_text("https://sandbox-api.example")
-    assert connection.status()["secret"]["available"] is False
+    assert connection.status()["available"] is False
     (secret / "SANDBOX_API_KEY").write_text("k")
-    assert connection.status()["secret"]["available"] is True
+    assert connection.status()["available"] is True
 
     connection.set_runtime_config({"enabled": True})
     assert connection.resolve() == connection.SandboxConnection("https://sandbox-api.example", "k")
@@ -122,22 +129,18 @@ def test_directory_stored_in_the_db_is_ignored(monkeypatch, tmp_path):
     connection.set_runtime_config({"enabled": True, "binding": "other"})
 
     assert connection.resolve().url == "http://env:1"
-    assert connection.status()["secret"]["dir"] == str(secret)
+    assert connection.secret_status()["dir"] == str(secret)
 
 
-def test_default_secret_dir_is_the_binding_mount(monkeypatch):
-    # The chart mounts the binding here; no env var is needed to find it.
+def test_no_secret_dir_by_default():
+    # Nothing in this repo mounts a secret; the deployment that mounts one names its directory.
     from cuga.config import validators
 
     default = next(v for v in validators if "advanced_features.sandbox_secret_dir" in v.names).default
-    assert default == "/bindings/cuga-sandbox"
-
-    monkeypatch.setattr(settings.advanced_features, "sandbox_secret_dir", default, raising=False)
-    assert str(connection.secret_dir()) == "/bindings/cuga-sandbox"
-    # Outside a pod the directory does not exist: URL and key are asked for instead.
-    assert connection.status()["connection"] == "manual"
+    assert default == ""
 
 
 def test_empty_secret_dir_disables_the_lookup(monkeypatch):
     monkeypatch.setattr(settings.advanced_features, "sandbox_secret_dir", "", raising=False)
     assert connection.secret_dir() is None
+    assert connection.status()["available"] is False

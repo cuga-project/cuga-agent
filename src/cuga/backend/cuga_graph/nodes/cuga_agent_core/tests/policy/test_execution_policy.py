@@ -12,11 +12,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import (
     ExecutionPlan,
     ExecutionRouter,
     split_execution_note,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _settings(**advanced) -> SimpleNamespace:

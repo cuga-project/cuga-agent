@@ -471,6 +471,15 @@ export function ManagePage() {
   // Events Studio entry — shown only when the events SERVICE answers (see getEventsStatus).
   const [studioOn, setStudioOn] = useState(false);
   useEffect(() => { api.getEventsStatus().then((s) => setStudioOn(!!s)).catch(() => {}); }, []);
+  // Code Sandbox section — shown only when the deployment provides a sandbox (the binding is mounted).
+  const [sandboxOn, setSandboxOn] = useState(false);
+  useEffect(() => {
+    api
+      .getSandboxSettings()
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s: api.SandboxSettingsStatus | null) => setSandboxOn(!!s?.available))
+      .catch(() => {});
+  }, []);
   // Live-config truth anchor. Sourced from GET /api/manage/config
   // (published=true) on mount and after every successful Publish — never
   // from optimistic client state. The pill in the header reads this so
@@ -2144,12 +2153,14 @@ export function ManagePage() {
               </AccordionItem>
               )}
 
+              {sandboxOn && (
               <AccordionItem title="Code Sandbox">
                 <SandboxSettings
                   onError={(title, message) => addToast("error", title, message)}
                   onSaved={(message) => addToast("success", "Code sandbox", message)}
                 />
               </AccordionItem>
+              )}
 
               {agentKind !== "supervisor" && (
               <AccordionItem title="Tools" open>

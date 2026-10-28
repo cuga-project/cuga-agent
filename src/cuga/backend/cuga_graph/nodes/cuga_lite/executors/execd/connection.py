@@ -8,12 +8,13 @@ The connection follows from what is configured, not from a separate choice:
 
 * a Kubernetes secret mounted as files in ``advanced_features.sandbox_secret_dir``
   (``url`` and ``api_key``) is used whenever it carries both;
-* otherwise the URL and API key come from ``execd_url`` / ``execd_api_key`` or
-  from the UI. A key entered in the UI is kept in the encrypted secrets store
-  and only its ``db://`` reference is persisted.
+* otherwise the URL and API key come from ``execd_url`` / ``execd_api_key`` in
+  ``settings.toml`` or the environment (local development, or ``sandbox_mode =
+  "execd"`` without a secret).
 
-The UI choice is stored in the DB and loaded with :func:`set_runtime_config`; it
-takes precedence over ``settings.toml`` / ``DYNACONF_ADVANCED_FEATURES__*`` until cleared.
+The UI can switch the sandbox on only when one of those is there; it never takes
+a URL or key itself. Its on/off choice is stored in the DB and loaded with
+:func:`set_runtime_config`.
 
 Nothing here touches the Kubernetes API. The mounted files are re-read only when
 their mtime changes, so a rotated secret is picked up without a restart and
@@ -29,7 +30,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
-from cuga.backend.secrets.secret_resolver import parse_ref, resolve_secret
+from cuga.backend.secrets.secret_resolver import resolve_secret
 from cuga.config import settings
 
 # File names accepted inside the mounted secret directory, first match wins.
@@ -44,10 +45,11 @@ class SandboxConnection:
 
 
 _lock = threading.Lock()
-# Runtime override loaded from the DB: {"enabled", "url", "api_key_ref"}.
+# Runtime override loaded from the DB: {"enabled"}. Rows saved by older versions
+# may also hold "url" / "api_key_ref", which are ignored.
 _runtime: Optional[dict[str, Any]] = None
-# (ref, resolved value) for the manual API key, so the secrets store is not hit per request.
-_manual_key_cache: Optional[tuple[str, str]] = None
+# (ref, resolved value) for the env API key, so a secret reference is not resolved per request.
+_env_key_cache: Optional[tuple[str, str]] = None
 # (file signature, connection) for the mounted cluster secret.
 _cluster_cache: Optional[tuple[tuple, SandboxConnection]] = None
 
@@ -57,7 +59,7 @@ def _adv(name: str, default: Any = None) -> Any:
 
 
 def env_defaults() -> dict[str, Any]:
-    """URL and key as given by settings.toml / env, before any UI override.
+    """URL and key as given by settings.toml / env.
 
     ``sandbox_url`` / ``sandbox_api_key`` are what the sandbox-binding secret
     sets when injected with ``envFrom`` (``DYNACONF_ADVANCED_FEATURES__SANDBOX_*``).
@@ -96,12 +98,9 @@ def is_enabled() -> bool:
     return bool((get_runtime_config() or {}).get("enabled"))
 
 
-def manual_config() -> dict[str, Any]:
-    """URL and key reference used when no secret is mounted: the UI's, else the environment's."""
-    runtime = get_runtime_config() or {}
-    if "url" in runtime:
-        return {"url": runtime.get("url") or "", "api_key_ref": runtime.get("api_key_ref") or ""}
-    return env_defaults()
+def available() -> bool:
+    """Whether a sandbox connection is configured, so the sandbox can be switched on."""
+    return uses_secret() or bool(env_defaults()["url"])
 
 
 def effective_sandbox_mode(configured: str) -> str:
@@ -120,9 +119,9 @@ def execd_active() -> bool:
 
 def refresh() -> None:
     """Drop cached secrets so the next lookup re-reads them."""
-    global _manual_key_cache, _cluster_cache
+    global _env_key_cache, _cluster_cache
     with _lock:
-        _manual_key_cache = None
+        _env_key_cache = None
         _cluster_cache = None
 
 
@@ -139,7 +138,7 @@ def secret_status() -> dict[str, Any]:
         info["found"] = directory.is_dir()
         info["has_url"] = _find_file(directory, URL_FILES) is not None
         info["has_api_key"] = _find_file(directory, API_KEY_FILES) is not None
-    # Used only when the secret carries both; otherwise the URL and key are entered by hand.
+    # Used only when the secret carries both; otherwise execd_url / execd_api_key apply.
     info["available"] = bool(info.get("found") and info.get("has_url") and info.get("has_api_key"))
     return info
 
@@ -185,92 +184,69 @@ def _read_cluster() -> SandboxConnection:
     return conn
 
 
-def _resolve_manual_key(ref: str) -> str:
-    global _manual_key_cache
+def _resolve_env_key(ref: str) -> str:
+    """The env API key: a literal value, or a ``vault://`` / ``aws://`` / ``env://`` reference."""
+    global _env_key_cache
     if not ref:
         return ""
-    if not ref.startswith(("db://", "vault://", "aws://", "env://")):
+    if not ref.startswith(("vault://", "aws://", "env://")):
         # A key given directly in the environment; resolve_secret would mistake
         # an all-caps value for an env var name.
         return ref
     with _lock:
-        if _manual_key_cache is not None and _manual_key_cache[0] == ref:
-            return _manual_key_cache[1]
-    if ref.startswith("db://"):
-        # Never read the DB synchronously: get_secret_sync runs the query on a new
-        # event loop in a worker thread, which fails against (and can poison) the
-        # asyncpg pool owned by the server's loop. load_manual_key() fills the cache.
-        logger.warning(
-            "[execd:conn] Sandbox API key {} is not loaded; requests go out without X-API-Key. "
-            "Use Manage → Code sandbox → Test again, or re-enter the key.",
-            ref,
-        )
-        value = ""
-    else:
-        value = resolve_secret(ref) or ""
-        if not value:
-            logger.warning("[execd:conn] Sandbox API key reference could not be resolved")
+        if _env_key_cache is not None and _env_key_cache[0] == ref:
+            return _env_key_cache[1]
+    value = resolve_secret(ref) or ""
+    if not value:
+        logger.warning("[execd:conn] Sandbox API key reference could not be resolved")
     with _lock:
-        _manual_key_cache = (ref, value)
+        _env_key_cache = (ref, value)
     return value
 
 
-def prime_manual_key(ref: str, value: str) -> None:
-    """Cache the value of the manual key reference, so requests need no secrets lookup."""
-    global _manual_key_cache
-    with _lock:
-        _manual_key_cache = (ref, value)
-
-
-async def load_manual_key() -> None:
-    """Read a ``db://`` manual key from the secrets store into the cache.
-
-    Called from async code (startup, PUT, refresh) because the DB can only be
-    read safely on the server's own event loop.
-    """
-    ref = manual_config()["api_key_ref"]
-    if not ref.startswith("db://"):
-        return
-    from cuga.backend.storage import secrets_store
-
-    _, secret_id = parse_ref(ref)
-    value = await secrets_store.get_secret(secret_id) or ""
-    if not value:
-        logger.warning(
-            f"[execd:conn] Sandbox API key {ref} not found in the secrets store (is CUGA_SECRET_KEY set?)"
-        )
-    prime_manual_key(ref, value)
+def configured() -> SandboxConnection:
+    """The connection the deployment configures, whether or not the sandbox is on."""
+    if uses_secret():
+        return _read_cluster()
+    env = env_defaults()
+    return SandboxConnection(url=env["url"], api_key=_resolve_env_key(env["api_key_ref"]))
 
 
 def resolve() -> Optional[SandboxConnection]:
     """Current connection, or ``None`` when the sandbox is off."""
     if not is_enabled():
         return None
-    if uses_secret():
-        return _read_cluster()
-    manual = manual_config()
-    return SandboxConnection(url=manual["url"], api_key=_resolve_manual_key(manual["api_key_ref"]))
+    return configured()
+
+
+def problem() -> Optional[str]:
+    """What stops the sandbox from working, from configuration alone; ``None`` when nothing does."""
+    try:
+        conn = configured()
+    except Exception as e:
+        return str(e)
+    if not conn.url:
+        return "Sandbox URL is not configured"
+    from . import tool_callback
+
+    if not tool_callback.callback_url():
+        # Every tool the code calls comes back to CUGA at this address.
+        return "advanced_features.sandbox_callback_url is not set, so code in the sandbox cannot call tools"
+    return None
 
 
 def status() -> dict[str, Any]:
     """Description of the current configuration for the UI. Never includes the key itself."""
     secret = secret_status()
-    manual = manual_config()
     enabled = is_enabled()
     result: dict[str, Any] = {
         "enabled": enabled,
         "required_by_config": required_by_config(),
-        "overridden": get_runtime_config() is not None,
-        "connection": "secret" if secret["available"] else "manual",
-        "secret": secret,
-        # Reported while the secret is in use too, so the UI can prefill the fields if it goes away.
-        "manual": {"url": manual["url"], "api_key_set": bool(manual["api_key_ref"])},
-        "error": None,
+        # The Manage UI shows the sandbox only when it can be switched on.
+        "available": available() or enabled,
+        "connection": "secret" if secret["available"] else "settings",
+        "error": problem() if enabled else None,
     }
-    if enabled:
-        try:
-            conn = resolve()
-            result["effective_url"] = conn.url if conn else None
-        except Exception as e:
-            result["error"] = str(e)
+    if enabled and not result["error"]:
+        result["effective_url"] = configured().url
     return result

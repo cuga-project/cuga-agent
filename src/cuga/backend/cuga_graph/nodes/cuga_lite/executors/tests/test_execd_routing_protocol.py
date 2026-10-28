@@ -33,7 +33,10 @@ def fake_sandbox(monkeypatch):
         )
 
     monkeypatch.setattr(ExecdExecutor, "_client", classmethod(client))
-    connection.set_runtime_config({"enabled": True, "url": "https://sandbox.example", "api_key_ref": "K"})
+    monkeypatch.setattr(settings.advanced_features, "sandbox_secret_dir", "", raising=False)
+    monkeypatch.setattr(settings.advanced_features, "execd_url", "https://sandbox.example", raising=False)
+    monkeypatch.setattr(settings.advanced_features, "execd_api_key", "K", raising=False)
+    connection.set_runtime_config({"enabled": True})
     ExecdExecutor._contexts.clear()
     ExecdExecutor._thread_of_context.clear()
     ExecdExecutor._contexts_url = None
@@ -65,6 +68,24 @@ async def test_thread_id_and_identity_headers_on_every_request(fake_sandbox):
 
 
 @pytest.mark.asyncio
+async def test_every_request_names_the_thread_by_its_sandbox_id(fake_sandbox):
+    # An id sandbox-api would rewrite ("#" -> "-") is sent hashed on every route,
+    # so "victim#x" cannot reach thread "victim" or share "victim-x"'s workspace.
+    thread = "victim#x"
+    sandbox_id = ExecdExecutor._workspace_name(thread)
+    await ExecdExecutor._run_remote("print('x')", thread)
+    await ExecdExecutor._run_shell_command("ls", thread)
+    await ExecdExecutor.release_thread(thread)
+
+    for r in fake_sandbox:
+        if r.method == "POST":
+            assert json.loads(r.content)["thread_id"] == sandbox_id
+    assert fake_sandbox[-1].method == "DELETE"
+    assert fake_sandbox[-1].url.path == f"/threads/{sandbox_id}"
+    assert ExecdExecutor._workspace_path(thread) == f"/workspace/{sandbox_id}"
+
+
+@pytest.mark.asyncio
 async def test_throwaway_context_still_routes_consistently(fake_sandbox):
     await ExecdExecutor._run_remote("print('x')", None)
     ids = {json.loads(r.content)["thread_id"] for r in fake_sandbox if r.method == "POST"}
@@ -91,14 +112,14 @@ def test_verify_ssl_setting(monkeypatch, value, expected):
 async def test_identity_headers_come_from_conversation_scope(fake_sandbox):
     state = Mock(spec=AgentState)
     state.variables_manager = VariablesManager()
-    state.service_scope = {"tenant_id": "tenant-12345", "agent_id": "my-agent"}
+    state.service_scope = {"tenant_id": "tenant-a", "agent_id": "my-agent"}
 
     ExecdExecutor._remember_scope("thread-s", state)
     await ExecdExecutor._run_remote("print(1)", "thread-s")
     await ExecdExecutor.release_thread("thread-s")
 
     for r in fake_sandbox:
-        assert r.headers["X-Tenant-Id"] == "tenant-12345"
+        assert r.headers["X-Tenant-Id"] == "tenant-a"
         assert r.headers["X-Agent-Id"] == "my-agent"
     assert fake_sandbox[-1].method == "DELETE"
     assert "thread-s" not in ExecdExecutor._scope_of_thread
@@ -121,3 +142,39 @@ async def test_release_without_thread_id_sends_nothing(fake_sandbox):
     await ExecdExecutor.release_thread(None)
 
     assert fake_sandbox == []
+
+
+@pytest.mark.asyncio
+async def test_a_call_before_any_turn_is_logged_under_the_threads_own_agent(fake_sandbox, monkeypatch):
+    # Uploads and the workspace panel reach the sandbox before code runs (review item 38):
+    # sandbox-api and execd log them under the agent the thread belongs to, not cuga-default.
+    from cuga.backend.server import conversation_history
+
+    class _DB:
+        async def get_thread_agent(self, thread_id):
+            return "crm-agent" if thread_id == "thread-u" else None
+
+    monkeypatch.setattr(conversation_history, "get_conversation_db", lambda: _DB())
+    ExecdExecutor._scope_of_thread.pop("thread-u", None)
+
+    await ExecdExecutor._run_shell_command("ls", "thread-u")
+
+    assert fake_sandbox and all(r.headers["X-Agent-Id"] == "crm-agent" for r in fake_sandbox)
+    assert all(r.headers["X-Tenant-Id"] for r in fake_sandbox)
+    ExecdExecutor._scope_of_thread.pop("thread-u", None)
+
+
+@pytest.mark.asyncio
+async def test_a_failing_agent_lookup_does_not_stop_the_call(fake_sandbox, monkeypatch):
+    from cuga.backend.server import conversation_history
+
+    class _DB:
+        async def get_thread_agent(self, thread_id):
+            raise ConnectionError("db down")
+
+    monkeypatch.setattr(conversation_history, "get_conversation_db", lambda: _DB())
+    ExecdExecutor._scope_of_thread.pop("thread-v", None)
+
+    await ExecdExecutor._run_shell_command("ls", "thread-v")
+
+    assert fake_sandbox[-1].headers["X-Agent-Id"] == "cuga-default"

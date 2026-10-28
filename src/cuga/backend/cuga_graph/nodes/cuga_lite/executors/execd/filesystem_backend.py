@@ -149,10 +149,14 @@ def run():
         dirs, files = [], []
         if base.exists():
             for dirpath, dirnames, filenames in os.walk(str(base)):
+                # Hidden entries (the thread's .venv above all) are never shown; pruning
+                # them here keeps thousands of package files out of every tree poll.
+                dirnames[:] = [name for name in dirnames if not name.startswith(".")]
                 for name in sorted(dirnames):
                     dirs.append(public(Path(dirpath) / name))
                 for name in sorted(filenames):
-                    files.append(public(Path(dirpath) / name))
+                    if not name.startswith("."):
+                        files.append(public(Path(dirpath) / name))
         return {"dirs": sorted(dirs), "files": sorted(files)}
 
     if op == "rmtree":

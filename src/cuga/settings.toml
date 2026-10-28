@@ -36,23 +36,24 @@ opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; req
 # Generated Python (CugaLite and CodeAgent), shell, filesystem tools and the workspace
 # panel then run in a per-thread kernel inside the sandbox. The connection is picked
 # automatically: the mounted secret (sandbox_secret_dir) when it carries url and api_key,
-# otherwise execd_url / execd_api_key below. URL and key entered in the UI are stored in
-# the DB and override these until reset.
+# otherwise execd_url / execd_api_key below. Manage shows the switch only when one of them
+# is configured; it never takes a URL or key itself.
 # URL of the code-execution sandbox-api (CUGA never talks to execd directly), e.g.
 # https://sandbox-api-<tenant>.apps.<cluster>. Env: DYNACONF_ADVANCED_FEATURES__EXECD_URL,
 # or DYNACONF_ADVANCED_FEATURES__SANDBOX_URL as set by the sandbox-binding secret.
 # Required when the sandbox is on and no secret is mounted; there is no default.
 execd_url = ""
 # sandbox-api key. Empty for local dev where the sandbox is network-isolated. Plain value or a
-# secret ref (db://, vault://, env://). Env: DYNACONF_ADVANCED_FEATURES__EXECD_API_KEY,
+# secret ref (vault://, aws://, env://). Env: DYNACONF_ADVANCED_FEATURES__EXECD_API_KEY,
 # or DYNACONF_ADVANCED_FEATURES__SANDBOX_API_KEY as set by the sandbox-binding secret.
 execd_api_key = ""
 # Kubernetes secret with the sandbox connection, mounted as files. When it holds both a URL and
-# a key it is used instead of execd_url / execd_api_key and the UI asks for nothing. URL file:
+# a key it is used instead of execd_url / execd_api_key. URL file:
 # url, execd_url, EXECD_URL or SANDBOX_URL; key file: api_key, apiKey,
 # execd_api_key, EXECD_API_KEY or SANDBOX_API_KEY. Re-read when the files change, so rotation needs no restart.
-# Mount it with `optional: true` so the pod starts without it; a missing directory means URL/key are entered by hand.
-sandbox_secret_dir = "/bindings/cuga-sandbox"  # directory the secret is mounted at; empty disables the lookup. Env: DYNACONF_ADVANCED_FEATURES__SANDBOX_SECRET_DIR
+# Mount it with `optional: true` so the pod starts without it; without it the sandbox is not offered.
+# Empty (default) = no secret. The deployment that mounts it sets the directory, e.g. /bindings/cuga-sandbox.
+sandbox_secret_dir = ""  # Env: DYNACONF_ADVANCED_FEATURES__SANDBOX_SECRET_DIR
 # TLS verification for execd/sandbox-api calls: true (default; system/certifi CAs), a path to a
 # CA bundle for self-signed routes, or false (insecure; dev only). Env: DYNACONF_ADVANCED_FEATURES__EXECD_VERIFY_SSL
 execd_verify_ssl = true
@@ -61,8 +62,8 @@ execd_verify_ssl = true
 execd_package_index = ""
 # Address of this CUGA server as the execd sandbox reaches it, e.g. http://cuga.<ns>.svc:7860.
 # Every tool the agent's code calls in the sandbox is POSTed back here to {url}/sandbox/tools/call
-# and runs in CUGA (registry, MCP, SDK tools, todos, ToolGuard, call budget). Empty = use
-# server_ports.function_call_host. The sandbox network policy must allow egress to it.
+# and runs in CUGA (registry, MCP, SDK tools, todos, ToolGuard, call budget). Required when the
+# sandbox is on: without it no tool can be called from code. The sandbox network policy must allow egress to it.
 # Env: DYNACONF_ADVANCED_FEATURES__SANDBOX_CALLBACK_URL
 sandbox_callback_url = ""
 # Per-block wall clock in the execd sandbox, in seconds. Longer than sandbox_execution_timeout by

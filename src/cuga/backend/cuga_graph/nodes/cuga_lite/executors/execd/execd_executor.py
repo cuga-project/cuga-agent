@@ -28,11 +28,11 @@ Log levels:
   WARNING — degraded paths (no key, bootstrap failed, throwaway context)
 """
 
+import ast
 import asyncio
+import hashlib
 import inspect
 import json
-import re
-import shlex
 import time
 import uuid
 from typing import Any, Callable, List, Optional
@@ -43,11 +43,18 @@ from loguru import logger
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState, VariablesManager
 from cuga.config import get_tenant_id, settings
+from ..common.benchmark_mode import is_relaxed_execution
 from ..common.run_output import format_run_command_output
-from ..filesystem.paths import normalize_shell_command_paths
 from ..base_executor import RemoteExecutor
 from ...tracking.tracker import counted_tool_call
 from . import block_runner, connection, tool_callback
+from .kernel_templates import (
+    CHARGE_NAME,
+    charged_tools_code,
+    filesystem_tools_code,
+    rewrite_workspace_paths,
+    shell_tool_code,
+)
 
 
 def _block_timeout() -> int:
@@ -56,13 +63,77 @@ def _block_timeout() -> int:
     return int(getattr(adv, "execd_execution_timeout", 0) or adv.sandbox_execution_timeout)
 
 
+def _redact_url(url: str) -> str:
+    """The URL without ``user:password@``, for logs. The package index may carry a token."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "(unparseable URL)"
+    if not parts.username and not parts.password:
+        return url
+    host = parts.hostname or ""
+    if parts.port:
+        host += f":{parts.port}"
+    return urlunsplit(parts._replace(netloc=f"***@{host}"))
+
+
+def _names_used(code: str) -> set[str]:
+    """Every identifier the code reads, as AST ``Name`` nodes (not strings or attributes)."""
+    return {node.id for node in ast.walk(ast.parse(code)) if isinstance(node, ast.Name)}
+
+
+_KERNEL_PREFIXES = ("_cuga", "_Cuga", "_CUGA")
+# A kernel keeps every global of every block, and runs with full builtins. These
+# reach those globals or a shell without naming a blocked module.
+_KERNEL_FORBIDDEN_NAMES = frozenset({"globals", "vars"})
+_KERNEL_FORBIDDEN_ATTRS = frozenset({"create_subprocess_shell", "create_subprocess_exec", "subprocess"})
+
+
+def _check_kernel_access(wrapped_code: str) -> None:
+    """Refuse code reaching the kernel's own helpers, which ``SecurityValidator`` does not know.
+
+    Under execd the agent's code shares a long-lived kernel with CUGA's helpers
+    (``_cuga_sh_os``, ``_cuga_cb_call``, ``_cuga_r_sys``, …). Through them it could
+    run a shell with the shell tool off, import a module off the allowlist or
+    call out over HTTP. A ``_cuga`` name is allowed only where the code binds it
+    itself, as ``CodeWrapper`` does for the frozen clock: inside the block's
+    function such a name is local, so it cannot read the kernel's.
+
+    A mitigation, not the boundary: the sandbox confines the thread whatever
+    the code does, and the tool callback answers only tools the block names.
+    """
+    if is_relaxed_execution():
+        return
+    tree = ast.parse(wrapped_code)
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            bound.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.alias):
+            bound.add(node.asname or node.name.split(".")[0])
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for name in node.names:
+                if name.startswith(_KERNEL_PREFIXES):
+                    raise PermissionError(f"Security violation: '{name}' is reserved for the sandbox runtime")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            name = node.id
+            if name.startswith(_KERNEL_PREFIXES) and name not in bound:
+                raise PermissionError(f"Security violation: '{name}' is reserved for the sandbox runtime")
+            if name in _KERNEL_FORBIDDEN_NAMES or (name.startswith("__") and name.endswith("__")):
+                raise PermissionError(f"Security violation: '{name}' is not allowed in sandbox code")
+        elif isinstance(node, ast.Attribute):
+            if node.attr in _KERNEL_FORBIDDEN_ATTRS or node.attr.startswith(_KERNEL_PREFIXES):
+                raise PermissionError(f"Security violation: '{node.attr}' is not allowed in sandbox code")
+
+
 def _is_callable_table(value: Any) -> bool:
     """A dict whose values are all callables, like the function-calling ``_fc_tools`` lookup."""
     return isinstance(value, dict) and bool(value) and all(callable(v) for v in value.values())
-
-
-# Name of the callback the in-kernel tools charge the call budget through.
-_CHARGE_NAME = "_cuga_charge_tool_call"
 
 
 def _budget_charge() -> Callable[..., Any]:
@@ -78,23 +149,6 @@ def _budget_charge() -> Callable[..., Any]:
         return None
 
     return counted_tool_call(_charge)
-
-
-def _charged_tools_code(names: list[str]) -> str:
-    """Kernel Python wrapping each in-kernel tool so it charges the budget before it runs."""
-    lines = [
-        "def _cuga_charged(_fn):",
-        "    async def _cuga_charged_call(*args, **kwargs):",
-        f"        await {_CHARGE_NAME}(_fn.__name__)",
-        "        return await _fn(*args, **kwargs)",
-        "    _cuga_charged_call.__name__ = _fn.__name__",
-        "    _cuga_charged_call.__doc__ = _fn.__doc__",
-        "    return _cuga_charged_call",
-        "",
-    ]
-    for name in names:
-        lines.append(f"if {name!r} in globals(): {name} = _cuga_charged({name})")
-    return "\n".join(lines) + "\n"
 
 
 class _KernelGone(Exception):
@@ -123,7 +177,7 @@ class ExecdExecutor(RemoteExecutor):
         # fall back to the configured URL rather than failing.
         conn = connection.resolve()
         if conn is None:
-            return connection.SandboxConnection(url=connection.manual_config()["url"], api_key="")
+            return connection.SandboxConnection(url=connection.env_defaults()["url"], api_key="")
         return conn
 
     @classmethod
@@ -132,7 +186,7 @@ class ExecdExecutor(RemoteExecutor):
         if not url:
             raise RuntimeError(
                 "Sandbox URL is not configured: mount the sandbox secret (sandbox_secret_dir), "
-                "set DYNACONF_ADVANCED_FEATURES__SANDBOX_URL / EXECD_URL, or enter it in Manage → Code sandbox"
+                "or set DYNACONF_ADVANCED_FEATURES__EXECD_URL / SANDBOX_URL"
             )
         return url
 
@@ -155,7 +209,7 @@ class ExecdExecutor(RemoteExecutor):
             # anything else is likely an endpoint that should be protected.
             logger.warning(
                 "[ExecdExecutor] execd URL looks like a remote endpoint ({}) but no API key is configured. "
-                "Set one in Manage → Code sandbox, or use the cluster secret.",
+                "Mount the sandbox secret, or set DYNACONF_ADVANCED_FEATURES__EXECD_API_KEY.",
                 conn.url,
             )
         headers = {"X-API-Key": conn.api_key} if conn.api_key else {}
@@ -183,6 +237,27 @@ class ExecdExecutor(RemoteExecutor):
         known = {k: str(scope[k]) for k in ("tenant_id", "agent_id") if scope.get(k)}
         if known:
             cls._scope_of_thread[thread_id] = known
+
+    @classmethod
+    async def _load_scope(cls, thread_id: str) -> None:
+        """Fill the thread's agent from the conversation DB when no turn has named it yet.
+
+        Uploads and the workspace panel reach the sandbox before any code runs,
+        so ``_remember_scope`` has not seen the thread. Without this they would
+        be logged under ``cuga-default`` in sandbox-api and execd.
+        """
+        if cls._scope_of_thread.get(thread_id, {}).get("agent_id"):
+            return
+        try:
+            from cuga.backend.server.conversation_history import get_conversation_db
+
+            agent_id = await get_conversation_db().get_thread_agent(thread_id)
+        except Exception as exc:
+            # Logging labels only: a DB problem must not stop the sandbox call.
+            logger.debug(f"[execd:ctx] Could not look up the agent of thread={thread_id}: {exc}")
+            return
+        if agent_id:
+            cls._scope_of_thread.setdefault(thread_id, {})["agent_id"] = agent_id
 
     @classmethod
     def _client(cls, timeout: float, thread: Optional[str] = None) -> httpx.AsyncClient:
@@ -242,6 +317,7 @@ class ExecdExecutor(RemoteExecutor):
 
         key = thread_id
         cls._sync_endpoint()
+        await cls._load_scope(key)
         async with cls._get_key_lock(key):
             existing = cls._contexts.get(key)
             if existing is not None:
@@ -287,8 +363,9 @@ class ExecdExecutor(RemoteExecutor):
                     files[f"skills/{entry.name}/{path.relative_to(root).as_posix()}"] = path.read_bytes()
         return files
 
-    # sandbox-api takes the command as one string, so the archive rides inside it.
-    _SKILLS_MAX_BYTES = 4 * 1024 * 1024
+    # The archive travels as one environment variable, and Linux caps a single
+    # env string at 128 KiB (sandbox-api refuses anything larger with 422).
+    _SKILLS_MAX_ARCHIVE_CHARS = 120 * 1024
 
     @classmethod
     async def _copy_skills_to_workspace(cls, thread_id: str) -> None:
@@ -311,12 +388,6 @@ class ExecdExecutor(RemoteExecutor):
         if not files:
             return
         total = sum(len(data) for data in files.values())
-        if total > cls._SKILLS_MAX_BYTES:
-            logger.warning(
-                f"[execd:ctx] Skills are {total} bytes, over {cls._SKILLS_MAX_BYTES}; "
-                f"not copied to thread={thread_id}"
-            )
-            return
 
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
@@ -325,6 +396,12 @@ class ExecdExecutor(RemoteExecutor):
                 info.size = len(data)
                 tar.addfile(info, io.BytesIO(data))
         archive = base64.b64encode(buf.getvalue()).decode("ascii")
+        if len(archive) > cls._SKILLS_MAX_ARCHIVE_CHARS:
+            logger.warning(
+                f"[execd:ctx] Skills archive is {len(archive)} characters, over "
+                f"{cls._SKILLS_MAX_ARCHIVE_CHARS}; not copied to thread={thread_id}"
+            )
+            return
         command = 'printf %s "$CUGA_SKILLS_TGZ" | base64 -d | tar -xz --skip-old-files -f -'
         try:
             _out, err, failed = await cls._run_shell_command(
@@ -347,7 +424,8 @@ class ExecdExecutor(RemoteExecutor):
         routing_id = bootstrap_key or f"throwaway-{uuid.uuid4().hex}"
         async with cls._client(timeout, routing_id) as client:
             response = await client.post(
-                f"{cls._base_url()}/code/context", json={"thread_id": routing_id, "language": "python"}
+                f"{cls._base_url()}/code/context",
+                json={"thread_id": cls._workspace_name(routing_id), "language": "python"},
             )
             response.raise_for_status()
             context_id = response.json()["id"]
@@ -363,13 +441,19 @@ class ExecdExecutor(RemoteExecutor):
 
     @staticmethod
     def _workspace_name(key: str) -> str:
-        """Filesystem-safe directory name for a thread id.
+        """The thread's id in sandbox-api, which is also its workspace directory name.
 
-        Thread ids reach us from callers, so anything outside this set — a
-        slash or a `..` in particular — must not survive into a path.
+        sandbox-api confines a thread to the directory named after the id it is
+        sent, mapping every character outside ``[A-Za-z0-9_-]`` to ``-`` and
+        cutting at 64. That mapping is not one-to-one — ``a.b`` and ``a-b`` would
+        share a workspace and a kernel — so an id it would change is replaced
+        here by its readable prefix plus a hash of the full id. Ids it keeps
+        as they are, UUIDs included, are sent unchanged.
         """
-        safe = "".join(c if (c.isalnum() or c in "-_") else "-" for c in key)
-        return safe[:64] or "default"
+        if key and len(key) <= 64 and all(c.isascii() and (c.isalnum() or c in "-_") for c in key):
+            return key
+        safe = "".join(c if (c.isascii() and (c.isalnum() or c in "-_")) else "-" for c in key)
+        return f"{safe[:39]}-{hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]}"
 
     @classmethod
     async def _bootstrap_context(cls, context_id: str, key: str) -> None:
@@ -391,69 +475,76 @@ class ExecdExecutor(RemoteExecutor):
         logger.info(
             f"[execd:ctx] Bootstrap start context_id={context_id} "
             f"workspace={workspace} "
-            f"package_index={index_url or '(none — installs will fail closed)'}"
+            f"package_index={_redact_url(index_url) or '(none — installs will fail closed)'}"
         )
+        # Inside a function, so none of its names (os, site, the urllib aliases)
+        # stay in the kernel's globals where agent code could pick them up.
         bootstrap = f"""
-import os, site, subprocess, sys
+def _cuga_bootstrap():
+    import os, site, subprocess, sys
 
-_ws = os.path.join("/workspace", {name!r})
-os.makedirs(_ws, exist_ok=True)
-os.chdir(_ws)
+    _ws = os.path.join("/workspace", {name!r})
+    os.makedirs(_ws, exist_ok=True)
+    os.chdir(_ws)
 
-_venv = os.path.join(_ws, ".venv")
-if not os.path.isdir(_venv):
-    try:
-        subprocess.run(["uv", "venv", "--seed", _venv], capture_output=True, timeout=120)
-    except Exception as _exc:
-        print("execd bootstrap: uv venv failed:", _exc)
+    _venv = os.path.join(_ws, ".venv")
+    if not os.path.isdir(_venv):
+        try:
+            subprocess.run(["uv", "venv", "--seed", _venv], capture_output=True, timeout=120)
+        except Exception as _exc:
+            print("execd bootstrap: uv venv failed:", _exc)
 
-# Fallback in case seed is missing pip or pip executable
-_pip_bin = os.path.join(_venv, "bin", "pip")
-if not os.path.exists(_pip_bin):
-    try:
-        subprocess.run(["uv", "pip", "install", "pip", "--python", os.path.join(_venv, "bin", "python")], capture_output=True, timeout=120)
-    except Exception:
-        pass
+    # Fallback in case seed is missing pip or pip executable
+    _pip_bin = os.path.join(_venv, "bin", "pip")
+    if not os.path.exists(_pip_bin):
+        try:
+            subprocess.run(["uv", "pip", "install", "pip", "--python", os.path.join(_venv, "bin", "python")], capture_output=True, timeout=120)
+        except Exception:
+            pass
 
-_sp = os.path.join(
-    _venv, "lib", "python{{}}.{{}}".format(*sys.version_info[:2]), "site-packages"
-)
-if os.path.isdir(_sp):
-    site.addsitedir(_sp)
-    # addsitedir appends; put the private packages ahead of the shared ones.
-    if _sp in sys.path:
-        sys.path.remove(_sp)
-    sys.path.insert(0, _sp)
-import importlib as _importlib
-_importlib.invalidate_caches()
+    _sp = os.path.join(
+        _venv, "lib", "python{{}}.{{}}".format(*sys.version_info[:2]), "site-packages"
+    )
+    if os.path.isdir(_sp):
+        site.addsitedir(_sp)
+        # addsitedir appends; put the private packages ahead of the shared ones.
+        if _sp in sys.path:
+            sys.path.remove(_sp)
+        sys.path.insert(0, _sp)
+    import importlib as _importlib
+    _importlib.invalidate_caches()
 
-# Package installs land in this thread's venv, never in the image-wide
-# site-packages (which is read-only under the sandbox policy anyway).
-# UV_PYTHON pins the interpreter for uv so `uv pip install` targets the venv
-# even when uv's discovery heuristics run before VIRTUAL_ENV is read.
-os.environ["VIRTUAL_ENV"] = _venv
-os.environ["UV_PYTHON"] = os.path.join(_venv, "bin", "python")
-os.environ["PATH"] = os.path.join(_venv, "bin") + os.pathsep + os.environ.get("PATH", "")
+    # Package installs land in this thread's venv, never in the image-wide
+    # site-packages (which is read-only under the sandbox policy anyway).
+    # UV_PYTHON pins the interpreter for uv so `uv pip install` targets the venv
+    # even when uv's discovery heuristics run before VIRTUAL_ENV is read.
+    os.environ["VIRTUAL_ENV"] = _venv
+    os.environ["UV_PYTHON"] = os.path.join(_venv, "bin", "python")
+    os.environ["PATH"] = os.path.join(_venv, "bin") + os.pathsep + os.environ.get("PATH", "")
 
-_index = {index_url!r}
-if _index:
-    os.environ["UV_INDEX_URL"] = _index
-    os.environ["PIP_INDEX_URL"] = _index
-    # uv resolves against this index only; nothing reaches the default PyPI
-    # unless the operator configured it explicitly.
-    os.environ["UV_INDEX_STRATEGY"] = "first-index"
+    _index = {index_url!r}
+    if _index:
+        os.environ["UV_INDEX_URL"] = _index
+        os.environ["PIP_INDEX_URL"] = _index
+        # uv resolves against this index only; nothing reaches the default PyPI
+        # unless the operator configured it explicitly.
+        os.environ["UV_INDEX_STRATEGY"] = "first-index"
 
-# Every tool call goes back to CUGA; say now, not at the first tool call, if it cannot.
-_cb = {callback!r}
-if _cb:
-    import urllib.request as _ur, urllib.error as _ue
-    try:
-        _ur.urlopen(_ur.Request(_cb + "/sandbox/tools/call", data=b"{{}}", method="POST",
-                                headers={{"Content-Type": "application/json"}}), timeout=5)
-    except _ue.HTTPError:
-        pass  # any HTTP answer means CUGA is reachable
-    except Exception as _exc:
-        print("CUGA_CALLBACK_UNREACHABLE", _cb, _exc)
+    # Every tool call goes back to CUGA; say now, not at the first tool call, if it cannot.
+    _cb = {callback!r}
+    if _cb:
+        import urllib.request as _ur, urllib.error as _ue
+        try:
+            _ur.urlopen(_ur.Request(_cb + "/sandbox/tools/call", data=b"{{}}", method="POST",
+                                    headers={{"Content-Type": "application/json"}}), timeout=5)
+        except _ue.HTTPError:
+            pass  # any HTTP answer means CUGA is reachable
+        except Exception as _exc:
+            print("CUGA_CALLBACK_UNREACHABLE", _cb, _exc)
+
+
+_cuga_bootstrap()
+del _cuga_bootstrap
 """
         t0 = time.monotonic()
         try:
@@ -537,7 +628,7 @@ if _cb:
         payload: dict[str, Any] = {"context": {"id": context_id, "language": "python"}, "code": code}
         thread = cls._thread_of_context.get(context_id)
         if thread:
-            payload["thread_id"] = thread
+            payload["thread_id"] = cls._workspace_name(thread)
         async with cls._client(timeout, thread) as client:
             async with client.stream("POST", f"{cls._base_url()}/code", json=payload) as response:
                 await cls._raise_for_status(response)
@@ -674,8 +765,9 @@ if _cb:
             )
 
         t0 = time.monotonic()
+        routing_id = cls._thread_of_context.get(context_id) or thread_id
         payload: dict[str, Any] = {
-            "thread_id": cls._thread_of_context.get(context_id) or thread_id,
+            "thread_id": cls._workspace_name(routing_id),
             "command": command,
             "cwd": workspace,
             "timeout": int(timeout_s * 1000),
@@ -684,7 +776,7 @@ if _cb:
             # or `uv pip install` would write to the image-wide site-packages.
             # UV_PYTHON pins the interpreter so `uv pip install` targets the
             # thread venv even when uv's discovery runs before VIRTUAL_ENV is
-            # read (observed on the OCP/UBI9 image).
+            # read (observed on the sandbox image).
             "envs": {
                 "VIRTUAL_ENV": venv,
                 "PATH": f"{venv}/bin:/usr/local/bin:/usr/bin:/bin",
@@ -702,13 +794,7 @@ if _cb:
             # out of shell quoting entirely.
             payload["envs"].update(extra_env)
 
-        # sandbox-api's /command accepts only thread_id and command and drops cwd and
-        # envs, so they are also folded into the command itself. Plain execd honours
-        # both fields; for it the prefix is redundant but harmless.
-        exports = " ".join(f"export {k}={shlex.quote(v)};" for k, v in payload["envs"].items())
-        payload["command"] = f"cd {shlex.quote(workspace)} || exit 1; {exports} {command}"
-
-        async with cls._client(timeout_s + 30.0, payload["thread_id"]) as client:
+        async with cls._client(timeout_s + 30.0, routing_id) as client:
             async with client.stream("POST", f"{cls._base_url()}/command", json=payload) as response:
                 await cls._raise_for_status(response)
                 _combined, out, err, failure = await cls._consume_stream(response)
@@ -742,32 +828,17 @@ if _cb:
 
         return stdout, stderr, bool(failure)
 
-    # A bare ``/workspace`` — the shared helper only rewrites ``/workspace/...``,
-    # leaving the root itself alone because under opensandbox the sandbox is
-    # per thread and that root is already the right one.
-    _BARE_WORKSPACE = re.compile(r"(?<![\w./])/workspace(?![\w/])")
-
     @classmethod
     def _confine_to_thread_workspace(cls, command: str, thread_id: Optional[str]) -> str:
-        """Point a bare ``/workspace`` at this thread's directory.
-
-        One execd container holds every thread, so ``ls /workspace`` would
-        otherwise list every other thread's workspace.
-
-        Best-effort, like the shared path normalization it follows: a command
-        that builds a path at runtime can still name the shared root. It is not
-        the isolation boundary — per-thread separation here is by directory, and
-        anything needing a real boundary needs its own sandbox (see
-        `sandbox/sandbox/README.md`). It removes the obvious accident.
-        """
-        return cls._BARE_WORKSPACE.sub(cls._workspace_path(thread_id), command)
+        """Map the agent's ``/workspace`` paths onto this thread's directory."""
+        return rewrite_workspace_paths(command, cls._workspace_path(thread_id))
 
     def create_run_command_tool(self, thread_id: Optional[str] = None) -> Callable:
         """Build the ``run_command`` coroutine bound to one thread."""
 
         async def run_command(cmd: str) -> str:
             try:
-                normalized = self._confine_to_thread_workspace(normalize_shell_command_paths(cmd), thread_id)
+                normalized = self._confine_to_thread_workspace(cmd, thread_id)
                 stdout, stderr, failed = await self._run_shell_command(normalized, thread_id)
                 return format_run_command_output(stdout, stderr, failed=failed)
             except Exception as exc:
@@ -820,15 +891,15 @@ if _cb:
         context_id = cls._contexts.pop(key, None)
         cls._locks.pop(key, None)
         routing_id = (cls._thread_of_context.pop(context_id, None) if context_id else None) or key
-        if agent_id and key not in cls._scope_of_thread:
-            cls._scope_of_thread[key] = {"agent_id": str(agent_id)}
+        if agent_id and not cls._scope_of_thread.get(key, {}).get("agent_id"):
+            cls._scope_of_thread.setdefault(key, {})["agent_id"] = str(agent_id)
         logger.info(f"[execd:ctx] Releasing thread={key} context_id={context_id}")
         try:
             timeout = float(_block_timeout())
             async with cls._client(timeout, routing_id) as client:
                 # sandbox-api frees a thread's kernel and routing entry by thread id;
                 # it has no per-context delete.
-                response = await client.delete(f"{cls._base_url()}/threads/{routing_id}")
+                response = await client.delete(f"{cls._base_url()}/threads/{cls._workspace_name(routing_id)}")
                 if response.status_code != 404:
                     response.raise_for_status()
             logger.info(f"[execd:ctx] Thread released thread={key} status={response.status_code}")
@@ -838,258 +909,6 @@ if _cb:
             logger.warning(f"[execd:ctx] Failed to release thread={key} context_id={context_id} error={exc}")
         finally:
             cls._scope_of_thread.pop(key, None)
-
-    @staticmethod
-    def _shell_tool_code(workspace_root: str, index_url: str = "") -> str:
-        """Inline ``run_command`` that runs directly in the sandbox.
-
-        Same reasoning as ``_filesystem_tools_code``: the agent's kernel already
-        runs inside execd at ``workspace_root``, so a shell command belongs right
-        here — no HTTP callback to CUGA and back.
-
-        Without this the tool fell through to the generic registry stub, which is
-        wrong twice over: ``run_command`` is not a registry API, and the stub is
-        ``(**kwargs)`` while the prompt documents ``await run_command("cmd")``,
-        so every call died with "takes 0 positional arguments but 1 was given".
-
-        Output contract matches ``format_run_command_output``: stdout on success,
-        stdout + "\n[stderr]\n" + stderr on failure.
-        """
-        return f'''
-import asyncio as _cuga_sh_aio
-import importlib as _cuga_sh_importlib
-import os as _cuga_sh_os
-import re as _cuga_sh_re
-
-_CUGA_SH_ROOT = {workspace_root!r}
-_CUGA_SH_VENV = _cuga_sh_os.path.join(_CUGA_SH_ROOT, ".venv")
-_CUGA_SH_INDEX = {index_url!r}
-
-# Matches `uv pip install` or `pip install` so we can rewrite them to target
-# the thread venv explicitly and refresh the kernel's import cache afterwards.
-_CUGA_SH_INSTALL_RE = _cuga_sh_re.compile(r"\\buv\\s+pip\\s+install\\b|\\bpip\\s+install\\b")
-# Matches an existing `--python ...` argument so we never double-inject it.
-_CUGA_SH_PYTHON_ARG_RE = _cuga_sh_re.compile(r"--python\\s+\\S+|--python=\\S+")
-
-
-def _cuga_sh_rewrite_install(cmd: str) -> str:
-    """Inject `--python <venv>/bin/python` into every uv/pip install command.
-
-    `uv pip install` respects `VIRTUAL_ENV` in theory, but under the OCP image
-    `uv` can resolve against the system Python when a project file is present in
-    the cwd or when its interpreter discovery runs before the env var is read.
-    Passing `--python` makes the target venv unambiguous regardless of any
-    discovery heuristics.  Idempotent: skipped when `--python` is already there.
-    """
-    if not _CUGA_SH_INSTALL_RE.search(cmd) or _CUGA_SH_PYTHON_ARG_RE.search(cmd):
-        return cmd
-    _python = _cuga_sh_os.path.join(_CUGA_SH_VENV, "bin", "python")
-    # Insert --python right after the `uv pip install` / `pip install` token.
-    return _CUGA_SH_INSTALL_RE.sub(
-        lambda m: m.group(0) + " --python " + _python,
-        cmd,
-        count=1,
-    )
-
-
-async def run_command(cmd: str) -> str:
-    """Run a shell command in the workspace and return its output."""
-    _env = dict(_cuga_sh_os.environ)
-    _env["VIRTUAL_ENV"] = _CUGA_SH_VENV
-    _env["UV_PYTHON"] = _cuga_sh_os.path.join(_CUGA_SH_VENV, "bin", "python")
-    _env["PATH"] = _CUGA_SH_VENV + "/bin:" + _env.get("PATH", "")
-    if _CUGA_SH_INDEX:
-        _env["UV_INDEX_URL"] = _CUGA_SH_INDEX
-        _env["PIP_INDEX_URL"] = _CUGA_SH_INDEX
-        _env["UV_INDEX_STRATEGY"] = "first-index"
-    _cmd = _cuga_sh_rewrite_install(cmd)
-    _proc = await _cuga_sh_aio.create_subprocess_shell(
-        _cmd,
-        cwd=_CUGA_SH_ROOT,
-        env=_env,
-        stdout=_cuga_sh_aio.subprocess.PIPE,
-        stderr=_cuga_sh_aio.subprocess.PIPE,
-    )
-    _out, _err = await _proc.communicate()
-    _out_s = _out.decode("utf-8", "replace")
-    _err_s = _err.decode("utf-8", "replace")
-    if _proc.returncode != 0 and _err_s.strip():
-        return _out_s + "\\n[stderr]\\n" + _err_s
-    # After a successful install refresh the kernel's import finder cache so
-    # newly installed packages are importable immediately without a restart.
-    if _proc.returncode == 0 and _CUGA_SH_INSTALL_RE.search(cmd):
-        _cuga_sh_importlib.invalidate_caches()
-    return _out_s or "(command completed with no output)"
-'''
-
-    @staticmethod
-    def _filesystem_tools_code(workspace_root: str) -> str:
-        """Inline Python definitions for filesystem tools that run directly in the sandbox.
-
-        No HTTP callback to CUGA needed — the agent's kernel already runs inside
-        the execd sandbox at ``workspace_root``, so Path operations work directly.
-        The signatures match WorkspaceFilesystem so the agent's generated code is identical
-        regardless of which backend is active.
-        """
-        # workspace_root is e.g. /workspace/d57c950e-...
-        return f'''
-import base64 as _cuga_b64
-import fnmatch as _cuga_fnm
-import glob as _cuga_glob
-import json as _cuga_json
-import os as _cuga_os
-import ast as _cuga_ast
-import textwrap as _cuga_tw
-from pathlib import Path as _CugaPath
-
-_CUGA_WS_ROOT = _CugaPath({workspace_root!r})
-
-def _cuga_resolve(path):
-    raw = str(path or "").strip().replace("\\\\", "/")
-    if not raw or raw in ("/workspace", "."):
-        return _CUGA_WS_ROOT
-    for pfx in ("/workspace/", "/workspace", "/tmp/"):
-        if raw.startswith(pfx):
-            raw = raw[len(pfx):]
-            break
-    import posixpath as _pp
-    rel = _pp.normpath(raw.lstrip("/"))
-    if rel == ".":
-        return _CUGA_WS_ROOT
-    if rel == ".." or rel.startswith("../"):
-        raise ValueError("path escapes workspace: " + path)
-    target = (_CUGA_WS_ROOT / rel).resolve()
-    base   = _CUGA_WS_ROOT.resolve()
-    if target != base and base not in target.parents:
-        raise ValueError("path escapes workspace: " + path)
-    return target
-
-def _cuga_public(p):
-    rel = _cuga_os.path.relpath(str(p), str(_CUGA_WS_ROOT.resolve()))
-    return "/workspace" if rel == "." else "/workspace/" + rel.replace(_cuga_os.sep, "/")
-
-def _cuga_validate_py(content, path):
-    try:
-        _cuga_ast.parse(content)
-        return None
-    except SyntaxError as e:
-        return str(e)
-
-async def write_file(path, content):
-    """Write text content into a file in the workspace."""
-    import ast as _a, textwrap as _tw
-    p = _cuga_resolve(path)
-    if str(path).endswith(".py"):
-        dedented = _tw.dedent(content)
-        err = _cuga_validate_py(dedented, path)
-        if err:
-            return "[write_file error] " + err + ". Rewrite and retry."
-        content = dedented
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
-    return "File written: " + _cuga_public(p) + " (" + str(len(content)) + " chars)"
-
-async def read_file(path, start_line=None, end_line=None, grep_pattern=None):
-    """Read a text file from the workspace."""
-    p = _cuga_resolve(path)
-    if not p.is_file():
-        return "[read_file error] File not found: " + str(path)
-    text = p.read_text(encoding="utf-8", errors="replace")
-    if start_line is not None or end_line is not None:
-        lines = text.splitlines(keepends=True)
-        s = (start_line or 1) - 1
-        e = end_line or len(lines)
-        text = "".join(lines[s:e])
-    if grep_pattern:
-        import re as _re
-        try:
-            pat = _re.compile(grep_pattern)
-            text = "\\n".join("LINE|" + ln for ln in text.splitlines() if pat.search(ln))
-        except Exception as _ge:
-            return "[read_file error] invalid grep_pattern: " + str(_ge)
-    return text
-
-async def list_files(path=".", pattern="*"):
-    """List files and directories in the workspace as JSON."""
-    import json as _j
-    p = _cuga_resolve(path)
-    if p == _CUGA_WS_ROOT:
-        p.mkdir(parents=True, exist_ok=True)
-    if not p.exists():
-        return "[list_files error] Path not found: " + str(path)
-    entries = []
-    for child in sorted(p.glob(pattern)):
-        entries.append({{
-            "name": child.name,
-            "path": _cuga_public(child),
-            "is_dir": child.is_dir(),
-            "size_bytes": child.stat().st_size if child.is_file() else 0,
-        }})
-    return _j.dumps({{"sandbox_path": str(path), "entries": entries}})
-
-async def make_directory(path):
-    """Create a directory in the workspace."""
-    p = _cuga_resolve(path)
-    p.mkdir(parents=True, exist_ok=True)
-    return "Directory created: " + _cuga_public(p)
-
-async def move_file(source, destination):
-    """Move a file within the workspace."""
-    src = _cuga_resolve(source)
-    dst = _cuga_resolve(destination)
-    if dst.exists():
-        return "[move_file error] Destination already exists: " + str(destination)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    _cuga_os.rename(str(src), str(dst))
-    return "Moved " + _cuga_public(src) + " to " + _cuga_public(dst)
-
-async def search_files(path, pattern, excludePatterns=None):
-    """Search files in the workspace."""
-    base = _cuga_resolve(path)
-    exclude = excludePatterns or []
-    results = []
-    if "**" in pattern:
-        for m in _cuga_glob.glob(str(base / pattern), recursive=True):
-            rel = _cuga_os.path.relpath(m, str(base))
-            if not any(_cuga_fnm.fnmatch(rel, ex) for ex in exclude):
-                results.append(_cuga_public(_CugaPath(m)))
-    else:
-        for item in sorted(_cuga_os.listdir(str(base))):
-            if _cuga_fnm.fnmatch(item, pattern) and not any(_cuga_fnm.fnmatch(item, ex) for ex in exclude):
-                results.append(_cuga_public(base / item))
-    return "\\n".join(results)
-
-async def get_file_info(path):
-    """Get metadata for a file in the workspace."""
-    p = _cuga_resolve(path)
-    st = p.stat()
-    from datetime import datetime as _dt
-    return "\\n".join([
-        "path: " + _cuga_public(p),
-        "size: " + str(st.st_size),
-        "isDirectory: " + str(p.is_dir()),
-        "isFile: " + str(p.is_file()),
-        "modified: " + _dt.fromtimestamp(st.st_mtime).isoformat(),
-    ])
-
-async def edit_file(path, edits, dryRun=False):
-    """Make exact-text edits to a file."""
-    p = _cuga_resolve(path)
-    if not p.is_file():
-        return "[edit_file error] File not found: " + str(path)
-    content = p.read_text(encoding="utf-8", errors="replace")
-    new_content = content
-    applied = []
-    for edit in (edits or []):
-        old, new = edit.get("oldText", ""), edit.get("newText", "")
-        if content.count(old) != 1:
-            return "[edit_file error] oldText not found exactly once: " + repr(old[:80])
-        new_content = new_content.replace(old, new, 1)
-        applied.append("- " + repr(old[:40]) + " → " + repr(new[:40]))
-    if not dryRun and new_content != content:
-        p.write_text(new_content, encoding="utf-8")
-    return ("DRY RUN\\n" if dryRun else "") + "\\n".join(applied)
-'''
 
     async def execute_for_cuga_lite(
         self,
@@ -1119,24 +938,31 @@ async def edit_file(path, edits, dryRun=False):
             # Filesystem tools and run_command run in the kernel itself, next to the
             # files and the venv; every other callable is answered by CUGA. The
             # in-kernel ones still charge the call budget through a callback.
+            _check_kernel_access(wrapped_code)
             in_kernel: dict[str, Any] = {}
             remote: dict[str, Any] = {}
+            used = _names_used(wrapped_code)
             for name, value in context_locals.items():
                 if callable(value) and getattr(value, "_cuga_app_name", None) == "filesystem":
                     in_kernel[name] = value
-                elif name == "run_command" and callable(value):
+                elif name == "run_command" and getattr(value, "_cuga_app_name", None) == "shell":
                     in_kernel[name] = value
+                elif name not in used:
+                    # The callback answers only what this block names. Tool approval
+                    # looked at this code, so a tool it never names (reached through
+                    # a kernel helper or a name built at runtime) must not run.
+                    continue
                 elif callable(value) or inspect.ismodule(value) or _is_callable_table(value):
                     remote[name] = value
             if in_kernel:
                 # In-kernel tools bypass the counted wrappers; they charge through this callback.
-                remote[_CHARGE_NAME] = _budget_charge()
-            fs_code = (
-                self._filesystem_tools_code(workspace) if any(n != "run_command" for n in in_kernel) else ""
-            )
+                remote[CHARGE_NAME] = _budget_charge()
+            fs_code = filesystem_tools_code(workspace) if any(n != "run_command" for n in in_kernel) else ""
             shell_code = (
-                self._shell_tool_code(
-                    workspace, getattr(settings.advanced_features, "execd_package_index", "") or ""
+                shell_tool_code(
+                    workspace,
+                    getattr(settings.advanced_features, "execd_package_index", "") or "",
+                    timeout=max(5, min(120, _block_timeout() - 5)),
                 )
                 if "run_command" in in_kernel
                 else ""
@@ -1153,7 +979,7 @@ async def edit_file(path, edits, dryRun=False):
                 if remote and not url:
                     raise RuntimeError(
                         "Tools cannot be called from the execd sandbox: set "
-                        "advanced_features.sandbox_callback_url (or server_ports.function_call_host) "
+                        "advanced_features.sandbox_callback_url "
                         "to an address of this server the sandbox can reach"
                     )
                 tools_code = (
@@ -1168,7 +994,7 @@ async def edit_file(path, edits, dryRun=False):
                     else ""
                 )
 
-                charged_code = _charged_tools_code(sorted(in_kernel)) if in_kernel else ""
+                charged_code = charged_tools_code(sorted(in_kernel)) if in_kernel else ""
 
                 complete_code = f"""
 import asyncio
@@ -1198,9 +1024,18 @@ import asyncio
 
             outcome = block_runner.parse_outcome(raw)
             if outcome is None:
-                # The runner never reported: the kernel died or the block could not compile.
+                # The runner never reported: the kernel died or the block was cut off.
+                # Not a success — say so, with whatever it printed, as a failed block reads.
                 logger.warning(f"[execd:route] No block outcome thread={thread_id} duration_ms={elapsed}")
-                return block_runner.strip_marker(raw) or "<code ran, no output printed to stdout>", {}
+                text = (
+                    "Error during execution: the code block did not finish "
+                    "(the sandbox kernel stopped before reporting a result). "
+                    "Variables from this block were not saved."
+                )
+                printed = block_runner.strip_marker(raw)
+                if printed.strip():
+                    text = f"Output before error:\n{printed.rstrip()}\n\n{text}"
+                return text, {}
             result_locals = outcome.get("locals") or {}
             logger.info(
                 f"[execd:route] {outcome.get('status')} execute_for_cuga_lite thread={thread_id} "

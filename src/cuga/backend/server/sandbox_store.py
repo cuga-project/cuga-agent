@@ -1,9 +1,8 @@
 """Persisted code-sandbox choice made in the Manage UI.
 
 Independent of agent configs: one row per tenant+instance, no draft/publish
-versions. Holds only the choice and, for the manual source, the URL and a
-secret reference — never the API key itself (that lives in the encrypted
-secrets store).
+versions. Holds only the on/off choice; the connection comes from the mounted
+sandbox secret or the settings.
 """
 
 import json
@@ -12,8 +11,6 @@ from typing import Any
 
 from cuga.backend.storage import get_storage
 from cuga.config import get_service_instance_id, get_tenant_id
-
-API_KEY_SECRET_ID = "sandbox-execd-api-key"
 
 
 def _get_store():

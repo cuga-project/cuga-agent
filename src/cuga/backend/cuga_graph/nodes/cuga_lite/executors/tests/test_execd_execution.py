@@ -1,6 +1,7 @@
 """How execd runs code and commands: context reuse, the event stream, failures and recovery."""
 
 import json
+import re
 
 import httpx
 import pytest
@@ -60,7 +61,10 @@ def sandbox(monkeypatch):
         )
 
     monkeypatch.setattr(ExecdExecutor, "_client", classmethod(client))
-    connection.set_runtime_config({"enabled": True, "url": "https://sandbox.example", "api_key_ref": "K"})
+    monkeypatch.setattr(settings.advanced_features, "sandbox_secret_dir", "", raising=False)
+    monkeypatch.setattr(settings.advanced_features, "execd_url", "https://sandbox.example", raising=False)
+    monkeypatch.setattr(settings.advanced_features, "execd_api_key", "K", raising=False)
+    connection.set_runtime_config({"enabled": True})
     ExecdExecutor._contexts.clear()
     ExecdExecutor._thread_of_context.clear()
     ExecdExecutor._contexts_url = None
@@ -144,9 +148,9 @@ async def test_other_http_errors_are_not_retried(sandbox):
 
 
 @pytest.mark.asyncio
-async def test_changing_the_endpoint_drops_contexts_of_the_old_one(sandbox):
+async def test_changing_the_endpoint_drops_contexts_of_the_old_one(sandbox, monkeypatch):
     await ExecdExecutor._run_remote("a = 1", "thread-a")
-    connection.set_runtime_config({"enabled": True, "url": "https://other.example", "api_key_ref": "K"})
+    monkeypatch.setattr(settings.advanced_features, "execd_url", "https://other.example", raising=False)
 
     await ExecdExecutor._run_remote("print(1)", "thread-a")
 
@@ -179,27 +183,46 @@ async def test_command_runs_in_the_thread_venv_and_reports_exit_as_output(sandbo
     assert body["cwd"] == "/workspace/thread-a"
     assert body["envs"]["VIRTUAL_ENV"] == venv and body["envs"]["UV_PYTHON"] == f"{venv}/bin/python"
     assert body["envs"]["UV_INDEX_URL"] == "https://pypi.example/simple"
-    # sandbox-api drops cwd/envs, so they are folded into the command too.
-    assert body["command"].startswith("cd /workspace/thread-a || exit 1;")
-    assert f"export VIRTUAL_ENV={venv};" in body["command"] and body["command"].endswith(" make")
+    # sandbox-api exports envs inside the thread's confinement; values stay off the command line.
+    assert body["command"] == "make"
 
 
 @pytest.mark.parametrize(
-    "thread_id, expected",
+    "thread_id",
+    ["thread-a", "c36d2ccb-bffa-4589-987e-bdded531de11", "_default", "x" * 64],
+)
+def test_ids_sandbox_api_keeps_are_sent_unchanged(thread_id):
+    # Existing conversations keep their workspace: UUIDs map to themselves.
+    assert ExecdExecutor._workspace_name(thread_id) == thread_id
+
+
+@pytest.mark.parametrize("thread_id", ["../../etc", "a/b c", "victim#x", "a.b", "zażółć", "", "x" * 80])
+def test_other_ids_become_safe_hashed_names(thread_id):
+    name = ExecdExecutor._workspace_name(thread_id)
+    assert re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name)
+    assert name != thread_id
+    assert ExecdExecutor._workspace_name(thread_id) == name
+
+
+@pytest.mark.parametrize(
+    "a, b",
     [
-        ("thread-a", "thread-a"),
-        ("../../etc", "------etc"),
-        ("a/b c", "a-b-c"),
-        ("", "default"),
-        ("x" * 80, "x" * 64),
+        ("a.b", "a-b"),
+        ("a.b", "a/b"),
+        ("c36d2ccb.bffa-4589-987e-bdded531de11", "c36d2ccb-bffa-4589-987e-bdded531de11"),
+        ("x" * 64 + "1", "x" * 64 + "2"),
+        ("x" * 65, "x" * 64),
     ],
 )
-def test_thread_ids_become_safe_directory_names(thread_id, expected):
-    assert ExecdExecutor._workspace_name(thread_id) == expected
+def test_ids_sandbox_api_would_merge_get_different_workspaces(a, b):
+    # sandbox-api maps both of each pair to one directory; the sent ids must differ.
+    assert ExecdExecutor._workspace_name(a) != ExecdExecutor._workspace_name(b)
 
 
-def test_a_missing_url_is_a_clear_error():
-    connection.set_runtime_config({"enabled": True, "url": "", "api_key_ref": ""})
+def test_a_missing_url_is_a_clear_error(monkeypatch):
+    monkeypatch.setattr(settings.advanced_features, "sandbox_secret_dir", "", raising=False)
+    monkeypatch.setattr(settings.advanced_features, "execd_url", "", raising=False)
+    connection.set_runtime_config({"enabled": True})
     try:
         with pytest.raises(RuntimeError, match="Sandbox URL is not configured"):
             ExecdExecutor._base_url()
@@ -250,10 +273,10 @@ async def test_a_new_kernel_gets_the_skill_folders_in_one_command(sandbox, monke
     await ExecdExecutor._run_remote("print(1)", "thread-a")
     await ExecdExecutor._run_remote("print(2)", "thread-a")  # existing kernel: no second copy
 
-    commands = [json.loads(r.content)["command"] for r in sandbox.requests if r.url.path == "/command"]
-    copies = [c for c in commands if "CUGA_SKILLS_TGZ" in c]
+    bodies = [json.loads(r.content) for r in sandbox.requests if r.url.path == "/command"]
+    copies = [b for b in bodies if "CUGA_SKILLS_TGZ" in b["command"]]
     assert len(copies) == 1
-    encoded = copies[0].split("export CUGA_SKILLS_TGZ=", 1)[1].split(";", 1)[0].strip("'")
+    encoded = copies[0]["envs"]["CUGA_SKILLS_TGZ"]
     with tarfile.open(fileobj=io.BytesIO(base64.b64decode(encoded))) as tar:
         names = sorted(tar.getnames())
     # Named by the skill's name (what load_skill tells the agent), not the folder; .pyc skipped.

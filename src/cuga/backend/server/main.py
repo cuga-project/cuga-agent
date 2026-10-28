@@ -54,7 +54,6 @@ from cuga.config import (
     LOGGING_DIR,
     TRACES_DIR,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import connection
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     assert_resolved_path_under,
 )
@@ -213,6 +212,8 @@ def _session_knowledge_collection(thread_id: str) -> str:
 
 async def _release_sandbox_thread(thread_id: str, agent_id: str) -> None:
     """Free the thread's kernel in sandbox-api when the execd sandbox is on."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import connection
+
     if connection.execd_active():
         from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import ExecdExecutor
 
@@ -4692,11 +4693,32 @@ async def sandbox_tool_call(request: Request):
     No user auth: the caller is the sandbox, which holds no user credentials.
     The request carries the HMAC token of the code block it belongs to, and is
     answered only while that block runs, only with the callables of that block.
+    With no block running (the sandbox off, or nothing in flight) the route does
+    not exist, so a server without the sandbox exposes nothing here.
     """
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import tool_callback
 
+    if not tool_callback.has_blocks():
+        raise HTTPException(status_code=404, detail="Not Found")
+    # Arguments are bounded like results, plus room for the envelope. Counted while
+    # reading: Content-Length is the caller's word, and chunked bodies have none.
+    limit = tool_callback.MAX_RESULT_BYTES + 64 * 1024
+    too_large = JSONResponse(
+        status_code=413,
+        content={"ok": False, "error": {"type": "ValueError", "message": f"request over {limit} bytes"}},
+    )
     try:
-        body = await request.json()
+        if int(request.headers.get("content-length") or 0) > limit:
+            return too_large
+    except ValueError:
+        pass
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > limit:
+            return too_large
+    try:
+        body = json.loads(raw)
     except Exception:
         return JSONResponse(
             status_code=400, content={"ok": False, "error": {"type": "ValueError", "message": "invalid JSON"}}
@@ -4867,13 +4889,11 @@ async def serve_react(full_path: str, request: Request):
         # Resolved outside the static directory: refuse rather than falling through to
         # the index.html SPA route, so the request gets one unambiguous answer.
         raise HTTPException(status_code=404, detail="Frontend files not found.")
-    # index.html names the hashed bundles; a cached copy keeps loading the old UI after a deploy.
-    no_cache = {"Cache-Control": "no-cache"}
     if file_path.is_file():
-        return FileResponse(str(file_path), headers=no_cache if file_path.name == "index.html" else None)
+        return FileResponse(str(file_path))
 
     index_path = os.path.join(app_state.STATIC_DIR_HTML, "index.html")
     if os.path.exists(index_path):
-        return FileResponse(index_path, headers=no_cache)
+        return FileResponse(index_path)
 
     raise HTTPException(status_code=404, detail="Frontend files not found. Did you run the build process?")

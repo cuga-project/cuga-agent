@@ -85,17 +85,19 @@ class BlockHandle:
 _blocks: dict[str, _Block] = {}
 
 
-def callback_url() -> str:
-    """Base URL the sandbox uses to reach this server.
+def has_blocks() -> bool:
+    """Whether any code block is running in the sandbox, so a call can be answered at all."""
+    return bool(_blocks)
 
-    ``advanced_features.sandbox_callback_url`` when set, else
-    ``server_ports.function_call_host`` — the URL remote sandboxes already use
-    to reach CUGA. Empty when neither is configured.
+
+def callback_url() -> str:
+    """Base URL the sandbox uses to reach this server: ``advanced_features.sandbox_callback_url``.
+
+    No fallback. ``server_ports.function_call_host`` names the tool registry
+    (port 8001), not this server, so a callback sent there never reaches the
+    route that answers it. Empty when not configured.
     """
-    explicit = str(getattr(settings.advanced_features, "sandbox_callback_url", "") or "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-    return str(getattr(settings.server_ports, "function_call_host", "") or "").strip().rstrip("/")
+    return str(getattr(settings.advanced_features, "sandbox_callback_url", "") or "").strip().rstrip("/")
 
 
 def _sign(block_id: str) -> str:
@@ -151,8 +153,16 @@ class CallRefused(Exception):
         self.status = status
 
 
+_HEX = frozenset("0123456789abcdef")
+
+
+def _is_hex(value: Any, length: int) -> bool:
+    return isinstance(value, str) and len(value) == length and set(value) <= _HEX
+
+
 def _block_for(block_id: str, token: str) -> _Block:
-    if not isinstance(block_id, str) or not isinstance(token, str):
+    # Ids are uuid4().hex and tokens a SHA-256 hexdigest; anything else is not ours.
+    if not _is_hex(block_id, 32) or not _is_hex(token, 64):
         raise CallRefused(400, "block and token are required")
     if not hmac.compare_digest(_sign(block_id), token):
         raise CallRefused(403, "invalid block token")
@@ -349,17 +359,16 @@ def stub_code(namespace: dict[str, Any], *, url: str, block_id: str, token: str,
 
 
 def _stub_def(py_name: str, call_name: str, fn: Any) -> str:
-    doc = (inspect.getdoc(fn) or "").split("\n", 1)[0].replace('"""', "'")
+    # A repr literal, so quotes and backslashes in a tool's description cannot break the stub.
+    doc = repr((inspect.getdoc(fn) or "").split("\n", 1)[0])
     if inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(getattr(fn, "__wrapped__", None)):
         return (
             f"async def {py_name}(*args, **kwargs):\n"
-            f'    """{doc}"""\n'
+            f"    {doc}\n"
             f"    return await _cuga_cb_acall({call_name!r}, args, kwargs)\n"
         )
     return (
-        f"def {py_name}(*args, **kwargs):\n"
-        f'    """{doc}"""\n'
-        f"    return _cuga_cb_call({call_name!r}, args, kwargs)\n"
+        f"def {py_name}(*args, **kwargs):\n    {doc}\n    return _cuga_cb_call({call_name!r}, args, kwargs)\n"
     )
 
 
@@ -369,6 +378,7 @@ __all__ = [
     "callback_url",
     "flatten_callables",
     "handle_call",
+    "has_blocks",
     "registered_block",
     "stub_code",
     "to_jsonable",

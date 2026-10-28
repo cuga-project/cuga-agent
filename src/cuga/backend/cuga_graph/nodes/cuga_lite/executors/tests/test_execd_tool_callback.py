@@ -195,18 +195,18 @@ async def test_call_budget_is_charged_in_the_block_context(cuga_server, monkeypa
 
 async def test_in_kernel_tools_are_charged_against_the_budget(cuga_server, monkeypatch):
     """Filesystem tools and run_command run in the kernel, past the counted wrappers; they still pay."""
-    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import execd_executor
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import execd_executor, kernel_templates
 
     url, seen = cuga_server
     monkeypatch.setattr(settings.advanced_features, "max_tool_calls_per_block", 2, raising=False)
 
     ToolCallTracker.seed_call_budget(0)
     ToolCallTracker.seed_block_budget()
-    namespace = {execd_executor._CHARGE_NAME: execd_executor._budget_charge()}
+    namespace = {kernel_templates.CHARGE_NAME: execd_executor._budget_charge()}
     # Top-level, as the generated filesystem/shell definitions are in the real kernel.
     kernel_tool = (
         "async def read_file(path):\n"
-        "    return 'body of ' + path\n" + execd_executor._charged_tools_code(["read_file", "absent_tool"])
+        "    return 'body of ' + path\n" + kernel_templates.charged_tools_code(["read_file", "absent_tool"])
     )
     code = (
         "a = await read_file('a')\nb = await read_file('b')\n"
@@ -231,7 +231,7 @@ async def test_in_kernel_tools_are_charged_against_the_budget(cuga_server, monke
     assert out["a"] == "body of a" and out["b"] == "body of b"
     assert out["refused"] == BlockToolCallBudgetExceeded.__name__
     assert ToolCallTracker.get_run_budget_used() == 2
-    assert {c["name"] for c in seen} == {execd_executor._CHARGE_NAME}
+    assert {c["name"] for c in seen} == {kernel_templates.CHARGE_NAME}
 
 
 async def test_callable_table_becomes_a_table_of_stubs(cuga_server):
@@ -332,14 +332,32 @@ async def test_oversized_result_is_an_error_not_a_payload(monkeypatch):
     assert "limit" in body["error"]["message"]
 
 
-def test_callback_url_prefers_the_explicit_setting(monkeypatch):
+def test_callback_url_is_only_the_explicit_setting(monkeypatch):
     monkeypatch.setattr(
         settings.advanced_features, "sandbox_callback_url", "http://cuga.ns.svc:7860/", raising=False
     )
     assert tool_callback.callback_url() == "http://cuga.ns.svc:7860"
+    # function_call_host names the tool registry, not this server: no fallback to it (item 26).
     monkeypatch.setattr(settings.advanced_features, "sandbox_callback_url", "", raising=False)
-    monkeypatch.setattr(settings.server_ports, "function_call_host", "http://fallback:7860", raising=False)
-    assert tool_callback.callback_url() == "http://fallback:7860"
+    monkeypatch.setattr(settings.server_ports, "function_call_host", "http://registry:8001", raising=False)
+    assert tool_callback.callback_url() == ""
+
+
+@pytest.mark.parametrize(
+    "block, token",
+    [
+        ("é" * 32, "a" * 64),  # non-ASCII used to raise inside hmac and give a 500
+        ("a" * 32, "é" * 64),
+        ("a" * 31, "a" * 64),
+        ("A" * 32, "a" * 64),
+        (None, "a" * 64),
+        ("a" * 32, 5),
+    ],
+)
+async def test_malformed_block_or_token_is_a_400(block, token):
+    status, body = await tool_callback.handle_call({"block": block, "token": token, "name": "x"})
+    assert status == 400
+    assert body["error"]["type"] == "CallRefused"
 
 
 async def test_a_control_signal_ends_the_block_and_is_reraised_in_cuga(cuga_server):
@@ -379,3 +397,79 @@ async def test_a_control_signal_ends_the_block_and_is_reraised_in_cuga(cuga_serv
         with pytest.raises(PauseForPermission):
             block.raise_pending_signal()
     assert after == []  # nothing after the pause ran
+
+
+def _request(body: bytes, headers: dict | None = None):
+    """A real Starlette request carrying ``body``, as uvicorn would hand it to the route."""
+    from starlette.requests import Request
+
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    raw_headers = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+    return Request({"type": "http", "method": "POST", "headers": raw_headers}, receive)
+
+
+async def test_the_callback_route_does_not_exist_while_no_block_runs():
+    """A server without the sandbox exposes nothing at /sandbox/tools/call (review item 3)."""
+    from fastapi import HTTPException
+
+    from cuga.backend.server.main import sandbox_tool_call
+
+    assert not tool_callback.has_blocks()
+    with pytest.raises(HTTPException) as exc:
+        await sandbox_tool_call(_request(b'{"block": "x"}'))
+    assert exc.value.status_code == 404
+
+    async def tool():
+        return "ok"
+
+    async with tool_callback.registered_block({"tool": tool}, "t1", 10) as block:
+        assert tool_callback.has_blocks()
+        body = {"block": block.block_id, "token": block.token, "name": "tool", "args": [], "kwargs": {}}
+        response = await sandbox_tool_call(_request(json.dumps(body).encode()))
+        assert response.status_code == 200
+        assert json.loads(response.body)["result"] == "ok"
+
+
+async def test_an_oversized_call_is_a_413_without_reading_it_all():
+    from cuga.backend.server.main import sandbox_tool_call
+
+    async def tool():
+        return "ok"  # pragma: no cover
+
+    limit = tool_callback.MAX_RESULT_BYTES + 64 * 1024
+    async with tool_callback.registered_block({"tool": tool}, "t1", 10):
+        # Declared too large: refused from the header.
+        response = await sandbox_tool_call(_request(b"{}", {"content-length": str(limit + 1)}))
+        assert response.status_code == 413
+        # No usable header (as with chunked bodies): refused while reading.
+        response = await sandbox_tool_call(_request(b"x" * (limit + 1)))
+        assert response.status_code == 413
+
+
+@pytest.mark.parametrize("doc", ['Set status to "active"', r"Read C:\new\x01 or \N{...}", "Ends with '''"])
+def test_a_tool_description_cannot_break_the_stub_code(doc):
+    """MCP and OpenAPI descriptions are not ours; any first line must still compile as a docstring."""
+
+    def sync_tool():
+        return None
+
+    async def async_tool():
+        return None
+
+    sync_tool.__doc__ = async_tool.__doc__ = doc + "\nsecond line"
+    src = tool_callback.stub_code(
+        {"sync_tool": sync_tool, "async_tool": async_tool}, url="http://x", block_id="b", token="t", timeout=1
+    )
+
+    kernel: dict = {}
+    exec(compile(src, "<stubs>", "exec"), kernel)
+    assert kernel["sync_tool"].__doc__ == doc
+    assert kernel["async_tool"].__doc__ == doc

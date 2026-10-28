@@ -218,6 +218,69 @@ code runs). Env override: `DYNACONF_EXECUTION__ENFORCE_CODE_SECURITY=false`.
 3. **Tool Serialization**: Only safe tool definitions sent
 4. **HTTP-based Tools**: Registry tools accessed via HTTP (no direct system access)
 
+### Isolation model (execd mode)
+With `sandbox_mode = "execd"` (or the Manage → Code sandbox toggle), generated Python,
+`run_command`, the filesystem tools and the workspace panel run in the remote sandbox
+(`execd/`). CUGA talks only to sandbox-api, never to execd directly.
+
+**Between conversations: enforced by the sandbox, not by CUGA.**
+- Each thread gets its own execd context: a separate Jupyter kernel (its own OS process
+  and Python state) with its own workspace directory, `/sandbox/<thread_id>`.
+- sandbox-api and execd keep threads apart. From its kernel or from `POST /command`,
+  code in one thread cannot read, overwrite, create or list files in another thread's
+  workspace, and cannot list `/sandbox` or `/tmp`.
+- Code cannot reach the sandbox internals: execd on loopback returns 401, Jupyter
+  returns 403, and `EXECD_ACCESS_TOKEN` is not in the kernel environment.
+- This is checked by `scripts/25_test_workspace_isolation.sh` in the sandbox-api repo.
+  It calls sandbox-api directly, so use a sandbox-api build where that test passes.
+- sandbox-api names the workspace after the thread id it is sent, after mapping every
+  character outside `[A-Za-z0-9_-]` to `-`. That would put `a.b` and `a-b` in one
+  workspace, so `ExecdExecutor._workspace_name` sends such ids as a prefix plus a hash.
+  UUIDs and other ids that the mapping keeps are sent unchanged.
+- `POST /command` sends its environment (venv, package index, file-tool operands) in
+  `envs`. sandbox-api must support that field, so deploy a sandbox-api with `envs`
+  support before this CUGA version, or file tools, installs and skill copies fail.
+- Tools do not run in the sandbox. Each tool is a stub that calls back into CUGA
+  (`POST /sandbox/tools/call`). Every block has its own id and an HMAC token signed with
+  a key that exists only in the CUGA process, so code in one thread cannot call another
+  thread's tools. A call that outlives its block is refused.
+
+**Inside one conversation: the checks are a mitigation, not a boundary.**
+- `SecurityValidator` checks the code before it is sent, as in the other modes. The
+  kernel itself runs with full builtins: the `LocalExecutor` runtime restrictions
+  (restricted `__import__`, safe builtins, filtered globals) are not applied there.
+- The kernel is long-lived and also holds CUGA's helpers (the tool callback client, the
+  in-kernel tools' `os`, the block runner's `sys`). Two execd-only checks keep agent
+  code away from them:
+  - The tool callback answers only the tools the block names as identifiers. A tool
+    reached any other way (for example `_cuga_cb_acall('send_' + 'email', …)`) is not
+    registered for the block, so CUGA refuses it. Tool approval looks at the same code.
+  - Code is refused before it is sent if it reads a `_cuga*` name it did not bind itself,
+    calls `globals()` or `vars()`, names a dunder such as `__builtins__`, or uses
+    `asyncio.create_subprocess_*` or `asyncio.subprocess`. The bootstrap keeps its own
+    names (`os`, `site`, `importlib`, `urllib`) inside a function, so they never reach
+    the kernel's globals.
+- These checks are a blocklist on a kernel with full builtins, so they are not a
+  boundary. Treat the sandbox as the boundary: what agent code can do is limited by what
+  the sandbox allows (its filesystem, network policy and the tools CUGA answers).
+
+**Paths.** The agent sees its workspace as `/workspace`. In the kernel and in shell
+commands, `/workspace/x` is rewritten to `./x` and a bare `/workspace` to the thread's
+directory, by one function (`_rewrite_workspace_paths`) that both `run_command`
+variants use. So a file that `write_file('/workspace/x.py')` wrote is found by
+`run_command('python /workspace/x.py')`.
+
+**Shared and persistent state.**
+- All kernels in the sandbox use one interpreter and the image's site-packages. Each
+  thread gets its own venv in its workspace, prepended to `sys.path`, so packages it
+  installs shadow the shared ones without affecting other threads.
+- `execd_package_index` is exported into the kernel so pip/uv can use it, so agent code
+  can read it. Do not put credentials in that URL.
+- Egress is denied by the sandbox network policy by default. Allow only the CUGA
+  callback (`sandbox_callback_url`) and the package index.
+- Deleting a conversation releases its kernel. Turning the sandbox off does not: kernels
+  and workspace files stay in the sandbox.
+
 ### Allowed Modules
 - `asyncio`, `json`, `pandas`, `numpy`, `statistics`
 - `datetime`, `math`, `collections`, `itertools`

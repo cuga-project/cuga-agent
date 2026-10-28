@@ -19,13 +19,14 @@ def _isolated(monkeypatch):
     for name in ("execd_url", "execd_api_key", "sandbox_secret_dir"):
         monkeypatch.setattr(adv, name, "", raising=False)
     monkeypatch.setattr(adv, "sandbox_mode", "local", raising=False)
+    monkeypatch.setattr(adv, "sandbox_callback_url", "http://cuga.ns.svc:7860", raising=False)
     saved: list[dict] = []
 
     async def save(config):
         saved.append(config)
 
-    async def probe(url):
-        return {"reachable": True, "status_code": 200, "probed": url}
+    async def probe(conn):
+        return {"reachable": True, "probed": conn.url if conn else None}
 
     # The routes import these names directly; patch them where they are used.
     monkeypatch.setattr(sandbox_routes, "save_sandbox_settings", save)
@@ -35,13 +36,17 @@ def _isolated(monkeypatch):
     connection.set_runtime_config(None)
 
 
+def _mount_secret(monkeypatch, tmp_path):
+    (tmp_path / "url").write_text("https://sandbox-api.example")
+    (tmp_path / "api_key").write_text("k")
+    monkeypatch.setattr(settings.advanced_features, "sandbox_secret_dir", str(tmp_path), raising=False)
+
+
 @pytest.mark.asyncio
 async def test_enabling_with_a_mounted_secret_needs_nothing_and_tests_at_once(
     monkeypatch, tmp_path, _isolated
 ):
-    (tmp_path / "url").write_text("https://sandbox-api.example")
-    (tmp_path / "api_key").write_text("k")
-    monkeypatch.setattr(settings.advanced_features, "sandbox_secret_dir", str(tmp_path), raising=False)
+    _mount_secret(monkeypatch, tmp_path)
 
     result = await put_sandbox_settings(SandboxSettingsBody(enabled=True))
 
@@ -51,23 +56,51 @@ async def test_enabling_with_a_mounted_secret_needs_nothing_and_tests_at_once(
 
 
 @pytest.mark.asyncio
-async def test_enabling_without_a_secret_asks_for_the_url():
+async def test_without_a_secret_the_sandbox_is_not_offered_and_cannot_be_enabled(_isolated):
+    assert connection.status()["available"] is False
+
     with pytest.raises(HTTPException) as exc:
         await put_sandbox_settings(SandboxSettingsBody(enabled=True))
-    assert exc.value.status_code == 422
 
-    result = await put_sandbox_settings(SandboxSettingsBody(enabled=True, url=" https://execd.example "))
-    assert result["connection"] == "manual"
-    assert result["probed"] == "https://execd.example"
+    assert exc.value.status_code == 422
+    assert _isolated == []
 
 
 @pytest.mark.asyncio
-async def test_switching_off_keeps_the_url_for_next_time():
-    await put_sandbox_settings(SandboxSettingsBody(enabled=True, url="https://execd.example"))
+async def test_the_ui_takes_no_url_or_key(monkeypatch, tmp_path):
+    # Fields an older UI sent are ignored; the mounted secret is the connection.
+    _mount_secret(monkeypatch, tmp_path)
+
+    body = SandboxSettingsBody.model_validate(
+        {"enabled": True, "url": "https://evil.example", "api_key": "x"}
+    )
+    result = await put_sandbox_settings(body)
+
+    assert result["probed"] == "https://sandbox-api.example"
+    assert connection.get_runtime_config() == {"enabled": True}
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_on_can_always_be_switched_off(monkeypatch, tmp_path, _isolated):
+    _mount_secret(monkeypatch, tmp_path)
+    await put_sandbox_settings(SandboxSettingsBody(enabled=True))
+    # The binding went away while the sandbox was on: the switch stays visible.
+    monkeypatch.setattr(settings.advanced_features, "sandbox_secret_dir", "", raising=False)
+    assert connection.status()["available"] is True
+
     result = await put_sandbox_settings(SandboxSettingsBody(enabled=False))
 
     assert not result["enabled"]
-    assert result["manual"]["url"] == "https://execd.example"
+    assert _isolated[-1] == {"enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_settings_url_makes_the_sandbox_available_for_local_development(monkeypatch):
+    monkeypatch.setattr(settings.advanced_features, "execd_url", "http://localhost:8090", raising=False)
+
+    assert connection.status()["available"] is True
+    result = await put_sandbox_settings(SandboxSettingsBody(enabled=True))
+    assert result["connection"] == "settings" and result["probed"] == "http://localhost:8090"
 
 
 @pytest.mark.asyncio
@@ -78,73 +111,135 @@ async def test_cannot_switch_off_a_sandbox_the_deployment_requires(monkeypatch):
     assert exc.value.status_code == 422
 
 
-@pytest.mark.asyncio
-async def test_key_entered_in_the_ui_is_sent_without_a_sync_db_read(monkeypatch):
-    # get_secret_sync runs on a fresh event loop, which breaks against the
-    # server's asyncpg pool; the key must come from the cache instead.
-    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import ExecdExecutor
-    from cuga.backend.storage import secrets_store
-
-    stored: dict[str, str] = {}
-
-    async def set_secret(secret_id, value, **kwargs):
-        stored[secret_id] = value
-
-    async def get_secret(secret_id, **kwargs):
-        return stored.get(secret_id)
-
-    def no_sync_read(*args, **kwargs):
-        raise AssertionError("sync secrets read from async code")
-
-    monkeypatch.setattr(secrets_store, "set_secret", set_secret)
-    monkeypatch.setattr(secrets_store, "get_secret", get_secret)
-    monkeypatch.setattr(secrets_store, "get_secret_sync", no_sync_read)
-    monkeypatch.setattr("cuga.backend.secrets.backends.db_backend.get_secret_sync", no_sync_read)
-
-    api_key = "s3cret"  # pragma: allowlist secret
-    await put_sandbox_settings(
-        SandboxSettingsBody(enabled=True, url="https://sandbox.example", api_key=api_key)
-    )
-    assert ExecdExecutor._auth_headers()["X-API-Key"] == "s3cret"
-
-    # After a restart only the db:// reference is known; startup loads the key.
-    runtime = connection.get_runtime_config()
-    connection.set_runtime_config(None)
-
-    async def load():
-        return runtime
-
-    monkeypatch.setattr(sandbox_routes, "load_sandbox_settings", load)
-    await sandbox_routes.load_sandbox_settings_into_runtime()
-    assert ExecdExecutor._auth_headers()["X-API-Key"] == "s3cret"
-
-    # Saving again without re-entering the key keeps sending it.
-    await put_sandbox_settings(SandboxSettingsBody(enabled=True, url="https://sandbox.example"))
-    assert ExecdExecutor._auth_headers()["X-API-Key"] == "s3cret"
-
-
-@pytest.mark.asyncio
-async def test_probe_reports_a_rejected_key(monkeypatch):
+def _probe_against(monkeypatch, status: int | Exception):
     import httpx
 
-    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import ExecdExecutor
+    def handler(request):
+        if isinstance(status, Exception):
+            raise status
+        return httpx.Response(status)
 
-    connection.set_runtime_config({"enabled": True, "url": "https://sandbox.example", "api_key_ref": "plain"})
-    transport = httpx.MockTransport(lambda request: httpx.Response(401))
-    monkeypatch.setattr(
-        ExecdExecutor,
-        "_client",
-        classmethod(lambda cls, timeout, thread=None: httpx.AsyncClient(transport=transport)),
-    )
+    real_client = httpx.AsyncClient
 
-    result = await _real_probe("https://sandbox.example")
-    assert result["status_code"] == 401
-    assert result["auth_error"] == "API key rejected by the sandbox"
+    def client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
 
 
 @pytest.mark.asyncio
-async def test_startup_fails_loudly_when_stored_settings_cannot_be_read(monkeypatch):
-    """A transient DB error must not start the server with the sandbox silently off."""
+@pytest.mark.parametrize(
+    "status, key, reason",
+    [
+        (401, "plain", "API key rejected by the sandbox"),
+        (403, "", "The sandbox requires an API key"),
+        (500, "plain", "The sandbox returned an error"),
+        (ConnectionError("refused at 10.0.0.7"), "plain", "The sandbox does not answer"),
+    ],
+)
+async def test_probe_gives_a_reason_not_the_details(monkeypatch, status, key, reason):
+    # Status codes and exception text (hosts, addresses) stay in the server log (item 16).
+    _probe_against(monkeypatch, status)
+
+    result = await _real_probe(connection.SandboxConnection("https://sandbox.example", key))
+
+    assert result["probe_error"] == reason
+    assert set(result) == {"reachable", "probe_error"}
+
+
+@pytest.mark.asyncio
+async def test_probe_sends_the_identity_headers_and_the_key_under_test(monkeypatch):
+    import httpx
+
+    seen: list[httpx.Request] = []
+    real_client = httpx.AsyncClient
+
+    def client(*args, **kwargs):
+        def handler(request):
+            seen.append(request)
+            return httpx.Response(200)
+
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    await _real_probe(connection.SandboxConnection("https://sandbox.example", "k-under-test"))
+
+    assert seen[0].headers["X-API-Key"] == "k-under-test"
+    assert seen[0].headers["X-Tenant-Id"] and seen[0].headers["X-Agent-Id"]
+
+
+@pytest.mark.asyncio
+async def test_probe_of_a_healthy_sandbox_is_just_reachable(monkeypatch):
+    _probe_against(monkeypatch, 200)
+    assert await _real_probe(connection.SandboxConnection("https://sandbox.example", "k")) == {
+        "reachable": True
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_that_does_not_answer_is_not_switched_on(monkeypatch, tmp_path, _isolated):
+    # Probed before saving: a failed check leaves the sandbox off and nothing stored (item 24).
+    _mount_secret(monkeypatch, tmp_path)
+
+    async def failing(conn):
+        return {"reachable": False, "probe_error": "The sandbox does not answer"}
+
+    monkeypatch.setattr(sandbox_routes, "_probe", failing)
+    with pytest.raises(HTTPException) as exc:
+        await put_sandbox_settings(SandboxSettingsBody(enabled=True))
+
+    assert exc.value.status_code == 422 and "does not answer" in exc.value.detail
+    assert _isolated == []
+    assert connection.is_enabled() is False
+
+
+@pytest.mark.asyncio
+async def test_without_a_callback_url_the_sandbox_is_not_switched_on(monkeypatch, tmp_path, _isolated):
+    # Every tool call from the sandbox comes back to this address (item 25).
+    _mount_secret(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings.advanced_features, "sandbox_callback_url", "", raising=False)
+
+    with pytest.raises(HTTPException) as exc:
+        await put_sandbox_settings(SandboxSettingsBody(enabled=True))
+
+    assert exc.value.status_code == 422 and "sandbox_callback_url" in exc.value.detail
+    assert _isolated == []
+
+
+def test_status_names_what_is_missing(monkeypatch):
+    # sandbox_mode = "execd" with nothing configured says so (item 32).
+    monkeypatch.setattr(settings.advanced_features, "sandbox_mode", "execd", raising=False)
+    assert connection.status()["error"] == "Sandbox URL is not configured"
+
+    monkeypatch.setattr(settings.advanced_features, "execd_url", "http://localhost:8090", raising=False)
+    monkeypatch.setattr(settings.advanced_features, "sandbox_callback_url", "", raising=False)
+    assert "sandbox_callback_url" in connection.status()["error"]
+
+
+@pytest.mark.asyncio
+async def test_switching_off_releases_the_kernels_this_process_holds(monkeypatch, tmp_path):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import ExecdExecutor
+
+    _mount_secret(monkeypatch, tmp_path)
+    await put_sandbox_settings(SandboxSettingsBody(enabled=True))
+    released: list[str] = []
+
+    async def release(thread_id, agent_id=None):
+        released.append(thread_id)
+
+    monkeypatch.setattr(ExecdExecutor, "release_thread", staticmethod(release))
+    monkeypatch.setattr(ExecdExecutor, "_contexts", {"t1": "ctx-1", "t2": "ctx-2"})
+
+    await put_sandbox_settings(SandboxSettingsBody(enabled=False))
+
+    assert sorted(released) == ["t1", "t2"]
+
+
+@pytest.mark.asyncio
+async def test_startup_continues_with_the_sandbox_off_when_settings_cannot_be_read(monkeypatch):
+    """A DB error reading the sandbox row must not stop the server from starting."""
     attempts = []
 
     async def broken():
@@ -156,9 +251,29 @@ async def test_startup_fails_loudly_when_stored_settings_cannot_be_read(monkeypa
 
     monkeypatch.setattr(sandbox_routes, "load_sandbox_settings", broken)
     monkeypatch.setattr(sandbox_routes.asyncio, "sleep", no_sleep)
-    with pytest.raises(RuntimeError, match="code-sandbox settings"):
-        await sandbox_routes.load_sandbox_settings_into_runtime()
+
+    await sandbox_routes.load_sandbox_settings_into_runtime()
+
     assert len(attempts) == sandbox_routes._LOAD_ATTEMPTS
+    assert connection.is_enabled() is False
+
+
+@pytest.mark.asyncio
+async def test_startup_keeps_a_sandbox_the_deployment_requires_when_settings_cannot_be_read(monkeypatch):
+    monkeypatch.setattr(settings.advanced_features, "sandbox_mode", "execd", raising=False)
+
+    async def broken():
+        raise ConnectionError("db down")
+
+    async def no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(sandbox_routes, "load_sandbox_settings", broken)
+    monkeypatch.setattr(sandbox_routes.asyncio, "sleep", no_sleep)
+
+    await sandbox_routes.load_sandbox_settings_into_runtime()
+
+    assert connection.is_enabled() is True
 
 
 @pytest.mark.asyncio
@@ -169,7 +284,7 @@ async def test_startup_retries_a_transient_settings_read(monkeypatch):
         calls.append(1)
         if len(calls) == 1:
             raise ConnectionError("db blip")
-        return {"enabled": True, "url": "https://sandbox.example"}
+        return {"enabled": True}
 
     async def no_sleep(_s):
         return None
