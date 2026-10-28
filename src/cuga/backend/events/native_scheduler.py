@@ -44,8 +44,29 @@ def _num(s: str, spec: str) -> int:
         ) from None
 
 
+def _validate_field(spec: str, lo: int, hi: int) -> None:
+    """Validate all comma-separated components of ``spec`` against allowed bounds."""
+    for part in spec.split(","):
+        step = 1
+        if "/" in part:
+            part, step_s = part.split("/", 1)
+            step = _num(step_s, spec)
+            if step <= 0:
+                raise ValueError(f"cron step must be positive, got {step!r} in {spec!r}")
+        if part == "*":
+            start, end = lo, hi
+        elif "-" in part:
+            a, b = part.split("-", 1)
+            start, end = _num(a, spec), _num(b, spec)
+        else:
+            start = end = _num(part, spec)
+        if not (lo <= start <= hi and lo <= end <= hi):
+            raise ValueError(f"cron field {spec!r} is out of range; allowed values are {lo}-{hi}")
+
+
 def _field_matches(spec: str, value: int, lo: int, hi: int) -> bool:
     """Does ``value`` match one cron field? Supports '*', 'a', 'a-b', 'a,b,c', '*/n', 'a-b/n'."""
+    matched = False
     for part in spec.split(","):
         step = 1
         if "/" in part:
@@ -67,8 +88,8 @@ def _field_matches(spec: str, value: int, lo: int, hi: int) -> bool:
         if not (lo <= start <= hi and lo <= end <= hi):
             raise ValueError(f"cron field {spec!r} is out of range; allowed values are {lo}-{hi}")
         if start <= value <= end and (value - start) % step == 0:
-            return True
-    return False
+            matched = True
+    return matched
 
 
 def _matches(expr: str, t: time.struct_time) -> bool:
@@ -96,6 +117,12 @@ def next_cron(expr: str, after: float) -> float:
             f"cron {expr!r} has {len(fields)} field(s); it needs exactly 5: "
             "minute hour day-of-month month day-of-week (macros like @daily are not supported)"
         )
+    mn, hr, dom, mon, dow = fields
+    _validate_field(mn, 0, 59)
+    _validate_field(hr, 0, 23)
+    _validate_field(dom, 1, 31)
+    _validate_field(mon, 1, 12)
+    _validate_field(dow, 0, 7)
     # start at the next whole minute after `after`
     t = int(after) - (int(after) % 60) + 60
     for _ in range(366 * 24 * 60):
