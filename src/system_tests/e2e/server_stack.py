@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import platform
 import signal
 import subprocess
@@ -141,6 +142,19 @@ def _open_log(path: Path):
     return path.open("w", encoding="utf-8", buffering=1)
 
 
+def assert_available_tools(port: int, app_name: str) -> None:
+    """Check agent-scoped tools before an LLM request can hide a setup error."""
+    url = f"http://127.0.0.1:{port}/api/tools/list?agent_id=cuga-default"
+    with urllib.request.urlopen(url, timeout=30) as response:
+        data = json.load(response)
+    if not any(tool.get("app") == app_name for tool in data.get("tools", [])):
+        apps = [app.get("name") for app in data.get("apps", [])]
+        raise RuntimeError(
+            f"Stability stack setup failed: agent cuga-default has no tools for {app_name!r}; "
+            f"available apps: {apps}. Check the seeded agent config and MCP_SERVERS_FILE."
+        )
+
+
 def start_digital_sales_stack(class_name: str) -> StackHandles:
     log_dir = _class_log_dir(class_name)
     handles = StackHandles(log_dir=log_dir)
@@ -158,6 +172,24 @@ def start_digital_sales_stack(class_name: str) -> StackHandles:
     preexec = get_preexec_fn()
 
     try:
+        # The legacy `demo` entry point starts the server without seeding Manage.
+        # Seed in a fresh process so it reads this class's CUGA_DBS_DIR, rather
+        # than the pytest process's already imported storage configuration.
+        subprocess.run(
+            [
+                "uv",
+                "run",
+                "python",
+                "-c",
+                "from cuga.backend.server.demo_manage_setup import setup_demo_manage_config; "
+                "setup_demo_manage_config('demo')",
+            ],
+            check=True,
+            timeout=60,
+            stdout=demo_handle,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
         ds_proc = subprocess.Popen(
             DIGITAL_SALES_MCP_COMMAND,
             stdout=ds_handle,
@@ -205,6 +237,7 @@ def start_digital_sales_stack(class_name: str) -> StackHandles:
             log_file=str(demo_log),
             process_name="Demo server",
         )
+        assert_available_tools(settings.server_ports.demo, "digital_sales")
         return handles
     except Exception:
         stop_stack(handles)
@@ -238,6 +271,7 @@ def start_crm_stack(class_name: str, mode: str = "default") -> StackHandles:
             log_file=str(demo_log),
             process_name="Demo CRM server",
         )
+        assert_available_tools(settings.server_ports.demo, "crm")
         return handles
     except Exception:
         stop_stack(handles)

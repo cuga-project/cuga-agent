@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import subprocess
+import io
+import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import MagicMock
@@ -116,6 +118,7 @@ def _patch_stack_launch(monkeypatch, tmp_path, popen_cls, ready_side_effect):
     monkeypatch.setattr(stack_mod, "_class_log_dir", lambda name: tmp_path)
     monkeypatch.setattr(stack_mod, "_open_log", lambda path: MagicMock())
     monkeypatch.setattr(stack_mod, "get_preexec_fn", lambda: None)
+    monkeypatch.setattr(stack_mod.subprocess, "run", MagicMock())
 
 
 @pytest.mark.unit
@@ -176,3 +179,66 @@ def test_start_crm_stack_stops_partial_launch(monkeypatch, tmp_path):
 
     assert launched
     assert stopped and stopped[0] == launched
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("app_name", ["crm", "digital_sales"])
+def test_assert_available_tools_rejects_unrelated_or_empty_apps(monkeypatch, app_name):
+    response = {
+        "apps": [{"name": "filesystem"}, {"name": app_name, "tool_count": 0}],
+        "tools": [{"name": "read_file", "app": "filesystem"}],
+    }
+    monkeypatch.setattr(
+        stack_mod.urllib.request, "urlopen", lambda *a, **kw: io.StringIO(json.dumps(response))
+    )
+    with pytest.raises(RuntimeError, match=f"no tools for '{app_name}'"):
+        stack_mod.assert_available_tools(12345, app_name)
+
+
+@pytest.mark.unit
+def test_assert_available_tools_accepts_expected_agent_tools(monkeypatch):
+    response = {
+        "apps": [{"name": "digital_sales", "tool_count": 1}],
+        "tools": [{"name": "digital_sales_my_accounts", "app": "digital_sales"}],
+    }
+    monkeypatch.setattr(
+        stack_mod.urllib.request, "urlopen", lambda *a, **kw: io.StringIO(json.dumps(response))
+    )
+    stack_mod.assert_available_tools(12345, "digital_sales")
+
+
+@pytest.mark.unit
+def test_digital_sales_setup_failure_stops_all_servers(monkeypatch, tmp_path):
+    launched = []
+
+    class TrackingPopen(_FakePopen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            launched.append(self)
+
+    _patch_stack_launch(monkeypatch, tmp_path, TrackingPopen, lambda *a, **kw: None)
+    monkeypatch.setattr(
+        stack_mod, "assert_available_tools", MagicMock(side_effect=RuntimeError("wrong scope"))
+    )
+
+    def stop(handles):
+        for proc in handles.processes:
+            proc._alive = False
+
+    monkeypatch.setattr(stack_mod, "stop_stack", stop)
+    with pytest.raises(RuntimeError, match="wrong scope"):
+        start_digital_sales_stack("Klass")
+    assert len(launched) == 3
+    assert all(proc.poll() == 0 for proc in launched)
+
+
+@pytest.mark.unit
+def test_digital_sales_seed_failure_does_not_start_servers(monkeypatch, tmp_path):
+    popen = MagicMock()
+    _patch_stack_launch(monkeypatch, tmp_path, popen, lambda *a, **kw: None)
+    monkeypatch.setattr(
+        stack_mod.subprocess, "run", MagicMock(side_effect=subprocess.CalledProcessError(1, "seed"))
+    )
+    with pytest.raises(subprocess.CalledProcessError):
+        start_digital_sales_stack("Klass")
+    popen.assert_not_called()
