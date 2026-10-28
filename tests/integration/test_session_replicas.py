@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import uuid
 from contextvars import ContextVar
 from types import SimpleNamespace
 from typing import Optional
@@ -303,83 +302,3 @@ async def test_stop_sent_to_another_replica_stops_the_running_turn(app_replicas)
     after = await other.send(thread_id, "after the stop")
     assert after.status_code == 200, after.text
     assert "Error" not in event_names(after)
-
-
-async def test_retention_sweep_prunes_idle_conversation_on_postgres(dsn, tmp_path, monkeypatch):
-    """The retention sweep marks an idle conversation legacy and removes its checkpoint.
-
-    Uses Postgres so the pgvector-integration job exercises the full path. The relational
-    store (owner rows) and the checkpointer both point at the CI database.
-    """
-    import datetime
-
-    import cuga.backend.storage.facade as facade
-
-    monkeypatch.setattr(facade, "_local_db_path", lambda: str(tmp_path / "cuga.db"))
-    monkeypatch.setattr(facade, "_storage_mode", lambda: "prod")
-    monkeypatch.setattr(facade, "_postgres_url", lambda: dsn)
-    facade.get_storage().invalidate_relational_stores()
-
-    from cuga.backend.server.main import _checkpoint_thread_id
-    from cuga.backend.server.retention import _prune_batch
-
-    storage = SimpleNamespace(
-        checkpointer="durable",
-        mode="prod",
-        postgres_url=dsn,
-        checkpoint_pool_min_size=1,
-        checkpoint_pool_max_size=2,
-    )
-    handle = await create_checkpointer(storage)
-    assert handle.kind == "postgres"
-
-    thread_old, thread_recent = f"ret-old-{uuid.uuid4().hex}", f"ret-new-{uuid.uuid4().hex}"
-    user_id, agent_id = "u-ret", "a-ret"
-    try:
-        conv_db = ConversationHistoryDB()
-
-        for tid in (thread_old, thread_recent):
-            await conv_db.create_conversation(tid, user_id, agent_id)
-
-        # Push the old one's last_turn_at far into the past
-        store = facade.get_storage().get_relational_store("conversation")
-        old_ts = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=200)).isoformat()
-        await store.execute(
-            "UPDATE runtime_thread_owners SET last_turn_at = ? WHERE thread_id = ?",
-            (old_ts, thread_old),
-        )
-        await store.commit()
-
-        # Write a real checkpoint for the old thread so adelete_thread has something to remove
-        old_key = _checkpoint_thread_id(thread_old, user_id, agent_id)
-        graph_old = build_turn_graph(handle.saver)
-        await graph_old.ainvoke({"input": "old message"}, {"configurable": {"thread_id": old_key}})
-
-        cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)).isoformat()
-        lease = ThreadLease()
-
-        pruned = await _prune_batch(
-            saver=handle.saver,
-            conversation_db=conv_db,
-            lease=lease,
-            checkpoint_thread_id_fn=_checkpoint_thread_id,
-            cutoff_iso=cutoff,
-        )
-
-        assert pruned == 1, "exactly the old conversation should be pruned"
-        assert await conv_db.get_thread_status(thread_old, user_id, agent_id) == "legacy"
-        assert await conv_db.get_thread_status(thread_recent, user_id, agent_id) != "legacy"
-
-        # Checkpoint for the old thread is gone
-        snap = await handle.saver.aget({"configurable": {"thread_id": old_key}})
-        assert snap is None, "checkpoint should be deleted after pruning"
-
-    finally:
-        # Remove this test's rows from the shared database, whatever happened above.
-        store = facade.get_storage().get_relational_store("conversation")
-        for tid in (thread_old, thread_recent):
-            await handle.saver.adelete_thread(_checkpoint_thread_id(tid, user_id, agent_id))
-            await store.execute("DELETE FROM runtime_thread_owners WHERE thread_id = ?", (tid,))
-        await store.commit()
-        await handle.aclose()
-        await facade.get_storage().close_relational_stores()

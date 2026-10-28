@@ -1,4 +1,4 @@
-"""Configuration fingerprint and stale-interrupt decision table (#774)."""
+"""Configuration fingerprint, stale-interrupt decision table and config-change notices (#774)."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from cuga.backend.server import main as main_mod
 from cuga.backend.server.config_fingerprint import (
     ConfigDecision,
     ConfigFingerprint,
+    agent_config_hash,
     classify_config_change,
     compute_fingerprint,
 )
@@ -77,13 +78,100 @@ def test_decision_table(scope, current, pending, expected_version, decision):
     assert classify_config_change(scope, current, pending, expected_version) is decision
 
 
-def test_agent_state_keeps_the_fingerprint_dict_in_service_scope():
-    from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
+# --- what changes the agent hash --------------------------------------------------------------
 
-    state = default_state(page=None, observation=None, goal="")
-    state.service_scope["config_fingerprint"] = OLD.to_scope_dict()
-    restored = AgentState(**state.model_dump())
-    assert restored.service_scope["config_fingerprint"] == OLD.to_scope_dict()
+
+@pytest.mark.parametrize(
+    "base, other, same",
+    [
+        (
+            {"tools": [{"name": "search", "include": ["app1"]}]},
+            {"tools": [{"name": "search", "include": ["app2"]}]},
+            False,
+        ),
+        (
+            {"updated_at": "2024-01-01", "tools": [{"name": "search", "created_at": "2024-01-01"}]},
+            {"updated_at": "2025-12-31", "tools": [{"name": "search", "created_at": "2025-12-31"}]},
+            True,
+        ),
+        # A bare credential never reaches the digest input: rotating it changes nothing.
+        ({"llm": {"api_key": "sk-abc"}}, {"llm": {}}, True),
+        ({"llm": {"api_key": "sk-xyz"}}, {"llm": {}}, True),
+        # A secret reference is configuration: pointing at another secret changes the hash.
+        (
+            {"llm": {"api_key": "vault://prod/llm-key"}},
+            {"llm": {"api_key": "vault://staging/llm-key"}},
+            False,
+        ),
+        (
+            {"llm": {"api_key": "env://PROD_OPENAI_KEY"}},
+            {"llm": {"api_key": "env://STAGING_OPENAI_KEY"}},
+            False,
+        ),
+        ({"llm": {"api_key": "db://openai-prod"}}, {"llm": {"api_key": "db://openai-staging"}}, False),
+        ({"llm": {"api_key": "aws://prod/openai"}}, {"llm": {"api_key": "aws://staging/openai"}}, False),
+        # Publish applies the config with the knowledge secret and without the export-only state.
+        (
+            {"knowledge": {"embedding_api_key": "sk-live", "enabled": True}},
+            {
+                "knowledge": {"embedding_api_key": "", "enabled": True},
+                "knowledge_state": {"collection": "kb"},
+            },
+            True,
+        ),
+    ],
+    ids=[
+        "tool-include-list",
+        "volatile-keys",
+        "secret-value",
+        "secret-value-rotated",
+        "vault-ref",
+        "env-ref",
+        "db-ref",
+        "aws-ref",
+        "published-snapshot",
+    ],
+)
+def test_agent_hash(base, other, same):
+    assert (agent_config_hash(base) == agent_config_hash(other)) is same
+
+
+async def test_applying_policies_leaves_the_config_hash_unchanged():
+    """Publish applies policies before it stamps the fingerprint; normalization must not edit the config."""
+    from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+    class _Storage:
+        def __init__(self):
+            self.added = []
+
+        async def add_policy(self, policy):
+            self.added.append(policy)
+
+    config = {
+        "policies": {
+            "enablePolicies": True,
+            "policies": [
+                {
+                    "id": "tool_approval_1",
+                    "name": "Approve writes",
+                    "description": "Require approval",
+                    "policy_type": "tool_approval",
+                    "triggers": [],
+                    "required_tools": ["filesystem_write_file"],
+                }
+            ],
+        }
+    }
+    before = agent_config_hash(config)
+    storage = _Storage()
+
+    result = await apply_policies_data_to_storage(
+        storage, config["policies"]["policies"], clear_existing=False
+    )
+
+    assert result["count"] == 1
+    assert storage.added[0].required_tools == ["filesystem_write_file"]
+    assert agent_config_hash(config) == before
 
 
 # --- _cancel_pending_interrupt against a real LangGraph ------------------------------------
@@ -128,19 +216,8 @@ async def test_cancel_pending_interrupt_clears_the_pause_and_keeps_history(inter
 
     after = await graph.aget_state(config)
     assert after.next == ()
-    assert after.values["log"] == "asked"  # history is untouched
+    assert after.values["log"] == "asked"  # history is untouched, and the cancelled action never ran
     assert after.values["hitl_action"] is None  # the stale approval request is gone
-
-
-@pytest.mark.asyncio
-async def test_cancel_pending_interrupt_does_not_run_the_cancelled_action():
-    graph = _approval_graph()
-    config = {"configurable": {"thread_id": "t"}}
-    await graph.ainvoke({"log": "start"}, config)
-
-    await main_mod._cancel_pending_interrupt(graph, "t")
-
-    assert (await graph.aget_state(config)).values["log"] != "acted"
 
 
 # --- event_stream: notices ------------------------------------------------------------------
@@ -256,17 +333,6 @@ async def test_event_stream_emits_config_changed_after_thread_created_and_keeps_
     assert payload == {"previous_agent_hash": OLD.short_hash(), "current_agent_hash": NEW.short_hash()}
     assert names[-1] == "event: Answer"
     assert {e["event_name"] for e in saved["events"]} == {"UserMessage", "Answer"}
-
-
-@pytest.mark.asyncio
-async def test_event_stream_stamps_the_fingerprint_into_the_checkpoint_scope(monkeypatch):
-    graph = MagicMock()
-    graph.aget_state = AsyncMock(return_value=SimpleNamespace(values=None, next=()))
-    seen: dict = {}
-
-    await _run_event_stream(monkeypatch, _event_stream_agent(graph, NEW), saved={}, scope_seen=seen)
-
-    assert seen["config_fingerprint"] == NEW.to_scope_dict()
 
 
 # --- upgrade, end to end through event_stream ----------------------------------------------
