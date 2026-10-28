@@ -25,6 +25,7 @@ import {
   Add,
   TrashCan,
   Chat,
+  Flow,
 } from "@carbon/icons-react";
 import * as api from "./api";
 import { CugaHeader } from "./CugaHeader";
@@ -129,6 +130,20 @@ export function ManageDashboard() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [agentRegistry, setAgentRegistry] = useState(false);
   const navigate = useNavigate();
+  const agentGroups = [
+    {
+      id: "supervisors",
+      title: "Supervisors",
+      description: "Coordinate other agents to complete tasks.",
+      agents: agents.filter((agent) => agent.kind === "supervisor"),
+    },
+    {
+      id: "agents",
+      title: "Individual agents",
+      description: "Agents with their own tools and instructions.",
+      agents: agents.filter((agent) => agent.kind !== "supervisor"),
+    },
+  ].filter((group) => group.agents.length > 0);
 
   // Show the Studio entry only when the events SERVICE answers (see getEventsStatus).
   // Vanilla CUGA (flag off) → getEventsStatus() returns null → nothing changes.
@@ -211,8 +226,8 @@ export function ManageDashboard() {
         ]}
       />
 
-      <div className="manage-dashboard-content" style={{ flex: 1, overflow: "auto", padding: "2rem 3rem", marginTop: "3rem", width: "100%" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.5rem" }}>
+      <div className="manage-dashboard-content" style={{ flex: 1, overflow: "auto", marginTop: "3rem", width: "100%" }}>
+        <div className="manage-dashboard-title-row">
           <Heading>Agent dashboard</Heading>
           {agentRegistry && (
             <Button kind="primary" renderIcon={Add} onClick={() => setShowCreateModal(true)}>
@@ -244,88 +259,96 @@ export function ManageDashboard() {
         )}
 
         {!loading && !error && agents.length > 0 && (
-          <div
-            className="manage-dashboard-list"
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(400px, 1fr))",
-              gap: "1.5rem",
-              marginTop: "1rem"
-            }}
-          >
-            {agents.map((agent: AgentItem) => (
-              <ClickableTile
-                key={agent.id}
-                onClick={() => navigate(`/manage/${encodeURIComponent(agent.id)}`)}
-                style={{ display: "flex", flexDirection: "column", padding: "1.5rem", minHeight: "200px" }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontWeight: 600 }}>
-                    <Bot size={20} />
-                    {agent.name?.trim() || "Agent"}
-                  </div>
-                  <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                    {agent.kind === "supervisor" && (
-                      <Tag type="purple" size="sm">
-                        Supervisor
-                      </Tag>
-                    )}
-                    <Tag type="blue" size="sm">
-                      <Tools size={12} style={{ marginRight: "0.25rem" }} />
-                      {agent.tools_count} tool{agent.tools_count !== 1 ? "s" : ""}
-                    </Tag>
-                    {agent.latest_version != null && (
-                      <Tag
-                        type="gray"
-                        size="sm"
-                        title={agent.latest_version_created_at ? new Date(agent.latest_version_created_at).toLocaleString() : undefined}
-                      >
-                        <DocumentMultiple_01 size={12} style={{ marginRight: "0.25rem" }} />
-                        v{agent.latest_version}
-                      </Tag>
-                    )}
-                  </div>
+          <div className="manage-dashboard-groups">
+            {agentGroups.map((group) => (
+              <section key={group.id} aria-labelledby={`manage-${group.id}-heading`}>
+                <div className="manage-dashboard-group-heading">
+                  <h2 id={`manage-${group.id}-heading`}>{group.title}</h2>
+                  <Tag type="gray" size="sm">{group.agents.length}</Tag>
                 </div>
-                {agent.description && (
-                  <p style={{ marginBottom: "1.5rem", color: "#525252", flex: 1, lineHeight: "1.5" }}>{agent.description}</p>
-                )}
-                <div style={{ display: "flex", gap: "0.75rem", marginTop: "auto", flexWrap: "wrap" }}>
-                  <Button
-                    kind="tertiary"
-                    size="sm"
-                    renderIcon={Settings}
-                    onClick={(e: React.MouseEvent) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      navigate(`/manage/${encodeURIComponent(agent.id)}`);
-                    }}
-                  >
-                    Configure & try it out
-                  </Button>
-                  <Button
-                    kind="ghost"
-                    size="sm"
-                    renderIcon={Chat}
-                    onClick={(e: React.MouseEvent) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      navigate(`/chat/${encodeURIComponent(agent.id)}`);
-                    }}
-                  >
-                    Chat
-                  </Button>
-                  {agentRegistry && agent.id !== "cuga-default" && (
-                    <IconButton
-                      label="Delete agent"
-                      kind="ghost"
-                      size="sm"
-                      onClick={(e: React.MouseEvent) => handleDelete(agent, e)}
+                <p className="manage-dashboard-group-description">{group.description}</p>
+                <div className="manage-dashboard-list">
+                  {group.agents.map((agent: AgentItem) => (
+                    <ClickableTile
+                      key={agent.id}
+                      className={agent.kind === "supervisor" ? "manage-dashboard-supervisor-card" : undefined}
+                      onClick={() => navigate(`/manage/${encodeURIComponent(agent.id)}`)}
+                      style={{ display: "flex", flexDirection: "column", padding: "1.5rem", minHeight: "200px" }}
                     >
-                      <TrashCan />
-                    </IconButton>
-                  )}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontWeight: 600 }}>
+                          {agent.kind === "supervisor" ? (
+                            <Flow size={20} className="manage-dashboard-supervisor-icon" aria-hidden="true" />
+                          ) : (
+                            <Bot size={20} aria-hidden="true" />
+                          )}
+                          {agent.name?.trim() || "Agent"}
+                        </div>
+                        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                          {agent.kind === "supervisor" && (
+                            <Tag type="purple" size="sm">
+                              Supervisor
+                            </Tag>
+                          )}
+                          <Tag type="blue" size="sm">
+                            <Tools size={12} style={{ marginRight: "0.25rem" }} />
+                            {agent.tools_count} tool{agent.tools_count !== 1 ? "s" : ""}
+                          </Tag>
+                          {agent.latest_version != null && (
+                            <Tag
+                              type="gray"
+                              size="sm"
+                              title={agent.latest_version_created_at ? new Date(agent.latest_version_created_at).toLocaleString() : undefined}
+                            >
+                              <DocumentMultiple_01 size={12} style={{ marginRight: "0.25rem" }} />
+                              v{agent.latest_version}
+                            </Tag>
+                          )}
+                        </div>
+                      </div>
+                      {agent.description && (
+                        <p style={{ marginBottom: "1.5rem", color: "#525252", flex: 1, lineHeight: "1.5" }}>{agent.description}</p>
+                      )}
+                      <div style={{ display: "flex", gap: "0.75rem", marginTop: "auto", flexWrap: "wrap" }}>
+                        <Button
+                          kind="tertiary"
+                          size="sm"
+                          renderIcon={Settings}
+                          onClick={(e: React.MouseEvent) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            navigate(`/manage/${encodeURIComponent(agent.id)}`);
+                          }}
+                        >
+                          Configure & try it out
+                        </Button>
+                        <Button
+                          kind="ghost"
+                          size="sm"
+                          renderIcon={Chat}
+                          onClick={(e: React.MouseEvent) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            navigate(`/chat/${encodeURIComponent(agent.id)}`);
+                          }}
+                        >
+                          Chat
+                        </Button>
+                        {agentRegistry && agent.id !== "cuga-default" && (
+                          <IconButton
+                            label="Delete agent"
+                            kind="ghost"
+                            size="sm"
+                            onClick={(e: React.MouseEvent) => handleDelete(agent, e)}
+                          >
+                            <TrashCan />
+                          </IconButton>
+                        )}
+                      </div>
+                    </ClickableTile>
+                  ))}
                 </div>
-              </ClickableTile>
+              </section>
             ))}
           </div>
         )}

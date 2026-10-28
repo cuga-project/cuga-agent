@@ -7,6 +7,7 @@ vi.mock("@carbon/ai-chat", () => ({
 vi.mock("./carbonChatHelpers", () => ({
   BUTTON_KIND: { PRIMARY: "primary", SECONDARY: "secondary", DANGER: "danger" },
   RESPONSE_USER_PROFILE: {},
+  getCachedResponseUserProfile: () => ({}),
   parseReasoningStepContent: vi.fn(),
   parseAnswerEventData: vi.fn(),
   buildToolApprovalCard: vi.fn(),
@@ -16,6 +17,7 @@ vi.mock("./CarbonChat", () => ({ generateUUID: () => "response-id" }));
 vi.mock("agentic_chat/Citations", () => ({ injectCitations: (text: string) => text }));
 vi.mock("../api", () => ({
   getApiBaseUrl: () => "http://localhost",
+  getKnowledgeAgentId: () => "cuga-default",
   postStream: vi.fn(),
   postStop: vi.fn(),
 }));

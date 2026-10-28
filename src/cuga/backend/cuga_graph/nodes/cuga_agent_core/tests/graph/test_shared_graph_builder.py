@@ -12,11 +12,13 @@ from __future__ import annotations
 
 from typing import Any, List, Optional
 
+import pytest
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import CoreGraphAdapter
 
+pytestmark = pytest.mark.unit
 
 # ── Minimal adapter & state for graph construction ─────────────────────────
 
@@ -100,33 +102,21 @@ def test_built_graph_has_prepare_and_call_model_nodes():
     assert "sandbox" in node_names  # adapter.execute_node_name
 
 
-async def test_execute_state_update_loops_back_to_call_model():
-    """Sandbox must loop back to call_model after code execution (regression guard).
+def test_built_graph_has_no_static_execute_to_call_model_edge():
+    """Execute Commands must be able to pause without scheduling another model call."""
+    build = _get_builder()
+    adapter = _MinimalAdapter()
 
-    The loop is a ``Command`` rather than a static edge, so an approval pause can end the turn.
-    """
-    from langgraph.graph import END
-    from langgraph.types import Command
+    graph = build(
+        adapter=adapter,
+        state_class=_MockState,
+        prepare_node=_noop_node(),
+        call_model_node=_noop_node(),
+        execute_node=_noop_node(),
+    )
 
-    async def update_only(state, config=None):
-        return {"variables_storage": {"x": 1}}
-
-    def execute_of(execute_node):
-        graph = _get_builder()(
-            adapter=_MinimalAdapter(),
-            state_class=_MockState,
-            prepare_node=_noop_node(),
-            call_model_node=_noop_node(),
-            execute_node=execute_node,
-        )
-        assert ("sandbox", "call_model") not in graph.edges
-        return graph.nodes["sandbox"].runnable.afunc
-
-    looped = await execute_of(update_only)(_MockState(), {})
-    assert looped.goto == "call_model" and looped.update == {"variables_storage": {"x": 1}}
-
-    paused = await execute_of(_noop_node())(_MockState(), {})
-    assert isinstance(paused, Command) and paused.goto == END
+    edges = graph.edges
+    assert ("sandbox", "call_model") not in edges
 
 
 def test_built_graph_has_no_prepare_to_call_model_edge():

@@ -248,10 +248,16 @@ class CombinedToolProvider(ToolProviderInterface):
             logger.warning("No apps found in tracker or registry")
             self.apps = []
         else:
-            if self.app_names:
+            if self.app_names is not None:
                 filtered_apps = [app for app in all_apps if app.name in self.app_names]
-                if not filtered_apps:
-                    logger.warning(f"None of the requested apps found: {self.app_names}")
+                if self.app_names and not filtered_apps:
+                    logger.warning(
+                        f"None of the requested apps found: {self.app_names}. "
+                        f"Agent: {self.agent_id}; available registry/tracker apps: "
+                        f"{sorted({app.name for app in all_apps})}. "
+                        "Check the saved agent tools against MCP_SERVERS_FILE. "
+                        "Legacy `uv run demo` startup reuses saved agent configuration."
+                    )
                 self.apps = [
                     AppDefinition(
                         name=app.name,
@@ -302,18 +308,17 @@ class CombinedToolProvider(ToolProviderInterface):
             if settings.advanced_features.registry:
                 fresh.extend(await get_apps(agent_id=self.agent_id))
 
-            if self.app_names:
+            if self.app_names is not None:
                 fresh = [a for a in fresh if a.name in self.app_names]
 
-            if fresh:
-                self.apps = [
-                    AppDefinition(
-                        name=a.name,
-                        url=a.url,
-                        description=getattr(a, "description", None),
-                    )
-                    for a in fresh
-                ]
+            self.apps = [
+                AppDefinition(
+                    name=a.name,
+                    url=a.url,
+                    description=getattr(a, "description", None),
+                )
+                for a in fresh
+            ]
         except Exception as e:
             logger.debug(f"Apps refresh failed, using cached list: {e}")
 
@@ -343,6 +348,9 @@ class CombinedToolProvider(ToolProviderInterface):
         """
         if not self.initialized:
             await self.initialize()
+
+        if self.app_names is not None and app_name not in self.app_names:
+            return []
 
         if self.get_include_by_app:
             include_by_app, version = self.get_include_by_app()

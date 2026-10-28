@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Callable, Type
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import START, StateGraph
 from langgraph.types import Command
 
@@ -56,8 +57,10 @@ def build_agent_graph(
     graph.add_node("prepare", prepare_node)
     graph.add_node("call_model", call_model_node)
 
-    async def execute_and_route(state, config):
+    async def execute_and_route(state, config: RunnableConfig):
         result = await execute_node(state, config)
+        # Approval and policy pauses choose their own destination. A static
+        # execute -> call_model edge would run even when they return goto=END.
         if isinstance(result, Command):
             return result
         return Command(update=result, goto="call_model")
@@ -66,7 +69,6 @@ def build_agent_graph(
 
     graph.add_edge(START, "prepare")
     # prepare returns Command(goto=...) — no static edge (avoids call_model after BLOCK_INTENT).
-    # A Command from execute can end the turn for approval. Plain state updates
-    # continue through call_model for the natural-language answer.
+    # Execute state updates loop back for the answer; Commands route explicitly.
 
     return graph
