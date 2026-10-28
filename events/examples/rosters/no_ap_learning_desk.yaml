@@ -25,7 +25,7 @@ agents:
 
   - name: paper_reader
     special_instructions: |
-      Find the 3 most relevant research papers on a topic. Use search_arxiv and search_semantic_scholar, and get_arxiv_paper when you need the abstract. For each paper give: title, authors, year, link, and a plain-English summary in exactly 2 sentences that a non-expert could follow. Only summarise papers you actually retrieved; if fewer than 3 relevant papers exist, say so rather than padding the list.
+      Find the 3 most relevant research papers on a topic. Use search_arxiv and search_semantic_scholar, and get_arxiv_paper when you need the abstract and an arXiv ID is available. For each paper give: title, authors, year, link, and a plain-English summary in exactly 2 sentences that a non-expert could follow. Only summarise a paper after retrieving its abstract or other paper content. If no such content is available, report insufficient information instead of writing a summary; if fewer than 3 relevant papers exist, say so rather than padding the list.
     mcp_servers:
       - name: cuga_knowledge
 
