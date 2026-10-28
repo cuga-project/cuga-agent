@@ -702,8 +702,9 @@ async def _build_published_default_agent(
         shortlisting_tool_threshold=overrides.get("shortlisting_tool_threshold"),
         cuga_lite_max_steps=overrides.get("cuga_lite_max_steps"),
         enable_filesystem_tools=overrides.get("enable_filesystem_tools"),
-        special_instructions=(startup_config or {}).get("special_instructions") or None,
+        special_instructions=agent_registry.agent_special_instructions(startup_config or {}),
         supervisor_id=app_state.agent_id,
+        **await agent_registry.supervisor_graph_overrides(startup_config or {}),
     )
     await agent.build_graph(checkpointer=app_state.checkpointer)
     agent._checkpoint_config_version = str(startup_version or 0)
@@ -1181,7 +1182,11 @@ async def _app_lifespan(app: FastAPI):
             getattr(app_state, "tools_include_version", 0),
         )
 
-    tool_provider = CombinedToolProvider(get_include_by_app=_get_include_by_app, agent_id="cuga-default")
+    tool_provider = CombinedToolProvider(
+        get_include_by_app=_get_include_by_app,
+        agent_id="cuga-default",
+        app_names=agent_registry.configured_tool_apps(_startup_config or {}),
+    )
     app_state.agent = await _build_published_default_agent(
         tool_provider=tool_provider,
         startup_config=_startup_config,
@@ -1223,7 +1228,9 @@ async def _app_lifespan(app: FastAPI):
         logger.info(f"Draft policy system initialized (collection: {draft_collection})")
 
     draft_tool_provider = CombinedToolProvider(
-        get_include_by_app=_get_draft_include_by_app, agent_id=draft_agent_id
+        get_include_by_app=_get_draft_include_by_app,
+        agent_id=draft_agent_id,
+        app_names=agent_registry.configured_tool_apps(draft_config or {}),
     )
     draft_policy = getattr(draft_app_state, "policy_system", None) or app_state.policy_system
     from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
@@ -1248,8 +1255,9 @@ async def _app_lifespan(app: FastAPI):
         cuga_lite_max_steps=draft_overrides.get("cuga_lite_max_steps"),
         enable_filesystem_tools=draft_overrides.get("enable_filesystem_tools"),
         llm_config=_draft_llm_cfg or None,
-        special_instructions=(draft_config or {}).get("special_instructions") or None,
+        special_instructions=agent_registry.agent_special_instructions(draft_config or {}),
         supervisor_id=draft_agent_id,
+        **await agent_registry.supervisor_graph_overrides(draft_config or {}, use_draft=True),
     )
     # Draft graphs stay on their own in-memory saver (not the shared one).
     await draft_app_state.agent.build_graph()
@@ -1861,11 +1869,11 @@ async def event_stream(
         local_state.service_scope.update({"agent_id": runtime_agent_id, "memory_turn_id": memory_turn_id})
         if not resume and config_version is not None:
             local_state.service_scope[checkpoint_config_key] = config_version
-        # Route this run to the CugaSupervisor node when the resolved agent is a supervisor
-        # graph (issue #101). Only override when True so non-supervisor agents keep falling
-        # back to the global settings.supervisor.enabled default.
-        if getattr(run_agent, "supervisor_enabled", None):
-            local_state.supervisor_mode = True
+        # An explicit single-agent role must override global settings and any
+        # supervisor mode retained in an older checkpoint too.
+        supervisor_enabled = getattr(run_agent, "supervisor_enabled", None)
+        if supervisor_enabled is not None:
+            local_state.supervisor_mode = supervisor_enabled
         if os.getenv("CUGA_DEMO_MODE") == "health" and not local_state.pi:
             from cuga.backend.server.demo_manage_setup import HEALTH_USER_CONTEXT
 
@@ -2197,6 +2205,7 @@ async def event_stream(
                                         f"for thread_id: {thread_id}"
                                     )
 
+                        stream_events_buffer.clear()
                         yield StreamEvent(
                             name="Answer",
                             data=final_answer_text,
@@ -2321,6 +2330,19 @@ async def event_stream(
         # exception would reach the caller the same way a response body would.
         _ref = log_error_ref(e, context="Agent event stream failed")
         yield StreamEvent(name="Error", data=f"Agent request failed (ref {_ref})").format()
+    finally:
+        # Approval pauses and disconnected clients can end a request without an
+        # Answer. Retain this request's prompt/events for the resumed transcript;
+        # only a completed answer creates/updates the recent-chat entry.
+        if thread_id and stream_events_buffer:
+            await _save_conversation_and_events_async(
+                agent_id=runtime_agent_id,
+                thread_id=thread_id,
+                user_id=user_id,
+                state=local_state,
+                events=stream_events_buffer.copy(),
+                events_only=True,
+            )
 
 
 app = FastAPI(lifespan=lifespan)
@@ -2893,9 +2915,7 @@ async def _resolve_stream_agent(
                     policy_system=policy_system,
                     tool_provider=CombinedToolProvider(agent_id=agent_id),
                     llm_config=sup_llm_config,
-                    special_instructions=config.get("special_instructions")
-                    or agent_meta.get("description")
-                    or None,
+                    special_instructions=agent_registry.agent_special_instructions(config),
                     supervisor_agents=agents_dict,
                     supervisor_enabled=True,
                     supervisor_plan_approval=bool(supervisor_cfg.get("planApproval")),
@@ -2919,16 +2939,16 @@ async def _resolve_stream_agent(
                     tool_provider=CombinedToolProvider(
                         get_include_by_app=lambda: (tools_include_by_app, 0),
                         agent_id=agent_id,
+                        app_names=agent_registry.configured_tool_apps(config),
                     ),
                     llm_config=config.get("llm") or None,
-                    special_instructions=config.get("special_instructions")
-                    or agent_meta.get("description")
-                    or None,
+                    special_instructions=agent_registry.agent_special_instructions(config),
                     enable_todos=overrides.get("enable_todos"),
                     reflection_enabled=overrides.get("reflection_enabled"),
                     shortlisting_tool_threshold=overrides.get("shortlisting_tool_threshold"),
                     cuga_lite_max_steps=overrides.get("cuga_lite_max_steps"),
                     enable_filesystem_tools=overrides.get("enable_filesystem_tools"),
+                    supervisor_enabled=False,
                 )
 
             # Published builds share the lifespan saver; draft builds keep their own MemorySaver.
@@ -3934,6 +3954,7 @@ async def get_tools_list(
     try:
         # Check for draft mode from query parameter or header
         from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apps, get_apis
+        from cuga.backend.server.config_store import load_config, load_draft
 
         use_draft = False
         if draft is not None:
@@ -3954,13 +3975,33 @@ async def get_tools_list(
             base = _parse_agent_id(agent_id or get_agent_id() or "cuga-default")
             effective_agent_id = f"{base}--draft"
 
+        base_agent_id = agent_id or get_agent_id() or "cuga-default"
+        tool_config = await load_draft(base_agent_id) if use_draft else None
+        if tool_config is None:
+            tool_config, _ = await load_config(None, base_agent_id)
+        allowed_apps = agent_registry.configured_tool_apps(tool_config or {})
+        if ((tool_config or {}).get("agent") or {}).get("kind") == "supervisor":
+            return JSONResponse({"tools": [], "apps": []})
+        includes = {
+            tool["name"]: tool["include"]
+            for tool in (tool_config or {}).get("tools") or []
+            if tool.get("name") and tool.get("include")
+        }
         apps = await get_apps(agent_id=effective_agent_id)
+        if allowed_apps is not None:
+            apps = [app for app in apps if app.name in allowed_apps]
         tools_list = []
         apps_list = []
 
         for app in apps:
             try:
                 apis = await get_apis(app.name, agent_id=effective_agent_id)
+                if app.name in includes:
+                    apis = {
+                        name: definition
+                        for name, definition in apis.items()
+                        if name in includes[app.name] or definition.get("operation_id") in includes[app.name]
+                    }
                 app_type = getattr(app, "type", "api").upper()
 
                 # Add app to apps list

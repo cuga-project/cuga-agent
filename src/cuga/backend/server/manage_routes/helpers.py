@@ -107,21 +107,53 @@ async def invalidate_agent_graph_cache(
     """Drop cached built graphs for agent_id and supervisors that delegate to it.
 
     Called on draft-save/publish so the next /stream request rebuilds from the new
-    config instead of serving a stale cached graph. A no-op for cuga-default,
-    which never uses this cache. Generation is bumped even when the cache is empty
+    config instead of serving a stale cached graph. The default runtime is rebuilt
+    when it delegates to the changed agent. Generation is bumped even when the cache is empty
     so a concurrent first-stream build that finishes after this call is discarded.
     """
-    if agent_id == DEFAULT_AGENT_ID:
-        return
     state = app_state(request)
     bump_agent_graph_generation(state, agent_id)
     referrers = await _referrer_ids_for_agent(agent_id, draft=draft, published=published)
     for referrer_id in referrers:
         bump_agent_graph_generation(state, referrer_id)
+    if published and (agent_id == "cuga" or "cuga" in referrers):
+        from cuga.backend.server.run_routes import invalidate_cached_supervisor
+
+        await invalidate_cached_supervisor()
     cache = getattr(state, "agent_graphs_cache", None) if state is not None else None
-    if not cache:
-        return
-    drop_cached_graphs_for_agent(cache, agent_id, draft=draft, published=published, referrer_ids=referrers)
+    if cache:
+        drop_cached_graphs_for_agent(
+            cache, agent_id, draft=draft, published=published, referrer_ids=referrers
+        )
+    if DEFAULT_AGENT_ID in referrers:
+        from cuga.backend.server.config_store import load_config, load_draft
+        from cuga.backend.server.manage_routes.draft_ops import _apply_config_and_rebuild, agent_rebuild_lock
+
+        for use_draft, enabled, runtime in (
+            (False, published, state),
+            (True, draft, draft_state(request)),
+        ):
+            agent = getattr(runtime, "agent", None)
+            if not enabled or agent is None:
+                continue
+            async with agent_rebuild_lock(agent):
+                while True:
+                    generations = getattr(state, "agent_graph_generations", {})
+                    generation = generations.get(DEFAULT_AGENT_ID, 0)
+                    config = await load_draft(DEFAULT_AGENT_ID) if use_draft else None
+                    if config is None:
+                        config, _ = await load_config(None, DEFAULT_AGENT_ID)
+                    if config:
+                        # The published default agent keeps the shared saver, so a roster
+                        # change does not drop its conversations (#774).
+                        await _apply_config_and_rebuild(
+                            agent,
+                            config,
+                            use_draft=use_draft,
+                            checkpointer=None if use_draft else getattr(state, "checkpointer", None),
+                        )
+                    if generations.get(DEFAULT_AGENT_ID, 0) == generation:
+                        break
 
 
 def draft_state(request: Request):

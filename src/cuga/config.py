@@ -268,6 +268,7 @@ validators = [
         gt=0,
     ),
     Validator("supervisor.enabled", default=False),
+    Validator("supervisor.delegation_execution_timeout", default=300, is_type_of=int, gt=0),
     Validator("supervisor.registry_enabled", default=False),
     Validator("supervisor.sub_agent_memory_scope", default="conversation"),
 ]
