@@ -267,7 +267,7 @@ def describe_pagination(
     }
 
 
-def audit_pagination(tool_calls: List[Dict[str, Any]]) -> List[str]:
+def audit_pagination(tool_calls: List[Dict[str, Any]], *, length_rule: bool = True) -> List[str]:
     """Return one note per listing left unresolved within these records.
 
     A *listing* is (app, tool, every argument except the page ones). It is
@@ -276,6 +276,11 @@ def audit_pagination(tool_calls: List[Dict[str, Any]]) -> List[str]:
     call went to a higher page, no call saw a short page and no response
     declared itself the last page. A page skipped on the way to a higher one
     is flagged as well. Failed calls are not progress and are ignored.
+
+    ``length_rule=False`` keeps only the explicit-signal rule. The audit is
+    per block, so under one-tool-per-step discipline a correct one-page-per-
+    block walk would otherwise be flagged on every full page: page N+1 is, by
+    design, in the next block.
     """
     groups: Dict[tuple, List[Dict[str, Any]]] = {}
     for call in tool_calls or []:
@@ -305,6 +310,8 @@ def audit_pagination(tool_calls: List[Dict[str, Any]]) -> List[str]:
             )
             continue
 
+        if not length_rule:
+            continue
         full = [i for i in infos if i["result_len"] is not None and i["result_len"] == i["limit"]]
         if not full:
             continue
