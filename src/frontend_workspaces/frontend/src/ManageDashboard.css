@@ -34,7 +34,22 @@
 .manage-dashboard-content {
   max-width: 900px;
   margin: 0 auto;
-  padding: 32px 24px;
+  padding: 2rem 3rem;
+}
+
+.manage-dashboard-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+@media (max-width: 640px) {
+  .manage-dashboard-content {
+    padding: 1.5rem;
+  }
 }
 
 .manage-dashboard-title {
@@ -50,10 +65,44 @@
   color: #64748b;
 }
 
-.manage-dashboard-list {
+.manage-dashboard-groups {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 2rem;
+  margin-top: 1.5rem;
+}
+
+.manage-dashboard-group-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.manage-dashboard-group-heading h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.manage-dashboard-group-description {
+  margin: 0.5rem 0 1rem;
+  color: #525252;
+  font-size: 0.875rem;
+}
+
+.manage-dashboard-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr));
+  gap: 1.5rem;
+}
+
+.manage-dashboard-list .manage-dashboard-supervisor-card {
+  border-inline-start: 4px solid #8a3ffc;
+}
+
+.manage-dashboard-supervisor-icon {
+  color: #6929c4;
+  flex-shrink: 0;
 }
 
 .manage-dashboard-card {

@@ -15,6 +15,91 @@ from cuga.backend.server import main as main_mod
 pytestmark = pytest.mark.unit
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disable_history", [False, True])
+@pytest.mark.parametrize("pause_exit", ["interrupt", "done", "close"])
+async def test_approval_pause_preserves_prompt_without_duplicating_resume(
+    monkeypatch, disable_history, pause_exit
+):
+    from cuga.backend.cuga_graph.state.agent_state import default_state
+    from cuga.backend.cuga_graph.utils.agent_loop import AgentLoopAnswer, StreamEvent
+
+    prompt = "Delegate this roster UI test to weatherbot"
+    checkpoint = default_state(page=None, observation=None, goal=prompt)
+    saved = []
+
+    async def fake_save(**kwargs):
+        saved.append(kwargs)
+
+    class ApprovalLoop:
+        def __init__(self, **kwargs):
+            pass
+
+        async def run_stream(self, **kwargs):
+            if kwargs.get("resume"):
+                yield AgentLoopAnswer(end=True, answer="Approved answer", tools=[])
+            else:
+                yield StreamEvent(name="SuggestHumanActions", data='{"action_id":"agent_approval"}').format()
+                if pause_exit == "interrupt":
+                    yield AgentLoopAnswer(end=False, interrupt=True, tools=[])
+
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(return_value=SimpleNamespace(values=checkpoint.model_dump()))
+    agent = SimpleNamespace(graph=graph, policy_system=None)
+    monkeypatch.setattr("cuga.backend.cuga_graph.utils.agent_loop.AgentLoop", ApprovalLoop)
+    monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", fake_save)
+    monkeypatch.setattr(main_mod, "_knowledge_enabled_for_app_state", lambda _: False)
+    monkeypatch.setattr(main_mod, "_rehydrate_citation_ledger", AsyncMock())
+    monkeypatch.setattr(main_mod, "_dispatch_slash_for_stream", AsyncMock(return_value=None))
+    monkeypatch.setattr(main_mod.app_state, "current_llm", None)
+    monkeypatch.setattr(main_mod.app_state, "stop_events", {})
+    monkeypatch.setattr(main_mod.app_state, "knowledge_provider", None)
+    monkeypatch.setattr(main_mod.app_state, "output_format", None)
+    monkeypatch.setattr(main_mod.settings.advanced_features, "langfuse_tracing", False)
+
+    paused = main_mod.event_stream(
+        prompt,
+        api_mode=True,
+        thread_id="approval-thread",
+        agent=agent,
+        agent_id="roster-supervisor",
+        user_id="qa-user",
+        disable_history=disable_history,
+    )
+    if pause_exit == "close":
+        assert "SuggestHumanActions" in await anext(paused)
+        await paused.aclose()
+    else:
+        _ = [chunk async for chunk in paused]
+    assert len(saved) == 1
+    assert saved[0]["events_only"] is True
+    assert [event["event_name"] for event in saved[0]["events"]] == ["UserMessage", "SuggestHumanActions"]
+
+    resumed = main_mod.event_stream(
+        "",
+        api_mode=True,
+        thread_id="approval-thread",
+        agent=agent,
+        agent_id="roster-supervisor",
+        user_id="qa-user",
+        disable_history=disable_history,
+        resume=SimpleNamespace(model_dump_json=lambda: "{}"),
+    )
+    _ = [chunk async for chunk in resumed]
+    assert len(saved) == 2  # Answer is saved before delivery, never again in finally.
+    assert saved[1].get("events_only", False) is disable_history
+    events = [event for batch in saved for event in batch["events"]]
+    assert [event["event_name"] for event in events] == ["UserMessage", "SuggestHumanActions", "Answer"]
+    assert events[0]["event_data"] == prompt
+    assert json.loads(events[-1]["event_data"])["data"] == "Approved answer"
+    for batch in saved:
+        assert (batch["agent_id"], batch["thread_id"], batch["user_id"]) == (
+            "roster-supervisor",
+            "approval-thread",
+            "qa-user",
+        )
+
+
 @pytest.fixture(autouse=True)
 def _registry_on(monkeypatch):
     monkeypatch.setattr(
@@ -91,6 +176,28 @@ def test_registry_disabled_ignores_non_default_agent_id(monkeypatch):
         mock_state.agent_graphs_cache = {}
         resolved = asyncio.run(main_mod._resolve_stream_agent(request, "trip-supervisor", False))
     assert resolved is default_agent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_draft", [False, True])
+@pytest.mark.parametrize("tools", [[], [{"name": "crm"}]])
+async def test_registered_single_agent_does_not_inherit_global_supervisor(monkeypatch, use_draft, tools):
+    monkeypatch.setattr(main_mod.settings.supervisor, "enabled", True)
+    config = {"agent": {"name": "Digital Sales Assistant", "kind": "single"}, "tools": tools}
+    graph = SimpleNamespace(build_graph=AsyncMock())
+    state = SimpleNamespace(agent=object(), agent_graphs_cache={}, checkpointer=None)
+    with (
+        patch.object(main_mod, "app_state", state),
+        patch("cuga.backend.server.config_store.load_config", AsyncMock(return_value=(config, 1))),
+        patch("cuga.backend.server.config_store.load_draft", AsyncMock(return_value=config)),
+        patch("cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined.CombinedToolProvider") as provider,
+        patch("cuga.backend.cuga_graph.graph.DynamicAgentGraph", return_value=graph) as factory,
+    ):
+        resolved = await main_mod._resolve_stream_agent(_request(), "digital-sales-assistant", use_draft)
+
+    assert resolved is graph
+    assert factory.call_args.kwargs["supervisor_enabled"] is False
+    assert provider.call_args.kwargs["app_names"] == [tool["name"] for tool in tools]
 
 
 @pytest.mark.asyncio
@@ -222,7 +329,11 @@ async def test_invalidate_during_build_does_not_cache_stale_graph():
 
 
 @pytest.mark.asyncio
-async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
+@pytest.mark.parametrize("supervisor_enabled", [False, True])
+@pytest.mark.parametrize("checkpoint_supervisor_mode", [None, True])
+async def test_event_stream_persists_under_requested_agent_id(
+    monkeypatch, supervisor_enabled, checkpoint_supervisor_mode
+):
     saved: dict = {}
 
     async def fake_save(**kwargs):
@@ -239,11 +350,19 @@ async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
             from cuga.backend.cuga_graph.utils.agent_loop import AgentLoopAnswer
 
             assert _kwargs["state"].service_scope["published_config_version"] == "4"
+            saved["observed_supervisor_mode"] = _kwargs["state"].supervisor_mode
             yield AgentLoopAnswer(end=True, answer="done", tools=[])
 
     graph = MagicMock()
-    graph.aget_state = AsyncMock(return_value=SimpleNamespace(values=None))
     graph.get_state.side_effect = AssertionError("event_stream must read state via aget_state")
+    if checkpoint_supervisor_mode is not None:
+        from cuga.backend.cuga_graph.state.agent_state import default_state
+
+        checkpoint = default_state(page=None, observation=None, goal="previous question")
+        checkpoint.supervisor_mode = checkpoint_supervisor_mode
+        graph.aget_state = AsyncMock(return_value=SimpleNamespace(values=checkpoint.model_dump()))
+    else:
+        graph.aget_state = AsyncMock(return_value=SimpleNamespace(values=None))
     run_agent = SimpleNamespace(
         graph=graph,
         _checkpoint_config_version="4",
@@ -255,8 +374,10 @@ async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
         enable_filesystem_tools=None,
         special_instructions=None,
         chat=None,
+        supervisor_enabled=supervisor_enabled,
     )
 
+    monkeypatch.setattr(main_mod.settings.supervisor, "enabled", True)
     _patch_agent_loop(monkeypatch, _ImmediateLoop)
     monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", fake_save)
     monkeypatch.setattr(main_mod, "_knowledge_enabled_for_app_state", lambda _state: False)
@@ -280,7 +401,8 @@ async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
         chunks.append(chunk)
 
     assert saved["agent_id"] == "sales-east"
-    assert any(chunks)
+    assert saved["observed_supervisor_mode"] is supervisor_enabled
+    assert any("Answer" in chunk for chunk in chunks)
 
 
 @pytest.mark.asyncio

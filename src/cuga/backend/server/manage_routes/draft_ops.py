@@ -1,18 +1,37 @@
 """Shared draft-state mutations: agent graph rebuild, tools include."""
 
+import asyncio
 from typing import Any
 
 from cuga.backend.server.manage_routes.helpers import extract_agent_feature_overrides
 
 
-async def rebuild_agent_from_config(agent: Any, config: dict[str, Any], *, checkpointer: Any = None) -> None:
-    """Reset tool provider and rebuild an agent graph from config.
+def agent_rebuild_lock(agent: Any) -> asyncio.Lock:
+    lock = getattr(agent, "_config_rebuild_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        agent._config_rebuild_lock = lock
+    return lock
+
+
+async def rebuild_agent_from_config(
+    agent: Any, config: dict[str, Any], *, use_draft: bool = False, checkpointer: Any = None
+) -> None:
+    """Serialize direct edits with rebuilds triggered by a changed roster member.
 
     ``checkpointer`` is the shared saver for published agents; ``None`` (draft
     agents) gives the rebuilt graph its own fresh ``MemorySaver``.
     """
     if not agent:
         return
+    async with agent_rebuild_lock(agent):
+        await _apply_config_and_rebuild(agent, config, use_draft=use_draft, checkpointer=checkpointer)
+
+
+async def _apply_config_and_rebuild(
+    agent: Any, config: dict[str, Any], *, use_draft: bool = False, checkpointer: Any = None
+) -> None:
+    """Apply config while the caller holds agent_rebuild_lock."""
     tp = getattr(agent, "tool_provider", None)
     if tp is not None and hasattr(tp, "reset"):
         tp.reset()
@@ -29,4 +48,19 @@ async def rebuild_agent_from_config(agent: Any, config: dict[str, Any], *, check
         agent.enable_filesystem_tools = overrides["enable_filesystem_tools"]
     llm_cfg = (config or {}).get("llm") or {}
     agent.llm_config = llm_cfg if llm_cfg else None
+    from cuga.backend.server.agent_registry import (
+        agent_special_instructions,
+        configured_tool_apps,
+        supervisor_graph_overrides,
+    )
+
+    if tp is not None:
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import unwrap_tool_provider
+
+        scoped_provider = unwrap_tool_provider(tp)
+        if hasattr(scoped_provider, "app_names"):
+            scoped_provider.app_names = configured_tool_apps(config)
+    agent.special_instructions = agent_special_instructions(config)
+    for key, value in (await supervisor_graph_overrides(config, use_draft=use_draft)).items():
+        setattr(agent, key, value)
     await agent.build_graph(checkpointer=checkpointer)

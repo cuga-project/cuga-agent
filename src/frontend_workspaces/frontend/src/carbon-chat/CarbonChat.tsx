@@ -6,7 +6,7 @@
  *
  *  @license
  */
-import React, { useCallback, useRef, useEffect, useState } from 'react';
+import React, { useCallback, useRef, useEffect, useLayoutEffect, useState } from 'react';
 import {
   ChatCustomElement,
   type ChatInstance,
@@ -36,10 +36,10 @@ import {
   type KnowledgeAttachmentSnapshot,
 } from "../knowledge/useSessionKnowledgeAttachments";
 import { customSendMessage as customSendMessageImpl, stopCugaAgent, StreamHttpError } from './customSendMessage';
-import { getCurrentThreadId, keepThread, showThread } from './threadState';
+import { getCurrentThreadId, getThreadGeneration, keepThread, showThread } from './threadState';
 import { customLoadHistory } from './customLoadHistory';
 import { useEventsInbox } from '../events/useEventsInbox';
-import { initAgentProfile, getResponseUserProfile } from './carbonChatHelpers';
+import { getResponseUserProfile } from './carbonChatHelpers';
 import { SlashCommandDropdown } from './SlashCommandDropdown';
 import { findShadowRoots } from './composerTextarea';
 import './CarbonChat.css';
@@ -73,12 +73,12 @@ interface HomescreenConfig {
 }
 
 interface CarbonChatProps {
+  agentId?: string;
   className?: string;
   theme?: 'light' | 'dark';
   contained?: boolean;
   useDraft?: boolean;
   threadId?: string | null;
-  agentId?: string;
   attachmentScope?: "none" | KnowledgeAttachmentScope;
   knowledgeEnabled?: boolean | null;
   agentKnowledgeEnabled?: boolean | null;
@@ -87,6 +87,7 @@ interface CarbonChatProps {
   isReadonly?: boolean;
   homescreen?: HomescreenConfig;
   onThreadChange?: (threadId: string) => void;
+  onRestart?: () => void;
   sessionDocsVersion?: number;
   onSessionDocsChanged?: () => void;
   onOpenKnowledge?: () => void;
@@ -227,12 +228,12 @@ function ComposerToolbar({
 }
 
 const CarbonChat = ({
+  agentId = api.getKnowledgeAgentId(),
   className = '',
   theme = 'light',
   contained = false,
   useDraft = false,
   threadId = null,
-  agentId,
   attachmentScope = "none",
   knowledgeEnabled = true,
   agentKnowledgeEnabled = true,
@@ -241,6 +242,7 @@ const CarbonChat = ({
   isReadonly = false,
   homescreen,
   onThreadChange,
+  onRestart,
   sessionDocsVersion = 0,
   onSessionDocsChanged,
   onOpenKnowledge,
@@ -251,15 +253,17 @@ const CarbonChat = ({
   const hs = homescreen ?? DEFAULT_HOMESCREEN;
   const starterLabels = (hs.starters ?? DEFAULT_HOMESCREEN.starters ?? []).filter(Boolean).slice(0, 4);
   const chatInstanceRef = useRef<ChatInstance | null>(null);
+  const historyMutationQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const historyReplayGenerationRef = useRef(0);
+  const sendContextRef = useRef({ agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange });
+  useLayoutEffect(() => {
+    sendContextRef.current = { agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange };
+  }, [agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange]);
   const chatElementRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [chatElement, setChatElement] = useState<HTMLElement | null>(null);
   const skipNextHistoryLoadRef = useRef<string | null>(null);
-  // clearConversation() reopens Carbon's home screen, and insertHistory() does
-  // not close it, so loaded history would sit hidden behind the home screen
-  // until the next send. The home screen is only for an empty chat.
-  const [historyShown, setHistoryShown] = useState(false);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
   const [isLoadingDebug, setIsLoadingDebug] = useState(false);
@@ -267,6 +271,8 @@ const CarbonChat = ({
   const [lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null);
   const [messageAttachmentSnapshots, setMessageAttachmentSnapshots] = useState<KnowledgeAttachmentSnapshot[][]>([]);
   const [chatRenderTick, setChatRenderTick] = useState(0);
+  const conversationScope = JSON.stringify([agentId, threadId, useDraft]);
+  const [transcriptScope, setTranscriptScope] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
   const effectiveAttachmentScope: KnowledgeAttachmentScope = attachmentScope === "agent" ? "agent" : "session";
@@ -366,10 +372,19 @@ const CarbonChat = ({
     );
   }, [onOpenMemoryUsage]);
 
+  const getChatResponseUserProfile = useCallback(
+    (draft = useDraft) => getResponseUserProfile(draft, agentId),
+    [agentId, useDraft],
+  );
+
   useEffect(() => {
-    initAgentProfile(useDraft);
-    getResponseUserProfile(useDraft).then((p) => setAssistantName(p.nickname || "CUGA Agent"));
-  }, [useDraft]);
+    let cancelled = false;
+    setAssistantName(agentId === "cuga-default" ? "CUGA Agent" : agentId);
+    getChatResponseUserProfile().then((profile) => {
+      if (!cancelled) setAssistantName(profile.nickname);
+    });
+    return () => { cancelled = true; };
+  }, [agentId, getChatResponseUserProfile]);
 
   useEffect(() => {
     let cancelled = false;
@@ -718,34 +733,6 @@ const CarbonChat = ({
     };
   }, [chatRenderTick, knownCommandNames, messageAttachmentSnapshots, onPreviewKnowledgeAttachment, resolveChatDomRoots]);
 
-  const reloadHistory = useCallback(async (historyThreadId: string) => {
-    // Citation state is per conversation; the map repopulates as
-    // renderUserDefinedResponse runs over the replayed history.
-    sourcesByMessageKey.current.clear();
-    setSourcesPanel(null);
-    if (!chatInstanceRef.current) return;
-    try {
-      // Clear the current conversation
-      await chatInstanceRef.current.messaging.clearConversation();
-
-      // Load the history
-      const history = await customLoadHistory(chatInstanceRef.current, historyThreadId);
-      // The user may have opened another conversation while this loaded.
-      if (getCurrentThreadId() !== historyThreadId) return;
-
-      if (history.length > 0 && chatInstanceRef.current) {
-        console.log(`Loaded ${history.length} history items for thread ${historyThreadId}`);
-        // Insert the history into the chat
-        chatInstanceRef.current.messaging.insertHistory(history);
-      } else {
-        console.log(`No history found for thread ${historyThreadId}`);
-      }
-      setHistoryShown(history.length > 0);
-    } catch (error) {
-      console.error('Error loading history:', error);
-    }
-  }, []);
-
   // Wrap the custom send message function to ensure it's properly bound
   const handleCustomSendMessage = useCallback(
     async (
@@ -753,6 +740,8 @@ const CarbonChat = ({
       options: CustomSendMessageOptions,
       instance: ChatInstance
     ) => {
+      setTranscriptScope(conversationScope);
+      const startedAt = getThreadGeneration();
       const attachmentSnapshot = createMessageAttachmentSnapshot();
       try {
         const result = await customSendMessageImpl(
@@ -766,14 +755,16 @@ const CarbonChat = ({
           agentId,
         );
 
+        // A new chat gets its ID from the server during the send; skip if the user moved on.
         const sentThreadId = getCurrentThreadId();
-        if (onThreadChange && sentThreadId) {
+        const context = sendContextRef.current;
+        if (sentThreadId && context.agentId === agentId && getThreadGeneration() === startedAt) {
           // Same conversation echoed back as a prop: keep the live transcript.
-          skipNextHistoryLoadRef.current = sentThreadId;
-          onThreadChange(sentThreadId);
+          if (context.threadId !== sentThreadId) skipNextHistoryLoadRef.current = sentThreadId;
+          setTranscriptScope(JSON.stringify([agentId, sentThreadId, useDraft]));
+          context.onThreadChange?.(sentThreadId);
+          await refreshMessageAttachmentSnapshots(sentThreadId);
         }
-
-        await refreshMessageAttachmentSnapshots(sentThreadId);
 
         return result;
       } catch (err) {
@@ -784,7 +775,7 @@ const CarbonChat = ({
         }
       }
     },
-    [agentId, attachmentScope, createMessageAttachmentSnapshot, disableHistory, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
+    [agentId, attachmentScope, conversationScope, createMessageAttachmentSnapshot, disableHistory, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
   );
 
   const handleChatReady = useCallback((instance: ChatInstance) => {
@@ -796,12 +787,23 @@ const CarbonChat = ({
     }
     
     instance.on({
+      type: BusEventType.PRE_RESTART_CONVERSATION,
+      handler: async () => {
+        historyReplayGenerationRef.current += 1;
+        // Finish an insertion already in progress before Carbon clears it.
+        await historyMutationQueueRef.current;
+      },
+    });
+
+    instance.on({
       type: BusEventType.RESTART_CONVERSATION,
       handler: () => {
         console.log('[CarbonChat] RESTART_CONVERSATION event received');
         showThread(null);
+        setTranscriptScope(null);
         sourcesByMessageKey.current.clear();
         setSourcesPanel(null);
+        sendContextRef.current.onRestart?.();
       },
     });
 
@@ -843,15 +845,28 @@ const CarbonChat = ({
             signal: new AbortController().signal,
             silent: false,
           };
-          await customSendMessageImpl(request, options, instance, useDraft, disableHistory, actionResponse, undefined, agentId);
+          // Carbon installs this listener once; read the current agent after dropdown switches.
+          const context = sendContextRef.current;
+          const approvedThreadId = getCurrentThreadId();
+          if (!approvedThreadId || (user_defined.thread_id && user_defined.thread_id !== approvedThreadId)) return;
+          await customSendMessageImpl(request, options, instance, context.useDraft, context.disableHistory, actionResponse, undefined, context.agentId);
+          if (sendContextRef.current.agentId === context.agentId && getCurrentThreadId() === approvedThreadId) {
+            sendContextRef.current.onThreadChange?.(approvedThreadId);
+          }
         }
       },
     });
-  }, [useDraft, disableHistory, agentId]);
+  }, []);
 
-  // Load history when threadId changes
+  // Reconcile selection after readiness as well as sidebar navigation. Carbon's
+  // clearConversation ignores overlapping clears, so serialize widget mutations.
   useEffect(() => {
-    if (!chatInstanceRef.current) return;
+    const instance = chatInstanceRef.current;
+    if (!instance) return;
+    let cancelled = false;
+    const generation = historyReplayGenerationRef.current;
+    const isCurrent = () => !cancelled && generation === historyReplayGenerationRef.current
+      && chatInstanceRef.current === instance;
     if (threadId && skipNextHistoryLoadRef.current === threadId) {
       // Same conversation echoed back after a send — keep the transcript and citation state.
       skipNextHistoryLoadRef.current = null;
@@ -860,32 +875,38 @@ const CarbonChat = ({
     }
     skipNextHistoryLoadRef.current = null;
     showThread(threadId ?? null);
-    if (threadId) {
-      void reloadHistory(threadId);
-      return;
-    }
-    // If threadId is null, start a fresh conversation
-    console.log('Starting new conversation');
-    setHistoryShown(false);
     sourcesByMessageKey.current.clear();
     setSourcesPanel(null);
-    chatInstanceRef.current.messaging.clearConversation();
-  }, [threadId, reloadHistory]);
 
-  // The effect above cannot load before the chat instance exists. A conversation
-  // that is already selected when the chat boots (restored after a page reload)
-  // would otherwise stay blank until the first send makes Carbon hydrate it.
-  useEffect(() => {
-    if (chatRenderTick === 0 || !threadId) return;
-    showThread(threadId);
-    void reloadHistory(threadId);
-    // Only on instance readiness; later threadId changes go through the effect above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatRenderTick]);
+    const enqueueMutation = (mutate: () => Promise<void>) => {
+      const pending = historyMutationQueueRef.current.then(async () => {
+        if (isCurrent()) await mutate();
+      });
+      // A rejected operation must not prevent later selections from loading.
+      historyMutationQueueRef.current = pending.catch(() => {});
+      return pending;
+    };
+    const loadAndInsertHistory = async () => {
+      await enqueueMutation(() => instance.messaging.clearConversation());
+      if (!isCurrent() || !threadId) return;
+      // Keep network requests outside the mutation queue so an obsolete slow
+      // response cannot block the currently selected conversation.
+      const history = await customLoadHistory(instance, threadId, agentId, useDraft);
+      if (!isCurrent()) return;
+      if (history.length > 0) {
+        await enqueueMutation(async () => {
+          await instance.messaging.insertHistory(history);
+          if (isCurrent()) setTranscriptScope(conversationScope);
+        });
+      }
+    };
+    void loadAndInsertHistory().catch((error) => console.error('Error loading history:', error));
+    return () => { cancelled = true; };
+  }, [agentId, chatRenderTick, conversationScope, threadId, useDraft]);
 
   // Armed-flow fires land in the transcript. The whole mechanism — mailbox, cursor, polling —
   // lives in the events UI; this is the single line that connects it to the chat.
-  useEventsInbox(threadId, chatInstanceRef, getResponseUserProfile, useDraft);
+  useEventsInbox(threadId, chatInstanceRef, getChatResponseUserProfile, useDraft);
 
   // Wrap customLoadHistory to pass threadId and disableHistory
   const handleCustomLoadHistory = useCallback(
@@ -893,9 +914,9 @@ const CarbonChat = ({
       if (disableHistory) {
         return [];
       }
-      return await customLoadHistory(instance, threadId || undefined);
+      return await customLoadHistory(instance, threadId || undefined, agentId, useDraft);
     },
-    [threadId, disableHistory]
+    [agentId, threadId, disableHistory, useDraft]
   );
 
   return (
@@ -1014,7 +1035,9 @@ const CarbonChat = ({
 
         } as any}
         homescreen={{
-          isOn: !isReadonly && !historyShown && (hs.isOn ?? true),
+          // insertHistory does not close Carbon's homescreen. Keep it from
+          // covering a restored transcript or reopening after a live send.
+          isOn: !isReadonly && transcriptScope !== conversationScope && (hs.isOn ?? true),
           greeting: hs.greeting ?? DEFAULT_HOMESCREEN.greeting,
           starters: !isReadonly && starterLabels.length > 0
             ? { isOn: true, buttons: starterLabels.map((label) => ({ label })) }
@@ -1029,6 +1052,7 @@ const CarbonChat = ({
         }}
 
         messaging={{
+          skipWelcome: true,
           customSendMessage: handleCustomSendMessage,
           customLoadHistory: handleCustomLoadHistory,
         }}

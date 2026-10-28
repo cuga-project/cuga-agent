@@ -18,7 +18,7 @@ import {
 } from "@carbon/ai-chat";
 import {
   BUTTON_KIND,
-  RESPONSE_USER_PROFILE,
+  getCachedResponseUserProfile,
   parseReasoningStepContent,
   parseAnswerEventData,
   buildToolApprovalCard,
@@ -131,7 +131,7 @@ export async function customSendMessage(
   disableHistory: boolean = false,
   actionResponse?: any,
   attachmentSnapshot?: KnowledgeAttachmentSnapshot[],
-  agentId?: string,
+  agentId = api.getKnowledgeAgentId(),
 ) {
   const userMessage = request.input.text?.trim() ?? "";
   
@@ -143,6 +143,7 @@ export async function customSendMessage(
   const threadId = getCurrentThreadId();
   const generation = getThreadGeneration();
   const responseID = generateUUID();
+  const responseUserProfile = getCachedResponseUserProfile(useDraft, agentId);
   
   // Listen for abort signal to call /stop endpoint
   const abortHandler = () => {
@@ -179,7 +180,7 @@ export async function customSendMessage(
           streaming_metadata: { id: "text-stream", cancellable: true },
         },
         partial_response: {
-          message_options: { reasoning: { steps: [] }, response_user_profile: RESPONSE_USER_PROFILE },
+          message_options: { reasoning: { steps: [] }, response_user_profile: responseUserProfile },
         },
         streaming_metadata: { response_id: responseID },
       });
@@ -202,7 +203,7 @@ export async function customSendMessage(
         output: { generic: [completeItem] },
         message_options: {
           ...(steps.length > 0 ? { reasoning: { steps } } : {}),
-          response_user_profile: RESPONSE_USER_PROFILE,
+          response_user_profile: responseUserProfile,
         },
       },
     });
@@ -266,10 +267,10 @@ export async function customSendMessage(
       },
       {
         threadId,
+        agentId,
         useDraft,
         disableHistory,
         signal: requestOptions.signal,
-        agentId,
       }
     );
 
@@ -280,11 +281,18 @@ export async function customSendMessage(
       console.error(`HTTP error response:`, errorText);
       // Parse error code for structured handling by the caller
       let errorCode: string | undefined;
+      let detail: string | undefined;
       try {
         const parsed = JSON.parse(errorText);
         errorCode = parsed?.error;
+        detail = parsed?.detail;
       } catch { /* ignore */ }
-      throw new StreamHttpError(response.status, errorCode);
+      // A conversation that is gone (404) or busy/unavailable (409) is handled by the caller;
+      // any other failure is shown in this response so the turn still finishes.
+      if (response.status === 409 || (response.status === 404 && threadId && detail === "Conversation not found")) {
+        throw new StreamHttpError(response.status, errorCode);
+      }
+      throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
     }
 
     // Process the stream
@@ -325,7 +333,7 @@ export async function customSendMessage(
                 streaming_metadata: { id: "text-stream", cancellable: true },
               },
               partial_response: {
-                message_options: { reasoning: { steps: [...collectedSteps, createReasoningStep(currentStepTitle, currentStepContent)] }, response_user_profile: RESPONSE_USER_PROFILE },
+                message_options: { reasoning: { steps: [...collectedSteps, createReasoningStep(currentStepTitle, currentStepContent)] }, response_user_profile: responseUserProfile },
               },
               streaming_metadata: { response_id: responseID },
             } as StreamChunk);
@@ -401,7 +409,7 @@ export async function customSendMessage(
             partial_response: {
               message_options: {
                 reasoning: { steps: [...collectedSteps] },
-                response_user_profile: RESPONSE_USER_PROFILE,
+                response_user_profile: responseUserProfile,
               },
             },
             streaming_metadata: { response_id: responseID },
@@ -433,7 +441,7 @@ export async function customSendMessage(
                 streaming_metadata: { id: "text-stream", cancellable: true },
               },
               partial_response: {
-                message_options: { reasoning: { steps: [...collectedSteps, createReasoningStep(currentStepTitle, currentStepContent)] }, response_user_profile: RESPONSE_USER_PROFILE },
+                message_options: { reasoning: { steps: [...collectedSteps, createReasoningStep(currentStepTitle, currentStepContent)] }, response_user_profile: responseUserProfile },
               },
               streaming_metadata: { response_id: responseID },
             } as StreamChunk);
@@ -454,7 +462,7 @@ export async function customSendMessage(
               streaming_metadata: { id: "text-stream", cancellable: true },
             },
             partial_response: {
-              message_options: { reasoning: { steps: collectedSteps }, response_user_profile: RESPONSE_USER_PROFILE },
+              message_options: { reasoning: { steps: collectedSteps }, response_user_profile: responseUserProfile },
             },
             streaming_metadata: { response_id: responseID },
           } as StreamChunk);
@@ -713,9 +721,9 @@ export async function customSendMessage(
           };
 
           if (collectedSteps.length > 0) {
-            finalResponse.final_response.message_options = { reasoning: { steps: collectedSteps }, response_user_profile: RESPONSE_USER_PROFILE };
+            finalResponse.final_response.message_options = { reasoning: { steps: collectedSteps }, response_user_profile: responseUserProfile };
           } else {
-            finalResponse.final_response.message_options = { response_user_profile: RESPONSE_USER_PROFILE };
+            finalResponse.final_response.message_options = { response_user_profile: responseUserProfile };
           }
 
           instance.messaging.addMessageChunk(finalResponse);
@@ -727,14 +735,8 @@ export async function customSendMessage(
         case "Error":
           // Handle error
           const errorMsg = typeof event.data === "string" ? event.data : JSON.stringify(event.data);
-          instance.messaging.addMessage({
-            output: {
-              generic: [{
-                response_type: MessageResponseTypes.TEXT,
-                text: `Error: ${errorMsg}`,
-              }],
-            },
-          });
+          flushPendingStep();
+          finalizeStream(`Error: ${errorMsg}`);
           return;
 
         case "Complete":
@@ -758,7 +760,7 @@ export async function customSendMessage(
               output: { generic: [completeItem] },
               message_options: {
                 ...(collectedSteps.length > 0 ? { reasoning: { steps: collectedSteps } } : {}),
-                response_user_profile: RESPONSE_USER_PROFILE,
+                response_user_profile: responseUserProfile,
               },
             },
           });
@@ -778,7 +780,7 @@ export async function customSendMessage(
                 streaming_metadata: { id: "text-stream", cancellable: true },
               },
               partial_response: {
-                message_options: { reasoning: { steps: collectedSteps }, response_user_profile: RESPONSE_USER_PROFILE },
+                message_options: { reasoning: { steps: collectedSteps }, response_user_profile: responseUserProfile },
               },
               streaming_metadata: { response_id: responseID },
             } as StreamChunk);
@@ -808,7 +810,7 @@ export async function customSendMessage(
           output: { generic: [completeItem] },
           message_options: {
             ...(collectedSteps.length > 0 ? { reasoning: { steps: collectedSteps } } : {}),
-            response_user_profile: RESPONSE_USER_PROFILE,
+            response_user_profile: responseUserProfile,
           },
         },
       });
@@ -827,14 +829,9 @@ export async function customSendMessage(
       clearLoadingIndicator();
       const url = api.getApiBaseUrl();
       const msg = error.message || "Failed to connect to CUGA backend";
-      instance.messaging.addMessage({
-        output: {
-          generic: [{
-            response_type: MessageResponseTypes.TEXT,
-            text: `Error: ${msg}. Backend URL: ${url}. Check that the backend is running and reachable (e.g. CORS, firewall, proxy).`,
-          }],
-        },
-      });
+      finalizeStream(
+        `Error: ${msg}. Backend URL: ${url}. Check that the backend is running and reachable (e.g. CORS, firewall, proxy).`
+      );
     }
   } finally {
     clearLoadingIndicator();

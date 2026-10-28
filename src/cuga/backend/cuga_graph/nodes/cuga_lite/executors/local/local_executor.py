@@ -7,7 +7,7 @@ import re
 import traceback
 from typing import Any, Optional
 
-from ..base_executor import BaseExecutor
+from ..base_executor import BaseExecutor, CodeExecutionTimeout
 from ..common.restricted_environment import RestrictedEnvironment
 from ..common.security import CodeSyntaxError, SecurityValidator
 from ..common.benchmark_mode import is_relaxed_execution, warn_if_relaxed
@@ -55,6 +55,7 @@ class LocalExecutor(BaseExecutor):
         wrapped_code: str,
         context_locals: dict[str, Any],
         timeout: int = 30,
+        raise_on_timeout: bool = False,
     ) -> str:
         """Execute code locally in a restricted environment.
 
@@ -116,13 +117,19 @@ class LocalExecutor(BaseExecutor):
                         return _BlockSystemExit(e, LocalExecutor._locals_from_frame(e, "_async_main"))
 
                 task = asyncio.create_task(_run_block())
-                done, _pending = await asyncio.wait({task}, timeout=timeout)
+                try:
+                    done, _pending = await asyncio.wait({task}, timeout=timeout)
+                except asyncio.CancelledError:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    raise
                 if not done:
                     recovered = self._locals_from_coro(task.get_coro(), "_async_main")
                     task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await task
+                    await asyncio.gather(task, return_exceptions=True)
                     context_locals.update(recovered)
+                    if raise_on_timeout:
+                        raise CodeExecutionTimeout("Code execution deadline exceeded")
                     # Preserve the evidence instead of discarding it: the agent
                     # otherwise sees a bare timeout, learns nothing, and re-runs
                     # the same loop until the step limit.

@@ -169,7 +169,7 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
             try:
                 draft_agent = getattr(state_to_update, "agent", None)
                 if draft_agent:
-                    await rebuild_agent_from_config(draft_agent, config or {})
+                    await rebuild_agent_from_config(draft_agent, config or {}, use_draft=True)
                 else:
                     logger.warning("No draft agent found in state, skipping rebuild")
             except Exception as rebuild_err:
@@ -294,7 +294,7 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
             try:
                 draft_agent = getattr(state, "agent", None)
                 if draft_agent:
-                    await rebuild_agent_from_config(draft_agent, full_draft)
+                    await rebuild_agent_from_config(draft_agent, full_draft, use_draft=True)
             except Exception as rebuild_err:
                 logger.error(f"Failed to rebuild draft agent graph after PATCH tools: {rebuild_err}")
         else:
