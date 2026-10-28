@@ -500,6 +500,20 @@ def test_cursor_listing_with_explicit_end_is_quiet():
 
 
 @pytest.mark.unit
+def test_length_rule_off_keeps_only_explicit_signals():
+    """Under one-tool-per-step the next page lives in the next block: a full page is not a finding."""
+    full_page = [_call("show_inbox", {"page_index": 0, "page_limit": 5}, _rows(5))]
+    assert len(audit_pagination(full_page)) == 1
+    assert audit_pagination(full_page, length_rule=False) == []
+    # An abandoned explicit "more pages" claim is still worth a note.
+    claims_more = [
+        _call("show_inbox", {"page_index": 0, "page_limit": 5}, {"threads": _rows(5), "has_more": True})
+    ]
+    notes = audit_pagination(claims_more, length_rule=False)
+    assert len(notes) == 1 and "(`has_more`)" in notes[0]
+
+
+@pytest.mark.unit
 def test_failed_calls_and_unpaged_calls_are_ignored():
     calls = [
         _call("show_inbox", {"page_index": 0, "page_limit": 5}, None, error="timed out"),
@@ -660,7 +674,7 @@ def _sandbox_state():
     )
 
 
-async def _run_sandbox_block(audit_enabled: bool):
+async def _run_sandbox_block(audit_enabled: bool, configurable: dict | None = None, result=None):
     """Run one sandbox block whose script fetches a full page-0 and stops."""
     from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
 
@@ -670,7 +684,7 @@ async def _run_sandbox_block(audit_enabled: bool):
         ToolCallTracker.record_call(
             tool_name="gmail_show_inbox_threads",
             arguments={"query": "from:amazon.com", "page_index": 0, "page_limit": 5},
-            result=_rows(5),
+            result=_rows(5) if result is None else result,
             app_name="gmail",
         )
         return "5", {}
@@ -685,8 +699,22 @@ async def _run_sandbox_block(audit_enabled: bool):
     ):
         node = create_sandbox_node(adapter, base_thread_id="base", base_apps_list=[])
         # No track_tool_calls in configurable: the production default.
-        result = await node(_sandbox_state(), config={"configurable": {}})
-    return adapter, result
+        out = await node(_sandbox_state(), config={"configurable": dict(configurable or {})})
+    return adapter, out
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sandbox_skips_the_full_page_rule_under_one_tool_per_step():
+    """One page per block is the discipline's own rule; a full page is not a finding there."""
+    discipline = {"cuga_lite_step_discipline": "one_tool_per_step"}
+    adapter, out = await _run_sandbox_block(audit_enabled=True, configurable=discipline)
+    assert "Pagination check" not in out["chat_messages"][-1].content
+    # An abandoned explicit "more pages" claim still gets the note.
+    adapter, out = await _run_sandbox_block(
+        audit_enabled=True, configurable=discipline, result={"threads": _rows(5), "has_more": True}
+    )
+    assert "says more pages exist (`has_more`)" in out["chat_messages"][-1].content
 
 
 @pytest.mark.unit
