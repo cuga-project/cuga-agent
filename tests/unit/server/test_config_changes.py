@@ -269,40 +269,7 @@ async def test_event_stream_stamps_the_fingerprint_into_the_checkpoint_scope(mon
     assert seen["config_fingerprint"] == NEW.to_scope_dict()
 
 
-# --- publish and upgrade, end to end through /stream and event_stream -------------------------
-
-
-def _event_names(response) -> list[str]:
-    return [line.split(":", 1)[1].strip() for line in response.text.splitlines() if line.startswith("event:")]
-
-
-async def test_rebuild_after_publish_keeps_the_conversation_and_emits_config_changed(server):
-    server.state.agent._config_fingerprint = OLD
-    thread_id = await server.create()
-    first = await server.send(thread_id, "first")
-    assert first.status_code == 200, first.text
-    assert "config_changed" not in _event_names(first)
-
-    # A publish rebuilds the agent with the new configuration on the same checkpointer.
-    server.state.agent = SimpleNamespace(
-        graph=server.graph, policy_system=None, chat=None, _config_fingerprint=NEW
-    )
-    second = await server.send(thread_id, "second")
-
-    assert second.status_code == 200, second.text
-    names = _event_names(second)
-    assert names[0] == "config_changed"
-    assert "Error" not in names
-    payload = json.loads(second.text.split("event: config_changed\ndata: ", 1)[1].split("\n", 1)[0])
-    assert payload == {"previous_agent_hash": OLD.short_hash(), "current_agent_hash": NEW.short_hash()}
-
-    snapshot = await server.graph.aget_state({"configurable": {"thread_id": server.key(thread_id)}})
-    assert snapshot.values["url"] == "2"  # the second turn continued from the first one's state
-    assert snapshot.values["service_scope"]["config_fingerprint"] == NEW.to_scope_dict()
-    assert await server.db.get_thread_status(thread_id, "alice", "cuga-default") == "active"
-
-    third = await server.send(thread_id, "third")  # the checkpoint now carries the new fingerprint
-    assert "config_changed" not in _event_names(third)
+# --- upgrade, end to end through event_stream ----------------------------------------------
 
 
 async def test_pending_interrupt_from_before_an_upgrade_is_cancelled_with_a_notice(monkeypatch):

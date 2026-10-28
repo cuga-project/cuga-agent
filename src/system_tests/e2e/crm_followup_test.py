@@ -1,7 +1,6 @@
 import asyncio
 import pytest
 import unittest
-import uuid
 
 from system_tests.e2e.base_crm_test import BaseCRMTestServerStream
 
@@ -10,7 +9,7 @@ pytestmark = pytest.mark.e2e
 
 class TestCRMFollowup(BaseCRMTestServerStream):
     async def asyncSetUp(self):
-        self.thread_id = str(uuid.uuid4())
+        self.thread_id = await self.create_conversation()
         print(f"\n=== Test thread ID: {self.thread_id} ===")
 
     async def test_crm_contacts_followup_fast(self):
@@ -64,7 +63,7 @@ class TestCRMFollowup(BaseCRMTestServerStream):
         n_tasks = 1
 
         async def run_one(turn):
-            thread_id = str(uuid.uuid4())
+            thread_id = await self.create_conversation()
             query = (
                 "From the list of emails in the file contacts.txt, please filter those who exist in the CRM application. "
                 "For the filtered contacts, retrieve their name and their associated account name, and calculate their account's revenue percentile across all accounts. "

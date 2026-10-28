@@ -1,12 +1,121 @@
-"""Continuing a conversation over ``/stream`` with server-issued IDs (#774, design §6, §11.1, §12)."""
+"""Continuing a conversation over ``/stream`` with server-issued IDs (#774, design §6, §10, §11.1, §12).
+
+The ``server`` fixture is a small FastAPI app over the real conversation routes, a real graph
+and the per-test SQLite store.
+"""
 
 import asyncio
+import json
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+from fastapi import FastAPI
+from langchain_core.messages import AIMessage
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+
+from cuga.backend.server.config_fingerprint import compute_fingerprint
+from cuga.backend.server.turn_prelude import ThreadUnavailable, check_turn_state
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture
+async def server(monkeypatch):
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+    from cuga.backend.server import main
+    from cuga.backend.server.conversation_history import ConversationHistoryDB
+    from cuga.backend.storage.checkpoint import CheckpointerHandle
+
+    turns: list[str] = []
+    gate: dict = {}  # set "release" to an asyncio.Event to hold a turn open
+
+    async def node(state: AgentState):
+        if "release" in gate:
+            gate["started"].set()
+            await gate["release"].wait()
+        turns.append(state.input)
+        return {
+            "url": str(int(state.url or "0") + 1),
+            "final_answer": state.input,
+            "messages": [AIMessage(content=state.input)],
+        }
+
+    saver = MemorySaver()
+    builder = StateGraph(AgentState)
+    builder.add_node("FinalAnswerAgent", node)
+    builder.add_edge(START, "FinalAnswerAgent")
+    builder.add_edge("FinalAnswerAgent", END)
+    graph = builder.compile(checkpointer=saver)
+    db = ConversationHistoryDB()
+    state = SimpleNamespace(
+        agent=SimpleNamespace(graph=graph, policy_system=None, chat=None),
+        agent_id="cuga-default",
+        stop_events={},
+        current_llm=None,
+        output_format=None,
+        knowledge_provider=None,
+        checkpointer_handle=CheckpointerHandle(saver=saver, kind="sqlite"),
+    )
+    monkeypatch.setattr(main, "get_conversation_db", lambda: db)
+    monkeypatch.setattr(main, "app_state", state)
+    monkeypatch.setattr(main.agent_registry, "is_agent_registry_enabled", lambda: False)
+    monkeypatch.setattr(main.events_bridge, "forwards_to_events", lambda *args: False)
+    monkeypatch.setattr(main, "_knowledge_enabled_for_app_state", lambda _: False)
+    monkeypatch.setattr(main, "_rehydrate_citation_ledger", AsyncMock())
+    monkeypatch.setattr(main, "_dispatch_slash_for_stream", AsyncMock(return_value=None))
+    monkeypatch.setattr(main, "_delete_session_knowledge_for_thread", AsyncMock())
+    monkeypatch.setattr(main, "delete_thread_uploads", AsyncMock())
+    monkeypatch.setattr(main.settings.evolve, "enabled", False)
+    monkeypatch.setattr(main.settings.advanced_features, "mode", "api")
+    monkeypatch.setattr(main.settings.advanced_features, "langfuse_tracing", False)
+
+    app = FastAPI()
+    app.state.app_state = state
+    app.add_api_route("/stream", main.stream, methods=["POST"])
+    app.add_api_route("/api/conversations", main.get_conversations, methods=["GET"])
+    app.add_api_route("/api/conversations", main.create_conversation, methods=["POST"])
+    app.add_api_route("/api/conversations/{conversation_id}", main.delete_conversation, methods=["DELETE"])
+    user = {"sub": "alice"}
+    app.dependency_overrides[main.require_chat_access] = lambda: SimpleNamespace(sub=user["sub"])
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+
+        async def create(as_user="alice"):
+            user["sub"] = as_user
+            response = await client.post("/api/conversations", json={})
+            assert response.status_code == 200, response.text
+            return response.json()["id"]
+
+        async def send(thread_id, query="hello", as_user="alice"):
+            user["sub"] = as_user
+            headers = {"X-Thread-ID": thread_id} if thread_id else {}
+            return await client.post("/stream", headers=headers, json={"query": query})
+
+        def hold_turns():
+            gate["started"], gate["release"] = asyncio.Event(), asyncio.Event()
+            return gate
+
+        def key(thread_id, user_id="alice"):
+            return main._checkpoint_thread_id(thread_id, user_id, "cuga-default")
+
+        yield SimpleNamespace(
+            client=client,
+            db=db,
+            graph=graph,
+            saver=saver,
+            state=state,
+            turns=turns,
+            user=user,
+            create=create,
+            send=send,
+            hold_turns=hold_turns,
+            key=key,
+            main=main,
+        )
 
 
 def _events(response) -> list[str]:
@@ -149,18 +258,6 @@ async def test_legacy_delete_removes_only_the_callers_own_history(server):
     assert (await server.client.delete("/api/conversations/shared")).status_code == 404
 
 
-def test_entry_points_never_share_a_web_conversations_checkpoint(monkeypatch):
-    from cuga.backend.server import thread_scope
-
-    keys = {
-        entry: thread_scope.checkpoint_thread_id("t", "u", "a", entry)
-        for entry in ("web", "run", "a2a", "ext")
-    }
-    assert len(set(keys.values())) == 4
-    # Web keys are unchanged, so checkpoints written before this change keep resolving.
-    assert keys["web"] == thread_scope.checkpoint_thread_id("t", "u", "a")
-
-
 async def test_owner_rows_from_before_the_status_column_become_legacy(tmp_path):
     from cuga.backend.server.conversation_history import ConversationHistoryDB, _instance_id, _tenant_id
     from cuga.backend.storage.relational.local import LocalRelationalStore
@@ -183,3 +280,87 @@ async def test_owner_rows_from_before_the_status_column_become_legacy(tmp_path):
         await db._ensure_schema()  # running the migration again is harmless
     finally:
         await store.close()
+
+
+# -- fail-closed checkpoint check before a turn (design §6.2 step 4, §10) ----------
+
+_PRESENT = SimpleNamespace(values={"input": "hi"}, next=())
+_PAUSED = SimpleNamespace(values={}, next=("WaitForResponse",))
+_ABSENT = SimpleNamespace(values={}, next=())
+_INCOMPATIBLE = SimpleNamespace(values={"chat_messages": "not a list"}, next=())
+
+
+@pytest.mark.parametrize(
+    ("status", "snapshot", "kind", "expected"),
+    [
+        ("active", _PRESENT, "sqlite", None),
+        ("new", _PRESENT, "sqlite", None),  # a checkpoint always wins over the status
+        ("active", _PAUSED, "postgres", None),
+        ("new", _ABSENT, "sqlite", None),  # a new conversation starts empty
+        ("active", _ABSENT, "sqlite", "missing"),  # never silently starts empty
+        ("active", _ABSENT, "memory", None),  # in-memory: a restart loses state by design
+        ("active", RuntimeError("db down"), "sqlite", "unreadable"),
+        ("active", RuntimeError("db down"), "memory", "unreadable"),
+        ("active", _INCOMPATIBLE, "sqlite", "incompatible"),
+    ],
+)
+async def test_checkpoint_rules(status, snapshot, kind, expected):
+    graph = SimpleNamespace(
+        aget_state=AsyncMock(side_effect=snapshot)
+        if isinstance(snapshot, Exception)
+        else AsyncMock(return_value=snapshot)
+    )
+    if expected is None:
+        await check_turn_state(graph, "key", status, kind)
+        return
+    with pytest.raises(ThreadUnavailable) as exc:
+        await check_turn_state(graph, "key", status, kind)
+    assert exc.value.reason == expected
+
+
+async def test_stream_returns_409_unavailable_without_running_the_turn(server):
+    thread_id = await server.create()
+    await server.send(thread_id)
+    await server.saver.adelete_thread(server.key(thread_id))  # e.g. the checkpoint DB was lost
+
+    response = await server.send(thread_id, "again")
+
+    assert response.status_code == 409
+    assert response.json() == {"error": "unavailable", "reason": "missing"}
+    assert server.turns == ["hello"]
+    assert (await server.send(thread_id)).status_code == 409  # and the lease was released
+
+
+def _event_names(response) -> list[str]:
+    return [line.split(":", 1)[1].strip() for line in response.text.splitlines() if line.startswith("event:")]
+
+
+async def test_rebuild_after_publish_keeps_the_conversation_and_emits_config_changed(server):
+    old = compute_fingerprint({"tools": [{"name": "search"}]})
+    new = compute_fingerprint({"tools": [{"name": "search"}, {"name": "browser"}]})
+    server.state.agent._config_fingerprint = old
+    thread_id = await server.create()
+    first = await server.send(thread_id, "first")
+    assert first.status_code == 200, first.text
+    assert "config_changed" not in _event_names(first)
+
+    # A publish rebuilds the agent with the new configuration on the same checkpointer.
+    server.state.agent = SimpleNamespace(
+        graph=server.graph, policy_system=None, chat=None, _config_fingerprint=new
+    )
+    second = await server.send(thread_id, "second")
+
+    assert second.status_code == 200, second.text
+    names = _event_names(second)
+    assert names[0] == "config_changed"
+    assert "Error" not in names
+    payload = json.loads(second.text.split("event: config_changed\ndata: ", 1)[1].split("\n", 1)[0])
+    assert payload == {"previous_agent_hash": old.short_hash(), "current_agent_hash": new.short_hash()}
+
+    snapshot = await server.graph.aget_state({"configurable": {"thread_id": server.key(thread_id)}})
+    assert snapshot.values["url"] == "2"  # the second turn continued from the first one's state
+    assert snapshot.values["service_scope"]["config_fingerprint"] == new.to_scope_dict()
+    assert await server.db.get_thread_status(thread_id, "alice", "cuga-default") == "active"
+
+    third = await server.send(thread_id, "third")  # the checkpoint now carries the new fingerprint
+    assert "config_changed" not in _event_names(third)

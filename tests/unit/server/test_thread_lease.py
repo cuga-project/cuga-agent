@@ -43,16 +43,16 @@ async def test_expired_lease_is_taken_over_and_the_old_holder_loses_it(lease):
 
 
 async def test_keep_lease_renews_releases_and_stops_the_turn_when_lost(lease):
-    token = await lease.acquire("t1", ttl_seconds=0.2)
-    async with keep_lease(lease, token, renew_seconds=0.05):
-        await asyncio.sleep(0.4)  # longer than the TTL: only renewal keeps it
+    token = await lease.acquire("t1", ttl_seconds=0.1)
+    async with keep_lease(lease, token, renew_seconds=0.02):
+        await asyncio.sleep(0.15)  # longer than the TTL: only renewal keeps it
         with pytest.raises(ThreadBusy):
             await lease.acquire("t1")
     await lease.release(await lease.acquire("t1"))  # released on exit
 
     stop = asyncio.Event()
     token = await lease.acquire("t1")
-    async with keep_lease(lease, token, stop_event=stop, renew_seconds=0.05):
+    async with keep_lease(lease, token, stop_event=stop, renew_seconds=0.02):
         store = lease._get_store()
         await store.execute("UPDATE thread_leases SET holder_id = 'other' WHERE thread_id = 't1'")
         await store.commit()

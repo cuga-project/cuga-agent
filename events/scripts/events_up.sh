@@ -44,13 +44,13 @@ start_events_service() {
 #   • EVENTS_NGROK_DOMAIN set → a STABLE ngrok reserved domain (never changes). This is the fix for
 #     the flapping quick-tunnel. We start ngrok (not cloudflared) for :7860 and pin the URL.
 #   • unset → a cloudflared quick-tunnel (random per run); we auto-detect + feed the live one in.
-env_val() { grep -E "^$1=" "$REPO/.env" 2>/dev/null | tail -1 | cut -d= -f2- \
+env_val() { { grep -E "^$1=" "$REPO/.env" 2>/dev/null || true; } | tail -1 | cut -d= -f2- \
   | sed -e 's/ *#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//'; }
 NGROK_DOMAIN="$(env_val EVENTS_NGROK_DOMAIN)"
 
 cuga_tunnel_url() {
   [ -n "$NGROK_DOMAIN" ] && { echo "https://$NGROK_DOMAIN"; return; }   # stable ngrok URL is known
-  grep -ao 'https://[a-z0-9-]*\.trycloudflare\.com' "$RUN/cuga_tunnel.log" 2>/dev/null | tail -1;
+  { grep -ao 'https://[a-z0-9-]*\.trycloudflare\.com' "$RUN/cuga_tunnel.log" 2>/dev/null || true; } | tail -1
 }
 
 # Export EVENTS_PUBLIC_URL so the server matches the live tunnel without editing .env. With a stable
@@ -61,7 +61,7 @@ export_public_url() {
   if [ -n "$pin" ] && ! printf '%s' "$pin" | grep -q trycloudflare; then
     export EVENTS_PUBLIC_URL="$pin"; return          # pinned stable URL — leave it alone
   fi
-  [ -n "$url" ] && export EVENTS_PUBLIC_URL="$url"
+  if [ -n "$url" ]; then export EVENTS_PUBLIC_URL="$url"; fi   # `[ ] && cmd` would return 1 under set -e
 }
 
 # The "find the URL + update these" step the setup was missing.
@@ -69,6 +69,11 @@ print_public_url() {
   local url; url="${EVENTS_PUBLIC_URL:-$(cuga_tunnel_url)}"
   echo ""
   echo "──────────── PUBLIC URL  (EVENTS_PUBLIC_URL) ────────────"
+  if [ -z "$url" ]; then
+    echo "  <none - no tunnel is running; Slack and Gmail callbacks need a public URL (use 'make up')>"
+    echo "─────────────────────────────────────────────────────────"
+    return 0
+  fi
   echo "  $url"
   if [ -n "$NGROK_DOMAIN" ]; then
     echo "  ✓ STABLE (ngrok) — this never changes. Set these EXTERNAL consoles ONCE:"
@@ -243,7 +248,7 @@ echo "READY:"
 echo "  CUGA        http://localhost:$CUGA_PORT   (Studio: /manage → Studio)"
 echo "  eventing    http://localhost:$EVENTS_PORT/health   (triggers · scheduler · channels)"
 echo "  registry    http://localhost:$REGISTRY_PORT/applications"
-echo "  AP tunnel   $(grep -ao 'https://[a-z0-9-]*\.trycloudflare\.com' "$RUN/ap_tunnel.log" | tail -1)   → for channel webhooks"
+echo "  AP tunnel   $(grep -ao 'https://[a-z0-9-]*\.trycloudflare\.com' "$RUN/ap_tunnel.log" 2>/dev/null | tail -1)   → for channel webhooks"
 print_public_url
 echo ""
 echo "next: 'make channels' to arm inbound chat channels · logs in $RUN/*.log · stop: events/scripts/events_up.sh --stop"
