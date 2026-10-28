@@ -281,6 +281,11 @@ MODEL_CONTEXT_SIZES = {
     # DeepSeek Models
     # ============================================================================
     "deepseek-v3": 64000,
+    # V3.2 serves 163840 (LiteLLM model map: deepseek/deepseek-v3.2, azure_ai/deepseek-v3.2).
+    # Without these keys it prefix-matches "deepseek-v3" and resolves to 64000.
+    "deepseek-v3.2": 163840,
+    "deepseek/deepseek-v3.2": 163840,
+    "deepseek-ai/deepseek-v3.2": 163840,
     "deepseek-chat": 64000,
     "deepseek-chat-v3": 64000,
     "deepseek-coder": 64000,
@@ -453,11 +458,11 @@ def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
 
 
 def ensure_model_context_profile(model: Optional[Any] = None, model_name: Optional[str] = None) -> int:
-    """Ensure *model.profile* reflects the known context window for the resolved model name."""
+    """Ensure *model.profile* reflects the context window resolved for *model* (see ``context_window``)."""
+    from cuga.backend.llm.context_window import resolve_context_window
+
     resolved_name = (model_name or "").strip() or resolve_model_identifier(model, fallback_name="")
-    context_size = lookup_model_context_size(resolved_name)
-    if context_size is None:
-        context_size = DEFAULT_CONTEXT_SIZE
+    context_size = resolve_context_window(model, resolved_name).tokens
 
     if model is not None:
         try:
@@ -648,9 +653,10 @@ class TokenCounter:
         """
         Get the context window size for a given model.
 
-        Prefers known model-name mappings over provider-supplied profiles, because
-        some integrations (e.g. ChatWatsonx) ship with generic 8K profiles that
-        do not match large-context models like gpt-oss-120b.
+        Resolved by ``cuga.backend.llm.context_window``: the model's ``context_window``
+        setting, then the serving endpoint, LiteLLM's model map, ``MODEL_CONTEXT_SIZES``,
+        and ``model.profile`` (ChatWatsonx's generic 8K profile is ignored). Unknown
+        models get ``DEFAULT_CONTEXT_SIZE``, with a warning.
 
         Args:
             model: Optional BaseChatModel instance (uses instance model if not provided)
@@ -658,24 +664,11 @@ class TokenCounter:
         Returns:
             Context window size in tokens
         """
+        from cuga.backend.llm.context_window import resolve_context_window
+
         model_to_check = model or self.model
         model_name = resolve_model_identifier(model_to_check, fallback_name=self.model_name)
-
-        known_size = lookup_model_context_size(model_name)
-        if known_size is not None:
-            return known_size
-
-        if model_to_check:
-            profile_limit = self._get_profile_limits(model_to_check)
-            if profile_limit is not None:
-                return profile_limit
-
-        logger.warning(
-            f"Unknown model '{model_name}', defaulting to {DEFAULT_CONTEXT_SIZE} context window. "
-            "Consider adding the model to MODEL_CONTEXT_SIZES constant or setting model.profile "
-            "with max_input_tokens for accurate tracking."
-        )
-        return DEFAULT_CONTEXT_SIZE
+        return resolve_context_window(model_to_check, model_name).tokens
 
     @staticmethod
     def _get_profile_limits(model: Any) -> Optional[int]:  # BaseChatModel

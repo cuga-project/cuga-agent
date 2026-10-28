@@ -29,6 +29,14 @@ enable_todos = false  # Enable todos feature for complex multi-step task managem
 reflection_enabled = false
 pre_execute_verify_enabled = false  # Independent of reflection; eval can hold VERIFY without dropping PLAN reflection
 # pre_execute_verify_timeout = 60  # Seconds for the VERIFY model call before the block runs unverified (default 60). Env: DYNACONF_ADVANCED_FEATURES__PRE_EXECUTE_VERIFY_TIMEOUT
+# Share of the model's context window that reflection / VERIFY inputs may fill (0 < x <= 1). Lower it to cut cost or latency.
+# There is no absolute prompt ceiling: lower these fractions for large-window models.
+reflection_context_fraction = 0.70  # Env: DYNACONF_ADVANCED_FEATURES__REFLECTION_CONTEXT_FRACTION
+pre_execute_verify_context_fraction = 0.70  # Env: DYNACONF_ADVANCED_FEATURES__PRE_EXECUTE_VERIFY_CONTEXT_FRACTION
+# Cache endpoint windows (OpenRouter, watsonx.ai, LiteLLM proxy, vLLM); retry failures after 30 seconds.
+# Off: use LiteLLM's bundled map and MODEL_CONTEXT_SIZES only. A model setting `context_window = N` always wins.
+# Set context_window explicitly for unknown gateway aliases or servers that do not publish their window.
+context_window_discovery = true  # Env: DYNACONF_ADVANCED_FEATURES__CONTEXT_WINDOW_DISCOVERY
 enable_filesystem_tools = false  # Enable workspace filesystem tools (read_file, write_file, etc.)
 e2b_sandbox = false           # use E2B cloud sandbox for code execution
 opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; requires Docker + opensandbox SDK

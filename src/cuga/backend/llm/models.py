@@ -1289,7 +1289,6 @@ class LLMManager:
                 wxo_params["http_async_client"] = httpx.AsyncClient(verify=ssl_verify)
 
             llm = ChatWxO(**wxo_params)
-            ensure_model_context_profile(llm, model_name)
         elif platform == "watsonx":
             from langchain_ibm import ChatWatsonx
 
@@ -1330,7 +1329,6 @@ class LLMManager:
                 raise ValueError("WatsonX requires WATSONX_SPACE_ID or WATSONX_PROJECT_ID to be set.")
 
             llm = ChatWatsonx(**watsonx_params)
-            ensure_model_context_profile(llm, model_name)
         elif platform == "rits":
             apikey_name = model_settings.get("apikey_name")
             api_key = _normalize_secret(resolve_secret(apikey_name)) if apikey_name else None
@@ -1549,7 +1547,18 @@ class LLMManager:
         else:
             raise ValueError(f"Unsupported platform: {platform}")
 
+        self._configure_context_window(llm, model_settings)
         return llm
+
+    def _configure_context_window(self, model: Any, model_settings: Dict[str, Any]) -> None:
+        from cuga.backend.llm.context_window import set_context_window_override, set_context_window_tls
+
+        set_context_window_tls(model, self._get_ssl_verify(model_settings))
+        context_window = model_settings.get("context_window")
+        if context_window not in (None, ""):
+            set_context_window_override(model, context_window)
+        if context_window not in (None, "") or model_settings.get("platform") in ("watsonx", "wxo"):
+            ensure_model_context_profile(model, model_settings.get("model_name"))
 
     def get_model(self, model_settings: Dict[str, Any]):
         """Get or create LLM instance for the given model settings
@@ -1586,6 +1595,7 @@ class LLMManager:
                 temperature=model_settings.get('temperature', 0.1),
                 max_tokens=max_tokens,
             )
+            self._configure_context_window(updated_model, model_settings)
             return updated_model
 
         # Get resolved values for logging and cache key
