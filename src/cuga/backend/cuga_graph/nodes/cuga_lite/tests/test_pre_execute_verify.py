@@ -1506,9 +1506,8 @@ def test_latest_output_grounds_values_of_the_same_kind_only():
     assert "{{latest_output}}" in user
 
 
-# History is trimmed from the end, and the verify budget is 30k chars: on
-# AppWorld about 60% of verify calls have a longer history, so the output the
-# proposed block was written against was the first thing cut.
+# Latest output keeps its own section within the shared VERIFY context budget,
+# even when earlier history is trimmed.
 
 
 @pytest.mark.unit
@@ -1550,9 +1549,16 @@ async def test_verify_keeps_the_latest_output_when_history_is_trimmed():
             config={},
             max_chars=300,
         )
-    assert "trimmed to 300 chars" in captured["agent_history"]
+    assert "omitted" in captured["agent_history"]
     assert "98765" in captured["latest_output"]
     assert "98765" not in captured["agent_history"]
+    assert (
+        sum(
+            len(captured[key])
+            for key in ("agent_history", "latest_output", "variables_snapshot", "proposed_code")
+        )
+        <= 300
+    )
 
 
 @pytest.mark.unit
