@@ -28,8 +28,7 @@ def main() -> None:
     preload_evolve()
     from altk_evolve.llm.guidelines.consistency_analyzer.consistency_metric import get_metric_instance
 
-    for metric in ("sbert_small", "sbert_large"):
-        get_metric_instance(metric).sentence_transformer_model.encode(["airgap warmup"])
+    get_metric_instance("sbert_small").sentence_transformer_model.encode(["airgap warmup"])
     print("Evolve consistency models loaded offline")
     preload_fastembed()
     preload_tiktoken()

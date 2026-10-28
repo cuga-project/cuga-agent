@@ -117,18 +117,13 @@ def preload_evolve() -> None:
     from altk_evolve.config.guidelines import guidelines_settings
     from altk_evolve.config.milvus import milvus_other_settings
     from altk_evolve.config.postgres import postgres_db_settings
-    from altk_evolve.embeddings import get_embedding_model
-    from altk_evolve.embedding_assets import CODERANK_MODEL, MINILM_MODEL
+    from altk_evolve.embeddings import MINILM_MODEL, get_embedding_model
 
     models = {
         (milvus_other_settings.embedding_model, False),
         (postgres_db_settings.embedding_model, False),
         (
             guidelines_settings.consistency_embedding_model_small or MINILM_MODEL,
-            guidelines_settings.consistency_embedding_trust_remote_code,
-        ),
-        (
-            guidelines_settings.consistency_embedding_model_large or CODERANK_MODEL,
             guidelines_settings.consistency_embedding_trust_remote_code,
         ),
     }

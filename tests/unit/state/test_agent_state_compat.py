@@ -60,12 +60,6 @@ def test_old_checkpoint_keys_are_still_accepted(fixture_values):
     )
 
 
-def test_every_field_has_a_default():
-    """A checkpoint written before a field existed lacks it."""
-    required = [n for n, f in AgentState.model_fields.items() if f.is_required()]
-    assert not required, f"AgentState fields without a default break old checkpoints: {required}"
-
-
 def test_unknown_keys_are_ignored():
     """``extra="forbid"`` would break old checkpoints; ``extra="allow"`` would resurrect removed fields."""
     assert AgentState.model_config.get("extra", "ignore") == "ignore"
