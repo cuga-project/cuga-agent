@@ -64,7 +64,7 @@ Both tests run the same user flow per thread:
 1. **Primary:** `list all my accounts, how many are there?`
 2. **Followup:** `how many accounts did we retrieve?`
 
-Each user gets a unique `X-Thread-ID`. Checks include:
+Each user creates its own conversation (`POST /api/conversations`) and sends the server-issued ID as `X-Thread-ID`. Checks include:
 
 - Answers contain expected keyword `50`
 - Per-thread variables and chat history (mocked test)
