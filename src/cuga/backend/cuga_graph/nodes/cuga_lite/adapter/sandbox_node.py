@@ -350,8 +350,13 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             # Pagination audit (#750): a list call that returned exactly page_limit
             # items with no next page requested is flagged in the observation the
             # model reads next — before reflection, so the summary can echo it.
+            # Under one-tool-per-step the next page is by design in the next
+            # block, so the full-page rule would fire on every correct walk;
+            # only an abandoned explicit "more pages" signal is worth a note there.
             if pagination_audit_on:
-                pagination_notes = audit_pagination(ToolCallTracker.get_current_calls())
+                pagination_notes = audit_pagination(
+                    ToolCallTracker.get_current_calls(), length_rule=not one_tool_per_step
+                )
                 if pagination_notes:
                     output = f"{output}\n\n{render_pagination_notes(pagination_notes)}"
                     adapter._tracker.collect_step(
