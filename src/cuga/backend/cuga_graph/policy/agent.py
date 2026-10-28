@@ -930,6 +930,64 @@ Provide:
         logger.info(f"NL-triggered policy matched: '{resolved_policy.name}' for target '{target}'")
         return resolved_policy, final_confidence, final_reasoning, trigger_details
 
+    async def _evaluate_always_triggered_policies(
+        self, target: str, context: PolicyContext, policy_types: Optional[List[PolicyType]] = None
+    ) -> Optional[tuple[Policy, float, str, Dict[str, Any]]]:
+        """
+        Evaluate OutputFormatter policies that use AlwaysTrigger (no keyword/NL condition).
+
+        Deterministic: never invokes the LLM. Only runs when OUTPUT_FORMATTER is explicitly
+        requested in ``policy_types`` — playbooks / intent guards do not advertise an
+        always-run path, so they are intentionally excluded.
+
+        Policies that also carry keyword or NL triggers for ``target`` are skipped here;
+        those are owned by the keyword / NL passes. Remaining non-NL triggers (e.g. app)
+        are still enforced via ``_check_policy_triggers``.
+
+        Selection: highest ``priority`` wins, ties broken by ``id`` for determinism.
+
+        Returns:
+            Tuple of (matched_policy, confidence, reasoning, trigger_details) or None if no match
+        """
+        if not policy_types or PolicyType.OUTPUT_FORMATTER not in policy_types:
+            return None
+
+        policies = await self.storage.list_policies(
+            policy_type=PolicyType.OUTPUT_FORMATTER, enabled_only=True
+        )
+
+        def _targets(t: Any) -> bool:
+            return t.target == target or (target == "intent" and t.target in ("intent", "user_input"))
+
+        candidates = []
+        for policy in policies:
+            if not isinstance(policy, OutputFormatter):
+                continue
+            if not any(isinstance(t, AlwaysTrigger) for t in policy.triggers):
+                continue
+            if any(
+                isinstance(t, (KeywordTrigger, NaturalLanguageTrigger)) and _targets(t)
+                for t in policy.triggers
+            ):
+                continue
+            candidates.append(policy)
+
+        if not candidates:
+            logger.debug(f"No always-triggered output formatters for target '{target}'")
+            return None
+
+        candidates.sort(key=lambda p: (-p.priority, p.id))
+        for policy in candidates:
+            all_matched, confidence, trigger_details = await self._check_policy_triggers(
+                policy, context, skip_nl_triggers=True
+            )
+            if all_matched:
+                reasoning = f"Always-triggered output formatter '{policy.name}' matched for target '{target}'"
+                logger.info(reasoning)
+                return policy, confidence, reasoning, trigger_details
+
+        return None
+
     async def match_policy(
         self, context: PolicyContext, target: str = "intent", policy_types: Optional[List[PolicyType]] = None
     ) -> PolicyMatch:
@@ -991,6 +1049,11 @@ Provide:
                 candidates.append(keyword_match)
             if nl_match:
                 candidates.append(nl_match)
+            if not candidates:
+                # Catch-all formatters apply only when no more specific trigger matched.
+                always_match = await self._evaluate_always_triggered_policies(target, context, policy_types)
+                if always_match:
+                    candidates.append(always_match)
 
             for policy, confidence, reasoning, trigger_details in candidates:
                 if isinstance(policy, IntentGuard):
