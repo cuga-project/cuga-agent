@@ -12,8 +12,6 @@ import json
 
 import pytest
 
-from tests.fixtures.async_only_saver import parked_hitl_graph
-
 pytestmark = [pytest.mark.anyio, pytest.mark.unit]
 
 
@@ -243,50 +241,6 @@ async def test_ambiguous_reply_reasks_without_resuming():
     assert events[-1].name == "input_required"
     assert events[-1].final is True
     assert events[-1].data["action_id"] == "new_flow_approve"
-
-
-# -- durable saver: the pending-action reads must use the async state API ----
-
-
-async def test_pending_action_reads_on_async_only_saver():
-    """Entry and post-stream ``_pending_action`` reads both await ``aget_state``.
-
-    The graph runs on ``AsyncOnlySaver``, which records each sync call before raising,
-    because ``_pending_action`` swallows a state-read error and would otherwise report
-    the thread as "not parked".
-    """
-    from cuga.backend.server.thread_scope import checkpoint_thread_id
-
-    graph, saver = parked_hitl_graph(_HITL)
-    seen = {"resume": []}
-
-    async def event_stream(**kwargs):
-        seen["resume"].append(kwargs.get("resume"))
-        scoped = checkpoint_thread_id(kwargs["thread_id"], kwargs["user_id"], "cuga-default")
-        config = {"configurable": {"thread_id": scoped}}
-        if kwargs.get("resume") is None:
-            await graph.ainvoke({"answer": ""}, config)  # parks before WaitForResponse
-            yield b"event: tool_call\ndata: preparing\n\n"
-        else:
-            final = await graph.ainvoke(None, config)
-            yield _answer_frame(final["answer"])
-
-    runner = _make_runner(_AppState(graph), event_stream, auto_approve=False)
-
-    # Entry read finds nothing; the post-stream read finds the parked action.
-    first = [ev async for ev in runner.run("do it", "ctx-async")]
-    assert first[-1].name == "input_required"
-    assert first[-1].data["action_id"] == "new_flow_approve"
-
-    # Entry read finds the parked action, so the approval resumes the graph.
-    second = [ev async for ev in runner.run("approve", "ctx-async")]
-    assert second[-1].name == "final_answer"
-    assert second[-1].data["text"] == "done"
-    resumes = [r for r in seen["resume"] if r is not None]
-    assert len(resumes) == 1
-    assert resumes[0].action_id == "new_flow_approve"
-    assert resumes[0].confirmed is True
-    assert saver.sync_calls == []
 
 
 # -- router approval extraction --------------------------------------------

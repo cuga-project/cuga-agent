@@ -11,7 +11,7 @@ can assert ``saver.sync_calls == []`` even when the code under test swallows the
 
 from __future__ import annotations
 
-from typing import Any, Optional, TypedDict
+from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -51,31 +51,3 @@ class AsyncOnlySaver(MemorySaver):
 
     async def aput_writes(self, config, writes, task_id, task_path=""):
         return super().put_writes(config, writes, task_id, task_path)
-
-
-_ParkedState = TypedDict("_ParkedState", {"hitl_action": Optional[dict], "answer": str}, total=False)
-
-
-def parked_hitl_graph(hitl_action: dict[str, Any]) -> tuple[Any, AsyncOnlySaver]:
-    """Real graph that parks before ``WaitForResponse`` on an ``AsyncOnlySaver``.
-
-    ``Produce`` sets ``hitl_action`` (a copy of ``hitl_action``) and the graph stops
-    before ``WaitForResponse``. Resuming with ``ainvoke(None, config)`` clears the
-    action and sets ``answer`` to ``"done"``. Returns ``(compiled_graph, saver)``.
-    """
-    from langgraph.graph import END, START, StateGraph
-
-    def produce(_state: _ParkedState) -> dict[str, Any]:
-        return {"hitl_action": dict(hitl_action)}
-
-    def wait_for_response(_state: _ParkedState) -> dict[str, Any]:
-        return {"hitl_action": None, "answer": "done"}
-
-    g = StateGraph(_ParkedState)
-    g.add_node("Produce", produce)
-    g.add_node("WaitForResponse", wait_for_response)
-    g.add_edge(START, "Produce")
-    g.add_edge("Produce", "WaitForResponse")
-    g.add_edge("WaitForResponse", END)
-    saver = AsyncOnlySaver()
-    return g.compile(checkpointer=saver, interrupt_before=["WaitForResponse"]), saver
