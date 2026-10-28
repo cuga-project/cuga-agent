@@ -11,6 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from fastapi import HTTPException
 
+pytestmark = pytest.mark.unit
+
 
 class _Provider(BaseHTTPRequestHandler):
     status = 401
@@ -49,14 +51,16 @@ def provider(monkeypatch):
 
 
 @pytest.mark.parametrize("status", [401, 403])
-async def test_a_rejected_provider_key_is_a_502_with_the_reason(provider, status, caplog):
+async def test_a_rejected_provider_key_is_a_502_without_echoing_body(provider, status):
     from cuga.backend.server.manage_routes.llm_routes import list_llm_models
 
     provider.status = status
     with pytest.raises(HTTPException) as e:
         await list_llm_models(request=None, disable_ssl=False, agent_id="cuga-default")
     assert e.value.status_code == 502
-    assert "rejected the API key" in e.value.detail and "Invalid API Key" in e.value.detail
+    assert "rejected the configured API key" in e.value.detail
+    assert f"HTTP {status}" in e.value.detail
+    assert "Invalid API Key" not in e.value.detail
 
 
 async def test_other_provider_errors_are_a_502_too(provider):

@@ -110,6 +110,7 @@ def test_user_inventory_is_scoped_and_projected(client):
     assert "private" not in response.text
     list_entities.assert_awaited_once_with(
         entity_types=["fact"],
+        exclude_entity_types=["trajectory"],
         user_id="user-1",
         agent_id="agent-a",
         session_id=None,
@@ -275,3 +276,34 @@ def test_multiple_memory_sources_only_link_available_conversations():
         {'thread_id': None, 'available': False, 'status': 'superseded'},
     ]
     assert 'private' not in str(result)
+
+
+@pytest.mark.parametrize("path", ["/api/memory/entities", "/api/manage/memory/entities"])
+def test_default_inventory_filters_raw_trajectories_before_pagination(client, path):
+    with (
+        patch(
+            "cuga.backend.server.memory_routes.EvolveIntegration.list_entities",
+            new=AsyncMock(
+                return_value={
+                    "items": [{"id": "fact-1", "type": "fact", "metadata": {}}],
+                    "total": 2,
+                    "next_cursor": "next-page",
+                    "facets": {"entity_types": {"fact": 1, "guideline": 1}},
+                }
+            ),
+        ) as inventory,
+        patch("cuga.backend.server.memory_routes.get_memory_usage_summaries", new=AsyncMock(return_value={})),
+        patch(
+            "cuga.backend.server.memory_routes.get_available_conversation_thread_ids",
+            new=AsyncMock(return_value=set()),
+        ),
+    ):
+        response = client.get(path + "?limit=1&cursor=page-start")
+    assert response.status_code == 200
+    args = inventory.await_args.kwargs
+    assert args["entity_types"] is None
+    assert args["exclude_entity_types"] == ["trajectory"]
+    assert args["cursor"] == "page-start"
+    assert args["limit"] == 1
+    assert response.json()["total"] == 2
+    assert response.json()["next_cursor"] == "next-page"

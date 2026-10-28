@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from cuga.backend.server.auth import require_manage_access
+from cuga.backend.server.error_responses import safe_http_exception
 
 from cuga.backend.server.manage_routes.helpers import resolve_agent_id
 from cuga.backend.server.manage_routes.router import router
@@ -41,7 +42,9 @@ async def discover_gateway(
         try:
             instance = mcp_gateway.parse_instance_url(body.url)
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+            raise safe_http_exception(
+                e, status=400, message="Enter a valid gateway instance URL with ?instance=<id>."
+            ) from e
         provider = gateway_tokens.provider_from_request(request, user) if request is not None else None
         if provider is None:
             raise HTTPException(
@@ -52,9 +55,11 @@ async def discover_gateway(
             token = await provider.token(instance.instance_id)
             return await mcp_gateway.discover(body.url, bearer_token=token)
         except gateway_tokens.GatewayAccessError as e:
-            raise HTTPException(status_code=403, detail=str(e)) from e
+            raise safe_http_exception(
+                e, status=403, message="Gateway access denied. Check your sign-in and role on the instance."
+            ) from e
         except mcp_gateway.GatewayError as e:
-            raise HTTPException(status_code=502, detail=str(e)) from e
+            raise safe_http_exception(e, status=502, message="Gateway discovery failed.") from e
 
     api_key = (body.api_key or "").strip()
     ref = (body.api_key_ref or "").strip()
@@ -69,6 +74,8 @@ async def discover_gateway(
     try:
         return await mcp_gateway.discover(body.url, api_key)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise safe_http_exception(
+            e, status=400, message="Enter a valid gateway instance URL with ?instance=<id>."
+        ) from e
     except mcp_gateway.GatewayError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
+        raise safe_http_exception(e, status=502, message="Gateway discovery failed.") from e

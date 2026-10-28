@@ -10,6 +10,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from loguru import logger
 
+from cuga.backend.cuga_graph.utils.thread_ids import workspace_thread_id
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import thread_budget_exhausted
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import create_update_todos_tool
@@ -284,7 +285,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
             }
         )
 
-        runtime_thread_id = cfg.get("thread_id") or state.thread_id
+        runtime_thread_id = workspace_thread_id(cfg, state.thread_id)
         runtime_backends = resolve_runtime_backends(settings, cfg)
         runtime_bundle = build_runtime_tools(thread_id=runtime_thread_id, backends=runtime_backends)
         adapter._agent_tools_context.update(runtime_bundle.execution_callables)

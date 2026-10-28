@@ -173,7 +173,7 @@ import socket
 import urllib.error
 import urllib.request
 
-async def call_api(app_name, api_name, args=None):
+async def call_api(app_name, api_name, args=None, *, knowledge_run_token=None):
     \"\"\"Call registry API tool via HTTP (remote execution only).\"\"\"
     if args is None:
         args = {{}}
@@ -182,7 +182,8 @@ async def call_api(app_name, api_name, args=None):
     payload = json.dumps({{
         "function_name": api_name,
         "app_name": app_name,
-        "args": args
+        "args": args,
+        "knowledge_run_token": knowledge_run_token if app_name == "knowledge" else None,
     }}).encode()
     req = urllib.request.Request(
         url,

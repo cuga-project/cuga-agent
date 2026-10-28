@@ -18,6 +18,8 @@ from cuga.backend.tools_env.registry.config.config_loader import _create_service
 from cuga.backend.tools_env.registry.mcp_manager.mcp_manager import MCPManager
 from cuga.backend.tools_env.registry.utils.api_utils import post_registry_call
 
+pytestmark = pytest.mark.unit
+
 INSTANCE = "7f3c9a10-5d2e-4b8a-9c61-0e4f2a7b8d93"
 URL = f"https://gw.example.com/?instance={INSTANCE}"
 
@@ -260,6 +262,9 @@ async def test_user_mode_entry_serves_saved_tool_definitions_without_a_credentia
     assert mgr.original_tool_name_by_sanitized["team_tools_demo_time_add"] == "demo-time-add"
     params = mgr.tools_by_server["team_tools"][0]["function"]["parameters"]
     assert set(params.get("properties", {})) == {"a", "b"}
+    schema = mgr.schemas["team_tools"]["tools"][0]
+    assert schema["inputSchema"] == config.gateway["tools"][0]["inputSchema"]
+    assert schema["outputSchema"] == {}
     assert mgr.mcp_transports["team_tools"] is None  # never used: each call builds its own
 
 

@@ -5,7 +5,7 @@ from json import JSONDecodeError
 from fastapi import FastAPI, HTTPException, Query, Request
 from pathlib import Path
 from mcp.types import TextContent
-from pydantic import BaseModel  # Import BaseModel for request body
+from pydantic import BaseModel, Field  # Import BaseModel for request body
 from typing import Dict, Any, List, Optional  # Add Any for flexible args/return
 from fastapi.responses import JSONResponse
 from cuga.config import PACKAGE_ROOT
@@ -47,6 +47,8 @@ class FunctionCallRequest(BaseModel):
     app_name: str  # name of the app to call
     function_name: str  # The name of the function to call
     args: Dict[str, Any]  # Arguments for the function
+    # Transport credential, excluded from argument traces and repr/log output.
+    knowledge_run_token: Optional[str] = Field(default=None, exclude=True, repr=False)
 
 
 class FunctionCallOnboardRequest(BaseModel):
@@ -135,11 +137,25 @@ async def _get_or_create_registry(
 
             kb_config = KnowledgeConfig.from_settings(settings)
             if kb_config.enabled and kb_config.mcp_transport == "http":
+                # Read the token BEFORE mutating anything. The HTTP listener
+                # requires it (see knowledge/mcp_server.py::_RequireInternalToken)
+                # and every call 401s without it, so a half-applied override —
+                # transport switched to http, no credential attached — is worse
+                # than not switching at all. If the token is unavailable this
+                # raises, the handler below logs it, and the service stays on
+                # stdio, which needs no token because owning the pipe is the
+                # credential.
+                from cuga.backend.knowledge.internal_token import read_token_file
+                from cuga.backend.tools_env.registry.config.config_loader import Auth
+
+                internal_token = read_token_file()
+
                 svc = services["knowledge"]
                 svc.transport = "http"
                 svc.url = f"http://127.0.0.1:{kb_config.mcp_port}/mcp"
                 svc.command = None
                 svc.args = None
+                svc.auth = Auth(type="header", key="X-Internal-Token", value=internal_token)
                 demo_scheme = _internal_demo_scheme()
                 svc.readiness_url = (
                     f"{demo_scheme}://127.0.0.1:{settings.server_ports.demo}"
@@ -152,7 +168,11 @@ async def _get_or_create_registry(
             else:
                 logger.debug("Knowledge MCP: using stdio transport")
         except Exception as e:
-            logger.debug(f"Knowledge MCP transport override skipped: {e}")
+            # Now also reached when the internal token cannot be read, which
+            # silently drops knowledge back to stdio — worth a warning rather
+            # than a debug line, because the symptom otherwise is just "HTTP
+            # transport did not happen".
+            logger.warning(f"Knowledge MCP transport override skipped: {e}")
 
     manager = MCPManager(config=services)
     reg = ApiRegistry(client=manager)
@@ -371,6 +391,11 @@ async def call_mcp_function(
             if served_as_http_error:
                 return JSONResponse(status_code=short_circuit.get("status_code", 422), content=short_circuit)
             return JSONResponse(status_code=200, content=short_circuit)
+        run_credentials = {}
+        if request.app_name == "knowledge":
+            if not request.knowledge_run_token:
+                raise HTTPException(status_code=403, detail="Knowledge run capability required")
+            run_credentials["knowledge_run_token"] = request.knowledge_run_token
         # MCP gateway servers whose calls run as the signed-in user need the user's instance
         # token; without it the agent gets a 401 naming the instance and retries with one.
         gateway_instance = mcp_gateway.user_mode_instance(
@@ -392,6 +417,7 @@ async def call_mcp_function(
                 function_name=request.function_name,
                 arguments=request.args,
                 auth_config=mcp_mgr.auth_config.get(request.app_name) if is_secure else None,
+                **run_credentials,
             )
         finally:
             mcp_gateway.CALL_USER_TOKEN.reset(token_reset)

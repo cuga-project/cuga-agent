@@ -21,21 +21,25 @@ _PROVIDER_API_KEY_REF = {
 }
 
 
-def _provider_error_message(response: httpx.Response) -> str:
-    """The provider's error message, short; never the request's credentials."""
+_MAX_UPSTREAM_DETAIL = 300
+_AUTH_REJECTED_STATUSES = (401, 403)
+
+
+def _upstream_message(response: httpx.Response, secret: Optional[str]) -> str:
+    """Short, single-line, secret-free text taken from an upstream error body."""
+    msg = None
     try:
         body = response.json()
-        err = body.get("error") if isinstance(body, dict) else None
-        msg = (
-            (err.get("message") if isinstance(err, dict) else err)
-            or body.get("message")
-            or body.get("detail")
-        )
-        if msg:
-            return str(msg)[:300]
-    except Exception:
-        pass
-    return (response.text or response.reason_phrase or "no message")[:300]
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        err = body.get("error")
+        msg = err.get("message") if isinstance(err, dict) else (err or body.get("message"))
+    if not isinstance(msg, str):
+        msg = response.text
+    if secret:
+        msg = msg.replace(secret, "[REDACTED]")
+    return " ".join(msg.split())[:_MAX_UPSTREAM_DETAIL]
 
 
 @router.get("/llm/models")
@@ -175,9 +179,7 @@ async def list_llm_models(
         headers = {}
         if custom_auth_header:
             headers[auth_header_name] = custom_auth_header
-            logger.info(
-                f"LiteLLM models request - Provider: {provider_key}, URL: {url}, Auth: {auth_header_name}"
-            )
+            logger.info(f"LiteLLM models request - Provider: {provider_key}, URL: {url}, Auth: custom header")
         elif api_key:
             headers["Authorization"] = f"Bearer {api_key}"
             logger.info(f"LiteLLM models request - Provider: {provider_key}, URL: {url}, Auth: Bearer")
@@ -195,17 +197,18 @@ async def list_llm_models(
         logger.info(f"LiteLLM models request successful - Found {len(data)} models")
         return {"models": sorted(m["id"] for m in data)}
     except httpx.HTTPStatusError as e:
-        # The provider's status is not CUGA's: a provider 401 must not look like an expired CUGA
-        # session (the frontend sends any 401 to the login page). Answer 502 with the reason.
-        status = e.response.status_code
-        reason = _provider_error_message(e.response)
-        logger.error(
-            f"LiteLLM models request failed: provider {provider_key} answered HTTP {status}: {reason}"
-        )
-        if status in (401, 403):
-            detail = f"The {provider_key} provider rejected the API key (HTTP {status}): {reason}. Check the key or the secret it comes from."
+        # Never relay the provider's status: a 401 here would be read by the UI as
+        # "CUGA session expired" and trigger a login redirect. Report a gateway error.
+        upstream_status = e.response.status_code
+        logger.error(f"LiteLLM models request failed: upstream returned HTTP {upstream_status}")
+        if upstream_status in _AUTH_REJECTED_STATUSES:
+            # Providers may echo (part of) the submitted key in the body: don't relay it.
+            detail = f"Models fetch failed: provider rejected the configured API key (HTTP {upstream_status})"
         else:
-            detail = f"The {provider_key} provider answered HTTP {status}: {reason}"
+            detail = f"Models fetch failed: provider returned HTTP {upstream_status}"
+            message = _upstream_message(e.response, api_key or api_key_ref)
+            if message:
+                detail = f"{detail}: {message}"
         raise HTTPException(status_code=502, detail=detail)
     except Exception as ex:
         logger.exception(f"LiteLLM models request failed: {ex}")

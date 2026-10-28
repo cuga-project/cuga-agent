@@ -535,7 +535,9 @@ class MCPManager:
                     "binding": tool['binding'],
                 }
 
-    async def call_tool(self, tool_name: str, args: dict, headers: dict = None):
+    async def call_tool(
+        self, tool_name: str, args: dict, headers: dict = None, *, knowledge_run_token: str | None = None
+    ):
         if not headers:
             headers = {}
         trm_tool = next((item for item in list(self.trm_tools.keys())), None)
@@ -569,14 +571,19 @@ class MCPManager:
         if isinstance(server, str):
             # External MCP server - use client-based call
             if server in self.mcp_clients:
-                return await self._call_mcp_server_tool(server, tool_name, args)
+                return await self._call_mcp_server_tool(
+                    server,
+                    tool_name,
+                    args,
+                    **({"knowledge_run_token": knowledge_run_token} if knowledge_run_token else {}),
+                )
             else:
                 raise Exception(f"[MCP server {server} not found in mcp_clients]")
         else:
             # Local FastMCP server instance - call directly.
             # Handlers expect {"params": <args>, "headers": <headers>}.
             result = await server.call_tool(tool_name, {"params": args, "headers": headers})
-            # FastMCP 3.x returns ToolResult; callers expect a TextContent list.
+            # FastMCP returns ToolResult; callers expect a TextContent list.
             if hasattr(result, "content") and not isinstance(result, list):
                 return list(result.content or [])
             return result
@@ -782,7 +789,15 @@ class MCPManager:
             if stored is not None:
                 # MCP gateway, signed-in user mode: no credential at start; calls carry each
                 # user's instance token (see _call_transport).
-                tools = [SimpleNamespace(**t) for t in stored]
+                tools = [
+                    SimpleNamespace(
+                        name=t["name"],
+                        description=t["description"],
+                        input_schema=t["inputSchema"],
+                        output_schema=t["outputSchema"],
+                    )
+                    for t in stored
+                ]
                 logger.info(f"Using {len(tools)} saved tool definitions for gateway entry {name}")
             else:
                 transport = self._create_transport(name, config)
@@ -811,8 +826,8 @@ class MCPManager:
                     {
                         "name": tool.name,
                         "description": tool.description,
-                        "inputSchema": tool.inputSchema if hasattr(tool, 'inputSchema') else {},
-                        "outputSchema": tool.outputSchema if hasattr(tool, 'outputSchema') else {},
+                        "inputSchema": tool.input_schema,
+                        "outputSchema": tool.output_schema,
                     }
                     for tool in tools
                     if not include_set or tool.name in include_set
@@ -839,9 +854,9 @@ class MCPManager:
                 # Keep a reverse map so _call_mcp_server_tool can send the original
                 # (possibly dashed) name to the MCP server, which only knows that name.
                 self.original_tool_name_by_sanitized[prefixed_name] = tool.name
-                input_schema = tool.inputSchema if hasattr(tool, 'inputSchema') else {}
+                input_schema = tool.input_schema
                 flattened_params = self._flatten_tool_parameters(input_schema)
-                output_schema = tool.outputSchema if hasattr(tool, 'outputSchema') else {}
+                output_schema = tool.output_schema
 
                 tool_dict = {
                     "type": "function",
@@ -1184,7 +1199,9 @@ class MCPManager:
             verify=mcp_gateway.gateway_settings()["gateway_verify"],
         )
 
-    async def _call_mcp_server_tool(self, server_name: str, tool_name: str, args: dict):
+    async def _call_mcp_server_tool(
+        self, server_name: str, tool_name: str, args: dict, *, knowledge_run_token: str | None = None
+    ):
         """Call a tool on an external MCP server using FastMCP client with SSE transport"""
         try:
             # Build headers from auth config if available
@@ -1205,7 +1222,12 @@ class MCPManager:
                 client = FastMCPClient(transport)
 
                 async with client:
-                    result = await client.call_tool(original_tool_name, args)
+                    call_options = {}
+                    if knowledge_run_token:
+                        from cuga.backend.knowledge.run_context import RUN_TOKEN_META
+
+                        call_options["meta"] = {RUN_TOKEN_META: knowledge_run_token}
+                    result = await client.call_tool(original_tool_name, args, **call_options)
                     ##TODO add result.structured output if exists and retutn instead of text key  return [TextContent(text=result_text, type='text')]
                     structured_content = (
                         result.structured_content if hasattr(result, 'structured_content') else None
@@ -1219,6 +1241,8 @@ class MCPManager:
                         result_text = json.dumps(result_text)
                     return [TextContent(text=result_text, type='text')]
             else:
+                if knowledge_run_token:
+                    raise ValueError("Knowledge calls require an MCP transport supporting request metadata")
                 url = self.mcp_clients[server_name]
                 base_url = url.replace('/sse', '')
                 original_tool_name = self.original_tool_name_by_sanitized[tool_name]
@@ -1381,9 +1405,9 @@ class MCPManager:
             # Convert FunctionTool to MCP Tool format if needed
             if hasattr(tool, 'to_mcp_tool'):
                 mcp_tool = tool.to_mcp_tool()
-                input_schema = mcp_tool.inputSchema
-            elif hasattr(tool, 'inputSchema'):
-                input_schema = tool.inputSchema
+                input_schema = mcp_tool.input_schema
+            elif hasattr(tool, 'input_schema'):
+                input_schema = tool.input_schema
             else:
                 # Fallback for FunctionTool with parameters attribute
                 input_schema = getattr(tool, 'parameters', {})

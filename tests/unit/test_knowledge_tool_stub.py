@@ -19,6 +19,8 @@ import pytest
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.e2b.e2b_executor import E2BExecutor
 
+pytestmark = pytest.mark.unit
+
 
 class _FakeKnowledgeTool:
     """Mirrors the attributes the wrapper attaches to a real tool."""
@@ -93,9 +95,8 @@ def test_stub_replaces_whitespace_thread_id(executor):
     assert forwarded["thread_id"] == "thread-abc-123"
 
 
-def test_stub_preserves_explicit_non_empty_thread_id(executor):
-    """If the caller (or another wrapper) supplied a real thread_id,
-    don't second-guess it."""
+def test_stub_overrides_explicit_non_empty_thread_id(executor):
+    """The conversation context must override a model-supplied thread_id."""
     stub = _stub(executor, "knowledge_search_knowledge")
     forwarded = _exec_stub(
         stub,
@@ -103,7 +104,7 @@ def test_stub_preserves_explicit_non_empty_thread_id(executor):
         args=(),
         kwargs={"query": "test", "scope": "session", "thread_id": "caller-supplied"},
     )
-    assert forwarded["thread_id"] == "caller-supplied"
+    assert forwarded["thread_id"] == "thread-abc-123"
 
 
 def test_stub_injects_when_thread_id_missing_entirely(executor):
@@ -152,7 +153,10 @@ def test_stub_for_tool_without_scope_does_not_emit_scope_block(executor):
     TypeError from injecting a scope kwarg the function doesn't accept."""
     stub = _stub(executor, "knowledge_get_knowledge_status")
     assert "scope" not in stub
-    assert "thread_id" not in stub
+    # "thread_id" now appears as ``kwargs.pop("thread_id", None)`` — the identity
+    # scrub runs for every knowledge tool. What must stay absent is an
+    # *assignment*, which is what would forward an argument this tool cannot take.
+    assert 'kwargs["thread_id"] =' not in stub
 
 
 def test_stub_invalid_scope_returns_error(executor):
@@ -180,9 +184,8 @@ def test_stub_invalid_scope_returns_error(executor):
     assert "__called__" not in captured  # short-circuited before HTTP
 
 
-def test_stub_thread_id_block_skipped_when_no_session_scope(executor):
-    """No need to inject thread_id when the engine doesn't even allow
-    session scope — keeps the generated stub minimal."""
+def test_stub_injects_runtime_thread_for_agent_scope_citations(executor):
+    """Agent-scope citations also belong to the runtime conversation."""
 
     class _AgentOnlyTool:
         _knowledge_allowed_scopes = ("agent",)
@@ -190,4 +193,31 @@ def test_stub_thread_id_block_skipped_when_no_session_scope(executor):
         _knowledge_thread_id = "thread-xyz"
 
     stub = executor._serialize_knowledge_tool_stub("knowledge_search_knowledge", _AgentOnlyTool())
-    assert "_existing_tid" not in stub  # no thread_id block at all
+    forwarded = _exec_stub(
+        stub, "knowledge_search_knowledge", args=(), kwargs={"query": "q", "thread_id": "victim"}
+    )
+    assert forwarded["thread_id"] == "thread-xyz"
+
+
+def test_stub_discards_model_thread_without_runtime_context(executor):
+    class _NoThreadTool:
+        _knowledge_allowed_scopes = ("agent",)
+        _knowledge_default_scope = "agent"
+        _knowledge_thread_id = None
+
+    stub = executor._serialize_knowledge_tool_stub("knowledge_search_knowledge", _NoThreadTool())
+    forwarded = _exec_stub(
+        stub, "knowledge_search_knowledge", args=(), kwargs={"query": "q", "thread_id": "victim"}
+    )
+    assert "thread_id" not in forwarded
+
+
+def test_stub_overrides_positional_model_thread(executor):
+    stub = _stub(executor, "knowledge_search_knowledge")
+    forwarded = _exec_stub(
+        stub,
+        "knowledge_search_knowledge",
+        args=("q", "session", 5, 0.0, "agent-id", "victim"),
+        kwargs={},
+    )
+    assert forwarded["thread_id"] == "thread-abc-123"

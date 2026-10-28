@@ -17,6 +17,8 @@ from cuga.backend.tools_env.registry import mcp_gateway
 from cuga.backend.tools_env.registry.config.config_loader import Auth, _create_service_config
 from cuga.backend.tools_env.registry.mcp_manager.adapter import apply_authentication
 
+pytestmark = pytest.mark.unit
+
 INSTANCE = "7f3c9a10-5d2e-4b8a-9c61-0e4f2a7b8d93"
 
 
@@ -298,6 +300,58 @@ async def test_discover_route_accepts_only_saved_secret_refs():
             )
         )
     assert e.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "run_as,error_kind,status",
+    [
+        ("user", "url", 400),
+        ("user", "access", 403),
+        ("user", "gateway", 502),
+        ("service", "url", 400),
+        ("service", "gateway", 502),
+    ],
+)
+async def test_discover_route_keeps_exception_details_out_of_responses(
+    monkeypatch, run_as, error_kind, status
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from fastapi import HTTPException
+
+    from cuga.backend.server.auth import gateway_tokens
+    from cuga.backend.server.manage_routes.gateway_routes import GatewayDiscoverRequest, discover_gateway
+
+    errors = {
+        "url": ValueError,
+        "access": gateway_tokens.GatewayAccessError,
+        "gateway": mcp_gateway.GatewayError,
+    }
+    error = errors[error_kind]("private upstream detail")
+    provider = SimpleNamespace(token=AsyncMock(return_value="instance-token"))
+    monkeypatch.setattr(gateway_tokens, "provider_from_request", lambda request, user: provider)
+    if run_as == "user" and error_kind == "url":
+
+        def invalid_url(url):
+            raise error
+
+        monkeypatch.setattr(mcp_gateway, "parse_instance_url", invalid_url)
+    elif error_kind == "access":
+        provider.token.side_effect = error
+    else:
+        monkeypatch.setattr(mcp_gateway, "discover", AsyncMock(side_effect=error))
+
+    with pytest.raises(HTTPException) as raised:
+        await discover_gateway(
+            GatewayDiscoverRequest(url=f"https://gw.example.com/?instance={INSTANCE}", run_as=run_as),
+            request=SimpleNamespace(),
+            user=SimpleNamespace(),
+        )
+
+    assert raised.value.status_code == status
+    assert "private upstream detail" not in raised.value.detail
+    assert "(ref " in raised.value.detail
 
 
 def test_agent_include_filter_accepts_raw_mcp_tool_names():

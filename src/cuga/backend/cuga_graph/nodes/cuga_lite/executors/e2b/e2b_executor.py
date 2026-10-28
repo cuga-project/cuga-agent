@@ -13,28 +13,36 @@ from ..base_executor import RemoteExecutor
 class E2BExecutor(RemoteExecutor):
     """Handles code execution in E2B remote sandbox."""
 
+    # ``agent_id``/``thread_id`` are deliberately absent. They used to sit at the
+    # tail of every list, which let model-written sandbox code set them
+    # positionally and name another principal's collection
+    # (GHSA-ffh4-qv86-xfxv). Dropping them from the tail means ``zip`` stops
+    # early and extra positional arguments are discarded. Only ever trim the
+    # tail — this map is position-sensitive, so removing an entry from the
+    # middle would silently rebind every argument after it.
     _KNOWLEDGE_POSITIONAL_ARGS = {
-        "knowledge_search_knowledge": [
-            "query",
-            "scope",
-            "limit",
-            "score_threshold",
-            "agent_id",
-            "thread_id",
-        ],
-        "knowledge_ingest_knowledge": [
-            "file_path",
-            "scope",
-            "replace_duplicates",
-            "agent_id",
-            "thread_id",
-        ],
-        "knowledge_ingest_knowledge_url": ["url", "scope", "agent_id", "thread_id"],
-        "knowledge_list_knowledge_documents": ["scope", "agent_id", "thread_id"],
-        "knowledge_delete_knowledge_document": ["filename", "scope", "agent_id", "thread_id"],
-        "knowledge_get_ingestion_status": ["task_id", "agent_id"],
-        "knowledge_get_knowledge_status": ["agent_id"],
+        "knowledge_search_knowledge": ["query", "scope", "limit", "score_threshold"],
+        "knowledge_ingest_knowledge": ["file_path", "scope", "replace_duplicates"],
+        "knowledge_ingest_knowledge_url": ["url", "scope"],
+        "knowledge_list_knowledge_documents": ["scope"],
+        "knowledge_delete_knowledge_document": ["filename", "scope"],
+        "knowledge_get_ingestion_status": ["task_id"],
+        "knowledge_get_knowledge_status": [],
     }
+
+    # Tools whose host-side counterpart takes a thread_id. The two status tools
+    # do not, so injecting one would forward an argument they cannot accept.
+    # Kept separate from the positional map now that identity is no longer in
+    # it — the map can no longer answer this question.
+    _KNOWLEDGE_THREAD_ID_TOOLS = frozenset(
+        {
+            "knowledge_search_knowledge",
+            "knowledge_ingest_knowledge",
+            "knowledge_ingest_knowledge_url",
+            "knowledge_list_knowledge_documents",
+            "knowledge_delete_knowledge_document",
+        }
+    )
 
     async def execute_for_cuga_lite(
         self,
@@ -216,6 +224,12 @@ if __name__ == "__main__":
         return "\n".join(lines) + "\n\n" if len(lines) > 1 else ""
 
     def _serialize_knowledge_tool_stub(self, tool_name: str, tool_func: Any) -> str:
+        from cuga.backend.knowledge.run_context import issue_run_token
+
+        run_context = getattr(tool_func, "_knowledge_run_context", None)
+        credential_arg = (
+            f", knowledge_run_token={issue_run_token(run_context)!r}" if run_context is not None else ""
+        )
         allowed_scopes = tuple(getattr(tool_func, "_knowledge_allowed_scopes", ()))
         default_scope = getattr(tool_func, "_knowledge_default_scope", None)
         thread_id = getattr(tool_func, "_knowledge_thread_id", "") or ""
@@ -227,7 +241,7 @@ if __name__ == "__main__":
         # ``knowledge_get_knowledge_status`` have no scope/thread params —
         # silently injecting them would TypeError inside the sandbox.
         tool_has_scope = "scope" in positional_names
-        tool_has_thread_id = "thread_id" in positional_names
+        tool_has_thread_id = tool_name in self._KNOWLEDGE_THREAD_ID_TOOLS
 
         # Scope validation: emit at function level so the block has its own
         # indent contract and isn't structurally coupled to thread_id below.
@@ -248,16 +262,22 @@ if __name__ == "__main__":
             if tool_has_scope and allowed_scopes
             else ""
         )
-        # Thread-id injection: also at function level. Whitespace-safe —
-        # ``setdefault`` would leave an explicit ``""`` in place, which is
-        # exactly what produced the post-publish 400s in the live trace.
-        thread_id_block = (
-            f"""    _existing_tid = kwargs.get("thread_id")
-    if _existing_tid is None or (isinstance(_existing_tid, str) and not _existing_tid.strip()):
-        kwargs["thread_id"] = "{thread_id}"
+        # Identity scrub, emitted for every knowledge tool. The code that calls
+        # these stubs is written by the model, so an agent_id/thread_id it
+        # passes is a claim to be a different principal — name someone else's
+        # agent or thread and you read, overwrite or delete their collection
+        # (GHSA-ffh4-qv86-xfxv). Dropping them from the positional map stops the
+        # positional form; this stops the keyword form.
+        identity_scrub_block = """    kwargs.pop("agent_id", None)
+    kwargs.pop("thread_id", None)
 """
-            if thread_id and "session" in allowed_scopes and tool_has_thread_id
-            else ""
+        # Thread-id injection: also at function level, and unconditional now
+        # that the scrub above guarantees nothing survives to defer to. The old
+        # "only fill a blank value" form was what let a model-supplied thread
+        # stand. Emitted with ``!r`` so the value lands as a Python literal
+        # rather than being pasted into a quoted string.
+        thread_id_block = (
+            f'    kwargs["thread_id"] = {thread_id!r}\n' if thread_id and tool_has_thread_id else ""
         )
 
         return f"""async def {tool_name}(*args, **kwargs):
@@ -265,7 +285,7 @@ if __name__ == "__main__":
     positional_names = {positional_names_repr}
     for name, value in zip(positional_names, args):
         kwargs.setdefault(name, value)
-{scope_validation_block}{thread_id_block}    return await call_api("knowledge", "{tool_name}", kwargs)
+{scope_validation_block}{identity_scrub_block}{thread_id_block}    return await call_api("knowledge", "{tool_name}", kwargs{credential_arg})
 """
 
     def _parse_execution_output(self, raw_output: str) -> tuple[str, dict[str, Any]]:

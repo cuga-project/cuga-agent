@@ -117,23 +117,19 @@ def preload_evolve() -> None:
     from altk_evolve.config.guidelines import guidelines_settings
     from altk_evolve.config.milvus import milvus_other_settings
     from altk_evolve.config.postgres import postgres_db_settings
-    from sentence_transformers import SentenceTransformer
+    from altk_evolve.embeddings import MINILM_MODEL, get_embedding_model
 
     models = {
         (milvus_other_settings.embedding_model, False),
         (postgres_db_settings.embedding_model, False),
         (
-            guidelines_settings.consistency_embedding_model_small or milvus_other_settings.embedding_model,
-            guidelines_settings.consistency_embedding_trust_remote_code,
-        ),
-        (
-            guidelines_settings.consistency_embedding_model_large or milvus_other_settings.embedding_model,
+            guidelines_settings.consistency_embedding_model_small or MINILM_MODEL,
             guidelines_settings.consistency_embedding_trust_remote_code,
         ),
     }
     for model_name, trust_remote_code in sorted(models):
         print(f"→ Preloading Evolve embedding model {model_name}...")
-        model = SentenceTransformer(model_name, device="cpu", trust_remote_code=trust_remote_code)
+        model = get_embedding_model(model_name, trust_remote_code=trust_remote_code)
         model.encode(["airgap warmup"])
 
 
@@ -163,13 +159,30 @@ def preload_tiktoken() -> None:
         tiktoken.get_encoding(name).encode("airgap warmup")
 
 
+def run_preloads() -> None:
+    """Run every preload step, routing failures through ``handle_preload_error``.
+
+    Non-strict (default): a missing optional dependency (docling absent in
+    the slim image, Evolve/READI absent, a flaky model download) prints a
+    skip message and the build continues. Strict (``MODEL_PRELOAD_STRICT=1``,
+    the full image): the same failure raises and fails the build.
+    """
+    for component, fn in (
+        ("fastembed", preload_fastembed),
+        ("fastembed tokenizer", preload_fastembed_tokenizer),
+        ("docling", preload_docling),
+        ("evolve", preload_evolve),
+        ("readi", preload_readi),
+        ("tiktoken", preload_tiktoken),
+    ):
+        try:
+            fn()
+        except Exception as e:
+            handle_preload_error(component, e)
+
+
 if __name__ == "__main__":
     print("Preloading models for airgapped operation...\n")
-    preload_fastembed()
-    preload_fastembed_tokenizer()
-    preload_docling()
-    preload_evolve()
-    preload_readi()
-    preload_tiktoken()
+    run_preloads()
     print("\nDone. Set HF_HUB_OFFLINE=1 at runtime to enforce airgap.")
     sys.exit(0)
