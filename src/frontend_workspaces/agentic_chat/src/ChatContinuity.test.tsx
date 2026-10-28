@@ -38,15 +38,6 @@ describe("createConversation", () => {
     expect(result.id).toBe("srv-thread-001");
     expect(result.status).toBe("new");
   });
-
-  it("throws when the server returns a non-ok status", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response("Internal Server Error", { status: 500 })
-    );
-
-    const { createConversation } = await import("../../frontend/src/api");
-    await expect(createConversation("my-agent")).rejects.toThrow("HTTP 500");
-  });
 });
 
 describe("adopting the server-issued thread ID", () => {

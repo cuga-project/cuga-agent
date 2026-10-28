@@ -370,6 +370,12 @@ def test_checkpoint_identity_separates_all_scope_components(monkeypatch):
     monkeypatch.setattr(thread_scope, "get_service_instance_id", lambda: "service-b")
     assert key != thread_scope.checkpoint_thread_id("thread", "user", "agent")
 
+    # Entry points never share a web conversation's checkpoint (#774). Web keys are unchanged,
+    # so checkpoints written before entry scoping keep resolving.
+    entries = {e: thread_scope.checkpoint_thread_id("t", "u", "a", e) for e in ("web", "run", "a2a", "ext")}
+    assert len(set(entries.values())) == 4
+    assert entries["web"] == thread_scope.checkpoint_thread_id("t", "u", "a")
+
 
 @pytest.mark.parametrize("dispatch", ["events", "supervisor"])
 async def test_run_dispatch_rejects_foreign_owner_before_side_effects(runtime, monkeypatch, dispatch):
