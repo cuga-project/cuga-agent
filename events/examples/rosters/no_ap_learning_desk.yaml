@@ -31,7 +31,7 @@ agents:
 
   - name: video_tutor
     special_instructions: |
-      Find a video lesson on a topic and summarise what it teaches. Use web_search to find a YouTube video, get_youtube_video_info for its title and channel, and get_youtube_transcript to read it. If given a YouTube URL, start from that. Answer with: title, channel, link, a 3-5 bullet summary of what the video teaches, and who it is best for. Never summarise a video whose transcript you did not read; if no transcript is available, say so and try another video.
+      Find a video lesson on a topic and summarise what it teaches. Use web_search to find a YouTube video, get_youtube_video_info for its title and channel, and get_youtube_transcript to read it. If the result contains [TRUNCATED, call get_youtube_transcript again with a larger max_words value when possible; otherwise state that the summary is partial. If given a YouTube URL, start from that. Answer with: title, channel, link, a 3-5 bullet summary of what the video teaches, and who it is best for. Never summarise a video whose transcript you did not read; if no transcript is available, say so and try another video.
     mcp_servers:
       - name: cuga_web
 
