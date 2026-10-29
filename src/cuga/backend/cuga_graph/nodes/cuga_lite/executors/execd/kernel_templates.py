@@ -125,6 +125,7 @@ import asyncio as _cuga_sh_aio
 import importlib as _cuga_sh_importlib
 import os as _cuga_sh_os
 import re as _cuga_sh_re
+import signal as _cuga_sh_signal
 
 _CUGA_SH_ROOT = {workspace_root!r}
 _CUGA_SH_VENV = _cuga_sh_os.path.join(_CUGA_SH_ROOT, ".venv")
@@ -171,17 +172,26 @@ async def run_command(cmd: str) -> str:
         _env["PIP_INDEX_URL"] = _CUGA_SH_INDEX
         _env["UV_INDEX_STRATEGY"] = "first-index"
     _cmd = _cuga_sh_rewrite_install(_cuga_sh_rewrite_paths(cmd, _CUGA_SH_ROOT))
-    _proc = await _cuga_sh_aio.create_subprocess_shell(
-        _cmd,
-        cwd=_CUGA_SH_ROOT,
-        env=_env,
-        stdout=_cuga_sh_aio.subprocess.PIPE,
-        stderr=_cuga_sh_aio.subprocess.PIPE,
-    )
+    try:
+        # Its own process group, so a timeout can stop the whole command:
+        # `sleep 8; echo x`, `a && b` or a pipe, not only the /bin/sh around them.
+        _proc = await _cuga_sh_aio.create_subprocess_shell(
+            _cmd,
+            cwd=_CUGA_SH_ROOT,
+            env=_env,
+            stdout=_cuga_sh_aio.subprocess.PIPE,
+            stderr=_cuga_sh_aio.subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as e:
+        return "[run_command error] " + str(e)
     try:
         _out, _err = await _cuga_sh_aio.wait_for(_proc.communicate(), _CUGA_SH_TIMEOUT)
     except _cuga_sh_aio.TimeoutError:
-        _proc.kill()
+        try:
+            _cuga_sh_os.killpg(_proc.pid, _cuga_sh_signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         await _proc.wait()
         return "(command timed out after " + str(_CUGA_SH_TIMEOUT) + "s)\\n[stderr]\\nCommand timed out"
     _out_s = _out.decode("utf-8", "replace")

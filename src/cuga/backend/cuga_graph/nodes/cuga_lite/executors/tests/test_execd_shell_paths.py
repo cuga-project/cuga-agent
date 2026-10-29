@@ -107,3 +107,28 @@ async def test_kernel_run_command_stops_a_hung_command(tmp_path):
     out = await kernel["run_command"]("sleep 10")
 
     assert "timed out after 1s" in out and "[stderr]" in out
+
+
+@pytest.mark.parametrize("cmd", ["sleep 10; echo late", "sleep 10 && echo late", "sleep 10 | cat"])
+async def test_kernel_run_command_timeout_stops_a_compound_command(tmp_path, cmd):
+    """Review item 33: the timeout stops the whole command, not only the /bin/sh around it."""
+    import time
+
+    kernel: dict = {}
+    exec(shell_tool_code(str(tmp_path), timeout=1), kernel)
+
+    started = time.monotonic()
+    out = await kernel["run_command"](cmd)
+
+    # Without the process group the call waited for `sleep` to finish.
+    assert time.monotonic() - started < 5
+    assert "timed out after 1s" in out and "late" not in out
+
+
+async def test_kernel_run_command_reports_an_os_error_instead_of_raising(tmp_path):
+    kernel: dict = {}
+    exec(shell_tool_code(str(tmp_path / "missing")), kernel)
+
+    out = await kernel["run_command"]("ls")
+
+    assert out.startswith("[run_command error] ")
