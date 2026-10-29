@@ -4,6 +4,7 @@ import * as api from "./api";
 import { useAuth } from "./AuthContext";
 import { ConfigHeader } from "./ConfigHeader";
 import CarbonChat from "./carbon-chat/CarbonChat";
+import type { ConfigNotice } from "./carbon-chat/customSendMessage";
 import { MemoryWorkspace } from "./memory/MemoryWorkspace";
 import { SupervisorRoster, type SupervisorMember } from "./SupervisorRoster";
 import {
@@ -321,7 +322,9 @@ const loadDraftThreadState = (agentId: string): DraftThreadState | null => {
       return null;
     }
     return {
-      threadId: typeof parsed.threadId === "string" ? parsed.threadId : null,
+      // Never restore a stored ID: older builds saved client-generated IDs, which /stream now
+      // rejects with 404. A null ID lets the server issue one on the first send (#774).
+      threadId: null,
       hasSentFirstMessage: false,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
       agentId,
@@ -475,6 +478,7 @@ export function ChatLanding() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [selectedThreadStatus, setSelectedThreadStatus] = useState<string | null>(null);
   const [selectedThreadUnavailable, setSelectedThreadUnavailable] = useState(false);
+  const [configNotice, setConfigNotice] = useState<ConfigNotice | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(draftThread.threadId);
   const [rightSection, setRightSection] = useState<RightPanelSection>("workspace");
   const [knowledgeDocCount, setKnowledgeDocCount] = useState(0);
@@ -518,6 +522,7 @@ export function ChatLanding() {
     setSelectedThreadId(null);
     setSelectedThreadStatus(null);
     setSelectedThreadUnavailable(false);
+    setConfigNotice(null);
     setActiveThreadId(nextDraft.threadId);
     setThreads([]);
     setLoading(true);
@@ -705,6 +710,7 @@ export function ChatLanding() {
     setSelectedThreadId(null);
     setSelectedThreadStatus(null);
     setSelectedThreadUnavailable(false);
+    setConfigNotice(null);
     setActiveThreadId(nextDraft.threadId);
     setSessionDocsVersion((version) => version + 1);
     return nextDraft;
@@ -797,6 +803,7 @@ export function ChatLanding() {
     setSelectedThreadId(threadId);
     setSelectedThreadStatus(thread?.status || null);
     setSelectedThreadUnavailable(false);
+    setConfigNotice(null);
   }, [threads]);
 
   const handleRemoveAll = async () => {
@@ -1426,6 +1433,7 @@ export function ChatLanding() {
               setSelectedThreadId(threadId);
               setSelectedThreadStatus(thread?.status || null);
               setSelectedThreadUnavailable(false);
+              setConfigNotice(null);
               setActiveView("chat");
             }}
           />
@@ -1465,6 +1473,30 @@ export function ChatLanding() {
               </Button>
             </div>
           )}
+          {/* The agent configuration changed since the conversation last ran */}
+          {configNotice && (
+            <div style={{
+              padding: "0.75rem 1rem",
+              background: configNotice === "pending_cancelled"
+                ? "var(--cds-notification-background-warning, #fdf6dd)"
+                : "var(--cds-notification-background-info, #edf5ff)",
+              borderBottom: "1px solid var(--cds-border-subtle-01)",
+              fontSize: "0.8125rem",
+              color: "var(--cds-text-primary)",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.75rem",
+            }}>
+              <span style={{ flex: 1 }} role="status">
+                {configNotice === "pending_cancelled"
+                  ? "A pending approval was cancelled because the agent\u2019s configuration changed."
+                  : "This agent\u2019s configuration was updated since your last message. Replies now use the latest version."}
+              </span>
+              <Button kind="ghost" size="sm" onClick={() => setConfigNotice(null)}>
+                Dismiss
+              </Button>
+            </div>
+          )}
           <CarbonChat
             agentId={effectiveChatAgentId}
             contained={true}
@@ -1486,6 +1518,7 @@ export function ChatLanding() {
             } : undefined}
             onPreviewKnowledgeAttachment={handlePreviewKnowledgeAttachment}
             onStreamError={handleStreamError}
+            onConfigNotice={setConfigNotice}
           />
         </div>
 

@@ -22,6 +22,7 @@ from loguru import logger
 from cuga.backend.storage import get_storage
 
 REPLICA_ID = uuid.uuid4().hex[:12]
+_STOP_POLL_SECONDS = 2.0
 
 
 @dataclass
@@ -115,6 +116,24 @@ class ThreadLease:
         )
         await store.commit()
 
+    async def request_stop(self, thread_id: str) -> None:
+        """Ask the replica running a turn on this thread to stop it. A no-op if no lease is held."""
+        store = await self._store()
+        await store.execute(
+            "UPDATE thread_leases SET stop_requested = 1, updated_at = ? WHERE thread_id = ?",
+            (time.time(), thread_id),
+        )
+        await store.commit()
+
+    async def stop_requested(self, token: LeaseToken) -> bool:
+        """Whether a stop was requested for the turn this token holds the lease for."""
+        store = await self._store()
+        row = await store.fetchone(
+            "SELECT stop_requested FROM thread_leases WHERE thread_id = ? AND holder_id = ?",
+            (token.thread_id, token.holder_id),
+        )
+        return bool(row and row["stop_requested"])
+
 
 @asynccontextmanager
 async def keep_lease(
@@ -125,7 +144,8 @@ async def keep_lease(
 ):
     """Renew an acquired lease while the body runs, then release it, also on cancellation.
 
-    If the lease is lost, ``stop_event`` is set so the running turn stops.
+    If the lease is lost, or another replica requests a stop, ``stop_event`` is set so the running
+    turn stops.
     """
 
     async def _renew_loop() -> None:
@@ -143,15 +163,32 @@ async def keep_lease(
                     stop_event.set()
                 return
 
-    renew_task = asyncio.create_task(_renew_loop())
+    async def _stop_poll_loop() -> None:
+        while True:
+            await asyncio.sleep(_STOP_POLL_SECONDS)
+            try:
+                requested = await lease.stop_requested(token)
+            except Exception:
+                logger.exception("stop request poll failed")
+                continue
+            if requested:
+                logger.info("stop requested by another replica; stopping the turn")
+                stop_event.set()
+                return
+
+    tasks = [asyncio.create_task(_renew_loop())]
+    if stop_event is not None:
+        tasks.append(asyncio.create_task(_stop_poll_loop()))
     try:
         yield token
     finally:
-        renew_task.cancel()
-        try:
-            await renew_task
-        except asyncio.CancelledError:
-            pass
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await asyncio.shield(lease.release(token))
 
 

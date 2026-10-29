@@ -8,8 +8,10 @@ from typing import Any, Callable, Dict, List, Optional
 from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
+    MEMORY_SCOPE_CALL,
     child_checkpoint_lock,
     resolve_child_checkpoint_id,
+    resolve_memory_scope,
 )
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
     SUPERVISOR_EXEC_KEY,
@@ -67,6 +69,26 @@ def resolve_names_from_caller_frame(variable_names: List[str]) -> Dict[str, Any]
     return resolved
 
 
+_CHILD_CHECKPOINT_IDS_KEY = "child_checkpoint_ids"
+
+
+def _record_child_checkpoint_id(state: Any, child_id: str) -> None:
+    """Append *child_id* to ``service_scope["child_checkpoint_ids"]`` on *state*.
+
+    The list accumulates all durable child IDs used by this conversation so that
+    cleanup can delete them even after the child is removed from the roster.
+    """
+    scope = getattr(state, "service_scope", None)
+    if not isinstance(scope, dict):
+        return
+    recorded = scope.get(_CHILD_CHECKPOINT_IDS_KEY)
+    if not isinstance(recorded, list):
+        recorded = []
+    if child_id not in recorded:
+        recorded = recorded + [child_id]
+        scope[_CHILD_CHECKPOINT_IDS_KEY] = recorded
+
+
 def _record_delegation(
     adapter: Any,
     agent_name: str,
@@ -121,6 +143,12 @@ def create_agent_delegation_func(
                 agent_name=agent_name,
                 agent_or_config=agent_or_config,
             )
+            # Record durable child IDs in the parent's service_scope so cleanup can find
+            # them even after the child is removed from the roster.
+            if exec_ctx is not None and exec_ctx.state is not None:
+                scope = resolve_memory_scope(agent_or_config, adapter=adapter, agent_name=agent_name)
+                if scope != MEMORY_SCOPE_CALL:
+                    _record_child_checkpoint_id(exec_ctx.state, child_thread_id)
             # A child tool-approval pause is not surfaced to the parent: invoke() returns the
             # pause notice as the answer and the child stays parked in its own saver (#774).
             async with child_checkpoint_lock(agent_or_config, child_thread_id):
