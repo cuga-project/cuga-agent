@@ -502,6 +502,7 @@ export function ChatLanding() {
   chatAgentIdRef.current = effectiveChatAgentId;
   // Bumped by "Remove all": a thread list requested before it must not bring the old threads back.
   const threadsGenerationRef = useRef(0);
+  const threadsRequestSeqRef = useRef(0);
 
   useEffect(() => {
     if (prevChatAgentIdRef.current === effectiveChatAgentId) return;
@@ -717,11 +718,17 @@ export function ChatLanding() {
   const refreshThreads = useCallback(async () => {
     const agentId = effectiveChatAgentId;
     const generation = threadsGenerationRef.current;
+    // Two refreshes in one generation can answer out of order; only the newest may apply.
+    const requestSeq = ++threadsRequestSeqRef.current;
     try {
       const res = await api.getConversationThreads(agentId);
       if (res.ok) {
         const data = await res.json();
-        if (agentId === chatAgentIdRef.current && generation === threadsGenerationRef.current) {
+        if (
+          requestSeq === threadsRequestSeqRef.current &&
+          agentId === chatAgentIdRef.current &&
+          generation === threadsGenerationRef.current
+        ) {
           setThreads(data.threads || []);
         }
       }

@@ -144,3 +144,17 @@ def test_empty_secret_dir_disables_the_lookup(monkeypatch):
     monkeypatch.setattr(settings.advanced_features, "sandbox_secret_dir", "", raising=False)
     assert connection.secret_dir() is None
     assert connection.status()["available"] is False
+
+
+def test_an_explicit_execd_backend_uses_the_mounted_secret_with_the_toggle_off(monkeypatch, tmp_path):
+    """python_backend = "execd" routes here even with the sandbox switched off; its secret must still apply."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import ExecdExecutor
+
+    _mount_secret(monkeypatch, tmp_path, url="http://execd.ns.svc:44772", key="k1")
+    connection.set_runtime_config({"enabled": False})
+
+    assert connection.resolve() is None
+    expected_key = "k1"  # pragma: allowlist secret
+    assert ExecdExecutor._connection() == connection.SandboxConnection(
+        url="http://execd.ns.svc:44772", api_key=expected_key
+    )

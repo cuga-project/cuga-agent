@@ -173,12 +173,10 @@ class ExecdExecutor(RemoteExecutor):
 
     @staticmethod
     def _connection() -> connection.SandboxConnection:
-        # Called even when the sandbox is off if a caller forces mode="execd";
-        # fall back to the configured URL rather than failing.
-        conn = connection.resolve()
-        if conn is None:
-            return connection.SandboxConnection(url=connection.env_defaults()["url"], api_key="")
-        return conn
+        # Called even when the sandbox is off if a caller forces mode="execd"
+        # (an explicit python_backend), so take the configured connection —
+        # mounted secret and API key included — rather than the on/off-gated one.
+        return connection.configured()
 
     @classmethod
     def _base_url(cls) -> str:
