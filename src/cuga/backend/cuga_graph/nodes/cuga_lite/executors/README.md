@@ -225,7 +225,7 @@ With `sandbox_mode = "execd"` (or the Manage → Code sandbox toggle), generated
 
 **Between conversations: enforced by the sandbox, not by CUGA.**
 - Each thread gets its own execd context: a separate Jupyter kernel (its own OS process
-  and Python state) with its own workspace directory, `/sandbox/<thread_id>`.
+  and Python state) with its own workspace directory, `/workspace/<thread_id>`.
 - sandbox-api and execd keep threads apart. From its kernel or from `POST /command`,
   code in one thread cannot read, overwrite, create or list files in another thread's
   workspace, and cannot list `/sandbox` or `/tmp`.
@@ -260,8 +260,8 @@ With `sandbox_mode = "execd"` (or the Manage → Code sandbox toggle), generated
     reached any other way is not registered for the block, so CUGA refuses it. Tool
     approval looks at the same code.
   - Code is refused before it is sent if it reads a `_cuga*` name its own scope did not
-    bind, names `globals`, `vars`, `eval`, `exec`, `compile` or a dunder such as
-    `__builtins__`, or uses `asyncio` subprocess calls (`create_subprocess_*`,
+    bind, reads `globals`, `vars`, `eval`, `exec` or `compile` without binding it
+    itself, or uses `asyncio` subprocess calls (`create_subprocess_*`,
     `subprocess_shell`, `subprocess_exec`, `asyncio.subprocess`). The bootstrap keeps
     its own names (`os`, `site`, `importlib`, `urllib`) inside a function, so they never
     reach the kernel's globals.

@@ -96,8 +96,10 @@ _HASHED_NAME_TAIL = re.compile(r"-[0-9a-f]{24}$")
 _KERNEL_PREFIXES = ("_cuga", "_Cuga", "_CUGA")
 # A kernel keeps every global of every block, and the kernel has full builtins.
 # These reach those globals or a shell without naming a blocked module. The block's
-# own namespace (block_runner.block_code) lacks most of them already; refusing them
-# here as well says why, before the code is sent.
+# own namespace (block_runner.block_code) lacks them already; refusing them here as
+# well says why, before the code is sent. Dunder names such as ``__name__`` are not
+# refused: in that namespace they are the local executor's safe values, and a
+# dunder attribute is refused by SecurityValidator.
 _KERNEL_FORBIDDEN_NAMES = frozenset({"globals", "vars", "eval", "exec", "compile"})
 _KERNEL_FORBIDDEN_ATTRS = frozenset(
     {"create_subprocess_shell", "create_subprocess_exec", "subprocess_shell", "subprocess_exec", "subprocess"}
@@ -127,10 +129,6 @@ def _check_kernel_access(wrapped_code: str) -> None:
             for name in node.names:
                 if name.startswith(_KERNEL_PREFIXES):
                     raise PermissionError(f"Security violation: '{name}' is reserved for the sandbox runtime")
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            name = node.id
-            if name in _KERNEL_FORBIDDEN_NAMES or (name.startswith("__") and name.endswith("__")):
-                raise PermissionError(f"Security violation: '{name}' is not allowed in sandbox code")
         elif isinstance(node, ast.Attribute):
             if node.attr in _KERNEL_FORBIDDEN_ATTRS or node.attr.startswith(_KERNEL_PREFIXES):
                 raise PermissionError(f"Security violation: '{node.attr}' is not allowed in sandbox code")
@@ -187,9 +185,12 @@ def _check_scope(body: list[ast.AST], enclosing: frozenset[str], *, class_body: 
         elif isinstance(node, ast.ExceptHandler) and node.name:
             bound.add(node.name)
     for node in nodes:
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            if node.id.startswith(_KERNEL_PREFIXES) and node.id not in bound:
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in bound:
+            if node.id.startswith(_KERNEL_PREFIXES):
                 raise PermissionError(f"Security violation: '{node.id}' is reserved for the sandbox runtime")
+            # A variable the code names ``vars`` itself is its own, as it is locally.
+            if node.id in _KERNEL_FORBIDDEN_NAMES:
+                raise PermissionError(f"Security violation: '{node.id}' is not allowed in sandbox code")
     # A class body's names are not visible inside its methods.
     visible = enclosing if class_body else frozenset(bound)
     for node in nodes:

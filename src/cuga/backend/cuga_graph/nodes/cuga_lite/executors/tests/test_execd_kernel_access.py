@@ -39,7 +39,6 @@ def _wrapped(code: str, fake_datetime: str | None = None) -> str:
         # Generic routes to the kernel's globals or a shell.
         "globals()['_cuga_os']",
         "vars()['x']",
-        "__builtins__",
         "import asyncio\nawait asyncio.create_subprocess_shell('id')",
         "import asyncio\nawait asyncio.create_subprocess_exec('id')",
         "import asyncio\nasyncio.subprocess",
@@ -62,6 +61,10 @@ def test_code_reaching_kernel_helpers_is_refused(code):
         "def helper(v):\n    return v * 2\nprint(helper(2))",
         # A name the code binds itself is its own, not the kernel's.
         "_cuga_mine = 3\nprint(_cuga_mine)",
+        # Valid code that ran locally but was refused under execd only.
+        "print(__name__)",
+        "vars = {'a': 1}\nprint(vars['a'])",
+        "def f(eval):\n    return eval\nprint(f(2))",
     ],
 )
 def test_ordinary_agent_code_passes(code):
@@ -327,3 +330,45 @@ def test_in_kernel_file_tools_still_work_from_the_restricted_block(tmp_path):
     assert outcome["status"] == "ok", outcome
     assert outcome["stdout"].strip() == "hello"
     assert (tmp_path / "a.txt").read_text() == "hello"
+
+
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        ("print(__name__)", "__restricted__"),
+        ("vars = {'a': 1}\nprint(vars['a'])", "1"),
+    ],
+)
+def test_code_the_local_executor_runs_runs_the_same_in_the_kernel(code, expected):
+    """Review: print(__name__) or a variable named vars failed under execd only."""
+    _check_kernel_access(_wrapped(code))
+    outcome = _run_in_kernel(code, helpers=_KERNEL_HELPERS)
+    assert outcome["status"] == "ok", outcome
+    assert outcome["stdout"].strip() == expected
+
+
+def test_builtins_in_the_kernel_are_the_safe_ones():
+    # __builtins__ is no longer refused by name; what it holds must still be the local executor's set.
+    outcome = _run_in_kernel(
+        "print('eval' in __builtins__, 'getattr' in __builtins__, 'len' in __builtins__)"
+    )
+    assert outcome["status"] == "ok", outcome
+    assert outcome["stdout"].strip() == "False False True"
+
+
+def test_vars_bound_only_in_a_nested_scope_is_still_refused():
+    with pytest.raises(PermissionError, match="'vars' is not allowed"):
+        _check_kernel_access(_wrapped("def f():\n    vars = 1\nprint(vars())"))
+
+
+@pytest.mark.parametrize(
+    "code, error_type",
+    [
+        ("print(__builtins__['eval'])", "KeyError"),
+        ("print(__builtins__['__import__']('os'))", "ImportError"),
+    ],
+)
+def test_reaching_through_builtins_fails_as_it_does_locally(code, error_type):
+    outcome = _run_in_kernel(code, helpers=_KERNEL_HELPERS)
+    assert outcome["status"] == "error"
+    assert outcome["error_type"] == error_type

@@ -817,7 +817,7 @@ With **`[advanced_features] sandbox_mode = "execd"`**, or with the sandbox turne
 
 The connection comes from the deployment: the sandbox secret mounted at `sandbox_secret_dir`, or `execd_url` / `execd_api_key`. **Manage → Code sandbox** appears only when one of them is configured, and only switches the sandbox on or off. It does not take a URL or key.
 
-**What keeps conversations apart.** The sandbox does, not CUGA. Each conversation gets its own kernel (a separate process) and its own workspace, `/sandbox/<thread_id>`. Code in one conversation cannot read, change or list another conversation's files, and cannot reach execd or Jupyter inside the sandbox. This requires a sandbox-api build that passes its workspace isolation test (`scripts/25_test_workspace_isolation.sh` in the sandbox-api repo).
+**What keeps conversations apart.** The sandbox does, not CUGA. Each conversation gets its own kernel (a separate process) and its own workspace, `/workspace/<thread_id>`. Code in one conversation cannot read, change or list another conversation's files, and cannot reach execd or Jupyter inside the sandbox. This requires a sandbox-api build that passes its workspace isolation test (`scripts/25_test_workspace_isolation.sh` in the sandbox-api repo).
 
 **What does not.** Inside its own conversation, agent code runs with the same restrictions as under the local executor: safe builtins, the import allowlist, and only its own tools and variables, not the kernel's helpers. CUGA also answers only the tools a code block names, so tool approval sees every tool that runs. These restrictions run in the same process as the code, so they are not a boundary. Treat the sandbox's filesystem and network policy as the security boundary.
 
