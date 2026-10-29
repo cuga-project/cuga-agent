@@ -65,19 +65,24 @@ def _block_timeout() -> int:
 
 
 def _redact_url(url: str) -> str:
-    """The URL without ``user:password@``, for logs. The package index may carry a token."""
+    """The URL without ``user:password@`` or a query string, for logs. The package index may carry a token."""
     from urllib.parse import urlsplit, urlunsplit
 
     try:
         parts = urlsplit(url)
     except ValueError:
         return "(unparseable URL)"
-    if not parts.username and not parts.password:
-        return url
-    host = parts.hostname or ""
-    if parts.port:
-        host += f":{parts.port}"
-    return urlunsplit(parts._replace(netloc=f"***@{host}"))
+    if parts.username or parts.password:
+        host = parts.hostname or ""
+        if parts.port:
+            host += f":{parts.port}"
+        parts = parts._replace(netloc=f"***@{host}")
+    # A token can sit in the query (``?token=…``) or the fragment as well.
+    if parts.query:
+        parts = parts._replace(query="***")
+    if parts.fragment:
+        parts = parts._replace(fragment="***")
+    return urlunsplit(parts)
 
 
 def _names_used(code: str) -> set[str]:

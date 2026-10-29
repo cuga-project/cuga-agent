@@ -198,7 +198,10 @@ def _resolve_env_key(ref: str) -> str:
             return _env_key_cache[1]
     value = resolve_secret(ref) or ""
     if not value:
+        # Not cached: a vault or env lookup that failed once (not ready yet, a
+        # network blip) is retried on the next call instead of until a refresh.
         logger.warning("[execd:conn] Sandbox API key reference could not be resolved")
+        return ""
     with _lock:
         _env_key_cache = (ref, value)
     return value

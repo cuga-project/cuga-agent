@@ -106,11 +106,13 @@ async def test_a_failing_tool_returns_an_error_instead_of_raising(kernel, tmp_pa
 
 def test_package_index_credentials_are_kept_out_of_the_log():
     # Item 23: the URL itself must stay usable for pip/uv, but not be logged with a token.
-    assert (
-        _redact_url("https://user:s3cret@pypi.example/simple") == "https://***@pypi.example/simple"
-    )  # pragma: allowlist secret
+    with_password = "https://user:s3cret@pypi.example/simple"  # pragma: allowlist secret
+    assert _redact_url(with_password) == "https://***@pypi.example/simple"
     assert _redact_url("https://tok@pypi.example:8443/simple") == "https://***@pypi.example:8443/simple"
     assert _redact_url("https://pypi.example/simple") == "https://pypi.example/simple"
+    # A token in the query string or fragment is kept out too.
+    assert _redact_url("https://pypi.example/simple?token=s3cret") == "https://pypi.example/simple?***"
+    assert _redact_url("https://pypi.example/simple#s3cret") == "https://pypi.example/simple#***"
 
 
 async def test_recursive_search_excludes_nested_matches_like_the_host_tool(kernel, tmp_path):

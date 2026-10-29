@@ -45,6 +45,9 @@ opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; req
 # panel then run in a per-thread kernel inside the sandbox. Exception: an explicit
 # execution.python_backend wins over sandbox_mode, so python_backend = "local" keeps
 # generated Python in CUGA even with execd on; leave it unset to get sandbox isolation.
+# Do not set python_backend = "execd" on its own: with the sandbox off, Python then runs
+# in execd while files and the shell stay on the host, so code cannot see the files the
+# agent's file tools write. Turn execd on with sandbox_mode or the Manage switch instead.
 # The connection is picked automatically: the mounted secret (sandbox_secret_dir) when it carries url and api_key,
 # otherwise execd_url / execd_api_key below. Manage shows the switch only when one of them
 # is configured; it never takes a URL or key itself.

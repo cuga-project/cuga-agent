@@ -158,3 +158,24 @@ def test_an_explicit_execd_backend_uses_the_mounted_secret_with_the_toggle_off(m
     assert ExecdExecutor._connection() == connection.SandboxConnection(
         url="http://execd.ns.svc:44772", api_key=expected_key
     )
+
+
+def test_a_failed_key_lookup_is_retried_not_cached(monkeypatch):
+    """Review item 27: a vault:// / env:// key that failed once must not stay empty until a refresh."""
+    answers = iter(["", "resolved-key"])
+    monkeypatch.setattr(connection, "resolve_secret", lambda ref: next(answers))
+    connection.refresh()
+
+    assert connection._resolve_env_key("vault://sandbox/key") == ""
+    assert connection._resolve_env_key("vault://sandbox/key") == "resolved-key"
+
+
+def test_a_resolved_key_is_cached(monkeypatch):
+    calls = []
+    monkeypatch.setattr(connection, "resolve_secret", lambda ref: calls.append(ref) or "resolved-key")
+    connection.refresh()
+
+    connection._resolve_env_key("env://SANDBOX_KEY")
+    connection._resolve_env_key("env://SANDBOX_KEY")
+
+    assert calls == ["env://SANDBOX_KEY"]
