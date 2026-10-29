@@ -267,12 +267,18 @@ def ordered_variables_summary(variables_manager: Any, script: Optional[str]) -> 
 
 
 def verify_blocked_message(alert: str) -> str:
-    # Scoped to the flagged value: a blanket "ground every argument" made the
-    # model strip needed flags (clear_cart_first, repeat_days) on rewrite.
-    body = (alert or "").strip() or "ungrounded or contradictory write"
+    # Scoped to the flagged value or field: a blanket "ground every argument" made
+    # the model strip needed flags (clear_cart_first, repeat_days) on rewrite. A
+    # rule-4 extra field is fixed by removing it, not by grounding it again.
+    body = (alert or "").strip() or (
+        "VERIFY did not name the value. Find the write argument that has no support in the "
+        "Current Task or retrieved data, contradicts the Current Task, or writes a field "
+        "the Current Task did not ask to change."
+    )
     return (
         f"{VERIFY_BLOCKED_PREFIX}\n"
         f"{body}\n"
-        "Rewrite the block so the flagged value comes from retrieved data or the task. "
-        "Keep every other argument the task needs, including flags and defaults."
+        "Rewrite the block. Fix the flagged value, or remove the flagged field if the task "
+        "did not ask to change it. Keep every other argument the task needs, including "
+        "flags and defaults."
     )

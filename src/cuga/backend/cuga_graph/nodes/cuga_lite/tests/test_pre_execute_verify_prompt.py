@@ -271,8 +271,48 @@ def test_verify_blocked_message_limits_the_rewrite_to_the_flagged_value():
     # (clear_cart_first, repeat_days) while fixing an unrelated value.
     msg = verify_blocked_message("quantity=1 is ungrounded")
     assert "each write argument is grounded" not in msg
-    assert "flagged value" in msg
+    assert "quantity=1 is ungrounded" in msg
+    assert "Fix the flagged value" in msg
     assert "flags and defaults" in msg
+
+
+@pytest.mark.unit
+def test_verify_blocked_message_says_to_remove_a_flagged_extra_field():
+    """Rule 4 flags a field the task did not ask to change; grounding it again cannot fix that."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        verify_blocked_message,
+    )
+
+    msg = verify_blocked_message('status="pending" is an extra field; the task only changes the title')
+    assert "remove the flagged field" in msg
+    assert "come from retrieved data" not in msg
+
+
+@pytest.mark.unit
+def test_verify_blocked_message_without_an_alert_still_says_what_to_check():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        VERIFY_BLOCKED_PREFIX,
+        verify_blocked_message,
+    )
+
+    msg = verify_blocked_message("")
+    assert msg.startswith(VERIFY_BLOCKED_PREFIX)
+    assert "did not name" in msg
+    assert "Current Task" in msg and "field" in msg
+    assert "flags and defaults" in msg
+
+
+@pytest.mark.unit
+def test_alert_format_lets_verify_name_an_extra_field():
+    output_format = _verify_prompt_text().split("Output EXACTLY in this format", 1)[1]
+    assert "extra field" in output_format
+
+
+@pytest.mark.unit
+def test_extra_field_rule_requires_an_explicit_restriction():
+    text = _verify_prompt_text()
+    assert "explicitly restricts which" in text
+    assert "it does not authorize writing an extra field" in text
 
 
 # Rule 1 names "an amount" while the Do NOT flag list excludes choices, and
