@@ -3042,13 +3042,19 @@ async def stream(
     # confirmed act. The cost is that a plain-English standing request runs ONCE as chat; the fix is
     # to type /automate, which is discoverable and never surprises.
     if isinstance(query, str) and events_bridge.forwards_to_events(query, thread_id):
-        _q, _tid = query, thread_id
+        _q, _tid, _issued = query, thread_id, issued_thread_id
 
         async def _arming_stream():
             # StreamEvent is imported INSIDE event_stream, so it is not in this scope —
             # referencing it here used to raise NameError and kill the whole arming reply.
             from cuga.backend.cuga_graph.utils.agent_loop import StreamEvent as _SE
 
+            # A new chat that opens with a slash verb must still learn its ID, or the follow-up
+            # "yes" lands on a fresh conversation and the arming dialogue is lost.
+            if _issued:
+                yield _SE(name="thread_created", data=_issued).format(
+                    app_state.output_format, thread_id=_issued
+                )
             reply = await events_bridge.forward_slash_to_events(_q, _tid, request.headers)
             yield _SE(name="Answer", data=reply).format(app_state.output_format, thread_id=_tid)
 

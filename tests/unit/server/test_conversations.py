@@ -143,6 +143,21 @@ async def test_stream_without_a_thread_id_creates_one_and_announces_it_first(ser
     assert rows[0]["thread_id"] in response.text.split("event: thread_created", 1)[1].split("event:", 1)[0]
 
 
+async def test_a_new_chat_opening_with_a_slash_verb_still_learns_its_id(server, monkeypatch):
+    forward = AsyncMock(return_value="Armed?")
+    monkeypatch.setattr(server.main.events_bridge, "forwards_to_events", lambda *args: True)
+    monkeypatch.setattr(server.main.events_bridge, "forward_slash_to_events", forward)
+
+    response = await server.send(None, "/automate every morning")
+
+    assert response.status_code == 200, response.text
+    assert _events(response) == ["thread_created", "Answer"]
+    rows = await server.db._get_store().fetchall("SELECT thread_id FROM runtime_thread_owners")
+    assert len(rows) == 1
+    assert forward.await_args.args[1] == rows[0]["thread_id"]  # the reply's thread is the announced one
+    assert rows[0]["thread_id"] in response.text.split("event: thread_created", 1)[1].split("event:", 1)[0]
+
+
 @pytest.mark.parametrize(
     "case", ["unknown", "other_user", "legacy", "deleted", "lookup_error", "fresh_other_user"]
 )
