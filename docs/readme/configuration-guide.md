@@ -829,7 +829,7 @@ The connection comes from the deployment: the sandbox secret mounted at `sandbox
 - Use a sandbox-api version that accepts `envs` on `POST /command`. CUGA sends the venv, the package index and the file-tool operands there.
 - Do not put credentials in `execd_package_index`. Agent code can read it.
 - Packages that a conversation installs go into its own venv. The image's packages are shared.
-- Deleting a conversation releases its kernel. Turning the sandbox off does not, and the workspace files stay in the sandbox.
+- Deleting a conversation releases its kernel. Turning the sandbox off releases the kernels this process holds; kernels from before a restart or on other replicas stay until sandbox-api's TTL. Workspace files stay in the sandbox either way.
 
 See the [executors README](../../src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/README.md#isolation-model-execd-mode) for details.
 

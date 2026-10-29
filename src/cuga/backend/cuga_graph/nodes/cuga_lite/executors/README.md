@@ -266,7 +266,7 @@ With `sandbox_mode = "execd"` (or the Manage → Code sandbox toggle), generated
 
 **Paths.** The agent sees its workspace as `/workspace`. In the kernel and in shell
 commands, `/workspace/x` is rewritten to `./x` and a bare `/workspace` to the thread's
-directory, by one function (`_rewrite_workspace_paths`) that both `run_command`
+directory, by one function (`rewrite_workspace_paths`) that both `run_command`
 variants use. So a file that `write_file('/workspace/x.py')` wrote is found by
 `run_command('python /workspace/x.py')`.
 
@@ -278,8 +278,9 @@ variants use. So a file that `write_file('/workspace/x.py')` wrote is found by
   can read it. Do not put credentials in that URL.
 - Egress is denied by the sandbox network policy by default. Allow only the CUGA
   callback (`sandbox_callback_url`) and the package index.
-- Deleting a conversation releases its kernel. Turning the sandbox off does not: kernels
-  and workspace files stay in the sandbox.
+- Deleting a conversation releases its kernel. Turning the sandbox off releases the
+  kernels this process holds; kernels from before a restart or on other replicas stay
+  until sandbox-api's TTL. Workspace files stay in the sandbox either way.
 
 ### Allowed Modules
 - `asyncio`, `json`, `pandas`, `numpy`, `statistics`
