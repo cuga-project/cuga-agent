@@ -1,9 +1,13 @@
-"""Per-thread lease: at most one turn runs on a conversation at a time, across replicas (#774).
+"""Per-thread lease: best-effort serialization of turns on a conversation, across replicas (#774).
 
 Leases live in the ``thread_leases`` table of the conversation relational store, so they work
 on local SQLite and prod Postgres alike. A lease expires after ``storage.thread_lease_ttl_seconds``
 unless renewed; an expired lease can be taken over, so a crashed replica never blocks a thread.
 Clock skew between replicas is tolerated because the TTL is several renew intervals long.
+
+Known limit: checkpoint writes are not fenced. A holder paused beyond the TTL (a stalled event
+loop or VM) can keep writing until its next renewal fails and its turn sees the stop event, so it
+may overlap with the holder that took over. Fencing is left to the cross-replica safety work.
 """
 
 import asyncio
