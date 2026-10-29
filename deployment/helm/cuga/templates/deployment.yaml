@@ -31,16 +31,14 @@ spec:
             - name: CUGA_DBS_DIR
               value: "/data/dbs"
             {{- end }}
-            {{- /* Address the execd sandbox calls tools back on. Callback blocks live in the
-                   memory of the pod that registered them, so it targets this pod's own IP on
-                   the container port, never the Service; a non-empty env value overrides it. */}}
+            {{- /* Address the execd sandbox calls tools back on. Only the chart knows the real
+                   Service name, so it is derived per release; a non-empty env value overrides it.
+                   The sandbox egress policy allows this host name, not pod IPs. Callback blocks
+                   live in the memory of the pod that registered them, so with more than one
+                   replica the Service needs session affinity or a per-pod address. */}}
             {{- $callbackKey := "DYNACONF_ADVANCED_FEATURES__SANDBOX_CALLBACK_URL" }}
-            - name: CUGA_POD_IP
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.podIP
             - name: {{ $callbackKey }}
-              value: {{ default "http://$(CUGA_POD_IP):7860" (get (.Values.env | default dict) $callbackKey) | quote }}
+              value: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "cuga.fullname" .) .Release.Namespace .Values.service.port) (get (.Values.env | default dict) $callbackKey) | quote }}
             {{- $secret := .Values.existingSecret }}
             {{- $sensitiveKeys := list "GROQ_API_KEY" "OIDC_CLIENT_SECRET" "OIDC_CLIENT_ID" "OIDC_DISCOVERY_URL" "OIDC_REDIRECT_URI" "DYNACONF_STORAGE__POSTGRES_URL" "VAULT_TOKEN" }}
             {{- range $key, $value := .Values.env }}

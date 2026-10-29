@@ -48,8 +48,9 @@ env:
   # DYNACONF_OBSERVABILITY__PRICING_JSON: ""
   DYNACONF_OBSERVABILITY__LITELLM_LOCAL_MODEL_COST_MAP: "true"
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
-  # Sandbox tool-callback address. Leave unset: the chart points it at each pod's own IP,
-  # http://<pod IP>:7860, so callbacks reach the replica that ran the block. Set only to override.
+  # Sandbox tool-callback address. Leave unset: the chart derives it per release as
+  # http://<fullname>.<namespace>.svc.cluster.local:<service.port>, the host the sandbox egress
+  # policy allows. Set only to override.
   # The default is plain HTTP: block tokens, arguments and results are unencrypted and a token
   # stays valid while its block runs. Use it only on a trusted in-cluster network; elsewhere set
   # an HTTPS address here (e.g. through a TLS proxy that still reaches this pod).
