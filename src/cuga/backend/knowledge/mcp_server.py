@@ -139,7 +139,7 @@ def _identity_headers(ctx: Context | None) -> dict[str, str]:
 
     request_context = ctx.request_context if ctx is not None else None
     meta = getattr(request_context, "meta", None)
-    token = getattr(meta, RUN_TOKEN_META, None)
+    token = meta.get(RUN_TOKEN_META) if isinstance(meta, dict) else None
     return {RUN_TOKEN_HEADER: token} if isinstance(token, str) else {}
 
 

@@ -160,6 +160,9 @@ validators = [
     Validator("advanced_features.e2b_cleanup_frequency", default=0),
     Validator("advanced_features.enable_web_search", default=False),
     Validator("advanced_features.execution_output_max_length", default=35000),
+    Validator("advanced_features.reflection_context_fraction", default=0.70),
+    Validator("advanced_features.pre_execute_verify_context_fraction", default=0.70),
+    Validator("advanced_features.context_window_discovery", default=True),
     Validator("advanced_features.enable_shell_tool", default=False),
     Validator("advanced_features.enable_filesystem_tools", default=False),
     Validator("advanced_features.sandbox_mode", default="opensandbox"),
@@ -260,6 +263,7 @@ validators = [
         gt=0,
     ),
     Validator("supervisor.enabled", default=False),
+    Validator("supervisor.delegation_execution_timeout", default=300, is_type_of=int, gt=0),
     Validator("supervisor.registry_enabled", default=False),
     Validator("supervisor.sub_agent_memory_scope", default="conversation"),
 ]

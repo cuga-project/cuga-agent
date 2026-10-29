@@ -552,7 +552,7 @@ class MCPManager:
             # Local FastMCP server instance - call directly.
             # Handlers expect {"params": <args>, "headers": <headers>}.
             result = await server.call_tool(tool_name, {"params": args, "headers": headers})
-            # FastMCP 3.x returns ToolResult; callers expect a TextContent list.
+            # FastMCP returns ToolResult; callers expect a TextContent list.
             if hasattr(result, "content") and not isinstance(result, list):
                 return list(result.content or [])
             return result
@@ -780,8 +780,8 @@ class MCPManager:
                     {
                         "name": tool.name,
                         "description": tool.description,
-                        "inputSchema": tool.inputSchema if hasattr(tool, 'inputSchema') else {},
-                        "outputSchema": tool.outputSchema if hasattr(tool, 'outputSchema') else {},
+                        "inputSchema": tool.input_schema,
+                        "outputSchema": tool.output_schema,
                     }
                     for tool in tools
                     if not include_set or tool.name in include_set
@@ -808,9 +808,9 @@ class MCPManager:
                 # Keep a reverse map so _call_mcp_server_tool can send the original
                 # (possibly dashed) name to the MCP server, which only knows that name.
                 self.original_tool_name_by_sanitized[prefixed_name] = tool.name
-                input_schema = tool.inputSchema if hasattr(tool, 'inputSchema') else {}
+                input_schema = tool.input_schema
                 flattened_params = self._flatten_tool_parameters(input_schema)
-                output_schema = tool.outputSchema if hasattr(tool, 'outputSchema') else {}
+                output_schema = tool.output_schema
 
                 tool_dict = {
                     "type": "function",
@@ -1338,9 +1338,9 @@ class MCPManager:
             # Convert FunctionTool to MCP Tool format if needed
             if hasattr(tool, 'to_mcp_tool'):
                 mcp_tool = tool.to_mcp_tool()
-                input_schema = mcp_tool.inputSchema
-            elif hasattr(tool, 'inputSchema'):
-                input_schema = tool.inputSchema
+                input_schema = mcp_tool.input_schema
+            elif hasattr(tool, 'input_schema'):
+                input_schema = tool.input_schema
             else:
                 # Fallback for FunctionTool with parameters attribute
                 input_schema = getattr(tool, 'parameters', {})
