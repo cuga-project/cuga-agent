@@ -177,6 +177,27 @@ def _check_opensandbox_reachable() -> bool:
         return False
 
 
+def _configure_stream_encoding(stream) -> None:
+    """Prevent Unicode output from crashing on Windows consoles."""
+    reconfigure = getattr(stream, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        pass
+
+
+def _configure_console_encoding() -> None:
+    """Configure Windows standard streams for Unicode output."""
+    if os.name != "nt":
+        return
+    _configure_stream_encoding(sys.stdout)
+    _configure_stream_encoding(sys.stderr)
+
+
+_configure_console_encoding()
+
 console = Console()
 
 os.environ["DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED"] = "true"
