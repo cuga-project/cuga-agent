@@ -12,7 +12,7 @@ from .local import LocalExecutor, LocalSandboxExecutor
 from .e2b import E2BExecutor
 from .docker import DockerExecutor
 from .opensandbox import OpenSandboxExecutor
-from .execd import ExecdExecutor, connection as execd_connection
+from .execd import connection as execd_connection
 from .native import NativeSandboxExecutor
 from .base_executor import BaseExecutor, CodeExecutionTimeout, RemoteExecutor
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionPlan
@@ -102,6 +102,8 @@ class CodeExecutor:
     @classmethod
     def _get_execd_executor(cls) -> RemoteExecutor:
         if cls._execd_executor is None:
+            from .execd.execd_executor import ExecdExecutor
+
             cls._execd_executor = ExecdExecutor()
         return cls._execd_executor
 
