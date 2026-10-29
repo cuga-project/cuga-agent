@@ -14,8 +14,11 @@ Look ONLY at:
    states a quantity* — an id, a name, a path, an email, an address, a phone
    number, a URL, an amount, a date — that is already a fixed number or string
    without support in Conversation history, the Most recent execution output,
-   Variables, the Current Task, or reads inside THIS same block (e.g.
-   `hits = await search(...); await add(id=hits[0]["id"])` is grounded).
+   Variables, the Current Task, or calls earlier in THIS same block (e.g.
+   `hits = await search(...); await add(id=hits[0]["id"])` is grounded, and so is
+   an id from what a create call earlier in the block returned). Resolved
+   arguments mark such a value as `[name: from the result of <call> earlier in
+   this block]`; the marker says where the value came from, it is not another call.
    Support also includes a count that matches the relevant retrieved rows,
    even if the resulting number does not appear verbatim. Three retrieved
    people ground `quantity=3`; do not require the code to recompute a correct

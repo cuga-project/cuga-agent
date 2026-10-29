@@ -332,6 +332,13 @@ def test_alert_format_lets_verify_name_an_extra_field():
 
 
 @pytest.mark.unit
+def test_rule_one_explains_the_marker_for_a_value_bound_from_a_call():
+    rule_one = _verify_prompt_text().split("2. Contradictions", 1)[0]
+    assert "from the result of <call> earlier in this block" in rule_one
+    assert "not another call" in rule_one
+
+
+@pytest.mark.unit
 def test_extra_field_rule_requires_an_explicit_restriction():
     text = _verify_prompt_text()
     assert "explicitly restricts which" in text
