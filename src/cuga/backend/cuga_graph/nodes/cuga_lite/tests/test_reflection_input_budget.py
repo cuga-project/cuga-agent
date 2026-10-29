@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import execution_output_text
+
 pytestmark = pytest.mark.unit
 
 SANDBOX = "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node"
@@ -18,9 +20,9 @@ def _long_run() -> list:
     msgs = [HumanMessage(content="split the amazon prime bill")]
     for i in range(1, 8):
         msgs.append(AIMessage(content=f"step_{i}()"))
-        msgs.append(HumanMessage(content=f"Execution output step {i}: " + "x" * 6000))
+        msgs.append(HumanMessage(content=execution_output_text(f"step {i}: " + "x" * 6000)))
     msgs.append(AIMessage(content="lookup_bill()"))
-    msgs.append(HumanMessage(content="Execution output NEWEST: {'bill_id': 8216, 'amount': 46.67}"))
+    msgs.append(HumanMessage(content=execution_output_text("NEWEST: {'bill_id': 8216, 'amount': 46.67}")))
     return msgs
 
 

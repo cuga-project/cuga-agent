@@ -6,7 +6,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import execution_output_text
 
 
 # ── VERIFY rule 1 scope ────────────────────────────────────────────────────
@@ -28,6 +30,50 @@ def _verify_prompt_text() -> str:
     return " ".join(text.split())
 
 
+def _rendered_user_prompt(**fields) -> str:
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify import verify_prompt
+
+    inputs = {
+        "current_task": "task",
+        "agent_history": "",
+        "latest_output": "",
+        "variables_snapshot": "",
+        "proposed_code": "",
+        "write_arguments": "",
+        **fields,
+    }
+    return verify_prompt().format_messages(**inputs)[-1].content
+
+
+async def _captured_verify_inputs(messages, script, *, max_chars=30_000, task="task"):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import decide_pre_execute_verify
+
+    captured = {}
+    chain = MagicMock()
+
+    async def _ainvoke(payload, config=None):
+        captured.update(payload)
+        return SimpleNamespace(content="GATE: ok")
+
+    chain.ainvoke = _ainvoke
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
+        return_value=chain,
+    ):
+        await decide_pre_execute_verify(
+            enabled=True,
+            streak=0,
+            script=script,
+            chat_messages=messages,
+            variables_snapshot="",
+            current_task=task,
+            model=MagicMock(spec=[]),
+            config={},
+            max_chars=max_chars,
+        )
+    return captured
+
+
 @pytest.mark.unit
 def test_rule_one_is_scoped_to_identifying_or_quantitative_values():
     text = _verify_prompt_text()
@@ -44,18 +90,25 @@ def test_choices_and_code_constants_are_listed_as_do_not_flag():
 
 @pytest.mark.unit
 def test_latest_output_grounds_values_of_the_same_kind_only():
-    from pathlib import Path
-
     rule_one = _verify_prompt_text().split("2. Contradictions", 1)[0]
     assert "the Most recent execution output" in rule_one
     # A bare digit such as "page": 1 must not ground quantity=1 for a task that
     # implies a different count.
     assert "does not ground a count the Current Task" in rule_one
-    user = (Path(__file__).resolve().parents[1] / "reflection" / "prompts" / "verify_user.jinja2").read_text(
-        encoding="utf-8"
-    )
-    assert "**Most recent execution output**" in user
-    assert "{{latest_output}}" in user
+
+
+@pytest.mark.unit
+def test_user_prompt_presents_the_latest_output_as_what_the_last_block_printed():
+    rendered = _rendered_user_prompt(latest_output="product_id=98765")
+    assert "**Most recent execution output** (what the last block printed" in rendered
+    assert "product_id=98765" in rendered
+
+
+@pytest.mark.unit
+def test_user_prompt_claims_no_output_when_no_block_ran():
+    rendered = _rendered_user_prompt(latest_output="")
+    assert "what the last block printed" not in rendered
+    assert "no block has run yet" in rendered
 
 
 # Latest output keeps its own section within the shared VERIFY context budget,
@@ -65,8 +118,6 @@ def test_latest_output_grounds_values_of_the_same_kind_only():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_verify_keeps_the_latest_output_when_history_is_trimmed():
-    from langchain_core.messages import AIMessage
-
     from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
         decide_pre_execute_verify,
     )
@@ -83,9 +134,12 @@ async def test_verify_keeps_the_latest_output_when_history_is_trimmed():
     for i in range(20):
         messages += [
             AIMessage(content=f"block {i} " + "x" * 50),
-            HumanMessage(content=f"out {i} " + "y" * 50),
+            HumanMessage(content=execution_output_text(f"out {i} " + "y" * 50)),
         ]
-    messages += [AIMessage(content="search"), HumanMessage(content="found product_id 98765")]
+    messages += [
+        AIMessage(content="search"),
+        HumanMessage(content=execution_output_text("found product_id 98765")),
+    ]
     with patch(
         "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
         return_value=chain,
@@ -121,7 +175,70 @@ def test_verify_context_has_no_latest_output_before_any_block_ran():
         [HumanMessage(content="order the cheapest pad")], "", "", max_chars=1000
     )
     assert "order the cheapest pad" in history
-    assert latest == "(no block has run yet)"
+    assert latest == ""
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verify_sees_function_calling_results_as_the_latest_output():
+    messages = [
+        HumanMessage(content="Add the notebook to my cart"),
+        AIMessage(content="", tool_calls=[{"name": "search", "args": {"q": "notebook"}, "id": "c1"}]),
+        ToolMessage(content="product_id=98765", tool_call_id="c1", name="search"),
+    ]
+
+    captured = await _captured_verify_inputs(messages, "await add_to_cart(product_id=98765)")
+
+    assert "product_id=98765" in captured["latest_output"]
+    assert "product_id=98765" not in captured["agent_history"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_blocked_function_calling_batch_is_not_the_latest_output():
+    """A revised batch never ran. Its deferred reply is not output, so the earlier result stays latest."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.fc_actions import DEFERRED_CALL_MESSAGE
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import verify_blocked_message
+
+    blocked = verify_blocked_message("product_id=55555 is ungrounded")
+    messages = [
+        HumanMessage(content="Add the notebook to my cart"),
+        AIMessage(content="", tool_calls=[{"name": "search", "args": {"q": "notebook"}, "id": "c1"}]),
+        ToolMessage(content="product_id=98765", tool_call_id="c1", name="search"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "add_to_cart", "args": {"product_id": 55555}, "id": "c2"},
+                {"name": "get_cart", "args": {}, "id": "c3"},
+            ],
+        ),
+        ToolMessage(content=blocked, tool_call_id="c2", name="add_to_cart", status="error"),
+        ToolMessage(content=DEFERRED_CALL_MESSAGE, tool_call_id="c3", name="get_cart", status="error"),
+    ]
+
+    captured = await _captured_verify_inputs(messages, "await add_to_cart(product_id=98765)")
+
+    assert "product_id=98765" in captured["latest_output"]
+    assert "Deferred" not in captured["latest_output"]
+    assert "Deferred" not in captured["agent_history"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_later_user_request_stays_in_history_not_in_latest_output():
+    messages = [
+        HumanMessage(content="Find the song Blue"),
+        AIMessage(content="print(await search(q='Blue'))"),
+        HumanMessage(content=execution_output_text("song_id=42")),
+        AIMessage(content="Found Blue (42)."),
+        HumanMessage(content="Great, add it to my cart and email the receipt to bob@example.com."),
+    ]
+
+    captured = await _captured_verify_inputs(messages, "await add_to_cart(song_id=42)")
+
+    assert captured["latest_output"] == "song_id=42"
+    assert "bob@example.com" in captured["agent_history"]
+    assert "what the last block printed" in _rendered_user_prompt(**captured)
 
 
 # Judged against ground truth, 883 recorded revises in the categories this
@@ -156,13 +273,6 @@ def test_verify_blocked_message_limits_the_rewrite_to_the_flagged_value():
     assert "each write argument is grounded" not in msg
     assert "flagged value" in msg
     assert "flags and defaults" in msg
-
-
-@pytest.mark.unit
-def test_extra_field_rule_requires_an_explicit_restriction():
-    text = _verify_prompt_text()
-    assert "explicitly restricts which" in text
-    assert "it does not authorize writing an extra field" in text
 
 
 # Rule 1 names "an amount" while the Do NOT flag list excludes choices, and

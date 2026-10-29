@@ -8,6 +8,7 @@ import asyncio
 import json
 from typing import Any, Callable, Optional
 
+from langchain_core.messages import AIMessage, ToolMessage
 from loguru import logger
 
 from cuga.backend.activity_tracker.tracker import Step
@@ -72,6 +73,35 @@ def verify_timeout_seconds() -> float:
         )
         return VERIFY_LLM_TIMEOUT_SECONDS
     return seconds
+
+
+def _is_blocked_reply(message: Any) -> bool:
+    content = getattr(message, "content", None)
+    return isinstance(content, str) and content.startswith(VERIFY_BLOCKED_PREFIX)
+
+
+def _without_blocked_replies(messages: list) -> list:
+    """Drop the replies to blocks VERIFY stopped; such a block never ran.
+
+    A stopped function-calling batch also loses its pre-decided replies (a deferred
+    or unknown call), which do not carry the blocked prefix: none of them is output.
+    """
+    blocked_ids = {m.tool_call_id for m in messages if isinstance(m, ToolMessage) and _is_blocked_reply(m)}
+    batch_ids: set = set()
+    if blocked_ids:
+        for m in messages:
+            ids = (
+                {c.get("id") for c in getattr(m, "tool_calls", None) or []}
+                if isinstance(m, AIMessage)
+                else set()
+            )
+            if ids & blocked_ids:
+                batch_ids |= ids
+    return [
+        m
+        for m in messages
+        if not _is_blocked_reply(m) and not (isinstance(m, ToolMessage) and m.tool_call_id in batch_ids)
+    ]
 
 
 def log_pre_execute_verify(tracker: Any, decision: VerifyDecision) -> bool:
@@ -146,7 +176,8 @@ async def decide_pre_execute_verify(
                 {
                     "current_task": task_text,
                     "agent_history": "",
-                    "latest_output": "",
+                    # Non-empty, so the longer with-output header is the one counted.
+                    "latest_output": " ",
                     "variables_snapshot": "",
                     "proposed_code": "",
                     "write_arguments": write_arguments,
@@ -159,14 +190,7 @@ async def decide_pre_execute_verify(
                 context_fraction=context_fraction_setting("pre_execute_verify_context_fraction"),
             )
         history, latest_output, variables, proposed = prepare_verify_context(
-            [
-                m
-                for m in (chat_messages or [])
-                if not (
-                    isinstance(getattr(m, "content", None), str)
-                    and m.content.startswith(VERIFY_BLOCKED_PREFIX)
-                )
-            ],
+            _without_blocked_replies(list(chat_messages or [])),
             variables_snapshot,
             script or "",
             max_chars=max_chars,

@@ -2,8 +2,9 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import execution_output_text
 from cuga.backend.cuga_graph.utils.context_management_utils import (
     DEFAULT_CONTEXT_FRACTION,
     context_fraction_setting,
@@ -12,6 +13,7 @@ from cuga.backend.cuga_graph.utils.context_management_utils import (
     model_input_budget_chars,
     prepare_reflection_context,
     prepare_verify_context,
+    split_latest_execution_output,
     truncate_head_tail,
     truncate_text_for_context,
     truncate_variables_summary,
@@ -25,9 +27,9 @@ def _long_run(steps: int = 7, output_chars: int = 6000) -> list:
     msgs = [HumanMessage(content="Send $59 to Jose via Venmo")]
     for i in range(1, steps + 1):
         msgs.append(AIMessage(content=f"step_{i}()"))
-        msgs.append(HumanMessage(content=f"Execution output step {i}: " + "x" * output_chars))
+        msgs.append(HumanMessage(content=execution_output_text(f"step {i}: " + "x" * output_chars)))
     msgs.append(AIMessage(content="send_money()"))
-    msgs.append(HumanMessage(content="Execution output FINAL: {'message': 'Sent money.'}"))
+    msgs.append(HumanMessage(content=execution_output_text("FINAL: {'message': 'Sent money.'}")))
     return msgs
 
 
@@ -110,7 +112,7 @@ def test_history_keep_recent_keeps_task_and_newest_messages():
 def test_history_keep_recent_counts_omitted_messages():
     msgs = _long_run()
     history = history_text_keep_recent(msgs, 30_000)
-    kept_steps = sum(1 for i in range(1, 8) if f"Execution output step {i}:" in history)
+    kept_steps = sum(1 for i in range(1, 8) if f"step {i}: x" in history)
     omitted = 2 * (7 - kept_steps)  # each dropped step is a code and an output message
     assert f"[{omitted} earlier messages omitted to fit the context budget]" in history
 
@@ -363,7 +365,7 @@ def test_prepare_verify_context_keeps_newest_history_and_leading_variables():
 
     assert "FINAL" in latest
     assert "FINAL" not in history
-    assert "Execution output step 7:" in history
+    assert "step 7: x" in history
     assert "## var_1\n" in variables and "## var_8" not in variables
     assert code == "await pay(amount=59)"
     assert len(history) + len(latest) + len(variables) + len(code) <= 10_000
@@ -372,7 +374,7 @@ def test_prepare_verify_context_keeps_newest_history_and_leading_variables():
 @pytest.mark.parametrize("budget", [0, 1, 10, 100, 250, 1_000, 10_000])
 def test_verify_latest_output_shares_budget_and_keeps_result_tail(budget):
     messages = _long_run()
-    messages[-1] = HumanMessage(content="START " + "r" * 20_000 + " RESULT-AT-END")
+    messages[-1] = HumanMessage(content=execution_output_text("START " + "r" * 20_000 + " RESULT-AT-END"))
     snapshot = "# Variables Summary\n\n## rows\n- Value Preview: " + "v" * 20_000
     code = "# START\n" + "# c\n" * 5_000 + "await pay(amount=59)"
 
@@ -384,3 +386,67 @@ def test_verify_latest_output_shares_budget_and_keeps_result_tail(budget):
         assert latest.endswith("RESULT-AT-END")
         assert "RESULT-AT-END" not in history
         assert "chars of Most recent execution output omitted" in latest
+
+
+# ── split_latest_execution_output: which message is the latest output ─────────
+
+
+def test_split_takes_the_latest_codeact_output_not_a_later_user_request():
+    """On a later thread turn the new request must stay in history, not pose as output."""
+    messages = [
+        HumanMessage(content="Find the song Blue"),
+        AIMessage(content="print(await search(q='Blue'))"),
+        HumanMessage(content=execution_output_text("song_id=42")),
+        AIMessage(content="Found Blue (42)."),
+        HumanMessage(content="Great, add it to my cart and email the receipt to bob@example.com."),
+    ]
+
+    earlier, latest = split_latest_execution_output(messages)
+
+    assert latest == "song_id=42"
+    assert earlier == messages[:2] + messages[3:]
+
+
+def test_split_keeps_a_retry_correction_in_history():
+    correction = HumanMessage(content="Your previous reply was empty. Reply with code or an answer.")
+    messages = [
+        HumanMessage(content="task"),
+        AIMessage(content="print(1)"),
+        HumanMessage(content=execution_output_text("id=7")),
+        AIMessage(content=""),
+        correction,
+    ]
+
+    earlier, latest = split_latest_execution_output(messages)
+
+    assert latest == "id=7"
+    assert earlier[-1] is correction
+
+
+def test_split_takes_the_trailing_tool_message_group_in_function_calling_mode():
+    messages = [
+        HumanMessage(content="Add the notebook to my cart"),
+        AIMessage(content="", tool_calls=[{"name": "search", "args": {"q": "notebook"}, "id": "c1"}]),
+        ToolMessage(content="old result", tool_call_id="c1", name="search"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "search", "args": {"q": "notebook"}, "id": "c2"},
+                {"name": "get_cart", "args": {}, "id": "c3"},
+            ],
+        ),
+        ToolMessage(content="product_id=98765", tool_call_id="c2", name="search"),
+        ToolMessage(content="404 no cart", tool_call_id="c3", name="get_cart", status="error"),
+    ]
+
+    earlier, latest = split_latest_execution_output(messages)
+
+    assert "product_id=98765" in latest and "search" in latest
+    assert "404 no cart" in latest and "get_cart" in latest
+    assert "old result" not in latest
+    assert earlier == messages[:4]
+
+
+def test_split_finds_no_output_before_any_block_ran():
+    messages = [HumanMessage(content="task"), AIMessage(content="thinking"), HumanMessage(content="go on")]
+    assert split_latest_execution_output(messages) == (messages, "")

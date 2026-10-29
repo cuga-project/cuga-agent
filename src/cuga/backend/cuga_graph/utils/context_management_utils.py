@@ -10,9 +10,10 @@ import re
 from collections.abc import Mapping
 from typing import Any, List, Optional
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from loguru import logger
 
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import EXECUTION_OUTPUT_PREFIX
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.utils.token_counter import TokenCounter, resolve_model_identifier
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
@@ -80,21 +81,39 @@ def messages_to_history_text(messages: List[BaseMessage]) -> str:
     return "\n".join(parts) if parts else "No previous conversation history"
 
 
+def _tool_result_line(msg: ToolMessage) -> str:
+    status = " (error)" if getattr(msg, "status", None) == "error" else ""
+    return f"{msg.name or 'tool'}{status}: {msg.content}"
+
+
 def split_latest_execution_output(
     messages: List[BaseMessage],
 ) -> tuple[List[BaseMessage], str]:
-    """Separate the newest user turn that follows an assistant turn from the rest.
+    """Separate the output of the last executed block from the rest of the history.
 
-    In CUGA Lite that turn is the output of the last executed block. Give the
-    observation the proposed block was written against its own context section.
+    CodeAct feeds a block's output back as a user message that starts with
+    ``EXECUTION_OUTPUT_PREFIX``. Function-calling mode answers each native call with
+    a ``ToolMessage``, so its output is the newest run of ``ToolMessage``s. Any other
+    user message (a new request on a later thread turn, a retry correction) is not
+    output and stays in history.
     """
-    first_ai = next((i for i, m in enumerate(messages) if isinstance(m, AIMessage)), None)
-    if first_ai is None:
-        return list(messages), ""
-    for i in range(len(messages) - 1, first_ai, -1):
-        if isinstance(messages[i], HumanMessage):
-            return list(messages[:i]) + list(messages[i + 1 :]), str(messages[i].content)
-    return list(messages), ""
+    msgs = list(messages)
+    for end in range(len(msgs) - 1, -1, -1):
+        msg = msgs[end]
+        if isinstance(msg, ToolMessage):
+            start = end
+            while start > 0 and isinstance(msgs[start - 1], ToolMessage):
+                start -= 1
+            output = "\n".join(_tool_result_line(m) for m in msgs[start : end + 1])
+            return msgs[:start] + msgs[end + 1 :], output
+        content = getattr(msg, "content", None)
+        if (
+            isinstance(msg, HumanMessage)
+            and isinstance(content, str)
+            and content.startswith(EXECUTION_OUTPUT_PREFIX)
+        ):
+            return msgs[:end] + msgs[end + 1 :], content[len(EXECUTION_OUTPUT_PREFIX) :].lstrip("\n")
+    return msgs, ""
 
 
 def history_text_keep_recent(messages: List[BaseMessage], max_chars: int) -> str:
@@ -288,16 +307,16 @@ def prepare_verify_context(
 
     The code takes at most ``VERIFY_CODE_SHARE`` of the budget and the variables at most
     ``VERIFY_VARIABLES_SHARE``. Latest output has its own ``VERIFY_OUTPUT_SHARE``;
-    history gets the rest and keeps its newest messages.
+    history gets the rest and keeps its newest messages. The latest output is ``""``
+    when no block has run.
     """
     earlier, latest_output = split_latest_execution_output(list(chat_messages))
     raw_code = proposed_code or ""
     raw_variables = variables_snapshot or "(no variables)"
-    raw_latest = latest_output or "(no block has run yet)"
     code = truncate_head_tail(raw_code, int(max_chars * VERIFY_CODE_SHARE), label="Proposed code")
     variables = truncate_variables_summary(raw_variables, int(max_chars * VERIFY_VARIABLES_SHARE))
     latest = truncate_head_tail(
-        raw_latest, int(max_chars * VERIFY_OUTPUT_SHARE), label="Most recent execution output"
+        latest_output, int(max_chars * VERIFY_OUTPUT_SHARE), label="Most recent execution output"
     )
     history = history_text_keep_recent(earlier, max(0, max_chars - len(code) - len(variables) - len(latest)))
     _log_input_budget(
@@ -305,7 +324,7 @@ def prepare_verify_context(
         max_chars,
         {
             "history": len(messages_to_history_text(earlier)),
-            "latest_output": len(raw_latest.strip()),
+            "latest_output": len(latest_output.strip()),
             "variables": len(raw_variables.strip()),
             "code": len(raw_code.strip()),
         },
