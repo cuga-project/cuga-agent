@@ -474,6 +474,12 @@ def setup_demo_manage_config(
     When filesystem is True, enables runtime filesystem tools (enable_shell_tool=True).
     """
     _normalize_demo_sandbox_mode()
+    if demo_type == "demo":
+        from cuga.backend.server.demo_setup_utils.registry_tools import custom_registry_tools
+
+        registry_tools = custom_registry_tools()
+        if registry_tools is not None:
+            tools = registry_tools
 
     from cuga.backend.server.config_store import (
         reset_config_db,

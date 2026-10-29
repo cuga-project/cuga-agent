@@ -28,6 +28,20 @@ The server will start on `http://127.0.0.1:8001` by default.
 
 The registry supports multiple service types through YAML configuration files. By default, it uses `config/mcp_servers.yaml`.
 
+### Saved agent configuration and legacy startup
+
+`MCP_SERVERS_FILE` selects the applications offered by the registry. A saved agent's
+`tools` list limits which of those applications that agent can use, including when
+the registry runs from YAML. An explicit empty list enables no registry apps.
+Without a saved `tools` field, legacy startup uses the available registry apps.
+
+`uv run demo` starts the server with existing published/draft configuration; it
+does not seed or reset that configuration. If the saved agent enables `crm` but
+the registry offers only `digital_sales`, the agent has no matching registry apps
+and startup logs `None of the requested apps found`. Check both configurations.
+`cuga start demo` seeds the demo for the selected registry, subject to
+`storage.preserve_configs_on_startup`; existing configurations can be preserved.
+
 ### Configuration Structure
 
 ```yaml

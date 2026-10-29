@@ -14,7 +14,7 @@ from .docker import DockerExecutor
 from .opensandbox import OpenSandboxExecutor
 from .execd import ExecdExecutor, connection as execd_connection
 from .native import NativeSandboxExecutor
-from .base_executor import BaseExecutor, RemoteExecutor
+from .base_executor import BaseExecutor, CodeExecutionTimeout, RemoteExecutor
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionPlan
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker, counted_tool_call
 
@@ -123,6 +123,7 @@ class CodeExecutor:
         plan: Optional[ExecutionPlan] = None,
         variable_manager: Optional[Any] = None,
         keep_listing_vars: bool = False,
+        execution_timeout: Optional[float] = None,
     ) -> tuple[str, dict[str, Any]]:
         """Execute code with async tools available in the local namespace.
 
@@ -141,6 +142,8 @@ class CodeExecutor:
             keep_listing_vars: Keep find_tools listing markdown among the block's
                 variables (function-calling reads the reply from there). Default
                 strips it, as before.
+            execution_timeout: Optional local deadline for delegation blocks,
+                independent of the child agent's Python block deadline.
 
         Returns:
             Tuple of (execution result, new variables dictionary)
@@ -184,6 +187,7 @@ class CodeExecutor:
             variable_manager=variable_manager,
             skills_on=skills_on,
             keep_listing_vars=keep_listing_vars,
+            execution_timeout=execution_timeout,
         )
 
     @classmethod
@@ -201,6 +205,7 @@ class CodeExecutor:
         variable_manager: Optional[Any] = None,
         skills_on: bool,
         keep_listing_vars: bool = False,
+        execution_timeout: Optional[float] = None,
     ) -> tuple[str, dict[str, Any]]:
         result = ""
 
@@ -236,6 +241,8 @@ class CodeExecutor:
             f"code_lines={len(code_lines)}"
             + (" (forced local: find_tools/load_skill)" if forced_local else ""),
         )
+        if execution_timeout is not None and mode != 'local':
+            raise ValueError("Delegation execution_timeout requires mode='local'")
 
         # opensandbox: Python runs locally with run_command in context (forwarded to sandbox)
         # Security checks must run for every execution mode, including E2B turns.
@@ -287,10 +294,17 @@ class CodeExecutor:
                 result = await executor.execute(
                     wrapped_code=wrapped_code,
                     context_locals=_locals,
-                    timeout=settings.advanced_features.sandbox_execution_timeout,
+                    timeout=(
+                        execution_timeout
+                        if execution_timeout is not None
+                        else settings.advanced_features.sandbox_execution_timeout
+                    ),
+                    **({"raise_on_timeout": True} if execution_timeout is not None else {}),
                 )
 
         except Exception as e:
+            if isinstance(e, CodeExecutionTimeout):
+                raise
             executor = cls._get_local_executor()
             available_tools = [
                 name for name, value in _locals.items() if callable(value) and not name.startswith('_')
