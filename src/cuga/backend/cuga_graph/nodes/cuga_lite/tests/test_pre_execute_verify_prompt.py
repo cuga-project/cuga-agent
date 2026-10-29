@@ -19,11 +19,13 @@ from langchain_core.messages import HumanMessage
 
 
 def _verify_prompt_text() -> str:
+    """The system prompt with whitespace collapsed, so a re-wrapped line is not a failure."""
     from pathlib import Path
 
-    return (
+    text = (
         Path(__file__).resolve().parents[1] / "reflection" / "prompts" / "verify_system.jinja2"
     ).read_text(encoding="utf-8")
+    return " ".join(text.split())
 
 
 @pytest.mark.unit
@@ -160,7 +162,7 @@ def test_verify_blocked_message_limits_the_rewrite_to_the_flagged_value():
 def test_extra_field_rule_requires_an_explicit_restriction():
     text = _verify_prompt_text()
     assert "explicitly restricts which" in text
-    assert "it does not authorize\n   writing an extra field" in text
+    assert "it does not authorize writing an extra field" in text
 
 
 # Rule 1 names "an amount" while the Do NOT flag list excludes choices, and
