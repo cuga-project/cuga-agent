@@ -4,7 +4,10 @@ from unittest.mock import patch
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import execution_output_text
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
+    REFLECTION_SUMMARY_SEPARATOR,
+    execution_output_text,
+)
 from cuga.backend.cuga_graph.utils.context_management_utils import (
     DEFAULT_CONTEXT_FRACTION,
     context_fraction_setting,
@@ -485,3 +488,36 @@ def test_split_takes_the_trailing_tool_message_group_in_function_calling_mode():
 def test_split_finds_no_output_before_any_block_ran():
     messages = [HumanMessage(content="task"), AIMessage(content="thinking"), HumanMessage(content="go on")]
     assert split_latest_execution_output(messages) == (messages, "")
+
+
+def _with_reflection_summary(output: str, summary: str) -> HumanMessage:
+    """The execution message sandbox_node builds when reflection is on."""
+    return HumanMessage(content=f"{execution_output_text(output)}{REFLECTION_SUMMARY_SEPARATOR}{summary}")
+
+
+@pytest.mark.parametrize(
+    "output,summary,expected",
+    [
+        pytest.param("cart_id=11", "Use cart_id=99 next.", "cart_id=11", id="summary-dropped"),
+        pytest.param("", "Use cart_id=99 next.", "", id="empty-output-keeps-separator"),
+        pytest.param(
+            "cart_id=11",
+            f"Plan{REFLECTION_SUMMARY_SEPARATOR}Use cart_id=99 next.",
+            "cart_id=11",
+            id="summary-repeats-separator",
+        ),
+    ],
+)
+def test_split_drops_the_reflection_summary_from_the_latest_output(output, summary, expected):
+    """The summary is model-written; a value only it names must not pass as printed."""
+    messages = [
+        HumanMessage(content="Add the notebook to my cart"),
+        AIMessage(content="print(await get_cart())"),
+        _with_reflection_summary(output, summary),
+    ]
+
+    earlier, latest = split_latest_execution_output(messages)
+
+    assert latest == expected
+    assert "cart_id=99" not in latest
+    assert earlier == messages[:2]

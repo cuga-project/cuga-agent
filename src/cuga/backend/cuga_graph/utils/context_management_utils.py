@@ -13,7 +13,10 @@ from typing import Any, List, Optional
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from loguru import logger
 
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import EXECUTION_OUTPUT_PREFIX
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
+    EXECUTION_OUTPUT_PREFIX,
+    REFLECTION_SUMMARY_SEPARATOR,
+)
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.utils.token_counter import TokenCounter, resolve_model_identifier
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
@@ -97,7 +100,8 @@ def split_latest_execution_output(
     ``EXECUTION_OUTPUT_PREFIX``. Function-calling mode answers each native call with
     a ``ToolMessage``, so its output is the newest run of ``ToolMessage``s. Any other
     user message (a new request on a later thread turn, a retry correction) is not
-    output and stays in history.
+    output and stays in history. A reflection summary appended to the CodeAct message
+    is model-written, not printed, so it is dropped.
     """
     msgs = list(messages)
     for end in range(len(msgs) - 1, -1, -1):
@@ -114,7 +118,11 @@ def split_latest_execution_output(
             and isinstance(content, str)
             and content.startswith(EXECUTION_OUTPUT_PREFIX)
         ):
-            return msgs[:end] + msgs[end + 1 :], content[len(EXECUTION_OUTPUT_PREFIX) :].lstrip("\n")
+            # Split at the first separator, before stripping newlines (an empty output
+            # would otherwise eat the separator's own), so text the summary repeats
+            # cannot pass as printed output.
+            printed = content[len(EXECUTION_OUTPUT_PREFIX) :].split(REFLECTION_SUMMARY_SEPARATOR, 1)[0]
+            return msgs[:end] + msgs[end + 1 :], printed.lstrip("\n")
     return msgs, ""
 
 

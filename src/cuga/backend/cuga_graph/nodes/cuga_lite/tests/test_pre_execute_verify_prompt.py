@@ -8,7 +8,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import execution_output_text
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
+    REFLECTION_SUMMARY_SEPARATOR,
+    execution_output_text,
+)
 
 
 # ── VERIFY rule 1 scope ────────────────────────────────────────────────────
@@ -239,6 +242,26 @@ async def test_a_later_user_request_stays_in_history_not_in_latest_output():
     assert captured["latest_output"] == "song_id=42"
     assert "bob@example.com" in captured["agent_history"]
     assert "what the last block printed" in _rendered_user_prompt(**captured)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_reflection_summary_is_not_shown_as_what_the_last_block_printed():
+    """With reflection on, sandbox_node appends a model-written summary to the output."""
+    messages = [
+        HumanMessage(content="Add the notebook to my cart"),
+        AIMessage(content="print(await get_cart())"),
+        HumanMessage(
+            content=execution_output_text("cart_id=11")
+            + REFLECTION_SUMMARY_SEPARATOR
+            + "The cart is cart_id=99; add the notebook to it."
+        ),
+    ]
+
+    captured = await _captured_verify_inputs(messages, "await add_to_cart(cart_id=99, product_id=98765)")
+
+    assert captured["latest_output"] == "cart_id=11"
+    assert "cart_id=99" not in captured["agent_history"]
 
 
 # Judged against ground truth, 883 recorded revises in the categories this

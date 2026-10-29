@@ -16,6 +16,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import extrac
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     append_chat_messages_with_step_limit as core_append_with_step_limit,
     create_error_command as core_create_error_command,
+    REFLECTION_SUMMARY_SEPARATOR,
     execution_output_text,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionRouter
@@ -407,7 +408,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             execution_message_content = execution_output_text(output)
             if reflection_output:
                 execution_message_content = (
-                    f"{execution_message_content}\n\n---\n\nSummary:\n{reflection_output}"
+                    f"{execution_message_content}{REFLECTION_SUMMARY_SEPARATOR}{reflection_output}"
                 )
 
             if fc_plan:
