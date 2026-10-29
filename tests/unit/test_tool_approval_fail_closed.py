@@ -13,6 +13,7 @@ tests cover states a full run does not reach on its own, and the supervisor.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -605,6 +606,7 @@ async def test_the_supervisor_pauses_the_same_way_when_the_check_fails():
     assert command.goto == END
     failed_id, failed_message = _failed_check()
     assert update["supervisor_metadata"]["policy_id"] == failed_id
+    assert update["supervisor_metadata"]["policy_confidence"] == 0.0, "an outage is not a confident match"
     assert update["sender"] == adapter.sender_name and update["hitl_action"] is not None
     assert update["supervisor_chat_messages"][-1].content == _CODE, (
         "the assistant turn is kept with the pause"
@@ -612,19 +614,78 @@ async def test_the_supervisor_pauses_the_same_way_when_the_check_fails():
     assert failed_message in update["final_answer"]
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("show_code_preview", [True, False])
-async def test_a_matched_policy_pauses_exactly_as_before(show_code_preview):
-    """The matched pause and the failed-check pause share one builder; the matched one must not change."""
+def _matching_policy_agent(**policy_overrides):
+    """A policy agent whose store holds the deletion approval policy."""
     from cuga.backend.cuga_graph.policy.agent import PolicyAgent
 
     policy_agent = PolicyAgent.__new__(PolicyAgent)
     policy_agent.storage = SimpleNamespace(
-        list_policies=AsyncMock(return_value=[_approval_policy(show_code_preview=show_code_preview)])
+        list_policies=AsyncMock(return_value=[_approval_policy(**policy_overrides)])
     )
+    return policy_agent
+
+
+@pytest.mark.asyncio
+async def test_an_error_pausing_for_a_matched_policy_is_not_reported_as_a_failed_check(monkeypatch):
+    """Only the check falls back to the failed-check pause; the matched pause is not built twice."""
+    real_interrupt = ToolApprovalHandler._create_approval_interrupt
+    attempts = []
+
+    def fails_once(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("cannot build the approval pause")
+        return real_interrupt(*args, **kwargs)
+
+    monkeypatch.setattr(ToolApprovalHandler, "_create_approval_interrupt", staticmethod(fails_once))
+    state = _lite_state()
+
+    with pytest.raises(RuntimeError, match="cannot build the approval pause"):
+        await _check(_policy_system(agent=_matching_policy_agent()), state=state)
+
+    decisions = [(d["policy_id"], d["outcome"]) for d in state.cuga_lite_metadata["policy_decisions"]]
+    assert decisions == [("approve-deletions", "approval_required")]
+    assert state.cuga_lite_metadata["policy_name"] == "Approve deletions"
+
+
+@pytest.mark.asyncio
+async def test_the_approval_check_sets_the_policy_system_up_like_the_other_checks():
+    """One set-up step for every policy check: a system with an agent handed in is still marked set up."""
+    policy_system = _policy_system(agent=_matching_policy_agent())
+
+    await _check(policy_system)
+
+    assert policy_system._initialized, "the approval check skipped the shared set-up step"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_checks_set_the_policy_system_up_once(monkeypatch):
+    storage = await _store()
+    setups = []
+
+    async def slow_setup(*args, **kwargs):
+        setups.append(1)
+        await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(storage, "_embedding_initialized", False)
+    monkeypatch.setattr(storage, "_initialize_embedding_function", slow_setup)
+    policy_system = _policy_system(storage=storage)
+
+    results = await asyncio.gather(_check(policy_system), _check(policy_system))
+
+    assert setups == [1], "two concurrent checks both ran the set-up"
+    assert results == [None, None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("show_code_preview", [True, False])
+async def test_a_matched_policy_pauses_exactly_as_before(show_code_preview):
+    """The matched pause and the failed-check pause share one builder; the matched one must not change."""
     adapter = _lite_adapter()
 
-    command = await _check(_policy_system(agent=policy_agent), adapter)
+    command = await _check(
+        _policy_system(agent=_matching_policy_agent(show_code_preview=show_code_preview)), adapter
+    )
 
     update = command.update
     metadata = update["cuga_lite_metadata"]

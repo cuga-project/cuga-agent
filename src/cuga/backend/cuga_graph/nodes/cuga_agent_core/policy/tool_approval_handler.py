@@ -146,43 +146,13 @@ class ToolApprovalHandler:
 
             policy_system = PolicyConfigurable.from_config(config or {})
             logger.debug(f"Got policy system: {policy_system}")
-            if policy_system.agent is None:
-                # Not set up yet in this run: set it up as the other policy checks
-                # do, so stored approval policies are checked rather than skipped.
-                await policy_system.initialize()
+            await policy_system.ensure_initialized()
 
             context = PolicyConfigurable.create_context_from_state(state, config or {})
             logger.debug(f"Created context with user_input: '{context.user_input}'")
 
             policy_match = await policy_system.agent.check_tool_approval_for_code(code, context)
             logger.debug(f"Policy match result: {policy_match}")
-
-            if not policy_match or not policy_match.matched:
-                logger.debug("No ToolApproval policy matched the generated code")
-                return None
-
-            policy = policy_match.policy
-            logger.warning(f"Tool approval required by policy '{policy.name}' - routing to HITL")
-
-            return ToolApprovalHandler._pause_for_approval(
-                adapter,
-                state,
-                code,
-                content,
-                {
-                    "policy_id": policy.id,
-                    "policy_name": policy.name,
-                    "policy_confidence": policy_match.confidence,
-                    "policy_reasoning": policy_match.reasoning,
-                    "required_tools": policy.required_tools,
-                    "matched_tools": policy_match.trigger_details.get("matched_tools", []),
-                    "required_apps": policy.required_apps,
-                    "approval_message": policy.approval_message
-                    or "This tool requires your approval before execution.",
-                    "show_code_preview": policy.show_code_preview,
-                },
-                ai_message=ai_message,
-            )
 
         except Exception as e:
             logger.error(
@@ -197,7 +167,7 @@ class ToolApprovalHandler:
                 {
                     "policy_id": APPROVAL_CHECK_FAILED_POLICY_ID,
                     "policy_name": "Tool approval check failed",
-                    "policy_confidence": 1.0,
+                    "policy_confidence": 0.0,
                     "policy_reasoning": "The tool-approval policies could not be checked.",
                     "required_tools": [],
                     "matched_tools": [],
@@ -207,6 +177,33 @@ class ToolApprovalHandler:
                 },
                 ai_message=ai_message,
             )
+
+        if not policy_match or not policy_match.matched:
+            logger.debug("No ToolApproval policy matched the generated code")
+            return None
+
+        policy = policy_match.policy
+        logger.warning(f"Tool approval required by policy '{policy.name}' - routing to HITL")
+
+        return ToolApprovalHandler._pause_for_approval(
+            adapter,
+            state,
+            code,
+            content,
+            {
+                "policy_id": policy.id,
+                "policy_name": policy.name,
+                "policy_confidence": policy_match.confidence,
+                "policy_reasoning": policy_match.reasoning,
+                "required_tools": policy.required_tools,
+                "matched_tools": policy_match.trigger_details.get("matched_tools", []),
+                "required_apps": policy.required_apps,
+                "approval_message": policy.approval_message
+                or "This tool requires your approval before execution.",
+                "show_code_preview": policy.show_code_preview,
+            },
+            ai_message=ai_message,
+        )
 
     @staticmethod
     def _pause_for_approval(

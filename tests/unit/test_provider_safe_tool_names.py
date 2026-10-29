@@ -399,8 +399,11 @@ async def test_approval_policy_on_the_real_name_stops_a_call_made_under_the_alia
         chat_messages=[HumanMessage(content="Reconcile.")], step_count=0, cuga_lite_metadata={}
     )
 
+    # A policy system that is already set up.
+    policy_system = SimpleNamespace(agent=policy_agent, ensure_initialized=AsyncMock())
+
     with (
-        patch.object(PolicyConfigurable, "from_config", return_value=SimpleNamespace(agent=policy_agent)),
+        patch.object(PolicyConfigurable, "from_config", return_value=policy_system),
         patch.object(
             PolicyConfigurable,
             "create_context_from_state",
