@@ -231,6 +231,8 @@ With `sandbox_mode = "execd"` (or the Manage → Code sandbox toggle), generated
   workspace, and cannot list `/sandbox` or `/tmp`.
 - Code cannot reach the sandbox internals: execd on loopback returns 401, Jupyter
   returns 403, and `EXECD_ACCESS_TOKEN` is not in the kernel environment.
+- Code cannot read another kernel's connection file (its ports and HMAC key), so it
+  cannot attach to another thread's kernel. A kernel can read only its own.
 - This is checked by `scripts/25_test_workspace_isolation.sh` in the sandbox-api repo.
   It calls sandbox-api directly, so use a sandbox-api build where that test passes.
 - sandbox-api names the workspace after the thread id it is sent, after mapping every
