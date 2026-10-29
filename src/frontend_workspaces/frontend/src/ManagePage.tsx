@@ -2153,7 +2153,7 @@ export function ManagePage() {
               )}
 
               {sandboxOn && (
-              <AccordionItem title="Code Sandbox">
+              <AccordionItem title="Code Sandbox (experimental)">
                 <SandboxSettings
                   onError={(title, message) => addToast("error", title, message)}
                   onSaved={(message) => addToast("success", "Code sandbox", message)}
