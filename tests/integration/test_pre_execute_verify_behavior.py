@@ -62,6 +62,22 @@ CASES = [
         id="cart-flag-preserves-task",
     ),
     pytest.param(
+        "Buy me a microwave.",
+        'Found product_id=4410, name="microwave". Cart: [{"product_id": 11, "name": "kettle"}, '
+        '{"product_id": 12, "name": "toaster"}, {"product_id": 13, "name": "mug"}].',
+        "await add_to_cart(product_id=4410, quantity=1, clear_cart_first=True)",
+        "ok",
+        id="unmentioned-destructive-flag-the-purchase-needs",
+    ),
+    pytest.param(
+        "Add the notebook to my cart.",
+        'Found product_id=98765, name="notebook". Cart: [{"product_id": 11, "name": "kettle"}, '
+        '{"product_id": 12, "name": "toaster"}, {"product_id": 13, "name": "mug"}].',
+        "await add_to_cart(product_id=98765, quantity=1, clear_cart_first=True)",
+        "revise",
+        id="unmentioned-destructive-flag-that-discards-the-cart",
+    ),
+    pytest.param(
         "Mark order 123 as shipped.",
         'Found order id=123, status="pending". API: status options are "pending", "shipped", "cancelled".',
         'await update_order(id=123, status="shipped")',
@@ -165,6 +181,56 @@ CASES = [
         "await add_to_cart(product_id=55555, quantity=1)",
         "revise",
         id="invented-record-id",
+    ),
+    # Values bound inside the block: an id the block's own create call returned,
+    # and writes behind a helper the block defines.
+    pytest.param(
+        "Make a playlist named Random Songs with the song Blue in it.",
+        'Found song_id=42, title="Blue".',
+        "playlist = await spotify_create_playlist_playlists_post(title='Random Songs', is_public=False)\n"
+        "await spotify_add_song_to_playlist_post(playlist_id=playlist['playlist_id'], song_id=42)",
+        "ok",
+        id="create-then-add-in-one-block",
+    ),
+    pytest.param(
+        "Make a playlist named Random Songs with the song Blue in it.",
+        'Found song_id=42, title="Blue".',
+        "playlist = await spotify_create_playlist_playlists_post(title='Random Songs', is_public=False)\n"
+        "await spotify_add_song_to_playlist_post(playlist_id=playlist['playlist_id'], song_id=55555)",
+        "revise",
+        id="create-then-add-with-an-invented-song-id",
+    ),
+    pytest.param(
+        "Order the notebook in my cart and pay with my Visa card.",
+        'Cart: [{"product_id": 98765, "name": "notebook"}]. Payment cards: [{"id": 129, "name": "Visa"}, '
+        '{"id": 130, "name": "Amex"}]. Address id=5.',
+        "cards = await amazon_show_payment_cards_get()\n"
+        "def is_visa(card):\n"
+        "    return card['name'] == 'Visa'\n"
+        "visa = [c for c in cards if is_visa(c)][0]\n"
+        "await amazon_place_order_orders_post(payment_card_id=visa['id'], address_id=5)",
+        "ok",
+        id="pure-helper-is-not-a-write",
+    ),
+    pytest.param(
+        "Order the notebook in my cart and pay with my Visa card.",
+        'Cart: [{"product_id": 98765, "name": "notebook"}]. Payment cards: [{"id": 129, "name": "Visa"}, '
+        '{"id": 130, "name": "Amex"}]. Address id=5.',
+        "async def place(payload):\n"
+        "    return await amazon_place_order_orders_post(**payload)\n"
+        "await place({'payment_card_id': 129, 'address_id': 5})",
+        "ok",
+        id="helper-wrapping-a-write-with-the-retrieved-card",
+    ),
+    pytest.param(
+        "Order the notebook in my cart and pay with my Visa card.",
+        'Cart: [{"product_id": 98765, "name": "notebook"}]. Payment cards: [{"id": 129, "name": "Visa"}, '
+        '{"id": 130, "name": "Amex"}]. Address id=5.',
+        "async def place(payload):\n"
+        "    return await amazon_place_order_orders_post(**payload)\n"
+        "await place({'payment_card_id': 999, 'address_id': 5})",
+        "revise",
+        id="helper-wrapping-a-write-with-an-invented-card",
     ),
 ]
 
