@@ -91,7 +91,8 @@ async def test_child_change_rebuilds_default_parent_even_without_cached_graphs(m
 
     prod = SimpleNamespace()
     preview = SimpleNamespace()
-    state = SimpleNamespace(agent=prod, agent_graphs_cache={}, agent_graph_generations={})
+    saver = object()
+    state = SimpleNamespace(agent=prod, agent_graphs_cache={}, agent_graph_generations={}, checkpointer=saver)
     request = SimpleNamespace(
         app=SimpleNamespace(
             state=SimpleNamespace(app_state=state, draft_app_state=SimpleNamespace(agent=preview))
@@ -108,9 +109,10 @@ async def test_child_change_rebuilds_default_parent_even_without_cached_graphs(m
 
     assert rebuild.await_count == int(draft) + int(published)
     if published:
-        rebuild.assert_any_await(prod, config, use_draft=False)
+        # The published default agent keeps the shared saver, so its conversations survive (#774).
+        rebuild.assert_any_await(prod, config, use_draft=False, checkpointer=saver)
     if draft:
-        rebuild.assert_any_await(preview, config, use_draft=True)
+        rebuild.assert_any_await(preview, config, use_draft=True, checkpointer=None)
 
 
 @pytest.mark.asyncio

@@ -343,6 +343,7 @@ if __name__ == "__main__":
 - **Simple API**: `CugaAgent(tools=[...])` → `await agent.invoke(message)`
 - **Streaming**: Monitor execution in real-time with `agent.stream()`
 - **State Isolation**: Per-user sessions with `thread_id`
+- **Durable Conversations**: Continue a `thread_id` after a restart with `checkpointer=` (see [SDK: durable conversations](#sdk-durable-conversations))
 - **LangGraph Integration**: Access underlying graph for advanced use cases
 - **Flexible Tools**: Direct tools or custom tool providers
 - **Policy System**: Comprehensive policy framework with 5 types:
@@ -523,6 +524,40 @@ Provider, model, batch size, and concurrency are all set under
 > Switching provider or model invalidates existing vectors (different
 > dim), so the manage UI surfaces a "Re-index recommended" banner
 > automatically.
+
+### SDK: durable conversations
+
+By default `CugaAgent` keeps conversation state in an in-process `MemorySaver`, so a thread is gone when the process exits. Pass an async LangGraph saver with the keyword-only `checkpointer=` argument, then call the agent again with the same `thread_id`, from the same process or a new one. The thread's messages, variables, and any pending approval are loaded from the saver.
+
+```python
+import asyncio
+
+import aiosqlite
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+from cuga import CugaAgent
+from cuga.backend.storage.checkpoint.serde import build_checkpoint_serde
+
+
+async def main():
+    async with aiosqlite.connect("./agent_state.db") as conn:
+        saver = AsyncSqliteSaver(conn, serde=build_checkpoint_serde())
+        agent = CugaAgent(tools=[...], checkpointer=saver)
+        await agent.invoke("What is the revenue for account acc_01?", thread_id="t-1")
+        # Later, or in another process with the same file:
+        result = await agent.invoke("And how does that compare to last year?", thread_id="t-1")
+        print(result.answer)
+
+
+asyncio.run(main())
+```
+
+- Any `BaseCheckpointSaver` with async methods works, for example `AsyncPostgresSaver` (call `await saver.setup()` once to create its tables). Sync-only savers (`SqliteSaver`, `PostgresSaver`) are rejected with `TypeError` when the graph is compiled.
+- `build_checkpoint_serde()` registers CUGA's state types. Without it LangGraph logs a warning for each one, and blocks them when `LANGGRAPH_STRICT_MSGPACK=true`. Your own pydantic models, dataclasses, and Enums stored in variables come back as plain values unless you add them to the allowlist (`CUGA_ALLOWED_MSGPACK_TYPES`).
+- `CugaSupervisor(checkpointer=...)` works the same way for the supervisor graph. Its internal sub-agents keep their own in-memory savers.
+- **The SDK does not check ownership, expire threads, or validate a paused thread against changed code.** Anyone who can pass a `thread_id` can continue that conversation, so use unguessable IDs and check ownership in your application. Delete a thread with `await saver.adelete_thread(thread_id)`.
+- **Resume an approval** by building the agent with the same tools, policies and saver, and calling `agent.invoke(None, thread_id=thread_id, action_response=...)`. On the compiled graph, use `Command(resume=action_response.model_dump())`; `aupdate_state()` followed by `ainvoke(None)` does not resume the pause.
+- **Use the async state methods.** Async savers refuse synchronous calls on the event loop, so `agent.graph.get_state()` / `update_state()` must become `aget_state()` / `aupdate_state()`.
 
 ---
 
@@ -1058,6 +1093,26 @@ Edit `configurations/instructions/instructions.toml`:
 [instructions]
 instruction_set = "default"  # or any instruction set above
 ```
+
+</details>
+
+<details>
+<summary>💾 Conversation checkpointer settings</summary>
+
+## Configuration
+
+These `[storage]` keys in `settings.toml` control how published agent graphs persist execution state between turns. `checkpointer` defaults to `"memory"`, which keeps the current in-process behavior. Set any key with `DYNACONF_STORAGE__<KEY>`, for example `DYNACONF_STORAGE__CHECKPOINTER=durable`.
+
+A pending approval is tied to the published agent configuration that created it. If the agent is published again before the approval arrives, the server rejects that approval; start a new conversation with the updated agent.
+
+| Key | Default | Description |
+|---|---|---|
+| `checkpointer` | `"memory"` | `memory` (in-process, lost on restart) \| `durable` (SQLite when `storage.mode = "local"`, Postgres when `"prod"`) |
+| `checkpoint_db_path` | `""` | Local mode only. SQLite file for checkpoints; empty means `DBS_DIR/checkpoints.db` |
+| `checkpoint_pool_min_size` | `1` | Prod mode only. Minimum Postgres connection pool size |
+| `checkpoint_pool_max_size` | `10` | Prod mode only. Maximum Postgres connection pool size |
+
+In `prod` mode the checkpoint tables are created at startup, so the database user needs DDL rights.
 
 </details>
 

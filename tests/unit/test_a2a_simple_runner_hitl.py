@@ -27,13 +27,13 @@ class _Snap:
 
 
 class _Graph:
-    """Returns a queued sequence of snapshots, one per get_state() call."""
+    """Returns a queued sequence of snapshots, one per aget_state() call."""
 
     def __init__(self, snaps):
         self._snaps = snaps
         self.calls = 0
 
-    def get_state(self, _config):
+    async def aget_state(self, _config):
         snap = self._snaps[min(self.calls, len(self._snaps) - 1)]
         self.calls += 1
         return snap

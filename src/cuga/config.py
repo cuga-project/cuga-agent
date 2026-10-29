@@ -178,6 +178,11 @@ validators = [
     Validator("storage.local_db_path", default=""),
     Validator("storage.postgres_url", default=""),
     Validator("storage.preserve_configs_on_startup", default="prod"),
+    # Durable LangGraph checkpointer (issue #774). "memory" is the rollback switch.
+    Validator("storage.checkpointer", default="memory", is_in=["durable", "memory"]),
+    Validator("storage.checkpoint_db_path", default=""),
+    Validator("storage.checkpoint_pool_min_size", default=1, gte=1),
+    Validator("storage.checkpoint_pool_max_size", default=10, gte=1),
     Validator("service.instance_id", default=""),
     Validator("service.tenant_id", default=""),
     Validator("secrets.mode", default="local"),

@@ -430,7 +430,7 @@ async def run_graph_until_interrupt(
             break
 
     # Get the current state from the graph
-    state_snapshot = graph.graph.get_state(config)
+    state_snapshot = await graph.graph.aget_state(config)
     return state_snapshot
 
 
@@ -462,7 +462,7 @@ async def resume_graph_with_response(
     for attempt in range(max_resume_attempts):
         # Drain the stream so LangGraph runs nodes and updates the checkpoint.
         # We don't inspect individual events; the authoritative state is read
-        # from get_state() after the stream finishes (or hits an interrupt).
+        # from aget_state() after the stream finishes (or hits an interrupt).
         async for _event in graph.graph.astream(
             resume_payload,
             config,
@@ -470,7 +470,7 @@ async def resume_graph_with_response(
         ):
             pass
 
-        state_snapshot = graph.graph.get_state(config)
+        state_snapshot = await graph.graph.aget_state(config)
         if not state_snapshot.next:
             return state_snapshot
 
@@ -517,7 +517,7 @@ async def run_full_graph_to_completion(
         pass  # Just iterate through all events
 
     # Get final state after all events are processed
-    state_snapshot = graph.graph.get_state({"configurable": {"thread_id": thread_id}})
+    state_snapshot = await graph.graph.aget_state({"configurable": {"thread_id": thread_id}})
     if state_snapshot.values:
         final_state = AgentState(**state_snapshot.values)
     else:

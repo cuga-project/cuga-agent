@@ -204,6 +204,12 @@ postgres_url = ""  # required when mode=prod
 # Skip demo/manager config seed when agent_configs already exist for tenant+instance+agent.
 # Applies when storage.mode matches this value: "prod" | "local" | "any". Default "prod".
 preserve_configs_on_startup = "prod"
+# Execution-state persistence for published agent graphs (issue #774).
+# "durable" = SQLite (local) / Postgres (prod) LangGraph checkpointer; "memory" = in-process MemorySaver (rollback).
+checkpointer = "memory"
+checkpoint_db_path = ""  # local only; default DBS_DIR/checkpoints.db
+checkpoint_pool_min_size = 1  # prod only
+checkpoint_pool_max_size = 10  # prod only
 
 [storage.embedding]
 provider = "local"  # "openai", "local", or "auto" (tries OpenAI, falls back to local)

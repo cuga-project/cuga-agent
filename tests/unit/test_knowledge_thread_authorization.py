@@ -84,6 +84,7 @@ async def test_event_stream_also_checks_owner_before_reading_checkpoint(runtime)
     assert "event: Error" in frame
     assert "Access denied" in frame
     graph.get_state.assert_not_called()
+    graph.aget_state.assert_not_called()
     assert await database.claim_thread("victim-thread", "alice", create=False) is None
 
 

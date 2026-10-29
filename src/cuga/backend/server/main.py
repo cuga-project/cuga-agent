@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     from cuga.backend.cuga_graph.state.agent_state import AgentState
     from cuga.backend.cuga_graph.utils.agent_loop import OutputFormat
     from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+    from cuga.backend.storage.checkpoint import CheckpointerHandle
+    from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from pathlib import Path
 import traceback
@@ -538,7 +540,18 @@ class AppState:
         self.agent_graphs_cache: Dict[Any, Any] = {}
         self.agent_graph_build_locks: Dict[Any, Any] = {}
         self.agent_graph_generations: Dict[str, int] = {}
+        # LangGraph checkpointer shared by the published graphs (issue #774). Owned by
+        # lifespan(): created before any published graph is built, closed after every
+        # graph owner and background task is gone. Close and probe the handle, never
+        # ``graph.checkpointer`` (a strict-msgpack compile swaps in a clone).
+        self.checkpointer_handle: Optional["CheckpointerHandle"] = None
         self.initialize_sdk()
+
+    @property
+    def checkpointer(self) -> Optional["BaseCheckpointSaver"]:
+        """The shared saver (``checkpointer_handle.saver``), or ``None`` before startup."""
+        handle = self.checkpointer_handle
+        return handle.saver if handle is not None else None
 
     def set_subsystem_status(
         self, name: str, state: str, message: str = "", details: Optional[Dict[str, Any]] = None
@@ -626,8 +639,98 @@ def format_time_custom():
     return f"{now.hour:02d}-{now.minute:02d}-{now.second:02d}"
 
 
+async def _open_checkpointer() -> None:
+    """Create the shared checkpointer handle from ``settings.storage`` (issue #774).
+
+    Never falls back to memory: a durable saver that cannot be opened fails startup.
+    """
+    from cuga.backend.storage.checkpoint import create_checkpointer
+
+    storage = settings.storage
+    try:
+        app_state.checkpointer_handle = await create_checkpointer(storage)
+    except Exception as exc:
+        # Type name only: driver errors can echo connection details.
+        logger.error(
+            "Startup aborted: could not open the checkpointer (storage.checkpointer={}, storage.mode={}): {}. "
+            "Check the [storage] settings, or set storage.checkpointer=memory.",
+            getattr(storage, "checkpointer", None),
+            getattr(storage, "mode", None) or "local",
+            type(exc).__name__,
+        )
+        raise
+
+
+async def _close_checkpointer() -> None:
+    """Close the shared checkpointer handle; never raises."""
+    handle = app_state.checkpointer_handle
+    if handle is None:
+        return
+    app_state.checkpointer_handle = None
+    try:
+        await handle.aclose()
+        logger.info("Checkpointer closed (kind={})", handle.kind)
+    except Exception as exc:
+        logger.warning("Closing the checkpointer failed (kind={}): {}", handle.kind, type(exc).__name__)
+
+
+async def _build_published_default_agent(
+    *,
+    tool_provider: Any,
+    startup_config: Optional[Dict[str, Any]],
+    startup_llm_cfg: Optional[Dict[str, Any]],
+    startup_version: Optional[int] = None,
+    langfuse_handler: Any = None,
+) -> "DynamicAgentGraph":
+    """Build the published cuga-default graph at startup (``app_state.agent``).
+
+    It compiles on the shared lifespan saver, so a publish rebuild keeps conversations
+    (issue #774). The draft graph is built separately and keeps its own MemorySaver.
+    """
+    from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph as DynamicAgentGraph
+    from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
+
+    overrides = _extract_agent_feature_overrides(startup_config or {})
+    agent = DynamicAgentGraph(
+        None,
+        langfuse_handler=langfuse_handler,
+        policy_system=app_state.policy_system,
+        tool_provider=tool_provider,
+        llm_config=startup_llm_cfg or None,
+        enable_todos=overrides.get("enable_todos"),
+        reflection_enabled=overrides.get("reflection_enabled"),
+        shortlisting_tool_threshold=overrides.get("shortlisting_tool_threshold"),
+        cuga_lite_max_steps=overrides.get("cuga_lite_max_steps"),
+        enable_filesystem_tools=overrides.get("enable_filesystem_tools"),
+        special_instructions=agent_registry.agent_special_instructions(startup_config or {}),
+        supervisor_id=app_state.agent_id,
+        **await agent_registry.supervisor_graph_overrides(startup_config or {}),
+    )
+    await agent.build_graph(checkpointer=app_state.checkpointer)
+    agent._checkpoint_config_version = str(startup_version or 0)
+    return agent
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Application startup and shutdown.
+
+    The checkpointer handle wraps the whole app lifespan: it is opened before any
+    published graph is built (so every startup path and every later rebuild sees
+    it) and closed only after ``_app_lifespan``'s shutdown has closed the graph
+    owners, cancelled the background tasks and closed the stores. It is also closed
+    when startup fails after it was opened (aiosqlite runs a non-daemon thread).
+    """
+    await _open_checkpointer()
+    try:
+        async with _app_lifespan(app):
+            yield
+    finally:
+        await _close_checkpointer()
+
+
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
     """Asynchronous context manager for application startup and shutdown."""
     logger.info("Application is starting up...")
     app_state.set_subsystem_status("policy", "starting", "Initializing policy subsystem")
@@ -1000,7 +1103,7 @@ async def lifespan(app: FastAPI):
     # Load the latest published config so both agents start with the correct LLM.
     # This ensures that a previously saved provider/model/api_key is applied from
     # the first request rather than always falling back to .env defaults.
-    _startup_config, _ = await load_config(None) or (None, None)
+    _startup_config, _startup_version = await load_config(None) or (None, None)
     _startup_llm_cfg = (_startup_config or {}).get("llm") or {}
 
     # Apply the published config at startup so the runtime override is set
@@ -1084,25 +1187,13 @@ async def lifespan(app: FastAPI):
         agent_id="cuga-default",
         app_names=agent_registry.configured_tool_apps(_startup_config or {}),
     )
-    from cuga.backend.server.manage_routes import _extract_agent_feature_overrides as _extract_prod_overrides
-
-    _prod_overrides = _extract_prod_overrides(_startup_config or {})
-    app_state.agent = DynamicAgentGraph(
-        None,
-        langfuse_handler=langfuse_handler,
-        policy_system=app_state.policy_system,
+    app_state.agent = await _build_published_default_agent(
         tool_provider=tool_provider,
-        llm_config=_startup_llm_cfg or None,
-        enable_todos=_prod_overrides.get("enable_todos"),
-        reflection_enabled=_prod_overrides.get("reflection_enabled"),
-        shortlisting_tool_threshold=_prod_overrides.get("shortlisting_tool_threshold"),
-        cuga_lite_max_steps=_prod_overrides.get("cuga_lite_max_steps"),
-        enable_filesystem_tools=_prod_overrides.get("enable_filesystem_tools"),
-        special_instructions=agent_registry.agent_special_instructions(_startup_config or {}),
-        supervisor_id=app_state.agent_id,
-        **await agent_registry.supervisor_graph_overrides(_startup_config or {}),
+        startup_config=_startup_config,
+        startup_llm_cfg=_startup_llm_cfg,
+        startup_version=_startup_version,
+        langfuse_handler=langfuse_handler,
     )
-    await app_state.agent.build_graph()
 
     draft_config = await load_draft()
     if draft_config is None:
@@ -1168,6 +1259,7 @@ async def lifespan(app: FastAPI):
         supervisor_id=draft_agent_id,
         **await agent_registry.supervisor_graph_overrides(draft_config or {}, use_draft=True),
     )
+    # Draft graphs stay on their own in-memory saver (not the shared one).
     await draft_app_state.agent.build_graph()
 
     logger.info("Application finished starting up...")
@@ -1643,6 +1735,32 @@ async def event_stream(
     from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
     from langchain_core.messages import AIMessage
 
+    checkpoint_config_key = "published_config_version"
+
+    async def _stale_pending_checkpoint(snapshot: Any) -> bool:
+        """A paused action may only resume on the published config that created it."""
+        expected = getattr(run_agent, "_checkpoint_config_version", None)
+        if expected is None or not getattr(snapshot, "next", None):
+            return False
+        values = getattr(snapshot, "values", None) or {}
+        scope = values.get("service_scope") or {}
+        if not isinstance(scope, dict) or scope.get(checkpoint_config_key) != expected:
+            return True
+        # A publish may have committed after /stream resolved its graph but before
+        # this request reached the checkpoint. Check the store as well as the graph.
+        try:
+            from cuga.backend.server.config_store import load_config
+
+            _, current_version = await load_config(None, runtime_agent_id)
+        except Exception as exc:
+            logger.warning("Could not verify pending approval configuration: {}", type(exc).__name__)
+            return True
+        return str(current_version or 0) != expected
+
+    stale_approval_message = (
+        "This pending approval belongs to an older agent configuration. Start a new conversation to continue."
+    )
+
     memory_turn_id = str(uuid.uuid4()) if not resume else ""
     run_agent = agent if agent is not None else app_state.agent
     runtime_agent_id = agent_id or app_state.agent_id
@@ -1691,9 +1809,15 @@ async def event_stream(
         # Check if we have existing state for this thread_id (for followup questions)
         if thread_id:
             try:
-                latest_state_values = run_agent.graph.get_state(
+                snapshot = await run_agent.graph.aget_state(
                     {"configurable": {"thread_id": checkpoint_thread_id}}
-                ).values
+                )
+                if await _stale_pending_checkpoint(snapshot):
+                    yield StreamEvent(name="Error", data=stale_approval_message).format(
+                        app_state.output_format, thread_id=thread_id
+                    )
+                    return
+                latest_state_values = snapshot.values
                 if latest_state_values:
                     # Load existing state for followup questions
                     local_state = AgentState(**latest_state_values)
@@ -1726,18 +1850,25 @@ async def event_stream(
     else:
         # For resume, fetch state from LangGraph
         if thread_id:
-            latest_state_values = run_agent.graph.get_state(
-                {"configurable": {"thread_id": checkpoint_thread_id}}
-            ).values
+            snapshot = await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
+            if await _stale_pending_checkpoint(snapshot):
+                yield StreamEvent(name="Error", data=stale_approval_message).format(
+                    app_state.output_format, thread_id=thread_id
+                )
+                return
+            latest_state_values = snapshot.values
             if latest_state_values:
                 local_state = AgentState(**latest_state_values)
                 local_state.thread_id = thread_id
 
     if local_state:
+        config_version = getattr(run_agent, "_checkpoint_config_version", None)
         if resume:
             memory_turn_id = str((local_state.service_scope or {}).get("memory_turn_id") or "")
         apply_request_user_context(local_state, user_id)
         local_state.service_scope.update({"agent_id": runtime_agent_id, "memory_turn_id": memory_turn_id})
+        if not resume and config_version is not None:
+            local_state.service_scope[checkpoint_config_key] = config_version
         # An explicit single-agent role must override global settings and any
         # supervisor mode retained in an older checkpoint too.
         supervisor_enabled = getattr(run_agent, "supervisor_enabled", None)
@@ -1880,6 +2011,12 @@ async def event_stream(
     # Use local_state if available, otherwise None (AgentLoop/LangGraph will handle state retrieval)
     agent_stream_gen = agent_loop_obj.run_stream(state=local_state if not resume else None, resume=resume)
 
+    async def _load_state_values() -> dict:
+        """Reload this thread's checkpointed state values (async: durable savers reject sync reads)."""
+        return (
+            await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
+        ).values
+
     # Print initial trace ID status
     if langfuse_handler and settings.advanced_features.langfuse_tracing:
         initial_trace_id = agent_loop_obj.get_langfuse_trace_id()
@@ -1910,9 +2047,7 @@ async def event_stream(
                     if event.interrupt and not event.has_tools:
                         # Update local state from graph
                         if thread_id:
-                            latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": checkpoint_thread_id}}
-                            ).values
+                            latest_state_values = await _load_state_values()
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
                         return
@@ -1938,9 +2073,7 @@ async def event_stream(
                         variables_metadata = {}
                         active_policies = []
                         if thread_id:
-                            latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": checkpoint_thread_id}}
-                            ).values
+                            latest_state_values = await _load_state_values()
 
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
@@ -2079,9 +2212,7 @@ async def event_stream(
                         ).format(app_state.output_format, thread_id=thread_id)
 
                         if thread_id:
-                            latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": checkpoint_thread_id}}
-                            ).values
+                            latest_state_values = await _load_state_values()
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
                         try:
@@ -2096,9 +2227,7 @@ async def event_stream(
                         return
                     elif event.has_tools:
                         if thread_id:
-                            latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": checkpoint_thread_id}}
-                            ).values
+                            latest_state_values = await _load_state_values()
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
 
@@ -2132,7 +2261,7 @@ async def event_stream(
                             local_state.url = app_state.env.get_url()
 
                         if thread_id and local_state:
-                            run_agent.graph.update_state(
+                            await run_agent.graph.aupdate_state(
                                 {"configurable": {"thread_id": checkpoint_thread_id}},
                                 local_state.model_dump(),
                             )
@@ -2142,9 +2271,7 @@ async def event_stream(
                 else:
                     logger.debug("Yield {}".format(event))
                     if thread_id:
-                        latest_state_values = run_agent.graph.get_state(
-                            {"configurable": {"thread_id": checkpoint_thread_id}}
-                        ).values
+                        latest_state_values = await _load_state_values()
                         if latest_state_values:
                             local_state = AgentState(**latest_state_values)
                     try:
@@ -2739,7 +2866,7 @@ async def _resolve_stream_agent(
             if use_draft:
                 config = await load_draft(agent_id)
             else:
-                config, _ = await load_config(None, agent_id)
+                config, config_version = await load_config(None, agent_id)
 
             if not config:
                 raise HTTPException(
@@ -2824,10 +2951,16 @@ async def _resolve_stream_agent(
                     supervisor_enabled=False,
                 )
 
-            await graph.build_graph()
+            # Published builds share the lifespan saver; draft builds keep their own MemorySaver.
+            if use_draft:
+                await graph.build_graph()
+            else:
+                await graph.build_graph(checkpointer=app_state.checkpointer)
+                graph._checkpoint_config_version = str(config_version or 0)
             # Another request may have finished first, or a draft-save/publish may have
-            # invalidated this key while we were building. Keep one live graph per key
-            # so both turns share the same MemorySaver; never cache a stale build.
+            # invalidated this key while we were building. The cache only dedupes builds:
+            # published state lives in the shared saver, not in the graph instance, so a
+            # rebuild keeps conversations. Never cache a stale build.
             if isinstance(gens, dict) and gens.get(agent_id, 0) != generation:
                 return graph
             existing = app_state.agent_graphs_cache.get(cache_key)
@@ -4032,7 +4165,7 @@ async def get_agent_state(
             raise HTTPException(status_code=503, detail="Agent graph not initialized")
 
         try:
-            state_snapshot = run_agent.graph.get_state(
+            state_snapshot = await run_agent.graph.aget_state(
                 {"configurable": {"thread_id": _checkpoint_thread_id(thread_id, user_id, agent_id)}}
             )
 
