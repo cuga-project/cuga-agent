@@ -93,6 +93,9 @@ export function SandboxSettings({ onError, onSaved }: Props) {
 
   return (
     <VStack gap={5}>
+      <p style={{ fontSize: "0.875rem", color: "var(--cds-text-secondary)" }}>
+        Applies to all agents and users. Conversations are isolated by the sandbox, not by CUGA.
+      </p>
       <Checkbox
         id="sandbox-enabled"
         labelText="Sandbox"
