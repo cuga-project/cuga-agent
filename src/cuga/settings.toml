@@ -42,8 +42,10 @@ e2b_sandbox = false           # use E2B cloud sandbox for code execution
 opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; requires Docker + opensandbox SDK
 # Remote execd sandbox (sandbox_mode = "execd", or switched on in Manage → Code sandbox).
 # Generated Python (CugaLite and CodeAgent), shell, filesystem tools and the workspace
-# panel then run in a per-thread kernel inside the sandbox. The connection is picked
-# automatically: the mounted secret (sandbox_secret_dir) when it carries url and api_key,
+# panel then run in a per-thread kernel inside the sandbox. Exception: an explicit
+# execution.python_backend wins over sandbox_mode, so python_backend = "local" keeps
+# generated Python in CUGA even with execd on; leave it unset to get sandbox isolation.
+# The connection is picked automatically: the mounted secret (sandbox_secret_dir) when it carries url and api_key,
 # otherwise execd_url / execd_api_key below. Manage shows the switch only when one of them
 # is configured; it never takes a URL or key itself.
 # URL of the code-execution sandbox-api (CUGA never talks to execd directly), e.g.

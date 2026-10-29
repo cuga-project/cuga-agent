@@ -336,12 +336,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     fc_outcomes,
                     output,
                     output_limit=settings.advanced_features.execution_output_max_length,
-                    timeout=(
-                        getattr(settings.advanced_features, "execd_execution_timeout", 0)
-                        or settings.advanced_features.sandbox_execution_timeout
-                    )
-                    if _exec_plan.python_backend == "execd"
-                    else settings.advanced_features.sandbox_execution_timeout,
+                    timeout=settings.advanced_features.sandbox_execution_timeout,
                 )
                 # A find_tools listing: the reply carries it, the variables do not.
                 for name in dropped:
