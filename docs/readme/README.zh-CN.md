@@ -20,7 +20,7 @@ CUGA 可根据业务请求，在应用、API 和文档之间执行操作。你�
 
 | 你的关注点 | CUGA 提供的能力 |
 | --- | --- |
-| **自主可控** | 在你自己的环境中运行；接入私有部署的模型和工具；可为离线部署预先下载所需的辅助模型（如嵌入模型）；用于推理的大模型需自行部署推理服务。 |
+| **自主可控** | 在你自己的环境中运行；接入私有部署的模型和工具；可为离线环境预先下载所需的辅助模型（如嵌入模型）；用于推理的大模型需自行部署推理服务。 |
 | **执行策略** | 阻止不符合策略的意图（Intent Guard），调用指定工具前须经人工审批（Tool Approval），用 Playbook（标准操作流程）引导工作流，并配置工具级防护（ToolGuard）。 |
 | **推理效率** | 选用开源模型，调整思考模式（reasoning mode），自动筛选相关工具，设置工具调用次数上限，并可启用 Run Receipt 查看每次运行的 token 用量。 |
 | **快速交付** | 接入 MCP 服务器、OpenAPI 服务和 Python 工具；在管理界面中配置并测试智能体，确认无误后再发布版本。 |
@@ -79,7 +79,7 @@ CUGA 无需依赖 OpenAI 官方托管服务，可接入兼容 OpenAI API 的模�
 # pip
 pip install cuga -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# uv：用环境变量指定默认索引
+# uv：通过环境变量指定默认索引
 # （不要在项目根目录新建 uv.toml，否则 pyproject.toml 中的 [tool.uv] 配置会被忽略）
 export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 uv sync --python 3.12
