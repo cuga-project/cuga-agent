@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import re
 import threading
 import time
@@ -107,8 +108,25 @@ def user_token_required_body(instance_id: str) -> dict[str, str]:
     }
 
 
+def _platform_ca_bundle(iam_ca: str) -> str:
+    """The platform trust bundle for gateway routes when ``mcp_gateway.ca_bundle`` is empty.
+
+    On Sovereign Core the gateway route has the spoke's default ingress certificate, signed by
+    the platform CA, not a public one. The IAM proxy bundle is that platform bundle; without it,
+    ``SSL_CERT_FILE`` or ``REQUESTS_CA_BUNDLE`` when set to a file. Empty: httpx's default store.
+    """
+    if iam_ca:
+        return iam_ca
+    for name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+        path = os.environ.get(name, "")
+        if path and os.path.isfile(path):
+            return path
+    return ""
+
+
 def gateway_settings() -> dict[str, Any]:
-    """IAM URL and TLS settings. IAM TLS follows ``auth.iam_proxy_*``; gateway TLS ``mcp_gateway.*``."""
+    """IAM URL and TLS settings. IAM TLS follows ``auth.iam_proxy_*``; gateway TLS ``mcp_gateway.*``,
+    falling back to the platform trust bundle (see ``_platform_ca_bundle``)."""
     from cuga.config import settings
 
     auth = getattr(settings, "auth", None)
@@ -116,7 +134,7 @@ def gateway_settings() -> dict[str, Any]:
     iam_skip = bool(getattr(auth, "iam_proxy_skip_verify", False))
     iam_ca = getattr(auth, "iam_proxy_ca_bundle", "") or ""
     gw_skip = bool(getattr(gw, "skip_verify", False))
-    gw_ca = getattr(gw, "ca_bundle", "") or ""
+    gw_ca = getattr(gw, "ca_bundle", "") or _platform_ca_bundle(iam_ca)
     return {
         "iam_url": (getattr(auth, "iam_proxy_url", "") or "").rstrip("/"),
         "iam_verify": False if iam_skip else (iam_ca or True),

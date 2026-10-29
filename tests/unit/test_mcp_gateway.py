@@ -368,3 +368,45 @@ def test_agent_include_filter_accepts_raw_mcp_tool_names():
         None, tools, "team_tools", ["team_tools_demo_time_echo"]
     )
     assert [t.name for t in kept] == ["team_tools_demo_time_echo"]
+
+
+@pytest.mark.parametrize(
+    "gw_ca, iam_ca, env, expected",
+    [
+        # An explicit gateway bundle wins.
+        ("/etc/gw-ca.pem", "/etc/platform.pem", {}, "/etc/gw-ca.pem"),
+        # Otherwise the platform bundle that the IAM proxy uses (set by cuga-operator on Sovereign).
+        ("", "/etc/platform.pem", {"SSL_CERT_FILE": "env"}, "/etc/platform.pem"),
+        # Otherwise SSL_CERT_FILE, then REQUESTS_CA_BUNDLE, when the file exists.
+        ("", "", {"SSL_CERT_FILE": "env"}, "env"),
+        ("", "", {"REQUESTS_CA_BUNDLE": "env"}, "env"),
+        ("", "", {"SSL_CERT_FILE": "/no/such/file.pem"}, True),
+        # Nothing set: httpx's default store.
+        ("", "", {}, True),
+    ],
+)
+def test_gateway_tls_falls_back_to_the_platform_bundle(monkeypatch, tmp_path, gw_ca, iam_ca, env, expected):
+    from cuga.config import settings
+
+    bundle = tmp_path / "ca.pem"
+    bundle.write_text("pem")
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, str(bundle) if value == "env" else value)
+    monkeypatch.setattr(settings.mcp_gateway, "ca_bundle", gw_ca, raising=False)
+    monkeypatch.setattr(settings.mcp_gateway, "skip_verify", False, raising=False)
+    monkeypatch.setattr(settings.auth, "iam_proxy_ca_bundle", iam_ca, raising=False)
+
+    verify = mcp_gateway.gateway_settings()["gateway_verify"]
+
+    assert verify == (str(bundle) if expected == "env" else expected)
+
+
+def test_gateway_skip_verify_still_wins(monkeypatch):
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.mcp_gateway, "skip_verify", True, raising=False)
+    monkeypatch.setattr(settings.auth, "iam_proxy_ca_bundle", "/etc/platform.pem", raising=False)
+
+    assert mcp_gateway.gateway_settings()["gateway_verify"] is False
