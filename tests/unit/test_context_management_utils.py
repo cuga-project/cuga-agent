@@ -388,6 +388,41 @@ def test_verify_latest_output_shares_budget_and_keeps_result_tail(budget):
         assert "chars of Most recent execution output omitted" in latest
 
 
+def test_verify_latest_output_keeps_a_mid_output_id_when_history_is_short():
+    """A fixed 25% output share cut this 19k listing to 7,500 chars and lost the id."""
+    rows = "\n".join(f"{{'song_id': {1000 + i}, 'title': 'Song {i}'}}" for i in range(500))
+    listing = rows.replace("'song_id': 1250,", "'song_id': 98765,")
+    assert 15_000 < len(listing) < 25_000 and listing.index("98765") > len(listing) // 3
+    messages = [
+        HumanMessage(content="Add the song with id 98765 to my playlist"),
+        AIMessage(content="print(await list_songs())"),
+        HumanMessage(content=execution_output_text(listing)),
+    ]
+
+    history, latest, _variables, _code = prepare_verify_context(
+        messages, "", "await add_song(song_id=98765)", max_chars=30_000
+    )
+
+    assert latest == listing
+    assert "Add the song with id 98765" in history
+
+
+def test_verify_long_history_keeps_its_floor_when_the_output_is_huge():
+    messages = _long_run()
+    messages[-1] = HumanMessage(content=execution_output_text("START " + "r" * 100_000 + " RESULT-AT-END"))
+
+    history, latest, variables, code = prepare_verify_context(
+        messages, "", "await pay(amount=59)", max_chars=30_000
+    )
+
+    assert history.startswith("User: Send $59 to Jose via Venmo")
+    assert "send_money()" in history
+    assert latest.startswith("START ") and latest.endswith("RESULT-AT-END")
+    # The output takes the rest, but leaves history a fifth of the budget.
+    assert 0.6 * 30_000 < len(latest) <= 30_000 - len(code) - len(variables) - 0.2 * 30_000
+    assert sum(map(len, (history, latest, variables, code))) <= 30_000
+
+
 # ── split_latest_execution_output: which message is the latest output ─────────
 
 

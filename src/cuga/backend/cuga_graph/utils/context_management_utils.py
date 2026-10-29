@@ -30,7 +30,9 @@ REFLECTION_OUTPUT_SHARE = 0.40
 REFLECTION_SKILLS_SHARE = 0.15
 VERIFY_CODE_SHARE = 0.25
 VERIFY_VARIABLES_SHARE = 0.35
-VERIFY_OUTPUT_SHARE = 0.25
+# The latest output takes what code and variables leave, minus this share for history
+# (or all of history, if shorter).
+VERIFY_HISTORY_FLOOR_SHARE = 0.20
 _MARKER_ROOM = 120
 
 
@@ -306,24 +308,28 @@ def prepare_verify_context(
     """Fit history, latest output, variables, and code into *max_chars*. Never summarize.
 
     The code takes at most ``VERIFY_CODE_SHARE`` of the budget and the variables at most
-    ``VERIFY_VARIABLES_SHARE``. Latest output has its own ``VERIFY_OUTPUT_SHARE``;
-    history gets the rest and keeps its newest messages. The latest output is ``""``
-    when no block has run.
+    ``VERIFY_VARIABLES_SHARE``. The latest output takes the rest, except
+    ``VERIFY_HISTORY_FLOOR_SHARE`` kept for history, so a short history leaves it nearly
+    the whole remainder. History gets what the output leaves and keeps its newest
+    messages. The latest output is ``""`` when no block has run.
     """
     earlier, latest_output = split_latest_execution_output(list(chat_messages))
     raw_code = proposed_code or ""
     raw_variables = variables_snapshot or "(no variables)"
     code = truncate_head_tail(raw_code, int(max_chars * VERIFY_CODE_SHARE), label="Proposed code")
     variables = truncate_variables_summary(raw_variables, int(max_chars * VERIFY_VARIABLES_SHARE))
+    remainder = max(0, max_chars - len(code) - len(variables))
+    raw_history = messages_to_history_text(earlier)
+    history_floor = min(len(raw_history), int(max_chars * VERIFY_HISTORY_FLOOR_SHARE))
     latest = truncate_head_tail(
-        latest_output, int(max_chars * VERIFY_OUTPUT_SHARE), label="Most recent execution output"
+        latest_output, max(0, remainder - history_floor), label="Most recent execution output"
     )
-    history = history_text_keep_recent(earlier, max(0, max_chars - len(code) - len(variables) - len(latest)))
+    history = history_text_keep_recent(earlier, max(0, remainder - len(latest)))
     _log_input_budget(
         "Pre-execute VERIFY",
         max_chars,
         {
-            "history": len(messages_to_history_text(earlier)),
+            "history": len(raw_history),
             "latest_output": len(latest_output.strip()),
             "variables": len(raw_variables.strip()),
             "code": len(raw_code.strip()),
