@@ -60,7 +60,13 @@ def evolve(tmp_path, monkeypatch):
     monkeypatch.setattr(EvolveIntegration, "is_enabled", lambda: True)
 
     async def call(tool, args):
-        result = getattr(server, tool)(**args)
+        from fastmcp import Client
+
+        # Exercise the installed wheel's protocol models and serialization, not
+        # just the Python handler (which can hide MCP major-version mismatches).
+        async with Client(server.mcp) as mcp_client:
+            response = await mcp_client.call_tool(tool, args)
+        result = response.data
         return json.loads(result) if isinstance(result, str) else result
 
     monkeypatch.setattr(EvolveIntegration, "_call_tool", call)

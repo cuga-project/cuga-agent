@@ -34,14 +34,8 @@ async def apply_published_config(app_state: Any, config: dict[str, Any]) -> None
             force_env = False
 
         if force_env:
-            if "model" in llm_cfg and llm_cfg["model"]:
-                os.environ["MODEL_NAME"] = str(llm_cfg["model"])
-            else:
-                os.environ.pop("MODEL_NAME", None)
-            if "temperature" in llm_cfg and llm_cfg["temperature"] is not None:
-                os.environ["MODEL_TEMPERATURE"] = str(llm_cfg["temperature"])
-            else:
-                os.environ.pop("MODEL_TEMPERATURE", None)
+            # Environment-owned deployments must not lose their configured model
+            # when a roster/default config has no editor LLM block.
             try:
                 LLMManager()._models.clear()
             except Exception as _e:
@@ -77,7 +71,9 @@ async def apply_published_config(app_state: Any, config: dict[str, Any]) -> None
                 os.environ["CUGA_DISABLE_SSL"] = "true"
             else:
                 os.environ.pop("CUGA_DISABLE_SSL", None)
-    special_instructions = (config or {}).get("special_instructions") or None
+    from cuga.backend.server.agent_registry import agent_special_instructions
+
+    special_instructions = agent_special_instructions(config or {})
     agent = getattr(app_state, "agent", None)
     if agent is not None:
         agent.special_instructions = special_instructions
@@ -123,14 +119,6 @@ def apply_llm_to_state(state: Any, llm_cfg: dict) -> None:
         force_env = False
 
     if force_env:
-        if llm_cfg.get("model"):
-            os.environ["MODEL_NAME"] = str(llm_cfg["model"])
-        else:
-            os.environ.pop("MODEL_NAME", None)
-        if llm_cfg.get("temperature") is not None:
-            os.environ["MODEL_TEMPERATURE"] = str(llm_cfg["temperature"])
-        else:
-            os.environ.pop("MODEL_TEMPERATURE", None)
         try:
             LLMManager()._models.clear()
         except Exception as _e:
