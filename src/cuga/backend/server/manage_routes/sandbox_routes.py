@@ -109,19 +109,29 @@ async def _status_with_probe() -> dict[str, Any]:
     return result
 
 
-async def _release_kernels() -> None:
-    """Free the kernels this process holds, before the sandbox goes off and they are forgotten.
+# Per kernel. Switching off is how a broken sandbox gets turned off, so the
+# request must not wait out the block timeout for each kernel it holds.
+_RELEASE_TIMEOUT_S = 5.0
 
-    Their files stay in the sandbox. Kernels from before a restart, or held by
-    another replica, are not known here and stay until sandbox-api's own TTL.
+
+async def _release_kernels() -> None:
+    """Free the kernels this process holds, after the sandbox went off and they are forgotten.
+
+    In parallel, each with a short timeout; a kernel that does not answer is
+    left to sandbox-api's own TTL. Their files stay in the sandbox. Kernels
+    from before a restart, or held by another replica, are not known here and
+    stay until that TTL too.
     """
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import ExecdExecutor
 
     threads = list(ExecdExecutor._contexts)
-    for thread_id in threads:
-        await ExecdExecutor.release_thread(thread_id)
-    if threads:
-        logger.info(f"[execd:ctx] Released {len(threads)} kernels on switching the sandbox off")
+    if not threads:
+        return
+    await asyncio.gather(
+        *(ExecdExecutor.release_thread(t, timeout=_RELEASE_TIMEOUT_S) for t in threads),
+        return_exceptions=True,
+    )
+    logger.info(f"[execd:ctx] Released {len(threads)} kernels on switching the sandbox off")
 
 
 @router.put("/sandbox")
@@ -141,21 +151,28 @@ async def put_sandbox_settings(body: SandboxSettingsBody):
             reason = (await _probe(connection.configured())).get("probe_error")
         if reason:
             raise HTTPException(status_code=422, detail=f"The sandbox was not switched on: {reason}")
-    elif connection.is_enabled():
-        await _release_kernels()
+    was_on = connection.is_enabled()
 
+    # "Off" is saved before the kernels are released: no new block goes to the
+    # sandbox while they are, however long a broken sandbox takes to answer.
     stored = {"enabled": body.enabled}
     await save_sandbox_settings(stored)
     connection.set_runtime_config(stored)
     logger.info(f"Sandbox settings updated: enabled={body.enabled}")
+    if was_on and not connection.is_enabled():
+        await _release_kernels()
     return await _status_with_probe()
 
 
 @router.delete("/sandbox")
 async def reset_sandbox_settings():
     """Forget the UI choice and fall back to the env / settings.toml defaults."""
+    was_on = connection.is_enabled()
     await delete_sandbox_settings()
     connection.set_runtime_config(None)
+    # Off by the defaults: free the kernels as switching off does.
+    if was_on and not connection.is_enabled():
+        await _release_kernels()
     return connection.status()
 
 

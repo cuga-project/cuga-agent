@@ -963,12 +963,15 @@ del _cuga_bootstrap
         ]
 
     @classmethod
-    async def release_thread(cls, thread_id: Optional[str], agent_id: Optional[str] = None) -> None:
+    async def release_thread(
+        cls, thread_id: Optional[str], agent_id: Optional[str] = None, timeout: Optional[float] = None
+    ) -> None:
         """Tell sandbox-api to free a thread's kernel and routing entry.
 
         Sent whether or not this process cached a context for the thread: after
         a restart, or on another replica, the kernel still lives in the sandbox.
         ``agent_id`` fills the scope header when nothing is cached for the thread.
+        ``timeout`` defaults to the block timeout.
         """
         if not thread_id:
             return
@@ -980,8 +983,7 @@ del _cuga_bootstrap
             cls._scope_of_thread.setdefault(key, {})["agent_id"] = str(agent_id)
         logger.info(f"[execd:ctx] Releasing thread={key} context_id={context_id}")
         try:
-            timeout = float(_block_timeout())
-            async with cls._client(timeout, routing_id) as client:
+            async with cls._client(float(timeout or _block_timeout()), routing_id) as client:
                 # sandbox-api frees a thread's kernel and routing entry by thread id;
                 # it has no per-context delete.
                 response = await client.delete(f"{cls._base_url()}/threads/{cls._workspace_name(routing_id)}")

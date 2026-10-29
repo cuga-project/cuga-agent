@@ -226,7 +226,7 @@ async def test_switching_off_releases_the_kernels_this_process_holds(monkeypatch
     await put_sandbox_settings(SandboxSettingsBody(enabled=True))
     released: list[str] = []
 
-    async def release(thread_id, agent_id=None):
+    async def release(thread_id, agent_id=None, timeout=None):
         released.append(thread_id)
 
     monkeypatch.setattr(ExecdExecutor, "release_thread", staticmethod(release))
@@ -235,6 +235,87 @@ async def test_switching_off_releases_the_kernels_this_process_holds(monkeypatch
     await put_sandbox_settings(SandboxSettingsBody(enabled=False))
 
     assert sorted(released) == ["t1", "t2"]
+
+
+@pytest.mark.asyncio
+async def test_switching_off_is_saved_first_and_does_not_wait_on_a_broken_sandbox(
+    monkeypatch, tmp_path, _isolated
+):
+    """Kernels are released after "off" is saved, in parallel and with a short timeout."""
+    import asyncio
+    import time
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import ExecdExecutor
+
+    _mount_secret(monkeypatch, tmp_path)
+    await put_sandbox_settings(SandboxSettingsBody(enabled=True))
+    seen: list[tuple] = []
+
+    async def hung_release(thread_id, agent_id=None, timeout=None):
+        # What the route has done by the time a kernel is released.
+        seen.append((thread_id, timeout, connection.is_enabled(), list(_isolated)))
+        await asyncio.sleep(0.3)
+
+    monkeypatch.setattr(ExecdExecutor, "release_thread", staticmethod(hung_release))
+    monkeypatch.setattr(ExecdExecutor, "_contexts", {f"t{i}": f"ctx-{i}" for i in range(5)})
+
+    started = time.monotonic()
+    await put_sandbox_settings(SandboxSettingsBody(enabled=False))
+
+    # Five kernels at 0.3 s each, released one at a time, would take 1.5 s.
+    assert time.monotonic() - started < 1.0
+    assert len(seen) == 5
+    for _thread, timeout, enabled, saved in seen:
+        assert timeout == sandbox_routes._RELEASE_TIMEOUT_S
+        assert enabled is False
+        assert saved[-1] == {"enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_resetting_to_the_defaults_releases_the_kernels_like_switching_off(monkeypatch, tmp_path):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import ExecdExecutor
+
+    _mount_secret(monkeypatch, tmp_path)
+    await put_sandbox_settings(SandboxSettingsBody(enabled=True))
+    released: list[str] = []
+
+    async def release(thread_id, agent_id=None, timeout=None):
+        released.append(thread_id)
+
+    async def delete():
+        pass
+
+    monkeypatch.setattr(sandbox_routes, "delete_sandbox_settings", delete)
+    monkeypatch.setattr(ExecdExecutor, "release_thread", staticmethod(release))
+    monkeypatch.setattr(ExecdExecutor, "_contexts", {"t1": "ctx-1"})
+
+    status = await sandbox_routes.reset_sandbox_settings()
+
+    assert status["enabled"] is False
+    assert released == ["t1"]
+
+
+@pytest.mark.asyncio
+async def test_resetting_keeps_the_kernels_of_a_sandbox_the_deployment_requires(monkeypatch, tmp_path):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import ExecdExecutor
+
+    _mount_secret(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings.advanced_features, "sandbox_mode", "execd", raising=False)
+    released: list[str] = []
+
+    async def release(thread_id, agent_id=None, timeout=None):
+        released.append(thread_id)  # pragma: no cover
+
+    async def delete():
+        pass
+
+    monkeypatch.setattr(sandbox_routes, "delete_sandbox_settings", delete)
+    monkeypatch.setattr(ExecdExecutor, "release_thread", staticmethod(release))
+    monkeypatch.setattr(ExecdExecutor, "_contexts", {"t1": "ctx-1"})
+
+    await sandbox_routes.reset_sandbox_settings()
+
+    assert released == []
 
 
 @pytest.mark.asyncio
