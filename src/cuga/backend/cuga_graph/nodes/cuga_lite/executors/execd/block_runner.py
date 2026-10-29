@@ -54,6 +54,67 @@ def variables_code(variables: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def block_code(wrapped_code: str, names: list[str]) -> str:
+    """Kernel code defining ``_async_main`` in a namespace of its own, as ``LocalExecutor`` does.
+
+    The kernel's globals also hold CUGA's helpers (the tool callback client, the
+    in-kernel tools' ``os``, the runner's ``sys``) and full builtins. The block
+    therefore runs in the namespace the local executor builds: the same safe
+    builtins and import allowlist, ``asyncio``/``json``/``pd``, and only the
+    kernel globals in ``names`` (the block's tools and stored variables). The
+    helpers stay out of reach whatever names the code builds at runtime.
+
+    With relaxed execution the block runs in the kernel's globals, unrestricted,
+    as the local executor's relaxed mode is.
+    """
+    from ..common.benchmark_mode import is_relaxed_execution
+
+    if is_relaxed_execution():
+        return wrapped_code
+    from ..common.restricted_environment import RestrictedEnvironment
+    from ..common.security import SecurityValidator
+
+    builtin_names = sorted(
+        n for n in RestrictedEnvironment.create_safe_builtins(None) if n not in ("__import__", "__name__")
+    )
+    # The list the host already checked the code's imports against.
+    allowed = sorted(SecurityValidator.ALLOWED_IMPORTS)
+    import ast
+
+    # pandas only when the block names it: importing it on every block would slow the kernel down.
+    used = {n.id for n in ast.walk(ast.parse(wrapped_code)) if isinstance(n, ast.Name)}
+    with_pandas = bool(used & {"pd", "pandas"})
+    shared = sorted(n for n in names if n.isidentifier() and not n.startswith(("_cuga", "_Cuga", "_CUGA")))
+    return f'''
+def _cuga_r_namespace():
+    import builtins as _b, json as _j
+    _real_import = _b.__import__
+    _allowed = frozenset({allowed!r})
+
+    def _restricted_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name.split(".")[0] not in _allowed:
+            raise ImportError(f"Import of '{{name}}' is not allowed in restricted execution context")
+        return _real_import(name, globals, locals, fromlist, level)
+
+    _safe = {{_n: getattr(_b, _n) for _n in {builtin_names!r} if hasattr(_b, _n)}}
+    _safe["__import__"] = _restricted_import
+    _safe["__name__"] = "__restricted__"
+    _ns = {{"__builtins__": _safe, "asyncio": _real_import("asyncio"), "json": _j}}
+    if {with_pandas!r}:
+        try:
+            _ns["pd"] = _ns["pandas"] = _real_import("pandas")
+        except ImportError:
+            pass
+    _g = globals()
+    _ns.update({{_n: _g[_n] for _n in {shared!r} if _n in _g}})
+    exec({wrapped_code!r}, _ns)
+    return _ns["_async_main"]
+
+_async_main = _cuga_r_namespace()
+del _cuga_r_namespace
+'''
+
+
 def runner_code(timeout: int) -> str:
     """Kernel code that runs ``_async_main`` and prints one framed result line.
 
@@ -141,9 +202,10 @@ async def _cuga_r_run():
         except SystemExit as e:
             return ("exit", (e, _cuga_r_frame_locals(e)))
 
-    # The block resolves exit/quit through globals first, before builtins.
-    _saved_exit = {{_n: globals().get(_n) for _n in ("exit", "quit")}}
-    globals()["exit"] = globals()["quit"] = _cuga_r_exit
+    # The block resolves exit/quit through its globals first, before builtins.
+    _block_globals = _async_main.__globals__
+    _saved_exit = {{_n: _block_globals.get(_n) for _n in ("exit", "quit")}}
+    _block_globals["exit"] = _block_globals["quit"] = _cuga_r_exit
     task = _cuga_r_aio.ensure_future(_block())
     try:
         done, _ = await _cuga_r_aio.wait({{task}}, timeout={int(timeout)})
@@ -186,9 +248,9 @@ async def _cuga_r_run():
         _cuga_r_sys.stdout = _real
         for _n, _v in _saved_exit.items():
             if _v is None:
-                globals().pop(_n, None)
+                _block_globals.pop(_n, None)
             else:
-                globals()[_n] = _v
+                _block_globals[_n] = _v
 
 await _cuga_r_run()
 '''
@@ -257,4 +319,12 @@ def render(outcome: dict[str, Any], *, timeout: int) -> str:
     return text
 
 
-__all__ = ["RESULT_MARKER", "parse_outcome", "render", "runner_code", "strip_marker", "variables_code"]
+__all__ = [
+    "RESULT_MARKER",
+    "block_code",
+    "parse_outcome",
+    "render",
+    "runner_code",
+    "strip_marker",
+    "variables_code",
+]

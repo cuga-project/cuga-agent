@@ -191,3 +191,139 @@ async def test_a_block_that_never_reports_is_an_error(monkeypatch):
         "Output before error:\npartial line\n\nError during execution: the code block did not finish"
     )
     assert new_vars == {}
+
+
+# Review item 18: routes that got past the name check. The check now refuses
+# them, and the block runs in a namespace of its own, so they fail in the
+# kernel too, as they do under the local executor.
+_BYPASSES = [
+    # A _cuga name bound in a nested scope only, read at the block's level.
+    "def _u():\n    _cuga_os = None\nprint(_cuga_os.listdir('/workspace'))",
+    # A runtime-built name through an alias of eval.
+    "e = eval\nprint(e('_cuga_' + 'os'))",
+    "x = exec",
+    "c = compile('1', 's', 'eval')",
+    # A shell with the shell tool off.
+    "import asyncio\nawait asyncio.get_running_loop().subprocess_shell(asyncio.SubprocessProtocol, 'id')",
+    "import asyncio\nawait asyncio.get_running_loop().subprocess_exec(asyncio.SubprocessProtocol, 'id')",
+]
+
+
+@pytest.mark.parametrize("code", _BYPASSES)
+def test_review_item_18_bypasses_are_refused(code):
+    with pytest.raises(PermissionError):
+        _check_kernel_access(_wrapped(code))
+
+
+def _run_in_kernel(code: str, helpers: str = "", names: tuple[str, ...] = ()) -> dict:
+    """Run a block as the kernel does, past the host check; return its outcome."""
+    import ast
+    import asyncio
+    import contextlib
+    import io
+    import types
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import block_runner
+
+    source = helpers + block_runner.block_code(_wrapped(code), list(names)) + block_runner.runner_code(5)
+    code_obj = compile(source, "<cell>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        coro = types.FunctionType(code_obj, {"__name__": "__main__"})()
+        if coro is not None:
+            asyncio.run(coro)
+    outcome = block_runner.parse_outcome(out.getvalue())
+    assert outcome is not None, out.getvalue()
+    return outcome
+
+
+_KERNEL_HELPERS = "import os as _cuga_sh_os\n"
+
+
+@pytest.mark.parametrize(
+    "code, error_type",
+    [
+        # Were the host check to miss them, the kernel's helpers are still out of reach.
+        ("def _u():\n    _cuga_sh_os = None\nprint(_cuga_sh_os.getcwd())", "NameError"),
+        ("e = eval\nprint(e('_cuga_' + 'sh_os'))", "NameError"),
+        ("print(globals()['_cuga_sh_os'])", "NameError"),
+        ("g = getattr\nprint(g)", "NameError"),
+        ("import os\nprint(os)", "ImportError"),
+        ("import subprocess", "ImportError"),
+    ],
+)
+def test_the_block_does_not_see_the_kernel_helpers(code, error_type):
+    outcome = _run_in_kernel(code, helpers=_KERNEL_HELPERS)
+    assert outcome["status"] == "error"
+    assert outcome["error_type"] == error_type
+
+
+def test_the_block_sees_its_tools_and_allowed_modules():
+    tools = "async def crm_get_contact(id):\n    return {'id': id}\n"
+    outcome = _run_in_kernel(
+        "import math, statistics\nc = await crm_get_contact(id=2)\nprint(c['id'], math.sqrt(4), statistics.mean([1, 3]))",
+        helpers=_KERNEL_HELPERS + tools,
+        names=("crm_get_contact",),
+    )
+    assert outcome["status"] == "ok", outcome
+    assert outcome["stdout"].strip() == "2 2.0 2"
+    assert outcome["locals"] == {"c": {"id": 2}}
+
+
+def test_relaxed_execution_keeps_the_kernel_globals(monkeypatch):
+    monkeypatch.setattr(settings.execution, "enforce_code_security", False, raising=False)
+    outcome = _run_in_kernel("print(_cuga_sh_os.sep)", helpers=_KERNEL_HELPERS)
+    assert outcome["status"] == "ok", outcome
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # Bound in a class body, read in its method: a method does not see class names.
+        "class A:\n    _cuga_x = 1\n    def m(self):\n        return _cuga_x",
+        # Bound in a comprehension, read after it.
+        "y = [_cuga_i for _cuga_i in range(3)]\nprint(_cuga_i)",
+        # Bound inside a lambda only, read outside it.
+        "f = lambda _cuga_a: _cuga_a\nprint(_cuga_a)",
+    ],
+)
+def test_a_cuga_name_bound_in_another_scope_is_refused(code):
+    with pytest.raises(PermissionError, match="reserved for the sandbox runtime"):
+        _check_kernel_access(_wrapped(code))
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # A closure reads its enclosing function's name.
+        "def outer():\n    _cuga_x = 1\n    def inner():\n        return _cuga_x\n    return inner()\nprint(outer())",
+        "def f(_cuga_p):\n    return _cuga_p\nprint(f(1))",
+        "print([_cuga_i * 2 for _cuga_i in range(3)])",
+        "try:\n    pass\nexcept Exception as _cuga_e:\n    print(_cuga_e)",
+    ],
+)
+def test_a_cuga_name_bound_in_its_own_scope_passes(code):
+    _check_kernel_access(_wrapped(code))
+
+
+def test_in_kernel_file_tools_still_work_from_the_restricted_block(tmp_path):
+    """The file tools keep their own os/glob; the block reaches them only by their tool names."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd.kernel_templates import (
+        CHARGE_NAME,
+        charged_tools_code,
+        filesystem_tools_code,
+    )
+
+    helpers = (
+        filesystem_tools_code(str(tmp_path))
+        + f"async def {CHARGE_NAME}(name):\n    pass\n"
+        + charged_tools_code(["read_file", "write_file"])
+    )
+    outcome = _run_in_kernel(
+        "await write_file('/workspace/a.txt', 'hello')\nprint(await read_file('/workspace/a.txt'))",
+        helpers=helpers,
+        names=("read_file", "write_file"),
+    )
+    assert outcome["status"] == "ok", outcome
+    assert outcome["stdout"].strip() == "hello"
+    assert (tmp_path / "a.txt").read_text() == "hello"

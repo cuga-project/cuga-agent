@@ -245,24 +245,30 @@ With `sandbox_mode = "execd"` (or the Manage → Code sandbox toggle), generated
   a key that exists only in the CUGA process, so code in one thread cannot call another
   thread's tools. A call that outlives its block is refused.
 
-**Inside one conversation: the checks are a mitigation, not a boundary.**
-- `SecurityValidator` checks the code before it is sent, as in the other modes. The
-  kernel itself runs with full builtins: the `LocalExecutor` runtime restrictions
-  (restricted `__import__`, safe builtins, filtered globals) are not applied there.
-- The kernel is long-lived and also holds CUGA's helpers (the tool callback client, the
-  in-kernel tools' `os`, the block runner's `sys`). Two execd-only checks keep agent
-  code away from them:
+**Inside one conversation: the same restrictions as the local executor.**
+- `SecurityValidator` checks the code before it is sent, as in the other modes.
+- In the kernel the block runs in a namespace of its own, built as `LocalExecutor`
+  builds it: the same safe builtins (no `eval`, `exec`, `compile`, `getattr`, `vars`,
+  `open`), imports limited to `SecurityValidator.ALLOWED_IMPORTS`, and only the block's
+  tools and stored variables. CUGA's helpers in the kernel's globals (the tool callback
+  client, the in-kernel tools' `os`, the block runner's `sys`) are not in that
+  namespace. `exit()` ends the block early and keeps its variables, as under the local
+  executor's runner. With `execution.enforce_code_security = false` the block runs in
+  the kernel's globals, unrestricted, as relaxed execution does locally.
+- Two execd-only checks on top:
   - The tool callback answers only the tools the block names as identifiers. A tool
-    reached any other way (for example `_cuga_cb_acall('send_' + 'email', …)`) is not
-    registered for the block, so CUGA refuses it. Tool approval looks at the same code.
-  - Code is refused before it is sent if it reads a `_cuga*` name it did not bind itself,
-    calls `globals()` or `vars()`, names a dunder such as `__builtins__`, or uses
-    `asyncio.create_subprocess_*` or `asyncio.subprocess`. The bootstrap keeps its own
-    names (`os`, `site`, `importlib`, `urllib`) inside a function, so they never reach
-    the kernel's globals.
-- These checks are a blocklist on a kernel with full builtins, so they are not a
-  boundary. Treat the sandbox as the boundary: what agent code can do is limited by what
-  the sandbox allows (its filesystem, network policy and the tools CUGA answers).
+    reached any other way is not registered for the block, so CUGA refuses it. Tool
+    approval looks at the same code.
+  - Code is refused before it is sent if it reads a `_cuga*` name its own scope did not
+    bind, names `globals`, `vars`, `eval`, `exec`, `compile` or a dunder such as
+    `__builtins__`, or uses `asyncio` subprocess calls (`create_subprocess_*`,
+    `subprocess_shell`, `subprocess_exec`, `asyncio.subprocess`). The bootstrap keeps
+    its own names (`os`, `site`, `importlib`, `urllib`) inside a function, so they never
+    reach the kernel's globals.
+- Like the local executor's, these restrictions run in the same process as the code, so
+  they are not a boundary. Treat the sandbox as the boundary: what agent code can do is
+  limited by what the sandbox allows (its filesystem, network policy and the tools CUGA
+  answers).
 
 **Paths.** The agent sees its workspace as `/workspace`. In the kernel and in shell
 commands, `/workspace/x` is rewritten to `./x` and a bare `/workspace` to the thread's

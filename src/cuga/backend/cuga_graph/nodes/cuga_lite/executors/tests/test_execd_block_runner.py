@@ -19,16 +19,25 @@ pytestmark = pytest.mark.unit
 
 
 def _run_kernel(
-    code: str, *, timeout: int = 5, variables: dict | None = None, extra: str = ""
+    code: str,
+    *,
+    timeout: int = 5,
+    variables: dict | None = None,
+    extra: str = "",
+    names: tuple[str, ...] = (),
 ) -> tuple[dict, str]:
-    """Exec variables + wrapped block + runner as one cell; return (outcome, rendered text)."""
+    """Exec variables + block + runner as one cell, as ExecdExecutor assembles it.
+
+    ``names`` are the kernel globals ``extra`` defines for the block (its tools);
+    stored variables are shared with the block the same way.
+    """
     import contextlib
     import io
 
     source = (
         block_runner.variables_code(variables or {})
         + extra
-        + CodeWrapper.wrap_code(code)
+        + block_runner.block_code(CodeWrapper.wrap_code(code), [*(variables or {}), *names])
         + block_runner.runner_code(timeout)
     )
     # Compiled as IPython compiles a cell: module level, top-level await allowed,
@@ -90,7 +99,9 @@ def test_a_refused_tool_call_keeps_the_result_of_the_call_that_ran():
         "        raise _CugaToolError('BlockToolCallBudgetExceeded', 'One tool call per step: refused')\n"
         "    return 'pong'\n"
     )
-    outcome, text = _run_kernel("a = await ping()\nb = await ping()\nprint('never')", extra=stubs)
+    outcome, text = _run_kernel(
+        "a = await ping()\nb = await ping()\nprint('never')", extra=stubs, names=("ping",)
+    )
     assert outcome["status"] == "budget"
     assert outcome["locals"] == {"a": "pong"}
     assert text.startswith(

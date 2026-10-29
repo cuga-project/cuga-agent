@@ -85,10 +85,14 @@ def _names_used(code: str) -> set[str]:
 
 
 _KERNEL_PREFIXES = ("_cuga", "_Cuga", "_CUGA")
-# A kernel keeps every global of every block, and runs with full builtins. These
-# reach those globals or a shell without naming a blocked module.
-_KERNEL_FORBIDDEN_NAMES = frozenset({"globals", "vars"})
-_KERNEL_FORBIDDEN_ATTRS = frozenset({"create_subprocess_shell", "create_subprocess_exec", "subprocess"})
+# A kernel keeps every global of every block, and the kernel has full builtins.
+# These reach those globals or a shell without naming a blocked module. The block's
+# own namespace (block_runner.block_code) lacks most of them already; refusing them
+# here as well says why, before the code is sent.
+_KERNEL_FORBIDDEN_NAMES = frozenset({"globals", "vars", "eval", "exec", "compile"})
+_KERNEL_FORBIDDEN_ATTRS = frozenset(
+    {"create_subprocess_shell", "create_subprocess_exec", "subprocess_shell", "subprocess_exec", "subprocess"}
+)
 
 
 def _check_kernel_access(wrapped_code: str) -> None:
@@ -101,34 +105,101 @@ def _check_kernel_access(wrapped_code: str) -> None:
     itself, as ``CodeWrapper`` does for the frozen clock: inside the block's
     function such a name is local, so it cannot read the kernel's.
 
-    A mitigation, not the boundary: the sandbox confines the thread whatever
-    the code does, and the tool callback answers only tools the block names.
+    A second layer: in the kernel the block runs in a namespace of its own that
+    does not hold the helpers (``block_runner.block_code``). Neither is the
+    boundary: the sandbox confines the thread whatever the code does, and the
+    tool callback answers only tools the block names.
     """
     if is_relaxed_execution():
         return
     tree = ast.parse(wrapped_code)
-    bound: set[str] = set()
     for node in ast.walk(tree):
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            for name in node.names:
+                if name.startswith(_KERNEL_PREFIXES):
+                    raise PermissionError(f"Security violation: '{name}' is reserved for the sandbox runtime")
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            name = node.id
+            if name in _KERNEL_FORBIDDEN_NAMES or (name.startswith("__") and name.endswith("__")):
+                raise PermissionError(f"Security violation: '{name}' is not allowed in sandbox code")
+        elif isinstance(node, ast.Attribute):
+            if node.attr in _KERNEL_FORBIDDEN_ATTRS or node.attr.startswith(_KERNEL_PREFIXES):
+                raise PermissionError(f"Security violation: '{node.attr}' is not allowed in sandbox code")
+    _check_scope(tree.body, frozenset())
+
+
+_FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+_COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
+def _scope_nodes(body: list[ast.AST]) -> list[ast.AST]:
+    """The nodes of one scope: everything under ``body`` but the inside of nested scopes.
+
+    A nested scope's node is included; what it evaluates in this scope
+    (decorators, defaults, bases, a comprehension's first iterable) is too.
+    """
+    out: list[ast.AST] = []
+    stack = list(reversed(body))
+    while stack:
+        node = stack.pop()
+        out.append(node)
+        if isinstance(node, (*_FUNCTIONS, ast.ClassDef)):
+            outer = [
+                *getattr(node, "decorator_list", []),
+                *getattr(node, "bases", []),
+                *getattr(node, "keywords", []),
+            ]
+            if isinstance(node, _FUNCTIONS):
+                outer += [*node.args.defaults, *(d for d in node.args.kw_defaults if d is not None)]
+            stack.extend(reversed(outer))
+        elif isinstance(node, _COMPREHENSIONS):
+            stack.append(node.generators[0].iter)
+        else:
+            stack.extend(reversed(list(ast.iter_child_nodes(node))))
+    return out
+
+
+def _check_scope(body: list[ast.AST], enclosing: frozenset[str], *, class_body: bool = False) -> None:
+    """Refuse a read of a ``_cuga`` name that neither this scope nor an enclosing function binds.
+
+    Scope by scope, as Python resolves names: ``_cuga_os = None`` inside a
+    nested function does not make ``_cuga_os`` the block's own, so reading it
+    outside that function reads the kernel's global.
+    """
+    nodes = _scope_nodes(body)
+    bound = set(enclosing)
+    for node in nodes:
         if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
             bound.add(node.id)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             bound.add(node.name)
         elif isinstance(node, ast.alias):
             bound.add(node.asname or node.name.split(".")[0])
-        elif isinstance(node, (ast.Global, ast.Nonlocal)):
-            for name in node.names:
-                if name.startswith(_KERNEL_PREFIXES):
-                    raise PermissionError(f"Security violation: '{name}' is reserved for the sandbox runtime")
-    for node in ast.walk(tree):
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+    for node in nodes:
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            name = node.id
-            if name.startswith(_KERNEL_PREFIXES) and name not in bound:
-                raise PermissionError(f"Security violation: '{name}' is reserved for the sandbox runtime")
-            if name in _KERNEL_FORBIDDEN_NAMES or (name.startswith("__") and name.endswith("__")):
-                raise PermissionError(f"Security violation: '{name}' is not allowed in sandbox code")
-        elif isinstance(node, ast.Attribute):
-            if node.attr in _KERNEL_FORBIDDEN_ATTRS or node.attr.startswith(_KERNEL_PREFIXES):
-                raise PermissionError(f"Security violation: '{node.attr}' is not allowed in sandbox code")
+            if node.id.startswith(_KERNEL_PREFIXES) and node.id not in bound:
+                raise PermissionError(f"Security violation: '{node.id}' is reserved for the sandbox runtime")
+    # A class body's names are not visible inside its methods.
+    visible = enclosing if class_body else frozenset(bound)
+    for node in nodes:
+        if isinstance(node, _FUNCTIONS):
+            a = node.args
+            params = {
+                x.arg for x in (*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg) if x is not None
+            }
+            inner = node.body if isinstance(node.body, list) else [node.body]
+            _check_scope(inner, visible | params)
+        elif isinstance(node, ast.ClassDef):
+            _check_scope(node.body, visible, class_body=True)
+        elif isinstance(node, _COMPREHENSIONS):
+            first, *rest = node.generators
+            inner = [first.target, *first.ifs]
+            for gen in rest:
+                inner += [gen.iter, gen.target, *gen.ifs]
+            inner += [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
+            _check_scope(inner, visible)
 
 
 def _is_callable_table(value: Any) -> bool:
@@ -1001,7 +1072,7 @@ import asyncio
 {tools_code}
 {charged_code}
 {variables_code}
-{wrapped_code}
+{block_runner.block_code(wrapped_code, [*remote, *in_kernel, *var_manager.get_variable_names()])}
 {block_runner.runner_code(sandbox_timeout)}"""
 
                 logger.debug(
