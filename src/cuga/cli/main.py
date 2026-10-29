@@ -177,6 +177,27 @@ def _check_opensandbox_reachable() -> bool:
         return False
 
 
+def _configure_stream_encoding(stream) -> None:
+    """Prevent Unicode output from crashing on Windows consoles."""
+    reconfigure = getattr(stream, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        pass
+
+
+def _configure_console_encoding() -> None:
+    """Configure Windows standard streams for Unicode output."""
+    if os.name != "nt":
+        return
+    _configure_stream_encoding(sys.stdout)
+    _configure_stream_encoding(sys.stderr)
+
+
+_configure_console_encoding()
+
 console = Console()
 
 os.environ["DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED"] = "true"
@@ -596,6 +617,12 @@ def run_direct_service(
 
 def wait_for_direct_processes():
     """Wait for all direct processes to complete or be interrupted."""
+    # Every service path prints its ready panel and then blocks here, so this is the one
+    # place a footer under that panel reaches all of them. Skipped when output isn't a TTY.
+    if console.is_terminal:
+        console.print(
+            "[dim]⭐ Enjoying CUGA? Star it on GitHub: https://github.com/cuga-project/cuga-agent[/dim]"
+        )
     try:
         while direct_processes and not shutdown_event.is_set():
             # Check if any process has terminated

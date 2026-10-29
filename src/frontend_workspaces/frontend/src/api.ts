@@ -411,9 +411,10 @@ export async function discoverGateway(
   });
 }
 
-export async function getToolsList(draft?: boolean): Promise<Response> {
-  const q = draft ? "?draft=1" : "";
-  return apiFetch(`/api/tools/list${q}`);
+export async function getToolsList(draft?: boolean, agentId = getKnowledgeAgentId()): Promise<Response> {
+  const params = new URLSearchParams({ agent_id: agentId });
+  if (draft) params.set("draft", "1");
+  return apiFetch(`/api/tools/list?${params.toString()}`);
 }
 
 export async function getSkills(): Promise<Response> {

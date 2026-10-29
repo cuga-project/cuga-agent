@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from cuga.backend.server.error_responses import log_error_ref, safe_http_exception
+from cuga.backend.server.agent_registry import agent_special_instructions
 
 import asyncio as _asyncio
 
@@ -48,6 +49,8 @@ async def get_manage_config(
                 config, _ = await load_config(None, agent_id)
             if config is None:
                 return JSONResponse({"config": {}, "version": "draft", "agent_id": agent_id})
+            if ((config.get("agent") or {}).get("kind")) == "supervisor":
+                config.setdefault("special_instructions", agent_special_instructions(config))
             merge_mcp_yaml_into_config(config)
             merge_feature_flags_defaults(config)
             redact_secrets_in_config(config)
@@ -55,6 +58,8 @@ async def get_manage_config(
         config, ver = await load_config(version, agent_id)
         if config is None:
             return JSONResponse({"config": {}, "agent_id": agent_id})
+        if ((config.get("agent") or {}).get("kind")) == "supervisor":
+            config.setdefault("special_instructions", agent_special_instructions(config))
         merge_mcp_yaml_into_config(config)
         merge_feature_flags_defaults(config)
         redact_secrets_in_config(config)
