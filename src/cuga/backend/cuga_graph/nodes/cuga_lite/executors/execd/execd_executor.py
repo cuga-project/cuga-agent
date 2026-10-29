@@ -297,9 +297,11 @@ class ExecdExecutor(RemoteExecutor):
 
     @classmethod
     def _identity_headers(cls, thread: Optional[str] = None) -> dict[str, str]:
-        """``X-Tenant-Id`` / ``X-Agent-Id`` that sandbox-api scopes threads by.
+        """``X-Tenant-Id`` / ``X-Agent-Id``: labels for sandbox-api's logs, traces and events.
 
         The conversation's own tenant and agent, from ``AgentState.service_scope``.
+        sandbox-api routes and confines a thread by its ``thread_id`` alone, so a
+        wrong or default label mislabels the logs but reaches no other thread.
         """
         scope = cls._scope_of_thread.get(thread or "", {})
         tenant = scope.get("tenant_id") or get_tenant_id() or "default"
