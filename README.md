@@ -40,6 +40,8 @@ uv run cuga start manager --crm
 
 Open `/manage` at the local URL printed by the CLI. Try the CRM tools, configure policies, and test a draft before publishing. [More source and demo options](#develop-from-source).
 
+Prefer to try it in your browser first? [Open the quickstart notebook in Colab](https://colab.research.google.com/github/cuga-project/cuga-agent/blob/main/docs/examples/colab/try_cuga.ipynb).
+
 ## Automate enterprise work. Keep control.
 
 | Your priority | What CUGA gives you |
