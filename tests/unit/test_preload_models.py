@@ -62,6 +62,15 @@ def test_supported_image_bakes_evolve_for_offline_runtime() -> None:
     assert "container_services.py" in entrypoint
     assert not (REPO_ROOT / "Dockerfile.memory").exists()
 
+    # cuga_workspace must be group-writable like /data and /app/.cuga, not just
+    # the files copied into it — otherwise CUGA_THREAD_WORKSPACE_SEED's
+    # per-thread mkdir (paths.py:ensure_thread_workspace_seeded) fails with a
+    # confusing "[read_file error] Permission denied: <thread-dir>" the first
+    # time a thread touches the workspace under the 1001:0 / arbitrary-UID
+    # restricted-SCC runtime user.
+    assert "chown -R 1001:0 /data /app/.cuga /app/cuga_workspace" in dockerfile
+    assert "chmod -R g+rwX /app/.cuga /app/cuga_workspace" in dockerfile
+
 
 @pytest.mark.unit
 def test_slim_image_excludes_docling_and_evolve_stack() -> None:
@@ -141,6 +150,11 @@ def test_slim_image_excludes_docling_and_evolve_stack() -> None:
     )
     assert "RUN --network=none /app/.venv/bin/python /app/src/scripts/verify_airgap.py" not in slim_dockerfile
     assert "container_services.py" in slim_dockerfile
+
+    # Same cuga_workspace permission fix as the full image — slim hits the
+    # exact same per-thread mkdir path.
+    assert "chown -R 1001:0 /data /app/.cuga /app/cuga_workspace" in slim_dockerfile
+    assert "chmod -R g+rwX /app/.cuga /app/cuga_workspace" in slim_dockerfile
 
 
 @pytest.mark.unit
