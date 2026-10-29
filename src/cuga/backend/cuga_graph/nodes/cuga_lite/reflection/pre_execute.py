@@ -267,18 +267,20 @@ def ordered_variables_summary(variables_manager: Any, script: Optional[str]) -> 
 
 
 def verify_blocked_message(alert: str) -> str:
-    # Scoped to the flagged value or field: a blanket "ground every argument" made
-    # the model strip needed flags (clear_cart_first, repeat_days) on rewrite. A
-    # rule-4 extra field is fixed by removing it, not by grounding it again.
-    body = (alert or "").strip() or (
-        "VERIFY did not name the value. Find the write argument that has no support in the "
-        "Current Task or retrieved data, contradicts the Current Task, or writes a field "
-        "the Current Task did not ask to change."
-    )
+    # The alert says what to change: a value to fix, a rule-4 extra field to
+    # remove, or a rule-5 flag to turn off. A blanket instruction does harm:
+    # "ground every argument" made the model strip needed flags
+    # (clear_cart_first, repeat_days), and "remove the flagged field if the task
+    # did not ask to change it" licensed removing any field the task is silent on.
+    alert = (alert or "").strip()
+    keep = "Keep every other argument the task needs, including flags and defaults."
+    if alert:
+        return f"{VERIFY_BLOCKED_PREFIX}\n{alert}\nRewrite the block. Make only the change the alert asks for. {keep}"
     return (
         f"{VERIFY_BLOCKED_PREFIX}\n"
-        f"{body}\n"
-        "Rewrite the block. Fix the flagged value, or remove the flagged field if the task "
-        "did not ask to change it. Keep every other argument the task needs, including "
-        "flags and defaults."
+        "VERIFY did not name the value. Find the write argument that has no support in the "
+        "Current Task or retrieved data, contradicts the Current Task, writes a field "
+        "the Current Task did not ask to change, or turns on a flag that deletes data "
+        "the Current Task did not ask to delete.\n"
+        f"Rewrite the block. Change only that argument. {keep}"
     )

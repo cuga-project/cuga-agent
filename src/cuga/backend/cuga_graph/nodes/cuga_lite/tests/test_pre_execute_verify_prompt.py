@@ -295,19 +295,28 @@ def test_verify_blocked_message_limits_the_rewrite_to_the_flagged_value():
     msg = verify_blocked_message("quantity=1 is ungrounded")
     assert "each write argument is grounded" not in msg
     assert "quantity=1 is ungrounded" in msg
-    assert "Fix the flagged value" in msg
+    assert "Make only the change the alert asks for" in msg
     assert "flags and defaults" in msg
 
 
 @pytest.mark.unit
-def test_verify_blocked_message_says_to_remove_a_flagged_extra_field():
-    """Rule 4 flags a field the task did not ask to change; grounding it again cannot fix that."""
+def test_verify_blocked_message_leaves_removal_to_the_alert():
+    """Only the alert may say to remove a field.
+
+    A general "remove the flagged field if the task did not ask to change it"
+    let the agent drop clear_cart_first after a wrong flag: Mistral's 6474048_1
+    shipped a pre-seeded 7-item order. A rule-4 alert names the field to remove
+    on its own fix line, so that removal still reaches the agent.
+    """
     from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
         verify_blocked_message,
     )
 
-    msg = verify_blocked_message('status="pending" is an extra field; the task only changes the title')
-    assert "remove the flagged field" in msg
+    msg = verify_blocked_message(
+        'status="pending" is an extra field\nRemove status; the task only changes the title'
+    )
+    assert "Remove status" in msg
+    assert "remove the flagged field" not in msg
     assert "come from retrieved data" not in msg
 
 
@@ -329,6 +338,33 @@ def test_verify_blocked_message_without_an_alert_still_says_what_to_check():
 def test_alert_format_lets_verify_name_an_extra_field():
     output_format = _verify_prompt_text().split("Output EXACTLY in this format", 1)[1]
     assert "extra field" in output_format
+    assert "destructive flag" in output_format and "which flag to turn off" in output_format
+
+
+# Mistral read "flags that do not contradict the Current Task" as "flags the task
+# supports" and flagged clear_cart_first=True on a purchase; the agent dropped it
+# and the pre-seeded cart shipped. An unmentioned flag is a choice, but one that
+# throws away existing data still needs a reason.
+
+
+@pytest.mark.unit
+def test_an_unmentioned_flag_is_not_a_contradiction():
+    carve_outs = _verify_prompt_text().split("Do NOT flag:", 1)[1]
+    assert "A flag the Current Task does not mention is not a contradiction" in carve_outs
+    assert "fall under rule 5" in carve_outs
+
+
+@pytest.mark.unit
+def test_a_destructive_flag_is_flagged_only_against_a_task_that_keeps_the_data():
+    """ "Needs support from the task" made Mistral revise clear_cart_first=True on
+    "Buy me a microwave" 3 of 3 times; it read a purchase as keeping the cart."""
+    text = _verify_prompt_text()
+    rule_five = text.split("5. Destructive flags", 1)[1].split("Do NOT flag:", 1)[0]
+    assert "asks only to add to that data or to keep it" in rule_five
+    assert '"add the kettle to my cart"' in rule_five
+    carve_outs = text.split("Do NOT flag:", 1)[1]
+    assert "when the Current Task is to buy or order items" in carve_outs
+    assert "part of the purchase, not a contradiction" in carve_outs
 
 
 @pytest.mark.unit
