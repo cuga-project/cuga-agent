@@ -33,6 +33,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import re
 import time
 import uuid
 from typing import Any, Callable, List, Optional
@@ -83,6 +84,9 @@ def _names_used(code: str) -> set[str]:
     """Every identifier the code reads, as AST ``Name`` nodes (not strings or attributes)."""
     return {node.id for node in ast.walk(ast.parse(code)) if isinstance(node, ast.Name)}
 
+
+# The tail ``_workspace_name`` puts on an id it hashes: a dash and 24 hex digits.
+_HASHED_NAME_TAIL = re.compile(r"-[0-9a-f]{24}$")
 
 _KERNEL_PREFIXES = ("_cuga", "_Cuga", "_CUGA")
 # A kernel keeps every global of every block, and the kernel has full builtins.
@@ -517,9 +521,16 @@ class ExecdExecutor(RemoteExecutor):
         cutting at 64. That mapping is not one-to-one — ``a.b`` and ``a-b`` would
         share a workspace and a kernel — so an id it would change is replaced
         here by its readable prefix plus a hash of the full id. Ids it keeps
-        as they are, UUIDs included, are sent unchanged.
+        as they are, UUIDs included, are sent unchanged — unless they end the
+        way a hashed name does: such an id would otherwise map to itself and
+        share the workspace of the id whose hash it copies.
         """
-        if key and len(key) <= 64 and all(c.isascii() and (c.isalnum() or c in "-_") for c in key):
+        if (
+            key
+            and len(key) <= 64
+            and all(c.isascii() and (c.isalnum() or c in "-_") for c in key)
+            and not _HASHED_NAME_TAIL.search(key)
+        ):
             return key
         safe = "".join(c if (c.isascii() and (c.isalnum() or c in "-_")) else "-" for c in key)
         return f"{safe[:39]}-{hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]}"

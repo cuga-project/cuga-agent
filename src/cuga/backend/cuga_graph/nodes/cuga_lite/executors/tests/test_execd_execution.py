@@ -219,6 +219,20 @@ def test_ids_sandbox_api_would_merge_get_different_workspaces(a, b):
     assert ExecdExecutor._workspace_name(a) != ExecdExecutor._workspace_name(b)
 
 
+def test_an_id_shaped_like_a_hashed_name_does_not_share_its_workspace():
+    """Review item 15: the hashed name of an id is itself a valid id; claiming it must not reach the folder."""
+    victim = "d57c950e.aaaa-bbbb"
+    hashed = ExecdExecutor._workspace_name(victim)
+    assert hashed == "d57c950e-aaaa-bbbb-ac0bc02afefa9f8bd8f51926"
+
+    claimed = ExecdExecutor._workspace_name(hashed)
+
+    assert claimed != hashed
+    assert re.fullmatch(r"[A-Za-z0-9_-]{1,64}", claimed)
+    # Hashing again does not loop back either.
+    assert ExecdExecutor._workspace_name(claimed) not in (hashed, claimed)
+
+
 def test_a_missing_url_is_a_clear_error(monkeypatch):
     monkeypatch.setattr(settings.advanced_features, "sandbox_secret_dir", "", raising=False)
     monkeypatch.setattr(settings.advanced_features, "execd_url", "", raising=False)
