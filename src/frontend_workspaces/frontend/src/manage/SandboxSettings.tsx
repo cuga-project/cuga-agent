@@ -93,17 +93,15 @@ export function SandboxSettings({ onError, onSaved }: Props) {
 
   return (
     <VStack gap={5}>
-      <p style={{ fontSize: "0.875rem", color: "var(--cds-text-secondary)" }}>
-        Applies to all agents and users. Conversations are isolated by the sandbox, not by CUGA.
-      </p>
       <Checkbox
         id="sandbox-enabled"
         labelText="Sandbox"
         helperText={
-          status.required_by_config
-            ? 'Required by the deployment (sandbox_mode = "execd")'
+          (status.required_by_config
+            ? 'Required by the deployment (sandbox_mode = "execd"). '
             : "Run generated code in a remote execd sandbox. Applies to this server process; " +
-              "other replicas pick it up when they restart."
+              "other replicas pick it up when they restart. ") +
+          "Applies to all agents and users. Conversations are isolated by the sandbox, not by CUGA."
         }
         checked={checked}
         disabled={busy || status.required_by_config}
