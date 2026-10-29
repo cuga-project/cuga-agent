@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import * as api from "./api";
 import { useAuth } from "./AuthContext";
 import { ConfigHeader } from "./ConfigHeader";
-import CarbonChat, { generateUUID } from "./carbon-chat/CarbonChat";
+import CarbonChat from "./carbon-chat/CarbonChat";
 import { MemoryWorkspace } from "./memory/MemoryWorkspace";
 import { SupervisorRoster, type SupervisorMember } from "./SupervisorRoster";
 import {
@@ -60,6 +60,7 @@ interface ConversationThread {
   latest_version: number;
   first_message: string;
   updated_at: string;
+  status?: string;  // "new" | "active" | "legacy"
 }
 
 interface AppTool {
@@ -160,7 +161,7 @@ interface SkillInfo {
 }
 
 interface DraftThreadState {
-  threadId: string;
+  threadId: string | null;
   hasSentFirstMessage: boolean;
   updatedAt: string;
   agentId: string;
@@ -300,7 +301,7 @@ const filterJsonUploadFiles = (files: File[]): File[] =>
   files.filter((file) => JSON_UPLOAD_SUFFIXES.some((suffix) => file.name.toLowerCase().endsWith(suffix)));
 
 const createDraftThreadState = (agentId: string): DraftThreadState => ({
-  threadId: generateUUID(),
+  threadId: null,  // issued by the server: thread_created on the first send, or created for an upload
   hasSentFirstMessage: false,
   updatedAt: new Date().toISOString(),
   agentId,
@@ -315,12 +316,12 @@ const loadDraftThreadState = (agentId: string): DraftThreadState | null => {
     }
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<DraftThreadState>;
-    if (typeof parsed.threadId !== "string" || !parsed.threadId || parsed.hasSentFirstMessage === true) {
+    if (parsed.hasSentFirstMessage === true) {
       window.sessionStorage.removeItem(draftStorageKey(agentId));
       return null;
     }
     return {
-      threadId: parsed.threadId,
+      threadId: typeof parsed.threadId === "string" ? parsed.threadId : null,
       hasSentFirstMessage: false,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
       agentId,
@@ -472,7 +473,9 @@ export function ChatLanding() {
   const [threads, setThreads] = useState<ConversationThread[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
-  const [activeThreadId, setActiveThreadId] = useState<string>(draftThread.threadId);
+  const [selectedThreadStatus, setSelectedThreadStatus] = useState<string | null>(null);
+  const [selectedThreadUnavailable, setSelectedThreadUnavailable] = useState(false);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(draftThread.threadId);
   const [rightSection, setRightSection] = useState<RightPanelSection>("workspace");
   const [knowledgeDocCount, setKnowledgeDocCount] = useState(0);
   const [knowledgeEnabled, setKnowledgeEnabled] = useState(false);
@@ -500,14 +503,21 @@ export function ChatLanding() {
   const prevChatAgentIdRef = useRef(effectiveChatAgentId);
   const chatAgentIdRef = useRef(effectiveChatAgentId);
   chatAgentIdRef.current = effectiveChatAgentId;
+  // Bumped with every new draft, so a conversation created for an older draft is not applied to this one.
+  const draftGenerationRef = useRef(0);
+  const pendingConversationRef = useRef<Promise<string> | null>(null);
 
   useEffect(() => {
     if (prevChatAgentIdRef.current === effectiveChatAgentId) return;
     prevChatAgentIdRef.current = effectiveChatAgentId;
     const nextDraft =
       loadDraftThreadState(effectiveChatAgentId) ?? createDraftThreadState(effectiveChatAgentId);
+    draftGenerationRef.current += 1;
+    pendingConversationRef.current = null;
     setDraftThread(nextDraft);
     setSelectedThreadId(null);
+    setSelectedThreadStatus(null);
+    setSelectedThreadUnavailable(false);
     setActiveThreadId(nextDraft.threadId);
     setThreads([]);
     setLoading(true);
@@ -678,7 +688,9 @@ export function ChatLanding() {
   }, [draftThread.threadId, selectedThreadId]);
 
   useEffect(() => {
-    void refreshKnowledgeDocCount(effectiveChatThreadId);
+    if (effectiveChatThreadId) {
+      void refreshKnowledgeDocCount(effectiveChatThreadId);
+    }
   }, [effectiveChatThreadId, refreshKnowledgeDocCount, sessionDocsVersion]);
 
   const handleSessionDocsChanged = useCallback(() => {
@@ -687,12 +699,34 @@ export function ChatLanding() {
 
   const createAndActivateDraftThread = useCallback(() => {
     const nextDraft = createDraftThreadState(effectiveChatAgentId);
+    draftGenerationRef.current += 1;
+    pendingConversationRef.current = null;
     setDraftThread(nextDraft);
     setSelectedThreadId(null);
+    setSelectedThreadStatus(null);
+    setSelectedThreadUnavailable(false);
     setActiveThreadId(nextDraft.threadId);
     setSessionDocsVersion((version) => version + 1);
     return nextDraft;
   }, [effectiveChatAgentId]);
+
+  const handleStreamError = useCallback((status: number, error?: string) => {
+    if (status === 404) {
+      // Thread no longer exists — remove from sidebar and start fresh
+      addToast("warning", "Conversation unavailable", "This conversation is no longer available.");
+      if (selectedThreadId) {
+        setThreads((prev) => prev.filter((t) => t.thread_id !== selectedThreadId));
+      }
+      createAndActivateDraftThread();
+    } else if (status === 409) {
+      if (error === "conflict") {
+        // Inline notice — handled via a toast here, isReadonly not set
+        addToast("warning", "Response still running", "Another response is still running in this conversation. Try again in a moment.");
+      } else if (error === "unavailable") {
+        setSelectedThreadUnavailable(true);
+      }
+    }
+  }, [addToast, createAndActivateDraftThread, selectedThreadId]);
 
   const clearDraftSessionFiles = useCallback(
     async (threadId: string) => {
@@ -715,10 +749,17 @@ export function ChatLanding() {
   const refreshThreads = useCallback(async () => {
     const agentId = effectiveChatAgentId;
     try {
-      const res = await api.getConversationThreads(agentId);
-      if (res.ok) {
-        const data = await res.json();
-        if (agentId === chatAgentIdRef.current) setThreads(data.threads || []);
+      const convs = await api.getConversations(agentId);
+      if (agentId === chatAgentIdRef.current) {
+        setThreads(
+          convs.map((c) => ({
+            thread_id: c.id,
+            latest_version: 0,
+            first_message: c.title || c.preview || "",
+            updated_at: c.timestamp ? new Date(c.timestamp).toISOString() : new Date().toISOString(),
+            status: c.status,
+          }))
+        );
       }
     } catch (err) {
       console.error("Error fetching threads:", err);
@@ -728,15 +769,22 @@ export function ChatLanding() {
   const handleThreadChange = useCallback(
     async (threadId: string) => {
       setActiveThreadId(threadId);
-      if (!draftThread.hasSentFirstMessage && threadId === draftThread.threadId) {
+      if (!draftThread.hasSentFirstMessage && (draftThread.threadId === null || threadId === draftThread.threadId)) {
         setDraftThread((prev) => ({
           ...prev,
+          threadId: threadId,
           hasSentFirstMessage: true,
           updatedAt: new Date().toISOString(),
         }));
       }
       if (threadId !== selectedThreadId) {
         setSelectedThreadId(threadId);
+        // Move the thread to top of sidebar after a successful send
+        setThreads((prev) => {
+          const existing = prev.find((t) => t.thread_id === threadId);
+          if (!existing) return prev;
+          return [existing, ...prev.filter((t) => t.thread_id !== threadId)];
+        });
       }
       // An approval can complete the already selected conversation.
       void refreshThreads();
@@ -745,13 +793,16 @@ export function ChatLanding() {
   );
 
   const handleSelectThread = useCallback((threadId: string) => {
+    const thread = threads.find((t) => t.thread_id === threadId);
     setSelectedThreadId(threadId);
-  }, []);
+    setSelectedThreadStatus(thread?.status || null);
+    setSelectedThreadUnavailable(false);
+  }, [threads]);
 
   const handleRemoveAll = async () => {
     if (!window.confirm("Remove all conversations? This cannot be undone.")) return;
     try {
-      if (!draftThread.hasSentFirstMessage) {
+      if (!draftThread.hasSentFirstMessage && draftThread.threadId) {
         await clearDraftSessionFiles(draftThread.threadId);
       }
       await Promise.all(
@@ -921,18 +972,19 @@ export function ChatLanding() {
 
   useEffect(() => {
     let cancelled = false;
-    const agentId = effectiveChatAgentId;
     (async () => {
       try {
-        const res = await api.getConversationThreads(agentId);
+        const convs = await api.getConversations(effectiveChatAgentId);
         if (cancelled) return;
-        if (!res.ok) {
-          const errorMsg = `Failed to load conversation threads (${res.status} ${res.statusText})`;
-          addToast("warning", "Threads Load Warning", errorMsg);
-          console.error(errorMsg);
-        } else {
-          setThreads((await res.json()).threads || []);
-        }
+        setThreads(
+          convs.map((c) => ({
+            thread_id: c.id,
+            latest_version: 0,
+            first_message: c.title || c.preview || "",
+            updated_at: c.timestamp ? new Date(c.timestamp).toISOString() : new Date().toISOString(),
+            status: c.status,
+          }))
+        );
       } catch (err) {
         if (cancelled) return;
         const errorMsg = err instanceof Error ? err.message : "Network error loading conversation threads";
@@ -969,7 +1021,7 @@ export function ChatLanding() {
     const isCurrent = () => workspaceThreadRef.current === effectiveChatThreadId;
     try {
       if (forceRefresh) setWorkspaceTreeLoading(true);
-      const res = await api.getWorkspaceTree(effectiveChatThreadId || undefined, forceRefresh);
+      const res = await api.getWorkspaceTree(effectiveChatThreadId || undefined, effectiveChatAgentId, forceRefresh);
       if (res.ok) {
         const data = await res.json();
         if (!isCurrent()) return;
@@ -985,7 +1037,7 @@ export function ChatLanding() {
     } finally {
       if (isCurrent()) setWorkspaceTreeLoading(false);
     }
-  }, [addToast, effectiveChatThreadId]);
+  }, [addToast, effectiveChatThreadId, effectiveChatAgentId]);
 
   useEffect(() => {
     fetchWorkspaceTree();
@@ -1044,7 +1096,7 @@ export function ChatLanding() {
       return;
     }
     try {
-      const res = await api.getWorkspaceFile(node.path, effectiveChatThreadId || undefined);
+      const res = await api.getWorkspaceFile(node.path, effectiveChatThreadId || undefined, effectiveChatAgentId);
       if (res.ok) {
         const data = await res.json();
         setFileModal({ path: node.path, content: data.content, name: node.name });
@@ -1054,13 +1106,13 @@ export function ChatLanding() {
     } catch (err) {
       addToast("error", "Error loading file", err instanceof Error ? err.message : "Unknown error");
     }
-  }, [addToast, effectiveChatThreadId]);
+  }, [addToast, effectiveChatThreadId, effectiveChatAgentId]);
 
   const handleWorkspaceFileDownload = useCallback(
     async (node: FileNode) => {
       if (node.type !== "file") return;
       try {
-        const res = await api.getWorkspaceDownload(node.path, effectiveChatThreadId || undefined);
+        const res = await api.getWorkspaceDownload(node.path, effectiveChatThreadId || undefined, effectiveChatAgentId);
         if (!res.ok) {
           addToast("error", "Download failed", res.statusText || `HTTP ${res.status}`);
           return;
@@ -1076,20 +1128,41 @@ export function ChatLanding() {
         addToast("error", "Download failed", err instanceof Error ? err.message : "Unknown error");
       }
     },
-    [addToast, effectiveChatThreadId],
+    [addToast, effectiveChatThreadId, effectiveChatAgentId],
   );
+
+  // An upload needs a conversation before the first message: create it once per draft.
+  const conversationIdForUpload = useCallback(async (): Promise<string> => {
+    if (effectiveChatThreadId) return effectiveChatThreadId;
+    if (!pendingConversationRef.current) {
+      const generation = draftGenerationRef.current;
+      pendingConversationRef.current = api.createConversation(effectiveChatAgentId).then((created) => {
+        if (generation === draftGenerationRef.current) {
+          setDraftThread((prev) => (prev.threadId ? prev : { ...prev, threadId: created.id }));
+          setActiveThreadId(created.id);
+        }
+        return created.id;
+      });
+      pendingConversationRef.current.catch(() => {
+        pendingConversationRef.current = null;
+      });
+    }
+    return pendingConversationRef.current;
+  }, [effectiveChatThreadId, effectiveChatAgentId]);
 
   const handleWorkspaceUpload = useCallback(
     async (files: File[]) => {
-      const tid = effectiveChatThreadId?.trim();
-      if (!tid) {
-        addToast("warning", "Upload unavailable", "Start a chat before uploading files.");
+      let uploadThreadId: string;
+      try {
+        uploadThreadId = await conversationIdForUpload();
+      } catch {
+        addToast("error", "Upload unavailable", "Could not start a conversation for this upload.");
         return;
       }
       try {
         await Promise.all(
           files.map(async (file) => {
-            const res = await api.uploadWorkspaceFile(file, tid);
+            const res = await api.uploadWorkspaceFile(file, uploadThreadId, effectiveChatAgentId);
             if (!res.ok) {
               let detail = res.statusText;
               try {
@@ -1108,7 +1181,7 @@ export function ChatLanding() {
         addToast("error", "Upload failed", err instanceof Error ? err.message : "Unknown error");
       }
     },
-    [addToast, effectiveChatThreadId, fetchWorkspaceTree],
+    [addToast, conversationIdForUpload, effectiveChatAgentId, fetchWorkspaceTree],
   );
 
   const handleWorkspaceFileInputChange = useCallback(
@@ -1136,7 +1209,7 @@ export function ChatLanding() {
       const response = await api.getKnowledgeDocumentFile(
         attachment.scope,
         attachment.knowledge_filename,
-        attachment.scope === "session" ? effectiveChatThreadId : undefined,
+        attachment.scope === "session" ? (effectiveChatThreadId || undefined) : undefined,
       );
       if (!response.ok) {
         addToast("error", "Preview unavailable", response.statusText || "Failed to load attachment.");
@@ -1349,7 +1422,10 @@ export function ChatLanding() {
             onClearFocus={() => setFocusedMemoryIds([])}
             onClose={() => setActiveView("chat")}
             onOpenConversation={(threadId) => {
+              const thread = threads.find((t) => t.thread_id === threadId);
               setSelectedThreadId(threadId);
+              setSelectedThreadStatus(thread?.status || null);
+              setSelectedThreadUnavailable(false);
               setActiveView("chat");
             }}
           />
@@ -1357,6 +1433,38 @@ export function ChatLanding() {
       )}
       {/* Keep the chat instance and its active stream alive while viewing memory. */}
         <div className="chat-content-area" hidden={activeView === "memory" && memoryEnabled} style={{ display: activeView === "memory" && memoryEnabled ? "none" : undefined, position: "relative", height: `calc(100vh - ${headerHeight}px)` }}>
+          {/* Conversations from before session continuity are read-only */}
+          {selectedThreadStatus === "legacy" && (
+            <div style={{
+              padding: "0.75rem 1rem",
+              background: "var(--cds-layer-accent-01, #e0e0e0)",
+              borderBottom: "1px solid var(--cds-border-subtle-01)",
+              fontSize: "0.8125rem",
+              color: "var(--cds-text-secondary)",
+            }}>
+              This conversation was created before conversations could be continued. Start a new conversation to keep going.
+            </div>
+          )}
+          {/* The saved state of this conversation cannot be loaded */}
+          {selectedThreadUnavailable && (
+            <div style={{
+              padding: "0.75rem 1rem",
+              background: "var(--cds-notification-background-warning, #fdf6dd)",
+              borderBottom: "1px solid var(--cds-border-subtle-01)",
+              fontSize: "0.8125rem",
+              color: "var(--cds-text-primary)",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.75rem",
+            }}>
+              <span style={{ flex: 1 }}>
+                This conversation&apos;s saved state can&apos;t be loaded. You can still read it, but you&apos;ll need to start a new conversation to continue.
+              </span>
+              <Button kind="tertiary" size="sm" onClick={() => createAndActivateDraftThread()}>
+                New chat
+              </Button>
+            </div>
+          )}
           <CarbonChat
             agentId={effectiveChatAgentId}
             contained={true}
@@ -1364,7 +1472,7 @@ export function ChatLanding() {
             attachmentScope="session"
             knowledgeEnabled={knowledgeEnabled}
             sessionKnowledgeEnabled={sessionKnowledgeEnabled}
-            isReadonly={selectedThreadId != null && selectedThreadId !== activeThreadId}
+            isReadonly={selectedThreadStatus === "legacy" || selectedThreadUnavailable}
             onThreadChange={handleThreadChange}
             onRestart={createAndActivateDraftThread}
             homescreen={homescreenConfig}
@@ -1377,6 +1485,7 @@ export function ChatLanding() {
               setActiveView("memory");
             } : undefined}
             onPreviewKnowledgeAttachment={handlePreviewKnowledgeAttachment}
+            onStreamError={handleStreamError}
           />
         </div>
 
@@ -1406,7 +1515,7 @@ export function ChatLanding() {
                   kind="ghost"
                   size="sm"
                   onClick={async () => {
-                    if (!draftThread.hasSentFirstMessage) {
+                    if (!draftThread.hasSentFirstMessage && draftThread.threadId) {
                       await clearDraftSessionFiles(draftThread.threadId);
                     }
                     createAndActivateDraftThread();
@@ -2023,7 +2132,7 @@ export function ChatLanding() {
               renderIcon={Download}
               onClick={async () => {
                 try {
-                  const res = await api.getWorkspaceDownload(fileModal.path, effectiveChatThreadId || undefined);
+                  const res = await api.getWorkspaceDownload(fileModal.path, effectiveChatThreadId || undefined, effectiveChatAgentId);
                   if (res.ok) {
                     const blob = await res.blob();
                     const url = URL.createObjectURL(blob);

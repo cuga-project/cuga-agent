@@ -219,7 +219,6 @@ async def test_stream_forwards_x_agent_id_as_execution_identity(monkeypatch):
     request = MagicMock()
     request.headers.get.side_effect = lambda key, default=None: {
         "X-Agent-ID": "sales-east",
-        "X-Thread-ID": "thread-1",
         "X-Use-Draft": "",
         "X-Disable-History": "",
     }.get(key, default)

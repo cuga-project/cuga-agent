@@ -126,8 +126,14 @@ async def runtime(monkeypatch, request):
     ]:
         app.add_api_route(path, handler, methods=[method])
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+
+        async def conversation(thread="owned", user="user-a", agent="cuga-default"):
+            # Web conversations are server-issued (#774): create one before streaming on it.
+            await db.create_conversation(thread, user, agent)
+
         yield SimpleNamespace(
             client=client,
+            conversation=conversation,
             headers=headers,
             db=db,
             graph=graph,
@@ -157,7 +163,7 @@ async def test_authenticated_foreign_runtime_access_is_denied(runtime, path, met
     runtime.main.app_state.stop_events["owned"] = event
     before = event.is_set()
     response = await runtime.client.request(method, path, headers=runtime.headers("user-b"), json=body)
-    assert response.status_code == 403, response.text
+    assert response.status_code == 404, response.text
     assert "USER_A_PRIVATE" not in response.text
     assert event.is_set() == before
     assert not runtime.seen
@@ -166,6 +172,7 @@ async def test_authenticated_foreign_runtime_access_is_denied(runtime, path, met
 
 
 async def test_owner_followup_state_and_controls_use_bound_agent(runtime):
+    await runtime.conversation(agent="sales")
     for query in ["USER_A_PRIVATE", "followup"]:
         response = await runtime.client.post(
             "/stream",
@@ -189,18 +196,19 @@ async def test_owner_followup_state_and_controls_use_bound_agent(runtime):
     # History-disabled runs still have durable ownership.
     assert await runtime.db.get_thread_history("owned") == []
     other = await runtime.client.post("/stream", headers=runtime.headers("user-b"), json={"query": "attack"})
-    assert other.status_code == 403
+    assert other.status_code == 404
     wrong_agent = await runtime.client.post(
         "/stream", headers=runtime.headers(agent="other"), json={"query": "attack"}
     )
-    assert wrong_agent.status_code == 403
+    assert wrong_agent.status_code == 404
 
 
 async def test_owner_can_resume_scoped_checkpoint(runtime):
+    await runtime.conversation()
     response = await runtime.client.post("/stream", headers=runtime.headers(), json={"query": "pause"})
     assert response.status_code == 200, response.text
     denied = await runtime.client.post("/stream", headers=runtime.headers("user-b"), json=RESUME)
-    assert denied.status_code == 403
+    assert denied.status_code == 404
     resumed = await runtime.client.post("/stream", headers=runtime.headers(), json=RESUME)
     assert resumed.status_code == 200, resumed.text
     assert runtime.seen and runtime.seen[-1][0:2] == ("user-a", "pause")
@@ -211,6 +219,8 @@ async def test_owner_can_resume_scoped_checkpoint(runtime):
 @pytest.mark.parametrize("runtime", [AsyncOnlySaver], indirect=True)
 async def test_stream_and_state_endpoint_use_async_state_api(runtime):
     """event_stream's state loads and /api/agent/state work on a saver that rejects sync calls."""
+    await runtime.conversation()
+    await runtime.conversation("paused")
     for query in ["first", "followup"]:
         response = await runtime.client.post("/stream", headers=runtime.headers(), json={"query": query})
         assert response.status_code == 200, response.text
@@ -258,7 +268,7 @@ async def test_query_or_body_thread_does_not_bypass_ownership(runtime, path, met
     response = await runtime.client.request(
         method, path, headers=runtime.headers("user-b", thread=None), json={"thread_id": "owned"}
     )
-    assert response.status_code == 403
+    assert response.status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -268,7 +278,7 @@ async def test_query_or_body_thread_does_not_bypass_ownership(runtime, path, met
 async def test_storage_failure_fails_closed(runtime, monkeypatch, path, method, storage_error):
     monkeypatch.setattr(runtime.db, "claim_thread", AsyncMock(side_effect=storage_error("database down")))
     response = await runtime.client.request(method, path, headers=runtime.headers(), json={"query": "hello"})
-    assert response.status_code == 503, response.text
+    assert response.status_code == 404, response.text
     assert not runtime.seen
     assert not runtime.main.app_state.stop_events
     runtime.clear.assert_not_called()
@@ -360,6 +370,12 @@ def test_checkpoint_identity_separates_all_scope_components(monkeypatch):
     monkeypatch.setattr(thread_scope, "get_service_instance_id", lambda: "service-b")
     assert key != thread_scope.checkpoint_thread_id("thread", "user", "agent")
 
+    # Entry points never share a web conversation's checkpoint (#774). Web keys are unchanged,
+    # so checkpoints written before entry scoping keep resolving.
+    entries = {e: thread_scope.checkpoint_thread_id("t", "u", "a", e) for e in ("web", "run", "a2a", "ext")}
+    assert len(set(entries.values())) == 4
+    assert entries["web"] == thread_scope.checkpoint_thread_id("t", "u", "a")
+
 
 @pytest.mark.parametrize("dispatch", ["events", "supervisor"])
 async def test_run_dispatch_rejects_foreign_owner_before_side_effects(runtime, monkeypatch, dispatch):
@@ -384,7 +400,7 @@ async def test_run_dispatch_rejects_foreign_owner_before_side_effects(runtime, m
     denied = await runtime.client.post(
         "/run", headers=runtime.headers("user-b"), json={"query": "hello", "thread_id": "owned"}
     )
-    assert denied.status_code == 403, denied.text
+    assert denied.status_code == 404, denied.text
     forward.assert_not_awaited()
     get_supervisor.assert_not_awaited()
     owner = await runtime.client.post(
@@ -396,7 +412,7 @@ async def test_run_dispatch_rejects_foreign_owner_before_side_effects(runtime, m
         assert kwargs["thread_id"] == "owned"
         assert kwargs["user_id"] == "user-a"
         assert kwargs["checkpoint_thread_id"] == runtime.main._checkpoint_thread_id(
-            "owned", "user-a", "cuga-default"
+            "owned", "user-a", "cuga-default", "run"
         )
     else:
         forward.assert_awaited_once()
@@ -585,7 +601,7 @@ async def test_supervisor_protocol_claims_before_construction_and_scopes_owner_r
     supervisor.invoke.assert_awaited_once_with(
         "hello",
         thread_id="owned",
-        checkpoint_thread_id=runtime.main._checkpoint_thread_id("owned", "user-a", "cuga-default"),
+        checkpoint_thread_id=runtime.main._checkpoint_thread_id("owned", "user-a", "cuga-default", "a2a"),
     )
 
 
@@ -595,6 +611,7 @@ async def test_read_and_controls_do_not_claim_unused_id(runtime, path, method):
     assert response.status_code == 200, response.text
     await runtime.db._ensure_schema()
     assert await runtime.db._get_store().fetchall("SELECT * FROM runtime_thread_owners") == []
+    await runtime.conversation()
     response = await runtime.client.post("/stream", headers=runtime.headers(), json={"query": "hello"})
     assert response.status_code == 200, response.text
     assert runtime.seen[-1][0] == "user-a"
@@ -603,6 +620,7 @@ async def test_read_and_controls_do_not_claim_unused_id(runtime, path, method):
 @pytest.mark.parametrize("first", ["stream", "state", "reset"])
 async def test_disabled_registry_normalizes_agent_on_all_routes(runtime, monkeypatch, first):
     monkeypatch.setattr(runtime.main.agent_registry, "is_agent_registry_enabled", lambda: False)
+    await runtime.conversation()
     headers = runtime.headers(agent="sales")
     if first == "state":
         assert (await runtime.client.get("/api/agent/state", headers=headers)).status_code == 200
@@ -621,6 +639,7 @@ async def test_disabled_registry_normalizes_agent_on_all_routes(runtime, monkeyp
 
 
 async def test_whitespace_thread_uses_same_owner_checkpoint_and_stop_event(runtime):
+    await runtime.conversation()
     response = await runtime.client.post(
         "/stream", headers=runtime.headers(thread=" owned "), json={"query": "hello"}
     )
@@ -628,7 +647,7 @@ async def test_whitespace_thread_uses_same_owner_checkpoint_and_stop_event(runti
     response = await runtime.client.post(
         "/stop", headers=runtime.headers("user-b", thread=None), json={"thread_id": " owned "}
     )
-    assert response.status_code == 403, response.text
+    assert response.status_code == 404, response.text
     response = await runtime.client.post(
         "/stop", headers=runtime.headers(thread=None), json={"thread_id": " owned "}
     )
@@ -653,10 +672,11 @@ async def test_generator_storage_failure_yields_error_event(runtime, monkeypatch
         return await claim(*args, **kwargs)
 
     monkeypatch.setattr(runtime.db, "claim_thread", fail_second)
+    await runtime.conversation()
     response = await runtime.client.post("/stream", headers=runtime.headers(), json={"query": "hello"})
     assert response.status_code == 200, response.text
     assert "event: Error" in response.text
-    assert "Thread ownership unavailable" in response.text
+    assert "Conversation not found" in response.text
     assert not runtime.seen
 
 
@@ -674,10 +694,13 @@ async def test_workspace_reads_do_not_create_owner_rows(runtime, monkeypatch):
         assert response.status_code == 200, response.text
     assert await runtime.db._get_store().fetchall("SELECT * FROM runtime_thread_owners") == []
     await runtime.db.claim_thread("owned", "user-a", "cuga-default")
+    tree.reset_mock()
     response = await runtime.client.get(
         "/api/workspace/tree", params={"thread_id": "owned"}, headers=runtime.headers("user-b")
     )
-    assert response.status_code == 403
+    # Another user's thread looks exactly like an unknown one: an empty tree.
+    assert response.status_code == 200
+    tree.assert_not_called()
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -737,7 +760,7 @@ async def test_extension_auth_and_validation_precede_ownership(runtime):
         headers=runtime.headers("user-b"),
         json={"query": "attack", "request_id": "owned"},
     )
-    assert denied.status_code == 403
+    assert denied.status_code == 404
 
 
 async def test_unknown_workspace_read_does_not_touch_new_foreign_resources(runtime, monkeypatch):
@@ -808,7 +831,11 @@ async def test_simple_protocol_resumes_canonical_context(runtime, monkeypatch):
     assert captured[0]["resume"].action_id == "approve"
     assert captured[0]["resume"].confirmed
     graph.aget_state.assert_awaited_once_with(
-        {"configurable": {"thread_id": runtime.main._checkpoint_thread_id("owned", "user-a", "cuga-default")}}
+        {
+            "configurable": {
+                "thread_id": runtime.main._checkpoint_thread_id("owned", "user-a", "cuga-default", "a2a")
+            }
+        }
     )
     graph.get_state.assert_not_called()
 

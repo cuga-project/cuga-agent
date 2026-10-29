@@ -30,13 +30,21 @@ import { injectCitations, type MessageSource } from "agentic_chat/Citations";
 import type { KnowledgeAttachmentSnapshot } from "../knowledge/useSessionKnowledgeAttachments";
 
 // Import thread ID management from CarbonChat
-import { getOrCreateThreadId, generateUUID } from './CarbonChat';
+import { generateUUID } from './CarbonChat';
+import { adoptIssuedThreadId, getCurrentThreadId, getThreadGeneration } from './threadState';
 
 
-export async function stopCugaAgent(threadId: string) {
+export class StreamHttpError extends Error {
+  constructor(public readonly status: number, public readonly errorCode?: string) {
+    super(`HTTP ${status}`);
+    this.name = "StreamHttpError";
+  }
+}
+
+export async function stopCugaAgent(threadId: string, agentId?: string) {
   try {
     console.log(`Calling /stop for thread: ${threadId}`);
-    const response = await api.postStop(threadId);
+    const response = await api.postStop(threadId, agentId);
     
     if (response.ok) {
       const result = await response.json();
@@ -132,14 +140,15 @@ export async function customSendMessage(
     return;
   }
 
-  const threadId = getOrCreateThreadId();
+  const threadId = getCurrentThreadId();
+  const generation = getThreadGeneration();
   const responseID = generateUUID();
   const responseUserProfile = getCachedResponseUserProfile(useDraft, agentId);
   
   // Listen for abort signal to call /stop endpoint
   const abortHandler = () => {
     console.log("User cancelled request, calling /stop endpoint");
-    stopCugaAgent(threadId);
+    if (threadId) stopCugaAgent(threadId, agentId);
   };
   
   if (requestOptions.signal) {
@@ -249,22 +258,6 @@ export async function customSendMessage(
       currentStepContent = "";
     };
 
-    // Build headers
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "X-Thread-ID": threadId,
-    };
-
-    // Add draft header if needed
-    if (useDraft) {
-      headers["X-Use-Draft"] = "true";
-    }
-
-    // Add disable history header if needed
-    if (disableHistory) {
-      headers["X-Disable-History"] = "true";
-    }
-
     const response = await api.postStream(
       actionResponse || {
         query: userMessage,
@@ -284,8 +277,21 @@ export async function customSendMessage(
     console.log(`Response status: ${response.status}`);
 
     if (!response.ok) {
-      const errorText = await response.text();
+      const errorText = await response.text().catch(() => "");
       console.error(`HTTP error response:`, errorText);
+      // Parse error code for structured handling by the caller
+      let errorCode: string | undefined;
+      let detail: string | undefined;
+      try {
+        const parsed = JSON.parse(errorText);
+        errorCode = parsed?.error;
+        detail = parsed?.detail;
+      } catch { /* ignore */ }
+      // A conversation that is gone (404) or busy/unavailable (409) is handled by the caller;
+      // any other failure is shown in this response so the turn still finishes.
+      if (response.status === 409 || (response.status === 404 && threadId && detail === "Conversation not found")) {
+        throw new StreamHttpError(response.status, errorCode);
+      }
       throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
     }
 
@@ -294,6 +300,12 @@ export async function customSendMessage(
       // Check if cancelled
       if (requestOptions.signal?.aborted) {
         break;
+      }
+
+      if (event.name === "thread_created") {
+        const serverId = typeof event.data === "string" ? event.data.trim() : null;
+        if (serverId) adoptIssuedThreadId(serverId, generation);
+        continue; // housekeeping only — no UI output
       }
 
       // First event means backend is responding — create shell and hide loading indicator
@@ -807,7 +819,10 @@ export async function customSendMessage(
   } catch (error: any) {
     console.error("Error calling CUGA backend:", error);
     
-    if (error.name === "AbortError") {
+    if (error.name === "StreamHttpError") {
+      // Re-throw structured HTTP errors so callers (CarbonChat) can handle 404/409
+      throw error;
+    } else if (error.name === "AbortError") {
       handleCancellation();
     } else {
       ensureShellMessage();

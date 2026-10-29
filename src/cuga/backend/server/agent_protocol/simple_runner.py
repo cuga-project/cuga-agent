@@ -151,6 +151,7 @@ class SimpleAgentRunner:
                     query=message if resume is None else None,
                     api_mode=True,  # Skip browser environment for API callers
                     thread_id=thread_id,
+                    entry="a2a",
                     agent=None,  # Use default (published) agent
                     disable_history=False,  # Keep conversation history
                     user_id=self._caller_user_id,
@@ -298,7 +299,7 @@ class SimpleAgentRunner:
             from cuga.backend.server.thread_scope import checkpoint_thread_id
 
             scoped_id = checkpoint_thread_id(
-                thread_id, self._caller_user_id, getattr(self._app_state, "agent_id", "cuga-default")
+                thread_id, self._caller_user_id, getattr(self._app_state, "agent_id", "cuga-default"), "a2a"
             )
             snapshot = await graph.aget_state({"configurable": {"thread_id": scoped_id}})
         except Exception:

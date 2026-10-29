@@ -35,9 +35,7 @@ class TestContextSummarizationE2E(BaseTestServerStream):
         2. Context is maintained across messages
         3. Agent can answer questions about earlier context after summarization
         """
-        import uuid
-
-        thread_id = str(uuid.uuid4())
+        thread_id = await self.create_conversation()
         print(f"\n=== Starting context summarization test with thread ID: {thread_id} ===")
 
         # Message 1: Establish context
@@ -75,9 +73,7 @@ class TestContextSummarizationE2E(BaseTestServerStream):
         2. Agent maintains context across multiple follow-ups
         3. Summarization preserves enough context for coherent follow-ups
         """
-        import uuid
-
-        thread_id = str(uuid.uuid4())
+        thread_id = await self.create_conversation()
         print(f"\n=== Starting follow-up test with thread ID: {thread_id} ===")
 
         # Message 1: Provide list of items

@@ -685,7 +685,7 @@ async def run_sync(request: Request):
             raise HTTPException(403, "Access denied: thread belongs to another user or agent") from exc
         except Exception as exc:
             raise HTTPException(503, "Thread ownership unavailable") from exc
-    checkpoint_id = checkpoint_thread_id(thread_id, user_id, runtime_agent_id)
+    checkpoint_id = checkpoint_thread_id(thread_id, user_id, runtime_agent_id, entry="run")
     disable_history = bool(body.get("disable_history", False))
     attachments = body.get("attachments") or None
 
@@ -815,6 +815,7 @@ async def run_sync(request: Request):
             api_mode=settings.advanced_features.mode == "api",
             resume=resume,
             thread_id=thread_id,
+            entry="run",
             agent=run_agent,
             disable_history=disable_history,
             user_id=user_id,
