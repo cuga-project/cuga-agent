@@ -5,6 +5,7 @@ import { useAuth } from "./AuthContext";
 import { ConfigHeader } from "./ConfigHeader";
 import CarbonChat, { generateUUID } from "./carbon-chat/CarbonChat";
 import { MemoryWorkspace } from "./memory/MemoryWorkspace";
+import { SupervisorRoster, type SupervisorMember } from "./SupervisorRoster";
 import {
   IconButton,
   Tag,
@@ -24,8 +25,7 @@ import {
   Tile,
   Layer,
   Stack,
-  Select,
-  SelectItem,
+  Dropdown,
 } from "@carbon/react";
 import Markdown from "@carbon/ai-chat-components/es/react/markdown.js";
 import {
@@ -46,6 +46,8 @@ import {
   Download,
   Upload,
   Renew,
+  Bot,
+  Flow,
 } from "@carbon/icons-react";
 import { KnowledgeSidePanel } from "agentic_chat/KnowledgeSidePanel";
 import type { SessionAttachmentSnapshot } from "./knowledge/useSessionKnowledgeAttachments";
@@ -63,6 +65,28 @@ interface ConversationThread {
 interface AppTool {
   name: string;
   description: string;
+}
+
+interface ChatAgentOption {
+  id: string;
+  name?: string;
+  kind?: "single" | "supervisor";
+  description?: string;
+}
+
+function renderChatAgentOption(agent: ChatAgentOption) {
+  const isSupervisor = agent.kind === "supervisor";
+  return (
+    <span className="chat-agent-option">
+      {isSupervisor ? (
+        <Flow size={16} className="chat-agent-option-supervisor-icon" aria-hidden="true" />
+      ) : (
+        <Bot size={16} aria-hidden="true" />
+      )}
+      <span className="chat-agent-option-name">{agent.name?.trim() || agent.id}</span>
+      {isSupervisor && <Tag type="purple" size="sm">Supervisor</Tag>}
+    </span>
+  );
 }
 
 interface AppConfig {
@@ -107,9 +131,18 @@ interface AgentConfig {
   name: string;
   description: string;
   configVersion?: number | string | null;
+  kind?: "single" | "supervisor";
+  supervisedAgents?: SupervisorMember[];
   apps: AppConfig[];
   workspaceFolders: WorkspaceFolder[];
 }
+
+const emptyAgentConfig = (agentId: string): AgentConfig => ({
+  name: agentId,
+  description: "",
+  apps: [],
+  workspaceFolders: [],
+});
 
 interface HomescreenConfig {
   isOn?: boolean;
@@ -375,7 +408,13 @@ export function ChatLanding() {
   useLayoutEffect(() => {
     api.setKnowledgeAgentId(effectiveChatAgentId);
   }, [effectiveChatAgentId]);
-  const [availableAgents, setAvailableAgents] = useState<Array<{ id: string; name?: string }>>([]);
+  const [availableAgents, setAvailableAgents] = useState<ChatAgentOption[]>([]);
+  const chatAgentOptions: ChatAgentOption[] = availableAgents.length > 0
+    ? [
+        ...availableAgents.filter((agent) => agent.kind === "supervisor"),
+        ...availableAgents.filter((agent) => agent.kind !== "supervisor"),
+      ]
+    : [{ id: effectiveChatAgentId }];
   const showAgentSwitcher = agentRegistry === true;
   const headerHeight = CARBON_HEADER_HEIGHT + (showAgentSwitcher ? AGENT_SWITCHER_HEIGHT : 0);
 
@@ -443,7 +482,7 @@ export function ChatLanding() {
   // only when the operator explicitly disabled citations in Manage).
   const [citationsEnabled, setCitationsEnabled] = useState(true);
   const [sessionDocsVersion, setSessionDocsVersion] = useState(0);
-  const [agentConfig, setAgentConfig] = useState<AgentConfig>(MOCK_AGENT_CONFIG);
+  const [agentConfig, setAgentConfig] = useState<AgentConfig>(() => emptyAgentConfig(effectiveChatAgentId));
   const [homescreenConfig, setHomescreenConfig] = useState<HomescreenConfig | undefined>(undefined);
   const [configLoading, setConfigLoading] = useState(true);
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
@@ -592,6 +631,10 @@ export function ChatLanding() {
   const currentChatThreadId = activeThreadId;
   /** Same resolver as `threadId` on `CarbonChat` — stream, sandbox workspace, and session knowledge must match. */
   const effectiveChatThreadId = selectedThreadId ?? currentChatThreadId;
+  const workspaceThreadRef = useRef(effectiveChatThreadId);
+  useLayoutEffect(() => {
+    workspaceThreadRef.current = effectiveChatThreadId;
+  }, [effectiveChatThreadId]);
 
   const refreshKnowledgeDocCount = useCallback(
     async (threadId: string) => {
@@ -653,6 +696,7 @@ export function ChatLanding() {
 
   const clearDraftSessionFiles = useCallback(
     async (threadId: string) => {
+      if (!knowledgeEnabled || !sessionKnowledgeEnabled) return;
       try {
         const res = await api.deleteSessionKnowledgeCollection(threadId);
         if (!res.ok) {
@@ -664,7 +708,7 @@ export function ChatLanding() {
         addToast("warning", "Draft cleanup incomplete", "The draft knowledge collection could not be removed.");
       }
     },
-    [addToast],
+    [addToast, knowledgeEnabled, sessionKnowledgeEnabled],
   );
 
   // ── Thread helpers ──────────────────────────────────────────────────────────
@@ -693,8 +737,9 @@ export function ChatLanding() {
       }
       if (threadId !== selectedThreadId) {
         setSelectedThreadId(threadId);
-        setTimeout(refreshThreads, 500);
       }
+      // An approval can complete the already selected conversation.
+      void refreshThreads();
     },
     [draftThread.hasSentFirstMessage, draftThread.threadId, selectedThreadId, refreshThreads],
   );
@@ -723,6 +768,8 @@ export function ChatLanding() {
   // Fetch agent configuration
   useEffect(() => {
     let cancelled = false;
+    setConfigLoading(true);
+    setAgentConfig(emptyAgentConfig(effectiveChatAgentId));
     (async () => {
       try {
         const agentId = effectiveChatAgentId;
@@ -730,7 +777,7 @@ export function ChatLanding() {
 
         const [contextRes, toolsListRes, manageRes] = await Promise.all([
           api.getAgentContext(),
-          api.getToolsList(isDraft),
+          api.getToolsList(isDraft, agentId),
           api.getManageConfig(false, agentId),
         ]);
         if (cancelled) return;
@@ -748,7 +795,7 @@ export function ChatLanding() {
           if (!routeAgentId) {
             agentIdFallback = contextData.agent_id ?? agentIdFallback;
           }
-          configVersion = contextData.config_version ?? null;
+          if (agentId === "cuga-default") configVersion = contextData.config_version ?? null;
           const kEnabled = contextData.knowledge_enabled ?? false;
           const agentKEnabled = contextData.agent_level_knowledge_enabled ?? false;
           const sessionKEnabled = contextData.session_level_knowledge_enabled ?? false;
@@ -770,9 +817,10 @@ export function ChatLanding() {
           }
         }
 
-        let manageData: { config?: { agent?: { name?: string; description?: string }; homescreen?: { isOn?: boolean; greeting?: string; starters?: string[] } } } | null = null;
+        let manageData: { version?: number | string; config?: { agent?: { name?: string; description?: string; kind?: "single" | "supervisor" }; supervisor?: { subAgents?: SupervisorMember[] }; homescreen?: { isOn?: boolean; greeting?: string; starters?: string[] } } } | null = null;
         if (manageRes.ok) {
           manageData = await manageRes.json();
+          configVersion = manageData?.version ?? (agentId === "cuga-default" ? configVersion : null);
           const ag = manageData?.config?.agent;
           if (ag && typeof ag === "object") {
             if (ag.name && String(ag.name).trim()) {
@@ -793,7 +841,7 @@ export function ChatLanding() {
         }
 
         // Get tools from tools/list endpoint and group by app
-        let apps: AppConfig[] = MOCK_AGENT_CONFIG.apps;
+        let apps: AppConfig[] = [];
         if (toolsListRes.ok) {
           const toolsData = await toolsListRes.json();
           const tools = toolsData.tools || [];
@@ -849,6 +897,8 @@ export function ChatLanding() {
           name: agentName,
           description: agentDescription,
           configVersion,
+          kind: manageData?.config?.agent?.kind ?? "single",
+          supervisedAgents: manageData?.config?.supervisor?.subAgents ?? [],
           apps,
           workspaceFolders: MOCK_AGENT_CONFIG.workspaceFolders, // TODO: Get from API if available
         };
@@ -860,7 +910,6 @@ export function ChatLanding() {
         const errorMsg = err instanceof Error ? err.message : "Network error loading agent configuration";
         addToast("error", "Configuration Load Error", errorMsg);
         console.error("Error fetching agent config:", err);
-        // Keep using MOCK_AGENT_CONFIG as fallback
       } finally {
         if (!cancelled) setConfigLoading(false);
       }
@@ -917,22 +966,24 @@ export function ChatLanding() {
   }, []);
 
   const fetchWorkspaceTree = useCallback(async (forceRefresh = false) => {
+    const isCurrent = () => workspaceThreadRef.current === effectiveChatThreadId;
     try {
       if (forceRefresh) setWorkspaceTreeLoading(true);
       const res = await api.getWorkspaceTree(effectiveChatThreadId || undefined, forceRefresh);
       if (res.ok) {
         const data = await res.json();
+        if (!isCurrent()) return;
         setWorkspaceTree(data.tree || []);
-      } else if (forceRefresh) {
+      } else if (forceRefresh && isCurrent()) {
         addToast("warning", "Workspace refresh failed", `${res.status} ${res.statusText}`);
       }
     } catch (err) {
       console.error("Error fetching workspace tree:", err);
-      if (forceRefresh) {
+      if (forceRefresh && isCurrent()) {
         addToast("error", "Workspace refresh failed", err instanceof Error ? err.message : "Unknown error");
       }
     } finally {
-      setWorkspaceTreeLoading(false);
+      if (isCurrent()) setWorkspaceTreeLoading(false);
     }
   }, [addToast, effectiveChatThreadId]);
 
@@ -1218,17 +1269,20 @@ export function ChatLanding() {
     setRightOpen(true);
   };
   const activeKnowledgeThreadId = effectiveChatThreadId;
+  const isSupervisor = agentConfig.kind === "supervisor";
+  const FlowIcon = isSupervisor ? Flow : Application;
+  const configurationMeta = isSupervisor ? { ...RIGHT_PANEL_META.configuration, title: "Supervised agents", subtitle: "Published agents available for delegation", icon: Flow } : RIGHT_PANEL_META.configuration;
   const sectionCounts: Record<RightPanelSection, number> = {
-    configuration: totalTools,
+    configuration: isSupervisor ? (agentConfig.supervisedAgents ?? []).length : totalTools,
     workspace: workspaceTree.length,
     knowledge: knowledgeDocCount,
     skills: skills.length,
   };
-  const activeSectionMeta = RIGHT_PANEL_META[rightSection];
+  const activeSectionMeta = rightSection === "configuration" ? configurationMeta : RIGHT_PANEL_META[rightSection];
   const ActiveSectionIcon = activeSectionMeta.icon;
 
   return (
-    <div className="chat-landing">
+    <div className="chat-landing" style={{ "--chat-header-height": `${headerHeight}px` } as React.CSSProperties}>
         <ConfigHeader
           onToggleLeftSidebar={handleToggleLeft}
           onToggleWorkspace={handleToggleWorkspace}
@@ -1253,33 +1307,31 @@ export function ChatLanding() {
             padding: "0 1rem",
             background: "var(--cds-layer)",
             borderBottom: "1px solid var(--cds-border-subtle-00)",
-            zIndex: 10,
+            zIndex: 202, // Keep the dropdown above the floating panels (200) and their controls (201).
           }}
         >
           <Chat size={16} style={{ color: "var(--cds-text-secondary)", flexShrink: 0 }} />
-          <Select
+          <Dropdown
             id="chat-agent-switcher"
-            labelText="Agent"
+            className="chat-agent-switcher"
+            titleText="Agent"
+            label={renderChatAgentOption({ id: effectiveChatAgentId })}
             hideLabel
             size="sm"
-            inline
-            value={effectiveChatAgentId}
-            onChange={(e) => {
-              const nextId = e.target.value;
+            items={chatAgentOptions}
+            selectedItem={chatAgentOptions.find((agent) => agent.id === effectiveChatAgentId)}
+            itemToString={(agent) => agent
+              ? `${agent.name?.trim() || agent.id}${agent.kind === "supervisor" ? " (Supervisor)" : ""}`
+              : ""}
+            itemToElement={renderChatAgentOption}
+            renderSelectedItem={renderChatAgentOption}
+            onChange={({ selectedItem }) => {
+              const nextId = selectedItem?.id;
               if (nextId && nextId !== effectiveChatAgentId) {
                 navigate(nextId === "cuga-default" ? "/chat" : `/chat/${encodeURIComponent(nextId)}`);
               }
             }}
-            style={{ maxWidth: "16rem" }}
-          >
-            {availableAgents.length === 0 ? (
-              <SelectItem value={effectiveChatAgentId} text={effectiveChatAgentId} />
-            ) : (
-              availableAgents.map((a) => (
-                <SelectItem key={a.id} value={a.id} text={a.name?.trim() || a.id} />
-              ))
-            )}
-          </Select>
+          />
         </div>
         )}
 
@@ -1306,6 +1358,7 @@ export function ChatLanding() {
       {/* Keep the chat instance and its active stream alive while viewing memory. */}
         <div className="chat-content-area" hidden={activeView === "memory" && memoryEnabled} style={{ display: activeView === "memory" && memoryEnabled ? "none" : undefined, position: "relative", height: `calc(100vh - ${headerHeight}px)` }}>
           <CarbonChat
+            agentId={effectiveChatAgentId}
             contained={true}
             threadId={effectiveChatThreadId}
             attachmentScope="session"
@@ -1313,6 +1366,7 @@ export function ChatLanding() {
             sessionKnowledgeEnabled={sessionKnowledgeEnabled}
             isReadonly={selectedThreadId != null && selectedThreadId !== activeThreadId}
             onThreadChange={handleThreadChange}
+            onRestart={createAndActivateDraftThread}
             homescreen={homescreenConfig}
             sessionDocsVersion={sessionDocsVersion}
             onSessionDocsChanged={handleSessionDocsChanged}
@@ -1472,7 +1526,7 @@ export function ChatLanding() {
           <div style={panelHeader}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: "0.625rem" }}>
-                <Application
+                <FlowIcon
                   size={20}
                   style={{ flexShrink: 0, marginTop: "0.125rem", color: "var(--cds-interactive)" }}
                 />
@@ -1511,7 +1565,7 @@ export function ChatLanding() {
           >
             <div className="agent-section-switcher">
               {(["configuration", "workspace", "knowledge", "skills"] as RightPanelSection[]).map((section) => {
-                const meta = RIGHT_PANEL_META[section];
+                const meta = section === "configuration" ? configurationMeta : RIGHT_PANEL_META[section];
                 const SectionIcon = meta.icon;
                 const handleClick =
                   section === "configuration"
@@ -1570,7 +1624,10 @@ export function ChatLanding() {
 
               <Layer level={2} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
                 <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
-              {rightSection === "configuration" && (
+              {rightSection === "configuration" && isSupervisor && (
+                <SupervisorRoster members={agentConfig.supervisedAgents ?? []} agents={availableAgents} />
+              )}
+              {rightSection === "configuration" && !isSupervisor && (
                 <div style={{ padding: "1rem" }}>
                   <Accordion>
                     {agentConfig.apps.map((app) => (
