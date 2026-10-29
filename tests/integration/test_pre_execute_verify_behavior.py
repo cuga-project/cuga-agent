@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import execution_output_text
 
 
 CASES = [
@@ -194,13 +196,92 @@ async def test_verify_write_choices(verifier_model, task, output, script, expect
         chat_messages=[
             HumanMessage(content=task),
             AIMessage(content="Inspect the relevant records and API documentation."),
-            HumanMessage(content=output),
+            HumanMessage(content=execution_output_text(output)),
         ],
         variables_snapshot="",
         current_task=task,
         model=verifier_model,
         config={},
         max_chars=30_000,
+    )
+    assert decision.gate == expected, (
+        f"expected {expected}, got {decision.gate}; alert={decision.alert!r}; output={decision.raw!r}"
+    )
+
+
+# The cases above use one short history. These put the grounding output where
+# real runs put it: before a later thread turn's request, in function-calling
+# ToolMessages, and in the middle of a long listing after a long history.
+
+_ADD = "Add the notebook to my cart."
+
+
+def _later_thread_turn():
+    return [
+        HumanMessage(content="Find the notebook."),
+        AIMessage(content="print(await search_products(query='notebook'))"),
+        HumanMessage(content=execution_output_text("Found product_id=98765, name='notebook'.")),
+        AIMessage(content="I found the notebook (product 98765)."),
+        HumanMessage(content=_ADD),
+    ]
+
+
+def _function_calling():
+    return [
+        HumanMessage(content=_ADD),
+        AIMessage(
+            content="", tool_calls=[{"name": "search_products", "args": {"query": "notebook"}, "id": "c1"}]
+        ),
+        ToolMessage(
+            content="[{'product_id': 98765, 'name': 'notebook'}]", tool_call_id="c1", name="search_products"
+        ),
+    ]
+
+
+def _long_history_mid_listing_id():
+    messages = [HumanMessage(content=_ADD)]
+    for i in range(20):
+        messages += [
+            AIMessage(content=f"print(await list_orders(page={i}))"),
+            HumanMessage(content=execution_output_text(f"orders page {i}: " + "o" * 6_000)),
+        ]
+    rows = [f"{{'product_id': {10_000 + i}, 'name': 'pen {i}'}}" for i in range(500)]
+    rows[250] = "{'product_id': 98765, 'name': 'notebook'}"
+    messages += [
+        AIMessage(content="print(await list_products())"),
+        HumanMessage(content=execution_output_text("\n".join(rows))),
+    ]
+    return messages
+
+
+SHAPES = [
+    pytest.param(_later_thread_turn, 30_000, id="codeact-later-thread-turn"),
+    pytest.param(_function_calling, 30_000, id="function-calling-tool-results"),
+    pytest.param(_long_history_mid_listing_id, 60_000, id="long-history-mid-listing-id"),
+]
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio(loop_scope="module")
+@pytest.mark.parametrize("product_id,expected", [(98765, "ok"), (55555, "revise")])
+@pytest.mark.parametrize("history,max_chars", SHAPES)
+async def test_verify_grounds_in_every_history_shape(
+    verifier_model, history, max_chars, product_id, expected
+):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        decide_pre_execute_verify,
+    )
+
+    decision = await decide_pre_execute_verify(
+        enabled=True,
+        streak=0,
+        script=f"await add_to_cart(product_id={product_id}, quantity=1)",
+        chat_messages=history(),
+        variables_snapshot="",
+        current_task=_ADD,
+        model=verifier_model,
+        config={},
+        max_chars=max_chars,
     )
     assert decision.gate == expected, (
         f"expected {expected}, got {decision.gate}; alert={decision.alert!r}; output={decision.raw!r}"
