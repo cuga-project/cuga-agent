@@ -179,10 +179,16 @@ async def list_llm_models(
         headers = {}
         if custom_auth_header:
             headers[auth_header_name] = custom_auth_header
-            logger.info(f"LiteLLM models request - Provider: {provider_key}, URL: {url}, Auth: custom header")
+            # Log with masked auth header
+            masked_auth = custom_auth_header[:10] + "***" if len(custom_auth_header) > 10 else "***"
+            logger.info(f"LiteLLM models request - Provider: {provider_key}, URL: {url}, Auth: {masked_auth}")
         elif api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-            logger.info(f"LiteLLM models request - Provider: {provider_key}, URL: {url}, Auth: Bearer")
+            # Log with masked API key
+            masked_key = api_key[:8] + "***" if len(api_key) > 8 else "***"
+            logger.info(
+                f"LiteLLM models request - Provider: {provider_key}, URL: {url}, Auth: Bearer {masked_key}"
+            )
         else:
             logger.error("LiteLLM models request - No authentication available")
 
