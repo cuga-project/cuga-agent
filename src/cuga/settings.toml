@@ -74,6 +74,8 @@ execd_package_index = ""
 # Every tool the agent's code calls in the sandbox is POSTed back here to {url}/sandbox/tools/call
 # and runs in CUGA (registry, MCP, SDK tools, todos, ToolGuard, call budget). Required when the
 # sandbox is on: without it no tool can be called from code. The sandbox network policy must allow egress to it.
+# Plain http:// sends block tokens, arguments and results unencrypted, and a token stays valid
+# while its block runs; use it only on a trusted network, otherwise give an https:// address.
 # Env: DYNACONF_ADVANCED_FEATURES__SANDBOX_CALLBACK_URL
 sandbox_callback_url = ""
 # Per-block wall clock in the execd sandbox, in seconds. Longer than sandbox_execution_timeout by

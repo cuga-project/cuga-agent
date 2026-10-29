@@ -50,6 +50,9 @@ env:
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
   # Sandbox tool-callback address. Leave unset: the chart points it at each pod's own IP,
   # http://<pod IP>:7860, so callbacks reach the replica that ran the block. Set only to override.
+  # The default is plain HTTP: block tokens, arguments and results are unencrypted and a token
+  # stays valid while its block runs. Use it only on a trusted in-cluster network; elsewhere set
+  # an HTTPS address here (e.g. through a TLS proxy that still reaches this pod).
   # DYNACONF_ADVANCED_FEATURES__SANDBOX_CALLBACK_URL: ""
 
 # Name of an existing Secret containing sensitive env vars.
