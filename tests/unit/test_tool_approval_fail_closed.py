@@ -232,6 +232,30 @@ async def test_a_failed_approval_check_pauses_instead_of_running_the_tool(monkey
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", MODES)
+async def test_the_failed_check_log_keeps_the_traceback_but_not_the_users_data(monkeypatch, mode):
+    from loguru import logger
+
+    model = _model(mode)
+    agent = await _guarded_agent(model, mode)
+    _break_approval_check_with_braces(monkeypatch, agent)
+    logged = []
+    # diagnose=True is loguru's default handler setting, which CUGA does not change.
+    sink = logger.add(logged.append, level="ERROR", format="{message}", diagnose=True)
+    try:
+        await agent.invoke("delete record 1", thread_id=f"fail-closed-log-{mode}")
+    finally:
+        logger.remove(sink)
+
+    failed = [message for message in logged if "Tool approval check failed" in message]
+    assert failed, logged
+    assert "Traceback" in failed[0] and "validation error for Policy" in failed[0], failed[0]
+    assert "delete record 1" not in failed[0] and "delete_record(" not in failed[0], (
+        "the log carries the user's input or the generated code"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
 async def test_approving_after_a_failed_check_runs_the_tool(monkeypatch, mode):
     model = _model(mode)
     agent = await _guarded_agent(model, mode)

@@ -3,6 +3,7 @@
 Shared by CugaLite and CugaSupervisor via :class:`CoreGraphAdapter` seams.
 """
 
+import traceback
 from typing import Any, List, Optional
 
 from langchain_core.messages import AIMessage
@@ -155,11 +156,15 @@ class ToolApprovalHandler:
             logger.debug(f"Policy match result: {policy_match}")
 
         except Exception as e:
-            # The error text goes in as an argument, not into the template: loguru
-            # formats the message, and braces in it (a pydantic error's input_value)
-            # would otherwise raise here and skip the pause.
-            logger.opt(exception=True).error(
-                "Tool approval check failed - pausing for approval instead of running the code: {}", e
+            # The error and traceback go in as arguments, not into the template: loguru
+            # formats the message, and braces in them (a pydantic error's input_value)
+            # would otherwise raise here and skip the pause. The traceback is plain
+            # text, not loguru's exception option, whose default diagnose mode would
+            # log this frame's locals: the generated code and the user's input.
+            logger.error(
+                "Tool approval check failed - pausing for approval instead of running the code: {}\n{}",
+                e,
+                traceback.format_exc(),
             )
             return ToolApprovalHandler._pause_for_approval(
                 adapter,
