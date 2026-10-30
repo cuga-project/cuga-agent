@@ -17,9 +17,9 @@ from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-PythonBackend = Literal["local", "e2b"]
-ShellBackend = Literal["none", "local", "native", "opensandbox", "e2b"]
-FilesystemBackend = Literal["none", "host", "sandbox_remote"]
+PythonBackend = Literal["local", "e2b", "execd"]
+ShellBackend = Literal["none", "local", "native", "opensandbox", "e2b", "execd"]
+FilesystemBackend = Literal["none", "host", "sandbox_remote", "sandbox_execd"]
 
 
 class ExecutionPlan(BaseModel):
@@ -37,8 +37,8 @@ class ExecutionPlan(BaseModel):
     @property
     def split_execution_active(self) -> bool:
         """True when generated Python runs locally while shell/FS run remotely."""
-        remote_shell = self.shell_backend in ("native", "opensandbox", "e2b")
-        remote_fs = self.filesystem_backend == "sandbox_remote"
+        remote_shell = self.shell_backend in ("native", "opensandbox", "e2b", "execd")
+        remote_fs = self.filesystem_backend in ("sandbox_remote", "sandbox_execd")
         return self.python_backend == "local" and (remote_shell or remote_fs)
 
 
@@ -82,9 +82,17 @@ class ExecutionRouter:
 
         # ── python_backend ──────────────────────────────────────────────────
         e2b = bool(getattr(adv, "e2b_sandbox", False))
-        settings_choice: PythonBackend = (
-            explicit_python if explicit_python is not None else ("e2b" if e2b else "local")
-        )
+        # Local import avoids a circular import with code_executor.
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd.connection import effective_sandbox_mode
+
+        # execd is chosen via sandbox_mode, but it decides where Python runs.
+        _mode_is_execd = effective_sandbox_mode(str(getattr(adv, "sandbox_mode", "") or "")) == "execd"
+        if explicit_python is not None:
+            settings_choice: PythonBackend = explicit_python
+        elif _mode_is_execd:
+            settings_choice = "execd"
+        else:
+            settings_choice = "e2b" if e2b else "local"
         if mode is not None:
             python_backend: PythonBackend = mode
             if mode != settings_choice:
@@ -114,9 +122,11 @@ class ExecutionRouter:
                     "Remove advanced_features.enable_shell_tool from your settings."
                 )
         elif _legacy_shell_on:
-            sandbox_mode = str(getattr(adv, "sandbox_mode", "native") or "native")
+            sandbox_mode = effective_sandbox_mode(str(getattr(adv, "sandbox_mode", "native") or "native"))
             shell_backend = (
-                sandbox_mode if sandbox_mode in ("local", "native", "opensandbox", "e2b") else "native"
+                sandbox_mode
+                if sandbox_mode in ("local", "native", "opensandbox", "e2b", "execd")
+                else "native"
             )
         else:
             shell_backend = "none"
@@ -125,7 +135,12 @@ class ExecutionRouter:
         if explicit_fs is not None:
             filesystem_backend: FilesystemBackend = explicit_fs
         elif bool(getattr(adv, "enable_filesystem_tools", False)):
-            filesystem_backend = "sandbox_remote" if shell_backend == "opensandbox" else "host"
+            if _mode_is_execd:
+                # Mirrors resolve_runtime_backends: under execd the files live
+                # wherever the Python runs, whether or not the shell tool is on.
+                filesystem_backend = "sandbox_execd"
+            else:
+                filesystem_backend = "sandbox_remote" if shell_backend == "opensandbox" else "host"
         else:
             filesystem_backend = "none"
 

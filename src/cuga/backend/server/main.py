@@ -210,6 +210,16 @@ def _session_knowledge_collection(thread_id: str) -> str:
     return session_collection_name(thread_id)
 
 
+async def _release_sandbox_thread(thread_id: str, agent_id: str) -> None:
+    """Free the thread's kernel in sandbox-api when the execd sandbox is on."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import connection
+
+    if connection.execd_active():
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import ExecdExecutor
+
+        await ExecdExecutor.release_thread(thread_id, agent_id=agent_id)
+
+
 async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id: str) -> None:
     from cuga.backend.knowledge.sources import drop_ledger
 
@@ -1001,6 +1011,11 @@ async def lifespan(app: FastAPI):
     # This ensures that a previously saved provider/model/api_key is applied from
     # the first request rather than always falling back to .env defaults.
     _startup_config, _ = await load_config(None) or (None, None)
+
+    # Code sandbox choice from the Manage UI; independent of agent config versions.
+    from cuga.backend.server.manage_routes.sandbox_routes import load_sandbox_settings_into_runtime
+
+    await load_sandbox_settings_into_runtime()
     _startup_llm_cfg = (_startup_config or {}).get("llm") or {}
 
     # Apply the published config at startup so the runtime override is set
@@ -3287,6 +3302,7 @@ async def delete_conversation(
         if success:
             await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
             await delete_thread_uploads(conversation_id)
+            await _release_sandbox_thread(conversation_id, agent_id)
             logger.info(f"Deleted conversation and stream events: {conversation_id}")
             return JSONResponse({"status": "success", "message": "Conversation deleted"})
         else:
@@ -4709,6 +4725,52 @@ async def download_workspace_file(
 #     except Exception as e:
 #         logger.error(f"Failed to upload file: {e}")
 #         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
+
+
+@app.post("/sandbox/tools/call", tags=["Sandbox"])
+async def sandbox_tool_call(request: Request):
+    """Run a tool on behalf of code executing in the execd sandbox.
+
+    No user auth: the caller is the sandbox, which holds no user credentials.
+    The request carries the HMAC token of the code block it belongs to, and is
+    answered only while that block runs, only with the callables of that block.
+    With no block running (the sandbox off, or nothing in flight) the route does
+    not exist, so a server without the sandbox exposes nothing here.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import tool_callback
+
+    if not tool_callback.has_blocks():
+        raise HTTPException(status_code=404, detail="Not Found")
+    # Arguments are bounded like results, plus room for the envelope. Counted while
+    # reading: Content-Length is the caller's word, and chunked bodies have none.
+    limit = tool_callback.MAX_RESULT_BYTES + 64 * 1024
+    too_large = JSONResponse(
+        status_code=413,
+        content={"ok": False, "error": {"type": "ValueError", "message": f"request over {limit} bytes"}},
+    )
+    try:
+        if int(request.headers.get("content-length") or 0) > limit:
+            return too_large
+    except ValueError:
+        pass
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > limit:
+            return too_large
+    try:
+        body = json.loads(raw)
+    except Exception:
+        return JSONResponse(
+            status_code=400, content={"ok": False, "error": {"type": "ValueError", "message": "invalid JSON"}}
+        )
+    if not isinstance(body, dict):
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": {"type": "ValueError", "message": "expected an object"}},
+        )
+    status, payload = await tool_callback.handle_call(body)
+    return JSONResponse(status_code=status, content=payload)
 
 
 @app.post("/functions/call", tags=["Registry Proxy"])
