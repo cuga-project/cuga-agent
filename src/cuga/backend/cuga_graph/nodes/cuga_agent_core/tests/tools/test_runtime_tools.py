@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.factory as fs_factory
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.tools.runtime_tools import (
     RuntimeBackends,
     ToolBundle,
@@ -170,14 +171,14 @@ def patch_packages(monkeypatch):
         return [_FakeTool("read_file", coroutine=_rf), _FakeTool("write_file", func=lambda: None)]
 
     class FakeRemoteBackend:
-        def __init__(self, executor, thread_id=None):
-            created["remote_executor"] = executor
+        def __init__(self, thread_id=None):
             created["remote_thread_id"] = thread_id
 
     import cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem as fs_pkg
 
     monkeypatch.setattr(fs_pkg, "create_filesystem_tools", fake_create_fs)
-    monkeypatch.setattr(fs_pkg, "RemoteSandboxBackend", FakeRemoteBackend)
+    # The sandbox backend is now chosen in one place; this is that seam.
+    monkeypatch.setattr(fs_factory, "sandbox_workspace_backend", FakeRemoteBackend)
 
     class FakeShellExecutor:
         def __init__(self, label):
@@ -226,9 +227,10 @@ def test_host_fs_orchestrates_create_filesystem_tools(patch_packages):
     assert [a.name for a in bundle.app_definitions] == ["filesystem"]
 
 
-def test_sandbox_remote_fs_builds_remote_backend(patch_packages):
-    build_runtime_tools(thread_id="t9", backends=RuntimeBackends("sandbox_remote", "opensandbox"))
-    # RemoteSandboxBackend wired with the opensandbox executor + thread_id
+@pytest.mark.parametrize("choice", ["sandbox_remote", "sandbox_execd"])
+def test_sandbox_fs_asks_the_factory_for_the_backend(patch_packages, choice):
+    """Both sandbox-backed choices go through one factory, bound to the thread."""
+    build_runtime_tools(thread_id="t9", backends=RuntimeBackends(choice, "none"))
     assert patch_packages["fs_backend"] is not None
     assert patch_packages["remote_thread_id"] == "t9"
 
@@ -299,3 +301,58 @@ async def test_skill_tool_func_is_awaitable_via_make_tool_awaitable():
 
     result = await wrapped(name="my_skill")
     assert "instructions" in result
+
+
+# ─── execd: the sandbox holds the workspace, so the tools must follow it ────
+
+
+def test_shell_execd_when_enabled():
+    b = resolve_runtime_backends(_settings(enable_shell_tool=True, sandbox_mode="execd"), {})
+    assert b.shell == "execd"
+
+
+def test_execd_filesystem_is_sandbox_backed_without_the_shell_tool():
+    """The coherence rule that motivates the whole execd wiring.
+
+    Under execd the agent's Python already runs in the sandbox and writes to
+    its workspace there. Host-backed files would mean generated code writes a
+    file that ``read_file`` cannot find — and whether the shell tool happens to
+    be enabled has nothing to do with where those files live.
+    """
+    b = resolve_runtime_backends(
+        _settings(enable_filesystem_tools=True, enable_shell_tool=False, sandbox_mode="execd"), {}
+    )
+    assert b.filesystem == "sandbox_execd"
+    assert b.shell == "none"
+
+
+def test_execd_filesystem_does_not_need_the_opensandbox_flag():
+    """``opensandbox_sandbox`` describes a different daemon and must not gate execd."""
+    b = resolve_runtime_backends(
+        _settings(enable_filesystem_tools=True, sandbox_mode="execd", opensandbox_sandbox=False), {}
+    )
+    assert b.filesystem == "sandbox_execd"
+
+
+def test_opensandbox_filesystem_gating_is_unchanged():
+    """Guard against the execd branch leaking into the opensandbox path."""
+    b = resolve_runtime_backends(
+        _settings(enable_filesystem_tools=True, enable_shell_tool=False, sandbox_mode="opensandbox"),
+        {},
+    )
+    assert b.filesystem == "host"
+
+
+def test_filesystem_execution_callables_carry_app_name_tag(patch_packages):
+    """Filesystem callables must be tagged _cuga_app_name='filesystem'.
+
+    E2BExecutor._serialize_tools reads this attribute to emit the correct
+    call_api("filesystem", ...) stub.  Without it the fallback splits on "_"
+    and guesses "write" / "read" / "list", producing HTTP 404s at runtime.
+    """
+    bundle = build_runtime_tools(thread_id="t1", backends=RuntimeBackends("host", "none"))
+    for name in ("read_file", "write_file"):
+        fn = bundle.execution_callables[name]
+        assert getattr(fn, "_cuga_app_name", None) == "filesystem", (
+            f"execution_callable '{name}' missing _cuga_app_name='filesystem'"
+        )
