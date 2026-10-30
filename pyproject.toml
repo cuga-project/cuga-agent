@@ -1,23 +1,17 @@
 [project]
 name = "cuga"
-version = "0.4.0"
+version = "0.4.3"
 description = "CUGA is an open-source generalist agent for the enterprise, supporting complex task execution on web and APIs, OpenAPI/MCP integrations, composable architecture, reasoning modes, and policy-aware features."
 readme = "README.md"
 license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10, <3.15"
 dependencies = [
-    # >=1.3.9 fixes GHSA-gr75-jv2w-4656 (path traversal / sandbox escape in the file-search
-    # middleware, <=1.3.8).
-    # <1.3.15 because 1.3.15 changed what happens when the summary model call fails:
-    # 1.3.9-1.3.14 return an "Error generating summary: ..." placeholder that we store as the
-    # summary; 1.3.15 retries and then raises, which we turn into
-    # RuntimeError("middleware_invocation_failed: ...") and fall back to keeping the last N
-    # messages. Both drop the same older messages — what changes is the extra placeholder
-    # message and the metrics (1.3.15 reports hard_truncation instead of success).
-    # Capped only to keep a security bump from also changing behaviour; 1.3.9-1.3.14 carry the
-    # fix without it. See _invoke_middleware in
-    # cuga/backend/cuga_graph/utils/context_summarizer.py for the measured comparison.
-    "langchain>=1.3.9,<1.3.15",
+    # First-party MCPAdapter replaces the archived langchain-mcp-adapters package.
+    # The MCP namespace is beta: stay within the tested minor series.
+    # Summary-model failures now retry then use our hard_truncation fallback,
+    # instead of treating an "Error generating summary" placeholder as success.
+    "langchain[mcp]>=1.4.6,<1.5",
     "langchain-ibm>=1.1.1",
     "ibm-watsonx-ai>=1.5.13; python_version>='3.14'",  # 1.5.10 StrEnum.__init__ crashes on 3.14
     "langchain-openai>=1.1.14",  # GHSA-r7w7-9xr2-qq2r: image-token-counting SSRF guard bypassed via DNS rebinding
@@ -37,38 +31,39 @@ dependencies = [
     "python-dotenv",
     "loguru",
     # 1.28.1+ fixes GHSA-hvrp-rf83-w775, GHSA-jpw9-pfvf-9f58, GHSA-vj7q-gjh5-988w (task/session/WebSocket auth).
-    # No upper bound: mcp 2.x is compatible after moving imports to standalone fastmcp.
-    "mcp[cli]>=1.28.1",
+    # FastMCP 4 and Evolve's CPEX integrations share the MCP 2 protocol models.
+    "mcp[cli]>=2.0.0,<3",
     "psutil>=7.0.0",
     "typer>=0.15.3",
     "typer-slim>=0.15.3", # explicit: docling pulls typer meta-package which needs typer-slim
-    # <4: fastmcp 4.0.0 is currently beta. Lift to >=4.0.0 once a stable release exists.
-    # >=3.3.0 so the fastmcp/ package has exactly one owner. Up to 3.2.x the fastmcp
-    # distribution ships the code itself; from 3.3.0 it is a meta-package that requires
-    # fastmcp-slim[client,server]==<same version>, and fastmcp-slim ships the code.
-    # arize-phoenix pulls pydantic-ai-slim[mcp] -> fastmcp-slim, so on 3.2.x we ended up with
-    # two distributions writing the same fastmcp/ directory: whichever installed last won, and
-    # uninstalling either deleted the shared directory. Same split as typer / typer-slim above.
-    "fastmcp>=3.3.0,<4",
+    # 4.1.2 is the stable floor shared with Evolve's server extra. FastMCP 3
+    # requires MCP <2, which cannot coexist with CPEX >=0.1.4 / pii-filter >=0.3.9.
+    # The fastmcp meta-package retains sole code ownership in fastmcp-slim.
+    "fastmcp>=4.1.2,<5",
     # Authoritative harmony special-token vocabulary
     # (see cuga_graph.utils.harmony.harmony_special_tokens); avoids
     # hand-maintaining the list.
     "openai-harmony>=0.0.4",
-    "langchain-mcp-adapters",
     "pyyaml>=6.0.3",
     "langchain-groq>=0.3.8",
     # 0.6+/0.7.0 publish cryptography<49, which blocks GHSA-g6cj-pr64-35w5 (needs cryptography>=50).
     # Stay on 0.5.x until langchain-litellm lifts that cap; ChatLiteLLM API used here is unchanged.
     "langchain-litellm>=0.5.1,<0.6",
-    # 1.84.0+ fixes GHSA-4xpc-pv4p-pm3w (Host header auth bypass); 1.83.14 was prior floor for fastmcp compat.
-    "litellm>=1.84.0",
+    # 1.89.7+ fixes GHSA-3cv6-jpf6-8222 (SSRF / provider-credential exfiltration via request-body
+    # routing params, 1.89.0..1.89.6); 1.84.0+ fixed GHSA-4xpc-pv4p-pm3w (Host header auth bypass).
+    "litellm>=1.89.7",
     "tavily-python",
     "fastembed>=0.4.0",
     "a2a-sdk[http-server]>=0.3.22",
     "sqlite-vec>=0.1.6", # GHSA-vrcx-gx3g-j3h8 affects <0.1.3 only; 0.1.6 is safe
     "pgvector>=0.4.2",
     "asyncpg>=0.30",
-    "PyJWT[crypto]>=2.13.0",  # GHSA-xgmm-8j9v-c9wx: JWK accepted as HMAC secret (<=2.12.x)
+    # 2.15.0+ fixes GHSA-42vr-xj54-vc7v (RecursionError DoS in pre-verification parse, <=2.14.0) and
+    # the 2.13.x batch: GHSA-ffc3-869f-jxw9, GHSA-p4g4-x82p-q773, GHSA-w2cx-738m-mc7w, GHSA-9j54-fg26-wv3r
+    # (HMAC key-confusion / empty-key bypasses), GHSA-gvp8-978c-rx2q, GHSA-hxm8-2xgr-2p9m,
+    # GHSA-r6x4-923q-g947, GHSA-9v7f-9g4p-ffgj, GHSA-2gx3-rcp4-g85q, GHSA-jwrc-g2q2-pq5p,
+    # GHSA-w6j9-cwv2-h6wq, GHSA-8wjv-2p76-3863.
+    "PyJWT[crypto]>=2.15.0",
     # 50.0.0+ fixes GHSA-g6cj-pr64-35w5 (PKCS#7 Bleichenbacher); 49+ also GHSA-jwv3-5hgf-82ww / GHSA-m2h6-j472-rp4c.
     "cryptography>=50.0.0",
     "hvac>=2.0.0",
@@ -106,8 +101,8 @@ e2b = ["e2b-code-interpreter>=2.4.1"]
 knowledge = []  # knowledge is now built-in, no extra dependencies needed
 health = ["cuga-oak-health; python_version>='3.12'"]  # kept for backward compat, now also in core deps
 opensandbox = ["opensandbox", "opensandbox-code-interpreter"]
-# Evolve 1.5.2 lets consistency metrics reuse the configured embedding model.
-evolve = ["altk-evolve[pii-regex]>=1.5.2,<2; python_version>='3.12'", "einops==0.8.1; python_version>='3.12'"]
+# Core keeps Phoenix optional; explicitly include the server, storage and PII integrations CUGA uses.
+evolve = ["altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]>=1.8.0,<2; python_version>='3.12'", "einops==0.8.1; python_version>='3.12'"]
 # wxO SDK requires Python >=3.11; keep it an extra so 3.10 installs are unaffected.
 wxo = ["ibm-watsonx-orchestrate-sdk>=2.15.0; python_version>='3.11'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
@@ -124,7 +119,10 @@ Repository = "https://github.com/cuga-project/cuga-agent"
 package = true
 constraint-dependencies = [
     "pillow>=12.3.0",  # GHSA-62p4-gmf7-7g93 and related Pillow OOB/DoS CVEs in <=12.2.x
-    "urllib3>=2.7.0",  # GHSA-qccp-gfcp-xxvc, GHSA-mf9v-mfxr-j63j (<=2.6.x); prior CVEs fixed in 2.6.3+
+    # GHSA-8988-9cw3-xx77 (HTTPS proxy TLS config ignored), GHSA-vxq7-64xx-v4gw (unbounded chunk-size
+    # line), GHSA-gh4c-6fx4-qh6g (chunked deflate infinite loop), all <2.8.0; earlier GHSA-qccp-gfcp-xxvc,
+    # GHSA-mf9v-mfxr-j63j (<=2.6.x).
+    "urllib3>=2.8.0",
     "h11>=0.16.0",     # CVE-2025-43859: HTTP request smuggling via chunked encoding
     "setuptools>=83.0.0",  # GHSA-h35f-9h28-mq5c (MANIFEST.in bypass via Unicode NFC/NFD collision, <83); earlier GHSA-cx63-2mw6-8hw5, GHSA-5rjg-fvgr-3xxf
     # Security updates for transitive dependencies
@@ -133,32 +131,25 @@ constraint-dependencies = [
     "orjson>=3.11.6",      # GHSA-hx9q-6w63-j58v
     "pyasn1>=0.6.4",       # GHSA-m4p7-r5rc-7g4j, GHSA-8ppf-4f7h-5ppj, GHSA-hm4w-wwcw-mr6r (DoS in <=0.6.3)
     "protobuf>=5.29.6",    # GHSA-7gcm-g887-7qv7
-    # GHSA-fr49-mhgj-crfc (MaxAliasesLimiter bypass via fragment spreads), GHSA-qfwv-87qj-98xq
-    # (circular fragment reference DoS), GHSA-x97m-qp5c-w9xj (GraphiQL leaks headers in URLs).
-    # Earlier: auth bypass + DoS via unlimited WebSocket subscriptions (<=0.312.2).
-    "strawberry-graphql>=0.315.7",
-    # arize-phoenix hard-pins an exact strawberry-graphql, so it sets which strawberry we get:
-    # <=16.3.0 pins the vulnerable 0.314.3, 16.4.0..17.12.0 pins 0.316.0, 17.13.0..17.30.0 pins
-    # 0.319.0, 18.0.0+ pins 0.320.4.
-    # >=17.13.0 because 16.4.0..17.10.0 ask for "pydantic-ai-slim>=1.95.0" with no upper bound
-    # while their code still uses the 1.x API, so a resolver is free to install pydantic-ai 2.x
-    # and phoenix then fails to import (MCPServerStreamableHTTP). pytest loads phoenix through
-    # its pytest11 entry point, so that breaks collection for the whole suite. Upstream capped
-    # it in 17.11.0 and moved to pydantic-ai 2.x in 17.13.0.
-    "arize-phoenix>=17.13.0",
     "starlette>=1.3.1",       # GHSA-82w8-qh3p-5jfq (form DoS), GHSA-wqp7-x3pw-xc5r (UNC SSRF on Windows)
     "python-multipart>=0.0.30",  # GHSA-5rvq-cxj2-64vf (querystring DoS); GHSA-pp6c-gr5w-3c5g fixed in 0.0.27+
     "langsmith>=0.8.18",  # GHSA-f4xh-w4cj-qxq8: TracingMiddleware arbitrary file read (<=0.8.17)
     "langgraph-checkpoint>=4.1.1",  # GHSA-fjqc-hq36-qh5p: unsafe JSON deserialization when loading checkpoints
-    "langgraph-sdk>=0.3.15",  # GHSA-w39p-vh2g-g8g5: unsafe URL path construction
+    "langgraph-sdk>=0.4.4",  # GHSA-fvww-7h3r-vfhp (custom auth silently ignores actions= on resource decorators, <=0.4.3); earlier GHSA-w39p-vh2g-g8g5 (unsafe URL path construction)
     "pydantic-settings>=2.14.2",  # GHSA-4xgf-cpjx-pc3j: NestedSecretsSettingsSource follows symlinks out of secrets_dir
     "langchain-classic>=1.0.7",  # GHSA-3644-q5cj-c5c7: untrusted prompt manifest deserialization (<=1.0.6)
-    "docling>=2.94.0",  # GHSA-q29v-xc37-wh5m: unsafe URI/path handling in HTML backend (<=2.93.x)
-    "mako>=1.3.12",           # GHSA-v92g-xgxw-vvmm (// path traversal, <=1.3.10), GHSA-2h4p-vjrc-8xpq (Windows \\ traversal, <=1.3.11)
+    # GHSA-x3q2-h9hx-4r4j (arbitrary file read/write + command exec), GHSA-pc36-qwjq-x68c (SSRF guard
+    # bypass via DNS rebinding), GHSA-4xhp-xg4w-8ppm (local file read via draw:image xlink:href),
+    # GHSA-q43m-vhcp-mhvm, GHSA-9jxx-vjrv-h2rq, GHSA-p944-4xh2-x776, GHSA-cgc7-9qp3-86m3,
+    # GHSA-3cr3-8m4c-fpxw, GHSA-p3fw-7699-7926, all <2.132.0; earlier GHSA-q29v-xc37-wh5m
+    # (unsafe URI/path handling in HTML backend, <=2.93.x). docling-slim ships the same code.
+    "docling>=2.132.0",
+    "docling-slim>=2.132.0",
+    "mako>=1.4.2",            # GHSA-5639-2j2p-m4mx (drive-letter URI path traversal on Windows, <=1.4.1); earlier GHSA-v92g-xgxw-vvmm (// traversal, <=1.3.10), GHSA-2h4p-vjrc-8xpq (Windows \\ traversal, <=1.3.11)
     "soupsieve>=2.8.4",  # GHSA-2wc2-fm75-p42x, GHSA-836r-79rf-4m37 (memory / ReDoS in <=2.8.3)
     "joserfc>=1.6.8",  # GHSA-gg9x-qcx2-xmrh: empty/nil HMAC key accepted for HS* verify (<=1.6.7)
     "json-repair>=0.60.1",  # GHSA-xf7x-x43h-rpqh: circular JSON Schema $ref DoS (<=0.60.0)
-    "datamodel-code-generator>=0.64.0",  # GHSA-5578-w22f-pfx9 and related code-injection / SSRF / path-read CVEs
+    "datamodel-code-generator>=0.81.0",  # GHSA-77xj-x4rm-935c (Protobuf weak-import path traversal, <=0.80.0); earlier GHSA-5578-w22f-pfx9 and related code-injection / SSRF / path-read CVEs
     "transformers>=5.10.0",  # GHSA-xrqw-3rrv-vx5w: save_pretrained path traversal via chat template names (<5.10.0)
     # >=2.12.0 fixes GHSA-h4x7-gw46-3wm6, GHSA-pf96-p4fj-6566 (multipart header injection /
     # conflicting Content-Length+Transfer-Encoding, both <2.11.0) and GHSA-8xx6-hgc6-gc2m
@@ -168,6 +159,19 @@ constraint-dependencies = [
     # GHSA-82r6-8w77-94w6 (TLSStream IDNA 2003 host encoding enables cert spoofing), GHSA-5p39-cfhj-2xmp
     # (process-pool workers block on undrained stderr), both <4.14.2.
     "anyio>=4.14.2",
+    # GHSA-jhr6-gm9c-rqjv: local model loading ignores trust_remote_code=False and runs custom Python (<5.6.0).
+    # Pulled in by altk-evolve (evolve extra).
+    "sentence-transformers>=5.6.0",
+    # GHSA-p58f-9548-mpm2 (activate scripts run commands embedded in paths, <=21.7.12), GHSA-x78j-v8h9-3j2q
+    # (--prompt injection in activate.bat), GHSA-94p9-xgh2-xp45 (seed wheels not integrity-checked),
+    # GHSA-9h9j-4vrj-gf7g (pyvenv.cfg line injection). Dev-only, via pre-commit.
+    "virtualenv>=21.7.13",
+    "fsspec>=2026.6.0",  # GHSA-27vj-qcqg-25rc: server-side template injection in ReferenceFileSystem (<2026.6.0)
+    "multidict>=6.9.1",  # GHSA-54p9-h82j-f925: reference leak in CIMultiDict/MultiDict items-view union (6.7.0..6.9.0)
+    # Not security: hold click where it was before this re-lock. Nothing requires >=8.2, but
+    # re-resolving floated py>=3.12 up to click 8.5.0, which drops CliRunner(mix_stderr=) and breaks
+    # the knowledge CLI tests. 8.2 also changed CLI behaviour we haven't vetted; keep the churn out.
+    "click<8.2",
 ]
 # litellm 1.83.4 pins python-dotenv==1.0.1; fastmcp needs >=1.1.0 — allow newer for sync/lock only.
 # READI pins application-wide packages; preserve CUGA's patched versions and
@@ -178,6 +182,10 @@ override-dependencies = [
     "pytz>=2025.1",
     "pandas>=2.3.3,<2.4",
     "safetensors>=0.8.0",
+    "urllib3>=2.8.0",  # READI 0.1.7 pins urllib3==2.7.0; keep the 2.8.0 security floor
+    # READI 0.1.7 pins datasets==5.0.0; override to keep the GHSA-379c-qx7v-6h59 floor (path
+    # traversal in folder-based builders, <5.0.1). A constraint can't win against READI's exact pin.
+    "datasets>=5.0.1",
 ]
 
 [tool.uv.sources]
@@ -189,12 +197,6 @@ torchaudio            = { index = "pytorch-cpu" }
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
-
-# NOTE: uv.lock includes graphql-core 3.3.0a12 (pre-release) to fix strawberry-graphql security vulnerability
-# RISK ACCEPTED: graphql-core pre-release required by arize-phoenix 14.3.1+ for secure strawberry-graphql
-# - Lock file generated with: uv lock --upgrade-package strawberry-graphql --upgrade-package arize-phoenix --prerelease=allow
-# - graphql-core is mature; alpha is for new features, not instability
-# - Monitor for graphql-core 3.3.0 stable release to remove pre-release dependency
 
 # PyPI openlit declares openai<2; litellm 1.83.x needs openai 2.x. Override for uv lock / Docker / dev only.
 [[tool.uv.dependency-metadata]]
@@ -279,7 +281,7 @@ test_llm = "scripts.commands:test_llm"
 # Image-only dependencies: uv applies the READI compatibility overrides above.
 # Keep these out of the published evolve extra, whose pip consumers do not use uv overrides.
 evolve-image = [
-    "altk-evolve[pii-semantic]>=1.5.2,<2; python_version>='3.12'",
+    "altk-evolve-core[pii-semantic]>=1.8.0,<2; python_version>='3.12'",
     "readi-privacy==0.1.7; python_version>='3.12'",
     "en-core-web-trf @ https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl ; python_version>='3.12'",
 ]
@@ -342,3 +344,70 @@ markers = [
     "windows_smoke: Windows CI smoke subset of stability tests",
     "manual: requires manually started services; excluded from default collection",
 ]
+
+[tool.ruff]
+# Exclude a variety of commonly ignored directories.
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pyenv",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "venv",
+]
+
+# Same as Black.
+line-length = 110
+indent-width = 4
+
+# Assume Python 3.9
+target-version = "py312"
+
+[tool.ruff.lint]
+# Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`)  codes by default.
+select = ["E4", "E7", "E9", "F"]
+ignore = []
+
+
+# Allow fix for all enabled rules (when `--fix`) is provided.
+fixable = ["ALL"]
+unfixable = []
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.pyflakes]
+allowed-unused-imports = ["webarena","evaluation.helper_functions"]
+
+[tool.ruff.format]
+# Like Black, use double quotes for strings.
+quote-style = "preserve"
+
+# Like Black, indent with spaces, rather than tabs.
+indent-style = "space"
+
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+
+# Like Black, automatically detect the appropriate line ending.
+line-ending = "auto"

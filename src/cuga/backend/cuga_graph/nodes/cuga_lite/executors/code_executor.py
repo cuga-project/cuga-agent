@@ -7,17 +7,13 @@ from cuga.config import settings
 from loguru import logger
 
 from .common import CodeSyntaxError, SecurityValidator, CodeWrapper, VariableUtils, CallApiHelper
-from .common.benchmark_mode import (
-    is_benchmark_mode,
-    reset_skills_relaxed_execution,
-    set_skills_relaxed_execution,
-)
+from .common.benchmark_mode import is_benchmark_mode
 from .local import LocalExecutor, LocalSandboxExecutor
 from .e2b import E2BExecutor
 from .docker import DockerExecutor
 from .opensandbox import OpenSandboxExecutor
 from .native import NativeSandboxExecutor
-from .base_executor import BaseExecutor, RemoteExecutor
+from .base_executor import BaseExecutor, CodeExecutionTimeout, RemoteExecutor
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionPlan
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker, counted_tool_call
 
@@ -118,6 +114,8 @@ class CodeExecutor:
         mode: Optional[Literal['local', 'e2b', 'opensandbox']] = None,
         plan: Optional[ExecutionPlan] = None,
         variable_manager: Optional[Any] = None,
+        keep_listing_vars: bool = False,
+        execution_timeout: Optional[float] = None,
     ) -> tuple[str, dict[str, Any]]:
         """Execute code with async tools available in the local namespace.
 
@@ -133,6 +131,11 @@ class CodeExecutor:
                 Python execution path unless ``mode`` is given explicitly.
             variable_manager: Variable manager to record new variables into.
                 Defaults to ``state.variables_manager`` (preserves prior behavior).
+            keep_listing_vars: Keep find_tools listing markdown among the block's
+                variables (function-calling reads the reply from there). Default
+                strips it, as before.
+            execution_timeout: Optional local deadline for delegation blocks,
+                independent of the child agent's Python block deadline.
 
         Returns:
             Tuple of (execution result, new variables dictionary)
@@ -164,22 +167,20 @@ class CodeExecutor:
         ToolCallTracker.seed_block_budget()
 
         skills_on = _skills_enabled_for_run(state)
-        skills_token = set_skills_relaxed_execution(skills_on)
-        try:
-            return await cls._eval_with_tools_async_impl(
-                code,
-                _locals,
-                state,
-                original_keys,
-                thread_id=thread_id,
-                apps_list=apps_list,
-                mode=mode,
-                plan=plan,
-                variable_manager=variable_manager,
-                skills_on=skills_on,
-            )
-        finally:
-            reset_skills_relaxed_execution(skills_token)
+        return await cls._eval_with_tools_async_impl(
+            code,
+            _locals,
+            state,
+            original_keys,
+            thread_id=thread_id,
+            apps_list=apps_list,
+            mode=mode,
+            plan=plan,
+            variable_manager=variable_manager,
+            skills_on=skills_on,
+            keep_listing_vars=keep_listing_vars,
+            execution_timeout=execution_timeout,
+        )
 
     @classmethod
     async def _eval_with_tools_async_impl(
@@ -195,6 +196,8 @@ class CodeExecutor:
         plan: Optional[ExecutionPlan] = None,
         variable_manager: Optional[Any] = None,
         skills_on: bool,
+        keep_listing_vars: bool = False,
+        execution_timeout: Optional[float] = None,
     ) -> tuple[str, dict[str, Any]]:
         result = ""
 
@@ -210,6 +213,8 @@ class CodeExecutor:
             mode = 'local'
         if skills_on and 'load_skill' in code:
             mode = 'local'
+        if execution_timeout is not None and mode != 'local':
+            raise ValueError("Delegation execution_timeout requires mode='local'")
 
         # opensandbox: Python runs locally with run_command in context (forwarded to sandbox)
         # Security checks must run for every execution mode, including E2B turns.
@@ -261,10 +266,17 @@ class CodeExecutor:
                 result = await executor.execute(
                     wrapped_code=wrapped_code,
                     context_locals=_locals,
-                    timeout=settings.advanced_features.sandbox_execution_timeout,
+                    timeout=(
+                        execution_timeout
+                        if execution_timeout is not None
+                        else settings.advanced_features.sandbox_execution_timeout
+                    ),
+                    **({"raise_on_timeout": True} if execution_timeout is not None else {}),
                 )
 
         except Exception as e:
+            if isinstance(e, CodeExecutionTimeout):
+                raise
             executor = cls._get_local_executor()
             available_tools = [
                 name for name, value in _locals.items() if callable(value) and not name.startswith('_')
@@ -304,7 +316,8 @@ class CodeExecutor:
             {k: v for k, v in new_vars.items() if k not in changed_keys}, keep_last_n
         )
         new_vars.update(changed_vars)
-        new_vars = _omit_find_tools_listing_vars(new_vars)
+        if not keep_listing_vars:
+            new_vars = _omit_find_tools_listing_vars(new_vars)
 
         # Format/trim the output before adding variables
         result = format_execution_output(result)
@@ -325,6 +338,11 @@ class CodeExecutor:
         SecurityValidator.validate_syntax(code)
         wrapped_code = CodeWrapper.wrap_code_for_code_agent(code, fake_datetime=fake_datetime)
         SecurityValidator.validate_dangerous_modules(wrapped_code)
+        # Route the CodeAgent path through the strict validator too (GHSA-w5rx / C-2).
+        # validate_dangerous_modules alone permits dunder traversal — e.g.
+        # json.dumps.__globals__['__builtins__']['__import__']('os') — which reads
+        # os.environ with no obfuscation. The strict pass rejects dunder attributes.
+        SecurityValidator.validate_wrapped_code(wrapped_code)
         return wrapped_code
 
     @classmethod
@@ -399,7 +417,8 @@ class CodeExecutor:
         1. Does NOT automatically capture all new variables
         2. Expects code to print JSON on last line: {"variable_name": "...", "description": "...", "value": ...}
         3. Progress prints are preserved in output
-        4. Uses less restrictive security validation (allows dunder methods, etc)
+        4. Runs the same strict security validation as the interactive path
+           (dunder traversal and the forbidden calls/attrs are rejected here too)
 
         Args:
             code: Python code to execute
@@ -411,39 +430,35 @@ class CodeExecutor:
             Tuple of (execution result string, empty dict)
         """
         skills_on = _skills_enabled_for_run(state)
-        skills_token = set_skills_relaxed_execution(skills_on)
-        try:
-            if mode is None:
-                if skills_on:
-                    if settings.advanced_features.e2b_sandbox:
-                        mode = 'e2b'
-                    elif getattr(settings.advanced_features, 'opensandbox_sandbox', False):
-                        mode = 'opensandbox'
-                    else:
-                        mode = 'local'
-                else:
-                    mode = 'e2b' if settings.advanced_features.e2b_sandbox else 'local'
-            # When skills + opensandbox_sandbox we temporarily select opensandbox above; CodeAgent still
-            # must not use OpenSandboxExecutor.execute_for_code_agent (it is not implemented — raises).
-            # OpenSandbox remains for shell tools in CugaLite; CodeAgent Python runs locally like eval_with_tools_async.
-            if mode == 'opensandbox':
-                mode = 'local'
-
-            tracker = ActivityTracker()
-            fake_datetime = tracker.current_date if tracker.current_date and is_benchmark_mode() else None
-            try:
-                wrapped_code = cls._wrap_code_for_code_agent(code, fake_datetime=fake_datetime)
-            except CodeSyntaxError as e:
-                executor = cls._get_local_executor()
-                return executor.format_error(e), {}
-
+        if mode is None:
             if skills_on:
-                if mode in ('e2b', 'docker'):
-                    return await cls._execute_remotely_for_code_agent(wrapped_code, state, mode)
+                if settings.advanced_features.e2b_sandbox:
+                    mode = 'e2b'
+                elif getattr(settings.advanced_features, 'opensandbox_sandbox', False):
+                    mode = 'opensandbox'
+                else:
+                    mode = 'local'
             else:
-                if mode in ('e2b', 'docker'):
-                    return await cls._execute_remotely_for_code_agent(wrapped_code, state, mode)
-            context_locals = cls._prepare_locals_for_code_agent(state)
-            return await cls._execute_locally_for_code_agent(wrapped_code, context_locals)
-        finally:
-            reset_skills_relaxed_execution(skills_token)
+                mode = 'e2b' if settings.advanced_features.e2b_sandbox else 'local'
+        # When skills + opensandbox_sandbox we temporarily select opensandbox above; CodeAgent still
+        # must not use OpenSandboxExecutor.execute_for_code_agent (it is not implemented — raises).
+        # OpenSandbox remains for shell tools in CugaLite; CodeAgent Python runs locally like eval_with_tools_async.
+        if mode == 'opensandbox':
+            mode = 'local'
+
+        tracker = ActivityTracker()
+        fake_datetime = tracker.current_date if tracker.current_date and is_benchmark_mode() else None
+        try:
+            wrapped_code = cls._wrap_code_for_code_agent(code, fake_datetime=fake_datetime)
+        except CodeSyntaxError as e:
+            executor = cls._get_local_executor()
+            return executor.format_error(e), {}
+
+        if skills_on:
+            if mode in ('e2b', 'docker'):
+                return await cls._execute_remotely_for_code_agent(wrapped_code, state, mode)
+        else:
+            if mode in ('e2b', 'docker'):
+                return await cls._execute_remotely_for_code_agent(wrapped_code, state, mode)
+        context_locals = cls._prepare_locals_for_code_agent(state)
+        return await cls._execute_locally_for_code_agent(wrapped_code, context_locals)

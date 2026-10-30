@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Callable, Optional
 
@@ -9,6 +10,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
 
+from cuga.backend.cuga_graph.utils.thread_ids import logical_thread_id
 from cuga.backend.activity_tracker.tracker import Step
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import extract_task_todos_from_new_vars
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
@@ -18,21 +20,41 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionRouter
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.fc_actions import (
+    NOT_EXECUTED_REPLY,
+    fc_context_overlay,
+    fc_pending_plan,
+    metadata_without_plan,
+    replies_from_execution,
+    replies_without_execution,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import reflection_current_task
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import (
     CodeExecutor,
     is_find_tools_listing_markdown,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
+    STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
+    resolve_step_discipline,
+    resolved_runtime_model_name,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
     decide_pre_execute_verify,
     log_pre_execute_verify,
+    ordered_variables_summary,
     verify_blocked_message,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.reflection import reflection_task
+from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.reflection import reflection_prompt, reflection_task
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import VerifyDecision
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.pagination_audit import (
+    audit_pagination,
+    render_pagination_notes,
+)
 from cuga.backend.cuga_graph.utils.context_management_utils import (
+    context_fraction_setting,
+    model_input_budget_chars,
     prepare_reflection_context,
-    truncate_text_for_context,
+    rendered_prompt_chars,
 )
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 from cuga.backend.llm.models import LLMManager
@@ -71,6 +93,11 @@ def _record_weak_schema_shapes(adapter: Any, tool_calls: list) -> None:
         if name not in weak_schema_tool_names or name in observed or call.get("error"):
             continue
         observed[name] = _describe_observed_shape(call.get("result"))
+
+
+def _pagination_audit_enabled() -> bool:
+    """advanced_features.pagination_audit_enabled (default on), read per block."""
+    return bool(getattr(settings.advanced_features, "pagination_audit_enabled", True))
 
 
 def _needs_shape_tracking(adapter: Any) -> bool:
@@ -115,7 +142,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         sync_langfuse_callbacks_from_config(config)
         max_steps = configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
         if "thread_id" in configurable:
-            current_thread_id = configurable["thread_id"]
+            current_thread_id = logical_thread_id(configurable)
         else:
             current_thread_id = state.thread_id or base_thread_id
         current_apps_list = configurable.get("apps_list", base_apps_list)
@@ -143,16 +170,32 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         # Add tools to context
         context = {**existing_vars, **adapter._tools_context}
 
+        # A function-calling turn left its call plan: the block is the translated
+        # native calls, and every exit below answers each id with a ToolMessage
+        # instead of an "Execution output:" message (see fc_actions). Empty for a
+        # CodeAct block, where nothing below changes.
+        fc_plan = fc_pending_plan(adapter, state)
+        fc_outcomes: dict = {}
+        if fc_plan:
+            fc_overlay, fc_outcomes = fc_context_overlay(adapter._tools_context, fc_plan)
+            context.update(fc_overlay)
+        fc_meta = {adapter.metadata_key: metadata_without_plan(adapter, state)} if fc_plan else {}
+
         # Start tool call tracking (enabled via invoke parameter, or internally
         # whenever a weak-schema tool's output shape hasn't been observed yet).
         # "timings_only" (set when tracking is forced for the run receipt) records
         # tool name/duration but never arguments/results/errors — but shape
         # tracking reads the result payload, so it takes precedence and forces
         # full recording when a weak-schema shape still needs to be observed.
+        # The pagination audit (#750) reads only the per-record pagination facts,
+        # which the tracker keeps in timings-only mode, so when nothing else asked
+        # for tracking it is forced on in that mode: no payload capture, and the
+        # records never reach state (they are only kept when track_tool_calls).
         needs_shape = _needs_shape_tracking(adapter)
+        pagination_audit_on = _pagination_audit_enabled()
         ToolCallTracker.start_tracking(
-            enabled=bool(track_tool_calls) or needs_shape,
-            timings_only=track_tool_calls == "timings_only" and not needs_shape,
+            enabled=bool(track_tool_calls) or needs_shape or pagination_audit_on,
+            timings_only=(track_tool_calls == "timings_only" or not track_tool_calls) and not needs_shape,
         )
         # Tool-call budgets: carry the turn count from earlier steps and the
         # conversation count from earlier turns, so max_tool_calls_per_run caps the run
@@ -167,17 +210,10 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             if verify_enabled and state.script:
                 try:
                     configured_model = configurable.get("llm") or None
-                    verify_text_limit = min(
-                        30_000,
-                        settings.advanced_features.execution_output_max_length // 2,
-                    )
-                    var_snapshot = ""
-                    get_summary = getattr(state.variables_manager, "get_variables_summary", None)
-                    if callable(get_summary):
-                        try:
-                            var_snapshot = get_summary() or ""
-                        except Exception:
-                            var_snapshot = ""
+                    try:
+                        var_snapshot = ordered_variables_summary(state.variables_manager, state.script)
+                    except Exception:
+                        var_snapshot = ""
                     decision = await decide_pre_execute_verify(
                         enabled=True,
                         streak=int(getattr(state, "verify_revise_streak", 0) or 0),
@@ -193,7 +229,6 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                             else lambda: _llm_manager.get_model(settings.agent.planner.model)
                         ),
                         config=config or {},
-                        max_chars=verify_text_limit,
                     )
                 except Exception as e:
                     logger.warning("Pre-execute VERIFY setup failed: {}", e)
@@ -206,11 +241,14 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 if decision.gate == "revise":
                     ToolCallTracker.stop_tracking()
                     msg = verify_blocked_message(decision.alert)
-                    new_message = HumanMessage(content=msg)
+                    new_messages = (
+                        replies_without_execution(fc_plan, msg) if fc_plan else [HumanMessage(content=msg)]
+                    )
                     updated_messages, error_message = core_append_with_step_limit(
-                        adapter, state, [new_message], max_steps
+                        adapter, state, new_messages, max_steps
                     )
                     skip_updates = {
+                        **fc_meta,
                         "variables_storage": state.variables_storage,
                         "variable_counter_state": state.variable_counter_state,
                         "variable_creation_order": state.variable_creation_order,
@@ -243,14 +281,38 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     _exec_plan.filesystem_backend,
                 )
             logger.debug(f"\n\n------\n\n📝 Generated code:\n\n{state.script}\n\n------\n\n")
-            output, new_vars = await CodeExecutor.eval_with_tools_async(
-                code=state.script,
-                _locals=context,
-                state=state,  # Pass CugaLiteState - it has variables_manager property
-                thread_id=current_thread_id,
-                apps_list=current_apps_list,
-                plan=_exec_plan,
+            # Step discipline: cap this block at one tool call. The cap rides the
+            # existing per-block budget, so the second call is refused by
+            # enforce_call_budget with the one-tool message and the executor
+            # keeps the block's variables (see LocalExecutor).
+            one_tool_per_step = (
+                resolve_step_discipline(
+                    configurable,
+                    resolved_runtime_model_name(
+                        configurable_llm=configurable.get("llm"),
+                        graph_default_model=getattr(adapter, "_model", None),
+                    ),
+                )
+                == STEP_DISCIPLINE_ONE_TOOL_PER_STEP
             )
+            cap_token = ToolCallTracker.set_block_cap_override(1) if one_tool_per_step else None
+            try:
+                output, new_vars = await CodeExecutor.eval_with_tools_async(
+                    code=state.script,
+                    _locals=context,
+                    state=state,  # Pass CugaLiteState - it has variables_manager property
+                    thread_id=current_thread_id,
+                    apps_list=current_apps_list,
+                    plan=_exec_plan,
+                    # A function-calling block calls in-process callables, so it runs on
+                    # the local executor whatever the Python backend; a find_tools result
+                    # must stay among its variables to be read back as the reply.
+                    mode="local" if fc_plan else None,
+                    keep_listing_vars=bool(fc_plan),
+                )
+            finally:
+                if cap_token is not None:
+                    ToolCallTracker.reset_block_cap_override(cap_token)
 
             adapter._tracker.collect_step(step=Step(name="User_output", data=output))
             adapter._tracker.collect_step(
@@ -266,6 +328,37 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             # Output is already formatted and trimmed by code_executor
             logger.debug(f"\n\n------\n\n📝 Execution output:\n\n{output}\n\n------\n\n")
 
+            fc_replies: list = []
+            if fc_plan:
+                fc_replies, new_vars, dropped = replies_from_execution(
+                    fc_plan,
+                    new_vars,
+                    fc_outcomes,
+                    output,
+                    output_limit=settings.advanced_features.execution_output_max_length,
+                    timeout=settings.advanced_features.sandbox_execution_timeout,
+                )
+                # A find_tools listing: the reply carries it, the variables do not.
+                for name in dropped:
+                    if name in state.variables_manager.get_variable_names():
+                        state.variables_manager.remove_variable(name)
+
+            # Pagination audit (#750): a list call that returned exactly page_limit
+            # items with no next page requested is flagged in the observation the
+            # model reads next — before reflection, so the summary can echo it.
+            # Under one-tool-per-step the next page is by design in the next
+            # block, so the full-page rule would fire on every correct walk;
+            # only an abandoned explicit "more pages" signal is worth a note there.
+            if pagination_audit_on:
+                pagination_notes = audit_pagination(
+                    ToolCallTracker.get_current_calls(), length_rule=not one_tool_per_step
+                )
+                if pagination_notes:
+                    output = f"{output}\n\n{render_pagination_notes(pagination_notes)}"
+                    adapter._tracker.collect_step(
+                        step=Step(name="PaginationAudit", data=json.dumps(pagination_notes))
+                    )
+
             # Update variables using CugaLiteState's variables_manager
             # This automatically updates state.variables_storage
             for name, value in new_vars.items():
@@ -276,30 +369,44 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 )
 
             reflection_output = ""
-            if reflection_enabled:
+            if reflection_enabled and not fc_plan:
                 try:
                     active_model = configurable.get("llm") or _llm_manager.get_model(
                         settings.agent.planner.model
                     )
                     reflection_agent = reflection_task(llm=active_model)
-                    reflection_text_limit = min(
-                        30_000,
-                        settings.advanced_features.execution_output_max_length // 2,
+                    current_task = reflection_current_task(state) or "(no task text)"
+                    reflection_inputs = {
+                        "instructions": "",
+                        "current_task": current_task,
+                        "apps": state.reflection_apps or [],
+                        "enable_find_tools": state.reflection_enable_find_tools,
+                        "skills_enabled": state.reflection_skills_enabled,
+                        "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
+                    }
+                    fixed_prompt_chars = rendered_prompt_chars(
+                        reflection_prompt(),
+                        {
+                            **reflection_inputs,
+                            "agent_history": "",
+                            "coder_agent_output": "",
+                            "skills_prompt_section": "",
+                        },
                     )
-                    agent_history, coder_output = await prepare_reflection_context(
+                    reflection_budget = await asyncio.to_thread(
+                        model_input_budget_chars,
+                        active_model,
+                        fixed_prompt_chars,
+                        context_fraction=context_fraction_setting("reflection_context_fraction"),
+                    )
+                    agent_history, coder_output, skills_prompt_section = await prepare_reflection_context(
                         list(state.chat_messages),
                         output,
                         active_model,
-                        max_output_chars=reflection_text_limit,
-                        max_history_chars=reflection_text_limit,
+                        budget_chars=reflection_budget,
+                        skills_prompt_section=state.reflection_skills_prompt_section or "",
                         tracker=adapter._tracker,
                     )
-                    skills_prompt_section = truncate_text_for_context(
-                        state.reflection_skills_prompt_section or "",
-                        reflection_text_limit,
-                        label="Skills prompt section",
-                    )
-                    current_task = reflection_current_task(state) or "(no task text)"
                     clamp_watsonx_completion_for_messages(
                         active_model,
                         [
@@ -313,15 +420,10 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     )
                     reflection_result = await reflection_agent.ainvoke(
                         {
-                            "instructions": "",
-                            "current_task": current_task,
+                            **reflection_inputs,
                             "agent_history": agent_history,
                             "coder_agent_output": coder_output,
-                            "apps": state.reflection_apps or [],
-                            "enable_find_tools": state.reflection_enable_find_tools,
-                            "skills_enabled": state.reflection_skills_enabled,
                             "skills_prompt_section": skills_prompt_section,
-                            "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
                         },
                         config=config or {},
                     )
@@ -338,16 +440,36 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     f"{execution_message_content}\n\n---\n\nSummary:\n{reflection_output}"
                 )
 
-            adapter._tracker.collect_step(
-                step=Step(
-                    name="User_return",
-                    data=execution_message_content,
+            if fc_plan:
+                adapter._tracker.collect_step(
+                    step=Step(
+                        name="Tool_results",
+                        data=json.dumps(
+                            [
+                                {
+                                    "tool_call_id": m.tool_call_id,
+                                    "name": m.name,
+                                    "status": m.status,
+                                    "content": m.content,
+                                }
+                                for m in fc_replies
+                            ],
+                            ensure_ascii=False,
+                            default=str,
+                        ),
+                    )
                 )
-            )
-
-            new_message = HumanMessage(content=execution_message_content)
+                new_messages = fc_replies
+            else:
+                adapter._tracker.collect_step(
+                    step=Step(
+                        name="User_return",
+                        data=execution_message_content,
+                    )
+                )
+                new_messages = [HumanMessage(content=execution_message_content)]
             updated_messages, error_message = core_append_with_step_limit(
-                adapter, state, [new_message], max_steps
+                adapter, state, new_messages, max_steps
             )
 
             # Collect tool calls from this execution
@@ -364,6 +486,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     error_message,
                     state.step_count,
                     additional_updates={
+                        **fc_meta,
                         "variables_storage": state.variables_storage,
                         "variable_counter_state": state.variable_counter_state,
                         "variable_creation_order": state.variable_creation_order,
@@ -380,6 +503,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
 
             todo_state_update = extract_task_todos_from_new_vars(new_vars)
             base_update = {
+                **fc_meta,
                 "chat_messages": updated_messages,
                 "variables_storage": state.variables_storage,
                 "variable_counter_state": state.variable_counter_state,
@@ -404,9 +528,13 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
 
             error_msg = f"Error during execution: {str(e)}"
             logger.error(error_msg)
-            new_message = HumanMessage(content=error_msg)
+            new_messages = (
+                replies_without_execution(fc_plan, NOT_EXECUTED_REPLY.format(reason=e), fc_outcomes)
+                if fc_plan
+                else [HumanMessage(content=error_msg)]
+            )
             updated_messages, limit_error_message = core_append_with_step_limit(
-                adapter, state, [new_message], max_steps
+                adapter, state, new_messages, max_steps
             )
 
             if limit_error_message:
@@ -415,10 +543,11 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     updated_messages,
                     limit_error_message,
                     state.step_count,
-                    additional_updates=_budget_updates(),
+                    additional_updates={**fc_meta, **_budget_updates()},
                 )
 
             return {
+                **fc_meta,
                 "chat_messages": updated_messages,
                 "error": error_msg,
                 "final_answer": error_msg,

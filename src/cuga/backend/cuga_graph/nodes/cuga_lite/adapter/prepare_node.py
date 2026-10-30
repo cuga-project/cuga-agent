@@ -10,6 +10,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from loguru import logger
 
+from cuga.backend.cuga_graph.utils.thread_ids import logical_thread_id, workspace_thread_id
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.arg_warning import make_arg_warning_callable
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import create_update_todos_tool
@@ -32,8 +33,16 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import (
     _get_knowledge_tool_scope_context,
     _knowledge_scope_instruction,
+    _wrap_knowledge_tool,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import resolved_runtime_model_name
+from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
+    EXECUTION_MODE_FUNCTION_CALLING,
+    STEP_DISCIPLINE_ONE_TOOL_PER_STEP,
+    resolve_execution_mode,
+    resolve_fc_prompt_fragments,
+    resolve_step_discipline,
+    resolved_runtime_model_name,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ToolGuardingToolProvider
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
@@ -45,8 +54,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     create_mcp_prompt,
     format_apps_for_prompt,
     normalize_mcp_few_shot_examples,
+    render_fc_prompt,
     resolve_cuga_lite_few_shots_enabled,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.fc_actions import FC_PENDING_KEY
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.app_auth import call_authenticate_apps
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
 from cuga.backend.skills import (
@@ -127,6 +138,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             configurable,
             model_name=_runtime_model_name,
         )
+        _execution_mode = resolve_execution_mode(configurable, _runtime_model_name)
         logger.debug(
             f"[APPROVAL DEBUG] prepare_tools_and_apps received cuga_lite_metadata: {state.cuga_lite_metadata}"
         )
@@ -287,6 +299,18 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         else:
             few_shot_examples = []
             logger.debug("MCP few-shots disabled (cuga_lite_enable_few_shots=false)")
+        if (
+            _execution_mode == EXECUTION_MODE_FUNCTION_CALLING
+            and few_shot_examples
+            and configurable.get("mcp_few_shot_examples") is None
+        ):
+            # The bundled demos are CodeAct-shaped (```python turns, "Execution output:"
+            # replies) and would contradict the function-calling prompt. Only demos the
+            # caller passes explicitly are replayed in this mode.
+            logger.info(
+                "Function-calling mode: bundled CodeAct few-shots withheld ({} turns)", len(few_shot_examples)
+            )
+            few_shot_examples = []
         if few_shot_examples:
             logger.debug(f"MCP few-shot examples: {len(few_shot_examples)} turns")
 
@@ -458,15 +482,17 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             cfg = config.get("configurable", {}) if config else {}
             # Spawn may set workspace_thread_id to the parent thread while keeping a
             # fresh conversation thread_id for checkpointer/chat isolation.
-            runtime_thread_id = cfg.get("workspace_thread_id") or (
-                cfg["thread_id"] if "thread_id" in cfg else (state.thread_id or adapter._thread_id)
-            )
+            runtime_thread_id = workspace_thread_id(cfg, state.thread_id or adapter._thread_id)
         else:
             runtime_thread_id = None
 
         _runtime_bundle = build_runtime_tools(thread_id=runtime_thread_id, backends=_runtime_backends)
         adapter._tools_context.update(_runtime_bundle.execution_callables)
         tools_for_prompt.extend(_runtime_bundle.prompt_tools)
+        # The catalogue find_tools was built with (above). Runtime apps appended
+        # below are not in its app_to_tools_map, so advertising them as
+        # ``app_name`` targets would only produce empty searches.
+        _find_tools_apps = list(apps_for_prompt) if apps_for_prompt is not None else None
         if _runtime_bundle.app_definitions and apps_for_prompt is not None:
             apps_for_prompt = list(apps_for_prompt) + _runtime_bundle.app_definitions
 
@@ -486,11 +512,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 list(tools_for_execution) + _skill_callable_tools + list(_runtime_bundle.prompt_tools)
             )
 
-            _spawn_thread_id = (
-                (config or {}).get("configurable", {}).get("thread_id")
-                or getattr(state, "thread_id", None)
-                or adapter._thread_id
-                or ""
+            _spawn_thread_id = logical_thread_id(
+                (config or {}).get("configurable", {}),
+                getattr(state, "thread_id", None) or adapter._thread_id or "",
             )
             agent_spawn_tools = create_spawn_tools(
                 spawn_futures=thread_spawn_futures(_spawn_thread_id),
@@ -526,7 +550,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             special_instructions_final = (special_instructions_final or "") + evolve_extension
 
         cfg = config.get("configurable", {}) if config else {}
-        _thread_id = cfg.get("thread_id") or ""
+        _thread_id = logical_thread_id(cfg, "")
         _knowledge_engine = cfg.get("knowledge_engine")
         if _knowledge_engine is None:
             try:
@@ -537,10 +561,31 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             except Exception:
                 _knowledge_engine = None
 
+        if cfg.get("knowledge_user_id") and getattr(
+            getattr(_knowledge_engine, "_config", None), "enabled", False
+        ):
+            from cuga.backend.knowledge.auth import ensure_session_access
+
+            provider = cfg.get("knowledge_provider")
+            if provider is None:
+                from cuga.backend.server.main import app as _app
+
+                provider = getattr(getattr(_app.state, "app_state", None), "knowledge_provider", None)
+            # Do this before issuing capabilities or assembling previews, and
+            # outside the best-effort awareness block: authorization must not
+            # be swallowed as an optional prompt-enrichment failure.
+            _thread_id = ensure_session_access(_thread_id, cfg["knowledge_user_id"], provider)
+
         allowed_knowledge_scopes, default_knowledge_scope = _get_knowledge_tool_scope_context(
             _knowledge_engine,
             _thread_id or None,
         )
+
+        selected_agent = (
+            cfg.get("knowledge_agent_id") or cfg.get("agent_id") or getattr(_provider, "agent_id", None)
+        )
+        if not isinstance(selected_agent, str) or not selected_agent:
+            selected_agent = "cuga-default"
 
         knowledge_tool_names = {
             tool.name for tool in tools_for_execution if getattr(tool, "name", "").startswith("knowledge_")
@@ -556,39 +601,26 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             apps_for_prompt = [
                 app for app in (apps_for_prompt or []) if getattr(app, "name", "") != "knowledge"
             ]
+            if _find_tools_apps is not None:
+                # The function-calling prompt's find_tools catalogue was captured above.
+                _find_tools_apps = [
+                    app for app in _find_tools_apps if getattr(app, "name", "") != "knowledge"
+                ]
             for tool_name in knowledge_tool_names:
                 adapter._tools_context.pop(tool_name, None)
         elif knowledge_tool_names:
+            from cuga.backend.knowledge.run_context import (
+                KnowledgeRunContext,
+            )
+
+            knowledge_run = KnowledgeRunContext(
+                selected_agent,
+                _thread_id or None,
+                allowed_knowledge_scopes,
+                cfg.get("knowledge_user_id") or None,
+            )
             if _thread_id:
                 logger.debug("Knowledge tools: thread context available for session scope injection")
-
-            def _wrap_knowledge_tool(fn, tid, allowed_scopes, default_scope):
-                async def _wrapped(*args, **kwargs):
-                    scope = kwargs.get("scope")
-                    if scope is None and default_scope:
-                        kwargs["scope"] = default_scope
-                        scope = default_scope
-                    if scope is not None and scope not in allowed_scopes:
-                        allowed_text = ", ".join(allowed_scopes)
-                        return {
-                            "error": (
-                                f"Knowledge scope '{scope}' is unavailable in this context. "
-                                f"Allowed scopes: {allowed_text}"
-                            )
-                        }
-                    # Forward the conversation id whenever we have one — the knowledge
-                    # layer needs it for the citations ledger even on agent-scope
-                    # searches. Session-collection access is still gated by scope checks
-                    # server-side; this only adds correlation, not access.
-                    if tid:
-                        kwargs.setdefault("thread_id", tid)
-                    return await fn(*args, **kwargs)
-
-                _wrapped.__doc__ = getattr(fn, "__doc__", None)
-                _wrapped._knowledge_allowed_scopes = allowed_scopes
-                _wrapped._knowledge_default_scope = default_scope
-                _wrapped._knowledge_thread_id = tid
-                return _wrapped
 
             for tool_name in knowledge_tool_names:
                 original_fn = adapter._tools_context.get(tool_name)
@@ -598,6 +630,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                         _thread_id,
                         allowed_knowledge_scopes,
                         default_knowledge_scope,
+                        knowledge_run=knowledge_run,
+                        is_status=tool_name
+                        in ("knowledge_get_ingestion_status", "knowledge_get_knowledge_status"),
                     )
 
             # Note: scope rules are injected once via effective_instructions.
@@ -636,24 +671,18 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
                 cfg = config.get("configurable", {})
                 engine = cfg.get("knowledge_engine") or get_engine_from_app_state()
-                # Get agent_id: configurable > app_state > fallback
-                agent_id = cfg.get("agent_id")
+                # Prompt previews and tool calls must use the same run identity.
+                agent_id = selected_agent
                 knowledge_config_hash = cfg.get("knowledge_config_hash")
-                if not agent_id:
+                if knowledge_config_hash is None:
                     try:
                         from cuga.backend.server.main import app as _app
 
                         _as = getattr(_app.state, "app_state", None)
-                        agent_id = getattr(_as, "agent_id", None) if _as else None
-                        if knowledge_config_hash is None:
-                            knowledge_config_hash = (
-                                getattr(_as, "knowledge_config_hash", None) if _as else None
-                            )
+                        knowledge_config_hash = getattr(_as, "knowledge_config_hash", None) if _as else None
                     except Exception:
                         pass
-                if not agent_id:
-                    agent_id = "cuga-default"
-                awareness_thread_id = cfg.get("thread_id")
+                awareness_thread_id = _thread_id or None
 
                 # Use draft knowledge config for search-time params when
                 # running in draft mode (Try-It-Out). Published agent always
@@ -713,6 +742,15 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             lc_bind_tools_meta["_lc_bind_tools_overlay_structured_tools"] = [
                 t for t in (tools_for_prompt or []) if getattr(t, "name", None)
             ]
+            # Function-calling advertises exactly what generated code could call: the
+            # executable set (already filtered per sub-task / relevant apps, knowledge
+            # tools already popped when out of scope) plus the in-graph overlays.
+            _candidates = [getattr(t, "name", None) for t in (tools_for_execution or [])] + [
+                getattr(t, "name", None) for t in (tools_for_prompt or [])
+            ]
+            lc_bind_tools_meta["_lc_bind_tools_executable_names"] = [
+                n for n in dict.fromkeys(_candidates) if n and n in adapter._tools_context
+            ]
 
         # Use tools_for_execution, not tools_for_prompt: when find_tools shortlisting
         # is active (the common case once an app has more than a handful of tools),
@@ -730,7 +768,39 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # Create prompt dynamically
         dynamic_prompt = adapter._static_prompt
 
-        if not dynamic_prompt:
+        if _execution_mode == EXECUTION_MODE_FUNCTION_CALLING:
+            # Function-calling mode: the CodeAct prompt is never rendered. Tools
+            # travel natively via bind_tools, so this prompt is only the behavioural
+            # contract plus the same instructions / special_instructions. A static
+            # prompt is ignored here: it is CodeAct-shaped and would tell the model
+            # to write the very fences this mode treats as violations.
+            if dynamic_prompt:
+                logger.warning(
+                    "Function-calling mode ignores the static prompt and renders the FC prompt instead"
+                )
+            _fragments = resolve_fc_prompt_fragments(configurable, _runtime_model_name)
+            _one_per_step = (
+                resolve_step_discipline(configurable, _runtime_model_name)
+                == STEP_DISCIPLINE_ONE_TOOL_PER_STEP
+            )
+            dynamic_prompt = render_fc_prompt(
+                instructions=effective_instructions,
+                special_instructions=special_instructions_final,
+                is_autonomous_subtask=settings.advanced_features.force_autonomous_mode
+                or is_autonomous_subtask,
+                step_discipline=_one_per_step,
+                fragments=_fragments,
+                skills_prompt_section=skills_prompt_section if skills_enabled else "",
+                agents_prompt_section=agents_prompt_section if agents_enabled else "",
+                apps=_find_tools_apps if enable_find_tools else None,
+            )
+            logger.info(
+                "Prepared CugaLite function-calling prompt: step_discipline={} fragments={} prompt_chars={}",
+                _one_per_step,
+                _fragments,
+                len(dynamic_prompt),
+            )
+        elif not dynamic_prompt:
             dynamic_prompt = create_mcp_prompt(
                 tools_for_prompt,
                 allow_user_clarification=True,
@@ -772,11 +842,21 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
         reflection_apps_snapshot = format_apps_for_prompt(apps_for_prompt or [])
 
+        # The function-calling one-correction cap is per turn. Metadata is carried
+        # across turns by the SDK / server (only policy_decisions is reset there), so
+        # drop the counter here — prepare runs exactly once per turn on both paths.
+        _turn_metadata = dict(state.cuga_lite_metadata or {})
+        _turn_metadata.pop("fc_mode_violations", None)
+        if not _turn_metadata.get("user_approved"):
+            # A plan left by a turn that never reached the sandbox (a denied approval, a
+            # crash). On an approval resume the subgraph is re-entered through prepare and
+            # the plan is what the approved block answers, so it stays.
+            _turn_metadata.pop(FC_PENDING_KEY, None)
         update_payload: dict[str, Any] = {
             "tools_prepared": True,
             "prepared_prompt": dynamic_prompt,
             "step_count": 0,
-            "cuga_lite_metadata": state.cuga_lite_metadata,
+            "cuga_lite_metadata": _turn_metadata,
             "reflection_apps": reflection_apps_snapshot,
             "reflection_enable_find_tools": enable_find_tools,
             "reflection_skills_enabled": skills_enabled,

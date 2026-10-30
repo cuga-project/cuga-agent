@@ -43,6 +43,7 @@ class SupervisorA2ARunner:
             app_state_ref,
             supervisor_config_path,
             protocol_name="A2A",
+            caller_user_id="a2a_user",
             cache_attr="a2a_supervisor",
         )
 

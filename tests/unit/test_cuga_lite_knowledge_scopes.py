@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import _get_knowledge_tool_scope_context
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.e2b.e2b_executor import E2BExecutor
+
+pytestmark = pytest.mark.unit
 
 
 def test_knowledge_scope_context_requires_thread_for_session_scope():
@@ -39,16 +43,7 @@ def test_e2b_serializes_knowledge_wrapper_scope_and_thread_context():
     )
 
     assert 'kwargs["scope"] = "session"' in stub
-    # Whitespace-safe thread_id injection: the legacy form was
-    # ``kwargs.setdefault("thread_id", "thread-123")``, but that would
-    # silently keep an existing whitespace-only thread_id (e.g. " ")
-    # and route the call into a phantom session collection. The session-
-    # isolation hardening replaced it with a whitespace-safe check
-    # that overwrites empty / whitespace-only / None values. Lock the
-    # new wording (still binds "thread-123" into the stub) without
-    # over-pinning the exact phrasing.
-    assert '"thread_id"' in stub
-    assert '"thread-123"' in stub
-    assert ".strip()" in stub  # the whitespace-safe guard signature
+    assert 'kwargs.pop("thread_id", None)' in stub
+    assert "kwargs[\"thread_id\"] = 'thread-123'" in stub
     assert "Allowed scopes" in stub
     assert 'return await call_api("knowledge", "knowledge_search_knowledge", kwargs)' in stub

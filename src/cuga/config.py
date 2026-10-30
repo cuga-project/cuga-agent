@@ -140,6 +140,7 @@ validators = [
     Validator("observability.pricing_json", default=""),
     Validator("observability.litellm_local_model_cost_map", default=True),
     Validator("advanced_features.benchmark", default="default"),
+    Validator("execution.enforce_code_security", default=True),
     Validator("advanced_features.appworld_final_answer_plain", default=False),
     # No is_type_of here: strict validators raise at import time for malformed
     # DYNACONF_FINAL_ANSWER__* env values (outside the ValidationError catch
@@ -159,6 +160,9 @@ validators = [
     Validator("advanced_features.e2b_cleanup_frequency", default=0),
     Validator("advanced_features.enable_web_search", default=False),
     Validator("advanced_features.execution_output_max_length", default=35000),
+    Validator("advanced_features.reflection_context_fraction", default=0.70),
+    Validator("advanced_features.pre_execute_verify_context_fraction", default=0.70),
+    Validator("advanced_features.context_window_discovery", default=True),
     Validator("advanced_features.enable_shell_tool", default=False),
     Validator("advanced_features.enable_filesystem_tools", default=False),
     Validator("advanced_features.sandbox_mode", default="opensandbox"),
@@ -220,6 +224,10 @@ validators = [
     Validator("advanced_features.cuga_lite_bind_tools_tool_names", default=[]),
     Validator("advanced_features.cuga_lite_bind_tools_max_count", default=128),
     Validator("advanced_features.cuga_lite_bind_tools_pad_to_cap", default=False),
+    # Native function-calling execution mode + step discipline (both default off).
+    Validator("advanced_features.cuga_lite_execution_mode", default="codeact"),
+    Validator("advanced_features.cuga_lite_step_discipline", default="off"),
+    Validator("advanced_features.cuga_lite_fc_prompt_fragments", default=[]),
     # Read at prepare_node without a getattr guard; without this a settings.toml
     # missing the key raises AttributeError mid-run instead of using the default.
     Validator("advanced_features.shortlisting_tool_threshold", default=35),
@@ -255,6 +263,7 @@ validators = [
         gt=0,
     ),
     Validator("supervisor.enabled", default=False),
+    Validator("supervisor.delegation_execution_timeout", default=300, is_type_of=int, gt=0),
     Validator("supervisor.registry_enabled", default=False),
     Validator("supervisor.sub_agent_memory_scope", default="conversation"),
 ]

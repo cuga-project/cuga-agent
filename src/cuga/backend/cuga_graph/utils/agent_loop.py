@@ -28,6 +28,30 @@ from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.observability.openlit_init import set_session_attribute
 
 
+def _native_tool_calls(messages: Any) -> list:
+    """``tool_calls`` on the last message of a function-calling turn (object or dict), else []."""
+    if not messages:
+        return []
+    last = messages[-1]
+    calls = last.get("tool_calls") if isinstance(last, dict) else getattr(last, "tool_calls", None)
+    return list(calls or [])
+
+
+def _tool_results_step_output(messages: Any) -> str:
+    """Render the trailing run of tool results (one per native call) as execution output.
+
+    Empty when the step did not end on tool results, e.g. a CodeAct block."""
+    lines: list = []
+    for msg in reversed(messages or []):
+        role = msg.get("type") if isinstance(msg, dict) else getattr(msg, "type", None)
+        if role != "tool":
+            break
+        name = (msg.get("name") if isinstance(msg, dict) else getattr(msg, "name", None)) or "tool"
+        content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+        lines.append(f"{name}: {content}")
+    return "\n".join(reversed(lines))
+
+
 class OutputFormat(str, Enum):
     WXO = "wxo"
     DEFAULT = "default"
@@ -329,9 +353,13 @@ class AgentLoop:
         knowledge_context: Optional[dict[str, Any]] = None,
         upload_context: Optional[str] = None,
         special_instructions: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        knowledge_user_id: Optional[str] = None,
+        checkpoint_thread_id: Optional[str] = None,
     ):
         self.env_pointer = env_pointer
         self.thread_id = thread_id
+        self.checkpoint_thread_id = checkpoint_thread_id or thread_id
         self.langfuse_handler = langfuse_handler
         self.graph = graph
         self.tracker = tracker
@@ -346,6 +374,8 @@ class AgentLoop:
         self.knowledge_context = knowledge_context
         self.upload_context = upload_context
         self.special_instructions = special_instructions
+        self.agent_id = agent_id
+        self.knowledge_user_id = knowledge_user_id
 
     async def stream_event(self, event: StreamEvent) -> Generator[str, None, None]:
         yield event.format()
@@ -382,8 +412,25 @@ class AgentLoop:
                 # Handle call_model node (shared by CugaLite and CugaSupervisor subgraphs)
                 if node_name == "call_model":
                     logger.debug("Detected call_model node")
-                    # Check if it generated code or text
-                    if "script" in state_data and state_data["script"] and state_data["script"].strip():
+                    # Check if it generated native tool calls, code, or text. Native calls come
+                    # first: a function-calling turn also carries the translated block in
+                    # ``script``, and that block is internal — the UI shows the calls, never it.
+                    native_calls = _native_tool_calls(subgraph_messages)
+                    if native_calls:
+                        calls_text = "\n".join(
+                            f"{c.get('name')}({json.dumps(c.get('args') or {}, ensure_ascii=False, default=str)})"
+                            for c in native_calls
+                            if isinstance(c, dict)
+                        )
+                        output = {
+                            "code": calls_text,
+                            "execution_output": "",
+                            "steps_summary": [],
+                            "summary": "Tool calls issued, preparing to execute",
+                            "variables": state_data.get("variables_storage", {}),
+                        }
+                        return StreamEvent(name="CodeAgent", data=json.dumps(output))
+                    elif "script" in state_data and state_data["script"] and state_data["script"].strip():
                         # Code generated - show as CodeAgent with JSON
                         logger.info(f"call_model generated script of length {len(state_data['script'])}")
                         output = {
@@ -440,10 +487,21 @@ class AgentLoop:
                             f"Returning sandbox output with execution_output length: {len(execution_output)}"
                         )
                         return StreamEvent(name="CodeAgent", data=json.dumps(output))
-                    else:
-                        # Skip empty sandbox events
-                        logger.debug("Skipping empty sandbox event")
-                        return StreamEvent(name="", data="")
+                    # Function-calling turn through the sandbox: the step appended one
+                    # ToolMessage per native call instead of an "Execution output:" message.
+                    tool_output = _tool_results_step_output(subgraph_messages or [])
+                    if tool_output.strip():
+                        output = {
+                            "code": "",
+                            "execution_output": tool_output,
+                            "steps_summary": [],
+                            "summary": "Tool calls completed",
+                            "variables": state_data.get("variables_storage", {}),
+                        }
+                        return StreamEvent(name="CodeAgent", data=json.dumps(output))
+                    # Skip empty sandbox events
+                    logger.debug("Skipping empty sandbox event")
+                    return StreamEvent(name="", data="")
 
                 # Default handling for other subgraph nodes
                 logger.debug(f"Unhandled subgraph node: {node_name}")
@@ -533,10 +591,16 @@ class AgentLoop:
             "recursion_limit": 135,
             "callbacks": callbacks,
             "configurable": {
-                "thread_id": self.thread_id,
+                "thread_id": self.checkpoint_thread_id,
+                "logical_thread_id": self.thread_id,
+                "workspace_thread_id": self.thread_id,
             },
         }
 
+        if self.agent_id:
+            config["configurable"]["knowledge_agent_id"] = self.agent_id
+        if self.knowledge_user_id:
+            config["configurable"]["knowledge_user_id"] = self.knowledge_user_id
         if self.policy_system:
             config["configurable"]["policy_system"] = self.policy_system
         if self.enable_todos is not None:
@@ -578,7 +642,7 @@ class AgentLoop:
         logger.debug(f"get_output called with event type: {type(event)}")
 
         state: AgentState = AgentState(
-            **self.graph.get_state({"configurable": {"thread_id": self.thread_id}}).values
+            **self.graph.get_state({"configurable": {"thread_id": self.checkpoint_thread_id}}).values
         )
         msg: AIMessage = state.messages[-1] if len(state.messages) > 0 else None
 

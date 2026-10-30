@@ -232,7 +232,13 @@ class ApiRegistry:
             raise
 
     async def call_function(
-        self, app_name: str, function_name: str, arguments: Dict[str, Any], auth_config=None
+        self,
+        app_name: str,
+        function_name: str,
+        arguments: Dict[str, Any],
+        auth_config=None,
+        *,
+        knowledge_run_token: str | None = None,
     ) -> Dict[str, Any]:
         """Calls a function via the mcp_client."""
         if app_name == "web" and function_name == "search_web" and self._is_web_search_enabled():
@@ -350,6 +356,7 @@ class ApiRegistry:
                 tool_name=function_name,
                 args=arguments,
                 headers=headers,
+                **({"knowledge_run_token": knowledge_run_token} if knowledge_run_token else {}),
             )
             logger.debug("Response:", result)
 

@@ -29,6 +29,14 @@ enable_todos = false  # Enable todos feature for complex multi-step task managem
 reflection_enabled = false
 pre_execute_verify_enabled = false  # Independent of reflection; eval can hold VERIFY without dropping PLAN reflection
 # pre_execute_verify_timeout = 60  # Seconds for the VERIFY model call before the block runs unverified (default 60). Env: DYNACONF_ADVANCED_FEATURES__PRE_EXECUTE_VERIFY_TIMEOUT
+# Share of the model's context window that reflection / VERIFY inputs may fill (0 < x <= 1). Lower it to cut cost or latency.
+# There is no absolute prompt ceiling: lower these fractions for large-window models.
+reflection_context_fraction = 0.70  # Env: DYNACONF_ADVANCED_FEATURES__REFLECTION_CONTEXT_FRACTION
+pre_execute_verify_context_fraction = 0.70  # Env: DYNACONF_ADVANCED_FEATURES__PRE_EXECUTE_VERIFY_CONTEXT_FRACTION
+# Cache endpoint windows (OpenRouter, watsonx.ai, LiteLLM proxy, vLLM); retry failures after 30 seconds.
+# Off: use LiteLLM's bundled map and MODEL_CONTEXT_SIZES only. A model setting `context_window = N` always wins.
+# Set context_window explicitly for unknown gateway aliases or servers that do not publish their window.
+context_window_discovery = true  # Env: DYNACONF_ADVANCED_FEATURES__CONTEXT_WINDOW_DISCOVERY
 enable_filesystem_tools = false  # Enable workspace filesystem tools (read_file, write_file, etc.)
 e2b_sandbox = false           # use E2B cloud sandbox for code execution
 opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; requires Docker + opensandbox SDK
@@ -54,6 +62,17 @@ cuga_lite_bind_tools_include_find_tools = false  # Also bind find_tools alongsid
 cuga_lite_bind_tools_max_count = 128
 # Pad shortlister output to fill the cap. Off by default for code-execution mode.
 cuga_lite_bind_tools_pad_to_cap = false
+# Execution mode: codeact (write Python, run it in the sandbox — default) | function_calling (the model
+# issues native tool_calls, the sandbox runs them and replies with ToolMessages). Alias: fc.
+# Per-invoke: config["configurable"]["cuga_lite_execution_mode"]. Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_EXECUTION_MODE
+cuga_lite_execution_mode = "codeact"
+# Step discipline, both modes: off (default) | one_tool_per_step — observe one result before the next call.
+# codeact: only the first tool call in a generated block runs (per-block cap becomes 1). function_calling: only
+# the first tool_call of a turn is attempted; the rest are answered with a "deferred" ToolMessage. Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_STEP_DISCIPLINE
+cuga_lite_step_discipline = "off"
+# Opt-in prompt fragments for function_calling mode. Known: "evidence_first" (call a tool before answering; never
+# answer from prior knowledge). Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_FC_PROMPT_FRAGMENTS='["evidence_first"]'
+cuga_lite_fc_prompt_fragments = []
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 cuga_lite_blocked_claim_retry = true  # When an NL turn claims tools/data are unavailable but no code has executed and tools ARE bound, retry once with a corrective message instead of finalizing the false refusal (issue #610). Only active when cuga_lite_nl_auto_continue is on.
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
@@ -65,6 +84,8 @@ max_tool_calls_per_thread = 2000  # Max tool/API calls per conversation, never r
 # Rejected-call guard (#599): stops an identical API call (same endpoint + same arguments) being re-issued after the registry has definitively rejected it (4xx). Counters clear on any successful mutating call and at /api/reset (task boundary).
 rejected_call_escalate_after = 1  # After N identical rejections, further rejections of the same signature carry a prominent "[Repeated failure] ... do not re-issue unchanged" message. 0 disables escalation. Env: DYNACONF_ADVANCED_FEATURES__REJECTED_CALL_ESCALATE_AFTER
 rejected_call_block_after = 2  # After N identical rejections, further identical calls are refused WITHOUT reaching the API, returning the stored error plus an explicit directive. 0 disables short-circuiting. Env: DYNACONF_ADVANCED_FEATURES__REJECTED_CALL_BLOCK_AFTER
+# Pagination audit (#750): after each code block, a list call that returned exactly page_limit items (a full page) without the next page being requested is flagged in the execution output — models otherwise read a full page as the last page. Deterministic and advisory; the tool result itself is untouched.
+pagination_audit_enabled = true  # Env: DYNACONF_ADVANCED_FEATURES__PAGINATION_AUDIT_ENABLED
 # Strip harmony protocol control tokens (<|channel|>, <|return|>, …) from the final answer.
 # "auto" = only when the final-answer model is a gpt-oss/harmony model (other providers untouched);
 # true/false force it on/off. Env: DYNACONF_ADVANCED_FEATURES__STRIP_HARMONY_CONTROL_TOKENS
@@ -79,6 +100,18 @@ enable_shell_tool = false
 #   "e2b"         — E2B cloud sandbox (requires e2b_sandbox = true)
 #   "local"       — no sandbox (runs directly on host; always pairs with run_command tool approval)
 sandbox_mode = "native"
+
+[execution]
+# Enforce the security checks on model-generated Python (true) or relax them (false).
+# When true: the import allowlist, the AST checks on the wrapped code (blocked modules,
+# dunder access, eval/exec), a restricted __import__, safe builtins, filtered locals and
+# globals without os/sys/subprocess, and the "code must use a tool or variable" check.
+# When false, all of these are off: generated code gets real builtins, os and sys.
+# The syntax check and code wrapping run either way. This is separate from
+# advanced_features.sandbox_mode (where code runs), and neither changes the other.
+# Skills and benchmark profiles do not turn it off; to reproduce relaxed benchmark runs
+# (for example AppWorld), set it to false (DYNACONF_EXECUTION__ENFORCE_CODE_SECURITY=false).
+enforce_code_security = true
 
 [shortlister]
 # How CugaLite shrinks a large tool set before the model sees it.
@@ -143,6 +176,7 @@ opensandbox_timeout_seconds = 600
 
 [supervisor]
 enabled = false  # Enable CugaSupervisor for multi-agent coordination
+delegation_execution_timeout = 300  # Seconds for a supervisor code block including complete child runs; child code blocks keep sandbox_execution_timeout
 config_path = "src/cuga/backend/tools_env/registry/config/supervisor_demo_crm.yaml"  # Path to supervisor YAML config (e.g., "config/supervisor_demo_crm.yaml"). If empty, uses default supervisor setup
 agent_approval = true  # Require user approval before executing any sub-agent (human-in-the-loop)
 pass_variables_a2a = false  # When true, A2A delegate tool accepts variables and sends them in request metadata (A2A protocol extension)

@@ -5,6 +5,7 @@ Prompt utilities for CugaLite - handles prompt creation and tool discovery.
 import functools
 import json
 import os
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from cuga.config import settings
@@ -13,6 +14,7 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_schema import model_tool_schema
 from cuga.backend.tools_env.registry.utils.schema_utils import json_schema_type
 
 _WEAK_SCHEMA_PROBE_DIRECTIVE = (
@@ -401,10 +403,7 @@ class PromptUtils:
         """
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:
-                if hasattr(tool.args_schema, 'model_json_schema'):
-                    schema = tool.args_schema.model_json_schema()
-                else:
-                    schema = tool.args_schema.schema()
+                schema = model_tool_schema(tool)
                 properties = schema.get('properties', {})
                 required = schema.get('required', [])
 
@@ -495,10 +494,7 @@ class PromptUtils:
 
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:
-                if hasattr(tool.args_schema, 'model_json_schema'):
-                    schema = tool.args_schema.model_json_schema()
-                else:
-                    schema = tool.args_schema.schema()
+                schema = model_tool_schema(tool)
                 properties = schema.get('properties', {})
                 required = schema.get('required', [])
 
@@ -549,12 +545,7 @@ class PromptUtils:
             tool_dict = tool.model_dump()
             if hasattr(tool, 'args_schema') and tool.args_schema:
                 try:
-                    if hasattr(tool.args_schema, 'schema'):
-                        tool_dict['args_schema'] = tool.args_schema.schema()
-                    elif hasattr(tool.args_schema, 'model_json_schema'):
-                        tool_dict['args_schema'] = tool.args_schema.model_json_schema()
-                    else:
-                        tool_dict['args_schema'] = {}
+                    tool_dict['args_schema'] = model_tool_schema(tool)
                 except (AttributeError, TypeError, ValueError) as e:
                     # Narrow to expected serialization failures so unexpected bugs propagate
                     # instead of silently stripping schema (coderabbit on #203).
@@ -897,3 +888,61 @@ def create_mcp_prompt(
         }
     ).to_string()
     return prompt
+
+
+# ── Function-calling prompt ───────────────────────────────────────────────────
+
+
+@lru_cache(maxsize=1)
+def _fc_prompt_template():
+    from pathlib import Path
+
+    from cuga.backend.llm.utils.helpers import load_one_prompt
+
+    path = Path(__file__).parent / "prompts" / "fc_prompt.jinja2"
+    return load_one_prompt(str(path), relative_to_caller=False)
+
+
+def render_fc_prompt(
+    *,
+    instructions: Optional[str] = None,
+    special_instructions: Optional[str] = None,
+    base_prompt: Optional[str] = None,
+    is_autonomous_subtask: bool = False,
+    step_discipline: bool = False,
+    fragments: Optional[List[str]] = None,
+    skills_prompt_section: Optional[str] = None,
+    agents_prompt_section: Optional[str] = None,
+    apps: Optional[list] = None,
+) -> str:
+    """System prompt for ``cuga_lite_execution_mode = "function_calling"``.
+
+    Deliberately short. Tool names, parameters and types travel in the API's
+    native ``tools`` parameter (``bind_tools``), which the model was trained to
+    read — so, unlike the CodeAct prompt, nothing about the tool catalog is
+    rendered as text. The prompt only sets the behavioural contract:
+
+    - the generic preamble (always),
+    - the step-discipline line when ``cuga_lite_step_discipline`` is on,
+    - opt-in fragments from ``cuga_lite_fc_prompt_fragments`` (``evidence_first``),
+    - the app catalogue when ``find_tools`` is bound (it takes an ``app_name``), and
+      the skill / agent catalogues when those tools are bound (``load_skill`` /
+      ``delegate_to_*`` take a name; the model has to be able to pick a valid one),
+    - then the agent's ``instructions`` and the caller's ``special_instructions``.
+
+    Answer-format contracts belong in ``special_instructions``; no
+    benchmark- or deployment-specific wording ships in the template.
+    """
+    frags = {f.strip().lower() for f in (fragments or [])}
+    rendered = _fc_prompt_template().format(
+        base_prompt=base_prompt or "",
+        is_autonomous_subtask=bool(is_autonomous_subtask),
+        step_discipline=bool(step_discipline),
+        evidence_first="evidence_first" in frags,
+        apps=format_apps_for_prompt(apps) if apps else [],
+        skills_prompt_section=(skills_prompt_section or "").strip(),
+        agents_prompt_section=(agents_prompt_section or "").strip(),
+        instructions=(instructions or "").strip(),
+        special_instructions=(special_instructions or "").strip(),
+    )
+    return rendered.strip() + "\n"
