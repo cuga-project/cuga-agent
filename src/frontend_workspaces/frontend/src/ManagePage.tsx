@@ -58,6 +58,7 @@ import KnowledgePanel from "agentic_chat/KnowledgePanel";
 import VariablesSidebar from "agentic_chat/VariablesSidebar";
 import { ToolsConfig, type ConnectedApp, type ConnectedTool } from "./ToolsConfig";
 import { SecretsManager } from "./SecretsManager";
+import { SandboxSettings } from "./manage/SandboxSettings";
 import type { ToolEntry } from "./types/tools";
 import type { AgentItem } from "./ManageDashboard";
 import type { KnowledgeAttachmentSnapshot } from "./knowledge/useSessionKnowledgeAttachments";
@@ -470,6 +471,15 @@ export function ManagePage() {
   // Events Studio entry — shown only when the events SERVICE answers (see getEventsStatus).
   const [studioOn, setStudioOn] = useState(false);
   useEffect(() => { api.getEventsStatus().then((s) => setStudioOn(!!s)).catch(() => {}); }, []);
+  // Code Sandbox section — shown only when the deployment provides a sandbox (the binding is mounted).
+  const [sandboxOn, setSandboxOn] = useState(false);
+  useEffect(() => {
+    api
+      .getSandboxSettings()
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s: api.SandboxSettingsStatus | null) => setSandboxOn(!!s?.available))
+      .catch(() => {});
+  }, []);
   // Live-config truth anchor. Sourced from GET /api/manage/config
   // (published=true) on mount and after every successful Publish — never
   // from optimistic client state. The pill in the header reads this so
@@ -2147,6 +2157,15 @@ export function ManagePage() {
                     </Accordion>
                   </VStack>
                   )}
+              </AccordionItem>
+              )}
+
+              {sandboxOn && (
+              <AccordionItem title="Code Sandbox (experimental)">
+                <SandboxSettings
+                  onError={(title, message) => addToast("error", title, message)}
+                  onSaved={(message) => addToast("success", "Code sandbox", message)}
+                />
               </AccordionItem>
               )}
 
