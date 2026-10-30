@@ -5,23 +5,51 @@ Judge the values in "Resolved write arguments", not the source text. Each entry
 is a write argument expanded to what it will actually evaluate to, so a wrong
 value is visible even when the code passes a variable.
 
+Current Task requirements take precedence over every "Do NOT flag" exception
+below. A value appearing in the task or retrieved data does not excuse a task
+contradiction or a field restriction under rule 4.
+
 Look ONLY at:
-1. Ungrounded write values: a resolved argument that is already a fixed number
-   or string, and that does not appear in Conversation history, Variables, or
-   the Current Task, and is not read inside THIS same block
-   (e.g. `hits = await search(...); await add(id=hits[0]["id"])` is grounded).
-2. Contradictions: a resolved argument conflicts with a retrieved value in
-   history or Variables that shares an identifying string (same description,
-   title, or name). Compare the value, not the literal — `amount=35.0` still
-   contradicts a retrieved `46.67` row with the same description when 35.0 is
-   reached through `round(total / n, 2)`.
+1. Ungrounded write values: a resolved argument that *identifies a record or
+   states a quantity* — an id, a name, a path, an email, an address, a phone
+   number, a URL, an amount, a date — that is already a fixed number or string
+   without support in Conversation history, the Most recent execution output,
+   Variables, the Current Task, or calls earlier in THIS same block (e.g.
+   `hits = await search(...); await add(id=hits[0]["id"])` is grounded, and so is
+   an id from what a create call earlier in the block returned). Resolved
+   arguments mark such a value as `[name: from the result of <call> earlier in
+   this block]`; the marker says where the value came from, it is not another call.
+   Support also includes a count that matches the relevant retrieved rows,
+   even if the resulting number does not appear verbatim. Three retrieved
+   people ground `quantity=3`; do not require the code to recompute a correct
+   count. A match must be the same kind of value: a digit that appears only as
+   a page number or as another field's value does not ground a count the Current Task
+   implies. Fixed categorical write values need the same support unless covered
+   by the documented enum/default exception below.
+2. Contradictions: a resolved argument conflicts with the Current Task,
+   including a requested status, boolean, or flag, or with a retrieved value in
+   history, the Most recent execution output, or Variables. For retrieved values,
+   match the record by an identifying string (same description, title, or name).
+   A requested update is not a contradiction merely because it changes the
+   record's retrieved current value.
+   Compare the value, not the literal — `amount=35.0` still contradicts a
+   retrieved `46.67` row with the same description when 35.0 is reached through
+   `round(total / n, 2)`. For example, `clear_cart_first=True` contradicts
+   "without emptying my cart", and `status="published"` contradicts "save a draft",
+   even if the value is a valid API option or default.
 3. Aggregations over the wrong rows: a resolved argument sums, counts, or
    averages a collection whose rows in Variables do not all belong to the
    Current Task (e.g. summing every transaction from a person when the task
    is about one specific order), or divides by a count that disagrees with a
    retrieved per-unit value.
-4. Extra mutation fields only when the Current Task clearly restricted which
-   fields to change.
+4. Extra mutation fields only when the Current Task explicitly restricts which
+   fields to change. Retrieved data grounds a value; it does not authorize
+   writing an extra field. For "only change the title", also writing a retrieved
+   `status="pending"` is extra, even if that value is correct for the record.
+5. Destructive flags against the task: a flag that deletes or replaces existing
+   data (clearing a cart, overwriting a file, deleting old entries) when the
+   Current Task asks only to add to that data or to keep it.
+   `clear_cart_first=True` contradicts "add the kettle to my cart".
 
 Do NOT flag:
 - Read/search/list/get/find calls
@@ -30,6 +58,26 @@ Do NOT flag:
 - Whether the chosen row is "cheapest" / "first" if the id is bound to retrieved data
 - Prose, comments, or print() arguments
 - An argument you cannot resolve and have no retrieved value to compare against
+- Values that are choices rather than facts about the world: booleans and flags
+  that do not contradict the Current Task, violate rule 4, or fall under rule 5.
+  A flag the Current Task does not mention is not a contradiction
+- `clear_cart_first=True` when the Current Task is to buy or order items: a
+  purchase must not also buy what was already in the cart, so clearing it first
+  is part of the purchase, not a contradiction
+- An enum option or documented default supported by API documentation present in
+  Conversation history, the Most recent execution output, or Variables, when
+  consistent with the Current Task and rule 4. Do not assume an option or default
+  is documented when that evidence is absent
+- The name or path of something the Current Task asks the agent to create, when
+  the task does not specify one. A name or path the task *does* specify must
+  match it, and an object the task never asked for (a test or placeholder
+  record, an unrequested report or note file) stays in scope
+- Constants that belong to the code rather than the data: regular expressions,
+  date/number format strings, page sizes, limits, and encodings
+- A number the Current Task neither states nor implies, where the API needs one
+  anyway (`quantity=1` for a task that names no number): the agent is choosing a
+  value, not asserting a fact. A number the task *does* imply stays in scope --
+  a count of people, items, or shares must match the rows it came from
 
 Output EXACTLY in this format, nothing else:
 
@@ -38,5 +86,5 @@ GATE: ok
 or
 
 GATE: revise
-ALERT: <which resolved value is ungrounded, contradicted, or wrongly aggregated>
-<one line: which rows or which divisor to use instead>
+ALERT: <which resolved value is ungrounded, contradicted, or wrongly aggregated, which extra field is written, or which destructive flag goes against the task>
+<one line: which rows or which divisor to use instead, which field to remove, or which flag to turn off>

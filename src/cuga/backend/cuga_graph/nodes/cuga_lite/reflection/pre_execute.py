@@ -8,6 +8,7 @@ import asyncio
 import json
 from typing import Any, Callable, Optional
 
+from langchain_core.messages import AIMessage, ToolMessage
 from loguru import logger
 
 from cuga.backend.activity_tracker.tracker import Step
@@ -74,6 +75,35 @@ def verify_timeout_seconds() -> float:
     return seconds
 
 
+def _is_blocked_reply(message: Any) -> bool:
+    content = getattr(message, "content", None)
+    return isinstance(content, str) and content.startswith(VERIFY_BLOCKED_PREFIX)
+
+
+def _without_blocked_replies(messages: list) -> list:
+    """Drop the replies to blocks VERIFY stopped; such a block never ran.
+
+    A stopped function-calling batch also loses its pre-decided replies (a deferred
+    or unknown call), which do not carry the blocked prefix: none of them is output.
+    """
+    blocked_ids = {m.tool_call_id for m in messages if isinstance(m, ToolMessage) and _is_blocked_reply(m)}
+    batch_ids: set = set()
+    if blocked_ids:
+        for m in messages:
+            ids = (
+                {c.get("id") for c in getattr(m, "tool_calls", None) or []}
+                if isinstance(m, AIMessage)
+                else set()
+            )
+            if ids & blocked_ids:
+                batch_ids |= ids
+    return [
+        m
+        for m in messages
+        if not _is_blocked_reply(m) and not (isinstance(m, ToolMessage) and m.tool_call_id in batch_ids)
+    ]
+
+
 def log_pre_execute_verify(tracker: Any, decision: VerifyDecision) -> bool:
     if tracker is None:
         return True
@@ -116,8 +146,8 @@ async def decide_pre_execute_verify(
     after ``VERIFY_REVISE_STREAK_CAP`` consecutive revises, and after
     ``VERIFY_REVISE_TOTAL_CAP`` revises in the run however they are spaced.
 
-    ``max_chars`` is the character budget shared by history, variables, and the
-    proposed code. ``None`` sizes it from the model's context window
+    ``max_chars`` is the character budget shared by history, latest output,
+    variables, and the proposed code. ``None`` sizes it from the model's context window
     (``advanced_features.pre_execute_verify_context_fraction``).
     """
     if not enabled or not (script or "").strip():
@@ -146,6 +176,8 @@ async def decide_pre_execute_verify(
                 {
                     "current_task": task_text,
                     "agent_history": "",
+                    # Non-empty, so the longer with-output header is the one counted.
+                    "latest_output": " ",
                     "variables_snapshot": "",
                     "proposed_code": "",
                     "write_arguments": write_arguments,
@@ -157,15 +189,8 @@ async def decide_pre_execute_verify(
                 fixed_prompt_chars,
                 context_fraction=context_fraction_setting("pre_execute_verify_context_fraction"),
             )
-        history, variables, proposed = prepare_verify_context(
-            [
-                m
-                for m in (chat_messages or [])
-                if not (
-                    isinstance(getattr(m, "content", None), str)
-                    and m.content.startswith(VERIFY_BLOCKED_PREFIX)
-                )
-            ],
+        history, latest_output, variables, proposed = prepare_verify_context(
+            _without_blocked_replies(list(chat_messages or [])),
             variables_snapshot,
             script or "",
             max_chars=max_chars,
@@ -175,7 +200,9 @@ async def decide_pre_execute_verify(
             [
                 {
                     "role": "user",
-                    "content": "\n".join([current_task, history, variables, proposed, write_arguments]),
+                    "content": "\n".join(
+                        [task_text, history, latest_output, variables, proposed, write_arguments]
+                    ),
                 }
             ],
         )
@@ -184,6 +211,7 @@ async def decide_pre_execute_verify(
                 {
                     "current_task": task_text,
                     "agent_history": history,
+                    "latest_output": latest_output,
                     "variables_snapshot": variables,
                     "proposed_code": proposed,
                     "write_arguments": write_arguments,
@@ -239,9 +267,20 @@ def ordered_variables_summary(variables_manager: Any, script: Optional[str]) -> 
 
 
 def verify_blocked_message(alert: str) -> str:
-    body = (alert or "").strip() or "ungrounded or contradictory write"
+    # The alert says what to change: a value to fix, a rule-4 extra field to
+    # remove, or a rule-5 flag to turn off. A blanket instruction does harm:
+    # "ground every argument" made the model strip needed flags
+    # (clear_cart_first, repeat_days), and "remove the flagged field if the task
+    # did not ask to change it" licensed removing any field the task is silent on.
+    alert = (alert or "").strip()
+    keep = "Keep every other argument the task needs, including flags and defaults."
+    if alert:
+        return f"{VERIFY_BLOCKED_PREFIX}\n{alert}\nRewrite the block. Make only the change the alert asks for. {keep}"
     return (
         f"{VERIFY_BLOCKED_PREFIX}\n"
-        f"{body}\n"
-        "Rewrite the block so each write argument is grounded in retrieved data."
+        "VERIFY did not name the value. Find the write argument that has no support in the "
+        "Current Task or retrieved data, contradicts the Current Task, writes a field "
+        "the Current Task did not ask to change, or turns on a flag that deletes data "
+        "the Current Task did not ask to delete.\n"
+        f"Rewrite the block. Change only that argument. {keep}"
     )
