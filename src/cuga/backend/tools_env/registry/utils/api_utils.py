@@ -103,6 +103,35 @@ async def get_apis(app_name: str, agent_id: Optional[str] = None):
             raise e
 
 
+_CALL_HEADERS = {"accept": "application/json", "Content-Type": "application/json"}
+
+
+async def post_registry_call(
+    session: aiohttp.ClientSession, url: str, payload: dict, timeout_seconds: float
+) -> tuple[int, str]:
+    """POST a tool call to the registry; returns (status, body text).
+
+    When the registry asks for the signed-in user's token of an MCP gateway instance (a
+    user-mode gateway tool), the call is sent once more with that instance's token only.
+    A GatewayAccessError (no user, no role) becomes the call's error text.
+    """
+    from cuga.backend.server.auth import gateway_tokens
+
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+    async with session.post(url, json=payload, headers=_CALL_HEADERS, timeout=timeout) as response:
+        status, text = response.status, await response.text()
+    try:
+        extra = await gateway_tokens.retry_headers(status, text)
+    except gateway_tokens.GatewayAccessError as e:
+        return 403, str(e)
+    if not extra:
+        return status, text
+    async with session.post(
+        url, json=payload, headers={**_CALL_HEADERS, **extra}, timeout=timeout
+    ) as response:
+        return response.status, await response.text()
+
+
 async def get_apps(agent_id: Optional[str] = None) -> List[AppDefinition]:
     """
     Execute an asynchronous GET request to retrieve applications from the registry.

@@ -35,6 +35,37 @@ from cuga.backend.tools_env.registry.mcp_manager.response_schema import extract_
 from cuga.backend.tools_env.registry.utils.schema_utils import json_schema_type
 import yaml
 from cuga.backend.utils.consts import ServiceType, LOCAL_ORCHESTRATE_URL, LOCAL_TRM_URL
+from cuga.backend.tools_env.registry import mcp_gateway
+from cuga.backend.tools_env.registry.mcp_gateway import AUTH_TYPE as GATEWAY_AUTH_TYPE
+from types import SimpleNamespace
+
+
+def _gateway_transport(name: str, config: ServiceConfig):
+    """Streamable HTTP transport to an MCP gateway instance, authenticated with a token
+    exchanged from the instance API key (renewed before expiry and after a 401)."""
+    from cuga.backend.secrets import resolve_secret
+    from cuga.backend.tools_env.registry import mcp_gateway
+
+    gateway = config.gateway or {}
+    # A secret saved for the agent is found only with its agent ID; global secrets either way.
+    api_key = (
+        resolve_secret(config.auth.value, agent_id=gateway.get("secret_agent_id"))
+        if config.auth.value
+        else None
+    )
+    if not api_key:
+        raise Exception(f"MCP gateway entry '{name}' has no instance API key (secret not found)")
+    if not gateway.get("instance_id"):
+        raise Exception(f"MCP gateway entry '{name}' has no instance id")
+    instance = mcp_gateway.GatewayInstance(
+        instance_url=gateway.get("instance_url", ""),
+        instance_id=gateway["instance_id"],
+        base_url=config.url.rsplit("/mcp", 1)[0],
+    )
+    verify = mcp_gateway.gateway_settings()["gateway_verify"]
+    return StreamableHttpTransport(
+        url=config.url, auth=mcp_gateway.auth_for(instance, api_key), verify=verify
+    )
 
 
 def _merge_auth_query_params(base_url: str, auth_params: dict[str, str]) -> str:
@@ -754,24 +785,39 @@ class MCPManager:
         self._clear_mcp_server_registration(name)
 
         try:
-            transport = self._create_transport(name, config)
-            if not transport:
-                self._set_service_status(name, "failed", "Transport creation returned no transport")
-                return False
+            stored = mcp_gateway.stored_tools(config)
+            if stored is not None:
+                # MCP gateway, signed-in user mode: no credential at start; calls carry each
+                # user's instance token (see _call_transport).
+                tools = [
+                    SimpleNamespace(
+                        name=t["name"],
+                        description=t["description"],
+                        input_schema=t["inputSchema"],
+                        output_schema=t["outputSchema"],
+                    )
+                    for t in stored
+                ]
+                logger.info(f"Using {len(tools)} saved tool definitions for gateway entry {name}")
+            else:
+                transport = self._create_transport(name, config)
+                if not transport:
+                    self._set_service_status(name, "failed", "Transport creation returned no transport")
+                    return False
 
-            client = FastMCPClient(transport)
-            logger.info(f"Fetching tools from {name}...")
+                client = FastMCPClient(transport)
+                logger.info(f"Fetching tools from {name}...")
 
-            async def fetch_tools():
-                async with client:
-                    return await client.list_tools()
+                async def fetch_tools():
+                    async with client:
+                        return await client.list_tools()
 
-            try:
-                tools = await asyncio.wait_for(fetch_tools(), timeout=15.0)
-                logger.info(f"Retrieved {len(tools)} tools from {name}: {[tool.name for tool in tools]}")
-            except asyncio.TimeoutError:
-                print(f"Timeout fetching tools from {name} after 15 seconds")
-                raise
+                try:
+                    tools = await asyncio.wait_for(fetch_tools(), timeout=15.0)
+                    logger.info(f"Retrieved {len(tools)} tools from {name}: {[tool.name for tool in tools]}")
+                except asyncio.TimeoutError:
+                    print(f"Timeout fetching tools from {name} after 15 seconds")
+                    raise
 
             include_set = set(config.include) if config.include else None
 
@@ -1023,6 +1069,9 @@ class MCPManager:
 
             print(f"Connecting to MCP server '{name}' via HTTP at {config.url}")
 
+            if config.auth and str(config.auth.type).lower() == GATEWAY_AUTH_TYPE:
+                return _gateway_transport(name, config)
+
             # Build headers from auth config if available
             headers = {}
             url = config.url
@@ -1132,6 +1181,24 @@ class MCPManager:
 
         return flattened
 
+    def _call_transport(self, server_name: str):
+        """The stored transport, or for a user-mode gateway server a transport for this call
+        with the user's instance token (listing keeps using the instance API key)."""
+        from cuga.backend.tools_env.registry import mcp_gateway
+
+        config = self.schema_urls.get(server_name)
+        instance_id = mcp_gateway.user_mode_instance(config)
+        if not instance_id:
+            return self.mcp_transports[server_name]
+        token = mcp_gateway.CALL_USER_TOKEN.get()
+        if not token:
+            raise Exception(mcp_gateway.user_token_required_body(instance_id)["message"])
+        return StreamableHttpTransport(
+            url=config.url,
+            headers={"Authorization": f"Bearer {token}"},
+            verify=mcp_gateway.gateway_settings()["gateway_verify"],
+        )
+
     async def _call_mcp_server_tool(
         self, server_name: str, tool_name: str, args: dict, *, knowledge_run_token: str | None = None
     ):
@@ -1151,7 +1218,7 @@ class MCPManager:
                 # that the MCP server registered under.
                 original_tool_name = self.original_tool_name_by_sanitized[tool_name]
 
-                transport = self.mcp_transports[server_name]
+                transport = self._call_transport(server_name)
                 client = FastMCPClient(transport)
 
                 async with client:
