@@ -93,7 +93,7 @@ uv sync --python 3.12
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
-也可以先运行 `uv run python src/scripts/preload_models.py` 预先下载所需模型（同样需要设置 `HF_ENDPOINT`）。
+也可以先运行 `uv run python src/scripts/preload_models.py` 预先下载所需模型（同样需要设置 `HF_ENDPOINT`）。下载失败的模型会被跳过而不报错，请确认输出中没有 fastembed 相关的 `preload skipped` 提示。
 
 **3. 使用千问（Qwen）**：在阿里云百炼控制台获取 API Key（参见 [OpenAI 兼容说明](https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope)），然后把 `.env` 中默认的 Groq 配置替换为：
 
