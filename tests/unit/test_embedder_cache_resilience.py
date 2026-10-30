@@ -219,10 +219,12 @@ def test_explicit_cache_path_env_wins(monkeypatch, request):
 
     import cuga.config as cfg
 
-    # Re-reload AFTER monkeypatch restores the real environment, so the module
-    # attribute doesn't stay out of sync with os.environ for the rest of the
-    # session (reload's own setdefault writes the recomputed default otherwise).
-    request.addfinalizer(lambda: importlib.reload(cfg))
+    # Restore the module's original attributes rather than reloading again: a
+    # reload builds a new ``settings`` object, so modules that imported it
+    # earlier and modules imported later would read different objects, and
+    # monkeypatching one would not reach the other for the rest of the session.
+    original = dict(vars(cfg))
+    request.addfinalizer(lambda: vars(cfg).update(original))
 
     monkeypatch.setenv("FASTEMBED_CACHE_PATH", "/opt/preloaded/fastembed")
     importlib.reload(cfg)

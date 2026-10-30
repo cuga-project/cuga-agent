@@ -1,10 +1,13 @@
 import asyncio
+import functools
 import pytest
 from unittest.mock import Mock
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState, VariablesManager
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.security import SecurityValidator
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd.execd_executor import ExecdExecutor
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd.kernel_templates import filesystem_tools_code
 from cuga.config import settings
 
 
@@ -604,3 +607,181 @@ async def test_generated_exit_ends_the_block_not_the_runtime(mock_state, monkeyp
         mode='local',
     )
     assert "no candidate found" in result
+
+
+# ─── _serialize_tools: _cuga_app_name takes priority over name-splitting ─────
+
+
+def _make_wrapped_tool(*, app_name: str = None):
+    """Return a minimal async callable mimicking a counted_tool_call-wrapped tool.
+
+    functools.wraps copies __dict__, so attributes set on the inner function
+    survive the counted_tool_call layer exactly as in production.
+    """
+
+    async def _inner(**kwargs):
+        pass  # pragma: no cover
+
+    if app_name:
+        _inner._cuga_app_name = app_name
+
+    @functools.wraps(_inner)
+    async def _wrapped(**kwargs):
+        return await _inner(**kwargs)  # pragma: no cover
+
+    return _wrapped
+
+
+@pytest.mark.unit
+async def test_execd_sends_filesystem_tools_inline_and_everything_else_as_callback_stubs(monkeypatch):
+    """Filesystem tools and run_command run in the kernel; every other callable is a stub calling CUGA."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import tool_callback
+
+    sent: list[str] = []
+
+    async def fake_run_remote(code, thread_id):
+        sent.append(code)
+        return "!!!===!!!\n{}"
+
+    monkeypatch.setattr(ExecdExecutor, "_run_remote", staticmethod(fake_run_remote))
+    monkeypatch.setattr(tool_callback, "callback_url", lambda: "http://cuga.test:7860")
+
+    async def crm_get_contact(**kwargs):
+        pass  # pragma: no cover
+
+    async def run_command(cmd):
+        pass  # pragma: no cover
+
+    run_command._cuga_app_name = "shell"  # as runtime_tools tags the shell tool
+    tools = {
+        "write_file": _make_wrapped_tool(app_name="filesystem"),
+        "run_command": run_command,
+        "crm_get_contact": crm_get_contact,
+    }
+    state = Mock()
+    state.variables_manager = VariablesManager()
+    state.service_scope = None
+    await ExecdExecutor().execute_for_cuga_lite(
+        "async def _async_main():\n    await crm_get_contact(id=1)\n    return locals()", tools, state, "t1"
+    )
+
+    code = sent[0]
+    assert "async def write_file(path, content)" in code  # inline filesystem tool
+    assert "_CUGA_SH_ROOT" in code  # inline run_command
+    assert "async def crm_get_contact(*args, **kwargs)" in code
+    assert "_cuga_cb_acall('crm_get_contact'" in code
+    # Not routed back to CUGA...
+    assert "_cuga_cb_acall('write_file'" not in code and "_cuga_cb_acall('run_command'" not in code
+    # ...but still charged against the call budget through the one counted callback.
+    assert "_cuga_cb_acall('_cuga_charge_tool_call'" in code
+    assert "write_file = _cuga_charged(write_file)" in code
+    assert "run_command = _cuga_charged(run_command)" in code
+    assert "http://cuga.test:7860/sandbox/tools/call" in code
+
+
+@pytest.mark.unit
+async def test_execd_keeps_a_tool_that_is_only_named_run_command(monkeypatch):
+    """An MCP/SDK tool called run_command is that tool, not the sandbox shell (review item 36)."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import tool_callback
+
+    sent: list[str] = []
+
+    async def fake_run_remote(code, thread_id):
+        sent.append(code)
+        return ""
+
+    monkeypatch.setattr(ExecdExecutor, "_run_remote", staticmethod(fake_run_remote))
+    monkeypatch.setattr(tool_callback, "callback_url", lambda: "http://cuga.test:7860")
+
+    async def run_command(cmd):
+        pass  # pragma: no cover
+
+    state = Mock()
+    state.variables_manager = VariablesManager()
+    state.service_scope = None
+    await ExecdExecutor().execute_for_cuga_lite(
+        "async def _async_main():\n    await run_command('x')\n    return locals()",
+        {"run_command": run_command},
+        state,
+        "t1",
+    )
+
+    assert "_CUGA_SH_ROOT" not in sent[0]
+    assert "_cuga_cb_acall('run_command'" in sent[0]
+
+
+@pytest.mark.unit
+async def test_execd_without_a_callback_url_fails_with_a_clear_message(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import tool_callback
+
+    monkeypatch.setattr(tool_callback, "callback_url", lambda: "")
+
+    async def crm_get_contact(**kwargs):
+        pass  # pragma: no cover
+
+    state = Mock()
+    state.variables_manager = VariablesManager()
+    state.service_scope = None
+    with pytest.raises(RuntimeError, match="sandbox_callback_url"):
+        await ExecdExecutor().execute_for_cuga_lite(
+            "async def _async_main():\n    await crm_get_contact(id=1)\n    return locals()",
+            {"crm_get_contact": crm_get_contact},
+            state,
+            "t1",
+        )
+
+
+@pytest.mark.unit
+def test_execd_filesystem_tools_code_defines_all_tools():
+    """filesystem_tools_code must define write_file, read_file, list_files inline."""
+    code = filesystem_tools_code("/workspace/test-thread")
+
+    for name in ("write_file", "read_file", "list_files", "make_directory", "edit_file"):
+        assert f"async def {name}" in code, f"Expected 'async def {name}' in filesystem tools code"
+
+    # Must reference the correct workspace root
+    assert "/workspace/test-thread" in code
+
+
+@pytest.mark.unit
+async def test_a_plan_choosing_local_stays_local_with_execd_switched_on(mock_state, monkeypatch):
+    """execution.python_backend = "local" wins over the Manage UI toggle: the plan is the one source."""
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionPlan
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import connection
+
+    monkeypatch.setattr(connection, "execd_active", lambda: True)
+
+    async def must_not_run(*a, **k):
+        raise AssertionError("execd must not be used when the plan says local")
+
+    monkeypatch.setattr(ExecdExecutor, "execute_for_cuga_lite", must_not_run)
+    plan = ExecutionPlan(
+        requested_backend="local", python_backend="local", shell_backend="none", filesystem_backend="none"
+    )
+    result, _ = await CodeExecutor.eval_with_tools_async(
+        code="print('here')", _locals={}, state=mock_state, plan=plan
+    )
+    assert "here" in result
+
+
+@pytest.mark.unit
+async def test_find_tools_block_is_not_forced_local_under_execd(mock_state, monkeypatch):
+    """With execd the tool callback reaches find_tools, so the block stays in the sandbox."""
+    seen = {}
+
+    async def fake_execute(self, wrapped_code, context_locals, state, thread_id=None, apps_list=None):
+        seen["ran"] = True
+        return "ok", {}
+
+    monkeypatch.setattr(ExecdExecutor, "execute_for_cuga_lite", fake_execute)
+
+    async def find_tools(query, app_name=""):
+        return "listing"  # pragma: no cover
+
+    await CodeExecutor.eval_with_tools_async(
+        code="r = await find_tools('x')",
+        _locals={"find_tools": find_tools},
+        state=mock_state,
+        mode="execd",
+    )
+    assert seen.get("ran") is True

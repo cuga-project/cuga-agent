@@ -29,6 +29,7 @@ from cuga.backend.server.manage_routes import (  # noqa: F401
     draft_routes,
     knowledge_routes,
     llm_routes,
+    sandbox_routes,
 )
 
 # Backward-compatible aliases
