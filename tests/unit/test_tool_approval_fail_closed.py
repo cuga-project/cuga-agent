@@ -142,7 +142,20 @@ def _break_approval_check(monkeypatch, agent) -> None:
     monkeypatch.setattr(agent._policy_system.agent, "check_tool_approval_for_code", crashed)
 
 
-_BREAKAGES = {"policy_store": _break_policy_store, "approval_check": _break_approval_check}
+def _break_approval_check_with_braces(monkeypatch, agent) -> None:
+    # A pydantic ValidationError message carries `input_value={...}`; braces in the
+    # error text must not break the log call that precedes the pause.
+    async def crashed(*args, **kwargs):
+        raise RuntimeError("1 validation error for Policy\n  input_value={'name': 'x'}, input_type=dict")
+
+    monkeypatch.setattr(agent._policy_system.agent, "check_tool_approval_for_code", crashed)
+
+
+_BREAKAGES = {
+    "policy_store": _break_policy_store,
+    "approval_check": _break_approval_check,
+    "approval_check_with_braces": _break_approval_check_with_braces,
+}
 
 
 def _failed_check():

@@ -155,9 +155,11 @@ class ToolApprovalHandler:
             logger.debug(f"Policy match result: {policy_match}")
 
         except Exception as e:
-            logger.error(
-                f"Tool approval check failed - pausing for approval instead of running the code: {e}",
-                exc_info=True,
+            # The error text goes in as an argument, not into the template: loguru
+            # formats the message, and braces in it (a pydantic error's input_value)
+            # would otherwise raise here and skip the pause.
+            logger.opt(exception=True).error(
+                "Tool approval check failed - pausing for approval instead of running the code: {}", e
             )
             return ToolApprovalHandler._pause_for_approval(
                 adapter,
