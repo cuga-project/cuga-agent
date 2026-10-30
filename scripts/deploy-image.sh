@@ -29,4 +29,8 @@ fi
 
 echo "Pushing image to registry"
 docker push $TARGET_IBM_REGISTRY_URL/$CR_NAMESPACE/$IMAGE_NAME:$IMAGE_TAG
+if [ $? -ne 0 ]; then
+  echo "Failed to push image to registry"
+  exit 1
+fi
 echo "Done pushing image to registry"
