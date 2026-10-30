@@ -482,6 +482,16 @@ class ConversationHistoryDB:
             logger.error(f"Error getting threads for agent: {e}")
             return []
 
+    async def get_thread_agent(self, thread_id: str) -> Optional[str]:
+        """The agent a thread is bound to, or ``None``. Read-only: no ownership check, nothing reserved."""
+        await self._ensure_schema()
+        row = await self._get_store().fetchone(
+            """SELECT agent_id FROM runtime_thread_owners
+            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?""",
+            (_tenant_id(), _instance_id(), thread_id.strip()),
+        )
+        return (row["agent_id"] or None) if row else None
+
     async def get_thread_owners_for_agent(self, agent_id: str) -> set[tuple[str, str]]:
         """Return scoped conversation keys used to validate memory provenance."""
         await self._ensure_schema()
