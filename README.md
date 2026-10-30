@@ -17,6 +17,8 @@ CUGA turns business requests into actions across your applications, APIs, and do
 
 [Apache 2.0](LICENSE) · Configurable Generalist Agent · Built with IBM SiL
 
+English · [简体中文](docs/readme/README.zh-CN.md)
+
 ---
 
 ## Quick install
