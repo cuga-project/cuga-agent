@@ -2,8 +2,8 @@
   "agent_servers": {
     "CUGA": {
       "type": "custom",
-      "command": "/absolute/path/to/cuga-acp",
-      "args": [],
+      "command": "/absolute/path/to/cuga",
+      "args": ["acp"],
       "env": {}
     }
   }

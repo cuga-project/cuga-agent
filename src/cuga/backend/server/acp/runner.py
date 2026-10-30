@@ -45,6 +45,10 @@ class StdioCugaRunner:
                 self._initialized = True
         return agent
 
+    async def ensure_ready(self) -> None:
+        """Build the configured LLM and graph once; raises if provider credentials are missing."""
+        await self._get_initialized_agent()
+
     async def run(
         self,
         message: str,
