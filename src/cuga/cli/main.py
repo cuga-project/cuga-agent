@@ -200,8 +200,6 @@ _configure_console_encoding()
 
 console = Console()
 
-os.environ["DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED"] = "true"
-
 app = typer.Typer(
     help="Cuga CLI for managing services with direct execution",
     short_help="Service management tool for Cuga components",

@@ -233,7 +233,7 @@ class AgentRunner:
                     )
                 self.env.messages = state.messages
                 obs, reward, terminated, truncated, info = await self.env.step("")
-                if eval_mode and reward == 1.0 or len(tracker.steps) >= settings.evaluation.max_steps:
+                if eval_mode and reward == 1.0 or tracker.step_count >= settings.evaluation.max_steps:
                     break
                 await self.browser_update_state(state)
                 self.agent_loop_obj.graph.update_state({"configurable": {"thread_id": self.thread_id}}, state)
@@ -252,7 +252,7 @@ class AgentRunner:
                     role="assistant",
                     msg="Final answer: {}".format(tracker.final_answer),
                 )
-            if len(tracker.steps) >= settings.evaluation.max_steps:
+            if tracker.step_count >= settings.evaluation.max_steps:
                 tracker.final_answer = "N/A"
                 obs, reward, terminated, truncated, info = await self.env.step("")
             if sites and len(sites) > 1:
@@ -347,7 +347,7 @@ class AgentRunner:
                             )
                         self.env.messages = state.messages
                         obs, reward, terminated, truncated, info = await self.env.step("")
-                        if eval_mode and reward == 1.0 or len(tracker.steps) >= settings.evaluation.max_steps:
+                        if eval_mode and reward == 1.0 or tracker.step_count >= settings.evaluation.max_steps:
                             break  # Break to handle final result outside the loop
                         await self.browser_update_state(state)
                         self.agent_loop_obj.graph.update_state(
@@ -372,7 +372,7 @@ class AgentRunner:
                     yield StreamEvent.parse(event)
 
             # Handle the case where we broke out due to max_steps or reward == 1.0
-            if eval_mode and (reward == 1.0 or len(tracker.steps) >= settings.evaluation.max_steps):
+            if eval_mode and (reward == 1.0 or tracker.step_count >= settings.evaluation.max_steps):
                 break
 
         # Handle final result outside the loop (matching your original structure)
