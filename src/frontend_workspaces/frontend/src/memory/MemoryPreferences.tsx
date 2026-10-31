@@ -1,5 +1,6 @@
+import { ContentSkeleton } from "agentic_chat/LoadingState";
 import React, { useEffect, useState } from "react";
-import { Column, Grid, InlineNotification, Toggle } from "@carbon/react";
+import { Column, Grid, InlineLoading, InlineNotification, Toggle } from "@carbon/react";
 import { loadMemoryPreferences, saveMemoryPreference, saveEpisodicMemoryPreference, type MemoryPreferencesState } from "./api";
 
 export function MemoryPreferences({ admin = false }: { admin?: boolean }) {
@@ -28,6 +29,8 @@ export function MemoryPreferences({ admin = false }: { admin?: boolean }) {
     catch (err) { setError(err instanceof Error ? err.message : "Memory settings could not be saved."); }
     finally { setSaving(false); }
   };
+
+  if (!preferences && !error) return <ContentSkeleton label="Loading memory settings…" rows={admin ? 2 : 1} />;
 
   return <Grid className={`memory-preferences${admin ? " memory-preferences--admin" : ""}`} fullWidth>
     <Column sm={4} md={8} lg={16}>
@@ -65,6 +68,7 @@ export function MemoryPreferences({ admin = false }: { admin?: boolean }) {
           </p>
         </div>
       </div>}
+      {saving && <InlineLoading description="Saving memory settings…" aria-live="polite" />}
       {error && <InlineNotification kind="error" title={error} lowContrast hideCloseButton />}
     </Column>
   </Grid>;
