@@ -1,3 +1,4 @@
+import { ContentSkeleton, AsyncButton } from "agentic_chat/LoadingState";
 import { MemoryPreferences } from "./MemoryPreferences";
 import React, { useMemo, useState } from "react";
 import {
@@ -7,6 +8,7 @@ import {
   Column,
   Grid,
   Search,
+  InlineLoading,
   Select,
   SelectItem,
   Tabs,
@@ -48,6 +50,7 @@ import {
   type RetentionRun,
 } from "./types";
 import "./memory.scss";
+import { useCarbonFeedback } from "../CarbonFeedback";
 import { RetentionSchedules } from "./RetentionSchedules";
 
 type MemorySort =
@@ -417,14 +420,15 @@ function MemoryDetail({
           </div>
         ) : (
           <div className="memory-workspace__detail-actions">
-            <Button
+            <AsyncButton
+              busy={!!deleting} busyLabel="Deleting..."
               kind="danger"
               size="sm"
-              disabled={memory.legalHold || deleting}
+              disabled={memory.legalHold}
               onClick={onDelete}
             >
-              {deleting ? "Deleting..." : "Forget"}
-            </Button>
+              Forget
+            </AsyncButton>
           </div>
         )}
       </div>
@@ -483,7 +487,8 @@ function SettingsDetail({
     <>
       <div className="memory-settings__intro memory-settings__row">
         <p>Manage memory retention for everyone using this service.</p>
-        <Button
+        <AsyncButton
+          busy={runningRetention} busyLabel="Running retention…"
           kind="tertiary"
           size="md"
           disabled={
@@ -491,8 +496,8 @@ function SettingsDetail({
           }
           onClick={onRunRetention}
         >
-          {runningRetention ? "Running retention…" : "Run retention now"}
-        </Button>
+          Run retention now
+        </AsyncButton>
       </div>
       {policy && (
         <>
@@ -707,8 +712,8 @@ function CollectionActivity({agentId, policies, refreshKey, onOpen, history, onR
   }[outcome] ?? displayType(outcome));
   return <section className="memory-activity" aria-label="Retention activity">
     {error && <p className="memory-activity__notice" role="alert">{error}</p>}
-    {loading && <p className="memory-activity__notice" role="status">Loading retention activity…</p>}
-    <Tabs>
+    {loading && <ContentSkeleton label="Loading retention activity…" kind="table" rows={5} />}
+    <div hidden={loading}><Tabs>
       <div className="memory-activity__navigation">
         <TabList aria-label="Retention activity views">
           <Tab>Awaiting action</Tab>
@@ -791,7 +796,7 @@ function CollectionActivity({agentId, policies, refreshKey, onOpen, history, onR
           </AccordionItem></Accordion>
         </TabPanel>
       </TabPanels>
-    </Tabs>
+    </Tabs></div>
   </section>;
 }
 
@@ -805,6 +810,7 @@ export function MemoryWorkspace({
   onClearFocus,
   onOpenConversation,
 }: MemoryWorkspaceProps) {
+  const { confirm } = useCarbonFeedback();
   const rootRef = React.useRef<HTMLElement>(null);
   const requestGenerationRef = React.useRef(0);
   const activeAgentRef = React.useRef(agentId);
@@ -1176,7 +1182,7 @@ export function MemoryWorkspace({
       setMessage("This memory is protected by a legal hold");
       return;
     }
-    if (!window.confirm("Forget this memory? Its source conversation will remain available.")) return;
+    if (!await confirm("Forget this memory? Its source conversation will remain available.", "Forget memory")) return;
     const generation = requestGenerationRef.current;
     setDeleting(true);
     try {
@@ -1196,8 +1202,8 @@ export function MemoryWorkspace({
   const executeRetention = async () => {
     const policy = selectedSettings?.policy;
     if (runningRetention || !capabilities?.available || !policy?.enabled) return;
-    if (!window.confirm(
-      "Run retention for everyone using this service? Eligible memories will be marked and deleted; current legal holds will be respected.",
+    if (!await confirm(
+      "Run retention for everyone using this service? Eligible memories will be marked and deleted; current legal holds will be respected.", "Run retention",
     )) return;
     const generation = requestGenerationRef.current;
     setRunningRetention(true);
@@ -1227,6 +1233,7 @@ export function MemoryWorkspace({
           </Button>
         )}
       </div>
+      {(loading || loadingMore) && visibleMemories.length > 0 && <InlineLoading description="Loading memories…" aria-live="polite" />}
       {visibleMemories.length > 0 ? (
         <ul className="memory-workspace__list">
           {visibleMemories.map((memory) => (
@@ -1250,9 +1257,7 @@ export function MemoryWorkspace({
           ))}
         </ul>
       ) : (
-        <p className="memory-workspace__empty">
-          {loading ? "Loading memories..." : "No memories match these filters."}
-        </p>
+        loading ? <ContentSkeleton label="Loading memories…" rows={5} /> : <p className="memory-workspace__empty">No memories match these filters.</p>
       )}
       {!focusEntityIds.length && (
         <Pagination className="memory-workspace__pagination" page={memoryPage} pageSize={memoryPageSize}
@@ -1368,29 +1373,17 @@ export function MemoryWorkspace({
             </div>
           </div>
 
-          <div className="memory-workspace__tabs" role="tablist" aria-label="Memory administration">
-            {(["settings", "memory", "activity"] as AdminTab[]).map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                role="tab"
-                aria-selected={adminTab === tab}
-                onClick={() => {
-                  setAdminTab(tab);
-                  setDetailOpen(false);
-                }}
-              >
-                {tab[0].toUpperCase() + tab.slice(1)}
-              </button>
-            ))}
-          </div>
-
-          {adminTab === "settings" && (
-            <div
-              role="tabpanel"
-              aria-label="Settings"
-              className="memory-workspace__settings"
-            >
+          <Tabs selectedIndex={(["settings", "memory", "activity"] as AdminTab[]).indexOf(adminTab)}
+            onChange={({ selectedIndex }) => {
+              setAdminTab((["settings", "memory", "activity"] as AdminTab[])[selectedIndex]);
+              setDetailOpen(false);
+            }}>
+            <TabList className="memory-workspace__tabs" aria-label="Memory administration">
+              <Tab>Settings</Tab><Tab>Memory</Tab><Tab>Activity</Tab>
+            </TabList>
+            <TabPanels>
+              <TabPanel className="memory-workspace__settings">
+                {adminTab === "settings" && (<>
               <Grid fullWidth>
                 <Column sm={4} md={8} lg={16}>
                   <TabsVertical
@@ -1468,11 +1461,11 @@ export function MemoryWorkspace({
                   </TabsVertical>
                 </Column>
               </Grid>
-            </div>
-          )}
+                </>)}
+              </TabPanel>
 
-          {adminTab === "memory" && (
-            <div role="tabpanel" aria-label="Memory">
+              <TabPanel className="">
+                {adminTab === "memory" && (<>
               <Grid className="memory-workspace__toolbar">
                 <Column sm={4} md={4} lg={5}>
                   <Select id="admin-memory-owner" labelText="Memory about" value={adminOwner} onChange={(event) => setAdminOwner(event.target.value)}>
@@ -1521,12 +1514,10 @@ export function MemoryWorkspace({
                           </li>
                         ))}
                       </ul>
-                    ) : <p className="memory-workspace__empty">{loading ? "Loading memories..." : "No memories match these filters."}</p>}
+                    ) : loading ? <ContentSkeleton label="Loading memories…" rows={5} /> : <p className="memory-workspace__empty">No memories match these filters.</p>}
                     {adminNextCursor && adminOwner === "all" && adminState === "all" && (
                       <div className="memory-workspace__load-more">
-                        <Button kind="ghost" size="sm" disabled={loadingMore} onClick={() => void loadMoreAdminMemories()}>
-                          {loadingMore ? "Loading..." : "Load more"}
-                        </Button>
+                        <AsyncButton kind="ghost" size="sm" busy={loadingMore} busyLabel="Loading…" onClick={() => void loadMoreAdminMemories()}>Load more</AsyncButton>
                       </div>
                     )}
                   </div>
@@ -1538,11 +1529,11 @@ export function MemoryWorkspace({
                 sheetOpen={detailOpen}
                 closeSheet={() => setDetailOpen(false)}
               />
-            </div>
-          )}
+                </>)}
+              </TabPanel>
 
-          {adminTab === "activity" && (
-            <div role="tabpanel" aria-label="Activity" className="memory-activity-panel">
+              <TabPanel className="memory-activity-panel">
+                {adminTab === "activity" && (<>
               <CollectionActivity policies={retentionPolicies} agentId={agentId} refreshKey={runs} refreshing={loading} onRefresh={() => void refreshData()} onOpen={(memory) => {
                 setAdminMemories((items) => items.some((item) => item.id === memory.id) ? items.map((item) => item.id === memory.id ? memory : item) : [...items, memory]);
                 setAdminOwner("all"); setAdminState("all");
@@ -1562,9 +1553,11 @@ export function MemoryWorkspace({
                       }} />
                   </AccordionItem>)}
                 </Accordion>
-              ) : <p className="memory-activity__empty">{loading ? "Loading runs…" : "No retention runs recorded yet."}</p>} />
-            </div>
-          )}
+              ) : loading ? <ContentSkeleton label="Loading runs…" /> : <p className="memory-activity__empty">No retention runs recorded yet.</p>} />
+                </>)}
+              </TabPanel>
+            </TabPanels>
+          </Tabs>
         </>
       )}
     </main>
