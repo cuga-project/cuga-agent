@@ -16,7 +16,7 @@
  * Chat's shadow DOM. Modern Playwright auto-pierces shadow roots, so the
  * locator selectors below work without explicit ``>>` chains.
  */
-import { test, expect, Page, Route } from "@playwright/test";
+import { test, expect, Page, Route, type Locator } from "@playwright/test";
 
 const COMMANDS_PAYLOAD = [
   { name: "deck", kind: "skill", description: "Make slide decks.", argument_hint: null },
@@ -75,10 +75,18 @@ function composer(page: Page) {
   return page.getByRole("textbox").first();
 }
 
+// WebKit's fill() can return without inserting text into Carbon's rich
+// shadow editor. Exercise real selection and typing for all engines.
+async function enterComposerText(page: Page, input: Locator, text: string) {
+  await input.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.type(text);
+}
+
 async function sendInComposer(page: Page, text: string) {
   const ta = composer(page);
   await ta.waitFor({ state: "visible", timeout: 30_000 });
-  await ta.fill(text);
+  await enterComposerText(page, ta, text);
   await ta.press("Enter");
 }
 
@@ -204,7 +212,7 @@ test.describe("slash-command skill invocation", () => {
     // (1) Type ``/`` and assert combobox semantics are wired up.
     const ta = composer(page);
     await ta.waitFor({ state: "visible", timeout: 30_000 });
-    await ta.fill("/");
+    await enterComposerText(page, ta, "/");
 
     await expect
       .poll(readComposerAria, { timeout: 10_000 })
@@ -250,7 +258,7 @@ test.describe("slash-command skill invocation", () => {
     // a role-based locator never has to re-resolve mid-keystroke.
     const ta2 = composer(page);
     await ta2.waitFor({ state: "visible", timeout: 30_000 });
-    await ta2.fill("/deck make 3 slides");
+    await enterComposerText(page, ta2, "/deck make 3 slides");
     await page.keyboard.press("Enter");
 
     // Wait for the response so we know Carbon has finished swapping the
@@ -265,7 +273,7 @@ test.describe("slash-command skill invocation", () => {
     // resolves to the FRESH node.
     const freshTa = composer(page);
     await freshTa.waitFor({ state: "visible", timeout: 10_000 });
-    await freshTa.fill("/");
+    await enterComposerText(page, freshTa, "/");
     await expect
       .poll(readComposerAria, { timeout: 10_000 })
       .toMatchObject({
@@ -301,7 +309,7 @@ test.describe("slash-command skill invocation", () => {
     await ta.waitFor({ state: "visible", timeout: 30_000 });
 
     // While the command is still being named the dropdown is up.
-    await ta.fill("/deck");
+    await enterComposerText(page, ta, "/deck");
     await expect(dropdown).toBeVisible({ timeout: 10_000 });
 
     // The first space after the name hides it. Keystrokes go through
@@ -342,7 +350,7 @@ test.describe("slash-command skill invocation", () => {
     const ta = composer(page);
     await ta.waitFor({ state: "visible", timeout: 30_000 });
 
-    await ta.fill("/dec");
+    await enterComposerText(page, ta, "/dec");
     await expect(dropdown).toBeVisible({ timeout: 10_000 });
     // Wait for the fetched+filtered option list — Enter on an empty list
     // would fall through to Carbon's submit instead of accepting.
@@ -380,7 +388,7 @@ test.describe("slash-command skill invocation", () => {
     await ta.waitFor({ state: "visible", timeout: 30_000 });
 
     // Plain prose keeps the dropdown closed…
-    await ta.fill("hi can I use ");
+    await enterComposerText(page, ta, "hi can I use ");
     await expect(dropdown).not.toBeVisible();
 
     // …but starting a ``/``-token mid-text re-opens it, filtered to the
@@ -431,7 +439,7 @@ test.describe("slash-command skill invocation", () => {
     const ta = composer(page);
     await ta.waitFor({ state: "visible", timeout: 30_000 });
 
-    await ta.fill("hi world");
+    await enterComposerText(page, ta, "hi world");
     await expect(dropdown).not.toBeVisible();
 
     // Walk the caret back to just after "hi", then type a slash token there:
@@ -452,6 +460,11 @@ test.describe("slash-command skill invocation", () => {
     await expect.poll(() => readComposerText(page), { timeout: 5_000 }).toBe(
       "hi /deck world",
     );
+    // The editor must retain the caret after the inserted separator. In
+    // WebKit, mutating rich textContent left it inside the command token.
+    await page.keyboard.type("nice ");
+    await expect.poll(() => readComposerText(page)).toBe("hi /deck nice world");
+    await expect(dropdown).not.toBeVisible();
   });
 
   test("known /command mentions in sent bubbles get pill decoration", async ({ page }) => {
@@ -495,7 +508,7 @@ test.describe("slash-command skill invocation", () => {
     const ta = composer(page);
     await ta.waitFor({ state: "visible", timeout: 30_000 });
 
-    await ta.fill("/de");
+    await enterComposerText(page, ta, "/de");
     await expect(ghost).toBeVisible({ timeout: 10_000 });
     await expect(ghost).toHaveText("ck");
 
