@@ -29,4 +29,3 @@ export async function stub(page: Page) {
   });
   return deletions;
 }
-
