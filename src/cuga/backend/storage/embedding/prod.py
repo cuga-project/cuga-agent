@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import re
 from typing import Any, Dict, List, Optional
@@ -46,23 +47,33 @@ class ProdEmbeddingStore:
         self._collection_name = collection_name
         self._schema = schema
         self._pool: Any = None
+        self._pool_lock = asyncio.Lock()
 
     async def _get_pool(self):
         if self._pool is None:
-            import asyncpg
+            # One caller creates and prepares the pool; concurrent first callers wait for it
+            # instead of creating their own pools or using one before the table exists.
+            async with self._pool_lock:
+                if self._pool is None:
+                    self._pool = await self._create_pool()
+        return self._pool
 
-            try:
-                from pgvector.asyncpg import register_vector
-            except ImportError:
-                raise ImportError("pgvector is required for storage.mode=prod. Install with: uv add pgvector")
+    async def _create_pool(self) -> Any:
+        import asyncpg
 
-            self._pool = await asyncpg.create_pool(
-                self._postgres_url,
-                min_size=1,
-                max_size=4,
-                command_timeout=60,
-            )
-            async with self._pool.acquire() as conn:
+        try:
+            from pgvector.asyncpg import register_vector
+        except ImportError:
+            raise ImportError("pgvector is required for storage.mode=prod. Install with: uv add pgvector")
+
+        pool = await asyncpg.create_pool(
+            self._postgres_url,
+            min_size=1,
+            max_size=4,
+            command_timeout=60,
+        )
+        try:
+            async with pool.acquire() as conn:
                 try:
                     await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
                 except asyncpg.exceptions.InsufficientPrivilegeError:
@@ -72,8 +83,11 @@ class ProdEmbeddingStore:
                         "setup will fail next."
                     )
                 await register_vector(conn)
-            await self._ensure_table()
-        return self._pool
+            await self._ensure_table(pool)
+        except BaseException:
+            await pool.close()
+            raise
+        return pool
 
     async def close_pool(self) -> None:
         """Release the pool (required when the surrounding event loop is discarded, e.g. after ``asyncio.run``)."""
@@ -85,8 +99,8 @@ class ProdEmbeddingStore:
         meta = self._schema.metadata_columns
         return [c for c in SCOPE_COLS if c in meta]
 
-    async def _ensure_table(self) -> None:
-        pool = self._pool
+    async def _ensure_table(self, pool: Any = None) -> None:
+        pool = pool or self._pool
         id_col = self._schema.id_column
         meta = self._schema.metadata_columns
         aux = self._schema.auxiliary_columns
