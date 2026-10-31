@@ -1,3 +1,4 @@
+import { ContentSkeleton, AsyncButton, useModalClose } from "agentic_chat/LoadingState";
 import React, { useState, useEffect } from "react";
 import {
   ComposedModal,
@@ -19,6 +20,7 @@ import {
 } from "@carbon/react";
 import { Add, TrashCan, Copy, Edit } from "@carbon/icons-react";
 import * as api from "./api";
+import { useCarbonFeedback } from "./CarbonFeedback";
 
 interface SecretMeta {
   id: string;
@@ -56,13 +58,17 @@ function refForSecret(item: SecretMeta, mode?: string): string {
 }
 
 export function SecretsManager({ open, onClose, agentId }: SecretsManagerProps) {
+  const { confirm, isOpen: feedbackOpen } = useCarbonFeedback();
   const [allSecrets, setAllSecrets] = useState<SecretMeta[]>([]);
   const [secretsConfig, setSecretsConfig] = useState<SecretsConfig | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [addId, setAddId] = useState("");
   const [addValue, setAddValue] = useState("");
   const [addDescription, setAddDescription] = useState("");
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const closeModal = useModalClose(saving || deleting !== null, onClose);
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
@@ -70,12 +76,15 @@ export function SecretsManager({ open, onClose, agentId }: SecretsManagerProps) 
   const load = async () => {
     if (!open) return;
     setLoading(true);
+    setLoadFailed(false);
     setError(null);
     try {
       const [secretsRes, configRes] = await Promise.all([
         api.getSecrets(agentId),
         api.getSecretsConfig(),
       ]);
+      if (!secretsRes.ok) throw new Error(`Failed to load secrets (${secretsRes.status})`);
+      if (!configRes.ok) throw new Error(`Failed to load secrets configuration (${configRes.status})`);
       if (secretsRes.ok) {
         const data = await secretsRes.json();
         setAllSecrets(data.secrets || data.overrides || []);
@@ -85,6 +94,7 @@ export function SecretsManager({ open, onClose, agentId }: SecretsManagerProps) 
         setSecretsConfig(cfg);
       }
     } catch (e) {
+      setLoadFailed(true);
       setError(e instanceof Error ? e.message : "Failed to load");
     } finally {
       setLoading(false);
@@ -124,18 +134,19 @@ export function SecretsManager({ open, onClose, agentId }: SecretsManagerProps) 
   };
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm(`Delete secret "${id}"?`)) return;
+    if (!await confirm(`Delete secret "${id}"?`, "Delete secret")) return;
+    setDeleting(id);
     setError(null);
     try {
       const res = await api.deleteSecret(id);
-      if (res.ok) load();
+      if (res.ok) await load();
       else {
         const data = await res.json().catch(() => ({}));
         setError(data.detail || data.error || "Failed to delete");
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to delete");
-    }
+    } finally { setDeleting(null); }
   };
 
   const handleSaveEdit = async (id: string) => {
@@ -185,13 +196,13 @@ export function SecretsManager({ open, onClose, agentId }: SecretsManagerProps) 
         )}
         {s.source !== "env" && (
           <Button kind="ghost" size="sm" hasIconOnly iconDescription="Edit" renderIcon={Edit}
-            onClick={() => { setEditingId(s.id); setEditValue(""); }} />
+            disabled={saving || deleting !== null} onClick={() => { setEditingId(s.id); setEditValue(""); }} />
         )}
         <Button kind="ghost" size="sm" hasIconOnly iconDescription="Copy reference" renderIcon={Copy}
           onClick={() => copyRef(s)} />
         {s.source !== "env" && (
-          <Button kind="ghost" size="sm" hasIconOnly iconDescription="Delete" renderIcon={TrashCan}
-            onClick={() => handleDelete(s.id)} />
+          deleting === s.id ? <InlineLoading description="Deleting secret…" aria-live="polite" /> : <Button kind="ghost" size="sm" hasIconOnly iconDescription="Delete" renderIcon={TrashCan}
+            disabled={saving || deleting !== null} onClick={() => handleDelete(s.id)} />
         )}
       </div>
       {editingId === s.id && (
@@ -205,7 +216,7 @@ export function SecretsManager({ open, onClose, agentId }: SecretsManagerProps) 
             placeholder="New value"
             autoComplete="off"
           />
-          <Button size="sm" onClick={() => handleSaveEdit(s.id)} disabled={saving || !editValue.trim()}>Save</Button>
+          <AsyncButton size="sm" busy={saving} busyLabel="Saving…" onClick={() => handleSaveEdit(s.id)} disabled={!editValue.trim()}>Save</AsyncButton>
           <Button kind="ghost" size="sm" onClick={() => { setEditingId(null); setEditValue(""); }}>Cancel</Button>
         </div>
       )}
@@ -215,8 +226,8 @@ export function SecretsManager({ open, onClose, agentId }: SecretsManagerProps) 
   const initialTab = mode === "vault" || storedSecrets.length > 0 ? 1 : 0;
 
   return (
-    <ComposedModal open={open} onClose={onClose} size="lg">
-      <ModalHeader title="Secrets Manager" buttonOnClick={onClose} />
+    <ComposedModal aria-label="Secrets Manager" open={open && !feedbackOpen} onClose={closeModal} size="lg">
+      <ModalHeader title="Secrets Manager" buttonOnClick={closeModal} />
       <ModalBody hasScrollingContent>
         {error && (
           <InlineNotification kind="error" title="Error" subtitle={error} lowContrast
@@ -228,8 +239,8 @@ export function SecretsManager({ open, onClose, agentId }: SecretsManagerProps) 
             lowContrast style={{ marginBottom: "1rem" }} />
         )}
         {loading ? (
-          <InlineLoading description="Loading secrets…" />
-        ) : (
+          <ContentSkeleton label="Loading secrets…" rows={4} />
+        ) : loadFailed && allSecrets.length === 0 ? <Button kind="tertiary" onClick={() => void load()}>Retry</Button> : (
           <Tabs defaultSelectedIndex={initialTab}>
             <TabList aria-label="Secrets tabs">
               <Tab>Environment {envSecrets.length > 0 && `(${envSecrets.length})`}</Tab>
@@ -265,10 +276,8 @@ export function SecretsManager({ open, onClose, agentId }: SecretsManagerProps) 
                       onChange={(e) => setAddValue(e.target.value)} placeholder="Secret value" autoComplete="off" />
                     <TextInput id="secret-description" labelText="Description (optional)" value={addDescription}
                       onChange={(e) => setAddDescription(e.target.value)} placeholder="Optional description" />
-                    <Button kind="secondary" size="sm" renderIcon={Add} onClick={handleAdd}
-                      disabled={saving || !addId.trim() || !addValue.trim()}>
-                      {saving ? "Saving…" : "Add"}
-                    </Button>
+                    <AsyncButton kind="secondary" size="sm" renderIcon={Add} onClick={handleAdd}
+                      busy={saving} busyLabel="Saving…" disabled={deleting !== null || !addId.trim() || !addValue.trim()}>Add</AsyncButton>
                   </Stack>
                 </FormGroup>
                 <FormGroup legendText={mode === "vault" ? "Vault secrets" : "Stored overrides"}>
