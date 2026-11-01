@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
+import { ContentSkeleton } from "agentic_chat/LoadingState";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useParams, useLocation } from "react-router-dom";
 import { ManageDashboard } from "./ManageDashboard";
 import { ManagePage } from "./ManagePage";
 import { ChatLanding } from "./ChatLanding";
@@ -8,6 +9,7 @@ import { UnauthorizedPage } from "./UnauthorizedPage";
 import { AuthProvider, useAuth } from "./AuthContext";
 import * as api from "./api";
 import * as auth from "./auth";
+import { CarbonFeedbackProvider } from "./CarbonFeedback";
 import "./carbon.scss";
 
 import "./global.css";
@@ -20,8 +22,13 @@ const StudioPage = React.lazy(() =>
   import("./events/StudioPage").then((m) => ({ default: m.StudioPage }))
 );
 
+function RouteLoading() {
+  return <div className="cuga-route-loading"><div className="cuga-route-loading__header" /><main id="main-content" className="cuga-route-loading__body"><ContentSkeleton label="Loading CUGA…" kind="cards" /></main></div>;
+}
+
 function RouteRoot({ children }: { children: React.ReactNode }) {
-  return <div className="route-root">{children}</div>;
+  const { pathname, search } = useLocation();
+  return <><a className="cuga-skip-link" href={`${pathname}${search}#main-content`}>Skip to main content</a><div className="route-root">{children}</div></>;
 }
 
 // Renders its children only when the events layer is mounted + enabled; otherwise redirects home.
@@ -34,7 +41,7 @@ function EventsGate({ children }: { children: React.ReactNode }) {
       .then((s) => setState(s ? "on" : "off"))
       .catch(() => setState("off"));
   }, []);
-  if (state === "checking") return null;                 // don't flash Studio before the check resolves
+  if (state === "checking") return <RouteLoading />;                 // don't flash Studio before the check resolves
   if (state === "off") return <Navigate to="/" replace />;
   return <>{children}</>;
 }
@@ -81,7 +88,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   }, []);
-  if (!ready) return null;
+  if (!ready) return <RouteLoading />;
   return <>{children}</>;
 }
 
@@ -89,7 +96,7 @@ function RequireRole({ requiredRoles, children }: { requiredRoles: string[]; chi
   const { user, isLoading, authorizationEnabled } = useAuth();
 
   if (isLoading) {
-    return null; // or a loading spinner
+    return <RouteLoading />;
   }
 
   // If authorization is disabled, allow access regardless of roles
@@ -124,6 +131,7 @@ function renderApp(): void {
     <BrowserRouter>
       <AuthGate>
         <AuthProvider>
+          <CarbonFeedbackProvider>
           <Routes>
             <Route path="/" element={<Navigate to="/chat" replace />} />
             <Route
@@ -149,13 +157,14 @@ function renderApp(): void {
               element={
                 <RequireRole requiredRoles={["ServiceOwner", "ServiceAdmin"]}>
                   <EventsGate><RouteRoot>
-                    <React.Suspense fallback={null}><StudioPage /></React.Suspense>
+                    <React.Suspense fallback={<RouteLoading />}><StudioPage /></React.Suspense>
                   </RouteRoot></EventsGate>
                 </RequireRole>
               }
             />
             <Route path="/unauthorized" element={<RouteRoot><UnauthorizedPage /></RouteRoot>} />
           </Routes>
+                  </CarbonFeedbackProvider>
         </AuthProvider>
       </AuthGate>
     </BrowserRouter>

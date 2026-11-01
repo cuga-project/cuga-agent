@@ -1,3 +1,4 @@
+import { ContentSkeleton, AsyncButton, useModalClose } from "./LoadingState";
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React, { useState, useEffect, useRef } from "react";
 import * as api from "../../frontend/src/api";
@@ -231,6 +232,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
   
   const [expandedPolicy, setExpandedPolicy] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const closeModal = useModalClose(saveStatus === "saving", onClose);
   const [isLoading, setIsLoading] = useState(true);
   const [availableTools, setAvailableTools] = useState<ToolInfo[]>([]);
   const [availableApps, setAvailableApps] = useState<AppInfo[]>([]);
@@ -315,7 +317,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
       URL.revokeObjectURL(url);
     } catch (error) {
       console.error("[PoliciesConfig] Export error:", error);
-      alert("Failed to export policies. Check console for details.");
+      setToastMessage({ kind: "error", title: "Error", subtitle: "Failed to export policies. Check console for details." });
     }
   };
 
@@ -835,16 +837,14 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
 
   return (
     <>
-      <ComposedModal open onClose={onClose} size="lg" isFullWidth preventCloseOnClickOutside>
-        <ModalHeader title="Policies Configuration" buttonOnClick={onClose} />
+      <ComposedModal open onClose={closeModal} size="lg" isFullWidth preventCloseOnClickOutside>
+        <ModalHeader title="Policies Configuration" buttonOnClick={closeModal} />
 
         <ModalBody hasScrollingContent>
           <Theme theme="white">
             <Stack gap={6} style={{ paddingBottom: "2rem" }}>
               {isLoading ? (
-                <Tile>
-                  <p>Loading policies...</p>
-                </Tile>
+                <ContentSkeleton label="Loading policies…" rows={4} />
               ) : (
                 <Tile>
                   <Stack gap={4}>
@@ -903,20 +903,19 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
           </Theme>
         </ModalBody>
         <ModalFooter>
-          <Button kind="secondary" onClick={onClose}>
+          <Button kind="secondary" disabled={saveStatus === "saving"} onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            kind="primary"
+          <AsyncButton
+            kind="primary" busy={saveStatus === "saving"} busyLabel="Saving..."
             renderIcon={Save}
             onClick={saveConfig}
-            disabled={saveStatus === "saving"}
+            disabled={isLoading || saveStatus === "saving"}
           >
-            {saveStatus === "idle" && "Save Changes"}
-            {saveStatus === "saving" && "Saving..."}
+            {(saveStatus === "idle" || saveStatus === "saving") && "Save Changes"}
             {saveStatus === "success" && "Saved!"}
             {saveStatus === "error" && "Error!"}
-          </Button>
+          </AsyncButton>
         </ModalFooter>
       </ComposedModal>
 
