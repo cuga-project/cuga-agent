@@ -210,6 +210,16 @@ def _session_knowledge_collection(thread_id: str) -> str:
     return session_collection_name(thread_id)
 
 
+async def _release_sandbox_thread(thread_id: str, agent_id: str) -> None:
+    """Free the thread's kernel in sandbox-api when the execd sandbox is on."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import connection
+
+    if connection.execd_active():
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import ExecdExecutor
+
+        await ExecdExecutor.release_thread(thread_id, agent_id=agent_id)
+
+
 async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id: str) -> None:
     from cuga.backend.knowledge.sources import drop_ledger
 
@@ -1001,6 +1011,11 @@ async def lifespan(app: FastAPI):
     # This ensures that a previously saved provider/model/api_key is applied from
     # the first request rather than always falling back to .env defaults.
     _startup_config, _ = await load_config(None) or (None, None)
+
+    # Code sandbox choice from the Manage UI; independent of agent config versions.
+    from cuga.backend.server.manage_routes.sandbox_routes import load_sandbox_settings_into_runtime
+
+    await load_sandbox_settings_into_runtime()
     _startup_llm_cfg = (_startup_config or {}).get("llm") or {}
 
     # Apply the published config at startup so the runtime override is set
@@ -1079,7 +1094,11 @@ async def lifespan(app: FastAPI):
             getattr(app_state, "tools_include_version", 0),
         )
 
-    tool_provider = CombinedToolProvider(get_include_by_app=_get_include_by_app, agent_id="cuga-default")
+    tool_provider = CombinedToolProvider(
+        get_include_by_app=_get_include_by_app,
+        agent_id="cuga-default",
+        app_names=agent_registry.configured_tool_apps(_startup_config or {}),
+    )
     from cuga.backend.server.manage_routes import _extract_agent_feature_overrides as _extract_prod_overrides
 
     _prod_overrides = _extract_prod_overrides(_startup_config or {})
@@ -1094,8 +1113,9 @@ async def lifespan(app: FastAPI):
         shortlisting_tool_threshold=_prod_overrides.get("shortlisting_tool_threshold"),
         cuga_lite_max_steps=_prod_overrides.get("cuga_lite_max_steps"),
         enable_filesystem_tools=_prod_overrides.get("enable_filesystem_tools"),
-        special_instructions=(_startup_config or {}).get("special_instructions") or None,
+        special_instructions=agent_registry.agent_special_instructions(_startup_config or {}),
         supervisor_id=app_state.agent_id,
+        **await agent_registry.supervisor_graph_overrides(_startup_config or {}),
     )
     await app_state.agent.build_graph()
 
@@ -1132,7 +1152,9 @@ async def lifespan(app: FastAPI):
         logger.info(f"Draft policy system initialized (collection: {draft_collection})")
 
     draft_tool_provider = CombinedToolProvider(
-        get_include_by_app=_get_draft_include_by_app, agent_id=draft_agent_id
+        get_include_by_app=_get_draft_include_by_app,
+        agent_id=draft_agent_id,
+        app_names=agent_registry.configured_tool_apps(draft_config or {}),
     )
     draft_policy = getattr(draft_app_state, "policy_system", None) or app_state.policy_system
     from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
@@ -1157,8 +1179,9 @@ async def lifespan(app: FastAPI):
         cuga_lite_max_steps=draft_overrides.get("cuga_lite_max_steps"),
         enable_filesystem_tools=draft_overrides.get("enable_filesystem_tools"),
         llm_config=_draft_llm_cfg or None,
-        special_instructions=(draft_config or {}).get("special_instructions") or None,
+        special_instructions=agent_registry.agent_special_instructions(draft_config or {}),
         supervisor_id=draft_agent_id,
+        **await agent_registry.supervisor_graph_overrides(draft_config or {}, use_draft=True),
     )
     await draft_app_state.agent.build_graph()
 
@@ -1730,11 +1753,11 @@ async def event_stream(
             memory_turn_id = str((local_state.service_scope or {}).get("memory_turn_id") or "")
         apply_request_user_context(local_state, user_id)
         local_state.service_scope.update({"agent_id": runtime_agent_id, "memory_turn_id": memory_turn_id})
-        # Route this run to the CugaSupervisor node when the resolved agent is a supervisor
-        # graph (issue #101). Only override when True so non-supervisor agents keep falling
-        # back to the global settings.supervisor.enabled default.
-        if getattr(run_agent, "supervisor_enabled", None):
-            local_state.supervisor_mode = True
+        # An explicit single-agent role must override global settings and any
+        # supervisor mode retained in an older checkpoint too.
+        supervisor_enabled = getattr(run_agent, "supervisor_enabled", None)
+        if supervisor_enabled is not None:
+            local_state.supervisor_mode = supervisor_enabled
         if os.getenv("CUGA_DEMO_MODE") == "health" and not local_state.pi:
             from cuga.backend.server.demo_manage_setup import HEALTH_USER_CONTEXT
 
@@ -2064,6 +2087,7 @@ async def event_stream(
                                         f"for thread_id: {thread_id}"
                                     )
 
+                        stream_events_buffer.clear()
                         yield StreamEvent(
                             name="Answer",
                             data=final_answer_text,
@@ -2194,6 +2218,19 @@ async def event_stream(
         # exception would reach the caller the same way a response body would.
         _ref = log_error_ref(e, context="Agent event stream failed")
         yield StreamEvent(name="Error", data=f"Agent request failed (ref {_ref})").format()
+    finally:
+        # Approval pauses and disconnected clients can end a request without an
+        # Answer. Retain this request's prompt/events for the resumed transcript;
+        # only a completed answer creates/updates the recent-chat entry.
+        if thread_id and stream_events_buffer:
+            await _save_conversation_and_events_async(
+                agent_id=runtime_agent_id,
+                thread_id=thread_id,
+                user_id=user_id,
+                state=local_state,
+                events=stream_events_buffer.copy(),
+                events_only=True,
+            )
 
 
 app = FastAPI(lifespan=lifespan)
@@ -2766,9 +2803,7 @@ async def _resolve_stream_agent(
                     policy_system=policy_system,
                     tool_provider=CombinedToolProvider(agent_id=agent_id),
                     llm_config=sup_llm_config,
-                    special_instructions=config.get("special_instructions")
-                    or agent_meta.get("description")
-                    or None,
+                    special_instructions=agent_registry.agent_special_instructions(config),
                     supervisor_agents=agents_dict,
                     supervisor_enabled=True,
                     supervisor_plan_approval=bool(supervisor_cfg.get("planApproval")),
@@ -2792,16 +2827,16 @@ async def _resolve_stream_agent(
                     tool_provider=CombinedToolProvider(
                         get_include_by_app=lambda: (tools_include_by_app, 0),
                         agent_id=agent_id,
+                        app_names=agent_registry.configured_tool_apps(config),
                     ),
                     llm_config=config.get("llm") or None,
-                    special_instructions=config.get("special_instructions")
-                    or agent_meta.get("description")
-                    or None,
+                    special_instructions=agent_registry.agent_special_instructions(config),
                     enable_todos=overrides.get("enable_todos"),
                     reflection_enabled=overrides.get("reflection_enabled"),
                     shortlisting_tool_threshold=overrides.get("shortlisting_tool_threshold"),
                     cuga_lite_max_steps=overrides.get("cuga_lite_max_steps"),
                     enable_filesystem_tools=overrides.get("enable_filesystem_tools"),
+                    supervisor_enabled=False,
                 )
 
             await graph.build_graph()
@@ -3267,6 +3302,7 @@ async def delete_conversation(
         if success:
             await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
             await delete_thread_uploads(conversation_id)
+            await _release_sandbox_thread(conversation_id, agent_id)
             logger.info(f"Deleted conversation and stream events: {conversation_id}")
             return JSONResponse({"status": "success", "message": "Conversation deleted"})
         else:
@@ -3801,6 +3837,7 @@ async def get_tools_list(
     try:
         # Check for draft mode from query parameter or header
         from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apps, get_apis
+        from cuga.backend.server.config_store import load_config, load_draft
 
         use_draft = False
         if draft is not None:
@@ -3821,13 +3858,33 @@ async def get_tools_list(
             base = _parse_agent_id(agent_id or get_agent_id() or "cuga-default")
             effective_agent_id = f"{base}--draft"
 
+        base_agent_id = agent_id or get_agent_id() or "cuga-default"
+        tool_config = await load_draft(base_agent_id) if use_draft else None
+        if tool_config is None:
+            tool_config, _ = await load_config(None, base_agent_id)
+        allowed_apps = agent_registry.configured_tool_apps(tool_config or {})
+        if ((tool_config or {}).get("agent") or {}).get("kind") == "supervisor":
+            return JSONResponse({"tools": [], "apps": []})
+        includes = {
+            tool["name"]: tool["include"]
+            for tool in (tool_config or {}).get("tools") or []
+            if tool.get("name") and tool.get("include")
+        }
         apps = await get_apps(agent_id=effective_agent_id)
+        if allowed_apps is not None:
+            apps = [app for app in apps if app.name in allowed_apps]
         tools_list = []
         apps_list = []
 
         for app in apps:
             try:
                 apis = await get_apis(app.name, agent_id=effective_agent_id)
+                if app.name in includes:
+                    apis = {
+                        name: definition
+                        for name, definition in apis.items()
+                        if name in includes[app.name] or definition.get("operation_id") in includes[app.name]
+                    }
                 app_type = getattr(app, "type", "api").upper()
 
                 # Add app to apps list
@@ -4668,6 +4725,52 @@ async def download_workspace_file(
 #     except Exception as e:
 #         logger.error(f"Failed to upload file: {e}")
 #         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
+
+
+@app.post("/sandbox/tools/call", tags=["Sandbox"])
+async def sandbox_tool_call(request: Request):
+    """Run a tool on behalf of code executing in the execd sandbox.
+
+    No user auth: the caller is the sandbox, which holds no user credentials.
+    The request carries the HMAC token of the code block it belongs to, and is
+    answered only while that block runs, only with the callables of that block.
+    With no block running (the sandbox off, or nothing in flight) the route does
+    not exist, so a server without the sandbox exposes nothing here.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import tool_callback
+
+    if not tool_callback.has_blocks():
+        raise HTTPException(status_code=404, detail="Not Found")
+    # Arguments are bounded like results, plus room for the envelope. Counted while
+    # reading: Content-Length is the caller's word, and chunked bodies have none.
+    limit = tool_callback.MAX_RESULT_BYTES + 64 * 1024
+    too_large = JSONResponse(
+        status_code=413,
+        content={"ok": False, "error": {"type": "ValueError", "message": f"request over {limit} bytes"}},
+    )
+    try:
+        if int(request.headers.get("content-length") or 0) > limit:
+            return too_large
+    except ValueError:
+        pass
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > limit:
+            return too_large
+    try:
+        body = json.loads(raw)
+    except Exception:
+        return JSONResponse(
+            status_code=400, content={"ok": False, "error": {"type": "ValueError", "message": "invalid JSON"}}
+        )
+    if not isinstance(body, dict):
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": {"type": "ValueError", "message": "expected an object"}},
+        )
+    status, payload = await tool_callback.handle_call(body)
+    return JSONResponse(status_code=status, content=payload)
 
 
 @app.post("/functions/call", tags=["Registry Proxy"])

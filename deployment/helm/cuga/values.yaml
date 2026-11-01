@@ -24,9 +24,13 @@ env:
   AGENT_SETTING_CONFIG: "settings.groq.toml"
   DYNACONF_SERVICE__INSTANCE_ID: ""
   DYNACONF_SERVICE__TENANT_ID: ""
+  # When auth is enabled, role checks are always enforced (there is no separate
+  # authorization switch). The identity provider MUST send a role claim mapping each
+  # user to ServiceOwner or ServiceAdmin (see auth.manage_roles); without that mapping
+  # every logged-in user loses access to admin-only routes (secrets, agent management).
+  # Confirm role-claim mapping is in place before enabling auth on a live install.
   DYNACONF_AUTH__ENABLED: "true"
   DYNACONF_AUTH__REQUIRE_HTTPS: "true"
-  DYNACONF_AUTH__AUTHORIZATION_ENABLED: "false"
   DYNACONF_AUTH__ROLE_TOKEN_SOURCE: "auto"
   DYNACONF_UI__HIDE_CUGA_LOGO: "false"
   DYNACONF_UI__BRAND_NAME: ""
@@ -48,6 +52,13 @@ env:
   # DYNACONF_OBSERVABILITY__PRICING_JSON: ""
   DYNACONF_OBSERVABILITY__LITELLM_LOCAL_MODEL_COST_MAP: "true"
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  # Sandbox tool-callback address. Leave unset: the chart derives it per release as
+  # http://<fullname>.<namespace>.svc.cluster.local:<service.port>, the host the sandbox egress
+  # policy allows. Set only to override.
+  # The default is plain HTTP: block tokens, arguments and results are unencrypted and a token
+  # stays valid while its block runs. Use it only on a trusted in-cluster network; elsewhere set
+  # an HTTPS address here (e.g. through a TLS proxy that still reaches this pod).
+  # DYNACONF_ADVANCED_FEATURES__SANDBOX_CALLBACK_URL: ""
 
 # Name of an existing Secret containing sensitive env vars.
 # When set, sensitive keys are sourced via secretKeyRef instead of plain value.

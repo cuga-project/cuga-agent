@@ -11,7 +11,7 @@ tests hold that contract:
 
   * seeding produces the same record shape the UI writes, so a seeded agent is an ordinary agent
   * seeding twice is a no-op — it must not add a config version on every container restart
-  * an agent NAMED IN THE YAML is owned by the YAML: re-seeding restores it after an edit
+  * untouched configs follow the YAML; edits made in Manage survive re-seeding
   * an agent added through the UI is NOT named in the YAML, so seeding never touches it
 """
 
@@ -73,6 +73,53 @@ async def test_seeds_sub_agents_and_supervisor(roster_file):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "- invalid",
+        "agents: wrong",
+        "supervisor: wrong\nagents: []",
+        "agents:\n  - name: duplicate--id\n  - name: duplicate-id",
+        "supervisor:\n  special_instructions: 7\nagents:\n  - name: valid",
+        "agents:\n  - name: valid\n  - name: 7",
+        "agents:\n  - name: valid\n  - name: invalid\n    special_instructions: 7",
+        "agents:\n  - name: valid\n  - name: invalid\n    apps: wrong",
+        "agents:\n  - name: valid\n  - invalid",
+    ],
+)
+async def test_invalid_roster_preserves_existing_configs(tmp_path, contents):
+    existing = {"agent": {"kind": "supervisor"}, "special_instructions": "keep"}
+    await config_store.save_config(existing, agent_id="cuga")
+    before = await config_store.list_agents_with_configs()
+    roster = tmp_path / "invalid.yaml"
+    roster.write_text(contents)
+
+    assert await roster_seed.seed_roster(str(roster)) == (0, {})
+    assert await config_store.list_agents_with_configs() == before
+    assert (await config_store.load_config(None, "cuga"))[0] == existing
+
+
+@pytest.mark.asyncio
+async def test_seed_preserves_supervisor_and_member_model_and_memory_scope(tmp_path):
+    roster = tmp_path / "models.yaml"
+    roster.write_text(
+        "supervisor:\n  model: {provider: openai, model_name: parent-model, url: 'https://example.invalid/v1'}\nagents:\n  - name: weatherbot\n    model: {provider: openai, model_name: child-model, temperature: 0.2}\n    memory_scope: isolated"
+    )
+
+    await roster_seed.seed_roster(str(roster))
+
+    parent, _ = await config_store.load_config(None, "cuga")
+    child, _ = await config_store.load_config(None, "weatherbot")
+    assert parent["llm"] == {
+        "provider": "openai",
+        "model": "parent-model",
+        "base_url": "https://example.invalid/v1",
+    }
+    assert child["llm"] == {"provider": "openai", "model": "child-model", "temperature": 0.2}
+    assert child["feature_flags"]["sub_agent_memory_scope"] == "isolated"
+
+
+@pytest.mark.asyncio
 async def test_sub_agent_record_matches_what_the_ui_writes(roster_file):
     """`build_agents_from_stored_subagents` reads agent/tools/special_instructions — a seeded record
     has to carry exactly those, or the sub-agent loads with no tools and no instructions."""
@@ -98,6 +145,85 @@ async def test_seeding_twice_writes_nothing(roster_file):
 
     assert tally["unchanged"] == 3 and tally["created"] == 0 and tally["updated"] == 0
     assert len(await config_store.list_versions("pricebot")) == len(versions_before)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_id", ["pricebot", "weatherbot", "cuga"])
+async def test_seeded_agents_have_matching_drafts(roster_file, agent_id):
+    await roster_seed.seed_roster(roster_file)
+
+    published, _ = await config_store.load_config(None, agent_id)
+    assert await config_store.load_draft(agent_id) == published
+
+
+@pytest.mark.asyncio
+async def test_backfills_legacy_seed_without_changing_published_version(roster_file):
+    config = roster_seed._sub_agent_config({"name": "pricebot"})
+    config[roster_seed._SEED_MARK] = roster_seed._body_hash(config)
+    await config_store.save_config(config, agent_id="pricebot")
+    versions_before = await config_store.list_versions("pricebot")
+
+    await roster_seed.seed_roster(roster_file)
+
+    published, _ = await config_store.load_config(None, "pricebot")
+    assert await config_store.load_draft("pricebot") == published
+    assert await config_store.list_versions("pricebot") == versions_before
+
+
+@pytest.mark.asyncio
+async def test_backfills_missing_draft_when_published_is_unchanged(roster_file, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    # Simulate an earlier release that wrote only published configs.
+    with monkeypatch.context() as patch:
+        patch.setattr(config_store, "save_draft", AsyncMock())
+        await roster_seed.seed_roster(roster_file)
+    published, _ = await config_store.load_config(None, "pricebot")
+
+    _, tally = await roster_seed.seed_roster(roster_file)
+
+    assert tally["unchanged"] == 3
+    assert await config_store.load_draft("pricebot") == published
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edited_draft", [False, True])
+async def test_roster_changes_update_only_untouched_drafts(roster_file, tmp_path, edited_draft):
+    await roster_seed.seed_roster(roster_file)
+    draft = await config_store.load_draft("pricebot")
+    if edited_draft:
+        draft["special_instructions"] = "UNPUBLISHED EDIT IN MANAGE"
+        await config_store.save_draft(draft, agent_id="pricebot")
+    (tmp_path / "supervisor_agents.yaml").write_text(ROSTER.replace("crypto/stock price", "ONLY crypto"))
+
+    await roster_seed.seed_roster(roster_file)
+
+    published, _ = await config_store.load_config(None, "pricebot")
+    assert "ONLY crypto" in published["special_instructions"]
+    assert await config_store.load_draft("pricebot") == (draft if edited_draft else published)
+
+
+@pytest.mark.asyncio
+async def test_unmarked_draft_is_not_taken_over(roster_file):
+    draft = {"agent": {"name": "pricebot"}, "special_instructions": "MY DRAFT"}
+    await config_store.save_draft(draft, agent_id="pricebot")
+
+    await roster_seed.seed_roster(roster_file)
+
+    assert await config_store.load_draft("pricebot") == draft
+
+
+@pytest.mark.asyncio
+async def test_reseeding_does_not_save_identical_drafts(roster_file, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    await roster_seed.seed_roster(roster_file)
+    save_draft = AsyncMock(wraps=config_store.save_draft)
+    monkeypatch.setattr(config_store, "save_draft", save_draft)
+
+    await roster_seed.seed_roster(roster_file)
+
+    save_draft.assert_not_awaited()
 
 
 @pytest.mark.asyncio

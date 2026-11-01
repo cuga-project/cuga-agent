@@ -7,7 +7,7 @@ message splitting, and summarization workflow.
 
 import pytest
 from typing import List
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 
 from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
@@ -59,6 +59,8 @@ def mock_model():
         'token_usage': {'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120}
     }
     model.invoke.return_value = response
+    model.with_retry.return_value = model
+    model.ainvoke = AsyncMock(side_effect=lambda *args, **kwargs: model.invoke(*args, **kwargs))
     return model
 
 
@@ -489,20 +491,32 @@ class TestStateCorruption:
         # Original list should not be modified
         assert sample_messages == original_messages
 
-    async def test_model_failure_preserves_state(self, mock_model, mock_settings, sample_messages):
-        """Test that model failures don't corrupt state."""
-        mock_model.invoke.side_effect = Exception("Model API error")
+    async def test_model_failure_preserves_state(self, mock_settings, sample_messages):
+        """Real middleware retries, then reports truncation without a fake summary."""
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
+        class FailingModel(FakeListChatModel):
+            calls: int = 0
+
+            def _call(self, *args, **kwargs):
+                self.calls += 1
+                raise RuntimeError("Model API error")
+
+        model = FailingModel(responses=[])
+        original_messages = list(sample_messages)
         with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
-            summarizer = ContextSummarizer(mock_model, "gpt-4")
+            summarizer = ContextSummarizer(model, "gpt-4")
+            assert summarizer.middleware is not None
             result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
-            # Middleware creates error summary + keeps last N messages
-            # Expected: 1 error summary + keep_last_n_messages from settings
-            keep_n = mock_settings.context_summarization.keep_last_n_messages
-            expected_count = 1 + keep_n
-            assert len(result_messages) == expected_count
-            assert 'Error generating summary' in result_messages[0].content
+        keep_n = mock_settings.context_summarization.keep_last_n_messages
+        assert model.calls == 3
+        assert sample_messages == original_messages
+        assert result_messages == original_messages[-keep_n:]
+        assert metrics["hard_truncation"] is True
+        assert metrics["messages_kept"] == keep_n
+        assert metrics["messages_dropped"] == len(original_messages) - keep_n
+        assert "Model API error" in metrics["error"]
 
     async def test_concurrent_summarization_thread_safety(self, mock_model, sample_messages):
         """Test concurrent summarization doesn't corrupt state."""

@@ -11,9 +11,12 @@ from typing import Any, Dict, List, Optional
 from cuga.config import settings
 from loguru import logger
 from pydantic import BaseModel, Field
+from jinja2.sandbox import SandboxedEnvironment
+from langchain_core.prompts import PromptTemplate
 from langchain_core.tools import StructuredTool
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_schema import model_tool_schema
 from cuga.backend.tools_env.registry.utils.schema_utils import json_schema_type
 
 _WEAK_SCHEMA_PROBE_DIRECTIVE = (
@@ -402,10 +405,7 @@ class PromptUtils:
         """
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:
-                if hasattr(tool.args_schema, 'model_json_schema'):
-                    schema = tool.args_schema.model_json_schema()
-                else:
-                    schema = tool.args_schema.schema()
+                schema = model_tool_schema(tool)
                 properties = schema.get('properties', {})
                 required = schema.get('required', [])
 
@@ -496,10 +496,7 @@ class PromptUtils:
 
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:
-                if hasattr(tool.args_schema, 'model_json_schema'):
-                    schema = tool.args_schema.model_json_schema()
-                else:
-                    schema = tool.args_schema.schema()
+                schema = model_tool_schema(tool)
                 properties = schema.get('properties', {})
                 required = schema.get('required', [])
 
@@ -550,12 +547,7 @@ class PromptUtils:
             tool_dict = tool.model_dump()
             if hasattr(tool, 'args_schema') and tool.args_schema:
                 try:
-                    if hasattr(tool.args_schema, 'schema'):
-                        tool_dict['args_schema'] = tool.args_schema.schema()
-                    elif hasattr(tool.args_schema, 'model_json_schema'):
-                        tool_dict['args_schema'] = tool.args_schema.model_json_schema()
-                    else:
-                        tool_dict['args_schema'] = {}
+                    tool_dict['args_schema'] = model_tool_schema(tool)
                 except (AttributeError, TypeError, ValueError) as e:
                     # Narrow to expected serialization failures so unexpected bugs propagate
                     # instead of silently stripping schema (coderabbit on #203).
@@ -793,6 +785,32 @@ def normalize_mcp_few_shot_examples(raw: Any) -> List[Dict[str, str]]:
     return out
 
 
+_JINJA_ENV = SandboxedEnvironment()
+
+
+@lru_cache(maxsize=64)
+def _compiled_jinja(template: str):
+    return _JINJA_ENV.from_string(template)
+
+
+def render_prompt_cached(prompt_template, variables: Dict[str, Any]) -> str:
+    """Render a LangChain string prompt template, compiling Jinja2 text only once.
+
+    LangChain builds a new ``SandboxedEnvironment`` and compiles the template on every
+    call, and the system prompt is rendered on every request. The compiled template is
+    cached by its text. Templates that are not plain Jinja2 (or that use
+    ``partial_variables``, or ``PromptTemplate`` subclasses that may override ``format``) take the
+    LangChain path.
+    """
+    if (
+        type(prompt_template) is PromptTemplate
+        and prompt_template.template_format == "jinja2"
+        and not prompt_template.partial_variables
+    ):
+        return _compiled_jinja(prompt_template.template).render(**variables)
+    return prompt_template.invoke(variables).to_string()
+
+
 def create_mcp_prompt(
     tools,
     base_prompt=None,
@@ -877,7 +895,8 @@ def create_mcp_prompt(
         skills_enabled = False
         skills_prompt_section = ""
 
-    prompt = prompt_template.invoke(
+    prompt = render_prompt_cached(
+        prompt_template,
         {
             "base_prompt": base_prompt,
             "apps": processed_apps,
@@ -899,8 +918,8 @@ def create_mcp_prompt(
             "agents_enabled": agents_enabled,
             "agents_prompt_section": agents_prompt_section,
             "plan_then_step": plan_then_step,
-        }
-    ).to_string()
+        },
+    )
     return prompt
 
 
@@ -948,15 +967,18 @@ def render_fc_prompt(
     benchmark- or deployment-specific wording ships in the template.
     """
     frags = {f.strip().lower() for f in (fragments or [])}
-    rendered = _fc_prompt_template().format(
-        base_prompt=base_prompt or "",
-        is_autonomous_subtask=bool(is_autonomous_subtask),
-        step_discipline=bool(step_discipline),
-        evidence_first="evidence_first" in frags,
-        apps=format_apps_for_prompt(apps) if apps else [],
-        skills_prompt_section=(skills_prompt_section or "").strip(),
-        agents_prompt_section=(agents_prompt_section or "").strip(),
-        instructions=(instructions or "").strip(),
-        special_instructions=(special_instructions or "").strip(),
+    rendered = render_prompt_cached(
+        _fc_prompt_template(),
+        {
+            "base_prompt": base_prompt or "",
+            "is_autonomous_subtask": bool(is_autonomous_subtask),
+            "step_discipline": bool(step_discipline),
+            "evidence_first": "evidence_first" in frags,
+            "apps": format_apps_for_prompt(apps) if apps else [],
+            "skills_prompt_section": (skills_prompt_section or "").strip(),
+            "agents_prompt_section": (agents_prompt_section or "").strip(),
+            "instructions": (instructions or "").strip(),
+            "special_instructions": (special_instructions or "").strip(),
+        },
     )
     return rendered.strip() + "\n"

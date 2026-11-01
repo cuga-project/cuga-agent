@@ -155,6 +155,7 @@ async def test_graph_passes_the_setting_to_executor_reflection_and_few_shots(
         create_cuga_lite_graph,
     )
     from cuga.backend.cuga_graph.nodes.cuga_lite.tracking import tracker as tracker_module
+    from cuga.backend.llm.context_window import set_context_window_override
     from cuga.config import settings
 
     monkeypatch.setattr(settings.policy, "enabled", False)
@@ -191,6 +192,8 @@ async def test_graph_passes_the_setting_to_executor_reflection_and_few_shots(
             "Echo returned 1.",
         ]
     )
+    # Main budgets reflection inputs; give the fake model room for the real prompt.
+    set_context_window_override(model, 131_072)
     extra_config = {}
     if plan_then_step is not None:
         extra_config["cuga_lite_plan_then_step"] = plan_then_step

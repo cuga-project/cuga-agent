@@ -810,3 +810,26 @@ async def test_run_injected_dependencies_do_not_import_main(runtime, monkeypatch
     assert response.json()["answer"] == "done"
     assert response.json()["thread_id"] == "owned"
     claim.assert_awaited_once_with("owned", "user-a", "sales")
+
+
+async def test_thread_agent_is_read_without_reserving_anything(tmp_path):
+    # The execd sandbox logs calls under the thread's agent; looking it up must not bind or claim.
+    from cuga.backend.server.conversation_history import ConversationHistoryDB
+    from cuga.backend.storage.relational.local import LocalRelationalStore
+
+    store = LocalRelationalStore(str(tmp_path / "owners.db"))
+    db = ConversationHistoryDB()
+    db._get_store = lambda: store
+    await db._ensure_schema()
+    try:
+        assert await db.get_thread_agent("t1") is None
+        assert await db.claim_thread("t1", "user-a", create=False) is None  # still unreserved
+
+        await db.claim_thread("t1", "user-a", "crm-agent")
+        assert await db.get_thread_agent("t1") == "crm-agent"
+        assert await db.get_thread_agent(" t1 ") == "crm-agent"
+
+        await db.claim_thread("t2", "user-a")  # owner without an agent yet
+        assert await db.get_thread_agent("t2") is None
+    finally:
+        await store.close()

@@ -160,9 +160,19 @@ validators = [
     Validator("advanced_features.e2b_cleanup_frequency", default=0),
     Validator("advanced_features.enable_web_search", default=False),
     Validator("advanced_features.execution_output_max_length", default=35000),
+    Validator("advanced_features.reflection_context_fraction", default=0.70),
+    Validator("advanced_features.pre_execute_verify_context_fraction", default=0.70),
+    Validator("advanced_features.context_window_discovery", default=True),
     Validator("advanced_features.enable_shell_tool", default=False),
     Validator("advanced_features.enable_filesystem_tools", default=False),
     Validator("advanced_features.sandbox_mode", default="opensandbox"),
+    Validator("advanced_features.execd_url", default=""),
+    Validator("advanced_features.execd_api_key", default=""),
+    Validator("advanced_features.sandbox_secret_dir", default=""),
+    Validator("advanced_features.execd_verify_ssl", default=True),
+    Validator("advanced_features.execd_package_index", default=""),
+    Validator("advanced_features.sandbox_callback_url", default=""),
+    Validator("advanced_features.execd_execution_timeout", default=120, is_type_of=int, gte=0),
     Validator("advanced_features.cuga_lite_nl_auto_continue", default=True),
     Validator("advanced_features.strip_harmony_control_tokens", default="auto"),
     Validator("advanced_features.cuga_lite_warn_suspect_args", default=True),
@@ -194,7 +204,11 @@ validators = [
     Validator("secrets.vault_write_enabled", default=False),
     Validator("secrets.aws_region", default=""),
     Validator("auth.enabled", default=False),
-    Validator("auth.authorization_enabled", default=False),
+    # Decision 1 / Option A: with auth off, same-machine callers may reach the secrets
+    # and management APIs; remote callers may not. True keeps local/dev/demo installs
+    # working on upgrade. With False and auth off, no caller can reach these APIs
+    # (Decision 1 / Option B); turn on auth to use them.
+    Validator("auth.allow_local_admin", default=True),
     Validator("auth.manage_roles", default=["ServiceOwner", "ServiceAdmin"]),
     Validator("auth.chat_roles", default=["ServiceOwner", "ServiceAdmin", "ServiceUser"]),
     Validator("auth.session_cookie_name", default="cuga_session"),
@@ -261,6 +275,7 @@ validators = [
         gt=0,
     ),
     Validator("supervisor.enabled", default=False),
+    Validator("supervisor.delegation_execution_timeout", default=300, is_type_of=int, gt=0),
     Validator("supervisor.registry_enabled", default=False),
     Validator("supervisor.sub_agent_memory_scope", default="conversation"),
 ]

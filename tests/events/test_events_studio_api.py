@@ -717,7 +717,7 @@ def test_mcp_servers_endpoint_serves_what_the_live_registry_reports(monkeypatch)
 
     assert "acme_crm" in servers and servers["acme_crm"] == "the customer system"
     # the built-in hint wins over the registry's terser description for a server we describe
-    assert servers["cuga_web"] == "web search / browse / weather / wiki"
+    assert servers["cuga_web"] == "web search / fetch pages & links / RSS feeds / YouTube info & transcripts"
     # and the rest of the catalog is still offered alongside whatever the registry knows
     assert "cuga_finance" in servers
 

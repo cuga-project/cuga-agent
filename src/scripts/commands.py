@@ -42,7 +42,12 @@ def run_api_registry_appworld():
 
 
 def run_demo():
-    """Run the FastAPI server."""
+    """Run the legacy server with existing published/draft configuration.
+
+    This does not seed or reset Manage storage. A stored agent's tool scope
+    still applies when the registry is started separately from a YAML file.
+    Use `cuga start demo` to seed a demo configuration for the selected registry.
+    """
     host = os.environ.get("CUGA_HOST", "127.0.0.1")
     server_module = "backend/server/main.py"
     subprocess.run(

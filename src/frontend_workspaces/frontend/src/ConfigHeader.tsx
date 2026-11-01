@@ -1,34 +1,23 @@
 import React, { useState, useEffect } from "react";
-import { DataBase } from "@carbon/icons-react";
+import { Link } from "react-router-dom";
 import * as api from "./api";
-import { CugaHeader } from "./CugaHeader";
+import { CugaHeader, type CugaHeaderAction } from "./CugaHeader";
 
 interface ConfigHeaderProps {
-  onToggleLeftSidebar: () => void;
-  onToggleWorkspace: () => void;
-  onOpenMemory?: () => void;
   // When set (e.g. from a /chat/:agentId route), this agent is already the source of truth —
   // skip the global /api/agent/context fetch below, which always reports the single default
   // agent and would otherwise clobber api.setKnowledgeAgentId back to "cuga-default".
   agentId?: string;
+  actions?: CugaHeaderAction[];
 }
 
 export function ConfigHeader({
-  onToggleLeftSidebar,
-  onToggleWorkspace,
-  onOpenMemory,
   agentId,
+  actions,
 }: ConfigHeaderProps) {
   const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(
     agentId ? { agent_id: agentId, config_version: null } : null
   );
-  // Show the Events Studio entry only when the events SERVICE answers (see getEventsStatus).
-  // Vanilla CUGA (flag off) → getEventsStatus() returns null → link stays hidden.
-  const [studioOn, setStudioOn] = useState(false);
-  useEffect(() => {
-    api.getEventsStatus().then((s) => setStudioOn(!!s)).catch(() => {});
-  }, []);
-
   useEffect(() => {
     if (agentId) return;
     api.getAgentContext()
@@ -51,23 +40,8 @@ export function ConfigHeader({
     <CugaHeader
       title="CUGA Agent"
       agentContext={agentContext ?? undefined}
-      navItems={[
-        { label: "Conversations", onClick: onToggleLeftSidebar },
-        { label: "Agent Config", onClick: onToggleWorkspace },
-        ...(onOpenMemory ? [{ label: "Memory", onClick: onOpenMemory }] : []),
-        { label: "Manage", href: "/manage" },
-        ...(studioOn ? [{ label: "Events Studio ⚗", href: "/studio" }] : []),
-      ]}
-      actions={
-        onOpenMemory
-          ? [{
-              icon: <DataBase size={20} />,
-              label: "Memory",
-              onClick: onOpenMemory,
-              className: "cuga-memory-mobile-action",
-            }]
-          : []
-      }
+      linkComponent={Link as any}
+      actions={actions}
     />
   );
 }

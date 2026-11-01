@@ -12,8 +12,9 @@ from .local import LocalExecutor, LocalSandboxExecutor
 from .e2b import E2BExecutor
 from .docker import DockerExecutor
 from .opensandbox import OpenSandboxExecutor
+from .execd import connection as execd_connection
 from .native import NativeSandboxExecutor
-from .base_executor import BaseExecutor, RemoteExecutor
+from .base_executor import BaseExecutor, CodeExecutionTimeout, RemoteExecutor
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionPlan
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker, counted_tool_call
 
@@ -65,6 +66,7 @@ class CodeExecutor:
     _e2b_executor: RemoteExecutor = None
     _docker_executor: RemoteExecutor = None
     _opensandbox_executor: RemoteExecutor = None
+    _execd_executor: RemoteExecutor = None
     _native_executor: NativeSandboxExecutor = None
 
     @classmethod
@@ -98,6 +100,14 @@ class CodeExecutor:
         return cls._opensandbox_executor
 
     @classmethod
+    def _get_execd_executor(cls) -> RemoteExecutor:
+        if cls._execd_executor is None:
+            from .execd.execd_executor import ExecdExecutor
+
+            cls._execd_executor = ExecdExecutor()
+        return cls._execd_executor
+
+    @classmethod
     def _get_native_executor(cls) -> NativeSandboxExecutor:
         if cls._native_executor is None:
             cls._native_executor = NativeSandboxExecutor()
@@ -111,10 +121,11 @@ class CodeExecutor:
         state: AgentState,
         thread_id: Optional[str] = None,
         apps_list: Optional[List[str]] = None,
-        mode: Optional[Literal['local', 'e2b', 'opensandbox']] = None,
+        mode: Optional[Literal['local', 'e2b', 'opensandbox', 'execd']] = None,
         plan: Optional[ExecutionPlan] = None,
         variable_manager: Optional[Any] = None,
         keep_listing_vars: bool = False,
+        execution_timeout: Optional[float] = None,
     ) -> tuple[str, dict[str, Any]]:
         """Execute code with async tools available in the local namespace.
 
@@ -133,6 +144,8 @@ class CodeExecutor:
             keep_listing_vars: Keep find_tools listing markdown among the block's
                 variables (function-calling reads the reply from there). Default
                 strips it, as before.
+            execution_timeout: Optional local deadline for delegation blocks,
+                independent of the child agent's Python block deadline.
 
         Returns:
             Tuple of (execution result, new variables dictionary)
@@ -176,6 +189,7 @@ class CodeExecutor:
             variable_manager=variable_manager,
             skills_on=skills_on,
             keep_listing_vars=keep_listing_vars,
+            execution_timeout=execution_timeout,
         )
 
     @classmethod
@@ -188,26 +202,49 @@ class CodeExecutor:
         *,
         thread_id: Optional[str] = None,
         apps_list: Optional[List[str]] = None,
-        mode: Optional[Literal['local', 'e2b', 'opensandbox']] = None,
+        mode: Optional[Literal['local', 'e2b', 'opensandbox', 'execd']] = None,
         plan: Optional[ExecutionPlan] = None,
         variable_manager: Optional[Any] = None,
         skills_on: bool,
         keep_listing_vars: bool = False,
+        execution_timeout: Optional[float] = None,
     ) -> tuple[str, dict[str, Any]]:
         result = ""
 
         if mode is None:
             if plan is not None:
-                mode = 'e2b' if plan.python_backend == 'e2b' else 'local'
+                # The plan already folds in execution.python_backend, sandbox_mode and
+                # the Manage UI toggle, with an explicit python_backend winning — so it
+                # alone decides, and "local" here stays local even with execd on.
+                mode = plan.python_backend if plan.python_backend in ('e2b', 'execd') else 'local'
+            elif execd_connection.execd_active():
+                mode = 'execd'
             else:
                 mode = 'e2b' if settings.advanced_features.e2b_sandbox else 'local'
 
-        # Force local execution for short find_tools or load_skill calls
+        # Force local execution for short find_tools or load_skill calls — E2B
+        # cannot reach these tools from its sandbox. execd can: every callable is
+        # answered by CUGA over the tool callback, so the whole block stays in the
+        # sandbox, including any agent code around the call.
         code_lines = [line.strip() for line in code.split('\n') if line.strip()]
-        if len(code_lines) <= 3 and 'await find_tools' in code:
-            mode = 'local'
-        if skills_on and 'load_skill' in code:
-            mode = 'local'
+        forced_local = False
+        if mode != 'execd':
+            if len(code_lines) <= 3 and 'await find_tools' in code:
+                mode = 'local'
+                forced_local = True
+            if skills_on and 'load_skill' in code:
+                mode = 'local'
+                forced_local = True
+
+        # INFO only under execd, where the route is worth seeing; every local block would flood the log.
+        logger.log(
+            "INFO" if mode == 'execd' else "DEBUG",
+            f"[execd:route] eval_with_tools_async mode={mode} thread={thread_id} "
+            f"code_lines={len(code_lines)}"
+            + (" (forced local: find_tools/load_skill)" if forced_local else ""),
+        )
+        if execution_timeout is not None and mode != 'local':
+            raise ValueError("Delegation execution_timeout requires mode='local'")
 
         # opensandbox: Python runs locally with run_command in context (forwarded to sandbox)
         # Security checks must run for every execution mode, including E2B turns.
@@ -244,8 +281,8 @@ class CodeExecutor:
         prior_values = VariableUtils.snapshot_values(_locals, original_keys, code=code)
 
         try:
-            if mode == 'e2b':
-                executor = cls._get_e2b_executor()
+            if mode in ('e2b', 'execd'):
+                executor = cls._get_e2b_executor() if mode == 'e2b' else cls._get_execd_executor()
                 result, parsed_locals = await executor.execute_for_cuga_lite(
                     wrapped_code=wrapped_code,
                     context_locals=_locals,
@@ -259,10 +296,17 @@ class CodeExecutor:
                 result = await executor.execute(
                     wrapped_code=wrapped_code,
                     context_locals=_locals,
-                    timeout=settings.advanced_features.sandbox_execution_timeout,
+                    timeout=(
+                        execution_timeout
+                        if execution_timeout is not None
+                        else settings.advanced_features.sandbox_execution_timeout
+                    ),
+                    **({"raise_on_timeout": True} if execution_timeout is not None else {}),
                 )
 
         except Exception as e:
+            if isinstance(e, CodeExecutionTimeout):
+                raise
             executor = cls._get_local_executor()
             available_tools = [
                 name for name, value in _locals.items() if callable(value) and not name.startswith('_')

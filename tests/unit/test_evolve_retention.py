@@ -111,6 +111,7 @@ async def test_collection_transport_cannot_override_instance_namespace(monkeypat
 
 
 def test_schedule_preview_uses_evolve_without_saving(client):
+    pytest.importorskip("altk_evolve.retention.schedule")  # optional extra: skip when not installed
     with (
         patch.object(EvolveIntegration, "is_enabled", return_value=True),
         patch.object(EvolveIntegration, "_call_structured_tool", new=AsyncMock()) as call,
@@ -134,6 +135,7 @@ def test_schedule_preview_uses_evolve_without_saving(client):
 
 @pytest.mark.parametrize("spec", [{"schedule": "bad"}, {"schedule": "@daily", "timeZone": "+03:00"}])
 def test_schedule_preview_rejects_invalid_timing(client, spec):
+    pytest.importorskip("altk_evolve.retention.schedule")  # optional extra: skip when not installed
     with patch.object(EvolveIntegration, "is_enabled", return_value=True):
         response = client.post("/api/manage/retention/schedules/preview", json={"spec": spec})
     assert response.status_code == 422

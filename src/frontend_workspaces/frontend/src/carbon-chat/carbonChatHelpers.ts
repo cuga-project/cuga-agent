@@ -21,14 +21,7 @@ const DEFAULT_NICKNAME = "CUGA";
 let cachedProfileUrl: string | undefined = undefined;
 let profileUrlFetched = false;
 
-const nicknameCache: Record<"draft" | "published", string> = {
-  draft: DEFAULT_NICKNAME,
-  published: DEFAULT_NICKNAME,
-};
-const nicknameFetched: Record<"draft" | "published", boolean> = {
-  draft: false,
-  published: false,
-};
+const nicknameCache = new Map<string, string>();
 
 async function getProfilePictureUrl(): Promise<string | undefined> {
   if (profileUrlFetched) return cachedProfileUrl;
@@ -44,30 +37,31 @@ async function getProfilePictureUrl(): Promise<string | undefined> {
   }
 }
 
-async function getAgentNickname(useDraft: boolean): Promise<string> {
-  const key: "draft" | "published" = useDraft ? "draft" : "published";
-  if (nicknameFetched[key]) return nicknameCache[key];
+async function getAgentNickname(useDraft: boolean, agentId: string): Promise<string> {
+  const key = JSON.stringify([agentId, useDraft]);
+  const cached = nicknameCache.get(key);
+  if (cached) return cached;
   try {
-    const res = await api.getManageConfig(useDraft);
+    const res = await api.getManageConfig(useDraft, agentId);
     if (res.ok) {
       const data = await res.json();
       const name = data?.config?.agent?.name;
-      if (name && typeof name === "string" && name.trim()) {
-        nicknameCache[key] = String(name).trim();
+      if (typeof name === "string" && name.trim()) {
+        const nickname = name.trim();
+        nicknameCache.set(key, nickname);
+        return nickname;
       }
     }
-    nicknameFetched[key] = true;
-    return nicknameCache[key];
   } catch {
-    nicknameFetched[key] = true;
-    return nicknameCache[key];
+    // A profile lookup must not prevent chat; do not cache a failed lookup.
   }
+  return agentId === "cuga-default" ? DEFAULT_NICKNAME : agentId;
 }
 
-export async function getResponseUserProfile(useDraft = false) {
+export async function getResponseUserProfile(useDraft = false, agentId = api.getKnowledgeAgentId()) {
   const [profile_picture_url, nickname] = await Promise.all([
     getProfilePictureUrl(),
-    getAgentNickname(useDraft),
+    getAgentNickname(useDraft, agentId),
   ]);
   return {
     id: "cuga-agent",
@@ -77,26 +71,15 @@ export async function getResponseUserProfile(useDraft = false) {
   };
 }
 
-export const RESPONSE_USER_PROFILE = {
-  id: "cuga-agent",
-  nickname: DEFAULT_NICKNAME,
-  user_type: UserType.BOT,
-  profile_picture_url: undefined as string | undefined,
-};
-
-export async function initAgentProfile(useDraft: boolean) {
-  const [url, nick] = await Promise.all([
-    getProfilePictureUrl(),
-    getAgentNickname(useDraft),
-  ]);
-  RESPONSE_USER_PROFILE.profile_picture_url = url;
-  RESPONSE_USER_PROFILE.nickname = nick;
+export function getCachedResponseUserProfile(useDraft = false, agentId = api.getKnowledgeAgentId()) {
+  return {
+    id: "cuga-agent",
+    nickname: nicknameCache.get(JSON.stringify([agentId, useDraft]))
+      || (agentId === "cuga-default" ? DEFAULT_NICKNAME : agentId),
+    user_type: UserType.BOT,
+    profile_picture_url: cachedProfileUrl,
+  };
 }
-
-Promise.all([getProfilePictureUrl(), getAgentNickname(false)]).then(([url, nick]) => {
-  RESPONSE_USER_PROFILE.profile_picture_url = url;
-  RESPONSE_USER_PROFILE.nickname = nick;
-});
 
 export const BUTTON_KIND = {
   PRIMARY: "primary",

@@ -112,6 +112,24 @@ class TestTokenCounter:
         assert lookup_model_context_size("mistralai/mistral-medium") == 32000
 
     @pytest.mark.unit
+    def test_lookup_deepseek_v32_not_shadowed_by_deepseek_v3(self):
+        """DeepSeek-V3.2 serves 163840 tokens; it must not prefix-match ``deepseek-v3`` (64000).
+
+        The 64000 entry made reflection, VERIFY and context summarization budget
+        DeepSeek-V3.2 at less than half its window.
+        """
+        for name in (
+            "azure/DeepSeek-V3.2",
+            "deepseek-v3.2",
+            "openrouter/deepseek/deepseek-v3.2",
+            "rits/deepseek-ai/DeepSeek-V3.2",
+        ):
+            assert lookup_model_context_size(name) == 163840, name
+        # The generic entry keeps working for models that want it.
+        assert lookup_model_context_size("deepseek-v3") == 64000
+        assert lookup_model_context_size("deepseek/deepseek-v3") == 64000
+
+    @pytest.mark.unit
     def test_lookup_gemma_4_matches_rits_deployment_window(self):
         """Gemma 4 on RITS serves the full 262144 native window (issue #719).
 

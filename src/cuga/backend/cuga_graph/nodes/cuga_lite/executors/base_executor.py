@@ -3,6 +3,10 @@ from typing import Any, Optional
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 
 
+class CodeExecutionTimeout(TimeoutError):
+    """The executor's deadline expired, rather than a tool's own timeout."""
+
+
 class BaseExecutor(ABC):
     """Base interface for code executors."""
 

@@ -43,6 +43,10 @@ IDEMPOTENCE
 version on every container restart. We compare against the published config first and use
 ``update_published_config_at_version`` to rewrite in place, so a restart that changes nothing
 writes nothing.
+
+Drafts are seeded alongside published configs so Manage's test panel can use them immediately.
+Missing drafts from older seeds are backfilled; existing drafts follow the same hash ownership
+rule independently, so an unpublished edit in Manage is never overwritten.
 """
 
 from __future__ import annotations
@@ -125,7 +129,19 @@ def _sub_agent_config(entry: Dict[str, Any]) -> Dict[str, Any]:
         },
         "tools": [{"name": n} for n in _app_names(entry)],
         "special_instructions": instructions,
+        **({"llm": _stored_llm(entry["model"])} if entry.get("model") else {}),
+        **(
+            {"feature_flags": {"sub_agent_memory_scope": entry["memory_scope"]}}
+            if entry.get("memory_scope")
+            else {}
+        ),
     }
+
+
+def _stored_llm(model: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate the YAML model name into the editor's persisted LLM shape."""
+    aliases = {"model_name": "model", "url": "base_url"}
+    return {aliases.get(key, key): value for key, value in model.items()}
 
 
 async def _partition_prior(prior: List[Dict[str, Any]], yaml_refs: List[str]) -> List[Dict[str, Any]]:
@@ -180,6 +196,7 @@ def _supervisor_config(
                 else {}
             ),
         },
+        **({"llm": _stored_llm(sup["model"])} if sup.get("model") else {}),
     }
 
 
@@ -197,7 +214,7 @@ def _body_hash(config: Dict[str, Any]) -> str:
 
 
 async def _upsert(config: Dict[str, Any], agent_id: str) -> str:
-    """Write `config` as the published config for `agent_id`, without churning versions.
+    """Seed published and draft configs for `agent_id`, without churning versions.
 
     Returns "created" | "updated" | "unchanged" | "skipped" — the caller logs a summary, and the
     tests assert that a second identical seed is a no-op.
@@ -216,7 +233,9 @@ async def _upsert(config: Dict[str, Any], agent_id: str) -> str:
     """
     from cuga.backend.server.config_store import (
         load_config,
+        load_draft,
         save_config,
+        save_draft,
         update_published_config_at_version,
     )
 
@@ -224,23 +243,28 @@ async def _upsert(config: Dict[str, Any], agent_id: str) -> str:
     existing, version = await load_config(None, agent_id)
     if existing is None or not version:
         await save_config(config, agent_id=agent_id)
-        return "created"
-    prior_mark = (existing or {}).get(_SEED_MARK)
-    if prior_mark is None:
-        return "skipped"  # not roster-managed — a hand-made agent that happens to share the name
-    if prior_mark != _body_hash(existing):
-        return "skipped"  # edited in Manage since we wrote it; the human's version wins
-    if existing == config:
-        return "unchanged"
-    # `load_config(None, ...)` only ever returns a published (numeric) version, but
-    # `update_published_config_at_version` raises on anything else, and that would be a crash at
-    # startup rather than a bad roster. Fall back to a normal save instead.
-    if str(version).isdigit() and await update_published_config_at_version(config, agent_id, version):
-        return "updated"
-    # The published version could not be rewritten in place (deleted underneath us, or a store
-    # that does not support it). A new version is still correct, just noisier.
-    await save_config(config, agent_id=agent_id)
-    return "updated"
+        result = "created"
+    else:
+        prior_mark = existing.get(_SEED_MARK)
+        if prior_mark is None:
+            return "skipped"  # not roster-managed — a hand-made agent that happens to share the name
+        if prior_mark != _body_hash(existing):
+            return "skipped"  # edited in Manage since we wrote it; the human's version wins
+        if existing == config:
+            result = "unchanged"
+        else:
+            # Rewrite numeric published versions in place; fall back to a new version if the
+            # record disappeared underneath us or the store cannot update it.
+            if not (
+                str(version).isdigit() and await update_published_config_at_version(config, agent_id, version)
+            ):
+                await save_config(config, agent_id=agent_id)
+            result = "updated"
+
+    draft = await load_draft(agent_id)
+    if draft != config and (draft is None or draft.get(_SEED_MARK) == _body_hash(draft)):
+        await save_draft(config, agent_id=agent_id)
+    return result
 
 
 async def seed_roster(path: Optional[str] = None) -> Tuple[int, Dict[str, int]]:
@@ -261,7 +285,47 @@ async def seed_roster(path: Optional[str] = None) -> Tuple[int, Dict[str, int]]:
         logger.warning(f"roster seed: could not read {path!r}: {e}")
         return 0, {}
 
-    entries = [a for a in (roster.get("agents") or []) if isinstance(a, dict) and a.get("name")]
+    if (
+        not isinstance(roster, dict)
+        or not isinstance(roster.get("agents", []), list)
+        or not isinstance(roster.get("supervisor", {}), dict)
+    ):
+        logger.warning("roster seed: invalid roster structure in {}", path)
+        return 0, {}
+    entries = roster.get("agents") or []
+    supervisor = roster.get("supervisor") or {}
+    records = [supervisor, *entries]
+    for record in records:
+        if not isinstance(record, dict) or any(
+            record.get(key) is not None and not isinstance(record[key], str)
+            for key in ("name", "special_instructions", "description", "memory_scope")
+        ):
+            logger.warning("roster seed: invalid agent fields in {}", path)
+            return 0, {}
+        if record.get("model") is not None and not isinstance(record["model"], dict):
+            logger.warning("roster seed: invalid model in {}", path)
+            return 0, {}
+        for key in ("apps", "mcp_servers"):
+            apps = record.get(key) or []
+            if not isinstance(apps, list) or any(
+                not (
+                    isinstance(app, str)
+                    and app.strip()
+                    or isinstance(app, dict)
+                    and isinstance(app.get("name"), str)
+                    and app["name"].strip()
+                )
+                for app in apps
+            ):
+                logger.warning("roster seed: invalid tool list in {}", path)
+                return 0, {}
+    if any(not isinstance(entry.get("name"), str) or not entry["name"].strip() for entry in entries):
+        logger.warning("roster seed: missing agent name in {}", path)
+        return 0, {}
+    entry_ids = [_agent_id(a["name"]) for a in entries]
+    if len(set(entry_ids)) != len(entry_ids):
+        logger.warning("roster seed: duplicate agent identities in {}", path)
+        return 0, {}
     if not entries:
         logger.warning(f"roster seed: {path!r} declares no agents")
         return 0, {}

@@ -71,7 +71,7 @@ def _client() -> tuple[TestClient, FastAPI]:
         tools_include_by_app=None,
         tools_include_version=0,
     )
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     return client, app
 
 

@@ -19,7 +19,7 @@ import {
 import * as api from "../api";
 import { injectCitations, type MessageSource } from "agentic_chat/Citations";
 import {
-  RESPONSE_USER_PROFILE,
+  getCachedResponseUserProfile,
   extractEventData,
   generateMessageId,
   parseReasoningStepContent,
@@ -54,18 +54,21 @@ interface ConversationMessage {
 
 async function customLoadHistory(
   _instance: ChatInstance,
-  threadId?: string
+  threadId?: string,
+  agentId = api.getKnowledgeAgentId(),
+  useDraft = false,
 ): Promise<HistoryItem[]> {
   if (!threadId) {
     return [];
   }
 
   try {
-    const eventsResponse = await api.getConversationStreamEvents(threadId);
+    const responseUserProfile = getCachedResponseUserProfile(useDraft, agentId);
+    const eventsResponse = await api.getConversationStreamEvents(threadId, agentId);
 
     if (!eventsResponse.ok) {
       console.error("Failed to load conversation stream events");
-      return await loadBasicMessages(threadId);
+      return await loadBasicMessages(threadId, agentId, responseUserProfile);
     }
 
     const eventsData = await eventsResponse.json();
@@ -73,7 +76,7 @@ async function customLoadHistory(
 
     if (events.length === 0) {
       // Fallback to basic messages if no stream events
-      return await loadBasicMessages(threadId);
+      return await loadBasicMessages(threadId, agentId, responseUserProfile);
     }
 
     console.log(`Found ${events.length} stream events`);
@@ -204,7 +207,7 @@ async function customLoadHistory(
             };
             cardMessage.message_options = {
               ...(currentSteps.length > 0 ? { reasoning: { steps: currentSteps } } : {}),
-              response_user_profile: RESPONSE_USER_PROFILE,
+              response_user_profile: responseUserProfile,
             };
             history.push({ message: cardMessage as MessageResponse, time: event.timestamp });
           } else {
@@ -247,7 +250,7 @@ async function customLoadHistory(
             };
             messageResponse.message_options = {
               ...(currentSteps.length > 0 ? { reasoning: { steps: currentSteps } } : {}),
-              response_user_profile: RESPONSE_USER_PROFILE,
+              response_user_profile: responseUserProfile,
             };
             history.push({ message: messageResponse as MessageResponse, time: event.timestamp });
           }
@@ -275,9 +278,13 @@ async function customLoadHistory(
 }
 
 // Fallback function to load basic messages
-async function loadBasicMessages(threadId: string): Promise<HistoryItem[]> {
+async function loadBasicMessages(
+  threadId: string,
+  agentId: string,
+  responseUserProfile: ReturnType<typeof getCachedResponseUserProfile>,
+): Promise<HistoryItem[]> {
   try {
-    const response = await api.getConversationMessages(threadId);
+    const response = await api.getConversationMessages(threadId, agentId);
 
     if (!response.ok) {
       return [];
@@ -325,7 +332,7 @@ async function loadBasicMessages(threadId: string): Promise<HistoryItem[]> {
           message: {
             id: messageId,
             output: { generic: genericItems },
-            message_options: { response_user_profile: RESPONSE_USER_PROFILE },
+            message_options: { response_user_profile: responseUserProfile },
           } as MessageResponse,
           time: msg.timestamp,
         };

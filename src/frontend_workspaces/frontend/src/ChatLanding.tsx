@@ -1,10 +1,13 @@
+import { ContentSkeleton } from "agentic_chat/LoadingState";
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import * as api from "./api";
 import { useAuth } from "./AuthContext";
+import { useCarbonFeedback } from "./CarbonFeedback";
 import { ConfigHeader } from "./ConfigHeader";
 import CarbonChat, { generateUUID } from "./carbon-chat/CarbonChat";
 import { MemoryWorkspace } from "./memory/MemoryWorkspace";
+import { SupervisorRoster, type SupervisorMember } from "./SupervisorRoster";
 import {
   IconButton,
   Tag,
@@ -14,7 +17,6 @@ import {
   ModalHeader,
   ModalBody,
   ModalFooter,
-  SkeletonText,
   ToastNotification,
   Button,
   Accordion,
@@ -24,8 +26,12 @@ import {
   Tile,
   Layer,
   Stack,
-  Select,
-  SelectItem,
+  Dropdown,
+  Tabs,
+  TabList,
+  Tab,
+  TabPanels,
+  TabPanel,
 } from "@carbon/react";
 import Markdown from "@carbon/ai-chat-components/es/react/markdown.js";
 import {
@@ -46,6 +52,8 @@ import {
   Download,
   Upload,
   Renew,
+  Bot,
+  Flow,
 } from "@carbon/icons-react";
 import { KnowledgeSidePanel } from "agentic_chat/KnowledgeSidePanel";
 import type { SessionAttachmentSnapshot } from "./knowledge/useSessionKnowledgeAttachments";
@@ -63,6 +71,28 @@ interface ConversationThread {
 interface AppTool {
   name: string;
   description: string;
+}
+
+interface ChatAgentOption {
+  id: string;
+  name?: string;
+  kind?: "single" | "supervisor";
+  description?: string;
+}
+
+function renderChatAgentOption(agent: ChatAgentOption) {
+  const isSupervisor = agent.kind === "supervisor";
+  return (
+    <span className="chat-agent-option">
+      {isSupervisor ? (
+        <Flow size={16} className="chat-agent-option-supervisor-icon" aria-hidden="true" />
+      ) : (
+        <Bot size={16} aria-hidden="true" />
+      )}
+      <span className="chat-agent-option-name">{agent.name?.trim() || agent.id}</span>
+      {isSupervisor && <Tag type="purple" size="sm">Supervisor</Tag>}
+    </span>
+  );
 }
 
 interface AppConfig {
@@ -107,9 +137,18 @@ interface AgentConfig {
   name: string;
   description: string;
   configVersion?: number | string | null;
+  kind?: "single" | "supervisor";
+  supervisedAgents?: SupervisorMember[];
   apps: AppConfig[];
   workspaceFolders: WorkspaceFolder[];
 }
+
+const emptyAgentConfig = (agentId: string): AgentConfig => ({
+  name: agentId,
+  description: "",
+  apps: [],
+  workspaceFolders: [],
+});
 
 interface HomescreenConfig {
   isOn?: boolean;
@@ -145,32 +184,32 @@ const RIGHT_PANEL_META: Record<
   { title: string; subtitle: string; icon: React.ElementType; badgeClass: string; ariaLabel: string }
 > = {
   configuration: {
-    title: "Configuration",
+    title: "Tools",
     subtitle: "Apps and tools available to this agent",
     icon: Settings,
     badgeClass: "agent-section-badge--configuration",
-    ariaLabel: "Configuration section",
+    ariaLabel: "Tools",
   },
   workspace: {
     title: "Workspace",
     subtitle: "Files available in the current workspace",
     icon: Folder,
     badgeClass: "agent-section-badge--workspace",
-    ariaLabel: "Workspace section",
+    ariaLabel: "Files",
   },
   knowledge: {
     title: "Knowledge",
     subtitle: "Agent and conversation documents for retrieval",
     icon: DocumentBlank,
     badgeClass: "agent-section-badge--knowledge",
-    ariaLabel: "Knowledge section",
+    ariaLabel: "Knowledge",
   },
   skills: {
     title: "Skills",
     subtitle: "Installed automation workflows",
     icon: Application,
     badgeClass: "agent-section-badge--skills",
-    ariaLabel: "Skills section",
+    ariaLabel: "Skills",
   },
 };
 
@@ -314,27 +353,22 @@ const clearDraftThreadState = (agentId: string) => {
 
 // ─── Inline style constants ───────────────────────────────────────────────────
 
-// Glass / frosted-transparent panel base — floats over the chat
+// Opaque Carbon layer; desktop panels reserve space beside the conversation.
 const panelStyle = (side: "left" | "right", headerH: number, width: string, visible: boolean): React.CSSProperties => ({
   position: "fixed",
   top: headerH,
   bottom: 0,
   [side]: 0,
   width,
+  maxWidth: "100vw",
+  visibility: visible ? "visible" : "hidden",
   zIndex: 200,
   display: "flex",
   flexDirection: "column",
   overflow: "hidden",
-  // Transparent glass effect
-  background: "rgba(var(--cds-background-rgb, 255,255,255), 0.55)",
-  backdropFilter: "blur(12px)",
-  WebkitBackdropFilter: "blur(12px)",
-  // IBM Carbon border standards - using subtle border for minimal visibility
-  borderRight: side === "left" ? "1px solid var(--cds-border-subtle-01, rgba(0, 0, 0, 0.1))" : undefined,
-  borderLeft: side === "right" ? "1px solid var(--cds-border-subtle-01, rgba(0, 0, 0, 0.1))" : undefined,
-  boxShadow: side === "left"
-    ? "1px 0 4px rgba(0, 0, 0, 0.05)"
-    : "-1px 0 4px rgba(0, 0, 0, 0.05)",
+  background: "var(--cds-layer-01)",
+  borderRight: side === "left" ? "1px solid var(--cds-border-subtle-01)" : undefined,
+  borderLeft: side === "right" ? "1px solid var(--cds-border-subtle-01)" : undefined,
   // Slide in/out
   transform: visible ? "translateX(0)" : side === "left" ? "translateX(-100%)" : "translateX(100%)",
   transition: "transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
@@ -352,10 +386,11 @@ const panelHeader: React.CSSProperties = {
 
 const CARBON_HEADER_HEIGHT = 48; // Carbon shell header default
 const AGENT_SWITCHER_HEIGHT = 40; // Agent-switcher bar rendered directly below it
-const LEFT_W = "22rem";
+const LEFT_W = "18rem";
 const RIGHT_W = "26rem";
 
 export function ChatLanding() {
+  const { confirm } = useCarbonFeedback();
   // Route-scoped agent (issue #101): /chat/:agentId chats against that agent (single or
   // supervisor); /chat with no param keeps the original cuga-default behavior. Set the
   // module-level agent id in a layout effect so postStream and conversation-* calls
@@ -365,7 +400,15 @@ export function ChatLanding() {
   const { user, isLoading: authLoading, authorizationEnabled } = useAuth();
   const [agentRegistry, setAgentRegistry] = useState<boolean | null>(null);
   const [memoryEnabled, setMemoryEnabled] = useState(false);
-  const [activeView, setActiveView] = useState<"chat" | "memory">("chat");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeView = memoryEnabled && searchParams.get("view") === "memory" ? "memory" : "chat";
+  const setActiveView = useCallback((view: "chat" | "memory") => {
+    const params = new URLSearchParams(searchParams);
+    if ((params.get("view") === "memory" ? "memory" : "chat") === view) return;
+    if (view === "memory") params.set("view", "memory");
+    else params.delete("view");
+    setSearchParams(params);
+  }, [searchParams, setSearchParams]);
   const [focusedMemoryIds, setFocusedMemoryIds] = useState<string[]>([]);
   const [focusedMemoryRelationship, setFocusedMemoryRelationship] = useState<"used" | "saved">("used");
   const effectiveChatAgentId = agentRegistry === false ? "cuga-default" : (routeAgentId || "cuga-default");
@@ -375,7 +418,13 @@ export function ChatLanding() {
   useLayoutEffect(() => {
     api.setKnowledgeAgentId(effectiveChatAgentId);
   }, [effectiveChatAgentId]);
-  const [availableAgents, setAvailableAgents] = useState<Array<{ id: string; name?: string }>>([]);
+  const [availableAgents, setAvailableAgents] = useState<ChatAgentOption[]>([]);
+  const chatAgentOptions: ChatAgentOption[] = availableAgents.length > 0
+    ? [
+        ...availableAgents.filter((agent) => agent.kind === "supervisor"),
+        ...availableAgents.filter((agent) => agent.kind !== "supervisor"),
+      ]
+    : [{ id: effectiveChatAgentId }];
   const showAgentSwitcher = agentRegistry === true;
   const headerHeight = CARBON_HEADER_HEIGHT + (showAgentSwitcher ? AGENT_SWITCHER_HEIGHT : 0);
 
@@ -418,11 +467,15 @@ export function ChatLanding() {
   }, [routeAgentId, navigate]);
 
   useEffect(() => {
-    if (!memoryEnabled) {
-      setActiveView("chat");
+    if (agentRegistry !== null && !memoryEnabled) {
+      if (searchParams.get("view") === "memory") {
+        const params = new URLSearchParams(searchParams);
+        params.delete("view");
+        setSearchParams(params, { replace: true });
+      }
       setFocusedMemoryIds([]);
     }
-  }, [memoryEnabled]);
+  }, [agentRegistry, memoryEnabled, searchParams, setSearchParams]);
 
   const [draftThread, setDraftThread] = useState<DraftThreadState>(
     () => loadDraftThreadState(effectiveChatAgentId) ?? createDraftThreadState(effectiveChatAgentId),
@@ -443,7 +496,7 @@ export function ChatLanding() {
   // only when the operator explicitly disabled citations in Manage).
   const [citationsEnabled, setCitationsEnabled] = useState(true);
   const [sessionDocsVersion, setSessionDocsVersion] = useState(0);
-  const [agentConfig, setAgentConfig] = useState<AgentConfig>(MOCK_AGENT_CONFIG);
+  const [agentConfig, setAgentConfig] = useState<AgentConfig>(() => emptyAgentConfig(effectiveChatAgentId));
   const [homescreenConfig, setHomescreenConfig] = useState<HomescreenConfig | undefined>(undefined);
   const [configLoading, setConfigLoading] = useState(true);
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
@@ -461,6 +514,9 @@ export function ChatLanding() {
   const prevChatAgentIdRef = useRef(effectiveChatAgentId);
   const chatAgentIdRef = useRef(effectiveChatAgentId);
   chatAgentIdRef.current = effectiveChatAgentId;
+  // Bumped by "Remove all": a thread list requested before it must not bring the old threads back.
+  const threadsGenerationRef = useRef(0);
+  const threadsRequestSeqRef = useRef(0);
 
   useEffect(() => {
     if (prevChatAgentIdRef.current === effectiveChatAgentId) return;
@@ -506,8 +562,6 @@ export function ChatLanding() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const canShowLeft = windowW >= BP_HIDE_LEFT;
-  const canShowRight = windowW >= BP_HIDE_RIGHT;
 
   // Toast notification helpers
   const addToast = useCallback((kind: "error" | "info" | "success" | "warning", title: string, subtitle: string) => {
@@ -592,6 +646,10 @@ export function ChatLanding() {
   const currentChatThreadId = activeThreadId;
   /** Same resolver as `threadId` on `CarbonChat` — stream, sandbox workspace, and session knowledge must match. */
   const effectiveChatThreadId = selectedThreadId ?? currentChatThreadId;
+  const workspaceThreadRef = useRef(effectiveChatThreadId);
+  useLayoutEffect(() => {
+    workspaceThreadRef.current = effectiveChatThreadId;
+  }, [effectiveChatThreadId]);
 
   const refreshKnowledgeDocCount = useCallback(
     async (threadId: string) => {
@@ -653,6 +711,7 @@ export function ChatLanding() {
 
   const clearDraftSessionFiles = useCallback(
     async (threadId: string) => {
+      if (!knowledgeEnabled || !sessionKnowledgeEnabled) return;
       try {
         const res = await api.deleteSessionKnowledgeCollection(threadId);
         if (!res.ok) {
@@ -664,17 +723,26 @@ export function ChatLanding() {
         addToast("warning", "Draft cleanup incomplete", "The draft knowledge collection could not be removed.");
       }
     },
-    [addToast],
+    [addToast, knowledgeEnabled, sessionKnowledgeEnabled],
   );
 
   // ── Thread helpers ──────────────────────────────────────────────────────────
   const refreshThreads = useCallback(async () => {
     const agentId = effectiveChatAgentId;
+    const generation = threadsGenerationRef.current;
+    // Two refreshes in one generation can answer out of order; only the newest may apply.
+    const requestSeq = ++threadsRequestSeqRef.current;
     try {
       const res = await api.getConversationThreads(agentId);
       if (res.ok) {
         const data = await res.json();
-        if (agentId === chatAgentIdRef.current) setThreads(data.threads || []);
+        if (
+          requestSeq === threadsRequestSeqRef.current &&
+          agentId === chatAgentIdRef.current &&
+          generation === threadsGenerationRef.current
+        ) {
+          setThreads(data.threads || []);
+        }
       }
     } catch (err) {
       console.error("Error fetching threads:", err);
@@ -693,8 +761,9 @@ export function ChatLanding() {
       }
       if (threadId !== selectedThreadId) {
         setSelectedThreadId(threadId);
-        setTimeout(refreshThreads, 500);
       }
+      // An approval can complete the already selected conversation.
+      void refreshThreads();
     },
     [draftThread.hasSentFirstMessage, draftThread.threadId, selectedThreadId, refreshThreads],
   );
@@ -704,25 +773,38 @@ export function ChatLanding() {
   }, []);
 
   const handleRemoveAll = async () => {
-    if (!window.confirm("Remove all conversations? This cannot be undone.")) return;
+    if (!await confirm("Remove all conversations? This cannot be undone.", "Remove all conversations")) return;
     try {
       if (!draftThread.hasSentFirstMessage) {
         await clearDraftSessionFiles(draftThread.threadId);
       }
-      await Promise.all(
-        threads.map((t) => api.deleteConversation(t.thread_id, effectiveChatAgentId)),
-      );
+      const toDelete = threads;
+      // Switch away first: the workspace panel polls the active thread, and a
+      // poll landing while it is being deleted brings its sandbox kernel back.
+      threadsGenerationRef.current += 1;
       setThreads([]);
       createAndActivateDraftThread();
+      const results = await Promise.allSettled(
+        toDelete.map((t) => api.deleteConversation(t.thread_id, effectiveChatAgentId)),
+      );
+      const failed = results.filter((r) => r.status === "rejected" || !r.value.ok).length;
+      // Show what is still there, also over a list fetched while the deletes ran.
+      // No thread is re-selected, so no kernel comes back.
+      await refreshThreads();
+      if (failed) {
+        addToast("error", "Error", `Failed to remove ${failed} of ${toDelete.length} conversations.`);
+      }
     } catch (err) {
       console.error(err);
-      alert("Failed to remove conversations.");
+      addToast("error", "Error", "Failed to remove conversations.");
     }
   };
 
   // Fetch agent configuration
   useEffect(() => {
     let cancelled = false;
+    setConfigLoading(true);
+    setAgentConfig(emptyAgentConfig(effectiveChatAgentId));
     (async () => {
       try {
         const agentId = effectiveChatAgentId;
@@ -730,7 +812,7 @@ export function ChatLanding() {
 
         const [contextRes, toolsListRes, manageRes] = await Promise.all([
           api.getAgentContext(),
-          api.getToolsList(isDraft),
+          api.getToolsList(isDraft, agentId),
           api.getManageConfig(false, agentId),
         ]);
         if (cancelled) return;
@@ -748,7 +830,7 @@ export function ChatLanding() {
           if (!routeAgentId) {
             agentIdFallback = contextData.agent_id ?? agentIdFallback;
           }
-          configVersion = contextData.config_version ?? null;
+          if (agentId === "cuga-default") configVersion = contextData.config_version ?? null;
           const kEnabled = contextData.knowledge_enabled ?? false;
           const agentKEnabled = contextData.agent_level_knowledge_enabled ?? false;
           const sessionKEnabled = contextData.session_level_knowledge_enabled ?? false;
@@ -770,9 +852,10 @@ export function ChatLanding() {
           }
         }
 
-        let manageData: { config?: { agent?: { name?: string; description?: string }; homescreen?: { isOn?: boolean; greeting?: string; starters?: string[] } } } | null = null;
+        let manageData: { version?: number | string; config?: { agent?: { name?: string; description?: string; kind?: "single" | "supervisor" }; supervisor?: { subAgents?: SupervisorMember[] }; homescreen?: { isOn?: boolean; greeting?: string; starters?: string[] } } } | null = null;
         if (manageRes.ok) {
           manageData = await manageRes.json();
+          configVersion = manageData?.version ?? (agentId === "cuga-default" ? configVersion : null);
           const ag = manageData?.config?.agent;
           if (ag && typeof ag === "object") {
             if (ag.name && String(ag.name).trim()) {
@@ -793,7 +876,7 @@ export function ChatLanding() {
         }
 
         // Get tools from tools/list endpoint and group by app
-        let apps: AppConfig[] = MOCK_AGENT_CONFIG.apps;
+        let apps: AppConfig[] = [];
         if (toolsListRes.ok) {
           const toolsData = await toolsListRes.json();
           const tools = toolsData.tools || [];
@@ -849,6 +932,8 @@ export function ChatLanding() {
           name: agentName,
           description: agentDescription,
           configVersion,
+          kind: manageData?.config?.agent?.kind ?? "single",
+          supervisedAgents: manageData?.config?.supervisor?.subAgents ?? [],
           apps,
           workspaceFolders: MOCK_AGENT_CONFIG.workspaceFolders, // TODO: Get from API if available
         };
@@ -860,7 +945,6 @@ export function ChatLanding() {
         const errorMsg = err instanceof Error ? err.message : "Network error loading agent configuration";
         addToast("error", "Configuration Load Error", errorMsg);
         console.error("Error fetching agent config:", err);
-        // Keep using MOCK_AGENT_CONFIG as fallback
       } finally {
         if (!cancelled) setConfigLoading(false);
       }
@@ -873,10 +957,11 @@ export function ChatLanding() {
   useEffect(() => {
     let cancelled = false;
     const agentId = effectiveChatAgentId;
+    const generation = threadsGenerationRef.current;
     (async () => {
       try {
         const res = await api.getConversationThreads(agentId);
-        if (cancelled) return;
+        if (cancelled || generation !== threadsGenerationRef.current) return;
         if (!res.ok) {
           const errorMsg = `Failed to load conversation threads (${res.status} ${res.statusText})`;
           addToast("warning", "Threads Load Warning", errorMsg);
@@ -917,22 +1002,24 @@ export function ChatLanding() {
   }, []);
 
   const fetchWorkspaceTree = useCallback(async (forceRefresh = false) => {
+    const isCurrent = () => workspaceThreadRef.current === effectiveChatThreadId;
     try {
       if (forceRefresh) setWorkspaceTreeLoading(true);
       const res = await api.getWorkspaceTree(effectiveChatThreadId || undefined, forceRefresh);
       if (res.ok) {
         const data = await res.json();
+        if (!isCurrent()) return;
         setWorkspaceTree(data.tree || []);
-      } else if (forceRefresh) {
+      } else if (forceRefresh && isCurrent()) {
         addToast("warning", "Workspace refresh failed", `${res.status} ${res.statusText}`);
       }
     } catch (err) {
       console.error("Error fetching workspace tree:", err);
-      if (forceRefresh) {
+      if (forceRefresh && isCurrent()) {
         addToast("error", "Workspace refresh failed", err instanceof Error ? err.message : "Unknown error");
       }
     } finally {
-      setWorkspaceTreeLoading(false);
+      if (isCurrent()) setWorkspaceTreeLoading(false);
     }
   }, [addToast, effectiveChatThreadId]);
 
@@ -1140,7 +1227,7 @@ export function ChatLanding() {
               <span
                 className="chat-landing-workspace-tree-name"
                 style={{
-                  fontSize: "0.8125rem",
+                  fontSize: "0.875rem",
                   color: "var(--cds-text-primary)",
                 }}
               >
@@ -1152,7 +1239,7 @@ export function ChatLanding() {
                   className="chat-landing-workspace-tree-filename"
                   style={{
                     cursor: "pointer",
-                    fontSize: "0.8125rem",
+                    fontSize: "0.875rem",
                     color: "var(--cds-text-primary)",
                   }}
                   role="button"
@@ -1191,102 +1278,107 @@ export function ChatLanding() {
 
   const handleToggleLeft = () => {
     setActiveView("chat");
-    if (canShowLeft) setLeftOpen((v) => !v);
+    setLeftOpen((v) => !v);
+    if (windowW < BP_HIDE_RIGHT) setRightOpen(false);
   };
   const handleToggleWorkspace = () => {
     setActiveView("chat");
-    if (!canShowRight) return;
+    if (windowW < BP_HIDE_RIGHT) setLeftOpen(false);
     setRightSection("workspace");
     setRightOpen(true);
   };
   const handleToggleKnowledge = () => {
     setActiveView("chat");
-    if (!canShowRight) return;
+    if (windowW < BP_HIDE_RIGHT) setLeftOpen(false);
     setRightSection("knowledge");
     setRightOpen(true);
   };
   const handleToggleConfiguration = () => {
     setActiveView("chat");
-    if (!canShowRight) return;
+    if (windowW < BP_HIDE_RIGHT) setLeftOpen(false);
     setRightSection("configuration");
     setRightOpen(true);
   };
   const handleToggleSkills = () => {
     setActiveView("chat");
-    if (!canShowRight) return;
+    if (windowW < BP_HIDE_RIGHT) setLeftOpen(false);
     setRightSection("skills");
     setRightOpen(true);
   };
   const activeKnowledgeThreadId = effectiveChatThreadId;
+  const isSupervisor = agentConfig.kind === "supervisor";
+  const FlowIcon = isSupervisor ? Flow : Application;
+  const configurationMeta = isSupervisor ? { ...RIGHT_PANEL_META.configuration, title: "Supervised agents", subtitle: "Published agents available for delegation", icon: Flow, ariaLabel: "Agents" } : RIGHT_PANEL_META.configuration;
   const sectionCounts: Record<RightPanelSection, number> = {
-    configuration: totalTools,
+    configuration: isSupervisor ? (agentConfig.supervisedAgents ?? []).length : totalTools,
     workspace: workspaceTree.length,
     knowledge: knowledgeDocCount,
     skills: skills.length,
   };
-  const activeSectionMeta = RIGHT_PANEL_META[rightSection];
+  const rightSections: { id: RightPanelSection; label: string }[] = [
+    { id: "configuration", label: isSupervisor ? "Agents" : "Tools" },
+    { id: "workspace", label: "Files" },
+    { id: "knowledge", label: "Knowledge" },
+    ...(skills.length > 0 ? [{ id: "skills" as const, label: "Skills" }] : []),
+  ];
+  useEffect(() => {
+    if (rightSection === "skills" && !skillsLoading && skills.length === 0) setRightSection("workspace");
+  }, [rightSection, skillsLoading, skills.length]);
+  const activeSectionMeta = rightSection === "configuration" ? configurationMeta : RIGHT_PANEL_META[rightSection];
   const ActiveSectionIcon = activeSectionMeta.icon;
 
   return (
-    <div className="chat-landing">
-        <ConfigHeader
-          onToggleLeftSidebar={handleToggleLeft}
-          onToggleWorkspace={handleToggleWorkspace}
-          onOpenMemory={memoryEnabled ? () => {
-            setFocusedMemoryIds([]);
-            setActiveView("memory");
-          } : undefined}
-          agentId={routeAgentId}
-        />
+    <div className={`chat-landing ${leftOpen ? "chat-landing--left-open" : ""} ${rightOpen ? "chat-landing--right-open" : ""}`}
+      style={{ "--chat-header-height": `${headerHeight}px`, "--chat-left-width": LEFT_W, "--chat-right-width": RIGHT_W } as React.CSSProperties}>
+        <ConfigHeader agentId={effectiveChatAgentId} actions={!showAgentSwitcher && activeView === "chat" ? [
+          { label: leftOpen ? "Close conversations" : "Open conversations", icon: <Chat size={20} />, expanded: leftOpen, controls: "chat-conversations-panel", onClick: handleToggleLeft },
+          { label: rightOpen ? "Close agent panel" : "Open agent panel", icon: <SidePanelOpen size={20} style={{ transform: "scaleX(-1)" }} />, expanded: rightOpen, controls: "chat-agent-details-panel", onClick: () => {
+            if (windowW < BP_HIDE_RIGHT) setLeftOpen(false);
+            setRightOpen((open) => !open);
+          } },
+        ] : undefined} />
 
-        {showAgentSwitcher && (
-        <div
-          style={{
-            position: "fixed",
-            top: CARBON_HEADER_HEIGHT,
-            left: 0,
-            right: 0,
-            height: AGENT_SWITCHER_HEIGHT,
-            display: "flex",
-            alignItems: "center",
-            gap: "0.5rem",
-            padding: "0 1rem",
-            background: "var(--cds-layer)",
-            borderBottom: "1px solid var(--cds-border-subtle-00)",
-            zIndex: 10,
-          }}
+        {showAgentSwitcher && <div
+          className="chat-agent-toolbar"
+          style={{ top: CARBON_HEADER_HEIGHT, height: AGENT_SWITCHER_HEIGHT }}
         >
-          <Chat size={16} style={{ color: "var(--cds-text-secondary)", flexShrink: 0 }} />
-          <Select
+          <Dropdown
             id="chat-agent-switcher"
-            labelText="Agent"
+            type="inline"
+            className="chat-agent-switcher"
+            titleText="Agent"
+            label={renderChatAgentOption({ id: effectiveChatAgentId })}
             hideLabel
             size="sm"
-            inline
-            value={effectiveChatAgentId}
-            onChange={(e) => {
-              const nextId = e.target.value;
+            items={chatAgentOptions}
+            selectedItem={chatAgentOptions.find((agent) => agent.id === effectiveChatAgentId)}
+            itemToString={(agent) => agent
+              ? `${agent.name?.trim() || agent.id}${agent.kind === "supervisor" ? " (Supervisor)" : ""}`
+              : ""}
+            itemToElement={renderChatAgentOption}
+            renderSelectedItem={renderChatAgentOption}
+            onChange={({ selectedItem }) => {
+              const nextId = selectedItem?.id;
               if (nextId && nextId !== effectiveChatAgentId) {
-                navigate(nextId === "cuga-default" ? "/chat" : `/chat/${encodeURIComponent(nextId)}`);
+                navigate(`${nextId === "cuga-default" ? "/chat" : `/chat/${encodeURIComponent(nextId)}`}${activeView === "memory" ? "?view=memory" : ""}`);
               }
             }}
-            style={{ maxWidth: "16rem" }}
-          >
-            {availableAgents.length === 0 ? (
-              <SelectItem value={effectiveChatAgentId} text={effectiveChatAgentId} />
-            ) : (
-              availableAgents.map((a) => (
-                <SelectItem key={a.id} value={a.id} text={a.name?.trim() || a.id} />
-              ))
-            )}
-          </Select>
-        </div>
-        )}
+          />
+          {activeView === "chat" && <div className="chat-agent-toolbar__actions">
+            <IconButton kind="ghost" size="sm" label={leftOpen ? "Close conversations" : "Open conversations"}
+              aria-expanded={leftOpen} aria-controls="chat-conversations-panel" onClick={handleToggleLeft}><Chat /></IconButton>
+            <IconButton kind="ghost" size="sm" label={rightOpen ? "Close agent panel" : "Open agent panel"}
+              aria-expanded={rightOpen} aria-controls="chat-agent-details-panel" onClick={() => {
+                if (windowW < BP_HIDE_RIGHT) setLeftOpen(false);
+                setRightOpen((open) => !open);
+              }}><SidePanelOpen style={{ transform: "scaleX(-1)" }} /></IconButton>
+          </div>}
+        </div>}
 
       {activeView === "memory" && memoryEnabled && (
         <div
-          className="memory-workspace-shell"
-          style={{ marginTop: headerHeight, height: `calc(100vh - ${headerHeight}px)` }}
+          id="main-content" tabIndex={-1} className="memory-workspace-shell"
+          style={{ marginTop: headerHeight, height: `calc(100dvh - ${headerHeight}px)` }}
         >
           <MemoryWorkspace
             agentId={effectiveChatAgentId}
@@ -1304,8 +1396,9 @@ export function ChatLanding() {
         </div>
       )}
       {/* Keep the chat instance and its active stream alive while viewing memory. */}
-        <div className="chat-content-area" hidden={activeView === "memory" && memoryEnabled} style={{ display: activeView === "memory" && memoryEnabled ? "none" : undefined, position: "relative", height: `calc(100vh - ${headerHeight}px)` }}>
+        <div role="main" id={activeView === "memory" && memoryEnabled ? undefined : "main-content"} tabIndex={-1} className="chat-content-area" hidden={activeView === "memory" && memoryEnabled} style={{ display: activeView === "memory" && memoryEnabled ? "none" : undefined, position: "relative", height: `calc(100dvh - ${headerHeight}px)` }}>
           <CarbonChat
+            agentId={effectiveChatAgentId}
             contained={true}
             threadId={effectiveChatThreadId}
             attachmentScope="session"
@@ -1313,6 +1406,7 @@ export function ChatLanding() {
             sessionKnowledgeEnabled={sessionKnowledgeEnabled}
             isReadonly={selectedThreadId != null && selectedThreadId !== activeThreadId}
             onThreadChange={handleThreadChange}
+            onRestart={createAndActivateDraftThread}
             homescreen={homescreenConfig}
             sessionDocsVersion={sessionDocsVersion}
             onSessionDocsChanged={handleSessionDocsChanged}
@@ -1327,10 +1421,10 @@ export function ChatLanding() {
         </div>
 
       {/* ══════════════════════════════════════════════════════════════════════
-          LEFT PANEL — fixed, transparent, slides over chat
+          LEFT PANEL — docked on desktop, dismissible on smaller screens
           ══════════════════════════════════════════════════════════════════════ */}
-      {activeView === "chat" && canShowLeft && (
-        <div style={panelStyle("left", headerHeight, LEFT_W, leftOpen)}>
+      {activeView === "chat" && (
+        <aside id="chat-conversations-panel" aria-label="Conversations" style={panelStyle("left", headerHeight, LEFT_W, leftOpen)}>
           {/* Header */}
           <div style={panelHeader}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1340,7 +1434,7 @@ export function ChatLanding() {
                   <p style={{ fontSize: "0.875rem", fontWeight: 600, margin: 0, color: "var(--cds-text-primary)" }}>
                     Conversations
                   </p>
-                  <p style={{ fontSize: "0.6875rem", color: "var(--cds-text-secondary)", margin: "0.2rem 0 0" }}>
+                  <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: "0.2rem 0 0" }}>
                     {loading ? "Loading…" : `${threads.length} thread${threads.length !== 1 ? "s" : ""}`}
                   </p>
                 </div>
@@ -1376,9 +1470,9 @@ export function ChatLanding() {
             </div>
 
             {effectiveChatThreadId && (
-              <div style={{ marginTop: "0.5rem", display: "flex", alignItems: "center", gap: "0.375rem" }}>
+              <div className="cds--visually-hidden">
                 <Time size={12} style={{ color: "var(--cds-text-secondary)" }} />
-                <code style={{ fontSize: "0.6rem", color: "var(--cds-text-secondary)", fontFamily: "monospace" }}>
+                <code style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", fontFamily: "monospace" }}>
                   {effectiveChatThreadId}
                 </code>
               </div>
@@ -1386,18 +1480,16 @@ export function ChatLanding() {
           </div>
 
           {/* Thread list */}
-          <div style={{ flex: 1, overflowY: "auto" }}>
+          <div className="chat-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
             {loading ? (
-              <div style={{ padding: "1rem" }}>
-                <SkeletonText paragraph lineCount={5} />
-              </div>
+              <ContentSkeleton label="Loading conversations…" rows={4} />
             ) : threads.length === 0 ? (
               <div
                 style={{
                   padding: "3rem 1rem",
                   textAlign: "center",
                   color: "var(--cds-text-secondary)",
-                  fontSize: "0.8125rem",
+                  fontSize: "0.875rem",
                 }}
               >
                 <Chat size={32} style={{ opacity: 0.25, display: "block", margin: "0 auto 0.75rem" }} />
@@ -1411,7 +1503,9 @@ export function ChatLanding() {
                 return (
                   <button
                     key={thread.thread_id}
-                    onClick={() => handleSelectThread(thread.thread_id)}
+                    type="button"
+                    aria-current={isActive ? "true" : undefined}
+                    onClick={() => { handleSelectThread(thread.thread_id); if (windowW < BP_HIDE_LEFT) setLeftOpen(false); }}
                     style={{
                       display: "block",
                       width: "100%",
@@ -1434,7 +1528,7 @@ export function ChatLanding() {
                     <p
                       style={{
                         margin: 0,
-                        fontSize: "0.8125rem",
+                        fontSize: "0.875rem",
                         fontWeight: isActive ? 600 : 400,
                         color: "var(--cds-text-primary)",
                         overflow: "hidden",
@@ -1446,7 +1540,7 @@ export function ChatLanding() {
                     </p>
                     <div style={{ marginTop: "0.25rem", display: "flex", alignItems: "center", gap: "0.375rem" }}>
                       <Time size={10} style={{ color: "var(--cds-text-secondary)" }} />
-                      <span style={{ fontSize: "0.6875rem", color: "var(--cds-text-secondary)" }}>
+                      <span style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)" }}>
                         {formatTimestamp(thread.updated_at)}
                       </span>
                       {isActive && (
@@ -1460,19 +1554,19 @@ export function ChatLanding() {
               })
             )}
           </div>
-        </div>
+        </aside>
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
-          RIGHT PANEL — fixed, transparent, slides over chat
+          RIGHT PANEL — agent details and workspace
           ══════════════════════════════════════════════════════════════════════ */}
-      {activeView === "chat" && canShowRight && (
-        <div style={panelStyle("right", headerHeight, RIGHT_W, rightOpen)}>
+      {activeView === "chat" && (
+        <aside id="chat-agent-details-panel" aria-label="Agent details" style={panelStyle("right", headerHeight, RIGHT_W, rightOpen)}>
           {/* Agent identity header */}
           <div style={panelHeader}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: "0.625rem" }}>
-                <Application
+                <FlowIcon
                   size={20}
                   style={{ flexShrink: 0, marginTop: "0.125rem", color: "var(--cds-interactive)" }}
                 />
@@ -1482,7 +1576,7 @@ export function ChatLanding() {
                   </p>
                   <p
                     style={{
-                      fontSize: "0.6875rem",
+                      fontSize: "0.75rem",
                       color: "var(--cds-text-secondary)",
                       margin: "0.2rem 0 0",
                       lineHeight: 1.4,
@@ -1509,48 +1603,14 @@ export function ChatLanding() {
             className="agent-info-panel"
             style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}
           >
-            <div className="agent-section-switcher">
-              {(["configuration", "workspace", "knowledge", "skills"] as RightPanelSection[]).map((section) => {
-                const meta = RIGHT_PANEL_META[section];
-                const SectionIcon = meta.icon;
-                const handleClick =
-                  section === "configuration"
-                    ? handleToggleConfiguration
-                    : section === "workspace"
-                      ? handleToggleWorkspace
-                      : section === "knowledge"
-                        ? handleToggleKnowledge
-                        : handleToggleSkills;
-                const isActive = rightSection === section;
-                return (
-                  <button
-                    key={section}
-                    type="button"
-                    className={`agent-section-button ${isActive ? "active" : ""}`}
-                    onClick={handleClick}
-                    aria-label={meta.ariaLabel}
-                    title={meta.title}
-                    style={{ position: "relative" }}
-                  >
-                    <SectionIcon size={18} />
-                    <span className={`agent-section-badge ${meta.badgeClass}`}>{sectionCounts[section]}</span>
-                    <span
-                      aria-hidden="true"
-                      style={{
-                        position: "absolute",
-                        left: 0,
-                        right: 0,
-                        bottom: -2,
-                        height: 3,
-                        backgroundColor: isActive ? "var(--cds-interactive, #0f62fe)" : "transparent",
-                        pointerEvents: "none",
-                        zIndex: 2,
-                      }}
-                    />
-                  </button>
-                );
-              })}
-            </div>
+            <Tabs selectedIndex={Math.max(0, rightSections.findIndex((section) => section.id === rightSection))}
+              onChange={({ selectedIndex }) => setRightSection(rightSections[selectedIndex].id)}>
+              <TabList className="agent-section-tabs" aria-label="Agent details sections">
+                {rightSections.map((section) => <Tab key={section.id}>{section.label}</Tab>)}
+              </TabList>
+              <div className="agent-detail-panels"><TabPanels>
+                {rightSections.map((section) => <TabPanel key={section.id} className="agent-detail-tab-panel">
+                  {section.id === rightSection && (
 
             <div className="agent-section-content">
               <div className="agent-section-header">
@@ -1569,8 +1629,12 @@ export function ChatLanding() {
               </div>
 
               <Layer level={2} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
-                <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
-              {rightSection === "configuration" && (
+                <div className="chat-panel-scroll" style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+              {rightSection === "configuration" && configLoading && <ContentSkeleton label="Loading agent details…" />}
+              {rightSection === "configuration" && !configLoading && isSupervisor && (
+                <SupervisorRoster members={agentConfig.supervisedAgents ?? []} agents={availableAgents} />
+              )}
+              {rightSection === "configuration" && !configLoading && !isSupervisor && (
                 <div style={{ padding: "1rem" }}>
                   <Accordion>
                     {agentConfig.apps.map((app) => (
@@ -1607,7 +1671,7 @@ export function ChatLanding() {
                                 </code>
                                 <span
                                   style={{
-                                    fontSize: "0.6875rem",
+                                    fontSize: "0.75rem",
                                     color: "var(--cds-text-secondary)",
                                     lineHeight: 1.4,
                                     display: "block",
@@ -1685,7 +1749,7 @@ export function ChatLanding() {
                 </div>
                 {workspaceTreeLoading ? (
                   <div style={{ padding: "1rem" }}>
-                    <SkeletonText paragraph lineCount={5} />
+                    <ContentSkeleton label="Loading workspace files…" rows={4} />
                   </div>
                 ) : workspaceTree.length === 0 ? (
                   <div
@@ -1693,7 +1757,7 @@ export function ChatLanding() {
                       padding: "2rem 1rem",
                       textAlign: "center",
                       color: "var(--cds-text-secondary)",
-                      fontSize: "0.8125rem",
+                      fontSize: "0.875rem",
                     }}
                   >
                     <Folder size={32} style={{ opacity: 0.25, display: "block", margin: "0 auto 0.75rem" }} />
@@ -1740,7 +1804,7 @@ export function ChatLanding() {
                 <div style={{ padding: "1rem" }}>
                 {skillsLoading ? (
                   <div style={{ padding: "1rem" }}>
-                    <SkeletonText paragraph lineCount={4} />
+                    <ContentSkeleton label="Loading skills…" />
                   </div>
                 ) : skills.length === 0 ? (
                   <div
@@ -1885,57 +1949,16 @@ export function ChatLanding() {
                 </div>
               </Layer>
             </div>
+                  )}
+                </TabPanel>)}
+              </TabPanels></div>
+            </Tabs>
           </div>
-        </div>
+        </aside>
       )}
 
-      {/* ── Floating re-open buttons when panels are closed ──────────────── */}
-      {activeView === "chat" && canShowLeft && !leftOpen && (
-        <button
-          onClick={() => setLeftOpen(true)}
-          title="Open conversations"
-          style={{
-            position: "fixed",
-            top: headerHeight + 12,
-            left: 8,
-            zIndex: 201,
-            background: "rgba(var(--cds-background-rgb, 255,255,255), 0.7)",
-            backdropFilter: "blur(8px)",
-            border: "1px solid var(--cds-border-subtle-01)",
-            borderRadius: "4px",
-            padding: "6px",
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            color: "var(--cds-text-primary)",
-          }}
-        >
-          <SidePanelOpen size={16} />
-        </button>
-      )}
-
-      {activeView === "chat" && canShowRight && !rightOpen && (
-        <button
-          onClick={() => setRightOpen(true)}
-          title="Open agent panel"
-          style={{
-            position: "fixed",
-            top: headerHeight + 12,
-            right: 8,
-            zIndex: 201,
-            background: "rgba(var(--cds-background-rgb, 255,255,255), 0.7)",
-            backdropFilter: "blur(8px)",
-            border: "1px solid var(--cds-border-subtle-01)",
-            borderRadius: "4px",
-            padding: "6px",
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            color: "var(--cds-text-primary)",
-          }}
-        >
-          <SidePanelOpen size={16} style={{ transform: "scaleX(-1)" }} />
-        </button>
+      {activeView === "chat" && windowW < BP_HIDE_RIGHT && (leftOpen || rightOpen) && (
+        <button className="chat-panel-scrim" aria-label="Close side panel" onClick={() => { setLeftOpen(false); setRightOpen(false); }} />
       )}
 
       <ComposedModal

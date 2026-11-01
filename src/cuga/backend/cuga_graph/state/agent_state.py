@@ -290,7 +290,11 @@ class VariablesManager(object):
         }
 
     def get_variables_summary(
-        self, variable_names: list[str] = None, last_n: Optional[int] = None, max_length: Optional[int] = 5000
+        self,
+        variable_names: list[str] = None,
+        last_n: Optional[int] = None,
+        max_length: Optional[int] = 5000,
+        preserve_order: bool = False,
     ) -> str:
         """
         Get a formatted summary of variables with their metadata.
@@ -301,6 +305,8 @@ class VariablesManager(object):
             last_n: Optional number of last created variables to include in summary.
                     If provided, overrides variable_names parameter.
             max_length: max preview length
+            preserve_order: List ``variable_names`` in the given order instead of
+                            creation order.
 
         Returns:
             str: Formatted string with variable summaries
@@ -330,11 +336,8 @@ class VariablesManager(object):
                 name: metadata for name, metadata in self.variables.items() if name in variable_names
             }
 
-            sorted_vars = [
-                (name, filtered_variables[name])
-                for name in self._creation_order
-                if name in filtered_variables
-            ]
+            order = variable_names if preserve_order else self._creation_order
+            sorted_vars = [(name, filtered_variables[name]) for name in order if name in filtered_variables]
         else:
             sorted_vars = [
                 (name, self.variables[name]) for name in self._creation_order if name in self.variables

@@ -77,6 +77,50 @@ def parse_markdown_to_steps(markdown_content: str) -> List[Dict[str, Any]]:
 VALID_FORMAT_TYPES = {"markdown", "json_schema", "direct"}
 
 
+_TEXT_TRIGGER_TYPES = ("keyword", "natural_language")
+
+
+def _is_blank(value: Any) -> bool:
+    """Return True for ``None`` or a whitespace-only string."""
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _normalize_output_formatter_triggers(triggers: Any) -> List[Any]:
+    """Map "no conditional trigger" to an explicit AlwaysTrigger for output formatters.
+
+    The UI represents "leave keywords empty to always format" as either ``[]`` or a
+    keyword/NL trigger with no (or only blank) values. Blank strings are stripped from
+    keyword/NL value lists — ``""`` is a substring of every text and would otherwise
+    match everything — and text triggers left with no values are dropped.
+
+    If no keyword/NL condition remains, ``{"type": "always"}`` is added (unless already
+    present) so non-text conditions such as app/tool/state triggers are preserved and
+    still enforced by the always-trigger pass. This matches the SDK and folder loader
+    defaults.
+    """
+    if not isinstance(triggers, list):
+        return triggers
+
+    kept: List[Any] = []
+    for t in triggers:
+        if isinstance(t, dict) and t.get("type") in _TEXT_TRIGGER_TYPES:
+            value = t.get("value")
+            if isinstance(value, list):
+                value = [v for v in value if not _is_blank(v)]
+                if not value:
+                    continue
+                t = {**t, "value": value}
+            elif _is_blank(value) or not value:
+                continue
+        kept.append(t)
+
+    has_text_trigger = any(isinstance(t, dict) and t.get("type") in _TEXT_TRIGGER_TYPES for t in kept)
+    has_always = any(isinstance(t, dict) and t.get("type") == "always" for t in kept)
+    if not has_text_trigger and not has_always:
+        kept.append({"type": "always"})
+    return kept
+
+
 def validate_output_formatter(data: Dict[str, Any]) -> List[str]:
     """Validate output formatter policy dict. Returns list of error messages (empty if valid)."""
     errs: List[str] = []
@@ -272,6 +316,7 @@ async def apply_policies_data_to_storage(
                     enabled=policy_data.get("enabled", True),
                 )
             elif policy_type == "output_formatter":
+                policy_data["triggers"] = _normalize_output_formatter_triggers(policy_data.get("triggers"))
                 val_errs = validate_output_formatter(policy_data)
                 if val_errs:
                     for e in val_errs:

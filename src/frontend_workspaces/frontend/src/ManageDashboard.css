@@ -1,186 +1,50 @@
 .manage-dashboard-page {
-  min-height: 100vh;
-  background: #f8fafc;
-  color: #1e293b;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-}
-
-.manage-dashboard-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 24px;
-  border-bottom: 1px solid #e2e8f0;
-  background: #fff;
-}
-
-.manage-dashboard-header h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  color: #1e293b;
-}
-
-.manage-dashboard-header a {
-  color: #64748b;
-  text-decoration: none;
-  font-size: 14px;
-}
-
-.manage-dashboard-header a:hover {
-  color: #334155;
-}
-
-.manage-dashboard-content {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 32px 24px;
-}
-
-.manage-dashboard-title {
-  margin: 0 0 8px 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #334155;
-}
-
-.manage-dashboard-subtitle {
-  margin: 0 0 24px 0;
-  font-size: 14px;
-  color: #64748b;
-}
-
-.manage-dashboard-list {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--cds-background);
+  color: var(--cds-text-primary);
 }
-
-.manage-dashboard-card {
-  display: block;
-  text-decoration: none;
-  color: inherit;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 20px 24px;
-  transition: border-color 0.2s, box-shadow 0.2s;
+.manage-dashboard-content {
+  flex: 1;
+  width: 100%;
+  max-width: 99rem;
+  margin: 3rem auto 0;
+  padding: 3rem 2rem;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
-
-.manage-dashboard-card:hover {
-  border-color: #cbd5e1;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
-}
-
-.manage-dashboard-card-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 12px;
-}
-
-.manage-dashboard-card-id {
-  font-size: 16px;
-  font-weight: 600;
-  color: #1e293b;
-}
-
-.manage-dashboard-card-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
-  font-size: 13px;
-  color: #64748b;
-}
-
-.manage-dashboard-card-desc {
-  font-size: 14px;
-  color: #475569;
-  line-height: 1.5;
-  margin-bottom: 14px;
-}
-
-.manage-dashboard-card-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-}
-
-.manage-dashboard-card-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  background: #6366f1;
-  border: none;
-  border-radius: 8px;
-  color: white;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  text-decoration: none;
-  transition: background 0.2s;
-}
-
-.manage-dashboard-card-btn:hover {
-  background: #4f46e5;
-}
-
-.manage-dashboard-card-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  color: #475569;
-  font-size: 13px;
-  font-weight: 500;
-  text-decoration: none;
-  transition: background 0.2s, color 0.2s;
-}
-
-.manage-dashboard-card-link:hover {
-  background: #e2e8f0;
-  color: #334155;
-}
-
-.manage-dashboard-tools-badge {
-  background: #e0f2fe;
-  color: #0369a1;
-  padding: 3px 8px;
-  border-radius: 4px;
-  font-weight: 500;
-}
-
-.manage-dashboard-version-badge {
-  background: #f3e8ff;
-  color: #6b21a8;
-  padding: 3px 8px;
-  border-radius: 4px;
-  font-weight: 500;
-}
-
-.manage-dashboard-logs-link {
-  color: #64748b;
-}
-
-.manage-dashboard-logs-link:hover {
-  color: #334155;
-}
-
-.manage-dashboard-loading,
-.manage-dashboard-error {
-  text-align: center;
-  padding: 48px 24px;
-  color: #64748b;
-  font-size: 14px;
-}
-
-.manage-dashboard-error {
-  color: #dc2626;
+.manage-dashboard-page-header { margin-bottom: 2rem; }
+.manage-dashboard-eyebrow { color: var(--cds-text-secondary); font-size: 0.75rem; margin-bottom: 0.5rem; }
+.manage-dashboard-title-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+.manage-dashboard-heading { font-size: 2.625rem; line-height: 1.2; font-weight: 300; }
+.manage-dashboard-description { margin-top: 1rem; color: var(--cds-text-secondary); font-size: 1rem; }
+.manage-dashboard-toolbar { display: flex; align-items: center; gap: 1rem; margin-bottom: 2rem; border-bottom: 1px solid var(--cds-border-subtle-01); }
+.manage-dashboard-toolbar .cds--search { max-width: 32rem; }
+.manage-dashboard-count { margin-left: auto; color: var(--cds-text-secondary); white-space: nowrap; font-size: 0.75rem; }
+.manage-dashboard-groups { display: flex; flex-direction: column; gap: 2.5rem; }
+.manage-dashboard-group-heading { display: flex; align-items: center; gap: 0.5rem; }
+.manage-dashboard-group-heading h2 { font-size: 1.25rem; font-weight: 400; }
+.manage-dashboard-group-description { margin: 0.5rem 0 1rem; color: var(--cds-text-secondary); }
+.manage-dashboard-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 23rem), 1fr)); gap: 1rem; }
+.manage-dashboard-card.cds--tile { display: flex; flex-direction: column; padding: 1.5rem; background: var(--cds-layer-01); min-width: 0; }
+.manage-dashboard-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
+.manage-dashboard-card-top > svg { color: var(--cds-icon-primary); }
+.manage-dashboard-card-name { font-size: 1.25rem; line-height: 1.4; font-weight: 400; overflow-wrap: anywhere; }
+.manage-dashboard-card-id { margin-top: 0.25rem; color: var(--cds-text-secondary); font-family: "IBM Plex Mono", monospace; font-size: 0.75rem; overflow-wrap: anywhere; }
+.manage-dashboard-card-description { flex: 1; min-height: 3rem; margin: 1rem 0 1.5rem; color: var(--cds-text-secondary); }
+.manage-dashboard-card-meta { display: flex; flex-wrap: wrap; gap: 1rem; padding-bottom: 1rem; color: var(--cds-text-secondary); font-size: 0.75rem; }
+.manage-dashboard-card-meta > span { display: inline-flex; align-items: center; gap: 0.375rem; }
+.manage-dashboard-card-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; padding-top: 1rem; border-top: 1px solid var(--cds-border-subtle-01); }
+.manage-dashboard-card-actions .cds--popover-container:last-child { margin-left: auto; }
+.manage-dashboard-empty { padding: 2rem; }
+.manage-dashboard-empty h2 { font-size: 1.25rem; margin-bottom: 0.5rem; }
+@media (max-width: 41.98rem) {
+  .manage-dashboard-content { padding: 2rem 1rem; }
+  .manage-dashboard-heading { font-size: 2rem; }
+  .manage-dashboard-toolbar { flex-wrap: wrap; padding-bottom: 0.5rem; }
+  .manage-dashboard-count { margin-left: 0; }
 }
