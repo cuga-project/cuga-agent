@@ -1,14 +1,11 @@
-"""Repair lone UTF-16 surrogates so text can be encoded as UTF-8 (#963).
+"""Repair lone UTF-16 surrogates in a model reply so it can be encoded as UTF-8 (#963).
 
 A lone surrogate (``"\\ud83d"``, half of an emoji) is a valid Python ``str``
-but cannot be encoded as UTF-8, so ``compile()``, ``json.dumps(...).encode()``,
-pydantic's ``model_dump_json()``, httpx request bodies and the trajectory file
-all fail on it. It reaches CUGA from model replies (a JSON ``\\udXXX`` escape),
-from tool results and code output (``print('\\ud83d\\ude00')`` builds two lone
-halves at runtime), and from user input.
+but cannot be encoded as UTF-8, so ``compile()``, the next request body,
+pydantic's ``model_dump_json()`` and the trajectory file all fail on it. A model
+reply holds one when the provider sends a JSON ``\\udXXX`` escape.
 
-Repair happens where text enters the agent, so history and state stay
-encodable for every later step:
+The reply is repaired before anything reads it, so the history stays encodable:
 
 - a split pair is joined back into the character it encodes
   (``"\\ud83d\\ude00"`` becomes ``"😀"``);
@@ -24,11 +21,11 @@ import copy
 import re
 from typing import Any
 
-from loguru import logger
-
 _SURROGATE = re.compile("[\ud800-\udfff]")
-# Deeper values are returned as-is, so a deeply nested tool result never hits RecursionError.
-_MAX_DEPTH = 100
+
+# The reply fields that hold model text: content (a string or a list of content
+# blocks), additional_kwargs (where reasoning_content lives) and tool-call arguments.
+_MESSAGE_FIELDS = ("content", "additional_kwargs", "tool_calls", "invalid_tool_calls")
 
 
 def repair_surrogates(text: str) -> str:
@@ -38,90 +35,37 @@ def repair_surrogates(text: str) -> str:
     return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
 
 
-def repair_surrogates_in(value: Any, _depth: int = 0) -> Any:
-    """Repair every string inside ``value``: dict keys and values, list and tuple items.
+def _repair_reply_value(value: Any) -> Any:
+    """Repair the strings in one reply field: a string, or JSON-like lists and dict values.
 
-    Keys are repaired by :func:`_repair_key`, so two keys never merge into one.
-
-    Other objects, and anything nested deeper than ``_MAX_DEPTH``, are returned
-    as-is. A container is copied only when something inside it changed;
-    otherwise the same object comes back.
+    Reply fields are parsed from the provider's JSON, so they hold only strings,
+    lists and dicts, with no cycles. Dict keys are not changed. Returns the same
+    object when nothing needed repair.
     """
     if isinstance(value, str):
         return repair_surrogates(value)
-    if _depth >= _MAX_DEPTH:
-        return value
+    if isinstance(value, list):
+        items = [_repair_reply_value(v) for v in value]
+        return value if all(n is o for n, o in zip(items, value)) else items
     if isinstance(value, dict):
-        keys = [_repair_key(k) for k in value]
-        values = [repair_surrogates_in(v, _depth + 1) for v in value.values()]
-        if _unchanged(keys, value) and _unchanged(values, value.values()):
-            return value
-        return _rebuild_dict(value, keys, values)
-    if isinstance(value, (list, tuple)):
-        items = [repair_surrogates_in(v, _depth + 1) for v in value]
-        if _unchanged(items, value):
-            return value
-        return items if isinstance(value, list) else tuple(items)
+        items = {k: _repair_reply_value(v) for k, v in value.items()}
+        return value if all(items[k] is v for k, v in value.items()) else items
     return value
 
 
-def _repair_key(key: Any) -> Any:
-    """Repair a dict key without merging keys.
-
-    U+FFFD would turn ``"\\ud800"`` and ``"\\udc00"`` into the same key and drop a
-    value. A key keeps a lone half as its escape text instead (``"\\ud800"``), which
-    differs per code point; a split pair is still joined.
-    """
-    if isinstance(key, tuple):
-        repaired = tuple(_repair_key(k) for k in key)
-        return key if _unchanged(repaired, key) else repaired
-    if not isinstance(key, str) or key.isascii() or not _SURROGATE.search(key):
-        return key
-    joined = key.encode("utf-16", "surrogatepass").decode("utf-16", "surrogatepass")
-    return joined.encode("utf-8", "backslashreplace").decode("utf-8")
-
-
-def _rebuild_dict(original: dict, keys: list, values: list) -> dict:
-    """Rebuild ``original`` with repaired keys; a key that needed no repair wins a collision.
-
-    A repaired key can still equal another key: ``"\\ud83d\\ude00"`` joins to an
-    existing ``"😀"``, or ``"\\ud800"`` becomes an existing literal ``"\\\\ud800"``.
-    The clean key keeps its value and the collision is logged, never silent.
-    """
-    rebuilt: dict = {}
-    for old_key, key, item in zip(original, keys, values):
-        if key in rebuilt:
-            if old_key is key:  # the clean key: replace what a repaired key put there
-                rebuilt[key] = item
-            logger.warning("Repairing lone surrogates merged two dict keys into {!r}; kept one value", key)
-            continue
-        rebuilt[key] = item
-    return rebuilt
-
-
-def _unchanged(repaired: list, original: Any) -> bool:
-    return all(new is old for new, old in zip(repaired, original))
-
-
-_MESSAGE_FIELDS = ("content", "additional_kwargs", "tool_calls", "invalid_tool_calls")
-
-
 def repair_message(message: Any) -> Any:
-    """Repair a LangChain message, or a ``{"role", "content"}`` dict, without mutating it.
+    """Repair a model reply without mutating it.
 
-    Covers ``content`` (a string or a list of content blocks), ``additional_kwargs``
-    (where ``reasoning_content`` lives) and the tool-call arguments. Returns the
-    same object when nothing needed repair, otherwise a copy. An object without
-    ``model_copy`` (``_FakeResponse`` in ``ainvoke_model``) gets a shallow copy.
+    Returns the same object when nothing needed repair, otherwise a copy. An
+    object without ``model_copy`` (``_FakeResponse`` in ``ainvoke_model``) gets
+    a shallow copy.
     """
-    if isinstance(message, dict):
-        return repair_surrogates_in(message)
     update = {}
     for field in _MESSAGE_FIELDS:
         current = getattr(message, field, None)
         if current is None:
             continue
-        repaired = repair_surrogates_in(current)
+        repaired = _repair_reply_value(current)
         if repaired is not current:
             update[field] = repaired
     if not update:
@@ -132,9 +76,3 @@ def repair_message(message: Any) -> Any:
     for field, value in update.items():
         setattr(repaired, field, value)
     return repaired
-
-
-def repair_messages(messages: list) -> list:
-    """Apply :func:`repair_message` to each message; returns the same list if all were clean."""
-    repaired = [repair_message(m) for m in messages]
-    return messages if _unchanged(repaired, messages) else repaired
