@@ -41,6 +41,13 @@ export function findShadowRoots(anchor: HTMLElement | null): ShadowRoot[] {
       }
     }
   }
+  // MutationObserver cannot cross a shadow boundary. Include the input's
+  // nested roots so callers can observe textarea-to-rich-editor replacements.
+  for (let index = 0; index < roots.length; index += 1) {
+    roots[index].querySelectorAll("*").forEach((element) => {
+      if (element.shadowRoot && !roots.includes(element.shadowRoot)) roots.push(element.shadowRoot);
+    });
+  }
   return roots;
 }
 
@@ -97,7 +104,7 @@ export function findComposerInput(anchor: HTMLElement | null): ComposerInput | n
  *  re-resolve the composer reference. */
 export function isComposerStale(el: ComposerInput | null): boolean {
   if (!el) return true;
-  if (!document.contains(el)) return true;
+  if (!el.isConnected) return true;
   return !isVisibleComposer(el);
 }
 

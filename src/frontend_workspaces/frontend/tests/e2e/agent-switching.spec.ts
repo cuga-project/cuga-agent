@@ -82,10 +82,10 @@ test("recent chats and history switch with the selected agent", async ({ page })
 test("configuration tools switch with the selected agent", async ({ page }) => {
   await stubAgents(page);
   await page.goto("/chat/weatherbot");
-  await page.getByRole("button", { name: "Configuration section", exact: true }).click();
+  await page.getByRole("tab", { name: /^(Tools|Agents)$/, exact: true }).click();
   await expect(page.getByText("weatherbot_app", { exact: true })).toBeVisible();
   await selectAgent(page, "Price specialist");
-  await page.getByRole("button", { name: "Configuration section", exact: true }).click();
+  await page.getByRole("tab", { name: /^(Tools|Agents)$/, exact: true }).click();
   await expect(page.getByText("pricebot_app", { exact: true })).toBeVisible();
   await expect(page.getByText("weatherbot_app", { exact: true })).toHaveCount(0);
 });
@@ -141,12 +141,12 @@ test("late history from the previous agent does not appear after switching", asy
 test("a failed tool lookup after switching does not show another agent's configuration", async ({ page }) => {
   await stubAgents(page, { failToolsFor: "pricebot" });
   await page.goto("/chat/weatherbot");
-  await page.getByRole("button", { name: "Configuration section", exact: true }).click();
+  await page.getByRole("tab", { name: /^(Tools|Agents)$/, exact: true }).click();
   await expect(page.getByText("weatherbot_app", { exact: true })).toBeVisible();
   await selectAgent(page, "Price specialist");
-  await page.getByRole("button", { name: "Configuration section", exact: true }).click();
+  await page.getByRole("tab", { name: /^(Tools|Agents)$/, exact: true }).click();
   await expect(page.getByText("Configuration Load Error", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Configuration section", exact: true })).toHaveText("0");
+  await expect(page.locator(".agent-section-header .cds--tag")).toHaveText("0");
   await expect(page.getByText("weatherbot_app", { exact: true })).toHaveCount(0);
   await expect(page.getByText("CUGA Default Agent", { exact: true })).toHaveCount(0);
 });
@@ -285,7 +285,7 @@ test("rapid conversation selection during hydration keeps the last selected tran
     await page.getByRole("button", { name: /weatherbot recent other/ }).click();
     await expect(page.getByText("Saved answer for weatherbot-other.", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Close panel", exact: true }).last().click();
-    await page.getByTestId("main_panel").getByRole("button", { name: "Restart conversation", exact: true }).click();
+    await page.getByRole("region", { name: "Chat", exact: true }).getByRole("button", { name: "Restart conversation", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Hello, how can I help you today?" })).toBeVisible();
   } finally { releaseDraft(); }
 });
@@ -305,7 +305,7 @@ test("restarting while saved history is pending keeps the conversation empty", a
     await page.getByRole("button", { name: /weatherbot recent thread/ }).click();
     await requested;
     await page.getByRole("button", { name: "Close panel", exact: true }).last().click();
-    await page.getByTestId("main_panel").getByRole("button", { name: "Restart conversation", exact: true }).click();
+    await page.getByRole("region", { name: "Chat", exact: true }).getByRole("button", { name: "Restart conversation", exact: true }).click();
     const response = page.waitForResponse("**/conversation-stream-events/weatherbot-thread?*");
     release();
     await (await response).finished();
@@ -314,7 +314,7 @@ test("restarting while saved history is pending keeps the conversation empty", a
     await expect(page.getByRole("heading", { name: "Hello, how can I help you today?" })).toBeVisible();
     await expect(page.locator("code").first()).not.toHaveText("weatherbot-thread");
     const newDraft = await page.locator("code").first().textContent();
-    const composer = page.getByTestId("home_screen_panel").getByRole("textbox");
+    const composer = page.getByRole("region", { name: "Chat", exact: true }).getByRole("textbox");
     await composer.fill("Weather after restart");
     await composer.press("Enter");
     await expect(page.getByText("Fresh conversation answer.", { exact: true })).toBeVisible();

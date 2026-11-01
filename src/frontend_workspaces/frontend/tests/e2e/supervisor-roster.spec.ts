@@ -27,7 +27,7 @@ async function stub(page, members = [{ kind: "internal", ref: "weatherbot" }, { 
 test("supervisor panel shows published members instead of the global tool registry", async ({ page }) => {
   await stub(page);
   await page.goto("/chat/cuga");
-  await page.getByRole("button", { name: "Configuration section", exact: true }).click();
+  await page.getByRole("tab", { name: /^(Tools|Agents)$/, exact: true }).click();
   const roster = page.getByRole("region", { name: "Supervised agents", exact: true });
   await expect(page.getByRole("heading", { name: "Supervised agents", exact: true })).toBeVisible();
   await expect(roster.getByText("Weather specialist", { exact: true })).toBeVisible();
@@ -39,7 +39,7 @@ test("supervisor panel shows published members instead of the global tool regist
   await expect(page.getByText("Published agents available for delegation", { exact: true })).toBeVisible();
   await roster.getByRole("link", { name: "Chat with Weather specialist", exact: true }).click();
   await expect(page).toHaveURL(/\/chat\/weatherbot$/);
-  await page.getByRole("button", { name: "Configuration section", exact: true }).click();
+  await page.getByRole("tab", { name: /^(Tools|Agents)$/, exact: true }).click();
   await expect(page.getByText("cuga_web", { exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Supervised agents", exact: true })).toHaveCount(0);
 });
@@ -47,11 +47,11 @@ test("supervisor panel shows published members instead of the global tool regist
 test("switching supervisors replaces the roster", async ({ page }) => {
   await stub(page);
   await page.goto("/chat/cuga");
-  await page.getByRole("button", { name: "Configuration section", exact: true }).click();
+  await page.getByRole("tab", { name: /^(Tools|Agents)$/, exact: true }).click();
   await expect(page.getByRole("link", { name: "Chat with Weather specialist", exact: true })).toBeVisible();
   await page.getByRole("combobox", { name: "Agent", exact: true }).click();
   await page.getByRole("option", { name: "Other supervisor Supervisor", exact: true }).click();
-  await page.getByRole("button", { name: "Configuration section", exact: true }).click();
+  await page.getByRole("tab", { name: /^(Tools|Agents)$/, exact: true }).click();
   await expect(page.getByRole("link", { name: "Chat with Price specialist", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Chat with Weather specialist", exact: true })).toHaveCount(0);
 });
@@ -59,7 +59,7 @@ test("switching supervisors replaces the roster", async ({ page }) => {
 test("empty supervisor roster does not imply access to all agents", async ({ page }) => {
   await stub(page, []);
   await page.goto("/chat/cuga");
-  await page.getByRole("button", { name: "Configuration section", exact: true }).click();
+  await page.getByRole("tab", { name: /^(Tools|Agents)$/, exact: true }).click();
   await expect(page.getByText("No agents are assigned to this supervisor.", { exact: true })).toBeVisible();
   await expect(page.getByText("cuga_web", { exact: true })).toHaveCount(0);
 });
@@ -67,7 +67,7 @@ test("empty supervisor roster does not imply access to all agents", async ({ pag
 test("deleted member stays visible as unavailable without a chat link", async ({ page }) => {
   await stub(page, [{ kind: "internal", ref: "deleted-agent" }]);
   await page.goto("/chat/cuga");
-  await page.getByRole("button", { name: "Configuration section", exact: true }).click();
+  await page.getByRole("tab", { name: /^(Tools|Agents)$/, exact: true }).click();
   await expect(page.getByText("Agent unavailable. Update the supervisor configuration.", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: /Chat with deleted-agent/ })).toHaveCount(0);
 });

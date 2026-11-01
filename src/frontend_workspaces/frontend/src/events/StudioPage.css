@@ -2,12 +2,16 @@
   width: 100%;
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .studio-content {
   flex: 1;
+  min-height: 0;
   overflow: auto;
+  overscroll-behavior-y: contain;
   padding: 2rem 3rem;
   margin-top: 3rem;
   width: 100%;
@@ -28,14 +32,14 @@
 }
 
 .studio-muted {
-  color: #525252;
+  color: var(--cds-text-secondary);
   line-height: 1.5;
   font-size: 0.875rem;
 }
 
 .studio-scope code,
 .studio-muted code {
-  background: #f4f4f4;
+  background: var(--cds-layer-02);
   padding: 0 0.25rem;
   border-radius: 2px;
   font-size: 0.8125rem;
@@ -44,7 +48,7 @@
 /* card grids for Channels / Integrations / Flows / Examples */
 .studio-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr));
   gap: 1rem;
   margin-top: 1rem;
 }
@@ -82,7 +86,7 @@
 
 .studio-example-utterance {
   font-style: italic;
-  color: #161616;
+  color: var(--cds-text-primary);
   margin: 0.25rem 0 0.5rem;
   line-height: 1.4;
 }
@@ -94,16 +98,16 @@
   padding: 3px 10px;
   font-size: 12px;
   font-style: italic;
-  color: #0f62fe;
-  background: #edf5ff;
-  border: 1px solid #d0e2ff;
-  border-radius: 14px;
+  color: var(--cds-interactive);
+  background: var(--cds-highlight);
+  border: 1px solid var(--cds-highlight);
+  border-radius: 0;
   cursor: pointer;
   text-align: left;
   line-height: 1.35;
 }
 .studio-example-chip:hover {
-  background: #d0e2ff;
+  background: var(--cds-highlight);
 }
 
 /* concierge chat */
@@ -119,8 +123,8 @@
   flex: 1;
   overflow: auto;
   padding: 0.5rem;
-  border: 1px solid #e0e0e0;
-  background: #f4f4f4;
+  border: 1px solid var(--cds-border-subtle-01);
+  background: var(--cds-layer-02);
   margin-bottom: 1rem;
 }
 
@@ -141,14 +145,14 @@
   white-space: pre-wrap;
   word-break: break-word;
   font-family: inherit;
-  background: #ffffff;
+  background: var(--cds-layer-01);
   padding: 0.75rem;
-  border-radius: 4px;
+  border-radius: 0;
   line-height: 1.5;
 }
 
 .studio-msg-user .studio-msg-text {
-  background: #edf5ff;
+  background: var(--cds-highlight);
 }
 
 .studio-chat-input {
@@ -169,10 +173,10 @@
    visual anchor and the facts sit underneath it. Carbon blue-60 rail to read as
    "action needed", not "error". */
 .studio-arm-card {
-  background: #ffffff;
-  border: 1px solid #c6c6c6;
-  border-left: 3px solid #0f62fe;
-  border-radius: 4px;
+  background: var(--cds-layer-01);
+  border: 1px solid var(--cds-border-strong-01);
+  border-left: 3px solid var(--cds-interactive);
+  border-radius: 0;
   padding: 0.875rem 1rem;
 }
 
@@ -185,14 +189,14 @@
   font-size: 0.75rem;
   letter-spacing: 0.02em;
   text-transform: uppercase;
-  color: #525252;
+  color: var(--cds-text-secondary);
   margin-bottom: 0.25rem;
 }
 
 .studio-arm-prompt {
   margin: 0 0 0.875rem;
   padding: 0.625rem 0.75rem;
-  background: #f4f4f4;
+  background: var(--cds-layer-02);
   border-left: 2px solid #8d8d8d;
   font-style: italic;
   line-height: 1.5;
@@ -209,7 +213,7 @@
 }
 
 .studio-arm-facts dt {
-  color: #525252;
+  color: var(--cds-text-secondary);
 }
 
 .studio-arm-facts dd {
@@ -226,4 +230,31 @@
 .studio-arm-stale {
   margin: 0;
   font-size: 0.75rem;
+}
+
+.studio-page { background: var(--cds-background); height: 100dvh; }
+.studio-content { max-width: 99rem; margin-inline: auto; }
+.studio-heading-row { flex-wrap: wrap; gap: 1rem; }
+.studio-title { font-size: 2.625rem; font-weight: 300; }
+.studio-card { background: var(--cds-layer-01); padding: 1.5rem; }
+.studio-example-chip { font-style: normal; border-radius: 0; min-height: 2rem; }
+@media (max-width: 41.98rem) {
+  .studio-content { padding: 2rem 1rem; }
+  .studio-title { font-size: 2rem; }
+  .studio-content .cds--tab-content { padding-inline: 0; }
+  .studio-content .cds--data-table-container { overflow-x: auto; }
+}
+
+/* Studio has application sections, not twelve peer tabs. Keep the hierarchy
+   visible on desktop and use a labelled native Carbon select on narrow screens. */
+.studio-content { max-inline-size: none; }
+.studio-workspace { display: grid; grid-template-columns: 14rem minmax(0, 1fr); gap: 2rem; align-items: start; }
+.studio-section-nav.cds--side-nav { overscroll-behavior-y: contain; position: sticky; inset-block-start: 0; inline-size: 14rem; block-size: auto; max-block-size: calc(100dvh - 5rem); overflow-y: auto; z-index: 1; background: var(--cds-layer-01); }
+.studio-section-content { min-inline-size: 0; }
+.studio-section-title { font-size: 1.25rem; line-height: 1.4; margin-block-end: 1rem; }
+.studio-section-select { display: none; }
+@media (max-width: 65.98rem) {
+  .studio-workspace { grid-template-columns: minmax(0, 1fr); }
+  .studio-section-nav.cds--side-nav { display: none; }
+  .studio-section-select { display: block; margin-block-end: 1.5rem; }
 }
