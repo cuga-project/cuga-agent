@@ -86,9 +86,8 @@ async def test_call_api_timeout():
     from cuga.config import settings
 
     # Mock the HTTP call to simulate a timeout
-    with patch(
-        'cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry.aiohttp.ClientSession'
-    ) as mock_session_class:
+    # call_api takes the shared session from get_http_session, so patch it where call_api looks it up
+    with patch('cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry.get_http_session') as mock_get:
         # Create a mock post context manager that raises TimeoutError
         async def timeout_post_context(*args, **kwargs):
             # Simulate timeout by raising asyncio.TimeoutError
@@ -99,14 +98,10 @@ async def test_call_api_timeout():
         mock_post_context.__aenter__ = AsyncMock(side_effect=timeout_post_context)
         mock_post_context.__aexit__ = AsyncMock(return_value=None)
 
-        # Create a mock session that is an async context manager
         mock_session = AsyncMock()
         mock_session.post = MagicMock(return_value=mock_post_context)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
 
-        # Make ClientSession() return the mock session
-        mock_session_class.return_value = mock_session
+        mock_get.return_value = mock_session
 
         # Set a short timeout
         original_timeout = getattr(settings.advanced_features, 'tool_call_timeout', 30)
