@@ -55,22 +55,24 @@ Prefer to try it in your browser first? [Open the quickstart notebook in Colab](
 
 ## See what you can build
 
-Configure tools and policies beside a draft chat, then publish a version for users.
+Configure tools and policies beside a draft chat, then publish a version for users. The refreshed workspace uses IBM Carbon components for navigation, forms, dialogs, and loading states.
 
-![Current CUGA manager UI showing connected CRM and Workspace tools, three policies, draft chat, and Publish](docs/images/readme/manager.jpg)
+![CUGA IBM Carbon workspace with connected CRM and Workspace tools, draft chat, and Publish](docs/images/readme/manager.jpg)
 
 *Current UI, captured from this repository with illustrative Revenue Operations configuration data. Internal endpoints and version labels are examples.*
 
 | Set approval policies | Manage specialized agents |
 | --- | --- |
-| ![Tool Approval configuration requiring human approval for CRM account updates](docs/images/readme/policies.jpg) | ![Agent dashboard with Revenue Operations, Knowledge Assistant, and Operations Supervisor examples](docs/images/readme/agents.jpg) |
+| ![IBM Carbon policy configuration dialog with sample CRM approval and protection policies](docs/images/readme/policies.jpg) | ![Agent dashboard with Revenue Operations, Knowledge Assistant, and Operations Supervisor examples](docs/images/readme/agents.jpg) |
 | Choose which tools need approval and show the proposed code before execution. | Configure individual agents and supervisors for different business workflows. |
 
-### Watch the product tour
+### Watch the Carbon experience tour
 
-https://github.com/user-attachments/assets/cb21fd61-b04b-4188-8f3e-e33197df1b9e
+[![Play the CUGA IBM Carbon experience tour](docs/images/readme/carbon-tour-poster.png)](docs/images/readme/carbon-tour.mp4)
 
-*Visual tour of the current UI with sample configuration, flows, run history, and memory records. It does not show a live agent run. [Media details](docs/readme/media.md).*
+**[Watch the 44-second narrated demo](docs/images/readme/carbon-tour.mp4)** · **[Read the transcript](docs/readme/carbon-tour.md)** · **[English captions](docs/images/readme/carbon-tour.vtt)**
+
+*Explore the refreshed agent dashboard, configuration, chat, knowledge, memory, Events Studio, loading states, and mobile layouts. Product screens use illustrative data; this is a visual tour, not a live agent run. [Media details](docs/readme/media.md).*
 
 ## From a business request to a completed workflow
 
