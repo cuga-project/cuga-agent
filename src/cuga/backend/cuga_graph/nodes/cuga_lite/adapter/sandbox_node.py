@@ -48,7 +48,6 @@ from cuga.backend.cuga_graph.utils.context_management_utils import (
     prepare_reflection_context,
     truncate_text_for_context,
 )
-from cuga.backend.cuga_graph.utils.surrogates import repair_surrogates_in
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 from cuga.backend.llm.models import LLMManager
 from cuga.config import settings
@@ -393,9 +392,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                         },
                         config=config or {},
                     )
-                    # The reply joins the history: repair it like any model reply (#963).
-                    # Its inputs come from the history and the output, already repaired.
-                    reflection_output = repair_surrogates_in(reflection_result.content)
+                    reflection_output = reflection_result.content
                     logger.debug(f"Reflection output:\n{reflection_output}")
                 except Exception as e:
                     logger.warning(f"Reflection failed: {e}")
