@@ -1,3 +1,4 @@
+import hashlib
 from typing import Optional
 
 import httpx
@@ -244,6 +245,8 @@ async def get_current_user(request: Request) -> Optional[UserInfo]:
     try:
         payload = validator.validate_and_decode(token)
         user = validator.to_user_info(payload)
+        # Bind downstream gateway credentials to the token actually validated here.
+        request.state.auth_token_hash = hashlib.sha256(token.encode()).hexdigest()
         logger.debug(
             "Authenticated user sub={} roles={} issuer={} all_claims={}",
             user.sub,

@@ -76,8 +76,8 @@ def decode_idp_cookie(
 
 # --- exchange and cache ------------------------------------------------------------------
 
-_cache: dict[tuple[str, str], tuple[str, float]] = {}
-_locks: dict[tuple[str, str], asyncio.Lock] = {}
+_cache: dict[tuple[str, str, str], tuple[str, float]] = {}
+_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
 
 
 def _access_error(status: int, body: str, instance_id: str) -> GatewayAccessError:
@@ -127,12 +127,13 @@ class GatewayTokenProvider:
     def __init__(self, sub: str, idp_token: str):
         self.sub = sub
         self._idp_token = idp_token
+        self._credential_hash = hashlib.sha256(idp_token.encode()).hexdigest()
 
     def __repr__(self) -> str:  # never print the token
         return f"GatewayTokenProvider(sub={self.sub!r})"
 
     async def token(self, instance_id: str) -> str:
-        key = (self.sub, instance_id)
+        key = (self.sub, self._credential_hash, instance_id)
         lock = _locks.setdefault(key, asyncio.Lock())
         async with lock:
             cached = _cache.get(key)
@@ -168,6 +169,12 @@ def provider_from_request(request: Any, user: Any) -> Optional[GatewayTokenProvi
     session_token = request.cookies.get(
         getattr(auth, "session_cookie_name", "cuga_session") or "cuga_session"
     )
+    # Authentication gives bearer tokens precedence. Never combine its identity with
+    # an IdP cookie bound to a different session, even if both are valid.
+    if not session_token or getattr(request.state, "auth_token_hash", None) != _session_binding(
+        session_token
+    ):
+        return None
     max_age = getattr(auth, "session_max_age", None)
     idp_token = decode_idp_cookie(request.cookies.get(IDP_COOKIE_NAME), session_token, max_age=max_age)
     return GatewayTokenProvider(sub, idp_token) if idp_token else None

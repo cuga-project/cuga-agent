@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import aiohttp
 import pytest
+from starlette.requests import Request
 from cryptography.fernet import Fernet
 
 from cuga.backend.server.auth import gateway_tokens
@@ -108,21 +109,69 @@ def test_no_cookie_without_an_encryption_key(monkeypatch):
     assert not gateway_tokens.user_tokens_available()
 
 
-def test_provider_from_request_needs_the_matching_session(fake):
-    class Req:
-        def __init__(self, cookies):
-            self.cookies = cookies
+async def test_provider_uses_only_the_credential_selected_by_authentication(fake, monkeypatch):
+    from cuga.backend.server.auth import dependencies
+    from cuga.backend.server.auth.models import UserInfo
 
-    class User:
-        sub = "user-1"
+    class Validator:
+        jwks_uri = "test"
 
-    cookie = gateway_tokens.encode_idp_cookie("idp-token", "session-a")
-    good = Req({"cuga_session": "session-a", gateway_tokens.IDP_COOKIE_NAME: cookie})
-    stolen = Req({"cuga_session": "session-b", gateway_tokens.IDP_COOKIE_NAME: cookie})
-    assert gateway_tokens.provider_from_request(good, User()).sub == "user-1"
-    assert gateway_tokens.provider_from_request(stolen, User()) is None
-    assert gateway_tokens.provider_from_request(good, None) is None
-    assert "idp-token" not in repr(gateway_tokens.provider_from_request(good, User()))
+        def validate_and_decode(self, token):
+            return {"sub": {"session-a": "alice", "session-b": "bob"}[token]}
+
+        def to_user_info(self, payload):
+            return UserInfo(sub=payload["sub"])
+
+    async def validator_for_token(token):
+        return Validator()
+
+    monkeypatch.setattr(dependencies, "_auth_enabled", lambda: True)
+    monkeypatch.setattr(dependencies, "_get_validator_for_token", validator_for_token)
+    cookie = gateway_tokens.encode_idp_cookie("idp-a", "session-a")
+
+    def request(bearer=None, session=None, idp=None):
+        headers = []
+        if bearer:
+            headers.append((b"authorization", f"Bearer {bearer}".encode()))
+        cookies = []
+        if session:
+            cookies.append(f"cuga_session={session}")
+        if idp:
+            cookies.append(f"{gateway_tokens.IDP_COOKIE_NAME}={idp}")
+        if cookies:
+            headers.append((b"cookie", "; ".join(cookies).encode()))
+        return Request({"type": "http", "headers": headers, "method": "POST", "path": "/"})
+
+    # Warm Alice's cache before testing the mixed-credential request.
+    cookie_request = request(session="session-a", idp=cookie)
+    alice = await dependencies.get_current_user(cookie_request)
+    provider = gateway_tokens.provider_from_request(cookie_request, alice)
+    assert await provider.token(INSTANCE) == "instance-token-1"
+    assert "idp-a" not in repr(provider)
+
+    matching = request(bearer="session-a", session="session-a", idp=cookie)
+    matching_user = await dependencies.get_current_user(matching)
+    assert (
+        await gateway_tokens.provider_from_request(matching, matching_user).token(INSTANCE)
+        == "instance-token-1"
+    )
+
+    mixed = request(bearer="session-b", session="session-a", idp=cookie)
+    bob = await dependencies.get_current_user(mixed)
+    assert bob.sub == "bob"
+    assert gateway_tokens.provider_from_request(mixed, bob) is None
+    assert fake.exchanges == 1
+
+    bearer_only = request(bearer="session-b")
+    assert (
+        gateway_tokens.provider_from_request(bearer_only, await dependencies.get_current_user(bearer_only))
+        is None
+    )
+    stolen = request(session="session-b", idp=cookie)
+    assert gateway_tokens.provider_from_request(stolen, await dependencies.get_current_user(stolen)) is None
+    assert gateway_tokens.provider_from_request(cookie_request, None) is None
+    # A user object without proof of the selected credential is insufficient.
+    assert gateway_tokens.provider_from_request(request(session="session-a", idp=cookie), alice) is None
 
 
 # --- exchange ----------------------------------------------------------------------------
@@ -134,7 +183,9 @@ async def test_exchange_is_cached_per_user_and_instance(fake):
     assert await alice.token(INSTANCE) == "instance-token-1"
     bob = gateway_tokens.GatewayTokenProvider("bob", "idp-b")
     assert await bob.token(INSTANCE) == "instance-token-2"
-    assert fake.exchanges == 2
+    other_credential = gateway_tokens.GatewayTokenProvider("alice", "idp-other")
+    assert await other_credential.token(INSTANCE) == "instance-token-3"
+    assert fake.exchanges == 3
 
 
 @pytest.mark.parametrize(
