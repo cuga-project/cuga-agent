@@ -195,6 +195,33 @@ def test_variables_are_not_charged_as_tool_calls(monkeypatch):
     assert update["tool_calls_used_run"] == 0
 
 
+def test_supervisor_code_stays_in_process_when_auto_would_pick_subprocess(monkeypatch):
+    """python_backend "auto" picks the sandboxed subprocess on a host with an OS
+    sandbox. Supervisor delegation walks the executing frames for its context, so
+    the supervisor must keep running its code in-process: sync helpers stay sync."""
+    import asyncio
+
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy import execution_policy
+    from cuga.config import settings
+
+    monkeypatch.setattr(execution_policy, "os_sandbox_available", lambda _settings: True)
+    monkeypatch.setattr(settings.execution, "python_backend", "auto", raising=False)
+    assert execution_policy.ExecutionRouter.resolve(settings).python_backend == "subprocess"
+    _set_cap(monkeypatch, 1)
+    _skip_policy(monkeypatch)
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool.core_append",
+        lambda adapter, state, msgs: ([], None),
+    )
+
+    def helper(x):
+        return x * 2
+
+    node = create_execute_agent_tool_node(_make_adapter({"helper": helper}))
+    update = asyncio.run(node(_make_state("doubled = [helper(i) for i in range(3)]\nprint(doubled)\n")))
+    assert update.get("error") is None, update.get("error")
+
+
 def test_default_cap_is_256():
     """The shipped default and the in-code fallback must agree; a mismatch means
     a deployment without the settings key silently gets a different budget."""

@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from langchain_core.messages import ToolMessage
 
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy import execution_policy
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter import tool_exec_node as te
 from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.deferred import discovered_in_history
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.rpc_client.cuga_tools import FoundTools
@@ -141,9 +142,16 @@ async def test_calls_through_the_bridge_are_recorded():
 
 
 def test_the_hybrid_prompt_describes_run_command_only_when_it_is_bound():
-    assert "cuga_tools" in render_fc_prompt(hybrid=True, shell=True)
-    assert "cuga_tools" not in render_fc_prompt(hybrid=True, shell=False)
-    assert "cuga_tools" not in render_fc_prompt(hybrid=False, shell=True)
+    assert "`run_command`" in render_fc_prompt(hybrid=True, shell=True)
+    assert "`run_command`" not in render_fc_prompt(hybrid=True, shell=False)
+    assert "`run_command`" not in render_fc_prompt(hybrid=False, shell=True)
+
+
+def test_the_prompt_does_not_advertise_the_shell_tool_bridge():
+    """Tools are called natively or from execute_python; the shell bridge
+    (``cuga-tool`` from bash) still works but is not advertised in the prompt."""
+    prompt = render_fc_prompt(hybrid=True, shell=True)
+    assert "cuga-tool" not in prompt and "cuga_tools" not in prompt
 
 
 def test_the_description_states_the_real_import_rule(monkeypatch):
@@ -152,6 +160,11 @@ def test_the_description_states_the_real_import_rule(monkeypatch):
     monkeypatch.setattr(benchmark_mode, "is_benchmark_mode", lambda: True)
     assert "Any standard-library module" in ep.execute_python_description()
     monkeypatch.setattr(benchmark_mode, "is_benchmark_mode", lambda: False)
+    # No OS sandbox: python_backend "auto" resolves to in-process, bounded by the allowlist.
+    monkeypatch.setattr(execution_policy, "os_sandbox_available", lambda _settings: False)
     restricted = ep.execute_python_description()
     assert "Allowed imports:" in restricted and "statistics" in restricted
     assert "tool_search" in restricted
+    # With one, "auto" resolves to the sandboxed subprocess: the whole stdlib.
+    monkeypatch.setattr(execution_policy, "os_sandbox_available", lambda _settings: True)
+    assert "Any standard-library module" in ep.execute_python_description()

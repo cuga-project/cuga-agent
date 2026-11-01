@@ -181,6 +181,12 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
 
         try:
             exec_plan = ExecutionRouter.resolve(settings)
+            if exec_plan.python_backend == "subprocess":
+                # Delegation finds its context by walking the executing frames for
+                # SUPERVISOR_EXEC_KEY (delegation.py); a child process has no such
+                # frame, and plain callables in the namespace would turn into async
+                # RPC stubs. Supervisor code stays in-process.
+                exec_plan = ExecutionRouter.resolve(settings, mode="local")
             if exec_plan.split_execution_active:
                 logger.info(
                     "Supervisor split execution: python=%s shell=%s fs=%s",

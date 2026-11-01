@@ -6,6 +6,7 @@ import asyncio
 import datetime as dt
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -289,3 +290,60 @@ async def test_a_trailing_expression_is_echoed_but_not_none():
 async def test_code_cannot_import_the_worker_channel():
     out, _ = await _run_isolated("from cuga_tools import call")
     assert "ModuleNotFoundError" in out
+
+
+# ── the subprocess backend shares run_command's workspace ────────────────────
+
+
+def _plan(shell_backend: str):
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionPlan
+
+    return ExecutionPlan(
+        requested_backend="subprocess",
+        python_backend="subprocess",
+        shell_backend=shell_backend,
+        filesystem_backend="none",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_block_starts_in_the_host_shells_workspace(tmp_path, monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionRouter
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ExecutionRouter, "resolve", staticmethod(lambda *_a, **_k: _plan("native")))
+    out, _ = await _run_isolated(
+        "open('note.txt', 'w').write('from python')\nprint(os.getcwd(), os.environ['HOME'])"
+    )
+    workspace = (tmp_path / "cuga_workspace" / "tests").resolve()
+    assert (workspace / "note.txt").read_text() == "from python"
+    cwd, home = out.split()
+    assert Path(cwd).resolve() == workspace
+    assert Path(home).resolve() != workspace  # caches and HOME stay in the private scratch dir
+    assert not (workspace / ".sandbox.sb").exists()
+
+
+def test_a_remote_shell_keeps_the_private_scratch_dir(tmp_path, monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionRouter
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.isolated import isolated_executor
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ExecutionRouter, "resolve", staticmethod(lambda *_a, **_k: _plan("opensandbox")))
+    assert isolated_executor._shared_workspace("tests") is None
+    assert not (tmp_path / "cuga_workspace").exists()
+
+
+def test_sandbox_launchers_make_the_workspace_writable_and_start_there(tmp_path):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.isolated import isolated_executor
+
+    workdir, workspace = tmp_path / "scratch", tmp_path / "ws"
+    workdir.mkdir()
+    isolated_executor._sandbox_argv("seatbelt", workdir, workspace)
+    policy = (workdir / ".sandbox.sb").read_text()
+    assert f'(subpath "{workdir}")' in policy and f'(subpath "{workspace}")' in policy
+    argv = isolated_executor._sandbox_argv("bwrap", workdir, workspace)
+    assert ["--bind", str(workspace), str(workspace)] == argv[
+        argv.index(str(workspace)) - 1 : argv.index(str(workspace)) + 2
+    ]
+    assert argv[argv.index("--chdir") + 1] == str(workspace)
+    assert isolated_executor._sandbox_argv("bwrap", workdir)[-1] == str(workdir)

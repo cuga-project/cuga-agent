@@ -210,8 +210,10 @@ validators = [
     Validator("skills.enabled", default=False),
     Validator("skills.root", default="cuga", is_in=["cuga", "agents", "global_agents", "global_cuga"]),
     # Phase 6: explicit execution axes — override advanced_features when set.
-    # None (default) means "read from advanced_features" (full backward-compat).
-    Validator("execution.python_backend", default=None),
+    # None means "read from advanced_features" (full backward-compat).
+    # python_backend = "auto": "subprocess" when the host has an OS sandbox (Seatbelt /
+    # bubblewrap), else "local" ("e2b" when advanced_features.e2b_sandbox is set).
+    Validator("execution.python_backend", default="auto"),
     # python_backend = "subprocess": wrap each block's interpreter in an OS sandbox —
     # auto (sandbox-exec / bwrap when present), on (fail without one), off.
     Validator("execution.subprocess_sandbox", default="auto"),

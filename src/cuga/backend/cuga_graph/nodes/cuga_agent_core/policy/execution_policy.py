@@ -4,15 +4,18 @@
 settings into an explicit :class:`ExecutionPlan` with three independent
 axes: ``python_backend``, ``shell_backend`` and ``filesystem_backend``.
 
-This is intentionally *behavior-preserving*: ``python_backend`` reproduces
-exactly the implicit decision today in
-``CodeExecutor.eval_with_tools_async`` ("e2b" iff
-``advanced_features.e2b_sandbox``, else "local"). The shell/filesystem axes
-merely describe existing flag behavior; no graph consumes the plan yet.
+``python_backend``: an explicit ``execution.python_backend`` wins. ``"auto"`` (the
+shipped default) picks ``"e2b"`` when ``advanced_features.e2b_sandbox`` is set, else
+``"subprocess"`` when the host has an OS sandbox (Seatbelt / bubblewrap, and
+``execution.subprocess_sandbox`` is not off), else ``"local"``. Unset (``None``)
+keeps the legacy rule: ``"e2b"`` iff ``advanced_features.e2b_sandbox``, else
+``"local"``. The shell/filesystem axes describe the existing flags.
 """
 
 from __future__ import annotations
 
+import shutil
+import sys
 from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -21,6 +24,23 @@ from pydantic import BaseModel, Field
 PythonBackend = Literal["local", "e2b", "subprocess"]
 ShellBackend = Literal["none", "local", "native", "opensandbox", "e2b"]
 FilesystemBackend = Literal["none", "host", "sandbox_remote"]
+
+
+def os_sandbox_available(settings: Any) -> bool:
+    """True when a ``subprocess`` block would run under an OS sandbox on this host.
+
+    Mirrors ``isolated_executor._sandbox_kind`` without importing the executor:
+    Seatbelt (``sandbox-exec``) on macOS, bubblewrap (``bwrap``) on Linux, unless
+    ``execution.subprocess_sandbox`` is off.
+    """
+    wanted = str(getattr(getattr(settings, "execution", None), "subprocess_sandbox", None) or "auto").lower()
+    if wanted in ("off", "none", "false"):
+        return False
+    if sys.platform == "darwin":
+        return shutil.which("sandbox-exec") is not None
+    if sys.platform.startswith("linux"):
+        return shutil.which("bwrap") is not None
+    return False
 
 
 class ExecutionPlan(BaseModel):
@@ -37,9 +57,15 @@ class ExecutionPlan(BaseModel):
 
     @property
     def split_execution_active(self) -> bool:
-        """True when generated Python runs locally while shell/FS run remotely."""
-        remote_shell = self.shell_backend in ("native", "opensandbox", "e2b")
+        """True when generated Python runs on the host while shell/FS run elsewhere.
+
+        A ``subprocess`` block starts in the native/local shell's workspace
+        (``isolated_executor._shared_workspace``), so only a remote shell splits it.
+        """
         remote_fs = self.filesystem_backend == "sandbox_remote"
+        if self.python_backend == "subprocess":
+            return self.shell_backend in ("opensandbox", "e2b") or remote_fs
+        remote_shell = self.shell_backend in ("native", "opensandbox", "e2b")
         return self.python_backend == "local" and (remote_shell or remote_fs)
 
 
@@ -76,16 +102,26 @@ class ExecutionRouter:
 
         # Phase 6: explicit execution.* settings take priority over advanced_features.
         # None means "not set" — fall through to the legacy flag logic below.
-        explicit_python: Optional[PythonBackend] = getattr(exec_cfg, "python_backend", None)
+        explicit_python: Optional[str] = getattr(exec_cfg, "python_backend", None)
         explicit_shell: Optional[ShellBackend] = getattr(exec_cfg, "shell_backend", None)
         explicit_fs: Optional[FilesystemBackend] = getattr(exec_cfg, "filesystem_backend", None)
         explicit_root: Optional[str] = getattr(exec_cfg, "workspace_root", None)
 
         # ── python_backend ──────────────────────────────────────────────────
         e2b = bool(getattr(adv, "e2b_sandbox", False))
-        settings_choice: PythonBackend = (
-            explicit_python if explicit_python is not None else ("e2b" if e2b else "local")
-        )
+        settings_choice: PythonBackend
+        if explicit_python == "auto":
+            if e2b:
+                settings_choice = "e2b"
+            elif os_sandbox_available(settings):
+                settings_choice = "subprocess"
+            else:
+                settings_choice = "local"
+            explicit_python = None  # "auto" honors advanced_features.e2b_sandbox — nothing to warn about
+        elif explicit_python is not None:
+            settings_choice = explicit_python  # type: ignore[assignment]
+        else:
+            settings_choice = "e2b" if e2b else "local"
         if mode is not None:
             python_backend: PythonBackend = mode
             if mode != settings_choice:

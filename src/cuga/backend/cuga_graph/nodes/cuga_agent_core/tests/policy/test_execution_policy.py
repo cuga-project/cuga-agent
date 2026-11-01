@@ -12,6 +12,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy import execution_policy
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import (
     ExecutionPlan,
     ExecutionRouter,
@@ -272,3 +275,59 @@ def test_no_deprecation_when_no_execution_section_and_legacy_flags_used() -> Non
     assert plan.python_backend == "e2b"
     # No deprecation without an execution.* override
     assert not any("deprecated" in f.lower() for f in plan.fallbacks)
+
+
+# ─── python_backend = "auto" (the shipped default) ──────────────────────────
+
+
+@pytest.mark.unit
+def test_auto_picks_subprocess_when_an_os_sandbox_is_available(monkeypatch) -> None:
+    monkeypatch.setattr(execution_policy, "os_sandbox_available", lambda _settings: True)
+    plan = ExecutionRouter.resolve(_settings_with_execution(python_backend="auto"))
+    assert plan.python_backend == "subprocess"
+    assert plan.fallbacks == []
+
+
+@pytest.mark.unit
+def test_auto_falls_back_to_local_without_an_os_sandbox(monkeypatch) -> None:
+    monkeypatch.setattr(execution_policy, "os_sandbox_available", lambda _settings: False)
+    plan = ExecutionRouter.resolve(_settings_with_execution(python_backend="auto"))
+    assert plan.python_backend == "local"
+
+
+@pytest.mark.unit
+def test_auto_honors_the_legacy_e2b_flag_without_a_deprecation_note(monkeypatch) -> None:
+    monkeypatch.setattr(execution_policy, "os_sandbox_available", lambda _settings: True)
+    plan = ExecutionRouter.resolve(_settings_with_execution(python_backend="auto", e2b_sandbox=True))
+    assert plan.python_backend == "e2b"
+    assert plan.fallbacks == []
+
+
+@pytest.mark.unit
+def test_subprocess_sandbox_off_means_no_os_sandbox() -> None:
+    settings = _settings_with_execution(python_backend="auto")
+    settings.execution.subprocess_sandbox = "off"
+    assert execution_policy.os_sandbox_available(settings) is False
+    assert ExecutionRouter.resolve(settings).python_backend == "local"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("python_backend", "shell_backend", "split"),
+    [
+        ("subprocess", "native", False),  # the block starts in the native shell's workspace
+        ("subprocess", "local", False),
+        ("subprocess", "opensandbox", True),
+        ("subprocess", "e2b", True),
+        ("local", "native", True),  # unchanged: in-process code cannot touch the workspace
+        ("e2b", "opensandbox", False),
+    ],
+)
+def test_split_execution_for_each_python_backend(python_backend, shell_backend, split) -> None:
+    plan = ExecutionPlan(
+        requested_backend=python_backend,
+        python_backend=python_backend,
+        shell_backend=shell_backend,
+        filesystem_backend="none",
+    )
+    assert plan.split_execution_active is split

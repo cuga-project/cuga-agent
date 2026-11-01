@@ -13,7 +13,11 @@ Here the isolation is the process (free-code's model, applied to our tools):
   environment — no API keys, no host ``PYTHONPATH``;
 - under an OS sandbox when one is available — Seatbelt (``sandbox-exec``) on macOS,
   bubblewrap on Linux: reads anywhere, writes only to a per-thread scratch
-  directory, **no network**;
+  directory (and the ``run_command`` workspace, see below), **no network**;
+- when ``run_command`` runs on this host (local / native shell, or host filesystem
+  tools), a block starts in that same per-thread workspace, so a file the code
+  writes is the file a shell command reads, and the other way round; HOME, TMPDIR
+  and caches stay in the private scratch directory;
 - tools reach the host over inherited pipes (``tool_rpc``), so every call is
   budgeted, tracked and write-checked by the host, exactly like an in-process call;
 - variables cross as JSON — the same rule the in-process path already applies
@@ -56,7 +60,7 @@ _SEATBELT_POLICY = """(version 1)
 (allow file-read*)
 (allow file-ioctl)
 (allow file-write*
-    (subpath "{workdir}")
+    (subpath "{workdir}"){extra_writable}
     (literal "/dev/null")
     (literal "/dev/dtracehelper")
 )
@@ -90,12 +94,40 @@ def _workdir(thread_id: Optional[str]) -> Path:
     return path
 
 
-def _sandbox_argv(kind: str, workdir: Path) -> List[str]:
+def _shared_workspace(thread_id: Optional[str]) -> Optional[Path]:
+    """The ``run_command`` workspace when the shell runs on this host, else ``None``.
+
+    Local and native shells run commands in ``thread_workspace_root(thread_id)``; so
+    do the host filesystem tools. A remote shell (opensandbox, e2b) has its own
+    filesystem, which a host process cannot share.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionRouter
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import thread_workspace_root
+    from cuga.config import settings
+
+    try:
+        plan = ExecutionRouter.resolve(settings)
+    except Exception as exc:
+        logger.debug(f"[IsolatedPython] no execution plan ({exc}); using the private scratch dir")
+        return None
+    if plan.shell_backend not in ("local", "native") and plan.filesystem_backend != "host":
+        return None
+    path = thread_workspace_root(thread_id).resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _sandbox_argv(kind: str, workdir: Path, workspace: Optional[Path] = None) -> List[str]:
+    """Launcher prefix. ``workdir`` is the private scratch dir; ``workspace``, when given,
+    is also writable and is where the block starts."""
+    start = workspace or workdir
     if kind == "seatbelt":
+        extra = f'\n    (subpath "{workspace}")' if workspace else ""
         policy = workdir / ".sandbox.sb"
-        policy.write_text(_SEATBELT_POLICY.format(workdir=str(workdir)))
+        policy.write_text(_SEATBELT_POLICY.format(workdir=str(workdir), extra_writable=extra))
         return ["sandbox-exec", "-f", str(policy)]
     if kind == "bwrap":
+        shared = ["--bind", str(workspace), str(workspace)] if workspace else []
         return [
             "bwrap",
             "--ro-bind", "/", "/",
@@ -103,10 +135,11 @@ def _sandbox_argv(kind: str, workdir: Path) -> List[str]:
             "--proc", "/proc",
             "--tmpfs", "/tmp",
             "--bind", str(workdir), str(workdir),
+            *shared,
             "--unshare-net",
             "--unshare-pid",
             "--die-with-parent",
-            "--chdir", str(workdir),
+            "--chdir", str(start),
         ]  # fmt: skip
     return []
 
@@ -188,8 +221,12 @@ class IsolatedPythonExecutor:
         if dropped:
             logger.debug(f"[IsolatedPython] variables not sent (not JSON data): {dropped}")
         workdir = _workdir(thread_id)
+        workspace = _shared_workspace(thread_id)
         sandboxed = self.os_sandboxed
-        argv = [*_sandbox_argv(self._kind or "none", workdir), sys.executable, "-I", str(WORKER_PATH)]
+        argv = [
+            *_sandbox_argv(self._kind or "none", workdir, workspace),
+            sys.executable, "-I", str(WORKER_PATH),
+        ]  # fmt: skip
         job = json.dumps(
             {"code": wrapped_code, "variables": variables, "tools": sorted(tools), "timeout": block_timeout},
             default=str,
@@ -212,7 +249,7 @@ class IsolatedPythonExecutor:
             _, stderr, returncode = await run_process(
                 argv,
                 env=_child_env(workdir),
-                cwd=str(workdir),
+                cwd=str(workspace or workdir),
                 timeout=block_timeout + HARD_KILL_GRACE_S,
                 tools=tools,
                 stdin_data=job,
