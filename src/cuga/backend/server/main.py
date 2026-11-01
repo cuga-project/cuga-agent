@@ -1279,6 +1279,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.debug(f"close_relational_stores: {e}")
 
+    try:
+        from cuga.backend.tools_env.registry.utils.http_session import close_http_session
+
+        await close_http_session()
+    except Exception as e:
+        logger.debug(f"close_http_session: {e}")
+
     # Clean up embedded assets
     if USE_EMBEDDED_ASSETS:
         embedded_assets.cleanup()
