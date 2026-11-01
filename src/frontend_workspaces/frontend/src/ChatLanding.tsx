@@ -510,6 +510,9 @@ export function ChatLanding() {
   // Bumped with every new draft, so a conversation created for an older draft is not applied to this one.
   const draftGenerationRef = useRef(0);
   const pendingConversationRef = useRef<Promise<string> | null>(null);
+  // Bumped by "Remove all": a thread list requested before it must not bring the old threads back.
+  const threadsGenerationRef = useRef(0);
+  const threadsRequestSeqRef = useRef(0);
 
   useEffect(() => {
     if (prevChatAgentIdRef.current === effectiveChatAgentId) return;
@@ -754,9 +757,16 @@ export function ChatLanding() {
   // ── Thread helpers ──────────────────────────────────────────────────────────
   const refreshThreads = useCallback(async () => {
     const agentId = effectiveChatAgentId;
+    const generation = threadsGenerationRef.current;
+    // Two refreshes in one generation can answer out of order; only the newest may apply.
+    const requestSeq = ++threadsRequestSeqRef.current;
     try {
       const convs = await api.getConversations(agentId);
-      if (agentId === chatAgentIdRef.current) {
+      if (
+        requestSeq === threadsRequestSeqRef.current &&
+        agentId === chatAgentIdRef.current &&
+        generation === threadsGenerationRef.current
+      ) {
         setThreads(
           convs.map((c) => ({
             thread_id: c.id,
@@ -812,11 +822,22 @@ export function ChatLanding() {
       if (!draftThread.hasSentFirstMessage && draftThread.threadId) {
         await clearDraftSessionFiles(draftThread.threadId);
       }
-      await Promise.all(
-        threads.map((t) => api.deleteConversation(t.thread_id, effectiveChatAgentId)),
-      );
+      const toDelete = threads;
+      // Switch away first: the workspace panel polls the active thread, and a
+      // poll landing while it is being deleted brings its sandbox kernel back.
+      threadsGenerationRef.current += 1;
       setThreads([]);
       createAndActivateDraftThread();
+      const results = await Promise.allSettled(
+        toDelete.map((t) => api.deleteConversation(t.thread_id, effectiveChatAgentId)),
+      );
+      const failed = results.filter((r) => r.status === "rejected" || !r.value.ok).length;
+      // Show what is still there, also over a list fetched while the deletes ran.
+      // No thread is re-selected, so no kernel comes back.
+      await refreshThreads();
+      if (failed) {
+        alert(`Failed to remove ${failed} of ${toDelete.length} conversations.`);
+      }
     } catch (err) {
       console.error(err);
       alert("Failed to remove conversations.");
@@ -979,10 +1000,12 @@ export function ChatLanding() {
 
   useEffect(() => {
     let cancelled = false;
+    const agentId = effectiveChatAgentId;
+    const generation = threadsGenerationRef.current;
     (async () => {
       try {
-        const convs = await api.getConversations(effectiveChatAgentId);
-        if (cancelled) return;
+        const convs = await api.getConversations(agentId);
+        if (cancelled || generation !== threadsGenerationRef.current) return;
         setThreads(
           convs.map((c) => ({
             thread_id: c.id,

@@ -40,6 +40,51 @@ context_window_discovery = true  # Env: DYNACONF_ADVANCED_FEATURES__CONTEXT_WIND
 enable_filesystem_tools = false  # Enable workspace filesystem tools (read_file, write_file, etc.)
 e2b_sandbox = false           # use E2B cloud sandbox for code execution
 opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; requires Docker + opensandbox SDK
+# Remote execd sandbox (sandbox_mode = "execd", or switched on in Manage → Code sandbox).
+# Generated Python (CugaLite and CodeAgent), shell, filesystem tools and the workspace
+# panel then run in a per-thread kernel inside the sandbox. Exception: an explicit
+# execution.python_backend wins over sandbox_mode, so python_backend = "local" keeps
+# generated Python in CUGA even with execd on; leave it unset to get sandbox isolation.
+# Do not set python_backend = "execd" on its own: with the sandbox off, Python then runs
+# in execd while files and the shell stay on the host, so code cannot see the files the
+# agent's file tools write. Turn execd on with sandbox_mode or the Manage switch instead.
+# The connection is picked automatically: the mounted secret (sandbox_secret_dir) when it carries url and api_key,
+# otherwise execd_url / execd_api_key below. Manage shows the switch only when one of them
+# is configured; it never takes a URL or key itself.
+# URL of the code-execution sandbox-api (CUGA never talks to execd directly), e.g.
+# https://sandbox-api-<tenant>.apps.<cluster>. Env: DYNACONF_ADVANCED_FEATURES__EXECD_URL,
+# or DYNACONF_ADVANCED_FEATURES__SANDBOX_URL as set by the sandbox-binding secret.
+# Required when the sandbox is on and no secret is mounted; there is no default.
+execd_url = ""
+# sandbox-api key. Empty for local dev where the sandbox is network-isolated. Plain value or a
+# secret ref (vault://, aws://, env://). Env: DYNACONF_ADVANCED_FEATURES__EXECD_API_KEY,
+# or DYNACONF_ADVANCED_FEATURES__SANDBOX_API_KEY as set by the sandbox-binding secret.
+execd_api_key = ""
+# Kubernetes secret with the sandbox connection, mounted as files. When it holds both a URL and
+# a key it is used instead of execd_url / execd_api_key. URL file:
+# url, execd_url, EXECD_URL or SANDBOX_URL; key file: api_key, apiKey,
+# execd_api_key, EXECD_API_KEY or SANDBOX_API_KEY. Re-read when the files change, so rotation needs no restart.
+# Mount it with `optional: true` so the pod starts without it; without it the sandbox is not offered.
+# Empty (default) = no secret. The deployment that mounts it sets the directory, e.g. /bindings/cuga-sandbox.
+sandbox_secret_dir = ""  # Env: DYNACONF_ADVANCED_FEATURES__SANDBOX_SECRET_DIR
+# TLS verification for execd/sandbox-api calls: true (default; system/certifi CAs), a path to a
+# CA bundle for self-signed routes, or false (insecure; dev only). Env: DYNACONF_ADVANCED_FEATURES__EXECD_VERIFY_SSL
+execd_verify_ssl = true
+# Package index for code in the execd sandbox. Empty = installs fail closed. Add its host
+# to the sandbox network policy — egress is denied by default.
+execd_package_index = ""
+# Address of this CUGA server as the execd sandbox reaches it, e.g. http://cuga.<ns>.svc:7860.
+# Every tool the agent's code calls in the sandbox is POSTed back here to {url}/sandbox/tools/call
+# and runs in CUGA (registry, MCP, SDK tools, todos, ToolGuard, call budget). Required when the
+# sandbox is on: without it no tool can be called from code. The sandbox network policy must allow egress to it.
+# Plain http:// sends block tokens, arguments and results unencrypted, and a token stays valid
+# while its block runs; use it only on a trusted network, otherwise give an https:// address.
+# Env: DYNACONF_ADVANCED_FEATURES__SANDBOX_CALLBACK_URL
+sandbox_callback_url = ""
+# Per-block wall clock in the execd sandbox, in seconds. Longer than sandbox_execution_timeout by
+# default because every tool call in the block is a round trip back to CUGA and counts against it.
+# 0 = use sandbox_execution_timeout. Env: DYNACONF_ADVANCED_FEATURES__EXECD_EXECUTION_TIMEOUT
+execd_execution_timeout = 120
 e2b_sandbox_mode = "per-session"  # E2B sandbox lifecycle: "per-session" = cache per thread_id (default), "single" = shared sandbox for all threads, "per-call" = new sandbox each call
 e2b_sandbox_idle_ttl = 600  # Idle timeout in seconds (default: 10 min) - sandbox expires after this much idle time
 e2b_sandbox_max_age = 86400  # Max age for "single" mode in seconds (24h, 0 = disabled) - prevents week-old sandboxes
@@ -99,6 +144,8 @@ enable_shell_tool = false
 #   "native"      — macOS sandbox-exec (no Docker; macOS only; auto-falls back to "local" on Windows/Linux)
 #   "e2b"         — E2B cloud sandbox (requires e2b_sandbox = true)
 #   "local"       — no sandbox (runs directly on host; always pairs with run_command tool approval)
+#   "execd"       — remote execd sandbox for code, shell, filesystem tools and workspace (see execd_url /
+#                   sandbox_secret_dir above). Set by the deployment, it cannot be switched off in the UI.
 sandbox_mode = "native"
 
 [execution]
