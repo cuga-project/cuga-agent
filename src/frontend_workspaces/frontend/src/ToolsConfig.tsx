@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef } from "react";
 import { Add, Edit, TrashCan, Filter, Key, Launch, Connect } from "@carbon/icons-react";
 import {
   ComposedModal,
@@ -49,6 +49,7 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
   const builtinSet = useMemo(() => new Set(builtinTools.map(n => n.toLowerCase())), [builtinTools]);
   const [modalOpen, setModalOpen] = useState(false);
   const [gatewayModalOpen, setGatewayModalOpen] = useState(false);
+  const modalLauncher = useRef<HTMLButtonElement | null>(null);
   const [secretsOpen, setSecretsOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [toolsModalIndex, setToolsModalIndex] = useState<number | null>(null);
@@ -201,7 +202,7 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
                         iconDescription="Select tools"
                         renderIcon={Filter}
                         // A gateway's picker lists the instance's tools, also the unselected ones.
-                        onClick={() => (t.gateway ? setEditingIndex(i) : setToolsModalIndex(i))}
+                        onClick={(event) => { modalLauncher.current = event.currentTarget as HTMLButtonElement; t.gateway ? setEditingIndex(i) : setToolsModalIndex(i); }}
                       />
                     )}
                     {t.gateway && (
@@ -222,7 +223,7 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
                       hasIconOnly
                       iconDescription="Edit"
                       renderIcon={Edit}
-                      onClick={() => setEditingIndex(i)}
+                      onClick={(event) => { modalLauncher.current = event.currentTarget as HTMLButtonElement; setEditingIndex(i); }}
                       disabled={isBuiltIn}
                     />
                     <Button
@@ -273,10 +274,10 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
 
       <HStack gap={3} className="tools-config-actions">
         <Button kind="ghost" size="sm" hasIconOnly iconDescription="Manage secrets" renderIcon={Key} onClick={() => (onOpenSecrets ? onOpenSecrets() : setSecretsOpen(true))} />
-        <Button kind="secondary" size="sm" renderIcon={Add} onClick={() => setModalOpen(true)}>
+        <Button kind="secondary" size="sm" renderIcon={Add} onClick={(event) => { modalLauncher.current = event.currentTarget as HTMLButtonElement; setModalOpen(true); }}>
           Add tool
         </Button>
-        <Button kind="tertiary" size="sm" renderIcon={Connect} onClick={() => setGatewayModalOpen(true)}>
+        <Button kind="tertiary" size="sm" renderIcon={Connect} onClick={(event) => { modalLauncher.current = event.currentTarget as HTMLButtonElement; setGatewayModalOpen(true); }}>
           MCP Gateway
         </Button>
         {tools.length > TOOLS_PREVIEW_COUNT && !showAllTools && (
@@ -294,6 +295,7 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
 
       {modalOpen && (
         <AddToolModal
+          launcherButtonRef={modalLauncher}
           onClose={() => setModalOpen(false)}
           onSave={handleAdd}
           initial={null}
@@ -302,6 +304,7 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
       )}
       {gatewayModalOpen && (
         <AddToolModal
+          launcherButtonRef={modalLauncher}
           onClose={() => setGatewayModalOpen(false)}
           onSave={handleAdd}
           initial={null}
@@ -311,6 +314,7 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
       )}
       {editingIndex !== null && editingTool !== null && (
         <AddToolModal
+          launcherButtonRef={modalLauncher}
           key={`edit-${editingIndex}`}
           onClose={() => setEditingIndex(null)}
           onSave={handleEdit}

@@ -1,19 +1,20 @@
-import React, { useState, useEffect } from "react";
+import { AsyncButton, useModalClose } from "agentic_chat/LoadingState";
+import React, { useState, useEffect, useRef, useId } from "react";
 import {
   ComposedModal,
   ModalHeader,
   ModalBody,
   ModalFooter,
   Button,
+  InlineNotification,
+  InlineLoading,
   TextInput,
   TextArea,
   FormGroup,
   Select,
   SelectItem,
-  Tile,
   ClickableTile,
   Checkbox,
-  InlineNotification,
 } from "@carbon/react";
 import { Template, Folder, Connect } from "@carbon/icons-react";
 import type { ToolEntry, ToolAuth, AuthType, GatewayServer, GatewayRunAs, GatewayToolDef } from "./types/tools";
@@ -28,6 +29,7 @@ interface AddToolModalProps {
   agentId?: string;
   /** Open as the dedicated MCP gateway form (no templates, type or connection choice). */
   gatewayOnly?: boolean;
+  launcherButtonRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
 const emptyAuth: ToolAuth = { type: "none" };
@@ -50,7 +52,7 @@ const TOOL_TEMPLATES: ToolTemplate[] = [
   {
     id: "mcp_gateway",
     name: "MCP Gateway instance",
-    description: "Tools of a gateway instance in your workspace, with its API key",
+    description: "Connect workspace tools as a signed-in user or service ID",
     icon: Connect,
     config: {
       name: "",
@@ -127,13 +129,29 @@ function initFromTool(initial: ToolEntry | null | undefined) {
   };
 }
 
-export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }: AddToolModalProps) {
+export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly, launcherButtonRef }: AddToolModalProps) {
+  const formId = useId();
+  const modalElement = useRef<HTMLDivElement | null>(null);
+  const fallbackLauncher = useRef<HTMLElement | null>(typeof document === "undefined" ? null : document.activeElement as HTMLElement);
+  useEffect(() => () => {
+    // Callers unmount this dialog on close, so Carbon never receives open=false.
+    // Return focus after the modal is removed, including browsers that do not
+    // focus pointer-activated buttons automatically.
+    const launcher = launcherButtonRef?.current ?? fallbackLauncher.current;
+    requestAnimationFrame(() => {
+      if (!modalElement.current?.isConnected && launcher?.isConnected) launcher.focus();
+    });
+  }, [launcherButtonRef]);
   const init = initFromTool(initial);
   const gatewayForm = !!gatewayOnly || !!initial?.gateway;
   if (gatewayOnly && !initial) {
     init.mcpMode = "gateway";
     init.description = "Tools from the MCP gateway";
   }
+  const [submitting, setSubmitting] = useState(false);
+  const [creatingSecret, setCreatingSecret] = useState(false);
+  const [secretError, setSecretError] = useState("");
+  const [secretsLoading, setSecretsLoading] = useState(true);
   const [name, setName] = useState(init.name);
   const [type, setType] = useState<"mcp" | "openapi">(init.type);
   const [mcpMode, setMcpMode] = useState<McpConnectionMode>(init.mcpMode);
@@ -164,8 +182,23 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
   const [gatewayConnecting, setGatewayConnecting] = useState(false);
   const [gatewayError, setGatewayError] = useState("");
   const [submitError, setSubmitError] = useState("");
+  const busy = submitting || creatingSecret || gatewayConnecting;
+  const closeModal = useModalClose(busy, onClose);
+  // Any route through the form can change a connection (including switching
+  // templates or connection modes). Never reuse tools discovered for another identity.
+  const discoveryContext = JSON.stringify([type, mcpMode, url, gatewayRunAs, authValue, useSavedSecret]);
+  const previousDiscoveryContext = useRef(discoveryContext);
+  useEffect(() => {
+    if (previousDiscoveryContext.current !== discoveryContext) {
+      setGatewayServers(null);
+      setGatewaySelected(new Set());
+      setGatewayError("");
+    }
+    previousDiscoveryContext.current = discoveryContext;
+  }, [discoveryContext]);
 
   useEffect(() => {
+    setSecretsLoading(true);
     Promise.all([api.getSecrets(agentId), api.getSecretsConfig()])
       .then(async ([secretsRes, configRes]) => {
         let mode = "local";
@@ -187,10 +220,12 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
           })));
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setSecretsLoading(false));
   }, [agentId]);
 
   const applyTemplate = (template: ToolTemplate) => {
+    if (busy) return;
     const config = template.config;
     setName(config.name || "");
     setType(config.type || "mcp");
@@ -233,6 +268,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
   })();
 
   const connectGateway = async () => {
+    if (busy) return;
     setGatewayError("");
     setGatewayConnecting(true);
     try {
@@ -247,7 +283,6 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setGatewayServers(null);
         setGatewayError(typeof data.detail === "string" ? data.detail : `Connect failed (${res.status})`);
         return;
       }
@@ -273,111 +308,119 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSubmitError("");
-    if (isGateway && gatewayUserMode) {
-      // No API key: the selected tools' definitions are saved, and calls carry each user's token.
-      onSave({
+    if (busy || !valid) return;
+    setSubmitting(true);
+    setSecretError("");
+    try {
+      setSubmitError("");
+      if (isGateway && gatewayUserMode) {
+        // No API key: the selected tools' definitions are saved, and calls carry each user's token.
+        onSave({
+          name: name.trim(),
+          type: "mcp",
+          url: url.trim(),
+          transport: "http",
+          description: description.trim() || undefined,
+          gateway: { instance_url: url.trim(), run_as: "user", tools: selectedToolDefs },
+          include: [...gatewaySelected].sort(),
+        });
+        onClose();
+        return;
+      }
+      if (isGateway) {
+        // The API key is stored only as a secret; a typed key becomes a new secret first.
+        let ref = gatewayKeyRef;
+        if (gatewayPlainKey) {
+          const baseSlug = saveAsNewSecretKey.trim()
+            ? saveAsNewSecretKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
+            : `${name.trim() || "gateway"}-apikey-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+          try {
+            const res = await api.createSecret(baseSlug, gatewayPlainKey, `MCP gateway API key for ${name.trim()}`, undefined, agentId);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json().catch(() => ({}));
+            ref = data.ref || `db://${baseSlug}`;
+          } catch (err) {
+            setSubmitError(`The API key could not be saved as a secret (${err instanceof Error ? err.message : "error"}). Nothing was saved.`);
+            return;
+          }
+        }
+        onSave({
+          name: name.trim(),
+          type: "mcp",
+          url: url.trim(),
+          transport: "http",
+          description: description.trim() || undefined,
+          gateway: { instance_url: url.trim(), run_as: "service" },
+          auth: { type: GATEWAY_AUTH_TYPE, value: ref },
+          include: [...gatewaySelected].sort(),
+        });
+        onClose();
+        return;
+      }
+      const isCommandMcp = type === "mcp" && mcpMode === "command";
+      const args = argsText.split("\n").map((s) => s.trim()).filter(Boolean);
+      const tool: ToolEntry = {
         name: name.trim(),
-        type: "mcp",
-        url: url.trim(),
-        transport: "http",
+        type,
+        url: isCommandMcp ? undefined : (url.trim() || undefined),
         description: description.trim() || undefined,
-        gateway: { instance_url: url.trim(), run_as: "user", tools: selectedToolDefs },
-        include: [...gatewaySelected].sort(),
-      });
-      onClose();
-      return;
-    }
-    if (isGateway) {
-      // The API key is stored only as a secret; a typed key becomes a new secret first.
-      let ref = gatewayKeyRef;
-      if (gatewayPlainKey) {
-        const baseSlug = saveAsNewSecretKey.trim()
-          ? saveAsNewSecretKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
-          : `${name.trim() || "gateway"}-apikey-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
-        try {
-          const res = await api.createSecret(baseSlug, gatewayPlainKey, `MCP gateway API key for ${name.trim()}`, undefined, agentId);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const data = await res.json().catch(() => ({}));
-          ref = data.ref || `db://${baseSlug}`;
-        } catch (err) {
-          setSubmitError(`The API key could not be saved as a secret (${err instanceof Error ? err.message : "error"}). Nothing was saved.`);
-          return;
+      };
+      if (isCommandMcp) {
+        tool.command = command.trim();
+        tool.args = args.length ? args : undefined;
+        tool.transport = "stdio";
+        const envEntries = envText
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .map((l) => {
+            const idx = l.indexOf("=");
+            return idx > 0 ? [l.slice(0, idx).trim(), l.slice(idx + 1).trim()] : null;
+          })
+          .filter((e): e is [string, string] => e !== null && e[0].length > 0);
+        if (envEntries.length > 0) {
+          tool.env = Object.fromEntries(envEntries);
+        }
+      } else if (type === "mcp" && url.trim()) {
+        tool.transport = mcpMode === "url-http" ? "http" : "sse";
+      }
+      if (authType !== "none") {
+        let authValueFinal = authValue.trim();
+
+        if (saveAsNewSecret && authValueFinal) {
+          const baseSlug = saveAsNewSecretKey.trim()
+            ? saveAsNewSecretKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
+            : `${name.trim() || "tool"}-${effectiveAuthType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+          const slug = baseSlug;
+          try {
+            const res = await api.createSecret(slug, authValueFinal, `Auth for ${name.trim() || "tool"}`, undefined, agentId);
+            if (!res.ok) throw new Error(`Failed to save secret (${res.status})`);
+            if (res.ok) {
+              const data = await res.json();
+              authValueFinal = data.ref || `db://${slug}`;
+            }
+          } catch (error) { throw error; }
+        }
+
+        if (authValueFinal) {
+          tool.auth = {
+            type: authType,
+            ...(needsKey && authKey.trim() && { key: authKey.trim() }),
+            value: authValueFinal,
+          };
+        } else if (initial?.auth && initial.auth.type !== "none") {
+          tool.auth = {
+            ...initial.auth,
+            type: authType,
+            ...(needsKey && authKey.trim() && { key: authKey.trim() }),
+          };
         }
       }
-      onSave({
-        name: name.trim(),
-        type: "mcp",
-        url: url.trim(),
-        transport: "http",
-        description: description.trim() || undefined,
-        gateway: { instance_url: url.trim(), run_as: "service" },
-        auth: { type: GATEWAY_AUTH_TYPE, value: ref },
-        include: [...gatewaySelected].sort(),
-      });
+      onSave(tool);
       onClose();
-      return;
-    }
-    const isCommandMcp = type === "mcp" && mcpMode === "command";
-    const args = argsText.split("\n").map((s) => s.trim()).filter(Boolean);
-    const tool: ToolEntry = {
-      name: name.trim(),
-      type,
-      url: isCommandMcp ? undefined : (url.trim() || undefined),
-      description: description.trim() || undefined,
-    };
-    if (isCommandMcp) {
-      tool.command = command.trim();
-      tool.args = args.length ? args : undefined;
-      tool.transport = "stdio";
-      const envEntries = envText
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean)
-        .map((l) => {
-          const idx = l.indexOf("=");
-          return idx > 0 ? [l.slice(0, idx).trim(), l.slice(idx + 1).trim()] : null;
-        })
-        .filter((e): e is [string, string] => e !== null && e[0].length > 0);
-      if (envEntries.length > 0) {
-        tool.env = Object.fromEntries(envEntries);
-      }
-    } else if (type === "mcp" && url.trim()) {
-      tool.transport = mcpMode === "url-http" ? "http" : "sse";
-    }
-    if (authType !== "none") {
-      let authValueFinal = authValue.trim();
-
-      if (saveAsNewSecret && authValueFinal) {
-        const baseSlug = saveAsNewSecretKey.trim()
-          ? saveAsNewSecretKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
-          : `${name.trim() || "tool"}-${effectiveAuthType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
-        const slug = baseSlug;
-        try {
-          const res = await api.createSecret(slug, authValueFinal, `Auth for ${name.trim() || "tool"}`, undefined, agentId);
-          if (res.ok) {
-            const data = await res.json();
-            authValueFinal = data.ref || `db://${slug}`;
-          }
-        } catch (_) {}
-      }
-
-      if (authValueFinal) {
-        tool.auth = {
-          type: authType,
-          ...(needsKey && authKey.trim() && { key: authKey.trim() }),
-          value: authValueFinal,
-        };
-      } else if (initial?.auth && initial.auth.type !== "none") {
-        tool.auth = {
-          ...initial.auth,
-          type: authType,
-          ...(needsKey && authKey.trim() && { key: authKey.trim() }),
-        };
-      }
-    }
-    onSave(tool);
-    onClose();
+    } catch (error) {
+      setSecretError(error instanceof Error ? error.message : "Failed to save secret");
+    } finally { setSubmitting(false); }
   };
 
   const NAME_RE = /^[a-z][a-z0-9_]*$/;
@@ -418,19 +461,21 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
       <Checkbox
         id="tool-use-saved-secret"
         labelText="Use saved secret"
+        disabled={secretsLoading}
         checked={useSavedSecret}
         onChange={(_e, { checked }) => {
           setUseSavedSecret(!!checked);
           setInlineCreateOpen(false);
         }}
       />
+      {secretsLoading && <InlineLoading description="Loading saved secrets…" aria-live="polite" />}
       {useSavedSecret ? (
         <>
           <Select
             id="tool-auth-secret"
             labelText="Secret"
             value={authValue}
-            onChange={(e) => setAuthValue(e.target.value)}
+            onChange={(e) => { setAuthValue(e.target.value); }}
           >
             <SelectItem value="" text="Select a secret" />
             {secretsList.map((s) => (
@@ -470,20 +515,29 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
                   placeholder="Secret value"
                   autoComplete="off"
                 />
-                <Button
+                <AsyncButton
+                  busy={creatingSecret}
+                  busyLabel="Saving secret…"
                   size="sm"
                   style={{ marginTop: "auto" }}
                   disabled={!inlineCreateValue.trim()}
                   onClick={async () => {
+                    if (busy) return;
+                    setCreatingSecret(true);
+                    setSecretError("");
+                    try {
                     const baseSlug = inlineCreateKey.trim()
                       ? inlineCreateKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
                       : `${name.trim() || "tool"}-${effectiveAuthType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
                     const slug = baseSlug || `${name.trim() || "tool"}-${effectiveAuthType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
                     const res = await api.createSecret(slug, inlineCreateValue.trim(), `Auth for ${name.trim() || "tool"}`, undefined, agentId);
+                    if (!res.ok) throw new Error(`Failed to save secret (${res.status})`);
+                    const created = await res.json();
                     if (res.ok) {
-                      setAuthValue(`db://${slug}`);
+                      setAuthValue(created.ref || `db://${slug}`);
                       setInlineCreateOpen(false);
                       setInlineCreateKey("");
+                      setInlineCreateValue("");
                       Promise.all([api.getSecrets(agentId), api.getSecretsConfig()])
                         .then(async ([secretsRes, configRes]) => {
                           let mode = "local";
@@ -507,10 +561,15 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
                         })
                         .catch(() => {});
                     }
+                    } catch (error) {
+                      setSecretError(error instanceof Error ? error.message : "Failed to save secret");
+                    } finally {
+                      setCreatingSecret(false);
+                    }
                   }}
                 >
                   Save
-                </Button>
+                </AsyncButton>
               </div>
             </div>
           )}
@@ -522,7 +581,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
             type="password"
             labelText="Secret / token / value"
             value={authValue}
-            onChange={(e) => setAuthValue(e.target.value)}
+            onChange={(e) => { setAuthValue(e.target.value); }}
             placeholder="Leave empty to keep existing"
             autoComplete="off"
           />
@@ -550,14 +609,19 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
     </>
   );
 
+  const modalTitle = gatewayForm ? (initial ? "Edit MCP Gateway" : "Add MCP Gateway") : initial ? "Edit tool" : "Add tool";
+
   return (
-    <ComposedModal open onClose={onClose} size="lg" isFullWidth preventCloseOnClickOutside>
+    <ComposedModal ref={modalElement} launcherButtonRef={launcherButtonRef} aria-label={modalTitle} open onClose={closeModal} size="lg" preventCloseOnClickOutside className="add-tool-modal">
       <ModalHeader
-        title={gatewayForm ? (initial ? "Edit MCP Gateway" : "Add MCP Gateway") : initial ? "Edit tool" : "Add tool"}
-        buttonOnClick={onClose}
+        title={modalTitle}
+        buttonOnClick={closeModal}
       />
-      <form onSubmit={handleSubmit}>
-        <ModalBody hasScrollingContent className="add-tool-modal-body">
+      <ModalBody hasScrollingContent className="add-tool-modal-body">
+        <form id={formId} onSubmit={handleSubmit}>
+          <fieldset className="cuga-loading-fieldset" disabled={busy}>
+          {submitError && <InlineNotification kind="error" lowContrast hideCloseButton title="Not saved" subtitle={submitError} />}
+          {secretError && <InlineNotification kind="error" title={secretError} lowContrast hideCloseButton />}
           {!initial && showTemplates && (
             <div style={{ marginBottom: "1.5rem" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
@@ -570,6 +634,9 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
                   return (
                     <ClickableTile
                       key={template.id}
+                      role="button"
+                      aria-label={template.name}
+                      disabled={busy}
                       onClick={() => applyTemplate(template)}
                       style={{ padding: "1rem" }}
                     >
@@ -659,7 +726,6 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
                 value={url}
                 onChange={(e) => {
                   setUrl(e.target.value);
-                  setGatewayServers(null);
                 }}
                 placeholder="https://<gateway>/?instance=<instance id>"
                 invalid={url.trim() !== "" && !gatewayInstanceId}
@@ -745,10 +811,12 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
                 id="tool-gateway-run-as"
                 labelText="Tool calls run as"
                 value={gatewayRunAs}
-                onChange={(e) => setGatewayRunAs(e.target.value as GatewayRunAs)}
+                onChange={(e) => {
+                  setGatewayRunAs(e.target.value as GatewayRunAs);
+                }}
                 helperText={
                   gatewayRunAs === "user"
-                    ? "Each chat user's own identity and role on the instance (token exchange at sign-in). Runs without a signed-in user cannot use these tools."
+                    ? "Each tool call uses the signed-in user’s identity and role. Scheduled runs need a service ID."
                     : "The API key's service ID, for every user and for scheduled runs. The gateway sees one identity."
                 }
               >
@@ -757,7 +825,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
               </Select>
               {gatewayUserMode ? (
                 <p className="cds--type-helper-text-01" style={{ margin: "0.75rem 0 0.5rem" }}>
-                  No API key: Connect lists the instance's tools with your own sign-in, and the selected tools are saved with this entry.
+                  Connect with your sign-in, then choose the tools this agent can use. No tools are selected automatically.
                 </p>
               ) : (
                 <>
@@ -767,21 +835,23 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
                   {secretFields}
                 </>
               )}
-              <Button
+              <AsyncButton
+                busy={gatewayConnecting}
+                busyLabel={gatewayServers ? "Refreshing tools…" : "Connecting…"}
                 kind="tertiary"
                 size="sm"
                 style={{ marginTop: "0.75rem" }}
                 disabled={!gatewayInstanceId || (!gatewayUserMode && !(gatewayPlainKey || gatewayKeyRef)) || gatewayConnecting}
                 onClick={connectGateway}
               >
-                {gatewayConnecting ? "Connecting…" : gatewayServers ? "Refresh tools" : "Connect"}
-              </Button>
+                {gatewayServers ? "Refresh tools" : "Connect"}
+              </AsyncButton>
               {gatewayError && (
                 <InlineNotification kind="error" lowContrast hideCloseButton title="Connect failed" subtitle={gatewayError} />
               )}
               {gatewayServers && (
-                <div className="add-tool-gateway-tools" style={{ marginTop: "1rem" }}>
-                  <p className="cds--type-label-01" style={{ marginBottom: "0.5rem" }}>
+                <div className="add-tool-gateway-tools" aria-label="Gateway tools">
+                  <p className="add-tool-gateway-selection" role="status" aria-live="polite">
                     Select the tools this agent may use ({gatewaySelected.size} selected)
                   </p>
                   {gatewayServers.length === 0 && <p className="cds--type-helper-text-01">This instance has no tools yet.</p>}
@@ -789,7 +859,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
                     const names = sv.tools.map((t) => t.name);
                     const all = names.every((n) => gatewaySelected.has(n));
                     return (
-                      <div key={sv.name} style={{ marginBottom: "0.75rem" }}>
+                      <div key={sv.name} className="add-tool-gateway-server" role="group" aria-label={sv.name}>
                         <Checkbox
                           id={`gw-server-${sv.name}`}
                           labelText={<strong>{sv.name} ({names.length})</strong>}
@@ -797,12 +867,12 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
                           indeterminate={!all && names.some((n) => gatewaySelected.has(n))}
                           onChange={(_e, { checked }) => toggleGatewayTools(names, !!checked)}
                         />
-                        <div style={{ paddingLeft: "1.5rem" }}>
+                        <div className="add-tool-gateway-server-tools">
                           {sv.tools.map((t) => (
                             <Checkbox
                               key={t.name}
                               id={`gw-tool-${t.name}`}
-                              labelText={t.description ? `${t.name} — ${t.description.slice(0, 80)}` : t.name}
+                              labelText={<><span className="add-tool-gateway-tool-name">{t.name}</span>{t.description && <span className="add-tool-gateway-tool-description">{t.description}</span>}</>}
                               checked={gatewaySelected.has(t.name)}
                               onChange={(_e, { checked }) => toggleGatewayTools([t.name], !!checked)}
                             />
@@ -843,19 +913,17 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly }:
             {authType !== "none" && secretFields}
           </FormGroup>
           )}
-        </ModalBody>
-        {submitError && (
-          <InlineNotification kind="error" lowContrast hideCloseButton title="Not saved" subtitle={submitError} />
-        )}
+          </fieldset>
+        </form>
+      </ModalBody>
         <ModalFooter>
-          <Button kind="secondary" onClick={onClose}>
+          <Button kind="secondary" disabled={busy} onClick={closeModal}>
             Cancel
           </Button>
-          <Button kind="primary" type="submit" disabled={!valid}>
+          <AsyncButton kind="primary" type="submit" form={formId} busy={submitting} busyLabel={isGateway ? "Saving gateway…" : "Saving tool…"} disabled={!valid || creatingSecret || gatewayConnecting}>
             {initial ? "Save" : gatewayForm ? "Add gateway" : "Add tool"}
-          </Button>
+          </AsyncButton>
         </ModalFooter>
-      </form>
     </ComposedModal>
   );
 }

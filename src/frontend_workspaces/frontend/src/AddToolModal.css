@@ -1,31 +1,41 @@
-.cds--modal-content.add-tool-modal-body,
-.cds--modal-scroll-content.add-tool-modal-body {
-  padding: 1.5rem 2rem 2.5rem 2rem !important;
-  overflow-y: auto !important;
-  max-height: 70vh;
-}
-
 .add-tool-modal-body .cds--form-group {
-  margin-bottom: 1rem;
+  margin-bottom: var(--cds-spacing-06, 1.5rem);
 }
 
 .add-tool-modal-body .cds--form-group:last-of-type {
   margin-bottom: 0;
 }
 
-/* Template browser styles */
-.add-tool-modal-body .cds--tile--clickable {
-  transition: all 0.15s ease-in-out;
-  border: 1px solid var(--cds-border-subtle-01);
+.add-tool-gateway-tools {
+  margin-top: var(--cds-spacing-06, 1.5rem);
 }
 
-.add-tool-modal-body .cds--tile--clickable:hover {
-  border-color: var(--cds-border-interactive);
-  background-color: var(--cds-layer-hover-01);
-  transform: translateY(-2px);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+.add-tool-gateway-selection {
+  margin-bottom: var(--cds-spacing-05, 1rem);
+  color: var(--cds-text-secondary);
+  font-size: var(--cds-label-01-font-size, 0.75rem);
 }
 
-.add-tool-modal-body .cds--tile--clickable:active {
-  transform: translateY(0);
+.add-tool-gateway-server {
+  border-top: 1px solid var(--cds-border-subtle-01);
+  padding-block: var(--cds-spacing-05, 1rem);
+}
+
+.add-tool-gateway-server-tools {
+  padding-left: var(--cds-spacing-06, 1.5rem);
+}
+
+.add-tool-gateway-tool-name,
+.add-tool-gateway-tool-description {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.add-tool-gateway-tool-name {
+  font-weight: 600;
+}
+
+.add-tool-gateway-tool-description {
+  color: var(--cds-text-secondary);
+  margin-bottom: var(--cds-spacing-03, 0.5rem);
 }

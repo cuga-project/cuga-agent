@@ -1,3 +1,4 @@
+import { InlineLoading } from "@carbon/react";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { marked } from "marked";
 
@@ -2408,12 +2409,13 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
       {/* Current Step Display - Shows one step at a time with smooth transitions */}
       {!isStopped && viewMode === "inplace" && isShowingCurrentStep && (
         <div
-          className={`current-step-container ${isLoading ? "loading-border" : ""}`}
+          className="current-step-container"
           style={{
             position: "relative",
             minHeight: "200px",
           }}
         >
+          {isLoading && <InlineLoading description="Processing step…" aria-live="polite" />}
           {renderStepCard(currentStep, true)}
         </div>
       )}
@@ -2433,53 +2435,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
         userActionSteps.length === 0 &&
         !hasErrorStep &&
         !isShowingCurrentStep && (
-          <div style={{ marginTop: "8px", marginBottom: "2px" }}>
-            <div
-              style={{
-                fontSize: "10px",
-                color: "#94a3b8",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                marginBottom: "4px",
-                userSelect: "none",
-              }}
-            >
-              <span>CUGA is thinking..</span>
-            </div>
-            <div
-              style={{
-                height: "4px",
-                position: "relative",
-                overflow: "hidden",
-                background: "#eef2ff",
-                borderRadius: "9999px",
-                boxShadow: "inset 0 0 0 1px #e5e7eb",
-              }}
-            >
-              <div
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  top: 0,
-                  bottom: 0,
-                  width: "28%",
-                  background: "linear-gradient(90deg, #a78bfa 0%, #6366f1 100%)",
-                  borderRadius: "9999px",
-                  animation: "cugaShimmer 1.7s infinite",
-                  boxShadow: "0 0 6px rgba(99,102,241,0.25)",
-                }}
-              />
-            </div>
-            <style>
-              {`
-              @keyframes cugaShimmer {
-                0% { transform: translateX(-100%); }
-                100% { transform: translateX(300%); }
-              }
-            `}
-            </style>
-          </div>
+          <InlineLoading description="CUGA is thinking.." aria-live="polite" />
         )}
     </div>
     </>

@@ -111,6 +111,8 @@ def registry_client(tmp_path: Path):
 
 def test_registry_call_records_trajectory_for_a_legitimate_path(registry_client):
     client, tracker = registry_client
+    # The registry no longer switches the tracker on for the caller; recording is opt-in.
+    settings.update({"ADVANCED_FEATURES": {"TRACKER_ENABLED": True}}, merge=True)
 
     trajectory_path = tracker.get_current_trajectory_path()
     assert trajectory_path, "the tracker must produce a path to record to"
@@ -127,3 +129,20 @@ def test_registry_call_records_trajectory_for_a_legitimate_path(registry_client)
     assert [step["name"] for step in recorded["steps"]] == ["api_call", "api_response"], (
         "a trajectory_path inside the tracker's base directory must still be recorded"
     )
+
+
+def test_registry_call_does_not_enable_the_tracker_or_record_when_it_is_off(registry_client):
+    client, tracker = registry_client
+    settings.update({"ADVANCED_FEATURES": {"TRACKER_ENABLED": False}}, merge=True)
+    steps_before = len(tracker.steps)
+
+    trajectory_path = tracker.get_current_trajectory_path()
+    response = client.post(
+        f"/functions/call?trajectory_path={quote(trajectory_path)}",
+        json={"app_name": "crm", "function_name": "list_contacts", "args": {}},
+    )
+
+    assert response.status_code == 200
+    assert settings.advanced_features.tracker_enabled is False
+    assert len(tracker.steps) == steps_before
+    assert not Path(trajectory_path).exists()

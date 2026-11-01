@@ -354,7 +354,6 @@ async def call_mcp_function(
         is_secure = api_info.get("secure", False)
         logger.debug(f"is_secure: {is_secure}")
         if trajectory_path:
-            settings.update({"ADVANCED_FEATURES": {"TRACKER_ENABLED": True}}, merge=True)
             tracker.collect_step_external(
                 Step(name="api_call", data=request.model_dump_json()), full_path=trajectory_path
             )
