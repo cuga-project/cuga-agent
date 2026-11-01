@@ -31,7 +31,7 @@ def _client() -> TestClient:
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[require_auth] = lambda: None
-    return TestClient(app)
+    return TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
 
 
 def test_patch_draft_supervisor_persists_sub_agents():
