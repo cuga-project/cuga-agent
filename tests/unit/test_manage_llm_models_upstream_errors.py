@@ -175,3 +175,39 @@ def test_upstream_error_log_does_not_contain_body_or_key(client, monkeypatch):
     assert "HTTP 401" in joined
     assert API_KEY not in joined
     assert "bad key" not in joined
+
+
+@pytest.mark.unit
+def test_force_env_non_listable_provider_returns_empty_list(client, monkeypatch):
+    # #746: with WatsonX configured via env, the endpoint must not fall back to OpenAI and 400.
+    from cuga.config import settings
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setitem(settings.agent.planner.model, "platform", "watsonx")
+    _mock_provider(monkeypatch, lambda request: pytest.fail("provider must not be called"))
+
+    resp = client.get(URL)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"models": []}
+
+
+@pytest.mark.unit
+def test_force_env_uses_env_configured_provider(client, monkeypatch):
+    from cuga.config import settings
+
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    monkeypatch.setitem(settings.agent.planner.model, "platform", "groq")
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"data": [{"id": "llama"}]})
+
+    _mock_provider(monkeypatch, handler)
+
+    resp = client.get(URL)
+
+    assert resp.status_code == 200
+    assert seen == {"url": "https://api.groq.com/openai/v1/models", "authorization": "Bearer gsk-test"}

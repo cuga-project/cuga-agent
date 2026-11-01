@@ -1,5 +1,6 @@
 """LLM model listing endpoint."""
 
+import os
 from typing import Optional
 
 import httpx
@@ -95,6 +96,19 @@ async def list_llm_models(
         except Exception as e:
             logger.debug(f"Failed to load config for LLM models: {e}")
 
+    if force_env:
+        # Env-managed: list models for the provider the agent actually runs on.
+        model_settings = settings.get("agent.planner.model") or {}
+        if model_settings.get("platform"):
+            llm_cfg = LLMConfig(
+                provider=model_settings["platform"],
+                # Same precedence as LLMManager._get_base_url for litellm (the only provider using it here)
+                base_url=os.environ.get("OPENAI_BASE_URL")
+                or os.environ.get("LITELLM_API_BASE")
+                or model_settings.get("url"),
+            )
+            logger.info(f"Using env-managed LLM config - provider: {llm_cfg.provider}")
+
     # Use default config if none loaded
     if llm_cfg is None:
         llm_cfg = LLMConfig()
@@ -110,6 +124,9 @@ async def list_llm_models(
     logger.info(f"Using provider: {provider_key}, auth_type: {auth_type}")
 
     if provider_key not in _PROVIDER_MODELS_URL:
+        if force_env:
+            # Nothing to list (e.g. watsonx) and nothing to configure in the UI either.
+            return {"models": []}
         raise HTTPException(
             status_code=400, detail=f"provider must be one of: groq, openai, litellm (got: {provider_key})"
         )
