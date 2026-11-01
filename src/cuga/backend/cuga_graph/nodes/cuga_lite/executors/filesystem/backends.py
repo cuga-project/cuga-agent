@@ -16,6 +16,7 @@ from __future__ import annotations
 import fnmatch
 import glob
 import os
+import shlex
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
@@ -309,6 +310,59 @@ class RemoteSandboxBackend(FilesystemBackend):
         await interp.sandbox.files.write_files([WriteEntry(path=sp, data=payload)])
         logger.info(f"[RemoteSandboxBackend] Uploaded {local_path} → {sp}")
         return UploadResult(local_path=str(local_path), sandbox_path=sp)
+
+    async def walk(self, path: str = VIRTUAL_WORKSPACE_ROOT) -> tuple[List[str], List[str]]:
+        """Return (directories, files) under ``path``.
+
+        ``find`` rather than ``files.search``: the workspace tree needs the two
+        lists apart, and the search API reports a size and a mode from which the
+        distinction has to be guessed.
+        """
+        sp = self._norm(path)
+        interp = await self._interp()
+
+        async def _find(type_flag: str) -> List[str]:
+            result = await interp.sandbox.commands.run(
+                f"find {shlex.quote(sp)} -type {type_flag} 2>/dev/null | sort"
+            )
+            text = result.text if hasattr(result, "text") else ""
+            return [line.strip() for line in text.splitlines() if line.strip()]
+
+        return await _find("d"), await _find("f")
+
+    async def read_bytes(self, path: str) -> bytes:
+        """Read a file without writing a copy to the host, unlike ``download``."""
+        interp = await self._interp()
+        return await interp.sandbox.files.read_bytes(self._norm(path))
+
+    async def remove_tree(self, path: str) -> None:
+        interp = await self._interp()
+        await interp.sandbox.commands.run(f"rm -rf {shlex.quote(self._norm(path))}")
+
+    async def preview_text(self, path: str, *, max_size: int) -> str:
+        """Read a file for the UI, refusing directories and oversized files.
+
+        Kept here rather than unified with the execd backend: the size check and
+        the directory case are expressed in whatever the underlying SDK reports,
+        and normalizing the two into a shared shape would mean rewriting
+        ``stat`` for a sandbox this repository cannot exercise in tests.
+        """
+        sp = self._norm(path)
+        interp = await self._interp()
+        infos = await interp.sandbox.files.get_file_info([sp])
+        info = infos.get(sp) if infos else None
+        if not info:
+            raise FileNotFoundError(sp)
+        if int(info.size) > max_size:
+            raise OSError("file too large")
+        try:
+            data = await interp.sandbox.files.read_bytes(sp)
+        except Exception as exc:
+            low = str(exc).lower()
+            if "is a directory" in low or "is a dir" in low or "eisdir" in low:
+                raise IsADirectoryError(sp) from exc
+            raise
+        return data.decode("utf-8")
 
 
 __all__ = [
