@@ -41,7 +41,10 @@ def _set_tracker(value: bool) -> None:
 
 
 def test_default_setting_is_off():
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
 
     import cuga
 
@@ -105,3 +108,25 @@ def test_reset_clears_the_step_count(tracker):
     tracker.reset(intent="x")
 
     assert tracker.step_count == 0
+
+
+def test_finish_task_reports_the_step_count_while_off(tracker, tmp_path):
+    _set_tracker(False)
+    tracker.experiment_folder = str(tmp_path)
+    for _ in range(3):
+        tracker.collect_step(Step(name="step", data="{}"))
+
+    tracker.finish_task(task_id="t1", site="s", intent="i")
+
+    assert tracker.tasks["t1"]["num_steps"] == 3
+
+
+def test_external_steps_count_toward_the_step_count(tracker, tmp_path):
+    _set_tracker(True)
+    tracker._base_dir = str(tmp_path)
+    path = str(tmp_path / "traj.json")
+
+    tracker.collect_step_external(Step(name="api_call", data="{}"), full_path=path)
+    tracker.collect_step_external(Step(name="api_response", data="{}"), full_path=path)
+
+    assert tracker.step_count == len(tracker.steps) == 2

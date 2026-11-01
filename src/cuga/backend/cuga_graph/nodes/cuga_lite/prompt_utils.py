@@ -12,6 +12,7 @@ from cuga.config import settings
 from loguru import logger
 from pydantic import BaseModel, Field
 from jinja2.sandbox import SandboxedEnvironment
+from langchain_core.prompts import PromptTemplate
 from langchain_core.tools import StructuredTool
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
@@ -798,10 +799,13 @@ def render_prompt_cached(prompt_template, variables: Dict[str, Any]) -> str:
     LangChain builds a new ``SandboxedEnvironment`` and compiles the template on every
     call, and the system prompt is rendered on every request. The compiled template is
     cached by its text. Templates that are not plain Jinja2 (or that use
-    ``partial_variables``) take the LangChain path.
+    ``partial_variables``, or ``PromptTemplate`` subclasses that may override ``format``) take the
+    LangChain path.
     """
-    if getattr(prompt_template, "template_format", None) == "jinja2" and not getattr(
-        prompt_template, "partial_variables", None
+    if (
+        type(prompt_template) is PromptTemplate
+        and prompt_template.template_format == "jinja2"
+        and not prompt_template.partial_variables
     ):
         return _compiled_jinja(prompt_template.template).render(**variables)
     return prompt_template.invoke(variables).to_string()

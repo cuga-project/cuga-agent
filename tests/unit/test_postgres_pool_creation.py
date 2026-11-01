@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -96,3 +97,63 @@ async def test_embedding_store_closes_the_pool_when_preparation_fails(monkeypatc
 
     pool.close.assert_awaited_once()
     assert store._pool is None
+
+
+def _run_in_thread_loops(store_factory):
+    """Call ``_get_pool`` from two threads, each with its own event loop, at the same time."""
+    results: list = []
+    errors: list = []
+    started = threading.Barrier(2)
+
+    def worker(store):
+        async def go():
+            started.wait(timeout=5)
+            return await store._get_pool()
+
+        try:
+            results.append(asyncio.run(go()))
+        except BaseException as exc:  # noqa: BLE001 - reported to the test below
+            errors.append(exc)
+
+    store = store_factory()
+    threads = [threading.Thread(target=worker, args=(store,), daemon=True) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    return threads, results, errors
+
+
+def test_relational_store_pool_creation_does_not_hang_across_event_loops(monkeypatch):
+    async def create_pool(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return _fake_pool()
+
+    monkeypatch.setattr(relational_prod, "asyncpg", MagicMock(create_pool=create_pool))
+
+    threads, results, errors = _run_in_thread_loops(lambda: ProdRelationalStore("postgresql://x/y", "db"))
+
+    assert not any(t.is_alive() for t in threads), "a caller hung waiting for a lock on another loop"
+    assert errors == []
+    assert len(results) == 2
+
+
+def test_embedding_store_pool_creation_does_not_hang_across_event_loops(monkeypatch):
+    async def create_pool(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return _fake_pool()
+
+    monkeypatch.setattr("asyncpg.create_pool", create_pool)
+    monkeypatch.setattr("pgvector.asyncpg.register_vector", AsyncMock())
+    schema = EmbeddingSchemaConfig(embedding_dim=4, id_column="id", metadata_columns={}, auxiliary_columns={})
+
+    def factory():
+        store = ProdEmbeddingStore("postgresql://x/y", "docs", schema)
+        store._ensure_table = AsyncMock()
+        return store
+
+    threads, results, errors = _run_in_thread_loops(factory)
+
+    assert not any(t.is_alive() for t in threads), "a caller hung waiting for a lock on another loop"
+    assert errors == []
+    assert len(results) == 2

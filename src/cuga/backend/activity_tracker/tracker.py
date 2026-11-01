@@ -711,6 +711,7 @@ class ActivityTracker(object):
             step.prompts = copy.deepcopy(self.prompts)
             self.prompts = []
             self.steps.append(step)
+            self.step_count += 1
             self._to_file_external_append(full_path, step)
             logger.info(f"Step appended to external file: {full_path}")
 
@@ -879,7 +880,7 @@ class ActivityTracker(object):
             "eval": eval,
             "score": score,
             "exception": exception,
-            "num_steps": num_steps if num_steps is not None else len(self.steps),
+            "num_steps": num_steps if num_steps is not None else self.step_count,
             "fail_category": fail_category,
             "agent_v": agent_v,
             "duration": duration if duration is not None else time.time() - self.start_time,

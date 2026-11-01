@@ -74,3 +74,13 @@ def test_partial_variables_use_the_langchain_path():
     )
 
     assert render_prompt_cached(template, {"b": "B"}) == "A B"
+
+
+def test_prompt_template_subclass_keeps_its_own_format():
+    class Suffixed(PromptTemplate):
+        def format(self, **kwargs):
+            return super().format(**kwargs) + " [custom]"
+
+    template = Suffixed.from_template("Hello {{ name }}", template_format="jinja2")
+
+    assert render_prompt_cached(template, {"name": "x"}) == template.invoke({"name": "x"}).to_string()

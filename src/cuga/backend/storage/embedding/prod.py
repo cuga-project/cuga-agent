@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import re
 from typing import Any, Dict, List, Optional
@@ -6,6 +5,7 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from cuga.backend.storage.embedding.base import EmbeddingSchemaConfig
+from cuga.backend.storage.loop_lock import PerLoopLock
 
 SCOPE_COLS = ["tenant_id", "instance_id"]
 
@@ -47,13 +47,13 @@ class ProdEmbeddingStore:
         self._collection_name = collection_name
         self._schema = schema
         self._pool: Any = None
-        self._pool_lock = asyncio.Lock()
+        self._pool_lock = PerLoopLock()
 
     async def _get_pool(self):
         if self._pool is None:
             # One caller creates and prepares the pool; concurrent first callers wait for it
             # instead of creating their own pools or using one before the table exists.
-            async with self._pool_lock:
+            async with self._pool_lock.get():
                 if self._pool is None:
                     self._pool = await self._create_pool()
         return self._pool
