@@ -16,11 +16,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge.engine import KnowledgeEngine
+
+pytestmark = pytest.mark.unit
 
 
 def _full_cfg(**over):
@@ -116,7 +119,7 @@ def test_publish_via_post_route_strips_keys_from_disk(monkeypatch):
 
     eng = KnowledgeEngine(_full_cfg())
     app = _build_app(eng)
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     payload = {
         "config": {
             "agent": {"name": "pub-strip-test"},
