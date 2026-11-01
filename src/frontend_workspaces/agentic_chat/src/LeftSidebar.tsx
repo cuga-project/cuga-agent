@@ -1,3 +1,4 @@
+import { ContentSkeleton } from "./LoadingState";
 import React, { useState, useEffect } from "react";
 import { MessageSquare, Database, ChevronLeft, ChevronRight, Plus, Trash2, Workflow, Info, HelpCircle } from "lucide-react";
 import { apiFetch } from "../../frontend/src/api";
@@ -66,6 +67,8 @@ export function LeftSidebar({
     console.log('[LeftSidebar] globalVariables updated:', Object.keys(globalVariables).length, 'keys');
     console.log('[LeftSidebar] variablesHistory updated:', variablesHistory.length, 'items');
   }, [globalVariables, variablesHistory]);
+  const [conversationsLoading, setConversationsLoading] = useState(true);
+  const [flowsLoading, setFlowsLoading] = useState(true);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<string | null>(null);
   const [savedFlows, setSavedFlows] = useState<SavedFlow[]>([]);
@@ -79,6 +82,7 @@ export function LeftSidebar({
   }, []);
 
   const loadConversations = async () => {
+    setConversationsLoading(true);
     try {
       const response = await apiFetch('/api/conversations');
       if (response.ok) {
@@ -87,7 +91,7 @@ export function LeftSidebar({
       }
     } catch (error) {
       console.error("Error loading conversations:", error);
-    }
+    } finally { setConversationsLoading(false); }
   };
 
   const createNewConversation = async (customTitle?: string) => {
@@ -167,6 +171,7 @@ export function LeftSidebar({
   };
 
   const loadSavedFlows = async () => {
+    setFlowsLoading(true);
     try {
       const response = await apiFetch('/api/flows');
       if (response.ok) {
@@ -178,7 +183,7 @@ export function LeftSidebar({
     } catch (error) {
       console.error("Error loading saved flows:", error);
       setSavedFlows([]);
-    }
+    } finally { setFlowsLoading(false); }
   };
 
   const formatDate = (timestamp: number) => {
@@ -265,7 +270,7 @@ export function LeftSidebar({
             </div>
 
             <div className="conversations-list">
-              {conversations.length === 0 ? (
+              {conversationsLoading ? <ContentSkeleton label="Loading conversations…" /> : conversations.length === 0 ? (
                 <div className="empty-state">
                   <MessageSquare size={32} />
                   <p>No conversations yet</p>
@@ -309,7 +314,7 @@ export function LeftSidebar({
         ) : ENABLE_SAVED_FLOWS && activeTab === "savedflows" ? (
           <>
             <div className="conversations-list">
-              {savedFlows.length === 0 ? (
+              {flowsLoading ? <ContentSkeleton label="Loading saved flows…" /> : savedFlows.length === 0 ? (
                 <div className="empty-state">
                   <Workflow size={32} />
                   <p>No saved flows yet</p>

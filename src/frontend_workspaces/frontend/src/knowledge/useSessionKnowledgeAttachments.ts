@@ -140,6 +140,9 @@ export function useSessionKnowledgeAttachments({
   visibleDocumentMode = "all",
 }: UseSessionKnowledgeAttachmentsOptions) {
   const [documents, setDocuments] = useState<SessionKnowledgeDocument[]>([]);
+  const [isLoading, setIsLoading] = useState(enabled);
+  const [loadError, setLoadError] = useState("");
+  const documentsRequestRef = useRef(0);
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
   const [deletingFilenames, setDeletingFilenames] = useState<Set<string>>(new Set());
   const [trackedDocumentFilenames, setTrackedDocumentFilenames] = useState<Set<string>>(new Set());
@@ -159,28 +162,35 @@ export function useSessionKnowledgeAttachments({
   }, [enabled, scope, threadId]);
 
   const refreshDocuments = useCallback(async () => {
+    const request = ++documentsRequestRef.current;
+    const isCurrent = () => request === documentsRequestRef.current;
     if (!enabled) {
+      setIsLoading(false);
+      setLoadError("");
       setDocuments([]);
       return;
     }
     const tid = threadIdRef.current;
     const currentScope = scopeRef.current;
     if (currentScope === "session" && !tid) {
+      setIsLoading(false);
+      setLoadError("");
       setDocuments([]);
       return;
     }
 
+    setIsLoading(true);
+    setLoadError("");
     try {
       const response =
         currentScope === "agent"
           ? await listKnowledgeDocuments()
           : await listSessionKnowledgeDocuments(tid!);
-      if (!response.ok) {
-        setDocuments([]);
-        return;
-      }
+      if (!isCurrent()) return;
+      if (!response.ok) throw new Error(`Failed to load documents (${response.status})`);
 
       const data = await response.json();
+      if (!isCurrent()) return;
       const nextDocuments = ((data.documents ?? []) as SessionKnowledgeDocumentResponse[]).map((doc) =>
         toSessionAttachmentSnapshot(
           doc,
@@ -201,12 +211,15 @@ export function useSessionKnowledgeAttachments({
       });
     } catch (error) {
       console.error("Failed to refresh session knowledge documents:", error);
-      setDocuments([]);
+      if (isCurrent()) setLoadError(error instanceof Error ? error.message : "Failed to load documents");
+    } finally {
+      if (isCurrent()) setIsLoading(false);
     }
   }, [enabled]);
 
   useEffect(() => {
     void refreshDocuments();
+    return () => { documentsRequestRef.current += 1; };
   }, [refreshDocuments, sessionDocsVersion, threadId, scope]);
 
   const uploadSingleFile = useCallback(
@@ -432,6 +445,9 @@ export function useSessionKnowledgeAttachments({
 
   return {
     documents,
+    isLoading,
+    isDeleting: deletingFilenames.size > 0,
+    loadError,
     attachmentItems,
     hasAnyDocuments: documents.length > 0,
     isAvailable,
