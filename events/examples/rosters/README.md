@@ -48,6 +48,7 @@ notes in its comments down to only the AP-free triggers so the file is honestly 
 | `no_ap_research_desk.yaml` | Research & Strategy | research_compass · papers · ai_labs_news · wiki_dive · webpage_summarizer | none |
 | `no_ap_markets_desk.yaml` | Markets / Finance | pricebot · market_briefer · competitive_analyst · feed_watcher (RSS) | none |
 | `no_ap_it_helpdesk.yaml` | IT Helpdesk / Support | ibm_docs_qa · code_auditor · incident_triage · support_digest | none (Slack/Discord direct) |
+| `no_ap_learning_desk.yaml` | Learning / Study | explainer · paper_reader · video_tutor · study_notes · quiz_master | none |
 | `ap_exec_office.yaml` | Executive Office | mailbot · resume_judge | **AP** — Gmail/Calendar/Box |
 | `ap_devops.yaml` | Engineering / DevOps | pr_reviewer · repo_watcher · incident_triage · github_trending · code_auditor | **AP** — GitHub push |
 

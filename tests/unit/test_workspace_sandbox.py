@@ -44,6 +44,22 @@ def _settings(
     return Settings()
 
 
+@pytest.fixture(autouse=True)
+def _factory_follows_patched_settings(monkeypatch):
+    """workspace_is_sandbox_backed lives in the filesystem factory and reads its own ``settings``.
+
+    The tests patch ``workspace_sandbox.settings``; point the factory at the same object.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import factory
+    from cuga.backend.server import workspace_sandbox as ws
+
+    class _Follow:
+        def __getattr__(self, name):
+            return getattr(ws.settings, name)
+
+    monkeypatch.setattr(factory, "settings", _Follow())
+
+
 @pytest.mark.unit
 def test_workspace_tree_is_native_backed_when_host_shell_with_opensandbox_flag(monkeypatch) -> None:
     from cuga.backend.server import workspace_sandbox as ws
