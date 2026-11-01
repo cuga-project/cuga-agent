@@ -78,6 +78,9 @@ class ActivityTracker(object):
     actions_count: int = 0
     token_usage: int = 0
     steps: List[Step] = []
+    # Steps seen since the last reset. Counted even when the tracker is off (``steps`` stays
+    # empty then), so loop limits such as ``evaluation.max_steps`` keep working.
+    step_count: int = 0
     images: List[str] = []
     score: float = 0.0
     tools: Dict[str, List[StructuredTool]] = {}
@@ -374,6 +377,7 @@ class ActivityTracker(object):
         self.prompts = []
         self.run_id = ""
         self.steps = []
+        self.step_count = 0
         self.images = []
         self.actions_count = 0
         self.final_answer = None
@@ -517,6 +521,10 @@ class ActivityTracker(object):
             f.write("")
 
     def collect_prompt(self, role: str, value: str):
+        # Prompts only exist to be saved on the next step. With the tracker off nothing
+        # saves them, so keeping them would grow memory for no reader.
+        if not settings.advanced_features.tracker_enabled:
+            return
         self.prompts.append(Prompt(role=role, value=value))
 
     def collect_tokens_usage(self, count: int) -> None:
@@ -532,11 +540,14 @@ class ActivityTracker(object):
         if not img:
             return
         # Ensure the image string is compatible with OpenAI vision API: must be a valid URL or a data URL.
-        if img.startswith("data:image") or img.startswith("http://") or img.startswith("https://"):
+        if not (img.startswith("data:image") or img.startswith("http://") or img.startswith("https://")):
+            # Assume raw base64 PNG data; prepend appropriate data URL header.
+            img = f"data:image/png;base64,{img}"
+        if settings.advanced_features.tracker_enabled:
             self.images.append(img)
         else:
-            # Assume raw base64 PNG data; prepend appropriate data URL header.
-            self.images.append(f"data:image/png;base64,{img}")
+            # The browser planner reads only the latest image; keep just that one.
+            self.images = [img]
 
     def collect_step(self, step: Step) -> None:
         """
@@ -545,6 +556,13 @@ class ActivityTracker(object):
         Args:
             step (Step): The description of the step to collect.
         """
+
+        self.step_count += 1
+        tracker_enabled = settings.advanced_features.tracker_enabled
+        if not tracker_enabled and not AGENT_ANALYTICS:
+            # Nothing reads the step, so do not keep it (``steps`` would grow with every step).
+            self.prompts = []
+            return
 
         data_json = None
         try:
@@ -635,10 +653,9 @@ class ActivityTracker(object):
                         annotation_content=f"{step.image_before}",
                     )
 
-        step.prompts = copy.deepcopy(self.prompts)
-        self.prompts = []
-        self.steps.append(step)
-        if settings.advanced_features.tracker_enabled:
+        if tracker_enabled:
+            step.prompts = copy.deepcopy(self.prompts)
+            self.steps.append(step)
             self.to_file()
         self.prompts = []
 
@@ -694,6 +711,7 @@ class ActivityTracker(object):
             step.prompts = copy.deepcopy(self.prompts)
             self.prompts = []
             self.steps.append(step)
+            self.step_count += 1
             self._to_file_external_append(full_path, step)
             logger.info(f"Step appended to external file: {full_path}")
 
@@ -862,7 +880,7 @@ class ActivityTracker(object):
             "eval": eval,
             "score": score,
             "exception": exception,
-            "num_steps": num_steps if num_steps is not None else len(self.steps),
+            "num_steps": num_steps if num_steps is not None else self.step_count,
             "fail_category": fail_category,
             "agent_v": agent_v,
             "duration": duration if duration is not None else time.time() - self.start_time,

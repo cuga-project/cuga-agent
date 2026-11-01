@@ -1,3 +1,4 @@
+import { InlineLoading } from "@carbon/react";
 /*
  *  Copyright IBM Corp. 2026
  *
@@ -41,6 +42,7 @@ import { getCommands, type SlashCommandInfo } from "../api";
 import {
   clearComposerAriaAttributes,
   findComposerTextarea,
+  findShadowRoots,
   getComposerCaretOffset,
   getComposerInputValue,
   getComposerRangeRects,
@@ -152,6 +154,8 @@ interface SlashCommandDropdownProps {
   chatElement: HTMLElement | null;
   /** Light-DOM container the dropdown portal renders into. */
   portalContainer: HTMLElement | null;
+  /** Use the editor's transaction API so its selection follows inserted text. */
+  onReplaceRange?: (value: string, start: number, end: number, insert: string) => Promise<void>;
 }
 
 const MAX_DROPDOWN_WIDTH = 520;
@@ -165,6 +169,7 @@ const FETCH_DEBOUNCE_MS = 150;
 export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
   chatElement,
   portalContainer,
+  onReplaceRange,
 }) => {
   const [textarea, setTextarea] = useState<HTMLElement | null>(null);
   const [open, setOpen] = useState(false);
@@ -192,9 +197,16 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
 
   useEffect(() => {
     let cancelled = false;
-    // MutationObserver does not cross the shadow boundary, so observe the shadowRoot when present.
-    const observeTarget: Node =
-      chatElement?.shadowRoot ?? chatElement ?? document.body;
+    const observed = new Set<Node>();
+    const observeRoots = () => {
+      const roots: Node[] = findShadowRoots(chatElement);
+      if (roots.length === 0) roots.push(chatElement ?? document.body);
+      roots.forEach((root) => {
+        if (observed.has(root)) return;
+        observer.observe(root, { childList: true, subtree: true });
+        observed.add(root);
+      });
+    };
 
     const tryFind = () => {
       if (cancelled) return;
@@ -202,10 +214,9 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
       if (found && found !== textarea) setTextarea(found);
     };
 
-    tryFind();
-
     const observer = new MutationObserver(() => {
       if (cancelled) return;
+      observeRoots();
       // Carbon Chat sometimes replaces the composer node entirely after a
       // submit while leaving the old (now zero-rect) one attached. We need
       // to re-resolve whenever the current reference is stale by *either*
@@ -214,7 +225,8 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
         tryFind();
       }
     });
-    observer.observe(observeTarget, { childList: true, subtree: true });
+    observeRoots();
+    tryFind();
     // Interval is a bootstrap fallback for composer-mounts-before-observer; clear it once the textarea is live.
     // Cap with a wall-clock budget so embedded / shadow-rooted / content-
     // blocked hosts where the textarea never resolves don't poll forever.
@@ -224,7 +236,7 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
       if (cancelled) return;
       attempts += 1;
       tryFind();
-      if (textarea && document.contains(textarea) && interval !== null) {
+      if (textarea?.isConnected && interval !== null) {
         window.clearInterval(interval);
         interval = null;
       } else if (attempts >= MAX_ATTEMPTS && interval !== null) {
@@ -426,7 +438,7 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
   }, [textarea, updateInlinePills]);
 
   const acceptCommand = useCallback(
-    (command: SlashCommandInfo) => {
+    async (command: SlashCommandInfo) => {
       const value = getComposerInputValue(textarea);
       const caret = getComposerCaretOffset(textarea) ?? value.length;
       const token = findSlashTokenAtCaret(value, caret);
@@ -437,15 +449,23 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
         // space, consume it so mid-text acceptance doesn't double up
         // whitespace.
         const end = value[token.end] === " " ? token.end + 1 : token.end;
-        replaceComposerRange(textarea, token.start, end, `/${command.name} `);
+        if (onReplaceRange) {
+          await onReplaceRange(value, token.start, end, `/${command.name} `);
+        } else {
+          replaceComposerRange(textarea, token.start, end, `/${command.name} `);
+        }
       } else {
         // No resolvable token (e.g. click-accept after focus was lost and
         // the selection with it): fall back to the whole-composer write.
-        setComposerTextareaValue(textarea, `/${command.name} `);
+        if (onReplaceRange) {
+          await onReplaceRange(value, 0, value.length, `/${command.name} `);
+        } else {
+          setComposerTextareaValue(textarea, `/${command.name} `);
+        }
       }
       closeDropdown();
     },
-    [closeDropdown, textarea],
+    [closeDropdown, onReplaceRange, textarea],
   );
 
   /**
@@ -500,7 +520,20 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
   useEffect(() => {
     if (!textarea) return;
 
+    let blurTimer: number | null = null;
+    let contentFrame = 0;
     const handleInput = () => evaluateComposer(true);
+    // WebKit may dispatch input before the rich editor updates its DOM, and
+    // selectionchange does not reliably cross its shadow boundary. Re-read
+    // after the editor's content mutation, including the first '/' character.
+    const contentObserver = new MutationObserver(() => {
+      if (contentFrame) return;
+      contentFrame = window.requestAnimationFrame(() => {
+        contentFrame = 0;
+        if (textarea.matches(":focus-within")) handleInput();
+      });
+    });
+    contentObserver.observe(textarea, { childList: true, characterData: true, subtree: true });
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!openRef.current) return;
@@ -548,7 +581,11 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
 
     const handleBlur = () => {
       // Close on a short delay so click handlers inside the dropdown still fire.
-      window.setTimeout(() => {
+      if (blurTimer !== null) window.clearTimeout(blurTimer);
+      blurTimer = window.setTimeout(() => {
+        // Carbon can replace the textarea or restore focus while upgrading
+        // its editor. An old blur must not close the current composer's popup.
+        if (isComposerStale(textarea) || textarea.matches(":focus-within")) return;
         if (
           dropdownRef.current &&
           dropdownRef.current.contains(document.activeElement)
@@ -567,6 +604,9 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     handleInput();
 
     return () => {
+      if (blurTimer !== null) window.clearTimeout(blurTimer);
+      if (contentFrame) window.cancelAnimationFrame(contentFrame);
+      contentObserver.disconnect();
       textarea.removeEventListener("input", handleInput);
       textarea.removeEventListener("keydown", handleKeyDown, true);
       textarea.removeEventListener("blur", handleBlur);
@@ -727,7 +767,7 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
           }}
         >
           {loading && (
-            <div className="cuga-slash-dropdown__status">Loading commands…</div>
+            <div className="cuga-slash-dropdown__status"><InlineLoading description="Loading commands…" aria-live="polite" /></div>
           )}
           {!loading && error && (
             <div className="cuga-slash-dropdown__status cuga-slash-dropdown__status--error">

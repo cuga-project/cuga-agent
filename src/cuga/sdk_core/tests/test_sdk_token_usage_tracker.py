@@ -83,8 +83,12 @@ class TestTokenUsageTrackerIntegration:
         # (Full integration test would require actual graph execution)
 
     @pytest.mark.asyncio
-    async def test_activity_tracker_collects_prompts(self):
+    async def test_activity_tracker_collects_prompts(self, monkeypatch):
         """Test that ActivityTracker receives prompts from TokenUsageTracker"""
+        # Prompts are kept only while the tracker is enabled (it is off by default).
+        from cuga.config import settings
+
+        monkeypatch.setattr(settings.advanced_features, "tracker_enabled", True, raising=False)
         # Reset ActivityTracker to ensure clean state
         tracker = ActivityTracker()
         tracker.prompts = []

@@ -62,9 +62,9 @@ for (const failure of ["404", "500", "network", "SSE Error"]) {
     await expect(page.getByRole("button", { name: /stop/i })).toHaveCount(0);
     // Sending dismisses the homescreen. Target the conversation composer once
     // that transition completes instead of filling an outgoing home input.
-    const retryComposer = page.getByTestId("main_panel").getByRole("textbox");
+    const retryComposer = page.getByRole("region", { name: "Chat", exact: true }).getByRole("textbox");
     await retryComposer.fill("Try again");
-    await expect(page.getByTestId("main_panel").getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    await expect(page.getByRole("region", { name: "Chat", exact: true }).getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
     await retryComposer.press("Enter");
     await expect(page.getByText("Retry succeeded.", { exact: true })).toBeVisible();
     expect(requests).toBe(2);

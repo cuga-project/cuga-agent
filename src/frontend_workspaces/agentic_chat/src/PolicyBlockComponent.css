@@ -1,7 +1,7 @@
 .policy-block-container {
   background: linear-gradient(135deg, #fff5f5 0%, #ffe5e5 100%);
   border: 2px solid #ff6b6b;
-  border-radius: 12px;
+  border-radius: 0;
   padding: 20px;
   margin: 16px 0;
   box-shadow: 0 4px 12px rgba(255, 107, 107, 0.15);
@@ -35,7 +35,7 @@
   width: 48px;
   height: 48px;
   background: linear-gradient(135deg, #ff6b6b 0%, #ff5252 100%);
-  border-radius: 12px;
+  border-radius: 0;
   color: white;
   flex-shrink: 0;
   box-shadow: 0 4px 8px rgba(255, 107, 107, 0.3);
@@ -57,7 +57,7 @@
   padding: 4px 12px;
   background: #ff6b6b;
   color: white;
-  border-radius: 12px;
+  border-radius: 0;
   font-size: 12px;
   font-weight: 500;
   text-transform: uppercase;
@@ -76,7 +76,7 @@
   gap: 12px;
   padding: 16px;
   background: white;
-  border-radius: 8px;
+  border-radius: 0;
   border-left: 4px solid #ff6b6b;
 }
 
@@ -99,7 +99,7 @@
   gap: 14px;
   padding: 16px;
   background: rgba(255, 255, 255, 0.7);
-  border-radius: 8px;
+  border-radius: 0;
 }
 
 .policy-detail-row {
@@ -122,10 +122,10 @@
 
 .policy-id {
   font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
-  font-size: 13px;
+  font-size: 14px;
   padding: 4px 8px;
   background: rgba(255, 107, 107, 0.1);
-  border-radius: 4px;
+  border-radius: 0;
 }
 
 .confidence-bar-container {
@@ -139,14 +139,14 @@
   flex: 1;
   height: 8px;
   background: rgba(255, 107, 107, 0.2);
-  border-radius: 4px;
+  border-radius: 0;
   overflow: hidden;
 }
 
 .confidence-bar-fill {
   height: 100%;
   background: linear-gradient(90deg, #ff6b6b 0%, #ff5252 100%);
-  border-radius: 4px;
+  border-radius: 0;
   transition: width 0.6s ease-out;
 }
 
@@ -161,7 +161,7 @@
   margin-top: 8px;
   padding: 16px;
   background: white;
-  border-radius: 8px;
+  border-radius: 0;
   border: 1px solid rgba(255, 107, 107, 0.2);
 }
 

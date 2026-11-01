@@ -3,7 +3,7 @@
   bottom: 20px;
   right: 100px;
   z-index: 1000;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
 }
 
 .debug-panel-toggle {
@@ -11,12 +11,12 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, var(--cds-interactive) 0%, var(--cds-interactive) 100%);
   color: white;
   border: none;
-  border-radius: 8px;
+  border-radius: 0;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
   transition: all 0.2s ease;
@@ -34,7 +34,7 @@
   width: 500px;
   max-height: 600px;
   background: white;
-  border-radius: 12px;
+  border-radius: 0;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
   overflow: hidden;
   display: flex;
@@ -46,7 +46,7 @@
   justify-content: space-between;
   align-items: center;
   padding: 16px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, var(--cds-interactive) 0%, var(--cds-interactive) 100%);
   color: white;
 }
 
@@ -70,7 +70,7 @@
   height: 28px;
   background: rgba(255, 255, 255, 0.2);
   border: none;
-  border-radius: 6px;
+  border-radius: 0;
   color: white;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -112,7 +112,7 @@
 
 .debug-section {
   padding: 16px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--cds-border-subtle-01);
 }
 
 .debug-section:last-child {
@@ -129,7 +129,7 @@
 .debug-section-header strong {
   font-size: 14px;
   font-weight: 600;
-  color: #374151;
+  color: var(--cds-text-primary);
 }
 
 .debug-copy-btn {
@@ -138,28 +138,28 @@
   justify-content: center;
   width: 24px;
   height: 24px;
-  background: #f3f4f6;
+  background: var(--cds-layer-02);
   border: none;
-  border-radius: 4px;
+  border-radius: 0;
   cursor: pointer;
   transition: all 0.2s ease;
-  color: #6b7280;
+  color: var(--cds-text-secondary);
 }
 
 .debug-copy-btn:hover {
-  background: #e5e7eb;
-  color: #374151;
+  background: var(--cds-border-subtle-01);
+  color: var(--cds-text-primary);
 }
 
 .debug-thread-id {
   font-family: "Monaco", "Menlo", "Courier New", monospace;
   font-size: 12px;
   padding: 10px;
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  background: var(--cds-layer-02);
+  border: 1px solid var(--cds-border-subtle-01);
+  border-radius: 0;
   word-break: break-all;
-  color: #111827;
+  color: var(--cds-text-primary);
 }
 
 .debug-state-content {
@@ -181,45 +181,45 @@
 .debug-label {
   font-size: 12px;
   font-weight: 600;
-  color: #6b7280;
+  color: var(--cds-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .debug-value {
-  font-size: 13px;
-  color: #111827;
+  font-size: 14px;
+  color: var(--cds-text-primary);
   word-break: break-word;
 }
 
 .debug-json {
   font-family: "Monaco", "Menlo", "Courier New", monospace;
-  font-size: 11px;
+  font-size: 12px;
   padding: 12px;
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  background: var(--cds-layer-02);
+  border: 1px solid var(--cds-border-subtle-01);
+  border-radius: 0;
   overflow-x: auto;
   max-height: 300px;
   overflow-y: auto;
   margin: 0;
-  color: #111827;
+  color: var(--cds-text-primary);
   line-height: 1.5;
 }
 
 .debug-loading {
   padding: 12px;
   text-align: center;
-  color: #6b7280;
-  font-size: 13px;
+  color: var(--cds-text-secondary);
+  font-size: 14px;
 }
 
 .debug-error {
   padding: 12px;
   background: #fef2f2;
   border: 1px solid #fecaca;
-  border-radius: 6px;
-  color: #dc2626;
-  font-size: 13px;
+  border-radius: 0;
+  color: var(--cds-text-error);
+  font-size: 14px;
 }
 

@@ -22,8 +22,6 @@
 .add-tool-modal-body .cds--tile--clickable:hover {
   border-color: var(--cds-border-interactive);
   background-color: var(--cds-layer-hover-01);
-  transform: translateY(-2px);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
 }
 
 .add-tool-modal-body .cds--tile--clickable:active {
