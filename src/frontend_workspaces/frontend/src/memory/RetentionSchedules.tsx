@@ -1,6 +1,8 @@
+import { ContentSkeleton } from "agentic_chat/LoadingState";
 import React, { useEffect, useState } from "react";
 import {
   Button,
+  InlineLoading,
   TextInput,
   Select,
   SelectItem,
@@ -94,6 +96,8 @@ export function RetentionSchedules({
     );
   useEffect(() => {
     let active = true;
+    setLoading(true);
+    setError("");
     loadSchedules()
       .then((rows) => {
         if (active)
@@ -158,6 +162,7 @@ export function RetentionSchedules({
         Add schedule
       </Button>
 </div>
+      {busy && <InlineLoading description="Updating schedules…" aria-live="polite" />}
       {error && (
         <p role="alert" className="memory-schedules__error">
           {error}
@@ -179,9 +184,9 @@ export function RetentionSchedules({
         Refresh schedules
       </Button>
       {loading ? (
-        <p>Loading schedules…</p>
+        <ContentSkeleton label="Loading schedules…" />
       ) : (
-        !items.length && <p>No schedules configured for this policy.</p>
+        !error && !items.length && <p>No schedules configured for this policy.</p>
       )}
       {items.map((item) => (
         <div className="memory-schedules__card" key={item.schedule_id}>

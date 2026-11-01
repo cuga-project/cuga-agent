@@ -7,6 +7,7 @@
   height: 100%;
   overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
   background: var(--cds-background);
   color: var(--cds-text-primary);
   font-size: 0.875rem;
@@ -121,49 +122,12 @@
   gap: 0.5rem;
 }
 
-.memory-workspace__tabs {
-  display: flex;
-  min-height: 3rem;
+.memory-workspace__tabs.cds--tab--list {
   padding-inline: 2rem;
-  border-bottom: 1px solid var(--cds-border-subtle-01);
   background: var(--cds-layer-01);
 }
-
-.memory-workspace__tabs button {
-  position: relative;
-  min-width: 7rem;
-  padding: 0.75rem 1rem;
-  border: 0;
-  background: transparent;
-  color: var(--cds-text-secondary);
-  cursor: pointer;
-  font: inherit;
-}
-
-.memory-workspace__tabs button:hover {
-  background: var(--cds-layer-hover-01);
-  color: var(--cds-text-primary);
-}
-
-.memory-workspace__tabs button:focus-visible {
-  outline: 2px solid var(--cds-focus);
-  outline-offset: -2px;
-}
-
-.memory-workspace__tabs button[aria-selected="true"] {
-  color: var(--cds-text-primary);
-  font-weight: 600;
-}
-
-.memory-workspace__tabs button[aria-selected="true"]::after {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  height: 2px;
-  background: var(--cds-border-interactive);
-  content: "";
-}
+.memory-workspace .cds--tab-content.memory-workspace__settings,
+.memory-workspace .cds--tab-content.memory-activity-panel { padding: 0; }
 
 .memory-workspace__page-head {
   width: 100%;

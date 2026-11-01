@@ -1,3 +1,4 @@
+import { ContentSkeleton, AsyncButton, useModalClose } from "./LoadingState";
 import React, { useState, useEffect } from "react";
 import {
   ComposedModal,
@@ -17,13 +18,13 @@ import {
   InlineNotification,
   IconButton
 } from "@carbon/react";
-import { 
-  Add, 
-  Save, 
-  TrashCan, 
-  ChevronDown, 
-  ChevronUp, 
-  Close 
+import {
+  Add,
+  Save,
+  TrashCan,
+  ChevronDown,
+  ChevronUp,
+  Close
 } from "@carbon/icons-react";
 import { apiFetch } from "../../frontend/src/api";
 
@@ -91,10 +92,12 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
     availableTools: [],
   });
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const closeModal = useModalClose(saveStatus === "saving", onClose);
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
   const [availableApps, setAvailableApps] = useState<App[]>([]);
   const [appToolsCache, setAppToolsCache] = useState<Record<string, AppTool[]>>({});
-  const [loadingApps, setLoadingApps] = useState(false);
+  const [loadingApps, setLoadingApps] = useState(true);
+  const [configLoading, setConfigLoading] = useState(true);
   const [showAddAgentModal, setShowAddAgentModal] = useState(false);
   const [newAgentSource, setNewAgentSource] = useState<AgentSourceType>("direct");
   const [newAgentUrl, setNewAgentUrl] = useState("");
@@ -124,7 +127,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
       }
     } catch (error) {
       console.error("Error loading config:", error);
-    }
+    } finally { setConfigLoading(false); }
   };
 
   const loadApps = async () => {
@@ -168,7 +171,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
       });
-      
+
       if (response.ok) {
         setSaveStatus("success");
         setTimeout(() => setSaveStatus("idle"), 2000);
@@ -220,7 +223,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
         sourceConfig.url = newAgentUrl;
         sourceConfig.streamType = newAgentStreamType;
       }
-      
+
       const envVarsObj: Record<string, string> = {};
       newAgentEnvVars.forEach(env => {
         if (env.key.trim()) {
@@ -244,12 +247,12 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
       policies: [],
       source: sourceConfig,
     };
-    
+
     setConfig({
       ...config,
       subAgents: [...config.subAgents, newAgent],
     });
-    
+
     closeAddAgentModal();
   };
 
@@ -349,10 +352,10 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
 
   return (
     <>
-      <ComposedModal open={true} onClose={onClose} size="lg">
-        <ModalHeader title="Sub-Agents Configuration" buttonOnClick={onClose} />
+      <ComposedModal open={true} onClose={closeModal} size="lg">
+        <ModalHeader title="Sub-Agents Configuration" buttonOnClick={closeModal} />
         <ModalBody hasForm>
-          <Stack gap={6}>
+          {configLoading ? <ContentSkeleton label="Loading sub-agents…" /> : <Stack gap={6}>
             {saveStatus === "success" && (
               <InlineNotification kind="success" title="Success" subtitle="Configuration saved successfully" />
             )}
@@ -480,7 +483,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
                                 labelText="Capabilities"
                                 helperText="Comma-separated list of capabilities (e.g., research, code, analysis)"
                                 value={agent.capabilities.join(", ")}
-                                onChange={(e) => updateAgent(agent.id, { 
+                                onChange={(e) => updateAgent(agent.id, {
                                   capabilities: e.target.value.split(",").map(c => c.trim()).filter(c => c)
                                 })}
                               />
@@ -492,6 +495,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
                                   <Select
                                     id={`assign-app-${agent.id}`}
                                     labelText="Assign an app"
+                                    disabled={loadingApps}
                                     hideLabel
                                     inline
                                     value=""
@@ -518,7 +522,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
                                     {agent.assignedApps.map((assignedApp) => {
                                       const app = availableApps.find(a => a.name === assignedApp.appName);
                                       const enabledCount = assignedApp.tools.filter(t => t.enabled).length;
-                                      
+
                                       return (
                                         <Tile key={assignedApp.appName} className="cds--tile--light">
                                           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
@@ -530,7 +534,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
                                               <Close size={16} />
                                             </IconButton>
                                           </div>
-                                          
+
                                           <p className="cds--label" style={{ marginBottom: '0.5rem' }}>
                                             Tools ({enabledCount}/{assignedApp.tools.length} enabled)
                                           </p>
@@ -577,7 +581,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
                                     Add Policy
                                   </Button>
                                 </div>
-                                
+
                                 {agent.policies.length === 0 ? (
                                   <p className="cds--type-helper-text">No policies defined. Add policies to control agent behavior.</p>
                                 ) : (
@@ -617,23 +621,22 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
                 )}
               </>
             )}
-          </Stack>
+          </Stack>}
         </ModalBody>
         <ModalFooter>
-          <Button kind="secondary" onClick={onClose}>
+          <Button kind="secondary" disabled={saveStatus === "saving"} onClick={onClose}>
             Cancel
           </Button>
-          <Button 
-            kind="primary" 
-            onClick={saveConfig} 
-            disabled={saveStatus === "saving"}
+          <AsyncButton
+            kind="primary" busy={saveStatus === "saving"} busyLabel="Saving..."
+            onClick={saveConfig}
+            disabled={saveStatus === "saving" || configLoading}
             renderIcon={Save}
           >
-            {saveStatus === "idle" && "Save Changes"}
-            {saveStatus === "saving" && "Saving..."}
+            {(saveStatus === "idle" || saveStatus === "saving") && "Save Changes"}
             {saveStatus === "success" && "Saved!"}
             {saveStatus === "error" && "Error!"}
-          </Button>
+          </AsyncButton>
         </ModalFooter>
       </ComposedModal>
 
@@ -644,7 +647,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
           <ModalBody hasForm>
             <Stack gap={5}>
               <h4 className="cds--type-heading-02">Agent Source</h4>
-              
+
               <Select
                 id="agent-source-select"
                 labelText="How to create this agent?"
@@ -713,7 +716,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
                       Add Variable
                     </Button>
                   </div>
-                  
+
                   {newAgentEnvVars.length === 0 ? (
                     <p className="cds--type-helper-text">No environment variables. Click "Add Variable" to add one.</p>
                   ) : (

@@ -1,3 +1,4 @@
+import { InlineLoading } from "@carbon/react";
 /**
  * Knowledge harness panel — operator-supplied rules appended to the
  * knowledge-agent system prompt.
@@ -368,7 +369,7 @@ export default function ClientAdaptationPanel({
         {/* The ONE AILabel on the whole surface — Carbon-for-AI identity. */}
         <AdaptationAILabel size="xs" />
         <span style={{ flex: 1 }} />
-        {saveText && (
+        {saveState === "saving" ? <InlineLoading description="Saving…" aria-live="polite" /> : saveText && (
           <span
             aria-live="polite"
             style={{

@@ -15,12 +15,12 @@
   overflow-x: auto;
   white-space: pre;
   line-height: 1.6;
-  background: #161616;
-  border-radius: 4px;
+  background: var(--cds-text-primary);
+  border-radius: 0;
 }
 
 .policy-code-block code {
   font-family: "IBM Plex Mono", Consolas, monospace;
   font-size: 0.8rem;
-  color: #f4f4f4;
+  color: var(--cds-layer-02);
 }

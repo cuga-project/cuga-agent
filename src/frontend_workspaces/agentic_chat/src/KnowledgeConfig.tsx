@@ -1,3 +1,4 @@
+import { ContentSkeleton, AsyncButton } from "./LoadingState";
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import ClientAdaptationPanel, {
@@ -31,8 +32,6 @@ import {
   Toggle,
   Accordion,
   AccordionItem,
-  AILabel,
-  AILabelContent,
 } from "@carbon/react";
 import { Upload, TrashCan, Search, Renew, Document, Quotes, Checkmark, ErrorFilled, Reset, Close } from "@carbon/icons-react";
 import { apiFetch } from "../../frontend/src/api";
@@ -541,6 +540,9 @@ export default function KnowledgePanel({
 
   // Documents tab state
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
+  const [documentsLoading, setDocumentsLoading] = useState(true);
+  const [documentsError, setDocumentsError] = useState("");
+  const documentsRequest = useRef(0);
   const [isDragOver, setIsDragOver] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -581,6 +583,7 @@ export default function KnowledgePanel({
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searchTime, setSearchTime] = useState<number | null>(null);
   const [searching, setSearching] = useState(false);
+  const [searchCompleted, setSearchCompleted] = useState(false);
   const [expandedResult, setExpandedResult] = useState<number | null>(null);
 
   // Health state (used by search tab for status display)
@@ -842,21 +845,31 @@ export default function KnowledgePanel({
   // Data fetching
   // -------------------------------------------------------------------------
   const loadDocuments = useCallback(async () => {
+    const request = ++documentsRequest.current;
     if (!agentLevelEnabled) {
+      setDocumentsLoading(false);
       setDocuments([]);
       onDocsChangedRef.current?.(0);
       return;
     }
+    setDocumentsLoading(true);
+    setDocumentsError("");
     try {
       const res = await api.listKnowledgeDocuments();
+      if (request !== documentsRequest.current) return;
+      if (!res.ok) throw new Error(`Failed to load documents (${res.status})`);
       if (res.ok) {
         const data = await res.json();
         const docs = data.documents || [];
+        if (request !== documentsRequest.current) return;
         setDocuments(docs);
         onDocsChangedRef.current?.(docs.length);
       }
     } catch (e) {
       console.error("Failed to load documents:", e);
+      if (request === documentsRequest.current) setDocumentsError(e instanceof Error ? e.message : "Failed to load documents");
+    } finally {
+      if (request === documentsRequest.current) setDocumentsLoading(false);
     }
   }, [agentLevelEnabled]);
 
@@ -1752,6 +1765,7 @@ export default function KnowledgePanel({
     }
     if (!searchQuery.trim()) return;
     setSearching(true);
+    setSearchCompleted(false);
     setSearchResults([]);
     setSearchTime(null);
     setExpandedResult(null);
@@ -1760,6 +1774,7 @@ export default function KnowledgePanel({
       if (res.ok) {
         const data = await res.json();
         setSearchResults(data.results || []);
+        setSearchCompleted(true);
         setSearchTime(data.query_time_ms ?? null);
       } else {
         onToast?.("error", "Search failed", "Could not search knowledge base");
@@ -1791,6 +1806,7 @@ export default function KnowledgePanel({
   return (
     <>
       <ComposedModal
+        aria-label="Knowledge Base"
         open
         onClose={onClose}
         size="lg"
@@ -1819,25 +1835,7 @@ export default function KnowledgePanel({
                 <TabList aria-label="Knowledge sections">
                   <Tab>Documents ({documents.length})</Tab>
                   <Tab>Search Test</Tab>
-                  <Tab>
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: "0.375rem" }}>
-                      Knowledge harness
-                      {/* Carbon-for-AI: AILabel slug marks this tab as AI-affecting */}
-                      <AILabel autoAlign size="mini" aiText="AI" textLabel="Knowledge harness">
-                        <AILabelContent>
-                          <h6 style={{ marginTop: 0 }}>Knowledge harness</h6>
-                          <p style={{ fontSize: "0.8125rem", margin: "0.5rem 0 0" }}>
-                            Operator rules + glossary appended to the knowledge-agent system prompt
-                            for every search. Steers phrasing, hedging, citation, and synonym handling
-                            without changing retrieval.
-                          </p>
-                        </AILabelContent>
-                      </AILabel>
-                      {(knowledgeConfig?.client_adaptation_text ?? "").trim().length > 0 && (
-                        <Tag type="green" size="sm">Active</Tag>
-                      )}
-                    </span>
-                  </Tab>
+                  <Tab>Knowledge harness</Tab>
                   <Tab>Settings</Tab>
                 </TabList>
                 <TabPanels>
@@ -1912,6 +1910,7 @@ export default function KnowledgePanel({
                             renderIcon={Renew}
                             iconDescription="Refresh"
                             onClick={loadDocuments}
+                            disabled={documentsLoading}
                           />
                         </Stack>
 
@@ -2212,6 +2211,8 @@ export default function KnowledgePanel({
                               if (n) taskByName.set(n, t);
                             }
                           }
+                          if (documentsLoading && effectiveDocs.length === 0) return <ContentSkeleton label="Loading documents…" rows={4} />;
+                          if (documentsError) return <InlineNotification kind="error" title={documentsError} lowContrast hideCloseButton />;
                           if (effectiveDocs.length === 0 && uploadingFiles.length === 0) {
                             return (
                               <Tile>
@@ -2305,16 +2306,16 @@ export default function KnowledgePanel({
                             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSearch(); } }}
                           />
                         </div>
-                        <Button
-                          type="button"
+                        <AsyncButton
+                          type="button" busy={searching} busyLabel="Searching..."
                           kind="primary"
                           size="md"
                           renderIcon={Search}
                           onClick={handleSearch}
                           disabled={searching || !searchQuery.trim()}
                         >
-                          {searching ? "Searching..." : "Search"}
-                        </Button>
+                          Search
+                        </AsyncButton>
                       </Stack>
 
                       <Stack orientation="horizontal" gap={4}>
@@ -2324,7 +2325,7 @@ export default function KnowledgePanel({
                           value={searchLimit}
                           min={1}
                           max={100}
-                          onChange={(_e: any, { value }: { value: number }) => setSearchLimit(value)}
+                          onChange={(_event, { value }) => setSearchLimit(Number(value))}
                           size="md"
                         />
                         <NumberInput
@@ -2334,7 +2335,7 @@ export default function KnowledgePanel({
                           min={0}
                           max={1}
                           step={0.1}
-                          onChange={(_e: any, { value }: { value: number }) => setSearchThreshold(value)}
+                          onChange={(_event, { value }) => setSearchThreshold(Number(value))}
                           size="md"
                         />
                       </Stack>
@@ -2413,7 +2414,7 @@ export default function KnowledgePanel({
                         </Stack>
                       )}
 
-                      {searchResults.length === 0 && !searching && searchQuery && (
+                      {searchResults.length === 0 && !searching && searchCompleted && searchQuery && (
                         <Tile>
                           <p style={{ color: "var(--cds-text-secondary)", margin: 0 }}>No results found. Try a different query.</p>
                         </Tile>
@@ -2693,14 +2694,10 @@ export default function KnowledgePanel({
                                       for 3s so it doesn't become a permanent
                                       sticker. */}
                                   {saveState === "saving" && (
-                                    <Tag type="gray" size="sm" renderIcon={Renew}>
-                                      Saving…
-                                    </Tag>
+                                    <InlineLoading description="Saving…" aria-live="polite" />
                                   )}
                                   {saveState === "saving-slow" && (
-                                    <Tag type="gray" size="sm" renderIcon={Renew}>
-                                      Still saving
-                                    </Tag>
+                                    <InlineLoading description="Still saving" aria-live="polite" />
                                   )}
                                   {saveState === "saved" && recentlySaved && (
                                     <Tag type="green" size="sm" renderIcon={Checkmark}>
@@ -2889,11 +2886,8 @@ export default function KnowledgePanel({
                                           {task.status === "failed" && (
                                             <ErrorFilled size={14} style={{ color: "var(--cds-support-error)" }} />
                                           )}
-                                          {(task.status === "pending" || task.status === "running") && (
-                                            <span
-                                              className={`knowledge-reindex-item__spinner knowledge-reindex-item__spinner--${task.status}`}
-                                            />
-                                          )}
+                                          {task.status === "running" && <InlineLoading iconDescription="Re-indexing document…" aria-live="off" />}
+                                          {task.status === "pending" && <span>—</span>}
                                         </div>
                                         <div className="knowledge-reindex-item__body">
                                           <span className="knowledge-reindex-item__filename">
@@ -3288,9 +3282,7 @@ export default function KnowledgePanel({
                                             ``recentlySaved``), and a red "Couldn't save"
                                             button-tag with one-click Retry on any failure. */}
                                         {saveState === "saving" && (
-                                          <Tag type="gray" size="sm" renderIcon={Renew}>
-                                            Saving…
-                                          </Tag>
+                                          <InlineLoading description="Saving…" aria-live="polite" />
                                         )}
                                         {/* saving-slow: 25s+ into the save with no
                                             response yet. Softer copy than a fail
@@ -3299,9 +3291,7 @@ export default function KnowledgePanel({
                                             30-45s and a perfectly-healthy save
                                             shouldn't read as broken. */}
                                         {saveState === "saving-slow" && (
-                                          <Tag type="gray" size="sm" renderIcon={Renew}>
-                                            Still saving — network is slow
-                                          </Tag>
+                                          <InlineLoading description="Still saving — network is slow" aria-live="polite" />
                                         )}
                                         {saveState === "saved" && recentlySaved && (
                                           <Tag type="green" size="sm" renderIcon={Checkmark}>

@@ -1,22 +1,68 @@
-html {
-  scrollbar-gutter: stable;
-}
-
+/* The application owns its viewport. Scroll only the workspace, its panels,
+   or modal contents; never let their edge gestures move the document. */
+html, body { block-size: 100%; overflow: hidden; overscroll-behavior-y: none; }
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--cds-background);
+  color: var(--cds-text-primary);
+  font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  font-size: 0.875rem;
+  line-height: 1.5;
 }
-
+button, input, textarea, select { font-family: inherit; }
 #root {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
   min-height: 0;
+  overflow: hidden;
 }
-
 #root > .route-root {
+  position: relative;
+  overflow: hidden;
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
+.cuga-skip-link {
+  position: fixed;
+  inset-block-start: -4rem;
+  inset-inline-start: 1rem;
+  z-index: 10001;
+  padding: 1rem;
+  background: var(--cds-background);
+  color: var(--cds-link-primary);
+}
+.cuga-skip-link:focus { inset-block-start: 0; }
+
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--cds-focus);
+  outline-offset: -2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.unauthorized-page { height: 100%; overflow-y: auto; }
+.unauthorized-content { width: 100%; max-width: 42rem; margin: 8rem auto 2rem; padding-inline: 1rem; }
+.unauthorized-content > .cds--tile { padding: 2rem; }
+.unauthorized-content h1 { font-size: 2rem; font-weight: 400; }
+.unauthorized-content p { color: var(--cds-text-secondary); }
+.unauthorized-code { font-family: "IBM Plex Mono", monospace; }
+.unauthorized-identity { padding-block: 1rem; border-block: 1px solid var(--cds-border-subtle-01); overflow-wrap: anywhere; }
+.unauthorized-actions { display: flex; flex-wrap: wrap; gap: 1rem; }
+.cuga-feedback-notices { position: fixed; top: 4rem; right: 1rem; z-index: 10001; display: grid; gap: 1rem; max-width: calc(100vw - 2rem); }
+.cuga-feedback-notices .cds--toast-notification { margin: 0; max-width: 100%; }
+.cuga-feedback-notices .cds--toast-notification__subtitle { white-space: pre-wrap; }
+
+/* Carbon's visually hidden toggle button is absolute. Anchor it to its
+   control so controls below a scroll boundary cannot enlarge the document. */
+.cds--toggle { position: relative; }
+.cds--modal-scroll-content { overscroll-behavior-y: contain; }
