@@ -55,7 +55,7 @@ Prefer to try it in your browser first? [Open the quickstart notebook in Colab](
 
 ## See what you can build
 
-Configure tools and policies beside a draft chat, then publish a version for users. The refreshed workspace uses IBM Carbon components for navigation, forms, dialogs, and loading states.
+Configure tools and policies beside a draft chat, then publish a version for users.
 
 ![CUGA IBM Carbon workspace with connected CRM and Workspace tools, draft chat, and Publish](docs/images/readme/manager.jpg)
 
@@ -66,13 +66,11 @@ Configure tools and policies beside a draft chat, then publish a version for use
 | ![IBM Carbon policy configuration dialog with sample CRM approval and protection policies](docs/images/readme/policies.jpg) | ![Agent dashboard with Revenue Operations, Knowledge Assistant, and Operations Supervisor examples](docs/images/readme/agents.jpg) |
 | Choose which tools need approval and show the proposed code before execution. | Configure individual agents and supervisors for different business workflows. |
 
-### Watch the Carbon experience tour
+### Watch the product walkthrough
 
-[![Play the CUGA IBM Carbon experience tour](docs/images/readme/carbon-tour-poster.png)](docs/images/readme/carbon-tour.mp4)
+**[Watch CUGA in the interface](docs/images/readme/product-tour.mp4)** · **[Walkthrough steps](docs/readme/product-tour.md)** · **[English captions](docs/images/readme/product-tour.vtt)**
 
-**[Watch the 44-second narrated demo](docs/images/readme/carbon-tour.mp4)** · **[Read the transcript](docs/readme/carbon-tour.md)** · **[English captions](docs/images/readme/carbon-tour.vtt)**
-
-*Explore the refreshed agent dashboard, configuration, chat, knowledge, memory, Events Studio, loading states, and mobile layouts. Product screens use illustrative data; this is a visual tour, not a live agent run. [Media details](docs/readme/media.md).*
+*A direct screen recording of agent search, configuration, connected tools, approval policies, chat, knowledge, memory, and Events Studio. The UI uses illustrative data; no live agent task was executed. [Media details](docs/readme/media.md).*
 
 ## From a business request to a completed workflow
 
