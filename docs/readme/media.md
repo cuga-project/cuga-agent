@@ -1,6 +1,6 @@
 # README media
 
-The README uses direct product screenshots and a browser recording of CUGA's interface. The files are stored in the repository so readers can inspect or download them.
+The README uses direct product screenshots and a browser recording of CUGA's interface. The recording plays inline through a GitHub video attachment. The MP4, captions, and walkthrough steps are also stored in the repository so readers can inspect or download them.
 
 | Asset | Content |
 | --- | --- |
@@ -12,6 +12,7 @@ The README uses direct product screenshots and a browser recording of CUGA's int
 | `../images/readme/events.jpg` | Events Studio with sample scheduled workflows and illustrative run history. |
 | `../images/readme/memory.jpg` | Memory workspace with sample guidance, preferences, sources, and usage. |
 | `../images/readme/memory-retention.jpg` | Memory administration with sample retention rules. |
+| [Inline product tour](https://github.com/user-attachments/assets/2c51ab34-cb7a-43f8-aa1d-9a4cf8e27b5c) | GitHub attachment of the checked-in MP4, used by the README player. |
 | [Product walkthrough](../images/readme/product-tour.mp4) | Approximately 30 seconds of direct browser recording, 1440 × 1000, silent H.264. |
 | [English captions](../images/readme/product-tour.vtt) | Descriptions of the interface actions shown in the recording. |
 | [Walkthrough steps](product-tour.md) | Text equivalent of the recorded sequence. |
@@ -41,3 +42,5 @@ The sample rules flag unused guidance after 90 days and remove conversation memo
 4. Wait for data and fonts. Inspect every capture for empty content, clipped controls, unwanted focus outlines, and errors. Save screenshot bytes at native resolution.
 5. Record the actual interface interactions when updating the walkthrough. Keep the action descriptions and text equivalent aligned with the video. Preserve the sample-data disclosure.
 6. Keep matching product media in `cuga-project/landing-site` synchronized. The website serves its own files, so the two PRs can merge independently. Verify playback, descriptions, dismissal, and focus restoration on desktop and mobile.
+
+For README inline playback, upload the checked-in MP4 through a GitHub Markdown attachment control and put the returned `https://github.com/user-attachments/assets/...` URL on its own line. Update the attachment link above, verify playback in the rendered README, and keep the repository MP4, captions, and text walkthrough.
