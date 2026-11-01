@@ -57,13 +57,13 @@ Prefer to try it in your browser first? [Open the quickstart notebook in Colab](
 
 Configure tools and policies beside a draft chat, then publish a version for users.
 
-![CUGA IBM Carbon workspace with connected CRM and Workspace tools, draft chat, and Publish](docs/images/readme/manager.jpg)
+![Current CUGA manager UI showing connected CRM and Workspace tools, three policies, draft chat, and Publish](docs/images/readme/manager.jpg)
 
 *Current UI, captured from this repository with illustrative Revenue Operations configuration data. Internal endpoints and version labels are examples.*
 
 | Set approval policies | Manage specialized agents |
 | --- | --- |
-| ![IBM Carbon policy configuration dialog with sample CRM approval and protection policies](docs/images/readme/policies.jpg) | ![Agent dashboard with Revenue Operations, Knowledge Assistant, and Operations Supervisor examples](docs/images/readme/agents.jpg) |
+| ![Tool Approval configuration requiring human approval for CRM account updates](docs/images/readme/policies.jpg) | ![Agent dashboard with Revenue Operations, Knowledge Assistant, and Operations Supervisor examples](docs/images/readme/agents.jpg) |
 | Choose which tools need approval and show the proposed code before execution. | Configure individual agents and supervisors for different business workflows. |
 
 ### Watch the product walkthrough
