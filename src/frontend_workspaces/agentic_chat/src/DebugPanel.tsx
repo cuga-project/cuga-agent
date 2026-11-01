@@ -1,3 +1,4 @@
+import { InlineLoading } from "@carbon/react";
 import React, { useState, useEffect, useCallback } from "react";
 import { Bug, RefreshCw, ChevronDown, ChevronUp, Copy, Check } from "lucide-react";
 import { apiFetch } from "../../frontend/src/api";
@@ -159,7 +160,7 @@ export function DebugPanel({ threadId }: DebugPanelProps) {
             <div className="debug-section-header">
               <strong>Agent State</strong>
             </div>
-            {isLoading && <div className="debug-loading">Loading...</div>}
+            {isLoading && <InlineLoading description="Loading..." aria-live="polite" />}
             {error && <div className="debug-error">Error: {error}</div>}
             {agentState && (
               <div className="debug-state-content">

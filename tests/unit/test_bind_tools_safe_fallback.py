@@ -32,6 +32,19 @@ def _pin_bind_tools_cap():
         yield
 
 
+# The tracker keeps steps only while it is enabled (it is off by default), and these tests
+# assert on the steps it records.
+@pytest.fixture
+def tracker_on():
+    from cuga.config import settings
+
+    original = settings.advanced_features.tracker_enabled
+    settings.update({"ADVANCED_FEATURES": {"TRACKER_ENABLED": True}}, merge=True)
+    with patch("cuga.backend.activity_tracker.tracker.ActivityTracker.to_file"):
+        yield
+    settings.update({"ADVANCED_FEATURES": {"TRACKER_ENABLED": original}}, merge=True)
+
+
 class _NoBindModel(BaseChatModel):
     @property
     def _llm_type(self) -> str:
@@ -50,7 +63,7 @@ class _BindModel(_NoBindModel):
         return self.model_copy(update={"bound": list(tools)})
 
 
-def test_safe_bind_returns_unbound_model_when_unsupported():
+def test_safe_bind_returns_unbound_model_when_unsupported(tracker_on):
     from cuga.backend.activity_tracker.tracker import ActivityTracker
 
     model = _NoBindModel()
@@ -130,7 +143,7 @@ async def test_over_cap_genuine_shortlister_failure_still_raises():
 
 
 @pytest.mark.asyncio
-async def test_degradation_leaves_a_machine_readable_trace():
+async def test_degradation_leaves_a_machine_readable_trace(tracker_on):
     """A log line is not actionable downstream; an eval harness must be able to
     tell that native binding was requested and didn't happen."""
     from cuga.backend.activity_tracker.tracker import ActivityTracker

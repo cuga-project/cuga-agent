@@ -93,7 +93,7 @@ Start with the [CRM demo](#develop-from-source), the [knowledge walkthrough](doc
 | **Multi-agent coordination** | Give specialists focused tools and instructions, then route work through [CugaSupervisor](https://docs.cuga.dev/docs/build/cuga-supervisor/). |
 | **Knowledge with citations** | Combine shared company documents with conversation uploads and inspect cited sources. [Knowledge walkthrough](docs/examples/knowledge_demo/README.md). |
 | **Reusable agent skills** | Package procedures in `SKILL.md` files and load the relevant instructions when a task needs them. [Skills guide](docs/readme/configuration-guide.md#agent-skills). |
-| **Execution visibility** | Inspect trajectories with `cuga viz` and enable per-run receipts for token usage, model calls, tool calls, and elapsed time. [Run receipts](docs/readme/configuration-guide.md#run-receipt). |
+| **Execution visibility** | Record trajectories with `tracker_enabled=true`, inspect them with `cuga viz`, and enable per-run receipts for token usage, model calls, tool calls, and elapsed time. [Run receipts](docs/readme/configuration-guide.md#run-receipt). |
 | **Access control** | Configure OIDC sign-in and enable separate chat and management role checks. [Authentication setup](docs/readme/configuration-guide.md#authentication-and-access-control). |
 
 ## Develop from source
@@ -133,7 +133,7 @@ For the configuration UI, open `/manage` on the same server. Connect tools, conf
 | Start the manager with CRM tools | `uv run cuga start manager --crm` |
 | Try document-based assistance | `uv run cuga start demo_knowledge` |
 | Try supervisor orchestration | `uv run cuga start demo_supervisor` |
-| Inspect execution trajectories | `uv run cuga viz` |
+| Inspect execution trajectories | `DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED=true uv run cuga start demo`, then `uv run cuga viz` |
 | Configure another model provider | [Model configuration](docs/readme/configuration-guide.md#supported-platforms) · [Environment example](.env.example) |
 
 ### Use your own inference endpoint

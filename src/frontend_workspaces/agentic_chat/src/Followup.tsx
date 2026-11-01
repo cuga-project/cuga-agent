@@ -1,3 +1,4 @@
+import { InlineLoading } from "@carbon/react";
 import React, { useState, useEffect } from "react";
 import { Check, X, Send } from "lucide-react";
 
@@ -190,7 +191,7 @@ export const FollowupAction = ({ followupAction, callback }: FollowupActionProps
 
   const renderWaitingState = () => (
     <div className="flex items-center justify-center py-4">
-      <span className="text-sm text-gray-500">Loading...</span>
+      <InlineLoading description="Loading..." aria-live="polite" />
     </div>
   );
 

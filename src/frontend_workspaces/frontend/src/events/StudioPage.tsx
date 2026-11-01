@@ -1,11 +1,12 @@
+import { ContentSkeleton, AsyncButton, useModalClose } from "agentic_chat/LoadingState";
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
-  Tabs,
-  TabList,
-  Tab,
-  TabPanels,
-  TabPanel,
+  SideNav,
+  SideNavItems,
+  SideNavMenu,
+  SideNavMenuItem,
+  SelectItemGroup,
   Tile,
   Tag,
   Button,
@@ -30,6 +31,7 @@ import * as api from "../api";
 import { CugaHeader } from "../CugaHeader";
 import { ConciergeChat } from "./ConciergeChat";
 import "./StudioPage.css";
+import { useCarbonFeedback } from "../CarbonFeedback";
 
 // ---- small dumb render helpers ------------------------------------------------
 const STATUS_TAG: Record<string, { type: string; label: string }> = {
@@ -104,13 +106,27 @@ function useEndpoint<T>(fn: () => Promise<Response>, pick: (d: any) => T, dep: n
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dep]);
-  return { data, loading, error };
+  return { data, loading: loading && data === null, refreshing: loading && data !== null, error };
 }
 
-function Loader({ loading, error }: { loading: boolean; error: string | null }) {
-  if (loading) return <InlineLoading description="Loading…" />;
+function Loader({ loading, refreshing = false, error, kind = "cards" }: { loading: boolean; refreshing?: boolean; error: string | null; kind?: "cards" | "table" | "list" }) {
+  if (loading) return <ContentSkeleton label="Loading Studio content…" kind={kind} />;
+  if (refreshing) return <InlineLoading description="Refreshing Studio content…" aria-live="polite" />;
   if (error) return <InlineNotification kind="error" title="Error" subtitle={error} lowContrast hideCloseButton />;
   return null;
+}
+
+function useStudioAction() {
+  const { notify } = useCarbonFeedback();
+  const [pending, setPending] = useState<string | null>(null);
+  const run = async (key: string, action: () => Promise<unknown>) => {
+    if (pending) return;
+    setPending(key);
+    try { await action(); }
+    catch (error) { notify(error instanceof Error ? error.message : "Request failed", "error"); }
+    finally { setPending(null); }
+  };
+  return { pending, run };
 }
 
 // ---- tabs --------------------------------------------------------------------
@@ -156,6 +172,7 @@ function AgentEditor({ open, editing, onClose }: {
   const [access, setAccess] = useState("");
   const [servers, setServers] = useState<{ name: string; hint: string }[]>([]);
   const [saving, setSaving] = useState(false);
+  const closeEditor = useModalClose(saving, () => onClose(false));
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -212,7 +229,8 @@ function AgentEditor({ open, editing, onClose }: {
     <Modal open={open} modalHeading={isEdit ? `Edit agent · ${editing?.name}` : "Add agent"}
       primaryButtonText={saving ? "Saving…" : "Save"} secondaryButtonText="Cancel"
       primaryButtonDisabled={saving || !name.trim()}
-      onRequestClose={() => onClose(false)} onRequestSubmit={save}>
+      loadingStatus={saving ? "active" : "inactive"} loadingDescription="Saving…"
+      onRequestClose={closeEditor} onRequestSubmit={save}>
       {err && <InlineNotification kind="error" title="Error" subtitle={err} lowContrast hideCloseButton />}
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <TextInput id="agent-name" labelText="Name" value={name} disabled={isEdit}
@@ -299,7 +317,7 @@ function AgentEditor({ open, editing, onClose }: {
 
 function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => void }) {
   const [localBump, setLocalBump] = useState(0);
-  const { data, loading, error } = useEndpoint<any[]>(
+  const { data, loading, refreshing, error } = useEndpoint<any[]>(
     api.getEventsAgents, (d) => d.agents ?? [], refresh + localBump);
   const mcp = useEndpoint<any>(api.getEventsMcpServers, (d) => d, refresh);
   const explorerUrl = mcp.data?.explorer_url || "http://localhost:8001/docs";
@@ -331,7 +349,7 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
           <span style={{ opacity: 0.85 }}>· {mcpServers.map((s) => s.name).join(", ")}</span>
         )}
       </div>
-      <Loader loading={loading} error={error} />
+      <Loader loading={loading} refreshing={refreshing} error={error} />
       {!loading && !error && (data?.length ?? 0) === 0 && (
         <InlineNotification kind="info" lowContrast hideCloseButton
           title="No sub-agents loaded"
@@ -384,10 +402,10 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
 }
 
 function ChannelsTab({ refresh }: { refresh: number }) {
-  const { data, loading, error } = useEndpoint<any[]>(api.getEventsChannels, (d) => d.channels ?? [], refresh);
+  const { data, loading, refreshing, error } = useEndpoint<any[]>(api.getEventsChannels, (d) => d.channels ?? [], refresh);
   return (
     <div className="studio-grid">
-      <Loader loading={loading} error={error} />
+      <Loader loading={loading} refreshing={refreshing} error={error} />
       {data?.map((c) => (
         <Tile key={c.name} className="studio-card">
           <div className="studio-card-head">
@@ -408,29 +426,31 @@ function ChannelsTab({ refresh }: { refresh: number }) {
 }
 
 function IntegrationsTab({ refresh }: { refresh: number }) {
-  const { data, loading, error } = useEndpoint<any[]>(api.getEventsIntegrations, (d) => d.integrations ?? [], refresh);
+  const { prompt, notify } = useCarbonFeedback();
+  const { pending, run } = useStudioAction();
+  const { data, loading, refreshing, error } = useEndpoint<any[]>(api.getEventsIntegrations, (d) => d.integrations ?? [], refresh);
   // the trigger registry, so each card can say WHAT the integration can watch
   const reg = useEndpoint<any[]>(api.getEventsTriggers, (d) => d.apps ?? [], refresh);
   const trigsFor = (app: string) =>
     (reg.data ?? []).find((a: any) => a.app === app)?.triggers ?? [];
 
   // "log in with your own account" — OAuth apps open the consent flow; token apps paste a secret.
-  const connect = (i: any) => {
-    if (i.auth === "oauth") {
+  const connect = async (i: any) => {
+    if (i.auth === "oauth") { // pragma: allowlist secret -- Authentication method comparison.
       window.open(api.eventsConnectUrl(i.name), "_blank", "noreferrer");
     } else {
-      const token = window.prompt(`Paste your ${i.label} token:`);
+      const token = await prompt(`Paste your ${i.label} token:`, true); // pragma: allowlist secret -- Credential is collected at runtime.
       if (token) {
-        api.postEventsConnectToken(i.name, token).then((r) => r.json()).then((res) => {
-          alert(res.ok ? `${i.label} connected.` : `Failed: ${res.error || "error"}`);
-        });
+        void run(i.name, () => api.postEventsConnectToken(i.name, token).then((r) => r.json()).then((res) => {
+          notify(res.ok ? `${i.label} connected.` : `Failed: ${res.error || "error"}`, res.ok ? "success" : "error");
+        }));
       }
     }
   };
 
   return (
     <div className="studio-grid">
-      <Loader loading={loading} error={error} />
+      <Loader loading={loading} refreshing={refreshing} error={error} />
       {data?.map((i) => (
         <Tile key={i.name} className="studio-card">
           <div className="studio-card-head">
@@ -456,17 +476,22 @@ function IntegrationsTab({ refresh }: { refresh: number }) {
               {i.backend === "direct" ? "direct backend" : "via Activepieces"}
             </Tag>
             <Tag type="outline" size="sm">
-              {i.auth === "none" ? "no auth"
-                : (i.backend === "direct" ? "token" : (i.auth === "oauth" ? "OAuth" : "token"))}
+              {i.auth === "none" ? "no auth" // pragma: allowlist secret -- Authentication method display label.
+                : (i.backend === "direct" ? "token" : (i.auth === "oauth" ? "OAuth" : "token")) // pragma: allowlist secret -- Authentication method display label.
+              }
             </Tag>
             {/* public-feed pieces (youtube/rss) need NO connection — show 'ready', not a Connect button */}
-            {(i.needs_connection === false || i.auth === "none") ? (
+            {(i.needs_connection === false ||
+              i.auth === "none" // pragma: allowlist secret -- Authentication method comparison.
+            ) ? (
               <Tag type="green" size="sm">ready · no connection needed</Tag>
             ) : i.status !== "ap_not_configured" ? (
-              <Button kind={i.status === "connected" ? "ghost" : "tertiary"} size="sm"
-                renderIcon={i.auth === "oauth" ? Launch : Plug} onClick={() => connect(i)}>
+              <AsyncButton busy={pending === i.name} busyLabel="Connecting…" disabled={pending !== null} kind={i.status === "connected" ? "ghost" : "tertiary"} size="sm"
+                renderIcon={
+                  i.auth === "oauth" ? Launch : Plug // pragma: allowlist secret -- Authentication method comparison.
+                } onClick={() => connect(i)}>
                 {i.status === "connected" ? "Reconnect" : "Connect"}
-              </Button>
+              </AsyncButton>
             ) : null}
           </div>
         </Tile>
@@ -478,48 +503,50 @@ function IntegrationsTab({ refresh }: { refresh: number }) {
 // The connect SETUP GUIDE — per connector: required creds (+ present?), ownership (per-user vs
 // tenant), and the concrete steps. Dumb: it renders the server's guides + drives the connect action.
 function SetupTab({ refresh }: { refresh: number }) {
-  const { data, loading, error } = useEndpoint<any[]>(api.getEventsSetupGuides, (d) => d.guides ?? [], refresh);
+  const { prompt, notify } = useCarbonFeedback();
+  const { pending, run } = useStudioAction();
+  const { data, loading, refreshing, error } = useEndpoint<any[]>(api.getEventsSetupGuides, (d) => d.guides ?? [], refresh);
   const [own, setOwn] = useState<Record<string, string>>({});
 
-  const connect = (g: any) => {
+  const connect = async (g: any) => {
     const ownership = own[g.app] || g.ownership_default || (g.ownership || [])[0] || "per_user";
     if (g.connect === "oauth") {
       window.open(api.eventsConnectUrl(g.app, ownership), "_blank", "noreferrer");
     } else if (g.connect === "token") {
-      const token = window.prompt(`Paste your ${g.label} token/secret:`);
-      if (token) api.postEventsConnectToken(g.app, token, ownership).then((r) => r.json())
-        .then((res) => alert(res.ok ? `${g.label} connected (${ownership}).` : `Failed: ${res.error || "error"}`));
+      const token = await prompt(`Paste your ${g.label} token/secret:`, true); // pragma: allowlist secret -- Credential is collected at runtime.
+      if (token) void run(g.app, () => api.postEventsConnectToken(g.app, token, ownership).then((r) => r.json())
+        .then((res) => notify(res.ok ? `${g.label} connected (${ownership}).` : `Failed: ${res.error || "error"}`, res.ok ? "success" : "error")));
     }
   };
   // TENANT-level OAuth app registration (client id/secret) — the org-wide credential that must exist
   // before per-user OAuth connect works. Consolidated here (was a separate Admin panel) so all
   // credential setup lives in ONE place.
-  const setOAuthApp = (g: any) => {
-    const cid = window.prompt(`${g.label} — OAuth app Client ID:`);
+  const setOAuthApp = async (g: any) => {
+    const cid = await prompt(`${g.label} — OAuth app Client ID:`);
     if (!cid) return;
-    const sec = window.prompt(`${g.label} — OAuth app Client Secret:`);
+    const sec = await prompt(`${g.label} — OAuth app Client Secret:`, true); // pragma: allowlist secret -- Masked input label, no credential value.
     if (!sec) return;
-    api.postEventsAdminOAuthApp({ app: g.app, client_id: cid, client_secret: sec })
+    void run(`oauth:${g.app}`, () => api.postEventsAdminOAuthApp({ app: g.app, client_id: cid, client_secret: sec })
       .then((r) => r.json())
-      .then((res) => alert(res.ok ? `${g.label} OAuth app saved (tenant).` : `Failed: ${res.error || "error"}`));
+      .then((res) => notify(res.ok ? `${g.label} OAuth app saved (tenant).` : `Failed: ${res.error || "error"}`, res.ok ? "success" : "error")));
   };
   // Edit ANY connector credential (its .env variable) in place — persists to .env + applies live where
   // the value is read at use-time (Slack/Box/OAuth); flags a reload for the boot-time ones (Discord).
-  const setCred = (c: any) => {
-    const v = window.prompt(`Set ${c.key} — ${c.label}\n(value is written to .env)`, "");
+  const setCred = async (c: any) => { // pragma: allowlist secret -- Runtime credential handler declaration.
+    const v = await prompt(`Set ${c.key} — ${c.label}\n(value is written to .env)`, true); // pragma: allowlist secret -- Credential is collected at runtime.
     if (v == null || v === "") return;
-    api.postEventsSetCredential(c.key, v).then((r) => r.json())
-      .then((res) => alert(res.ok ? `${c.key} saved.\n${res.note}` : `Failed: ${res.error || "error"}`));
+    void run(c.key, () => api.postEventsSetCredential(c.key, v).then((r) => r.json())
+      .then((res) => notify(res.ok ? `${c.key} saved.\n${res.note}` : `Failed: ${res.error || "error"}`, res.ok ? "success" : "error")));
   };
-  const pill = (label: string, on: boolean, click?: () => void) => (
-    <span onClick={click} style={{ cursor: click ? "pointer" : "default", fontSize: 12, fontWeight: 600,
-      padding: "2px 10px", borderRadius: 20, marginRight: 6,
-      background: on ? "#0f62fe" : "#e0e0e0", color: on ? "#fff" : "#525252" }}>{label}</span>
-  );
+  const pill = (label: string, on: boolean, click?: () => void) => click ? (
+    <Button kind={on ? "primary" : "tertiary"} size="sm" aria-pressed={on} onClick={click}>
+      {label}
+    </Button>
+  ) : <Tag type={on ? "blue" : "gray"} size="sm">{label}</Tag>;
 
   return (
     <div>
-      <Loader loading={loading} error={error} />
+      <Loader loading={loading} refreshing={refreshing} error={error} kind="list" />
       <p className="studio-muted" style={{ marginBottom: 12 }}>How to connect each channel &amp; integration —
         required credentials, where to store them (<b>per-user</b> vs <b>per-tenant</b>), and the steps.</p>
       {data?.map((g) => (
@@ -538,13 +565,13 @@ function SetupTab({ refresh }: { refresh: number }) {
               <Tag type={g.connection_scope === "tenant" ? "blue" : "purple"} size="sm">
                 {g.connection_scope === "tenant" ? "TENANT (one per org)" : "USER (per-person login)"}</Tag>
               {(g.connect === "oauth" || g.connect === "token") && (
-                <Button kind={g.connected ? "ghost" : "tertiary"} size="sm"
+                <AsyncButton busy={pending === g.app} busyLabel="Connecting…" disabled={pending !== null} kind={g.connected ? "ghost" : "tertiary"} size="sm"
                   renderIcon={g.connect === "oauth" ? Launch : Plug} onClick={() => connect(g)}>
-                  {g.connected ? "Reconnect" : "Connect"} {g.label}</Button>
+                  {g.connected ? "Reconnect" : "Connect"} {g.label}</AsyncButton>
               )}
               {g.connect === "oauth" && g.connection_scope === "user" && (
-                <Button kind="ghost" size="sm" renderIcon={Settings} onClick={() => setOAuthApp(g)}>
-                  OAuth app creds (tenant)</Button>
+                <AsyncButton busy={pending === `oauth:${g.app}`} busyLabel="Saving…" disabled={pending !== null} kind="ghost" size="sm" renderIcon={Settings} onClick={() => setOAuthApp(g)}>
+                  OAuth app creds (tenant)</AsyncButton>
               )}
             </div>
           )}
@@ -557,8 +584,8 @@ function SetupTab({ refresh }: { refresh: number }) {
                 <Tag type={c.scope === "tenant" ? "blue" : "purple"} size="sm">
                   {c.scope === "tenant" ? "TENANT" : "USER"}</Tag>
                 <code>{c.key}</code> — {c.label} <span className="studio-muted">({c.where})</span>
-                <Button kind="ghost" size="sm" renderIcon={Edit} onClick={() => setCred(c)}>
-                  {c.present ? "Edit" : "Set"}</Button>
+                <AsyncButton busy={pending === c.key} busyLabel="Saving…" disabled={pending !== null} kind="ghost" size="sm" renderIcon={Edit} onClick={() => setCred(c)}>
+                  {c.present ? "Edit" : "Set"}</AsyncButton>
               </div>
             ))}
           {(g.ownership || []).length > 0 && (
@@ -639,8 +666,9 @@ function FlowDetail({ detail }: { detail: any }) {
 }
 
 function FlowsTab({ refresh }: { refresh: number }) {
+  const { confirm } = useCarbonFeedback();
   const [tick, setTick] = useState(0);
-  const { data, loading, error } = useEndpoint<any[]>(
+  const { data, loading, refreshing, error } = useEndpoint<any[]>(
     api.getEventsSubscriptions, (d) => d.subscriptions ?? [], refresh + tick);
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -657,7 +685,7 @@ function FlowsTab({ refresh }: { refresh: number }) {
     finally { setBusy(null); }
   };
   const del = async (id: string, name: string) => {
-    if (!window.confirm(`Delete flow "${name}"? This removes it from Activepieces too.`)) return;
+    if (!await confirm(`Delete flow "${name}"? This removes it from Activepieces too.`, "Delete flow")) return;
     await act(id, api.deleteFlow);
   };
   const view = async (id: string) => {
@@ -674,7 +702,8 @@ function FlowsTab({ refresh }: { refresh: number }) {
 
   return (
     <div>
-      <Loader loading={loading} error={error} />
+      <Loader loading={loading} refreshing={refreshing} error={error} />
+      {busy && <InlineLoading description="Updating flow…" aria-live="polite" />}
       {actionError && <InlineNotification kind="error" lowContrast title="Error"
         subtitle={actionError} onCloseButtonClick={() => setActionError(null)} />}
       {!loading && !error && (data?.length ?? 0) === 0 && (
@@ -718,7 +747,7 @@ function FlowsTab({ refresh }: { refresh: number }) {
         <Modal open passiveModal
           modalHeading={`Flow — ${detail?.subscription?.flow_name || detail?.id || ""}`}
           onRequestClose={() => setDetail(null)}>
-          {detailLoading ? <InlineLoading description="Loading flow…" />
+          {detailLoading ? <ContentSkeleton label="Loading flow…" />
             : detail?.subscription ? <FlowDetail detail={detail} />
             : <p className="studio-muted">No detail.</p>}
         </Modal>
@@ -766,6 +795,8 @@ function RunDetail({ detail }: { detail: any }) {
 // rest of the Studio; reads the same /api/events/* endpoints as the standalone dashboard page.
 const MODE_TAG_D: Record<string, string> = { CRON: "green", POLL: "teal", PUSH: "magenta", NOW: "gray" };
 function DashboardTab({ refresh }: { refresh: number }) {
+  const { confirm } = useCarbonFeedback();
+  const { pending, run } = useStudioAction();
   const [tick, setTick] = useState(0);
   const subsE = useEndpoint<any>(api.getEventsSubscriptions, (d) => d, refresh + tick);
   const runsE = useEndpoint<any[]>(api.getEventsRuns, (d) => d.runs ?? [], refresh + tick);
@@ -778,11 +809,12 @@ function DashboardTab({ refresh }: { refresh: number }) {
   const bkTag = (b: string) => (b === "native" ? "green" : b === "ap" ? "purple" : "cool-gray");
 
   const act = async (id: string, what: "pause" | "resume" | "delete") => {
-    if (what === "delete" && !window.confirm("Delete watcher " + id + "?")) return;
-    if (what === "pause") await api.pauseFlow(id);
-    else if (what === "resume") await api.resumeFlow(id);
-    else await api.deleteFlow(id);
-    setTick((t) => t + 1);
+    if (what === "delete" && !await confirm("Delete watcher " + id + "?", "Delete watcher")) return;
+    await run(id, async () => {
+      const response = what === "pause" ? await api.pauseFlow(id) : what === "resume" ? await api.resumeFlow(id) : await api.deleteFlow(id);
+      if (!response.ok) throw new Error(`Request failed (${response.status})`);
+      setTick((t) => t + 1);
+    });
   };
   const cadence = (s: any) =>
     s.interval_seconds ? (s.interval_seconds % 60 === 0 ? `${s.interval_seconds / 60} min` : `${s.interval_seconds}s`)
@@ -806,7 +838,8 @@ function DashboardTab({ refresh }: { refresh: number }) {
 
   return (
     <div>
-      <Loader loading={subsE.loading} error={subsE.error} />
+      {pending && <InlineLoading description="Updating watcher…" aria-live="polite" />}
+      <Loader loading={subsE.loading} refreshing={subsE.refreshing} error={subsE.error} kind="table" />
       {!subsE.loading && !subsE.error && (
         <>
           <p className="studio-muted" style={{ margin: "0 0 12px", fontSize: 13 }}>
@@ -847,10 +880,10 @@ function DashboardTab({ refresh }: { refresh: number }) {
                     <TableCell><Tag type={(s.status === "paused" ? "warm-gray" : "green") as any} size="sm">{s.status}</Tag></TableCell>
                     <TableCell><div style={{ display: "flex", gap: 2 }}>
                       <Button kind="ghost" size="sm" hasIconOnly renderIcon={s.status === "paused" ? Play : Pause}
-                        iconDescription={s.status === "paused" ? "resume" : "pause"} tooltipPosition="left"
+                        disabled={pending !== null} iconDescription={s.status === "paused" ? "resume" : "pause"} tooltipPosition="left"
                         onClick={() => act(s.id, s.status === "paused" ? "resume" : "pause")} />
                       <Button kind="danger--ghost" size="sm" hasIconOnly renderIcon={TrashCan}
-                        iconDescription="delete" tooltipPosition="left" onClick={() => act(s.id, "delete")} />
+                        disabled={pending !== null} iconDescription="delete" tooltipPosition="left" onClick={() => act(s.id, "delete")} />
                     </div></TableCell>
                   </TableRow>
                 ))}
@@ -910,7 +943,7 @@ function DashboardTab({ refresh }: { refresh: number }) {
 
 function RunsTab({ refresh }: { refresh: number }) {
   const [tick, setTick] = useState(0);
-  const { data, loading, error } = useEndpoint<any[]>(
+  const { data, loading, refreshing, error } = useEndpoint<any[]>(
     api.getEventsRuns, (d) => d.runs ?? [], refresh + tick);
   const [f, setF] = useState<Record<string, string>>(
     { agent: "all", backend: "all", integration: "all", channel: "all", mode: "all", status: "all" });
@@ -954,7 +987,7 @@ function RunsTab({ refresh }: { refresh: number }) {
 
   return (
     <div>
-      <Loader loading={loading} error={error} />
+      <Loader loading={loading} refreshing={refreshing} error={error} kind="table" />
       {!loading && !error && (
         <>
           <p className="studio-muted" style={{ margin: "0 0 10px", fontSize: 13 }}>
@@ -1015,7 +1048,7 @@ function RunsTab({ refresh }: { refresh: number }) {
       )}
       {detail && (
         <Modal open passiveModal modalHeading="Run output" onRequestClose={() => setDetail(null)}>
-          {detailLoading ? <InlineLoading description="Loading…" /> : <RunDetail detail={detail} />}
+          {detailLoading ? <ContentSkeleton label="Loading run details…" /> : <RunDetail detail={detail} />}
         </Modal>
       )}
     </div>
@@ -1023,7 +1056,7 @@ function RunsTab({ refresh }: { refresh: number }) {
 }
 
 function ExamplesTab({ refresh, onTry }: { refresh: number; onTry: (utterance: string) => void }) {
-  const { data, loading, error } = useEndpoint<any[]>(api.getEventsExamples, (d) => d.examples ?? [], refresh);
+  const { data, loading, refreshing, error } = useEndpoint<any[]>(api.getEventsExamples, (d) => d.examples ?? [], refresh);
   const [starOnly, setStarOnly] = useState(false);
   const [q, setQ] = useState("");
 
@@ -1058,7 +1091,7 @@ function ExamplesTab({ refresh, onTry }: { refresh: number; onTry: (utterance: s
         <Checkbox id="ex-star-only" labelText="⭐ Recommended only"
           checked={starOnly} onChange={(_e: any, d: any) => setStarOnly(!!d?.checked)} />
       </div>
-      <Loader loading={loading} error={error} />
+      <Loader loading={loading} refreshing={refreshing} error={error} />
       {!loading && !error && agents.length === 0 && <p className="studio-muted">No examples match.</p>}
       {agents.map((agent) => (
         <div key={agent} style={{ marginBottom: 22 }}>
@@ -1092,13 +1125,15 @@ function ExamplesTab({ refresh, onTry }: { refresh: number; onTry: (utterance: s
 }
 
 function ProfileTab({ refresh }: { refresh: number }) {
-  const { data, loading, error } = useEndpoint<any>(api.getEventsMe, (d) => d, refresh);
+  const { prompt, notify } = useCarbonFeedback();
+  const { pending, run } = useStudioAction();
+  const { data, loading, refreshing, error } = useEndpoint<any>(api.getEventsMe, (d) => d, refresh);
   const link = (channel: string) => {
-    api.postEventsLinkChannel(channel).then((r) => r.json()).then((res) => {
-      alert(res.ok ? `To link ${channel}: ${res.how}` : `Failed: ${res.error || "error"}`);
-    });
+    void run(channel, () => api.postEventsLinkChannel(channel).then((r) => r.json()).then((res) => {
+      notify(res.ok ? `To link ${channel}: ${res.how}` : `Failed: ${res.error || "error"}`, res.ok ? "success" : "error");
+    }));
   };
-  if (loading || error) return <Loader loading={loading} error={error} />;
+  if (loading || error) return <Loader loading={loading} refreshing={refreshing} error={error} kind="list" />;
   return (
     <div>
       <Tile className="studio-card" style={{ marginBottom: "1rem" }}>
@@ -1119,9 +1154,9 @@ function ProfileTab({ refresh }: { refresh: number }) {
                 <StatusTag status={linked ? "connected" : "not_connected"} />
               </div>
               <div className="studio-card-foot">
-                <Button kind="tertiary" size="sm" onClick={() => link(ch)}>
+                <AsyncButton busy={pending === ch} busyLabel="Linking…" disabled={pending !== null} kind="tertiary" size="sm" onClick={() => link(ch)}>
                   {linked ? "Re-link" : "Link my account"}
-                </Button>
+                </AsyncButton>
               </div>
             </Tile>
           );
@@ -1140,22 +1175,25 @@ function ProfileTab({ refresh }: { refresh: number }) {
 }
 
 function AdminTab({ refresh }: { refresh: number }) {
-  const { data, loading, error } = useEndpoint<any[]>(api.getEventsAdminUsers, (d) => d.users ?? [], refresh);
-  const add = () => {
-    const id = window.prompt("New user id (e.g. carol):");
+  const { prompt, notify } = useCarbonFeedback();
+  const { pending, run } = useStudioAction();
+  const { data, loading, refreshing, error } = useEndpoint<any[]>(api.getEventsAdminUsers, (d) => d.users ?? [], refresh);
+  const add = async () => {
+    const id = await prompt("New user id (e.g. carol):");
     if (!id) return;
-    const email = window.prompt("Email:") || "";
-    api.postEventsAdminUser({ user_id: id, email, roles: ["user"] })
-      .then((r) => r.json()).then((res) => alert(res.ok ? `Added ${id}` : `Failed: ${res.error}`));
+    const email = await prompt("Email:");
+    if (email === null) return;
+    void run("add-user", () => api.postEventsAdminUser({ user_id: id, email, roles: ["user"] })
+      .then((r) => r.json()).then((res) => notify(res.ok ? `Added ${id}` : `Failed: ${res.error}`, res.ok ? "success" : "error")));
   };
   return (
     <div>
-      <Loader loading={loading} error={error} />
+      <Loader loading={loading} refreshing={refreshing} error={error} kind="table" />
       <p className="studio-muted" style={{ marginBottom: 12 }}>
         Users &amp; roles for this tenant. <b>Credentials &amp; app connections</b> (OAuth app client
         id/secret, tokens, connect/reconnect) all live in the <b>Setup</b> tab — one place.
       </p>
-      <Button kind="tertiary" size="sm" onClick={add} style={{ marginBottom: "1rem" }}>Add user</Button>
+      <AsyncButton busy={pending === "add-user"} busyLabel="Adding user…" kind="tertiary" size="sm" onClick={add} style={{ marginBottom: "1rem" }}>Add user</AsyncButton>
       <div className="studio-grid">
         {data?.map((u) => (
           <Tile key={u.user_id} className="studio-card">
@@ -1184,6 +1222,7 @@ function ApiTab() {
   // state rather than through the sync helper, because on first mount that cache is cold and would
   // fall back to the same wrong origin.
   const [base, setBase] = useState<string | null>(null);
+  const [referenceLoading, setReferenceLoading] = useState(true);
   useEffect(() => {
     let live = true;
     api.getEventsBaseUrl().then((b) => {
@@ -1210,22 +1249,48 @@ function ApiTab() {
         </Button>
       </div>
       {base ? (
-        <iframe title="API reference" src={url}
-          style={{ width: "100%", height: "72vh", border: "1px solid var(--cds-border-subtle, #e0e0e0)",
-                   borderRadius: 6, background: "#fff" }} />
+        <div style={{ position: "relative", height: "72vh" }}>
+          {referenceLoading && <ContentSkeleton label="Loading the API reference…" rows={8} />}
+          <iframe title="API reference" src={url} onLoad={() => setReferenceLoading(false)} onError={() => setReferenceLoading(false)}
+            style={{ position: "absolute", inset: 0, visibility: referenceLoading ? "hidden" : "visible", width: "100%", height: "100%", border: "1px solid var(--cds-border-subtle-01)", background: "var(--cds-layer-01)" }} />
+        </div>
       ) : (
-        <p className="studio-muted" style={{ fontSize: 13 }}>Loading the API reference…</p>
+        <ContentSkeleton label="Loading the API reference…" rows={5} />
       )}
     </div>
   );
 }
+
+const STUDIO_NAVIGATION = [
+  { title: "Automation", items: [
+    { id: "dashboard", label: "Dashboard" }, { id: "concierge", label: "Concierge" },
+    { id: "agents", label: "Sub-agents" }, { id: "flows", label: "Flows" },
+    { id: "runs", label: "Runs" }, { id: "examples", label: "Examples" },
+  ] },
+  { title: "Connections", items: [
+    { id: "channels", label: "Channels" }, { id: "integrations", label: "Integrations" }, { id: "setup", label: "Setup" },
+  ] },
+  { title: "Service", items: [
+    { id: "profile", label: "Profile" }, { id: "admin", label: "Admin" }, { id: "api", label: "API" },
+  ] },
+];
+const STUDIO_SECTIONS = STUDIO_NAVIGATION.flatMap((group) => group.items);
 
 // ---- page --------------------------------------------------------------------
 export function StudioPage() {
   const navigate = useNavigate();
   const [status, setStatus] = useState<api.EventsStatus | null>(null);
   const [checked, setChecked] = useState(false);
-  const [selected, setSelected] = useState(0);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selected = STUDIO_SECTIONS.find((item) => item.id === searchParams.get("section")) ?? STUDIO_SECTIONS[0];
+  const [visited, setVisited] = useState(() => new Set([selected.id]));
+  useEffect(() => { setVisited((previous) => previous.has(selected.id) ? previous : new Set([...previous, selected.id])); }, [selected.id]);
+  const selectSection = (id: string) => {
+    const params = new URLSearchParams(searchParams);
+    if (id === "dashboard") params.delete("section");
+    else params.set("section", id);
+    setSearchParams(params);
+  };
   const [draft, setDraft] = useState("");
   const [refresh, setRefresh] = useState(0);
 
@@ -1240,8 +1305,8 @@ export function StudioPage() {
     // events layer not mounted → this route shouldn't be reachable; guide back.
     return (
       <div className="studio-page">
-        <CugaHeader title="CUGA Agent" navItems={[{ label: "Chat", href: "/chat" }]} />
-        <div className="studio-content">
+        <CugaHeader title="CUGA Agent" linkComponent={Link as any} />
+        <div role="main" id="main-content" tabIndex={-1} className="studio-content">
           <InlineNotification kind="info" lowContrast hideCloseButton
             title="Studio is off"
             subtitle="The events service isn't reachable. Start it (python -m cuga.backend.events.service) and set EVENTS_API_URL." />
@@ -1253,22 +1318,32 @@ export function StudioPage() {
     );
   }
 
-  const onTry = (utterance: string) => { setDraft(utterance); setSelected(0); };
+  const onTry = (utterance: string) => { setDraft(utterance); selectSection("concierge"); };
+  const sectionContent = (id: string) => {
+    switch (id) {
+      case "dashboard": return <DashboardTab refresh={refresh} />;
+      case "concierge": return <ConciergeChat draft={draft} setDraft={setDraft} />;
+      case "agents": return <AgentsTab refresh={refresh} onTry={onTry} />;
+      case "channels": return <ChannelsTab refresh={refresh} />;
+      case "integrations": return <IntegrationsTab refresh={refresh} />;
+      case "setup": return <SetupTab refresh={refresh} />;
+      case "flows": return <FlowsTab refresh={refresh} />;
+      case "runs": return <RunsTab refresh={refresh} />;
+      case "examples": return <ExamplesTab refresh={refresh} onTry={onTry} />;
+      case "api": return <ApiTab />;
+      case "profile": return <ProfileTab refresh={refresh} />;
+      case "admin": return <AdminTab refresh={refresh} />;
+      default: return null;
+    }
+  };
 
   return (
     <div className="studio-page">
-      <CugaHeader
-        title="CUGA Studio"
-        prefix="Events"
-        navItems={[
-          { label: "Chat", href: "/chat" },
-          { label: "Agents", href: "/manage" },
-        ]}
-      />
-      <div className="studio-content">
+      <CugaHeader title="CUGA Agent" linkComponent={Link as any} />
+      <div role="main" id="main-content" tabIndex={-1} className="studio-content">
         <div className="studio-heading-row">
           <div>
-            <h2 className="studio-title">Event Studio</h2>
+            <h1 className="studio-title">Event Studio</h1>
             <p className="studio-muted">
               Turn natural language into worker agents + triggers. Configuration &amp; visibility
               only — all decisions run server-side.
@@ -1283,36 +1358,32 @@ export function StudioPage() {
           <Button kind="ghost" size="sm" onClick={bump}>Refresh</Button>
         </div>
 
-        <Tabs selectedIndex={selected} onChange={(e: { selectedIndex: number }) => setSelected(e.selectedIndex)}>
-          <TabList aria-label="Studio sections" contained>
-            <Tab renderIcon={Dashboard}>Dashboard</Tab>
-            <Tab renderIcon={Chat}>Concierge</Tab>
-            <Tab renderIcon={Bot}>Agents</Tab>
-            <Tab renderIcon={Chat}>Channels</Tab>
-            <Tab renderIcon={Plug}>Integrations</Tab>
-            <Tab renderIcon={Settings}>Setup</Tab>
-            <Tab renderIcon={Flow}>Flows</Tab>
-            <Tab renderIcon={Activity}>Runs</Tab>
-            <Tab renderIcon={Idea}>Examples</Tab>
-            <Tab renderIcon={Launch}>API</Tab>
-            <Tab renderIcon={User}>Profile</Tab>
-            <Tab renderIcon={Settings}>Admin</Tab>
-          </TabList>
-          <TabPanels>
-            <TabPanel><DashboardTab refresh={refresh} /></TabPanel>
-            <TabPanel><ConciergeChat draft={draft} setDraft={setDraft} /></TabPanel>
-            <TabPanel><AgentsTab refresh={refresh} onTry={onTry} /></TabPanel>
-            <TabPanel><ChannelsTab refresh={refresh} /></TabPanel>
-            <TabPanel><IntegrationsTab refresh={refresh} /></TabPanel>
-            <TabPanel><SetupTab refresh={refresh} /></TabPanel>
-            <TabPanel><FlowsTab refresh={refresh} /></TabPanel>
-            <TabPanel><RunsTab refresh={refresh} /></TabPanel>
-            <TabPanel><ExamplesTab refresh={refresh} onTry={onTry} /></TabPanel>
-            <TabPanel><ApiTab /></TabPanel>
-            <TabPanel><ProfileTab refresh={refresh} /></TabPanel>
-            <TabPanel><AdminTab refresh={refresh} /></TabPanel>
-          </TabPanels>
-        </Tabs>
+        <div className="studio-section-select">
+          <Select id="studio-section" labelText="Studio section" value={selected.id} onChange={(event) => selectSection(event.target.value)}>
+            {STUDIO_NAVIGATION.map((group) => <SelectItemGroup key={group.title} label={group.title}>
+              {group.items.map((item) => <SelectItem key={item.id} value={item.id} text={item.label} />)}
+            </SelectItemGroup>)}
+          </Select>
+        </div>
+        <div className="studio-workspace">
+          <SideNav aria-label="Studio sections" className="studio-section-nav" expanded isPersistent isFixedNav isChildOfHeader={false} addFocusListeners={false} addMouseListeners={false}>
+            <SideNavItems>
+              {STUDIO_NAVIGATION.map((group) => <SideNavMenu key={group.title} title={group.title} defaultExpanded isActive={group.items.some((item) => item.id === selected.id)}>
+                {group.items.map((item) => <SideNavMenuItem key={item.id} as={Link} to={item.id === "dashboard" ? "/studio" : `/studio?section=${item.id}`} isActive={selected.id === item.id}>
+                  {item.label}
+                </SideNavMenuItem>)}
+              </SideNavMenu>)}
+            </SideNavItems>
+          </SideNav>
+          <div className="studio-section-content">
+            {STUDIO_SECTIONS.map((item) => <section key={item.id} hidden={selected.id !== item.id} aria-labelledby={`studio-section-${item.id}`}>
+              {(visited.has(item.id) || selected.id === item.id) && <>
+                <h2 id={`studio-section-${item.id}`} className="studio-section-title">{item.label}</h2>
+                {sectionContent(item.id)}
+              </>}
+            </section>)}
+          </div>
+        </div>
       </div>
     </div>
   );

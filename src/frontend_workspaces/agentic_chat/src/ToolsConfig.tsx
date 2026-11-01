@@ -1,6 +1,8 @@
+import { ContentSkeleton } from "./LoadingState";
 import React, { useState, useEffect } from "react";
 import { X, Plus, Trash2, Save, Upload, Download } from "lucide-react";
 import yaml from "js-yaml";
+import { InlineNotification } from "@carbon/react";
 import { apiFetch } from "../../frontend/src/api";
 import "./ConfigModal.css";
 
@@ -42,6 +44,7 @@ interface ToolsConfigProps {
 }
 
 export default function ToolsConfig({ onClose }: ToolsConfigProps) {
+  const [importError, setImportError] = useState<string | null>(null);
   const [configData, setConfigData] = useState<ToolsConfigData>({
     services: [],
     mcpServers: {},
@@ -50,7 +53,7 @@ export default function ToolsConfig({ onClose }: ToolsConfigProps) {
   });
   const [activeTab, setActiveTab] = useState<"apps" | "services" | "mcpServers">("apps");
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     loadConfig();
@@ -243,7 +246,7 @@ export default function ToolsConfig({ onClose }: ToolsConfigProps) {
           const data = yaml.load(text) as ToolsConfigData;
           setConfigData(data);
         } catch (error) {
-          alert('Failed to parse YAML file');
+          setImportError('Failed to parse YAML file');
         }
       }
     };
@@ -253,6 +256,7 @@ export default function ToolsConfig({ onClose }: ToolsConfigProps) {
   return (
     <div className="config-modal-overlay" onClick={onClose}>
       <div className="config-modal" onClick={(e) => e.stopPropagation()}>
+        {importError && <InlineNotification kind="error" title="Error" subtitle={importError} lowContrast onCloseButtonClick={() => setImportError(null)} />}
         <div className="config-modal-header">
           <h2>Tools Configuration</h2>
           <button className="config-modal-close" onClick={onClose}>
@@ -297,7 +301,7 @@ export default function ToolsConfig({ onClose }: ToolsConfigProps) {
             <div className="apps-section">
               <div className="section-header">
                 <h3>Available Apps & Tools</h3>
-                {loading && <span className="loading-text">Loading...</span>}
+                {loading && <ContentSkeleton label="Loading tools…" />}
               </div>
 
               {(configData.apps || []).length === 0 && !loading ? (
@@ -482,7 +486,8 @@ export default function ToolsConfig({ onClose }: ToolsConfigProps) {
                 </div>
               ))}
 
-              {Object.keys(configData.mcpServers || {}).length === 0 && (
+              {loading && <ContentSkeleton label="Loading MCP servers…" />}
+              {!loading && Object.keys(configData.mcpServers || {}).length === 0 && (
                 <div className="empty-state">
                   <p>No MCP servers configured. Click "Add Server" to get started.</p>
                 </div>
@@ -494,7 +499,7 @@ export default function ToolsConfig({ onClose }: ToolsConfigProps) {
             <div className="services-section">
               <div className="section-header">
                 <h3>OpenAPI Services</h3>
-                {loading && <span className="loading-text">Loading...</span>}
+                {loading && <ContentSkeleton label="Loading tools…" />}
               </div>
 
               {(configData.services || []).length === 0 && !loading ? (

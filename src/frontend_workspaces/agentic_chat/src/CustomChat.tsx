@@ -1,3 +1,4 @@
+import { InlineLoading } from "@carbon/react";
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { Send, RotateCcw, Bot, User, FileText, Database, Code, Terminal, Cpu, Globe, Settings, ChevronRight, Paperclip } from "lucide-react";
 import CardManager from "./CardManager";
@@ -62,6 +63,7 @@ export function CustomChat({ onVariablesUpdate, onMessageSent, onChatStarted, on
   const currentChatInstanceRef = useRef<ChatInstance | null>(null);
   const [showFileAutocomplete, setShowFileAutocomplete] = useState(false);
   const [autocompleteQuery, setAutocompleteQuery] = useState("");
+  const [filesLoading, setFilesLoading] = useState(true);
   const [allFiles, setAllFiles] = useState<Array<{ name: string; path: string }>>([]);
   const [filteredFiles, setFilteredFiles] = useState<Array<{ name: string; path: string }>>([]);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
@@ -233,7 +235,7 @@ export function CustomChat({ onVariablesUpdate, onMessageSent, onChatStarted, on
         setAllFiles(files);
       } catch (error) {
         console.error('Error loading files:', error);
-      }
+      } finally { setFilesLoading(false); }
     };
 
     loadFiles();
@@ -1200,11 +1202,11 @@ export function CustomChat({ onVariablesUpdate, onMessageSent, onChatStarted, on
           </div>
           </div>
 
-          {showFileAutocomplete && filteredFiles.length > 0 && (
+          {showFileAutocomplete && (filesLoading || filteredFiles.length > 0) && (
             <div className="simple-file-autocomplete">
               <div className="simple-file-autocomplete-header">
                 <span>Workspace Files</span>
-                <span className="file-count">{filteredFiles.length}</span>
+                {filesLoading ? <InlineLoading description="Loading workspace files…" /> : <span className="file-count">{filteredFiles.length}</span>}
               </div>
               <div className="simple-file-autocomplete-list">
                 {filteredFiles.map((file, index) => (
