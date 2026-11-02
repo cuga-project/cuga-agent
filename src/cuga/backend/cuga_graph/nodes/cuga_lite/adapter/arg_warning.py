@@ -89,7 +89,7 @@ def warn_suspect_kwargs(
 
 def make_arg_warning_callable(
     tool_func: Callable[..., Any],
-    input_model: Optional[type[BaseModel]],
+    input_model: Optional[type[BaseModel] | dict[str, Any]],
     *,
     enable: bool,
 ) -> Callable[..., Any]:
@@ -109,10 +109,24 @@ def make_arg_warning_callable(
     if not enable or input_model is None:
         return tool_func
 
-    field_types: Dict[str, Optional[str]] = {
-        name: jsonschema_type(f.annotation) for name, f in input_model.model_fields.items()
-    }
-    model_name = getattr(input_model, "__name__", "tool")
+    if isinstance(input_model, dict):
+        from cuga.backend.tools_env.registry.utils.schema_utils import (
+            json_schema_type,
+            schema_type_is_ambiguous,
+        )
+
+        properties = input_model.get("properties", {})
+        if not isinstance(properties, dict):
+            return tool_func
+        field_types = {
+            name: json_schema_type(prop, default="") if not schema_type_is_ambiguous(prop) else None
+            for name, prop in properties.items()
+            if isinstance(prop, dict)
+        }
+        model_name = input_model.get("title", "tool")
+    else:
+        field_types = {name: jsonschema_type(f.annotation) for name, f in input_model.model_fields.items()}
+        model_name = getattr(input_model, "__name__", "tool")
 
     # Only the kwargs path carries the dict-as-string shapes; positional calls
     # are left alone to avoid mis-reading bound arguments.

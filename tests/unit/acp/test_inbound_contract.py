@@ -43,6 +43,7 @@ async def test_initialize_advertises_truthful_text_only_capabilities() -> None:
     assert capabilities.mcp_capabilities.http is False
     assert capabilities.mcp_capabilities.sse is False
     assert capabilities.mcp_capabilities.acp is False
+    assert capabilities.session_capabilities.list is None
 
 
 @pytest.mark.asyncio

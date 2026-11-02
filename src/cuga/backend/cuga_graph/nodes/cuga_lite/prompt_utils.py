@@ -411,7 +411,7 @@ class PromptUtils:
 
                 params = []
                 for name, prop in properties.items():
-                    param_type = prop.get('type', 'Any')
+                    param_type = json_schema_type(prop, default='Any')
 
                     type_mapping = {
                         'string': 'str',

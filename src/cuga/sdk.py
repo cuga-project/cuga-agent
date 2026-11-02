@@ -1951,6 +1951,7 @@ class CugaAgent:
         skills_folder: Optional[str] = None,
         shortlister: Optional["Shortlister"] = None,
         final_answer: "Optional[Union[str, Callable[[str], str], FinalAnswerConfig]]" = None,
+        checkpointer: Any = None,
         execution_mode: Optional[str] = None,
         step_discipline: Optional[str] = None,
     ):
@@ -1989,6 +1990,7 @@ class CugaAgent:
                 function=...)` combines both. None = unchanged behavior. Non-SDK
                 deployments use the `[final_answer]` settings section. Not applied to
                 supervisor-composed synthesis (#621).
+            checkpointer: Optional LangGraph checkpointer. Defaults to an in-memory saver.
 
         Example with tool approval policy:
             ```python
@@ -2019,6 +2021,7 @@ class CugaAgent:
         self._callbacks = callbacks
         self._graph = None
         self._compiled_graph = None
+        self._checkpointer = checkpointer
         self._policy_system = policy_system
         self._special_instructions = special_instructions
 
@@ -2645,12 +2648,15 @@ class CugaAgent:
             ```
         """
         if self._compiled_graph is None:
-            from langgraph.checkpoint.memory import MemorySaver
-
             graph = self._create_graph()
 
             # Always compile with checkpointer and interrupt for HITL support
-            checkpointer = MemorySaver()
+            if self._checkpointer is None:
+                from langgraph.checkpoint.memory import MemorySaver
+
+                checkpointer = MemorySaver()
+            else:
+                checkpointer = self._checkpointer
             self._compiled_graph = graph.compile(
                 checkpointer=checkpointer,
                 interrupt_before=["WaitForResponse"],  # Interrupt before waiting for user
@@ -2876,7 +2882,7 @@ class CugaAgent:
             resume_prior_tool_calls = 0
             if receipt_collector is not None:
                 try:
-                    prior_state = self.graph.get_state(run_config)
+                    prior_state = await self.graph.aget_state(run_config)
                     if prior_state and prior_state.values:
                         resume_prior_tool_calls = len(prior_state.values.get("tool_calls") or [])
                 except Exception as e:
@@ -2907,7 +2913,7 @@ class CugaAgent:
             # Check if graph interrupted again
             if not final_answer and not empty_is_final:
                 try:
-                    state = self.graph.get_state(run_config)
+                    state = await self.graph.aget_state(run_config)
                     if state.next:  # Has pending nodes = interrupted again
                         logger.info("Graph interrupted again for human-in-the-loop interaction")
                         final_answer = (
@@ -2979,7 +2985,7 @@ class CugaAgent:
         # Try to get existing state for this thread_id
         existing_state = None
         try:
-            state_snapshot = self.graph.get_state(run_config)
+            state_snapshot = await self.graph.aget_state(run_config)
             if state_snapshot and state_snapshot.values:
                 existing_state = AgentState(**state_snapshot.values)
                 logger.debug(f"Found existing state for thread_id: {thread_id}")

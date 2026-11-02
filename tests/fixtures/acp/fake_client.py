@@ -54,7 +54,12 @@ class FixtureRunner:
         yield AgentStreamEvent("agent_message", {"text": "first:"})
         yield AgentStreamEvent("final_answer", {"text": f"turn-{count}:{message}"}, final=True)
 
-raise SystemExit(main(runner=FixtureRunner()))
+runner = FixtureRunner()
+if os.environ.get("CUGA_ACP_FIXTURE_DAM") == "1":
+    from deployment.dam.cuga_dam.factory import create_agent
+    runner.mcp_transports = ("http", "sse")
+    raise SystemExit(main(runner=runner, agent_factory=create_agent))
+raise SystemExit(main(runner=runner))
 '''
 
 
@@ -111,16 +116,24 @@ class BoundedConnection:
     async def prompt(self, *args: Any, **kwargs: Any) -> Any:
         return await asyncio.wait_for(self._connection.prompt(*args, **kwargs), timeout=self._timeout)
 
+    async def list_sessions(self, *args: Any, **kwargs: Any) -> Any:
+        return await asyncio.wait_for(self._connection.list_sessions(*args, **kwargs), timeout=self._timeout)
+
+    async def load_session(self, *args: Any, **kwargs: Any) -> Any:
+        return await asyncio.wait_for(self._connection.load_session(*args, **kwargs), timeout=self._timeout)
+
     async def cancel(self, *args: Any, **kwargs: Any) -> Any:
         return await asyncio.wait_for(self._connection.cancel(*args, **kwargs), timeout=self._timeout)
 
 
-def cuga_agent_launch(scenario: str) -> tuple[tuple[str, ...], dict[str, str], Path]:
+def cuga_agent_launch(scenario: str, *, dam: bool = False) -> tuple[tuple[str, ...], dict[str, str], Path]:
     """Return the deterministic CUGA fixture command, environment, and cwd."""
     root = Path(__file__).parents[3]
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(root / "src")
+    env["PYTHONPATH"] = os.pathsep.join((str(root), str(root / "src")))
     env["CUGA_ACP_FIXTURE_SCENARIO"] = scenario
+    if dam:
+        env["CUGA_ACP_FIXTURE_DAM"] = "1"
     return (sys.executable, "-c", _RUNNER_SCRIPT), env, root
 
 
@@ -131,9 +144,13 @@ async def spawn_cuga_agent(
     permission: str = "allow",
     observers: list[Any] | None = None,
     receive_timeout: float = 10,
+    store_folder: Path | None = None,
+    dam: bool = False,
 ) -> AsyncIterator[tuple[FakeClient, Any, Any]]:
     """Launch the real CUGA stdio adapter with a deterministic injected runner."""
-    command, env, root = cuga_agent_launch(scenario)
+    command, env, root = cuga_agent_launch(scenario, dam=dam)
+    if store_folder is not None:
+        env["CUGA_FOLDER"] = str(store_folder)
     client = FakeClient(permission=permission)
     async with spawn_agent_process(
         client,

@@ -1,0 +1,4 @@
+# DAM-only persistence dependencies. The root CUGA lock already supplies sqlite-vec.
+aiosqlite==0.22.1
+langgraph-checkpoint==4.3.0
+langgraph-checkpoint-sqlite==3.1.2

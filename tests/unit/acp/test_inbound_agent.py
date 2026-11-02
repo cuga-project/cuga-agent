@@ -566,6 +566,32 @@ async def test_hitl_permission_outcomes_resume_same_context(outcome: Any, confir
 
 
 @pytest.mark.unit
+async def test_permission_shows_exact_pending_code() -> None:
+    code = 'result = await run_command("pwd")'
+    runner = _ScriptedRunner(
+        [
+            [
+                AgentStreamEvent(
+                    "input_required",
+                    {"text": "Review shell command", "action_id": "action-1", "approval_code": code},
+                    final=True,
+                )
+            ],
+            [AgentStreamEvent("final_answer", {"text": "done"}, final=True)],
+        ]
+    )
+    client = _FakeClient(
+        [RequestPermissionResponse(outcome=AllowedOutcome(outcome="selected", optionId="allow-once"))]
+    )
+    agent, client, session_id = await _new_agent(runner, client)
+
+    assert (await agent.prompt(session_id, [_text("do it")])).stop_reason == "end_turn"
+    tool_call = client.permission_requests[0][1]
+    assert tool_call.title == f"Review shell command\n\nCode to execute:\n{code}"
+    assert tool_call.raw_input == {"code": code}
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("action_id", [None, "", 7, [], {}])
 async def test_malformed_hitl_action_id_fails_before_permission_and_never_resumes(action_id: Any) -> None:
     runner = _ScriptedRunner(
@@ -649,6 +675,7 @@ async def test_unsupported_methods_and_extensions_use_method_not_found() -> None
 
     calls = [
         agent.load_session(cwd="/workspace", session_id=session_id, mcp_servers=[]),
+        agent.list_sessions(cwd="/workspace"),
         agent.set_session_mode(session_id=session_id, mode_id="unsafe"),
         agent.authenticate(method_id="none"),
         agent.ext_method("secret-extension", {"secret": "payload"}),
@@ -658,6 +685,42 @@ async def test_unsupported_methods_and_extensions_use_method_not_found() -> None
             await call
         assert exc_info.value.code == -32601
         assert "payload" not in repr(exc_info.value.data)
+
+
+@pytest.mark.unit
+async def test_sessions_list_and_replay_after_adapter_restart(tmp_path) -> None:
+    from cuga.backend.server.acp.agent import CugaAcpAgent
+    from deployment.dam.cuga_dam.session_store import AcpSessionStore
+
+    store_path = str(tmp_path / "acp-sessions.sqlite3")
+    first = CugaAcpAgent(
+        _ScriptedRunner([[AgentStreamEvent("final_answer", {"text": "It is noon."}, final=True)]]),
+        session_store=AcpSessionStore(store_path),
+    )
+    first.on_connect(_FakeClient())
+    session_id = (await first.new_session(cwd="/workspace", mcp_servers=[])).session_id
+    context_id = first.session_metadata(session_id).context_id
+    await first.prompt(session_id, [_text("What time is it?")])
+    await first.shutdown()
+
+    resumed = CugaAcpAgent(_ScriptedRunner(), session_store=AcpSessionStore(store_path))
+    peer = _FakeClient()
+    resumed.on_connect(peer)
+    listed = await resumed.list_sessions(cwd=".")
+    assert [session.session_id for session in listed.sessions] == [session_id]
+    assert listed.sessions[0].cwd == "/workspace"
+
+    await resumed.load_session(cwd="/workspace", session_id=session_id, mcp_servers=[])
+    assert resumed.session_metadata(session_id).context_id == context_id
+    assert [update.session_update for _, update in peer.updates] == [
+        "user_message_chunk",
+        "agent_message_chunk",
+    ]
+    assert [update.content.text for _, update in peer.updates] == [
+        "What time is it?",
+        "It is noon.",
+    ]
+    await resumed.shutdown()
 
 
 @pytest.mark.unit

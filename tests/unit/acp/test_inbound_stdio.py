@@ -74,7 +74,10 @@ class _Client:
 
 
 @pytest.mark.unit
-async def test_serve_constructs_agent_and_passes_it_to_sdk_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("observers", [None, [], [object()]])
+async def test_serve_constructs_agent_and_passes_it_to_sdk_runtime(
+    monkeypatch: pytest.MonkeyPatch, observers: list[Any] | None
+) -> None:
     from cuga.backend.server.acp import stdio
 
     runner = _Runner()
@@ -89,7 +92,7 @@ async def test_serve_constructs_agent_and_passes_it_to_sdk_runtime(monkeypatch: 
 
     monkeypatch.setattr(stdio, "_stdio_streams", fake_streams)
     monkeypatch.setattr(stdio, "_load_runtime", lambda: fake_runtime)
-    status = await stdio.serve(runner=runner)
+    status = await stdio.serve(runner=runner, observers=observers)
 
     assert status == 0
     assert received[0][0]._runner is runner
@@ -97,6 +100,7 @@ async def test_serve_constructs_agent_and_passes_it_to_sdk_runtime(monkeypatch: 
         "input_stream": streams[1],
         "output_stream": streams[0],
         "use_unstable_protocol": False,
+        **({"observers": observers} if observers is not None else {}),
     }
     assert runner.shutdown_calls == 1
 
@@ -208,6 +212,27 @@ async def test_console_wrapper_returns_async_status(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(stdio, "serve", fake_serve)
     assert await asyncio.to_thread(stdio.main) == 7
+
+
+@pytest.mark.unit
+async def test_console_wrapper_forwards_factory_and_observers(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cuga.backend.server.acp import stdio
+
+    runner = _Runner()
+
+    def factory(active_runner: Any) -> Any:
+        return active_runner
+
+    observers = [object()]
+    received: dict[str, Any] = {}
+
+    async def fake_serve(**kwargs: Any) -> int:
+        received.update(kwargs)
+        return 7
+
+    monkeypatch.setattr(stdio, "serve", fake_serve)
+    assert await asyncio.to_thread(stdio.main, runner, factory, observers) == 7
+    assert received == {"runner": runner, "agent_factory": factory, "observers": observers}
 
 
 @pytest.mark.unit

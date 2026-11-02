@@ -29,8 +29,9 @@ class StdioCugaRunner:
             self._agent = CugaAgent()
         return self._agent
 
-    async def _get_initialized_agent(self) -> Any:
+    async def _get_initialized_agent(self, context_id: str | None = None) -> Any:
         """Initialize and compile the shared SDK agent exactly once."""
+        del context_id
         if self._closed:
             raise RuntimeError("ACP runner is closed")
         agent = self._get_agent()
@@ -53,7 +54,7 @@ class StdioCugaRunner:
     ) -> AsyncIterator[Any]:
         from cuga.backend.server.agent_protocol.events import AgentStreamEvent
 
-        agent = await self._get_initialized_agent()
+        agent = await self._get_initialized_agent(context_id)
         action_response = None
         invoke_message: str | None = message
         if approval is not None:
@@ -62,7 +63,7 @@ class StdioCugaRunner:
                 yield AgentStreamEvent("error", final=True)
                 return
             try:
-                pending = _pending_action(agent, context_id)
+                pending = await _pending_action(agent, context_id)
             except Exception:
                 yield AgentStreamEvent("error", final=True)
                 return
@@ -91,17 +92,22 @@ class StdioCugaRunner:
             action_response=action_response,
         )
         try:
-            pending = _pending_action(agent, context_id)
+            pending = await _pending_action(agent, context_id)
         except Exception:
             yield AgentStreamEvent("error", final=True)
             return
         if pending is not None:
+            event_data = {
+                "text": pending.get("description") or "CUGA requests permission to continue.",
+                "action_id": pending.get("action_id"),
+            }
+            details = pending.get("additional_data")
+            tool = details.get("tool") if isinstance(details, dict) else None
+            if isinstance(tool, dict) and isinstance(tool.get("full_code"), str):
+                event_data["approval_code"] = tool["full_code"]
             yield AgentStreamEvent(
                 "input_required",
-                {
-                    "text": pending.get("description") or "CUGA requests permission to continue.",
-                    "action_id": pending.get("action_id"),
-                },
+                event_data,
                 final=True,
             )
             return
@@ -119,10 +125,12 @@ class StdioCugaRunner:
             await agent.aclose()
 
 
-def _pending_action(agent: Any, context_id: str | None) -> dict[str, Any] | None:
+async def _pending_action(agent: Any, context_id: str | None) -> dict[str, Any] | None:
     if not context_id:
         return None
-    snapshot = agent.graph.get_state({"configurable": {"thread_id": context_id}})
+    config = {"configurable": {"thread_id": context_id}}
+    async_get_state = getattr(agent.graph, "aget_state", None)
+    snapshot = await async_get_state(config) if callable(async_get_state) else agent.graph.get_state(config)
     if not getattr(snapshot, "next", None):
         return None
     pending = (getattr(snapshot, "values", None) or {}).get("hitl_action")

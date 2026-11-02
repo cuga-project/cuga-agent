@@ -65,7 +65,11 @@ async def _stdio_streams() -> tuple[Any, Any]:
     return await stdio_streams()
 
 
-async def serve(runner: Any | None = None) -> int:
+async def serve(
+    runner: Any | None = None,
+    agent_factory: Callable[[Any | None], Any] | None = None,
+    observers: list[Any] | None = None,
+) -> int:
     """Run one injected or production CUGA adapter over SDK-managed stdio."""
     configure_logging()
     agent: Any | None = None
@@ -77,15 +81,17 @@ async def serve(runner: Any | None = None) -> int:
         # Bind protocol streams to the original descriptors first, then discard
         # untrusted Python stdout writes so they reach neither JSON-RPC nor logs.
         reader, writer = await _stdio_streams()
-        agent = create_agent(runner)
+        agent = (agent_factory or create_agent)(runner)
         runtime = _load_runtime()
         discard = _DiscardTextStream()
         with redirect_stdout(discard), redirect_stderr(discard):
+            options = {"observers": list(observers)} if observers is not None else {}
             await runtime(
                 agent,
                 input_stream=writer,
                 output_stream=reader,
                 use_unstable_protocol=False,
+                **options,
             )
     except asyncio.CancelledError:
         primary_cancelled = True
@@ -108,10 +114,16 @@ async def serve(runner: Any | None = None) -> int:
     return status
 
 
-def main(runner: Any | None = None) -> int:
+def main(
+    runner: Any | None = None,
+    agent_factory: Callable[[Any | None], Any] | None = None,
+    observers: list[Any] | None = None,
+) -> int:
     """Synchronous console-script wrapper around :func:`serve`."""
     try:
-        return asyncio.run(serve(runner=runner))
+        if agent_factory is None and observers is None:
+            return asyncio.run(serve(runner=runner))
+        return asyncio.run(serve(runner=runner, agent_factory=agent_factory, observers=observers))
     except KeyboardInterrupt:
         return 130
 
