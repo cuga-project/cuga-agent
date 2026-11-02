@@ -1,6 +1,8 @@
 import re
 from typing import Any, List, Optional
 
+from cuga.backend.storage.loop_lock import PerLoopLock
+
 try:
     import asyncpg
 except ImportError:
@@ -22,17 +24,24 @@ class ProdRelationalStore:
         self._postgres_url = postgres_url
         self._db_name = db_name
         self._pool: Any = None
+        self._pool_lock = PerLoopLock()
 
     async def _get_pool(self):
         if self._pool is None:
-            if asyncpg is None:
-                raise ImportError("asyncpg required for storage.mode=prod. Install with: uv add asyncpg")
-            self._pool = await asyncpg.create_pool(
-                self._postgres_url,
-                min_size=1,
-                max_size=4,
-                command_timeout=60,
-            )
+            # Concurrent first requests would each create a pool (up to 4 connections each)
+            # and leak all but the last one.
+            async with self._pool_lock.get():
+                if self._pool is None:
+                    if asyncpg is None:
+                        raise ImportError(
+                            "asyncpg required for storage.mode=prod. Install with: uv add asyncpg"
+                        )
+                    self._pool = await asyncpg.create_pool(
+                        self._postgres_url,
+                        min_size=1,
+                        max_size=4,
+                        command_timeout=60,
+                    )
         return self._pool
 
     async def execute(self, sql: str, params: tuple = ()) -> None:

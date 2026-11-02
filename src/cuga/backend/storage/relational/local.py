@@ -12,7 +12,9 @@ class LocalRelationalStore:
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+            # Python's default wait for a locked database is 5 s; other connections to the same
+            # file (``execute_batch``) already wait 30 s, so use the same limit here.
+            self._conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=30)
             self._conn.row_factory = sqlite3.Row
             self._on_connection_opened(self._conn)
         return self._conn
