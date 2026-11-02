@@ -47,6 +47,8 @@ If there is no `origin/<branch>`, obtain confirmation and push with `git push -u
 
 If **ahead** is greater than zero, **STOP**. Push first (`git push origin <branch-name>`).
 
+Before any push in this flow, **MUST** run [labels.md](labels.md) (it updates the labels of an open pull request).
+
 If **behind** is greater than zero, **STOP**. Update the local branch (pull/rebase) before creating the PR.
 
 Only if the tree is clean and both counts are zero, continue.
@@ -74,7 +76,11 @@ Only if the tree is clean and both counts are zero, continue.
    - Root Cause / Solution (bugfixes)
    - Testing
    - Checklist
-5. Create (pass title via a variable; pass body via `--body-file` so shell does not interpolate the Markdown):
+5. **Choose labels (MUST).** Follow [labels.md](labels.md) against `origin/main...HEAD`: exactly one
+   `design-impact:`, one `area:` label per changed area, and exactly one `readability:` (improve the description
+   until `readability: good` is true). Do not create the PR without them.
+6. Create (pass title via a variable; pass body via `--body-file` so shell does not interpolate the Markdown; pass
+   each label with `--label`):
 
 ```bash
 title="<title in commit convention>"
@@ -84,7 +90,13 @@ cat >"$body_file" <<'EOF'
 <filled template>
 EOF
 
-gh pr create --repo "$origin_repo" --base main --title "$title" --body-file "$body_file"
+gh pr create --repo "$origin_repo" --base main --title "$title" --body-file "$body_file" \
+  --label "design-impact: <low|medium|high>" \
+  --label "area: <area>" \
+  --label "readability: <good|fair|poor>"
 ```
 
-Return the PR URL to the user.
+7. Verify the labels landed: `gh pr view "$branch" --repo "$origin_repo" --json labels --jq '[.labels[].name]'`. If you could
+   not set them (for example, a pull request from a fork), follow rule 8 in [labels.md](labels.md).
+
+Return the PR URL and its labels to the user.

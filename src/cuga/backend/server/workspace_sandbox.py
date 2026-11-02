@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import platform as _platform
-import shlex
 from pathlib import Path
 from typing import Any, Optional
 
 from loguru import logger
 
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd.connection import effective_sandbox_mode
 from cuga.config import settings
 
 SANDBOX_WORKSPACE_ROOT = "/workspace"
@@ -20,15 +20,23 @@ LEGACY_SANDBOX_WORKSPACE_ROOT = "/tmp/cuga_workspace"
 _LEGACY_DISPLAY_ROOTS = {"tmp", "cuga_workspace"}  # kept for backward-compat path resolution
 
 
+def _effective_mode(default: str) -> str:
+    return effective_sandbox_mode(
+        str(getattr(settings.advanced_features, "sandbox_mode", default) or default)
+    )
+
+
 def get_sandbox_env_description() -> str:
     """Return a human-readable OS/environment string for the active sandbox mode.
 
     opensandbox (e2b) always runs in a Linux Docker container.
     native/local runs on the host process, so we read the real OS from Python.
     """
-    mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
+    mode = _effective_mode("opensandbox")
     if mode == "opensandbox":
         return "Linux (Ubuntu, Docker container)"
+    if mode == "execd":
+        return "Linux (execd sandbox)"
     sys_name = _platform.system()
     if sys_name == "Darwin":
         mac_ver = _platform.mac_ver()[0]
@@ -46,10 +54,12 @@ def workspace_tree_is_sandbox_backed() -> bool:
     ``native`` or ``local``, files live on the host even if the OpenSandbox
     flag is set for other features.
     """
-    if not bool(getattr(settings.advanced_features, "opensandbox_sandbox", False)):
-        return False
-    mode = str(getattr(settings.advanced_features, "sandbox_mode", "opensandbox") or "opensandbox")
-    return mode not in ("native", "local")
+    # Deferred: the factory pulls in every executor; prepare_node imports this module.
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.factory import (
+        workspace_is_sandbox_backed,
+    )
+
+    return workspace_is_sandbox_backed()
 
 
 def workspace_tree_is_native_backed() -> bool:
@@ -59,7 +69,7 @@ def workspace_tree_is_native_backed() -> bool:
     plan = ExecutionRouter.resolve(settings)
     if plan.filesystem_backend == "host" or plan.shell_backend in ("native", "local"):
         return True
-    mode = str(getattr(settings.advanced_features, "sandbox_mode", "opensandbox") or "opensandbox")
+    mode = _effective_mode("opensandbox")
     if mode in ("native", "local"):
         return True
     if workspace_tree_is_sandbox_backed():
@@ -139,6 +149,17 @@ def _children_nodes(
     return items
 
 
+def _backend(thread_id: Optional[str]):
+    """The backend for the sandbox holding this thread's workspace.
+
+    The three functions below differ only in which operation they call, so the
+    choice of sandbox is made once, here, rather than branched at each of them.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.factory import sandbox_workspace_backend
+
+    return sandbox_workspace_backend(thread_id)
+
+
 def sandbox_paths_to_tree(
     dir_lines: list[str],
     file_lines: list[str],
@@ -150,36 +171,35 @@ def sandbox_paths_to_tree(
     return _children_nodes(tuple(), dir_rels, file_rels, display_root=display_root)
 
 
-async def _find_paths(commands: Any, type_flag: str) -> list[str]:
-    q = shlex.quote(SANDBOX_WORKSPACE_ROOT)
-    cmd = f"find {q} -type {type_flag} 2>/dev/null | sort"
-    ex = await commands.run(cmd)
-    text = ex.text if hasattr(ex, "text") else ""
-    return [ln.strip() for ln in text.splitlines() if ln.strip()]
-
-
 async def fetch_sandbox_workspace_tree(thread_id: Optional[str]) -> list[dict[str, Any]]:
-    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
-
-    executor = CodeExecutor._get_opensandbox_executor()
-    interpreter = await executor.get_interpreter_for_thread(thread_id)
-    sandbox = interpreter.sandbox
-    commands = sandbox.commands
-    dir_lines = await _find_paths(commands, "d")
-    file_lines = await _find_paths(commands, "f")
+    dir_lines, file_lines = await _backend(thread_id).walk()
     tree = sandbox_paths_to_tree(dir_lines, file_lines)
     if not tree and (dir_lines or file_lines):
-        logger.warning(
-            "sandbox workspace tree: find returned paths but tree is empty — sample file_lines={} dir_lines={}",
-            file_lines[:8],
-            dir_lines[:8],
-        )
+        # Only warn if there are non-hidden paths — hidden-only (e.g. .venv bootstrap)
+        # is expected when the workspace has no user files yet.
+        sandbox_root = SANDBOX_WORKSPACE_ROOT.rstrip("/") + "/"
+        visible_files = [
+            p
+            for p in file_lines
+            if not any(seg.startswith(".") for seg in p[len(sandbox_root) :].split("/") if seg)
+        ]
+        visible_dirs = [
+            p
+            for p in dir_lines
+            if not any(seg.startswith(".") for seg in p[len(sandbox_root) :].split("/") if seg)
+        ]
+        if visible_files or visible_dirs:
+            logger.warning(
+                "sandbox workspace tree: walk returned paths but tree is empty — sample file_lines={} dir_lines={}",
+                file_lines[:8],
+                dir_lines[:8],
+            )
     return tree
 
 
 def _host_workspace_root(thread_id: Optional[str]) -> Path:
     """Return the correct host-filesystem workspace root for the active sandbox mode."""
-    mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
+    mode = _effective_mode("opensandbox")
     if mode == "local":
         from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_sandbox_executor import (
             local_thread_workspace_root,
@@ -315,35 +335,13 @@ def native_workspace_text_preview(
 
 
 async def read_sandbox_workspace_bytes(thread_id: Optional[str], path: str) -> tuple[bytes, str]:
-    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
-
     sandbox_path = public_path_to_sandbox_abs(path)
-    executor = CodeExecutor._get_opensandbox_executor()
-    interpreter = await executor.get_interpreter_for_thread(thread_id)
-    data = await interpreter.sandbox.files.read_bytes(sandbox_path)
     name = sandbox_path.rsplit("/", 1)[-1]
-    return data, name
+    return await _backend(thread_id).read_bytes(sandbox_path), name
 
 
 async def sandbox_text_preview(
     thread_id: Optional[str], api_path: str, *, max_size: int = 10 * 1024 * 1024
 ) -> str:
-    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
-
     sandbox_path = public_path_to_sandbox_abs(api_path)
-    executor = CodeExecutor._get_opensandbox_executor()
-    interpreter = await executor.get_interpreter_for_thread(thread_id)
-    infos = await interpreter.sandbox.files.get_file_info([sandbox_path])
-    info = infos.get(sandbox_path) if infos else None
-    if not info:
-        raise FileNotFoundError(sandbox_path)
-    if int(info.size) > max_size:
-        raise OSError("file too large")
-    try:
-        data = await interpreter.sandbox.files.read_bytes(sandbox_path)
-    except Exception as exc:
-        low = str(exc).lower()
-        if "is a directory" in low or "is a dir" in low or "eisdir" in low:
-            raise IsADirectoryError(sandbox_path) from exc
-        raise
-    return data.decode("utf-8")
+    return await _backend(thread_id).preview_text(sandbox_path, max_size=max_size)

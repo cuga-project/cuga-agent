@@ -21,6 +21,8 @@ from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge.engine import KnowledgeEngine
 from cuga.backend.server.manage_routes import router as manage_router
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def app_with_live_engine(monkeypatch):
@@ -82,7 +84,7 @@ async def test_patch_knowledge_applies_to_live_engine(app_with_live_engine, monk
     # Pre-condition: live engine starts in 'accurate' mode (default).
     assert engine._config.docling_pdf_mode == "accurate"
 
-    with TestClient(app) as client:
+    with TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost") as client:
         resp = client.patch(
             "/api/manage/config/draft/knowledge?agent_id=cuga-default",
             json={"knowledge": {"docling_pdf_mode": "fast", "embedding_batch_size": 128}},
@@ -122,7 +124,7 @@ async def test_patch_knowledge_rejects_bad_config_without_partial_apply(app_with
 
     pre = engine._config.docling_pdf_mode
 
-    with TestClient(app) as client:
+    with TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost") as client:
         resp = client.patch(
             "/api/manage/config/draft/knowledge?agent_id=cuga-default",
             json={"knowledge": {"docling_pdf_mode": "ultra-fast-mega"}},

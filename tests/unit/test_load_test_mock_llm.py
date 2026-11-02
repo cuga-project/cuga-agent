@@ -7,6 +7,7 @@ from cuga.backend.llm.load_test_mock import (
     LoadTestMockChatModel,
     _ACCOUNTS_QUERY_CODE,
     is_mock_llm_enabled,
+    mock_llm_latency_s,
 )
 
 pytestmark = pytest.mark.unit
@@ -17,6 +18,26 @@ def test_is_mock_llm_enabled_reads_env(monkeypatch):
     assert is_mock_llm_enabled() is False
     monkeypatch.setenv("CUGA_MOCK_LLM", "true")
     assert is_mock_llm_enabled() is True
+
+
+def test_mock_llm_latency_defaults_to_zero_and_reads_ms(monkeypatch):
+    monkeypatch.delenv("CUGA_MOCK_LLM_LATENCY_MS", raising=False)
+    assert mock_llm_latency_s() == 0.0
+    monkeypatch.setenv("CUGA_MOCK_LLM_LATENCY_MS", "250")
+    assert mock_llm_latency_s() == 0.25
+    monkeypatch.setenv("CUGA_MOCK_LLM_LATENCY_MS", "-5")
+    assert mock_llm_latency_s() == 0.0
+
+
+async def test_mock_agenerate_waits_for_configured_latency(monkeypatch):
+    import time
+
+    monkeypatch.setenv("CUGA_MOCK_LLM_LATENCY_MS", "200")
+    model = LoadTestMockChatModel()
+    started = time.monotonic()
+    result = await model.ainvoke([HumanMessage(content="how many accounts did we retrieve?")])
+    assert time.monotonic() - started >= 0.2
+    assert "50" in result.content
 
 
 def test_create_llm_from_config_uses_mock_when_enabled(monkeypatch):

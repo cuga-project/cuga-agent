@@ -89,7 +89,7 @@ def _pinned_port_env(cls) -> dict[str, str]:
 
 
 @pytest.fixture(scope="class", autouse=True)
-def e2e_class_stack(request):
+def e2e_class_stack(request, tmp_path_factory):
     cls = getattr(request, "cls", None)
     stack_kind = getattr(cls, "_stability_stack", None) if cls else None
     if not stack_kind:
@@ -119,6 +119,15 @@ def e2e_class_stack(request):
             os.environ.pop(key, None)
         else:
             _setenv(saved, key, value)
+
+    # Each subprocess imports DBS_DIR once. Set this before starting any stack
+    # so a later class cannot load the preceding class's published agent config.
+    dbs_dir = tmp_path_factory.mktemp(f"{cls.__name__}-dbs")
+    _setenv(saved, "CUGA_DBS_DIR", str(dbs_dir))
+    # Explicit storage settings override DBS_DIR. Never seed into a developer's
+    # shared SQLite database or an inherited production database.
+    _setenv(saved, "DYNACONF_STORAGE__MODE", "local")
+    _setenv(saved, "DYNACONF_STORAGE__LOCAL_DB_PATH", str(dbs_dir / "cuga.db"))
 
     settings.reload()
     _sync_settings_ports(env_ports)

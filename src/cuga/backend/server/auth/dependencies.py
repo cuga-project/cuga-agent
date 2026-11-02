@@ -31,18 +31,16 @@ def _auth_enabled() -> bool:
 
 
 def _authorization_enabled() -> bool:
-    try:
-        from cuga.config import settings
+    """Authorization tracks authentication: role checks are enforced exactly when
+    authentication is enabled.
 
-        auth = getattr(settings, "auth", None)
-        return bool(auth and getattr(auth, "authorization_enabled", False))
-    except Exception as e:
-        logger.warning(
-            "authorization config check failed (fail-open): {}",
-            e,
-            exc_info=True,
-        )
-        return False
+    There is no separate authorization switch. The old ``auth.authorization_enabled``
+    setting allowed the unsafe "authentication on, authorization off" state — every
+    logged-in user, including chat-only and no-role users, reaching the manage and
+    secrets APIs (GHSA-4cj6/GHSA-r2pq, D2). A stale ``authorization_enabled`` left in a
+    config or environment from an older release is deliberately ignored, not an error.
+    """
+    return _auth_enabled()
 
 
 def _get_manage_roles() -> list[str]:
@@ -307,3 +305,144 @@ async def require_chat_access(request: Request) -> Optional[UserInfo]:
         raise HTTPException(status_code=403, detail=f"Access denied. Required roles: {', '.join(chat_roles)}")
 
     return user
+
+
+# Loopback client hosts that count as "same machine" for the local exemption.
+# The peer address comes from the ASGI scope (request.client), not from a header.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+# Uvicorn's ProxyHeadersMiddleware (on by default under `cuga start`) rewrites
+# request.client from X-Forwarded-For when the peer is in FORWARDED_ALLOW_IPS. With
+# FORWARDED_ALLOW_IPS=*, a remote caller that sends "X-Forwarded-For: 127.0.0.1"
+# becomes a loopback client. A request with any of these headers came through a proxy,
+# so it does not get the local exemption. A local proxy that sends none of them still
+# looks local; the gate cannot detect that case.
+_FORWARDING_HEADERS = ("x-forwarded-for", "x-real-ip", "forwarded")
+
+# The webpack dev server, which proxies /api to the backend.
+_DEV_UI_PORT = 3002
+
+
+def _host_name(host_header: str) -> str:
+    """Return the host name of a Host header value, without the port."""
+    if host_header.startswith("["):
+        return host_header[1 : host_header.find("]")] if "]" in host_header else ""
+    return host_header.rsplit(":", 1)[0]
+
+
+def _trusted_local_origins() -> frozenset[str]:
+    """This app's own local UI origins, on the configured UI port and the dev port.
+
+    A TCP connection from the loopback address is not enough on its own: a browser tab
+    open on an unrelated, untrusted site can also reach a loopback server. Only a
+    browser sends an Origin header, so a present-but-unlisted Origin is refused; a
+    request with no Origin header (curl, scripts, the CLI) is unaffected by this check.
+    Both schemes are listed because start_demo serves TLS when SSL_KEYFILE/SSL_CERTFILE
+    are set (see deployment/certs/README.md).
+    """
+    try:
+        from cuga.config import settings
+
+        ui_port = int(settings.server_ports.demo)
+    except Exception:
+        ui_port = 7860
+    return frozenset(
+        f"{scheme}://{host}:{port}"
+        for scheme in ("http", "https")
+        for host in ("localhost", "127.0.0.1", "[::1]")
+        for port in (ui_port, _DEV_UI_PORT)
+    )
+
+
+def _allow_local_admin() -> bool:
+    """Decision 1 / Option A: with auth off, same-machine callers may reach the
+    secrets and management APIs; remote callers may not. Defaults to True so local
+    development and demos keep working. With auth.allow_local_admin=false and auth
+    off, no caller can reach these APIs; turn on auth to use them (Decision 1 /
+    Option B)."""
+    try:
+        from cuga.config import settings
+
+        auth = getattr(settings, "auth", None)
+        return bool(getattr(auth, "allow_local_admin", True)) if auth else True
+    except Exception:
+        # Fail closed: if we cannot read the setting, do not grant the local exemption.
+        return False
+
+
+def _is_local_ui_request(request: Request) -> bool:
+    """True when the request comes straight from this machine, and, from a browser,
+    only from this app's own UI.
+
+    * The peer address is loopback, and no forwarding header is present.
+    * The Host header names a loopback host. After a DNS-rebinding attack, the attack
+      page has the same origin as this server, so the browser sends no Origin header;
+      the Host header still carries the attacker's domain.
+    * An Origin header, if present, names one of this app's own UI origins.
+    """
+    client_host = request.client.host if request.client else None
+    if client_host not in _LOOPBACK_HOSTS:
+        return False
+    if any(name in request.headers for name in _FORWARDING_HEADERS):
+        return False
+    if _host_name(request.headers.get("host", "")) not in _LOOPBACK_HOSTS:
+        return False
+    origin = request.headers.get("origin")
+    return origin is None or origin in _trusted_local_origins()
+
+
+async def require_secrets_access(request: Request) -> Optional[UserInfo]:
+    """Fail-closed gate for the secrets API.
+
+    The bug this closes: ``require_auth`` returns ``None`` (and every route passes)
+    whenever ``auth.enabled=false`` — the shipped default — so on stock settings the
+    entire ``/api/secrets`` API is open to any caller that can reach the port,
+    including a drive-by request from a website open in the operator's browser.
+
+    Behaviour:
+
+    * ``auth.enabled=true``  -> authentication required and the manage-role check is
+      enforced. Authorization tracks authentication (there is no separate switch), so
+      a logged-in user without a manage role is refused — there is no configuration
+      that authenticates a user and then skips the role check.
+    * ``auth.enabled=false`` (default) -> allow only direct same-machine callers
+      (see ``_is_local_ui_request``), and only when ``auth.allow_local_admin`` is on;
+      refuse everything else with 401.
+    """
+    return await _require_local_or_manage(request, resource="The secrets API")
+
+
+async def _require_local_or_manage(request: Request, *, resource: str) -> Optional[UserInfo]:
+    """Shared fail-closed gate: manage-role when auth is on, else same-machine only.
+
+    ``require_auth`` passes every caller when ``auth.enabled=false`` (the default), so a
+    router that gates only on it is open to anyone who can reach the port. This gate
+    requires a manage role when auth is on, and otherwise admits only direct loopback
+    callers from this app's own UI — refusing remote, proxied, DNS-rebound and
+    drive-by browser requests. Used by both the secrets API and the management API.
+    """
+    if _auth_enabled():
+        return await require_manage_access(request)
+
+    if _allow_local_admin() and _is_local_ui_request(request):
+        return None
+
+    raise HTTPException(
+        status_code=401,
+        detail=(
+            f"{resource} is not available to unauthenticated remote callers. "
+            "Enable authentication (auth.enabled=true) and use a manage-role token, "
+            "or call it from the local machine's own UI."
+        ),
+    )
+
+
+async def require_manage_or_local_access(request: Request) -> Optional[UserInfo]:
+    """Gate for the management API (`/api/manage`).
+
+    Same shape as ``require_secrets_access``: on default settings (auth off) an
+    unauthenticated remote caller could repoint a tool's service URL or the LLM
+    ``api_base`` and have a stored key sent to an attacker host. This admits only
+    same-machine UI callers when auth is off, and enforces the manage role when on.
+    """
+    return await _require_local_or_manage(request, resource="The management API")

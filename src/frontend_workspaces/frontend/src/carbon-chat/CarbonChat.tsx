@@ -1,3 +1,4 @@
+import { ContentSkeleton } from "agentic_chat/LoadingState";
 /*
  *  Copyright IBM Corp. 2025
  *
@@ -6,7 +7,7 @@
  *
  *  @license
  */
-import React, { useCallback, useRef, useEffect, useState } from 'react';
+import React, { useCallback, useRef, useEffect, useLayoutEffect, useState } from 'react';
 import {
   ChatCustomElement,
   type ChatInstance,
@@ -18,8 +19,8 @@ import {
   MessageResponseTypes,
   type MessageResponse,
 } from '@carbon/ai-chat';
-import { Button } from '@carbon/react';
-import { FileText, Loader2, Paperclip, RotateCcw, X } from "lucide-react";
+import { Button, IconButton, ComposedModal, ModalHeader, ModalBody, ModalFooter, InlineLoading, InlineNotification, CodeSnippet } from '@carbon/react';
+import { Document, Renew, Attachment, Close, Code } from "@carbon/icons-react";
 import {
   registerCiteElement,
   CITE_CLICK_EVENT,
@@ -38,7 +39,7 @@ import {
 import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './customSendMessage';
 import { customLoadHistory } from './customLoadHistory';
 import { useEventsInbox } from '../events/useEventsInbox';
-import { initAgentProfile, getResponseUserProfile } from './carbonChatHelpers';
+import { getResponseUserProfile } from './carbonChatHelpers';
 import { SlashCommandDropdown } from './SlashCommandDropdown';
 import { findShadowRoots } from './composerTextarea';
 import './CarbonChat.css';
@@ -90,6 +91,7 @@ interface HomescreenConfig {
 }
 
 interface CarbonChatProps {
+  agentId?: string;
   className?: string;
   theme?: 'light' | 'dark';
   contained?: boolean;
@@ -103,6 +105,7 @@ interface CarbonChatProps {
   isReadonly?: boolean;
   homescreen?: HomescreenConfig;
   onThreadChange?: (threadId: string) => void;
+  onRestart?: () => void;
   sessionDocsVersion?: number;
   onSessionDocsChanged?: () => void;
   onOpenKnowledge?: () => void;
@@ -148,15 +151,9 @@ function ComposerToolbar({
     <div className={`cuga-composer-toolbar${hasItems ? ' cuga-composer-toolbar--has-items' : ''}`}>
       <div className="cuga-composer-toolbar__row">
         {onAttachClick && (
-          <button
-            type="button"
-            className="cuga-composer-toolbar__attach"
-            onClick={onAttachClick}
-            aria-label="Attach files"
-            title="Attach files"
-          >
-            <Paperclip size={16} />
-          </button>
+          <IconButton kind="ghost" size="sm" label="Attach files" onClick={onAttachClick}>
+            <Attachment />
+          </IconButton>
         )}
 
         {hasItems && (
@@ -180,8 +177,8 @@ function ComposerToolbar({
                     key={item.id}
                     className={`cuga-composer-chip cuga-composer-chip--${item.status}`}
                   >
-                    <button
-                      type="button"
+                    {(item.status === "uploading" || item.status === "deleting") && <InlineLoading iconDescription={item.status === "deleting" ? "Removing file…" : "Uploading file…"} aria-live="polite" className="cuga-composer-chip__loading" />}
+                    <Button kind="ghost" size="sm"
                       className="cuga-composer-chip__main"
                       onClick={() => {
                         if (previewSnapshot && onPreviewAttachment) {
@@ -190,26 +187,16 @@ function ComposerToolbar({
                       }}
                       disabled={!previewSnapshot || !onPreviewAttachment}
                     >
-                      {item.status === "uploading" ? (
-                        <Loader2 size={13} className="cuga-composer-chip__spinner" />
-                      ) : (
-                        <FileText size={13} />
-                      )}
+                      {item.status !== "uploading" && item.status !== "deleting" && <Document size={16} />}
                       <span className="cuga-composer-chip__name">{item.displayName}</span>
-                    </button>
+                    </Button>
                     {item.kind === "upload" && item.status === "error" && (
-                      <button
-                        type="button"
-                        className="cuga-composer-chip__action"
-                        onClick={() => onRetryUpload(item.id)}
-                        title="Retry upload"
-                      >
-                        <RotateCcw size={11} />
-                      </button>
+                      <IconButton kind="ghost" size="sm" label={`Retry upload ${item.displayName}`}
+                        onClick={() => onRetryUpload(item.id)}><Renew /></IconButton>
                     )}
-                    <button
-                      type="button"
-                      className="cuga-composer-chip__action"
+                    <IconButton kind="ghost" size="sm"
+                      label={`${item.kind === "document" ? "Remove file" : "Dismiss"} ${item.displayName}`}
+                      disabled={item.status === "deleting"}
                       onClick={() => {
                         if (item.kind === "document" && item.knowledgeFilename) {
                           onDeleteDocument(item.knowledgeFilename);
@@ -217,22 +204,20 @@ function ComposerToolbar({
                           onDismissUpload(item.id);
                         }
                       }}
-                      title={item.kind === "document" ? "Remove file" : "Dismiss"}
                     >
-                      <X size={11} />
-                    </button>
+                      <Close />
+                    </IconButton>
                   </div>
                 );
               })}
             </div>
             {onOpenKnowledge && (
-              <button
-                type="button"
+              <Button kind="ghost" size="sm"
                 className="cuga-composer-toolbar__manage"
                 onClick={onOpenKnowledge}
               >
                 Manage
-              </button>
+              </Button>
             )}
           </>
         )}
@@ -242,6 +227,7 @@ function ComposerToolbar({
 }
 
 const CarbonChat = ({
+  agentId = api.getKnowledgeAgentId(),
   className = '',
   theme = 'light',
   contained = false,
@@ -255,6 +241,7 @@ const CarbonChat = ({
   isReadonly = false,
   homescreen,
   onThreadChange,
+  onRestart,
   sessionDocsVersion = 0,
   onSessionDocsChanged,
   onOpenKnowledge,
@@ -264,6 +251,12 @@ const CarbonChat = ({
   const hs = homescreen ?? DEFAULT_HOMESCREEN;
   const starterLabels = (hs.starters ?? DEFAULT_HOMESCREEN.starters ?? []).filter(Boolean).slice(0, 4);
   const chatInstanceRef = useRef<ChatInstance | null>(null);
+  const historyMutationQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const historyReplayGenerationRef = useRef(0);
+  const sendContextRef = useRef({ agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange });
+  useLayoutEffect(() => {
+    sendContextRef.current = { agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange };
+  }, [agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange]);
   const chatElementRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -276,6 +269,14 @@ const CarbonChat = ({
   const [lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null);
   const [messageAttachmentSnapshots, setMessageAttachmentSnapshots] = useState<KnowledgeAttachmentSnapshot[][]>([]);
   const [chatRenderTick, setChatRenderTick] = useState(0);
+  const [chatReady, setChatReady] = useState(false);
+  const [chatInitialized, setChatInitialized] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const conversationScope = JSON.stringify([agentId, threadId, useDraft]);
+  const [reconciledScope, setReconciledScope] = useState<string | null>(null);
+  const reconcilingConversation = reconciledScope !== conversationScope;
+  const chatVisible = chatReady && chatInitialized;
+  const [transcriptScope, setTranscriptScope] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
   const effectiveAttachmentScope: KnowledgeAttachmentScope = attachmentScope === "agent" ? "agent" : "session";
@@ -375,10 +376,19 @@ const CarbonChat = ({
     );
   }, [onOpenMemoryUsage]);
 
+  const getChatResponseUserProfile = useCallback(
+    (draft = useDraft) => getResponseUserProfile(draft, agentId),
+    [agentId, useDraft],
+  );
+
   useEffect(() => {
-    initAgentProfile(useDraft);
-    getResponseUserProfile(useDraft).then((p) => setAssistantName(p.nickname || "CUGA Agent"));
-  }, [useDraft]);
+    let cancelled = false;
+    setAssistantName(agentId === "cuga-default" ? "CUGA Agent" : agentId);
+    getChatResponseUserProfile().then((profile) => {
+      if (!cancelled) setAssistantName(profile.nickname);
+    });
+    return () => { cancelled = true; };
+  }, [agentId, getChatResponseUserProfile]);
 
   useEffect(() => {
     let cancelled = false;
@@ -405,6 +415,42 @@ const CarbonChat = ({
   // Shared shadow-DOM walk (same candidate selectors + nested-container
   // traversal as the slash-command composer lookup) — see composerTextarea.ts.
   const resolveChatDomRoots = useCallback(() => findShadowRoots(chatElementRef.current), []);
+
+  const replaceCommandRange = useCallback(async (value: string, start: number, end: number, insert: string) => {
+    const instance = chatInstanceRef.current;
+    const scope = sendContextRef.current;
+    if (!instance) return;
+    try {
+      const editor = await instance.input.getEditor();
+      if (editor.isDestroyed || chatInstanceRef.current !== instance
+        || sendContextRef.current.agentId !== scope.agentId || sendContextRef.current.threadId !== scope.threadId
+        || sendContextRef.current.useDraft !== scope.useDraft
+        || editor.view.dom.textContent !== value) return;
+      // Composer offsets refer to DOM text, while ProseMirror positions also
+      // count paragraph boundaries. Map through the live editor DOM rather
+      // than assuming a single paragraph or changing its textContent.
+      const positionAt = (offset: number, endBoundary: boolean) => {
+        const walker = document.createTreeWalker(editor.view.dom, NodeFilter.SHOW_TEXT);
+        let consumed = 0;
+        let node: Node | null;
+        while ((node = walker.nextNode())) {
+          const length = node.textContent?.length ?? 0;
+          if (offset < consumed + length || (endBoundary && offset === consumed + length)) {
+            return editor.view.posAtDOM(node, offset - consumed);
+          }
+          consumed += length;
+        }
+        return editor.view.posAtDOM(editor.view.dom, editor.view.dom.childNodes.length);
+      };
+      editor.chain().focus().insertContentAt(
+        { from: positionAt(start, false), to: positionAt(end, true) },
+        { type: "text", text: insert },
+        { updateSelection: true },
+      ).run();
+    } catch (error) {
+      console.error("Failed to insert command:", error);
+    }
+  }, []);
 
   const refreshMessageAttachmentSnapshots = useCallback(
     async (targetThreadId?: string | null) => {
@@ -436,6 +482,17 @@ const CarbonChat = ({
   useEffect(() => {
     void refreshMessageAttachmentSnapshots(threadId);
   }, [refreshMessageAttachmentSnapshots, threadId]);
+
+  // Range-based command highlights need the rich composer. Carbon 1.23 starts
+  // with a textarea and loads this editor on demand; keep it lazy for agents
+  // without commands.
+  useEffect(() => {
+    if (knownCommandNames.length > 0 && chatInstanceRef.current) {
+      void chatInstanceRef.current.input.getEditor().catch((error) => {
+        console.error("Failed to initialize command editor:", error);
+      });
+    }
+  }, [chatRenderTick, knownCommandNames.length]);
 
   // Format relative time (e.g., "2 seconds ago", "5 minutes ago")
   const formatRelativeTime = useCallback((date: Date) => {
@@ -625,6 +682,12 @@ const CarbonChat = ({
         if (markdowns.length > 0) {
           for (const md of markdowns) {
             if (md.shadowRoot) wrapKnownSlashTokens(md.shadowRoot, known);
+            // Markdown now renders asynchronously. Its shadow tree can still
+            // be empty when the transcript observer first sees the host.
+            const rendered = (md as HTMLElement & { updateComplete?: Promise<boolean> }).updateComplete;
+            void rendered?.then(() => {
+              if (!cancelled && md.isConnected && md.shadowRoot) wrapKnownSlashTokens(md.shadowRoot, known);
+            });
           }
         } else {
           // Builds that render the text directly (no markdown element).
@@ -642,27 +705,28 @@ const CarbonChat = ({
         applyReasoningToggleLabels(shadowRoot);
         applySlashCommandPills(shadowRoot);
         const requestNodes = Array.from(
-          shadowRoot.querySelectorAll(".cds-custom-aichat--message--request"),
+          shadowRoot.querySelectorAll(".cds-aichat--message--request, .cds-custom-aichat--message--request"),
         ) as HTMLElement[];
 
         requestNodes.forEach((requestNode, index) => {
-          const target = (requestNode.querySelector(".cds-custom-aichat--sent--text") ??
-            requestNode.querySelector(".cds-custom-aichat--message--padding")) as HTMLElement | null;
+          const target = (requestNode.querySelector(".cds-aichat--sent--text, .cds-custom-aichat--sent--text") ??
+            requestNode.querySelector(".cds-aichat--message--padding, .cds-custom-aichat--message--padding")) as HTMLElement | null;
           if (!target) {
             return;
           }
 
-          target
-            .querySelectorAll(".cuga-carbon-message-attachments")
-            .forEach((row) => row.remove());
-
           const attachments = messageAttachmentSnapshots[index] ?? [];
+          const signature = JSON.stringify(attachments);
+          const existing = target.querySelector<HTMLElement>(".cuga-carbon-message-attachments");
+          if (existing?.dataset.attachments === signature) return;
+          existing?.remove();
           if (attachments.length === 0) {
             return;
           }
 
           const row = document.createElement("div");
           row.className = "cuga-carbon-message-attachments";
+          row.dataset.attachments = signature;
           row.style.display = "flex";
           row.style.flexWrap = "wrap";
           row.style.gap = "0.4rem";
@@ -693,8 +757,6 @@ const CarbonChat = ({
       });
     };
 
-    applyMessageAttachmentDecorations();
-
     // rAF-debounce decoration rebuilds — observer fires per mutation during streaming and a tight rebuild loop is expensive.
     let scheduled = false;
     let cancelled = false;
@@ -709,6 +771,8 @@ const CarbonChat = ({
       scheduled = true;
       rafHandle = window.requestAnimationFrame(flush);
     };
+
+    applyMessageAttachmentDecorations();
 
     const observers = roots.map((shadowRoot) => {
       const observer = new MutationObserver(() => {
@@ -733,6 +797,8 @@ const CarbonChat = ({
       options: CustomSendMessageOptions,
       instance: ChatInstance
     ) => {
+      setTranscriptScope(conversationScope);
+      const sentThreadId = getOrCreateThreadId();
       const attachmentSnapshot = createMessageAttachmentSnapshot();
       const result = await customSendMessageImpl(
         request,
@@ -742,35 +808,48 @@ const CarbonChat = ({
         disableHistory,
         undefined,
         attachmentScope === "session" ? attachmentSnapshot : undefined,
+        agentId,
       );
       
-      if (onThreadChange && currentThreadId) {
-        skipNextHistoryLoadRef.current = currentThreadId;
-        onThreadChange(currentThreadId);
+      const context = sendContextRef.current;
+      if (context.agentId === agentId && currentThreadId === sentThreadId) {
+        if (context.threadId !== sentThreadId) skipNextHistoryLoadRef.current = sentThreadId;
+        context.onThreadChange?.(sentThreadId);
+        await refreshMessageAttachmentSnapshots(sentThreadId);
       }
-
-      await refreshMessageAttachmentSnapshots(currentThreadId);
       
       return result;
     },
-    [attachmentScope, createMessageAttachmentSnapshot, disableHistory, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
+    [agentId, attachmentScope, conversationScope, createMessageAttachmentSnapshot, disableHistory, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
   );
 
   const handleChatReady = useCallback((instance: ChatInstance) => {
     console.log('[CarbonChat] handleChatReady called, setting up event listeners');
     chatInstanceRef.current = instance;
+    setChatReady(true);
     setChatRenderTick((tick) => tick + 1);
-    if (chatElementRef.current) {
-      setChatElement(chatElementRef.current);
-    }
+    chatElementRef.current = wrapperRef.current?.querySelector<HTMLElement>("cds-aichat-container") ?? null;
+    if (chatElementRef.current) setChatElement(chatElementRef.current);
     
+    instance.on({
+      type: BusEventType.PRE_RESTART_CONVERSATION,
+      handler: async () => {
+        historyReplayGenerationRef.current += 1;
+        // Finish an insertion already in progress before Carbon clears it.
+        await historyMutationQueueRef.current;
+      },
+    });
+
     instance.on({
       type: BusEventType.RESTART_CONVERSATION,
       handler: () => {
         console.log('[CarbonChat] RESTART_CONVERSATION event received');
         resetThreadId();
+        setTranscriptScope(null);
+        setHistoryLoading(false);
         sourcesByMessageKey.current.clear();
         setSourcesPanel(null);
+        sendContextRef.current.onRestart?.();
       },
     });
 
@@ -811,64 +890,81 @@ const CarbonChat = ({
             signal: new AbortController().signal,
             silent: false,
           };
-          await customSendMessageImpl(request, options, instance, useDraft, disableHistory, actionResponse);
+          // Carbon installs this listener once; read the current agent after dropdown switches.
+          const context = sendContextRef.current;
+          const approvedThreadId = getOrCreateThreadId();
+          if (user_defined.thread_id && user_defined.thread_id !== approvedThreadId) return;
+          await customSendMessageImpl(request, options, instance, context.useDraft, context.disableHistory, actionResponse, undefined, context.agentId);
+          if (sendContextRef.current.agentId === context.agentId && currentThreadId === approvedThreadId) {
+            sendContextRef.current.onThreadChange?.(approvedThreadId);
+          }
         }
       },
     });
-  }, [useDraft, disableHistory]);
+  }, []);
 
-  // Load history when threadId changes
+  // Reconcile selection after readiness as well as sidebar navigation. Carbon's
+  // clearConversation ignores overlapping clears, so serialize widget mutations.
   useEffect(() => {
-    if (chatInstanceRef.current) {
-      if (threadId) {
-        currentThreadId = threadId;
-        if (skipNextHistoryLoadRef.current === threadId) {
-          // Same conversation echoed back after a send — keep citation state.
-          skipNextHistoryLoadRef.current = null;
-          return;
-        }
-        skipNextHistoryLoadRef.current = null;
-        // Citation state is per conversation; the map repopulates as
-        // renderUserDefinedResponse runs over the replayed history.
-        sourcesByMessageKey.current.clear();
-        setSourcesPanel(null);
-        const loadAndInsertHistory = async () => {
-          if (!chatInstanceRef.current) return;
-          
-          try {
-            // Clear the current conversation
-            await chatInstanceRef.current.messaging.clearConversation();
-            
-            // Load the history
-            const history = await customLoadHistory(chatInstanceRef.current, threadId);
-            
-            if (history.length > 0 && chatInstanceRef.current) {
-              console.log(`Loaded ${history.length} history items for thread ${threadId}`);
-              // Insert the history into the chat
-              chatInstanceRef.current.messaging.insertHistory(history);
-            } else {
-              console.log(`No history found for thread ${threadId}`);
-            }
-          } catch (error) {
-            console.error('Error loading history:', error);
-          }
-        };
-        
-        loadAndInsertHistory();
-      } else {
-        // If threadId is null, start a fresh conversation
-        console.log('Starting new conversation');
-        currentThreadId = null;
-        sourcesByMessageKey.current.clear();
-        setSourcesPanel(null);
-        chatInstanceRef.current.messaging.clearConversation();
-      }
+    const instance = chatInstanceRef.current;
+    if (!instance) return;
+    let cancelled = false;
+    const generation = historyReplayGenerationRef.current;
+    const isCurrent = () => !cancelled && generation === historyReplayGenerationRef.current
+      && chatInstanceRef.current === instance;
+    if (threadId && skipNextHistoryLoadRef.current === threadId) {
+      // Same conversation echoed back after a send — keep citation state.
+      skipNextHistoryLoadRef.current = null;
+      setReconciledScope(conversationScope);
+      return;
     }
-  }, [threadId]);
+    skipNextHistoryLoadRef.current = null;
+    setHistoryLoading(Boolean(threadId));
+    sourcesByMessageKey.current.clear();
+    setSourcesPanel(null);
+
+    const enqueueMutation = (mutate: () => Promise<void>) => {
+      const pending = historyMutationQueueRef.current.then(async () => {
+        if (isCurrent()) await mutate();
+      });
+      // A rejected operation must not prevent later selections from loading.
+      historyMutationQueueRef.current = pending.catch(() => {});
+      return pending;
+    };
+    const loadAndInsertHistory = async () => {
+      await enqueueMutation(() => instance.messaging.clearConversation());
+      if (!isCurrent()) return;
+      // The first clear must finish before the composer becomes interactive;
+      // otherwise a fast first keystroke can be erased by initialization.
+      // Expose the header before fetching history so Restart stays available.
+      setChatInitialized(true);
+      if (!threadId) return;
+      // Keep network requests outside the mutation queue so an obsolete slow
+      // response cannot block the currently selected conversation.
+      const history = await customLoadHistory(instance, threadId, agentId, useDraft);
+      if (!isCurrent()) return;
+      if (history.length > 0) {
+        await enqueueMutation(async () => {
+          await instance.messaging.insertHistory(history);
+          if (isCurrent()) setTranscriptScope(conversationScope);
+        });
+      }
+    };
+    void loadAndInsertHistory()
+      .catch((error) => console.error('Error loading history:', error))
+      .finally(() => {
+        if (isCurrent()) {
+          setChatInitialized(true);
+          setReconciledScope(conversationScope);
+          setHistoryLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [agentId, chatRenderTick, conversationScope, threadId, useDraft]);
 
   // Armed-flow fires land in the transcript. The whole mechanism — mailbox, cursor, polling —
   // lives in the events UI; this is the single line that connects it to the chat.
-  useEventsInbox(threadId, chatInstanceRef, getResponseUserProfile, useDraft);
+  useEventsInbox(threadId, chatInstanceRef, getChatResponseUserProfile, useDraft);
 
   // Wrap customLoadHistory to pass threadId and disableHistory
   const handleCustomLoadHistory = useCallback(
@@ -876,75 +972,34 @@ const CarbonChat = ({
       if (disableHistory) {
         return [];
       }
-      return await customLoadHistory(instance, threadId || undefined);
+      return await customLoadHistory(instance, threadId || undefined, agentId, useDraft);
     },
-    [threadId, disableHistory]
+    [agentId, threadId, disableHistory, useDraft]
   );
 
   return (
     <>
-      {/* Debug Panel Toggle Button */}
-      <button
-        className="debug-toggle-button"
-        onClick={() => setShowDebugPanel(!showDebugPanel)}
-        title="Toggle Debug Panel"
-      >
-        🐛
-      </button>
-
-      {/* Debug Panel */}
-      {showDebugPanel && (
-        <div className="debug-panel">
-          <div className="debug-panel-header">
-            <h3>Agent State Debug</h3>
-            <button
-              className="debug-close-button"
-              onClick={() => setShowDebugPanel(false)}
-            >
-              ✕
-            </button>
-          </div>
-          <div className="debug-panel-content">
-            {isLoadingDebug && <div className="debug-loading">Loading...</div>}
-            {debugError && (
-              <div className="debug-error">
-                <strong>Error:</strong> {debugError}
-              </div>
-            )}
-            {debugData && (
-              <div className="debug-data">
-                <div className="debug-section">
-                  <strong>Thread ID:</strong>
-                  <code>{currentThreadId || 'None'}</code>
-                </div>
-                {lastUpdateTime && (
-                  <div className="debug-section">
-                    <strong>Last Updated:</strong>
-                    <code>{formatRelativeTime(lastUpdateTime)}</code>
-                  </div>
-                )}
-                <div className="debug-section">
-                  <strong>State Data:</strong>
-                  <pre>{JSON.stringify(debugData, null, 2)}</pre>
-                </div>
-              </div>
-            )}
-          </div>
-          <div className="debug-panel-footer">
-            <button
-              className="debug-refresh-button"
-              onClick={fetchDebugData}
-              disabled={isLoadingDebug}
-            >
-              🔄 Refresh
-            </button>
-            <span className="debug-auto-refresh">
-              Auto-refresh: 3s
-              {lastUpdateTime && ` • Updated ${formatRelativeTime(lastUpdateTime)}`}
-            </span>
-          </div>
-        </div>
-      )}
+      <div hidden>
+        <IconButton kind="ghost" label="Toggle Debug Panel"
+          onClick={() => setShowDebugPanel(!showDebugPanel)}><Code /></IconButton>
+      </div>
+      <ComposedModal aria-label="Agent State Debug" open={showDebugPanel} onClose={() => setShowDebugPanel(false)} size="lg">
+        <ModalHeader title="Agent State Debug" />
+        <ModalBody>
+          {isLoadingDebug && <InlineLoading description="Loading..." />}
+          {debugError && <InlineNotification kind="error" title="Error:" subtitle={debugError} lowContrast hideCloseButton />}
+          {debugData && <div className="debug-data">
+            <div><p>Thread ID:</p><CodeSnippet type="single">{currentThreadId || 'None'}</CodeSnippet></div>
+            {lastUpdateTime && <div><p>Last Updated:</p><p>{formatRelativeTime(lastUpdateTime)}</p></div>}
+            <div><p>State Data:</p><CodeSnippet type="multi">{JSON.stringify(debugData, null, 2)}</CodeSnippet></div>
+          </div>}
+          <p className="debug-auto-refresh">Auto-refresh: 3s{lastUpdateTime && ` • Updated ${formatRelativeTime(lastUpdateTime)}`}</p>
+        </ModalBody>
+        <ModalFooter>
+          <Button kind="secondary" onClick={() => setShowDebugPanel(false)}>Close</Button>
+          <Button renderIcon={Renew} onClick={fetchDebugData} disabled={isLoadingDebug}>Refresh</Button>
+        </ModalFooter>
+      </ComposedModal>
 
       <div
         ref={wrapperRef}
@@ -982,22 +1037,26 @@ const CarbonChat = ({
           }
         }}
       >
+        {(!chatVisible || historyLoading || reconcilingConversation) && <div className={`cuga-chat-loading${chatVisible ? " cuga-chat-loading--history" : ""}`}><ContentSkeleton kind="chat" showHeader={!chatVisible} label={historyLoading ? "Loading conversation history…" : "Loading conversation…"} /></div>}
+        <div className="cuga-chat-surface" {...(!chatVisible ? { inert: "" } : {})} style={{ visibility: !chatVisible ? "hidden" : undefined }}>
         <ChatCustomElement
-        ref={chatElementRef as any}
         className={`${contained ? 'carbon-chat-contained' : 'carbon-chat-fullscreen'} ${className}`}
         injectCarbonTheme={theme === 'dark' ? CarbonTheme.G100 : CarbonTheme.WHITE}
         openChatByDefault={true}
         assistantName={assistantName}
-        isReadonly={isReadonly}
+        isReadonly={isReadonly || historyLoading || reconcilingConversation || !chatVisible}
         header={{
           isOn: true,
+          name: assistantName,
           showRestartButton: true,
           showAiLabel: false,
           hideMinimizeButton: true,
 
         } as any}
         homescreen={{
-          isOn: !isReadonly && (hs.isOn ?? true),
+          // insertHistory does not close Carbon's homescreen. Keep it from
+          // covering a restored transcript or reopening after a live send.
+          isOn: !isReadonly && transcriptScope !== conversationScope && (hs.isOn ?? true),
           greeting: hs.greeting ?? DEFAULT_HOMESCREEN.greeting,
           starters: !isReadonly && starterLabels.length > 0
             ? { isOn: true, buttons: starterLabels.map((label) => ({ label })) }
@@ -1009,9 +1068,11 @@ const CarbonChat = ({
         }}
         input={{
           isVisible: true,
+          isDisabled: isReadonly || historyLoading || reconcilingConversation || !chatVisible,
         }}
 
         messaging={{
+          skipWelcome: true,
           customSendMessage: handleCustomSendMessage,
           customLoadHistory: handleCustomLoadHistory,
         }}
@@ -1053,6 +1114,7 @@ const CarbonChat = ({
         onError={(data: any) => console.error('[CarbonChat] onError:', data)}
         onAfterRender={handleChatReady}
         />
+        </div>
         <input
           ref={fileInputRef}
           type="file"
@@ -1107,6 +1169,7 @@ const CarbonChat = ({
         <SlashCommandDropdown
           chatElement={chatElement}
           portalContainer={wrapperRef.current}
+          onReplaceRange={replaceCommandRange}
         />
       </div>
     </>

@@ -13,6 +13,17 @@ from toolguard.runtime import IToolInvoker
 
 T = TypeVar('T')
 
+_SCOPED_KNOWLEDGE_TOOLS = frozenset(
+    {
+        "knowledge_search_knowledge",
+        "knowledge_ingest_knowledge",
+        "knowledge_ingest_knowledge_url",
+        "knowledge_list_knowledge_documents",
+        "knowledge_delete_knowledge_document",
+    }
+)
+_KNOWLEDGE_STATUS_TOOLS = frozenset({"knowledge_get_ingestion_status", "knowledge_get_knowledge_status"})
+
 
 class ToolGuardInvoker(IToolInvoker):
     """
@@ -105,6 +116,31 @@ class ToolGuardInvoker(IToolInvoker):
                 raise ValueError(f"Tool '{toolname}' not found. Available tools: {available_tools}")
 
             tool = tools[toolname]
+
+            if toolname in _SCOPED_KNOWLEDGE_TOOLS | _KNOWLEDGE_STATUS_TOOLS:
+                from cuga.backend.knowledge.run_context import current_run_token, verify_run_token
+
+                # Guards invoke raw provider tools, bypassing the prepare-node wrapper.
+                # Bind identity again here; guard-generated arguments are untrusted.
+                arguments = dict(arguments)
+                arguments.pop("agent_id", None)
+                arguments.pop("thread_id", None)
+                token = current_run_token.get()
+                run = verify_run_token(token) if token is not None else None
+                if toolname in _SCOPED_KNOWLEDGE_TOOLS:
+                    arguments["thread_id"] = (run.thread_id or "") if run else ""
+                    if run is not None:
+                        scope = arguments.get("scope")
+                        if scope is None:
+                            scope = "session" if "session" in run.scopes else "agent"
+                            arguments["scope"] = scope
+                        if scope not in run.scopes:
+                            return {
+                                "error": (
+                                    f"Knowledge scope '{scope}' is unavailable in this context. "
+                                    f"Allowed scopes: {', '.join(run.scopes)}"
+                                )
+                            }
 
             # Invoke the tool using LangChain's invoke method
             # LangChain tools typically accept a single input or dict of inputs

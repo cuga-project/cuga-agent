@@ -48,6 +48,7 @@ notes in its comments down to only the AP-free triggers so the file is honestly 
 | `no_ap_research_desk.yaml` | Research & Strategy | research_compass · papers · ai_labs_news · wiki_dive · webpage_summarizer | none |
 | `no_ap_markets_desk.yaml` | Markets / Finance | pricebot · market_briefer · competitive_analyst · feed_watcher (RSS) | none |
 | `no_ap_it_helpdesk.yaml` | IT Helpdesk / Support | ibm_docs_qa · code_auditor · incident_triage · support_digest | none (Slack/Discord direct) |
+| `no_ap_learning_desk.yaml` | Learning / Study | explainer · paper_reader · video_tutor · study_notes · quiz_master | none |
 | `ap_exec_office.yaml` | Executive Office | mailbot · resume_judge | **AP** — Gmail/Calendar/Box |
 | `ap_devops.yaml` | Engineering / DevOps | pr_reviewer · repo_watcher · incident_triage · github_trending · code_auditor | **AP** — GitHub push |
 
@@ -62,6 +63,63 @@ notes in its comments down to only the AP-free triggers so the file is honestly 
   cuga_code · cuga_text`. No invented servers.
 - **Supervisor name stays `cuga`** so a file is drop-in: events still address the one agent `cuga`;
   only its roster (and personality) changes per domain.
+
+## Write your own roster in 10 minutes
+
+A roster is one YAML file: a supervisor that hands each request to one sub-agent, and the
+sub-agents that do the work. Copy this, then change the names and instructions:
+
+```yaml
+supervisor:
+  name: cuga            # keep "cuga" so the file is a drop-in replacement
+  special_instructions: |
+    You are the <Team> supervisor. Delegate EVERY task to exactly ONE sub-agent and return its
+    answer; never answer yourself. Route <kind of request> to agent_a, <other kind> to agent_b.
+agents:
+  - name: agent_a
+    special_instructions: |
+      <One topic. Which tool to use. What the answer looks like.>
+    mcp_servers:
+      - name: cuga_knowledge
+  - name: agent_b
+    special_instructions: |
+      <...>
+    mcp_servers:
+      - name: cuga_web
+```
+
+### Servers used by these examples
+
+| Server | Tools |
+|---|---|
+| `cuga_web` | web_search, fetch_webpage, fetch_webpage_links, fetch_feed, search_feeds, get_youtube_video_info, get_youtube_transcript |
+| `cuga_knowledge` | search_wikipedia, get_wikipedia_article, get_article_summary, get_article_sections, get_related_articles, search_arxiv, get_arxiv_paper, search_semantic_scholar, get_paper_references |
+| `cuga_geo` | geocode, find_hikes, search_attractions, get_weather |
+| `cuga_finance` | get_crypto_price, get_stock_quote |
+| `cuga_code` | check_python_syntax, extract_code_metrics, detect_language |
+| `cuga_text` | chunk_text, count_tokens, extract_text, extract_text_from_bytes |
+
+These are the tools the servers listed when this was written; the servers are the source of truth.
+`cuga_local` (system monitoring) is registered too, but no example roster uses it.
+
+### Writing good instructions
+
+An abridged excerpt from `webpage_summarizer` in `default.yaml`:
+
+> Given a URL, fetch the page (`fetch_webpage`) and summarize it: what it is, the 3-5 key points,
+> and who should care. … Never summarize a page you did not fetch.
+
+1. **One job per agent.** This one summarizes web pages and nothing else.
+2. **Name the tool.** `fetch_webpage`, so the agent doesn't guess.
+3. **Describe the answer.** "What it is, the 3-5 key points, who should care" can be checked.
+4. **Add a "don't make things up" rule.** The last sentence is the one to copy.
+
+### Naming
+
+Name the file `no_ap_<name>.yaml` if none of its triggers needs Activepieces. That depends on how
+events arrive, not on which MCP servers the agents use: in `src/cuga/backend/events/triggers.py`,
+a trigger with `backend="direct"` doesn't need it and `backend="ap"` does. For a `no_ap_` file,
+add a row to the "Enterprise test-bed rosters" table above.
 
 ## How to test one
 

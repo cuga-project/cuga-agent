@@ -17,6 +17,8 @@ CUGA turns business requests into actions across your applications, APIs, and do
 
 [Apache 2.0](LICENSE) · Configurable Generalist Agent · Built with IBM SiL
 
+English · [简体中文](docs/readme/README.zh-CN.md)
+
 ---
 
 ## Quick install
@@ -39,6 +41,8 @@ uv run cuga start manager --crm
 ```
 
 Open `/manage` at the local URL printed by the CLI. Try the CRM tools, configure policies, and test a draft before publishing. [More source and demo options](#develop-from-source).
+
+Prefer to try it in your browser first? [Open the quickstart notebook in Colab](https://colab.research.google.com/github/cuga-project/cuga-agent/blob/main/docs/examples/colab/try_cuga.ipynb).
 
 ## Automate enterprise work. Keep control.
 
@@ -66,7 +70,7 @@ Configure tools and policies beside a draft chat, then publish a version for use
 
 ### Watch the product tour
 
-https://github.com/user-attachments/assets/cb21fd61-b04b-4188-8f3e-e33197df1b9e
+https://github.com/user-attachments/assets/2c51ab34-cb7a-43f8-aa1d-9a4cf8e27b5c
 
 *Visual tour of the current UI with sample configuration, flows, run history, and memory records. It does not show a live agent run. [Media details](docs/readme/media.md).*
 
@@ -89,7 +93,7 @@ Start with the [CRM demo](#develop-from-source), the [knowledge walkthrough](doc
 | **Multi-agent coordination** | Give specialists focused tools and instructions, then route work through [CugaSupervisor](https://docs.cuga.dev/docs/build/cuga-supervisor/). |
 | **Knowledge with citations** | Combine shared company documents with conversation uploads and inspect cited sources. [Knowledge walkthrough](docs/examples/knowledge_demo/README.md). |
 | **Reusable agent skills** | Package procedures in `SKILL.md` files and load the relevant instructions when a task needs them. [Skills guide](docs/readme/configuration-guide.md#agent-skills). |
-| **Execution visibility** | Inspect trajectories with `cuga viz` and enable per-run receipts for token usage, model calls, tool calls, and elapsed time. [Run receipts](docs/readme/configuration-guide.md#run-receipt). |
+| **Execution visibility** | Record trajectories with `tracker_enabled=true`, inspect them with `cuga viz`, and enable per-run receipts for token usage, model calls, tool calls, and elapsed time. [Run receipts](docs/readme/configuration-guide.md#run-receipt). |
 | **Access control** | Configure OIDC sign-in and enable separate chat and management role checks. [Authentication setup](docs/readme/configuration-guide.md#authentication-and-access-control). |
 
 ## Develop from source
@@ -129,7 +133,7 @@ For the configuration UI, open `/manage` on the same server. Connect tools, conf
 | Start the manager with CRM tools | `uv run cuga start manager --crm` |
 | Try document-based assistance | `uv run cuga start demo_knowledge` |
 | Try supervisor orchestration | `uv run cuga start demo_supervisor` |
-| Inspect execution trajectories | `uv run cuga viz` |
+| Inspect execution trajectories | `DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED=true uv run cuga start demo`, then `uv run cuga viz` |
 | Configure another model provider | [Model configuration](docs/readme/configuration-guide.md#supported-platforms) · [Environment example](.env.example) |
 
 ### Use your own inference endpoint

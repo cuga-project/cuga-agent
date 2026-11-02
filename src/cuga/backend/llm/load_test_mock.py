@@ -19,6 +19,14 @@ def is_mock_llm_enabled() -> bool:
     return os.getenv("CUGA_MOCK_LLM", "").lower() in ("true", "1", "yes", "on")
 
 
+def mock_llm_latency_s() -> float:
+    """Simulated provider latency per async call (``CUGA_MOCK_LLM_LATENCY_MS``, default 0)."""
+    raw = os.getenv("CUGA_MOCK_LLM_LATENCY_MS", "").strip()
+    if not raw:
+        return 0.0
+    return max(float(raw), 0.0) / 1000.0
+
+
 def _message_content(message: Any) -> str:
     if isinstance(message, BaseMessage):
         content = message.content
@@ -185,6 +193,10 @@ class LoadTestMockChatModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=message)])
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        latency_s = mock_llm_latency_s()
+        if latency_s:
+            # Non-blocking wait, like a real async provider client waiting on the network.
+            await asyncio.sleep(latency_s)
         return await asyncio.to_thread(self._generate, messages, stop, run_manager, **kwargs)
 
     def bind_tools(
@@ -212,7 +224,13 @@ class LoadTestMockChatModel(BaseChatModel):
                 return {"parsed": parsed, "raw": AIMessage(content=raw_content)}
             return parsed
 
-        return RunnableLambda(_build)
+        async def _abuild(_input: Any):
+            latency_s = mock_llm_latency_s()
+            if latency_s:
+                await asyncio.sleep(latency_s)
+            return _build(_input)
+
+        return RunnableLambda(_build, afunc=_abuild)
 
 
 _load_test_mock_singleton: Optional[LoadTestMockChatModel] = None

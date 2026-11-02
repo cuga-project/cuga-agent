@@ -21,6 +21,27 @@ _PROVIDER_API_KEY_REF = {
 }
 
 
+_MAX_UPSTREAM_DETAIL = 300
+_AUTH_REJECTED_STATUSES = (401, 403)
+
+
+def _upstream_message(response: httpx.Response, secret: Optional[str]) -> str:
+    """Short, single-line, secret-free text taken from an upstream error body."""
+    msg = None
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        err = body.get("error")
+        msg = err.get("message") if isinstance(err, dict) else (err or body.get("message"))
+    if not isinstance(msg, str):
+        msg = response.text
+    if secret:
+        msg = msg.replace(secret, "[REDACTED]")
+    return " ".join(msg.split())[:_MAX_UPSTREAM_DETAIL]
+
+
 @router.get("/llm/models")
 async def list_llm_models(
     request: Request,
@@ -182,10 +203,19 @@ async def list_llm_models(
         logger.info(f"LiteLLM models request successful - Found {len(data)} models")
         return {"models": sorted(m["id"] for m in data)}
     except httpx.HTTPStatusError as e:
-        logger.error(f"LiteLLM models request failed with HTTP {e.response.status_code}: {e.response.text}")
-        raise HTTPException(
-            status_code=e.response.status_code, detail=f"Models fetch failed: {e.response.text}"
-        )
+        # Never relay the provider's status: a 401 here would be read by the UI as
+        # "CUGA session expired" and trigger a login redirect. Report a gateway error.
+        upstream_status = e.response.status_code
+        logger.error(f"LiteLLM models request failed: upstream returned HTTP {upstream_status}")
+        if upstream_status in _AUTH_REJECTED_STATUSES:
+            # Providers may echo (part of) the submitted key in the body: don't relay it.
+            detail = f"Models fetch failed: provider rejected the configured API key (HTTP {upstream_status})"
+        else:
+            detail = f"Models fetch failed: provider returned HTTP {upstream_status}"
+            message = _upstream_message(e.response, api_key or api_key_ref)
+            if message:
+                detail = f"{detail}: {message}"
+        raise HTTPException(status_code=502, detail=detail)
     except Exception as ex:
         logger.exception(f"LiteLLM models request failed: {ex}")
         raise HTTPException(status_code=502, detail=f"Models fetch failed: {str(ex)}")

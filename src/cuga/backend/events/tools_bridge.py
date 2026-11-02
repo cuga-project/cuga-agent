@@ -57,14 +57,57 @@ def _builtins():
 
 
 async def load_mcp_tools(mcp_servers: dict) -> list:
-    """Load tools from MCP servers via langchain-mcp-adapters. Returns [] on failure."""
+    """Discover reconnecting first-party MCP tools; preserve the existing failure fallback.
+
+    Catalog entries use URL and transport. Direct callers may also supply the
+    explicit FastMCP options below; timeout is the whole MCP request timeout,
+    and auth accepts a bearer string or httpx2.Auth, not legacy httpx.Auth.
+    """
     if not mcp_servers:
         return []
     try:
-        from langchain_mcp_adapters.client import MultiServerMCPClient
+        from fastmcp import Client
+        from fastmcp.client.transports import SSETransport, StdioTransport, StreamableHttpTransport
+        from langchain.mcp import MCPAdapter
 
-        client = MultiServerMCPClient(mcp_servers)
-        tools = await client.get_tools()
+        tools = []
+        for config in mcp_servers.values():
+            transport_name = config.get("transport", "streamable_http")
+            supported = {"transport", "timeout"}
+            if transport_name == "stdio":
+                supported.update({"command", "args", "env", "cwd"})
+            else:
+                supported.update({"url", "headers", "auth"})
+                if transport_name == "sse":
+                    supported.add("sse_read_timeout")
+            unknown = set(config) - supported
+            if unknown:
+                raise ValueError(f"Unsupported MCP options: {sorted(unknown)}")
+            if transport_name == "stdio":
+                transport = StdioTransport(
+                    command=config["command"],
+                    args=config.get("args", []),
+                    env=config.get("env"),
+                    cwd=config.get("cwd"),
+                )
+            else:
+                options = {key: config[key] for key in ("headers", "auth") if key in config}
+                if transport_name == "sse":
+                    transport = SSETransport(
+                        config["url"], sse_read_timeout=config.get("sse_read_timeout"), **options
+                    )
+                elif transport_name in ("http", "streamable_http", "streamable-http"):
+                    transport = StreamableHttpTransport(config["url"], **options)
+                else:
+                    raise ValueError(f"Unsupported MCP transport: {transport_name}")
+            adapter = MCPAdapter(Client(transport, timeout=config.get("timeout")))
+            # Independent discovery preserves existing unprefixed tool names and
+            # tool_filter values. Each returned tool re-enters its client when
+            # called, so cached ReactRuntime graphs need no idle connection.
+            discovered = await adapter.list_tools()
+            for remote_tool in discovered:
+                remote_tool.handle_tool_error = False
+            tools.extend(discovered)
         log.info("loaded %d MCP tools from %s", len(tools), list(mcp_servers))
         return tools
     except Exception:  # noqa: BLE001

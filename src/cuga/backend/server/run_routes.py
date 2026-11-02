@@ -125,6 +125,8 @@ _supervisor_active_users: Dict[int, int] = {}
 _supervisor_retired: Dict[int, Any] = {}
 _supervisor_close_tasks: set[asyncio.Task[None]] = set()
 _supervisor_shutting_down = False
+_supervisor_cache_generation = 0
+_STALE_SUPERVISOR_BUILD = object()
 _supervisor_drained = asyncio.Event()
 _supervisor_drained.set()
 # name → description for the loaded roster, kept beside the supervisor so /run/agents can answer
@@ -239,7 +241,7 @@ async def _roster_details(sub_refs: List[str]) -> Dict[str, Dict[str, Any]]:
         if not cfg:
             continue
         meta = cfg.get("agent") or {}
-        out[str(meta.get("name") or ref)] = {
+        out[ref] = {
             "description": str(cfg.get("special_instructions") or meta.get("description") or "").strip(),
             "mcp_servers": [
                 t["name"] for t in (cfg.get("tools") or []) if isinstance(t, dict) and t.get("name")
@@ -255,11 +257,38 @@ def _cache_version(cache_key: str) -> int:
         return -1
 
 
+async def invalidate_cached_supervisor() -> None:
+    """Retire a changed roster while preserving owners leased by active runs."""
+    global _supervisor_cache_generation
+    immediate = []
+    async with _supervisor_cache_lock:
+        _supervisor_cache_generation += 1
+        for owner in {id(owner): owner for owner in _supervisor_cache.values()}.values():
+            if _supervisor_active_users.get(id(owner), 0):
+                _supervisor_retired[id(owner)] = owner
+            else:
+                immediate.append(owner)
+        _supervisor_cache.clear()
+        _supervisor_roster.clear()
+        task = _schedule_supervisor_close(*immediate)
+    if task is not None:
+        await asyncio.shield(task)
+
+
 async def _get_supervisor(*, retain: bool = False):
+    while True:
+        result = await _get_supervisor_once(retain=retain)
+        if result is not _STALE_SUPERVISOR_BUILD:
+            return result
+
+
+async def _get_supervisor_once(*, retain: bool = False):
     """Return the latest stored supervisor with monotonic, cancellation-safe publication."""
     from cuga.backend.server.config_store import load_config
     from cuga.supervisor_utils.roster_seed import SUPERVISOR_AGENT_ID
 
+    async with _supervisor_cache_lock:
+        generation = _supervisor_cache_generation
     sup_cfg, version = await load_config(None, SUPERVISOR_AGENT_ID)
     if not sup_cfg or (sup_cfg.get("agent") or {}).get("kind") != "supervisor":
         return None
@@ -269,6 +298,8 @@ async def _get_supervisor(*, retain: bool = False):
     async with _supervisor_cache_lock:
         if _supervisor_shutting_down:
             return None
+        if generation != _supervisor_cache_generation:
+            return _STALE_SUPERVISOR_BUILD
         current_key = next(iter(_supervisor_cache), None)
         if current_key == cache_key or (
             current_key is not None and _cache_version(current_key) > requested_version
@@ -283,6 +314,8 @@ async def _get_supervisor(*, retain: bool = False):
         async with _supervisor_cache_lock:
             if _supervisor_shutting_down:
                 return None
+            if generation != _supervisor_cache_generation:
+                return _STALE_SUPERVISOR_BUILD
             current_key = next(iter(_supervisor_cache), None)
             if current_key == cache_key or (
                 current_key is not None and _cache_version(current_key) > requested_version
@@ -300,9 +333,16 @@ async def _get_supervisor(*, retain: bool = False):
         supervisor = None
         try:
             agents = await build_agents_from_stored_subagents(sub_specs, auto_load_policies=False)
+            from cuga.backend.server.agent_registry import agent_special_instructions
+            from cuga.backend.llm.models import create_llm_from_config
+
+            llm_config = sup_cfg.get("llm") or {}
+            model = create_llm_from_config(llm_config) if llm_config.get("model") else None
             supervisor = CugaSupervisor(
                 agents=agents,
-                special_instructions=(sup_cfg.get("supervisor") or {}).get("special_instructions"),
+                special_instructions=agent_special_instructions(sup_cfg),
+                model=model,
+                name=SUPERVISOR_AGENT_ID,
                 interactive=False,
             )
             details = await _roster_details([s.get("ref") for s in sub_specs if s.get("ref")])
@@ -315,12 +355,16 @@ async def _get_supervisor(*, retain: bool = False):
             {"name": name, **details.get(name, {"description": "", "mcp_servers": []})}
             for name in (agents or {})
         ]
+        supervisor._cuga_roster = roster
         unpublished = None
         immediately_close = []
         leased = False
         async with _supervisor_cache_lock:
             current_key = next(iter(_supervisor_cache), None)
-            if _supervisor_shutting_down:
+            if generation != _supervisor_cache_generation:
+                published = _STALE_SUPERVISOR_BUILD
+                unpublished = supervisor
+            elif _supervisor_shutting_down:
                 published = None
                 unpublished = supervisor
             elif current_key == cache_key or (
@@ -342,7 +386,7 @@ async def _get_supervisor(*, retain: bool = False):
                         _supervisor_retired[owner_id] = stale_supervisor
                     else:
                         immediately_close.append(stale_supervisor)
-            if retain and published is not None:
+            if retain and published is not None and published is not _STALE_SUPERVISOR_BUILD:
                 owner_id = id(published)
                 _supervisor_active_users[owner_id] = _supervisor_active_users.get(owner_id, 0) + 1
                 leased = True
@@ -683,7 +727,7 @@ async def run_sync(request: Request):
     # existing agent, so turning the roster on cannot disturb the interactive surface.
     supervisor = None
     try:
-        supervisor = await _get_supervisor(retain=bool(query))
+        supervisor = await _get_supervisor(retain=bool(query or resume))
     except Exception:  # noqa: BLE001 — a bad roster must not take the endpoint down
         # The roster PATH and the exception text are both server-side detail: the path exposes the
         # deployment's filesystem layout and str(e) can carry a stack trace. Log both, return
@@ -699,21 +743,44 @@ async def run_sync(request: Request):
             },
             500,
         )
-    if supervisor is not None and query:
+    if supervisor is not None and (query or resume):
         # PINNED sub-agent — ADVISORY, not a guarantee. A caller naming a real sub-agent (a webhook
         # with ?agent=incident_triage, a subscription armed against a specialist) gets that name
         # expressed as an INSTRUCTION IN THE PROMPT, because CugaSupervisor exposes no API to invoke
         # a named sub-agent. The model can ignore it, so a run pinned to a specialist may be answered
         # by a different one. Doing this properly needs a routing API on the supervisor; until then
-        # do not treat ?agent= as routing. A name absent from the roster is ignored, not an error.
+        # do not treat ?agent= as routing. An absent name must fail rather than
+        # silently running a different specialist.
         pinned = str(body.get("agent") or "").split("::")[-1].strip()
-        roster_names = {a["name"] for a in (_supervisor_roster.get("__current__") or [])}
+        roster_names = {a["name"] for a in getattr(supervisor, "_cuga_roster", [])}
         if pinned and pinned != "cuga" and pinned in roster_names:
             query = (
                 f"Delegate this to the `{pinned}` agent — it is the right specialist. "
                 f"Return its answer.\n\n{query}"
             )
         try:
+            if str(body.get("use_draft", "")).lower() in ("1", "true", "yes", "on"):
+                return JSONResponse(
+                    {"ok": False, "status": "error", "error": "Draft supervisor runs require /stream"}, 422
+                )
+            if attachments or resume:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "status": "error",
+                        "error": "Supervisor attachments and approval resumes require /stream",
+                    },
+                    422,
+                )
+            if pinned and pinned != "cuga" and pinned not in roster_names:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "status": "error",
+                        "error": "Requested agent is not in the supervisor roster",
+                    },
+                    404,
+                )
             try:
                 res = await supervisor.invoke(
                     query, thread_id=thread_id, checkpoint_thread_id=checkpoint_id, user_id=user_id
@@ -837,7 +904,7 @@ async def run_agents(request: Request):
             "agents": [{"name": "cuga", "description": "the CUGA agent", "mcp_servers": []}],
         }
     path = _supervisor_roster_path()
-    subs = list(_supervisor_roster.get("__current__") or [])
+    subs = list(getattr(sup, "_cuga_roster", []))
     # "cuga" is the supervisor itself and is always addressable — callers that know nothing about
     # the roster target it and let it route.
     agents = [{"name": "cuga", "description": "the CUGA supervisor", "mcp_servers": []}] + [

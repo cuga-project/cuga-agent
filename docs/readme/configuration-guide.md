@@ -200,6 +200,31 @@ and omit `WXO_API_KEY` — local instances are auto-detected and don't require a
 - Instance URL: `http://localhost:4321` (local ADK dev server)
 
 
+## Using CUGA in mainland China
+
+CUGA does not require OpenAI: OpenAI-compatible endpoints work through the standard override, including Chinese providers. Two services are commonly unreachable from mainland China and have workarounds:
+
+- **PyPI is slow:** use a local mirror, for example `pip install cuga -i https://pypi.tuna.tsinghua.edu.cn/simple`. With uv, set `UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple` rather than adding a `uv.toml` to the project root, which would make uv ignore the `[tool.uv]` section of `pyproject.toml`. A changed index re-resolves `uv.lock`; don't commit that change. torch and torchvision still come from the PyTorch CPU index pinned in `pyproject.toml`, not the mirror.
+- **Hugging Face is blocked:** with the default `[storage.embedding] provider = "local"`, policies and knowledge download a small embedding model from Hugging Face on first use. Set `HF_ENDPOINT=https://hf-mirror.com`, or preload the models ahead of time (this also needs `HF_ENDPOINT` set):
+
+  ```bash
+  export FASTEMBED_CACHE_PATH="$HOME/.cache/cuga/fastembed"
+  uv run python src/scripts/preload_models.py
+  ```
+
+  The export points the script at the cache directory CUGA reads; without it, the models land in a temporary directory and CUGA downloads them again on first use. The script skips a failed download instead of stopping, so check that no `fastembed` line in its output says `preload skipped`.
+
+Example `.env` for Alibaba Model Studio (Qwen), replacing the default Groq lines; the key must match the endpoint's region:
+
+```dotenv
+AGENT_SETTING_CONFIG=settings.openai.toml
+OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+OPENAI_API_KEY=your-dashscope-api-key  # pragma: allowlist secret
+MODEL_NAME=qwen-plus
+```
+
+If Discord is unreachable, use [GitHub Discussions](https://github.com/cuga-project/cuga-agent/discussions). A Chinese-language summary of the README is at [README.zh-CN.md](README.zh-CN.md).
+
 ## Configuration Files
 
 CUGA uses TOML configuration files located in `src/cuga/configurations/models/`:
@@ -807,6 +832,31 @@ E2B will automatically execute code in cloud sandboxes. You'll see logs indicati
 - Supports per-session caching for cost optimization
 
 **Note**: E2B is a paid service with a free tier. Check [e2b.dev/pricing](https://e2b.dev/pricing) for details.
+
+</details>
+
+<details>
+<summary> Remote execd sandbox: isolation model</summary>
+
+With **`[advanced_features] sandbox_mode = "execd"`**, or with the sandbox turned on in **Manage → Code sandbox**, generated Python, `run_command`, the filesystem tools and the workspace panel run in a remote sandbox behind sandbox-api. Connection settings (`execd_url`, `execd_api_key`, `sandbox_secret_dir`, `sandbox_callback_url`, `execd_package_index`) are described in [`settings.toml`](../../src/cuga/settings.toml).
+
+The connection comes from the deployment: the sandbox secret mounted at `sandbox_secret_dir`, or `execd_url` / `execd_api_key`. **Manage → Code sandbox** appears only when one of them is configured, and only switches the sandbox on or off. It does not take a URL or key.
+
+**What keeps conversations apart.** The sandbox does, not CUGA. Each conversation gets its own kernel (a separate process) and its own workspace, `/workspace/<thread_id>`. Code in one conversation cannot read, change or list another conversation's files, and cannot reach execd or Jupyter inside the sandbox. This requires a sandbox-api build that passes its workspace isolation test (`scripts/25_test_workspace_isolation.sh` in the sandbox-api repo).
+
+**What does not.** Inside its own conversation, agent code runs with the same restrictions as under the local executor: safe builtins, the import allowlist, and only its own tools and variables, not the kernel's helpers. CUGA also answers only the tools a code block names, so tool approval sees every tool that runs. These restrictions run in the same process as the code, so they are not a boundary. Treat the sandbox's filesystem and network policy as the security boundary.
+
+**Tools.** Tools run in CUGA, not in the sandbox. The sandbox calls them back at `{sandbox_callback_url}/sandbox/tools/call`. Each code block carries its own signed token, so one conversation cannot call another conversation's tools.
+
+**Before you turn it on:**
+
+- Allow egress from the sandbox only to `sandbox_callback_url` and to the package index. Egress is denied by default.
+- Use a sandbox-api version that accepts `envs` on `POST /command`. CUGA sends the venv, the package index and the file-tool operands there.
+- Do not put credentials in `execd_package_index`. Agent code can read it.
+- Packages that a conversation installs go into its own venv. The image's packages are shared.
+- Deleting a conversation releases its kernel. Turning the sandbox off releases the kernels this process holds; kernels from before a restart or on other replicas stay until sandbox-api's TTL. Workspace files stay in the sandbox either way.
+
+See the [executors README](../../src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/README.md#isolation-model-execd-mode) for details.
 
 </details>
 

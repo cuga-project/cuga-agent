@@ -10,7 +10,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
-from fastmcp import Client
+from fastmcp import Client, Context, FastMCP
 from langchain_core.messages import HumanMessage
 
 from cuga.backend.knowledge import mcp_server
@@ -18,6 +18,7 @@ from cuga.backend.knowledge.routes import knowledge_router
 from cuga.backend.knowledge.run_context import (
     KnowledgeRunContext,
     RUN_TOKEN_HEADER,
+    RUN_TOKEN_META,
     current_run_token,
     issue_run_token,
     verify_run_token,
@@ -28,6 +29,31 @@ pytestmark = pytest.mark.unit
 
 def capability(agent="named-agent", thread="real-thread", scopes=("agent", "session"), user=None):
     return issue_run_token(KnowledgeRunContext(agent, thread, scopes, user))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metadata,expected",
+    [
+        (None, {}),
+        ({}, {}),
+        ({RUN_TOKEN_META: "run-credential"}, {RUN_TOKEN_HEADER: "run-credential"}),
+        ({RUN_TOKEN_META: 42}, {}),
+    ],
+)
+async def test_identity_headers_use_real_mcp_metadata(metadata, expected):
+    server = FastMCP("Knowledge metadata regression")
+
+    @server.tool()
+    def identity_headers(ctx: Context) -> dict[str, str]:
+        # Exercise the SDK's actual request metadata, not a fabricated context.
+        assert ctx.request_context is not None
+        assert ctx.request_context.meta is None or isinstance(ctx.request_context.meta, dict)
+        return mcp_server._identity_headers(ctx)
+
+    async with Client(server) as client:
+        result = await client.call_tool("identity_headers", {}, meta=metadata)
+    assert result.data == expected
 
 
 @pytest.fixture

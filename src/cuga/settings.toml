@@ -29,9 +29,62 @@ enable_todos = false  # Enable todos feature for complex multi-step task managem
 reflection_enabled = false
 pre_execute_verify_enabled = false  # Independent of reflection; eval can hold VERIFY without dropping PLAN reflection
 # pre_execute_verify_timeout = 60  # Seconds for the VERIFY model call before the block runs unverified (default 60). Env: DYNACONF_ADVANCED_FEATURES__PRE_EXECUTE_VERIFY_TIMEOUT
+# Share of the model's context window that reflection / VERIFY inputs may fill (0 < x <= 1). Lower it to cut cost or latency.
+# There is no absolute prompt ceiling: lower these fractions for large-window models.
+reflection_context_fraction = 0.70  # Env: DYNACONF_ADVANCED_FEATURES__REFLECTION_CONTEXT_FRACTION
+pre_execute_verify_context_fraction = 0.70  # Env: DYNACONF_ADVANCED_FEATURES__PRE_EXECUTE_VERIFY_CONTEXT_FRACTION
+# Cache endpoint windows (OpenRouter, watsonx.ai, LiteLLM proxy, vLLM); retry failures after 30 seconds.
+# Off: use LiteLLM's bundled map and MODEL_CONTEXT_SIZES only. A model setting `context_window = N` always wins.
+# Set context_window explicitly for unknown gateway aliases or servers that do not publish their window.
+context_window_discovery = true  # Env: DYNACONF_ADVANCED_FEATURES__CONTEXT_WINDOW_DISCOVERY
 enable_filesystem_tools = false  # Enable workspace filesystem tools (read_file, write_file, etc.)
 e2b_sandbox = false           # use E2B cloud sandbox for code execution
 opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; requires Docker + opensandbox SDK
+# Remote execd sandbox (sandbox_mode = "execd", or switched on in Manage → Code sandbox).
+# Generated Python (CugaLite and CodeAgent), shell, filesystem tools and the workspace
+# panel then run in a per-thread kernel inside the sandbox. Exception: an explicit
+# execution.python_backend wins over sandbox_mode, so python_backend = "local" keeps
+# generated Python in CUGA even with execd on; leave it unset to get sandbox isolation.
+# Do not set python_backend = "execd" on its own: with the sandbox off, Python then runs
+# in execd while files and the shell stay on the host, so code cannot see the files the
+# agent's file tools write. Turn execd on with sandbox_mode or the Manage switch instead.
+# The connection is picked automatically: the mounted secret (sandbox_secret_dir) when it carries url and api_key,
+# otherwise execd_url / execd_api_key below. Manage shows the switch only when one of them
+# is configured; it never takes a URL or key itself.
+# URL of the code-execution sandbox-api (CUGA never talks to execd directly), e.g.
+# https://sandbox-api-<tenant>.apps.<cluster>. Env: DYNACONF_ADVANCED_FEATURES__EXECD_URL,
+# or DYNACONF_ADVANCED_FEATURES__SANDBOX_URL as set by the sandbox-binding secret.
+# Required when the sandbox is on and no secret is mounted; there is no default.
+execd_url = ""
+# sandbox-api key. Empty for local dev where the sandbox is network-isolated. Plain value or a
+# secret ref (vault://, aws://, env://). Env: DYNACONF_ADVANCED_FEATURES__EXECD_API_KEY,
+# or DYNACONF_ADVANCED_FEATURES__SANDBOX_API_KEY as set by the sandbox-binding secret.
+execd_api_key = ""
+# Kubernetes secret with the sandbox connection, mounted as files. When it holds both a URL and
+# a key it is used instead of execd_url / execd_api_key. URL file:
+# url, execd_url, EXECD_URL or SANDBOX_URL; key file: api_key, apiKey,
+# execd_api_key, EXECD_API_KEY or SANDBOX_API_KEY. Re-read when the files change, so rotation needs no restart.
+# Mount it with `optional: true` so the pod starts without it; without it the sandbox is not offered.
+# Empty (default) = no secret. The deployment that mounts it sets the directory, e.g. /bindings/cuga-sandbox.
+sandbox_secret_dir = ""  # Env: DYNACONF_ADVANCED_FEATURES__SANDBOX_SECRET_DIR
+# TLS verification for execd/sandbox-api calls: true (default; system/certifi CAs), a path to a
+# CA bundle for self-signed routes, or false (insecure; dev only). Env: DYNACONF_ADVANCED_FEATURES__EXECD_VERIFY_SSL
+execd_verify_ssl = true
+# Package index for code in the execd sandbox. Empty = installs fail closed. Add its host
+# to the sandbox network policy — egress is denied by default.
+execd_package_index = ""
+# Address of this CUGA server as the execd sandbox reaches it, e.g. http://cuga.<ns>.svc:7860.
+# Every tool the agent's code calls in the sandbox is POSTed back here to {url}/sandbox/tools/call
+# and runs in CUGA (registry, MCP, SDK tools, todos, ToolGuard, call budget). Required when the
+# sandbox is on: without it no tool can be called from code. The sandbox network policy must allow egress to it.
+# Plain http:// sends block tokens, arguments and results unencrypted, and a token stays valid
+# while its block runs; use it only on a trusted network, otherwise give an https:// address.
+# Env: DYNACONF_ADVANCED_FEATURES__SANDBOX_CALLBACK_URL
+sandbox_callback_url = ""
+# Per-block wall clock in the execd sandbox, in seconds. Longer than sandbox_execution_timeout by
+# default because every tool call in the block is a round trip back to CUGA and counts against it.
+# 0 = use sandbox_execution_timeout. Env: DYNACONF_ADVANCED_FEATURES__EXECD_EXECUTION_TIMEOUT
+execd_execution_timeout = 120
 e2b_sandbox_mode = "per-session"  # E2B sandbox lifecycle: "per-session" = cache per thread_id (default), "single" = shared sandbox for all threads, "per-call" = new sandbox each call
 e2b_sandbox_idle_ttl = 600  # Idle timeout in seconds (default: 10 min) - sandbox expires after this much idle time
 e2b_sandbox_max_age = 86400  # Max age for "single" mode in seconds (24h, 0 = disabled) - prevents week-old sandboxes
@@ -76,6 +129,8 @@ max_tool_calls_per_thread = 2000  # Max tool/API calls per conversation, never r
 # Rejected-call guard (#599): stops an identical API call (same endpoint + same arguments) being re-issued after the registry has definitively rejected it (4xx). Counters clear on any successful mutating call and at /api/reset (task boundary).
 rejected_call_escalate_after = 1  # After N identical rejections, further rejections of the same signature carry a prominent "[Repeated failure] ... do not re-issue unchanged" message. 0 disables escalation. Env: DYNACONF_ADVANCED_FEATURES__REJECTED_CALL_ESCALATE_AFTER
 rejected_call_block_after = 2  # After N identical rejections, further identical calls are refused WITHOUT reaching the API, returning the stored error plus an explicit directive. 0 disables short-circuiting. Env: DYNACONF_ADVANCED_FEATURES__REJECTED_CALL_BLOCK_AFTER
+# Pagination audit (#750): after each code block, a list call that returned exactly page_limit items (a full page) without the next page being requested is flagged in the execution output — models otherwise read a full page as the last page. Deterministic and advisory; the tool result itself is untouched.
+pagination_audit_enabled = true  # Env: DYNACONF_ADVANCED_FEATURES__PAGINATION_AUDIT_ENABLED
 # Strip harmony protocol control tokens (<|channel|>, <|return|>, …) from the final answer.
 # "auto" = only when the final-answer model is a gpt-oss/harmony model (other providers untouched);
 # true/false force it on/off. Env: DYNACONF_ADVANCED_FEATURES__STRIP_HARMONY_CONTROL_TOKENS
@@ -89,6 +144,8 @@ enable_shell_tool = false
 #   "native"      — macOS sandbox-exec (no Docker; macOS only; auto-falls back to "local" on Windows/Linux)
 #   "e2b"         — E2B cloud sandbox (requires e2b_sandbox = true)
 #   "local"       — no sandbox (runs directly on host; always pairs with run_command tool approval)
+#   "execd"       — remote execd sandbox for code, shell, filesystem tools and workspace (see execd_url /
+#                   sandbox_secret_dir above). Set by the deployment, it cannot be switched off in the UI.
 sandbox_mode = "native"
 
 [execution]
@@ -166,6 +223,7 @@ opensandbox_timeout_seconds = 600
 
 [supervisor]
 enabled = false  # Enable CugaSupervisor for multi-agent coordination
+delegation_execution_timeout = 300  # Seconds for a supervisor code block including complete child runs; child code blocks keep sandbox_execution_timeout
 config_path = "src/cuga/backend/tools_env/registry/config/supervisor_demo_crm.yaml"  # Path to supervisor YAML config (e.g., "config/supervisor_demo_crm.yaml"). If empty, uses default supervisor setup
 agent_approval = true  # Require user approval before executing any sub-agent (human-in-the-loop)
 pass_variables_a2a = false  # When true, A2A delegate tool accepts variables and sends them in request metadata (A2A protocol extension)
@@ -239,7 +297,7 @@ aws_region = ""
 
 [auth]
 enabled = false
-authorization_enabled = false
+allow_local_admin = true  # with auth off: true = same-machine callers may use the secrets and manage APIs; false = no caller can
 manage_roles = ["ServiceOwner", "ServiceAdmin"]
 chat_roles = ["ServiceOwner", "ServiceAdmin", "ServiceUser"]
 session_cookie_name = "cuga_session"

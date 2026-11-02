@@ -94,5 +94,5 @@ export function useEventsInbox(
       if (first) clearTimeout(first);
       if (timer) clearInterval(timer);
     };
-  }, [threadId, useDraft]);
+  }, [threadId, useDraft, getResponseUserProfile]);
 }

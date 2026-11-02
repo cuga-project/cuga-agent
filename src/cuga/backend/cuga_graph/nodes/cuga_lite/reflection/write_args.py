@@ -215,10 +215,12 @@ def _bound_names(tree: ast.AST) -> set:
     return names
 
 
-def _is_write_call(node: ast.Call, local_names: set) -> bool:
+def _is_write_call(node: ast.Call, local_names: set, pure_helpers: frozenset = frozenset()) -> bool:
     name = _call_name(node)
     if not name:
         return True
+    if isinstance(node.func, ast.Name) and name in pure_helpers:
+        return False
     if isinstance(node.func, ast.Attribute):
         if name in READ_ONLY_METHODS:
             return False
@@ -228,6 +230,89 @@ def _is_write_call(node: ast.Call, local_names: set) -> bool:
     if name.endswith("_get"):
         return False
     return name not in READ_ONLY_CALLS
+
+
+def _local_helpers(tree: ast.AST) -> Dict[str, ast.AST]:
+    """Functions the block defines exactly once, by ``def`` or as ``name = lambda ...``.
+
+    A name that is also bound some other way (a parameter, a loop target, a
+    second definition, an import) or carries a decorator is left out, so a call
+    to it is still treated as a write.
+    """
+    defs: Dict[str, List[ast.AST]] = {}
+    stores: Dict[str, int] = {}
+    other: set = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defs.setdefault(node.name, []).append(node)
+            if node.decorator_list:
+                other.add(node.name)
+        elif (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Lambda)
+        ):
+            defs.setdefault(node.targets[0].id, []).append(node.value)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            stores[node.id] = stores.get(node.id, 0) + 1
+        elif isinstance(node, ast.arg):
+            other.add(node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            other.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            other.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ClassDef):
+            other.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            other.update(node.names)
+    helpers: Dict[str, ast.AST] = {}
+    for name, nodes in defs.items():
+        lambdas = sum(isinstance(n, ast.Lambda) for n in nodes)
+        if len(nodes) == 1 and stores.get(name, 0) == lambdas and name not in other:
+            helpers[name] = nodes[0]
+    return helpers
+
+
+def _helper_writes(helpers: Dict[str, ast.AST], local_names: set) -> Dict[str, frozenset]:
+    """The write calls each local helper makes, directly or through other helpers.
+
+    An empty set means the helper only computes, so calling it is not a write:
+    ``valid(c)`` was listed as a write argument and the verifier judged it as
+    one. A helper that wraps ``place_order`` keeps that call, so a write behind
+    a helper is still verified.
+    """
+    direct: Dict[str, set] = {name: set() for name in helpers}
+    calls: Dict[str, set] = {name: set() for name in helpers}
+    for name, fn in helpers.items():
+        body = fn.body if isinstance(fn.body, list) else [fn.body]
+        for stmt in body:
+            for sub in ast.walk(stmt):
+                if not isinstance(sub, ast.Call):
+                    continue
+                callee = _call_name(sub)
+                if isinstance(sub.func, ast.Name) and callee in helpers:
+                    calls[name].add(callee)
+                elif _is_write_call(sub, local_names):
+                    direct[name].add(callee or "<call>")
+    writes = {name: set(found) for name, found in direct.items()}
+    changed = True
+    while changed:
+        changed = False
+        for name in helpers:
+            for callee in calls[name]:
+                if not writes[callee] <= writes[name]:
+                    writes[name] |= writes[callee]
+                    changed = True
+    return {name: frozenset(found) for name, found in writes.items()}
+
+
+def _pure_helpers(tree: ast.AST, local_names: set) -> frozenset:
+    if _over_budget(tree):
+        return frozenset()
+    return frozenset(
+        name for name, found in _helper_writes(_local_helpers(tree), local_names).items() if not found
+    )
 
 
 def has_write_call(code: Optional[str]) -> bool:
@@ -240,8 +325,9 @@ def has_write_call(code: Optional[str]) -> bool:
     except SyntaxError:
         return True
     local_names = _bound_names(tree)
+    pure = _pure_helpers(tree, local_names)
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and _is_write_call(node, local_names):
+        if isinstance(node, ast.Call) and _is_write_call(node, local_names, pure):
             return True
     # map(pay_post, amounts) contains no Call node for pay_post, and map itself
     # is read-only, so the writes ran without ever reaching the gate. A registry
@@ -577,12 +663,58 @@ class _ExpandBudgetExceeded(Exception):
     pass
 
 
+def _origin_call(value: ast.expr, pure_helpers: frozenset) -> Optional[str]:
+    """The tool or helper call whose result *value* is, or None for anything else.
+
+    Inlining ``playlist = await create_playlist(...)`` into a later
+    ``add_song(playlist_id=playlist["playlist_id"])`` rendered the argument as a
+    second create call, and the verifier flagged a duplicate write or an
+    ungrounded id. Such a name is kept and marked with the call it came from; a
+    write call's own arguments are already listed on their own rows.
+
+    Only a call result or a field of one (``resp["id"]``, ``resp.get("id")``)
+    counts. A value computed from a result, ``(await total())["sum"] / 3``, is
+    still inlined so the divisor stays visible, and so is a non-awaited method
+    call such as ``json.loads(text)``.
+    """
+    node = value
+    while True:
+        if isinstance(node, (ast.Subscript, ast.Attribute)):
+            node = node.value
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in READ_ONLY_METHODS
+        ):
+            node = node.func.value
+        else:
+            break
+    if isinstance(node, ast.Await):
+        return (_call_name(node.value) or "<call>") if isinstance(node.value, ast.Call) else None
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        name = node.func.id
+        if name in READ_ONLY_CALLS or name in pure_helpers:
+            return None
+        return name
+    return None
+
+
 class _Expander(ast.NodeTransformer):
-    def __init__(self, env: Dict[str, ast.expr], seen: frozenset, depth: int, visits: List[int]):
+    def __init__(
+        self,
+        env: Dict[str, ast.expr],
+        seen: frozenset,
+        depth: int,
+        visits: List[int],
+        origins: Optional[Dict[str, str]] = None,
+        pure_helpers: frozenset = frozenset(),
+    ):
         self.env = env
         self.seen = seen
         self.depth = depth
         self.visits = visits
+        self.origins = origins if origins is not None else {}
+        self.pure_helpers = pure_helpers
 
     def visit(self, node: ast.AST) -> ast.AST:
         self.visits[0] += 1
@@ -605,7 +737,9 @@ class _Expander(ast.NodeTransformer):
                 bound.add(extra.arg)
         node.args = self.generic_visit(a)  # type: ignore[assignment]
         inner_env = {k: v for k, v in self.env.items() if k not in bound}
-        node.body = _Expander(inner_env, self.seen, self.depth, self.visits).visit(node.body)
+        node.body = _Expander(
+            inner_env, self.seen, self.depth, self.visits, self.origins, self.pure_helpers
+        ).visit(node.body)
         return node
 
     def visit_Name(self, node: ast.Name) -> ast.AST:  # noqa: N802
@@ -614,20 +748,38 @@ class _Expander(ast.NodeTransformer):
         value = self.env.get(node.id)
         if value is None:
             return node
-        return _Expander(self.env, self.seen | {node.id}, self.depth + 1, self.visits).visit(
-            ast.parse(ast.unparse(value), mode="eval").body
-        )
+        origin = _origin_call(value, self.pure_helpers)
+        if origin is not None:
+            self.origins[node.id] = origin
+            return node
+        return _Expander(
+            self.env, self.seen | {node.id}, self.depth + 1, self.visits, self.origins, self.pure_helpers
+        ).visit(ast.parse(ast.unparse(value), mode="eval").body)
 
 
-def _expand(node: ast.expr, env: Dict[str, ast.expr]) -> ast.expr:
+def _expand(
+    node: ast.expr,
+    env: Dict[str, ast.expr],
+    origins: Optional[Dict[str, str]] = None,
+    pure_helpers: frozenset = frozenset(),
+) -> ast.expr:
     try:
-        return _Expander(env, frozenset(), 0, [0]).visit(ast.parse(ast.unparse(node), mode="eval").body)
+        return _Expander(env, frozenset(), 0, [0], origins, pure_helpers).visit(
+            ast.parse(ast.unparse(node), mode="eval").body
+        )
     except Exception:
         return node
 
 
 def _free_names(node: ast.expr) -> set:
+    """Variable names the expression reads but does not bind.
+
+    A called name is a tool or builtin, not a variable: listing
+    ``spotify_create_playlist_playlists_post`` under "From earlier blocks"
+    sent the verifier to look for it in Variables.
+    """
     bound: set = set()
+    callees = {id(sub.func) for sub in ast.walk(node) if isinstance(sub, ast.Call)}
     for sub in ast.walk(node):
         if isinstance(sub, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             for gen in sub.generators:
@@ -637,7 +789,7 @@ def _free_names(node: ast.expr) -> set:
         elif isinstance(sub, ast.Lambda):
             for arg in sub.args.args:
                 bound.add(arg.arg)
-    return {s.id for s in ast.walk(node) if isinstance(s, ast.Name)} - bound
+    return {s.id for s in ast.walk(node) if isinstance(s, ast.Name) and id(s) not in callees} - bound
 
 
 _BIN_OPS = {
@@ -882,9 +1034,15 @@ def describe_write_arguments(code: Optional[str]) -> str:
     local_names = _bound_names(tree)
     rows: List[str] = []
     unresolved: set = set()
+    helpers = _local_helpers(tree)
+    helper_writes = _helper_writes(helpers, local_names)
+    pure = frozenset(name for name, found in helper_writes.items() if not found)
+    helper_of = {id(fn): name for name, fn in helpers.items()}
 
     write_calls = [
-        node for node in ast.walk(tree) if isinstance(node, ast.Call) and _is_write_call(node, local_names)
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _is_write_call(node, local_names, pure)
     ]
     omitted = 0
 
@@ -898,11 +1056,21 @@ def describe_write_arguments(code: Optional[str]) -> str:
     per_call: List[List[str]] = []
     for node in write_calls:
         name = _call_name(node) or "<call>"
-        env = _env_before(assigns, getattr(node, "lineno", 0), chains.get(id(node), ()), unreliable, shadowed)
+        chain = chains.get(id(node), ())
+        env = _env_before(assigns, getattr(node, "lineno", 0), chain, unreliable, shadowed)
+        # Say how a helper relates to the writes, so its call site is not judged
+        # as an unknown tool and the calls in its body are tied back to it.
+        call_note = ""
+        if isinstance(node.func, ast.Name) and name in helper_writes:
+            call_note = "helper defined in this block; it calls " + ", ".join(sorted(helper_writes[name])[:3])
+        else:
+            enclosing = next((helper_of[id(scope)] for scope in chain if id(scope) in helper_of), None)
+            if enclosing:
+                call_note = f"inside helper {enclosing}"
         args: List[Tuple[str, ast.expr]] = [(kw.arg or "**kwargs", kw.value) for kw in node.keywords]
         args += [(f"arg{i}", value) for i, value in enumerate(node.args)]
         if not args:
-            per_call.append([f"{name}() — no arguments"])
+            per_call.append([f"{name}() — no arguments" + (f"  [{call_note}]" if call_note else "")])
             continue
         call_rows: List[str] = []
         for arg_name, value in args:
@@ -910,7 +1078,8 @@ def describe_write_arguments(code: Optional[str]) -> str:
                 source = ast.unparse(value)
             except Exception:
                 continue
-            expanded = _expand(value, env)
+            origins: Dict[str, str] = {}
+            expanded = _expand(value, env, origins, pure)
             try:
                 expanded_src = ast.unparse(expanded)
             except Exception:
@@ -920,13 +1089,20 @@ def describe_write_arguments(code: Optional[str]) -> str:
                 # Folded values are clipped like unfolded ones. A long string
                 # literal in a write (an email body, a note) otherwise became one
                 # uncapped row; measured at 6,021 chars for a 3,000-char literal.
-                call_rows.append(f"{name}({arg_name}=) -> {_clip(str(folded))}")
+                row = f"{name}({arg_name}=) -> {_clip(str(folded))}"
             elif expanded_src != source:
-                call_rows.append(f"{name}({arg_name}=) -> {_clip(expanded_src)}")
+                row = f"{name}({arg_name}=) -> {_clip(expanded_src)}"
                 unresolved |= _free_names(expanded) - set(_FOLD_NAMESPACE)
             else:
-                call_rows.append(f"{name}({arg_name}=) -> {_clip(source)}")
+                row = f"{name}({arg_name}=) -> {_clip(source)}"
                 unresolved |= _free_names(value) - set(_FOLD_NAMESPACE)
+            notes = [
+                f"{var}: from the result of {call} earlier in this block"
+                for var, call in sorted(origins.items())[:3]
+            ]
+            if call_note:
+                notes.append(call_note)
+            call_rows.append(row + (f"  [{'; '.join(notes)}]" if notes else ""))
         per_call.append(call_rows)
 
     # Select round-robin, emit grouped. Selection decides *which* rows fit;

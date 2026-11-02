@@ -48,7 +48,7 @@ def test_publish_syncs_draft_with_published_knowledge_flags(monkeypatch):
         tools_include_version=0,
     )
 
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     response = client.post(
         "/api/manage/config",
         params={"agent_id": "cuga-default"},
@@ -91,7 +91,7 @@ def test_publish_syncs_draft_with_published_agent_level_disabled(monkeypatch):
         tools_include_version=0,
     )
 
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     response = client.post(
         "/api/manage/config",
         params={"agent_id": "cuga-default"},
@@ -202,7 +202,7 @@ def test_publish_defers_flip_when_reindex_started(monkeypatch):
         tools_include_version=0,
     )
 
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     response = client.post(
         "/api/manage/config",
         params={"agent_id": "test-agent"},

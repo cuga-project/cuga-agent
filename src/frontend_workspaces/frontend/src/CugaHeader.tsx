@@ -1,13 +1,18 @@
 import React, { useState, useEffect, useRef, type ReactNode, type ComponentType } from "react";
 import {
   Header,
-  HeaderContainer,
   HeaderName,
   HeaderNavigation,
   HeaderMenuItem,
   HeaderGlobalBar,
   HeaderGlobalAction,
   HeaderPanel,
+  HeaderMenuButton,
+  SideNav,
+  SideNavItems,
+  SideNavLink,
+  Theme,
+  Button,
 } from "@carbon/react";
 import { Logout, Password, User } from "@carbon/icons-react";
 import { useAuth } from "./AuthContext";
@@ -20,6 +25,7 @@ export interface CugaHeaderNavItem {
   href?: string;
   to?: string;
   onClick?: () => void;
+  current?: boolean;
 }
 
 export interface CugaHeaderAction {
@@ -29,6 +35,8 @@ export interface CugaHeaderAction {
   onClick?: () => void;
   disabled?: boolean;
   className?: string;
+  expanded?: boolean;
+  controls?: string;
 }
 
 export interface CugaHeaderProps {
@@ -62,15 +70,21 @@ export function CugaHeader({
   title,
   prefix,
   agentContext,
-  navItems = [],
+  navItems,
   actions = [],
   linkComponent: LinkComponent,
   onOpenSecrets,
 }: CugaHeaderProps) {
-  const { user: userInfo } = useAuth();
+  const { user: userInfo, isLoading: authLoading, authorizationEnabled } = useAuth();
+  const pathname = window.location.pathname;
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  const navigationRef = useRef<HTMLElement>(null);
+  const profileButtonRef = useRef<HTMLButtonElement>(null);
   const [authEnabled, setAuthEnabled] = useState(false);
   const [userPanelOpen, setUserPanelOpen] = useState(false);
   const [hideLogo, setHideLogo] = useState(true);
+  const [memoryEnabled, setMemoryEnabled] = useState(false);
+  const [studioEnabled, setStudioEnabled] = useState(false);
   const [brandName, setBrandName] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -78,7 +92,7 @@ export function CugaHeader({
     if (!userPanelOpen) return;
     const handler = (e: MouseEvent) => {
       const el = e.target as Node;
-      if (panelRef.current && !panelRef.current.contains(el)) {
+      if (panelRef.current && !panelRef.current.contains(el) && !profileButtonRef.current?.contains(el)) {
         setUserPanelOpen(false);
       }
     };
@@ -87,15 +101,53 @@ export function CugaHeader({
   }, [userPanelOpen]);
 
   useEffect(() => {
+    api.getEventsStatus().then((status) => setStudioEnabled(!!status)).catch(() => {});
     api.getAuthConfig().then((c) => {
       setAuthEnabled(c.enabled);
     }).catch(() => {});
 
     api.getUiConfig().then((c) => {
       setHideLogo(c.hide_cuga_logo);
+      setMemoryEnabled(!!c.evolve_memory_enabled);
       setBrandName(c.brand_name);
     }).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!userPanelOpen) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setUserPanelOpen(false);
+        profileButtonRef.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
+  }, [userPanelOpen]);
+
+  const canManage = !authLoading && (!authorizationEnabled || userInfo === null || userInfo.canManage === true);
+  const routeAgentId = /^\/(?:chat|manage)\/([^/]+)/.exec(pathname)?.[1];
+  const activeAgentId = routeAgentId ?? (agentContext?.agent_id ? encodeURIComponent(agentContext.agent_id) : undefined);
+  const chatPath = activeAgentId && activeAgentId !== "cuga-default" ? `/chat/${activeAgentId}` : "/chat";
+  const inMemory = pathname.startsWith("/chat") && new URLSearchParams(window.location.search).get("view") === "memory";
+  const productNav: CugaHeaderNavItem[] = [
+    { label: "Chat", to: chatPath, current: pathname.startsWith("/chat") && !inMemory },
+    ...(canManage ? [{ label: "Agents", to: "/manage", current: pathname.startsWith("/manage") }] : []),
+    ...(memoryEnabled ? [{ label: "Memory", to: `${chatPath}?view=memory`, current: inMemory }] : []),
+    ...(canManage && studioEnabled ? [{ label: "Studio", to: "/studio", current: pathname === "/studio" }] : []),
+  ];
+  const navigationItems = navItems ?? productNav;
+  const isCurrent = (item: CugaHeaderNavItem) => {
+    if (item.current !== undefined) return item.current;
+    const target = item.to ?? item.href;
+    if (!target) return false;
+    const targetPath = new URL(target, window.location.origin).pathname;
+    return pathname === targetPath || (targetPath !== "/" && pathname.startsWith(`${targetPath}/`));
+  };
+
+  useEffect(() => {
+    if (navigationOpen) navigationRef.current?.querySelector<HTMLAnchorElement>("a")?.focus();
+  }, [navigationOpen]);
 
   const displayTitle = brandName ?? title;
 
@@ -107,14 +159,14 @@ export function CugaHeader({
     const content = item.label;
     if (item.to && LinkComponent) {
       return (
-        <HeaderMenuItem key={item.label} as={LinkComponent as any} to={item.to} onClick={onItemClick}>
+        <HeaderMenuItem isCurrentPage={isCurrent(item)} key={item.label} as={LinkComponent as any} to={item.to} onClick={onItemClick}>
           {content}
         </HeaderMenuItem>
       );
     }
-    if (item.href && !item.onClick) {
+    if ((item.href || item.to) && !item.onClick) {
       return (
-        <HeaderMenuItem key={item.label} href={item.href} onClick={onItemClick}>
+        <HeaderMenuItem isCurrentPage={isCurrent(item)} key={item.label} href={item.href ?? item.to} onClick={onItemClick}>
           {content}
         </HeaderMenuItem>
       );
@@ -131,44 +183,49 @@ export function CugaHeader({
   };
 
   return (
-    <HeaderContainer
-      render={() => (
-        <div className="cuga-header-wrapper">
-          <Header aria-label="CUGA">
-            {!hideLogo && (
-              <a href="/" className="cuga-header-logo" aria-label="Home">
-                <img src="https://avatars.githubusercontent.com/u/230847519?s=200&v=4" alt="" />
-              </a>
-            )}
-            <HeaderName href="/" prefix={prefix ?? ""}>
-              {displayTitle}
-            </HeaderName>
-            <HeaderNavigation aria-label="CUGA">
-              {navItems.map((item) => renderNavItem(item))}
-            </HeaderNavigation>
-            <HeaderGlobalBar>
-              {actions.map((action) => {
-                if (action.href && !action.onClick) {
-                  return (
-                    <a
-                      key={action.label}
-                      href={action.href}
-                      className={`cds--header__global-action ${action.className ?? ""}`.trim()}
-                      aria-label={action.label}
-                      title={action.label}
-                      style={{ display: "flex", alignItems: "center", padding: "0 1rem", color: "inherit", textDecoration: "none" }}
-                    >
-                      {action.icon}
-                    </a>
-                  );
+    <Theme theme="g100" className="cuga-header-wrapper">
+      <Header aria-label="CUGA">
+        {navigationItems.length > 0 && <HeaderMenuButton
+          id="cuga-navigation-toggle"
+          aria-label={navigationOpen ? "Close navigation" : "Open navigation"}
+          isActive={navigationOpen}
+          onClick={() => setNavigationOpen((open) => !open)}
+        />}
+        {!hideLogo && (
+          <a href="/" className="cuga-header-logo" aria-label="Home">
+            <img src="https://avatars.githubusercontent.com/u/230847519?s=200&v=4" alt="" />
+          </a>
+        )}
+        <HeaderName href="/" prefix={prefix ?? ""}>
+          {displayTitle}
+        </HeaderName>
+        <HeaderNavigation aria-label="CUGA">
+          {navigationItems.map((item) => renderNavItem(item))}
+        </HeaderNavigation>
+        <HeaderGlobalBar>
+          {actions.map((action) => {
+            if (action.href && !action.onClick) {
+              return (
+                <a
+                  key={action.label}
+                  href={action.href}
+                  className={`cds--header__global-action ${action.className ?? ""}`.trim()}
+                  aria-label={action.label}
+                  title={action.label}
+                  style={{ display: "flex", alignItems: "center", padding: "0 1rem", color: "inherit", textDecoration: "none" }}
+                >
+                  {action.icon}
+                </a>
+              );
                 }
                 return (
                   <HeaderGlobalAction
                     key={action.label}
                     aria-label={action.label}
-                    title={action.label}
+                    aria-expanded={action.expanded}
+                    aria-controls={action.controls}
                     onClick={action.onClick}
-                    disabled={action.disabled}
+                    {...{ disabled: action.disabled }}
                     className={action.className}
                   >
                     {action.icon}
@@ -178,15 +235,15 @@ export function CugaHeader({
               {!authEnabled && onOpenSecrets && (
                 <HeaderGlobalAction
                   aria-label="Manage Secrets"
-                  title="Manage Secrets"
                   onClick={onOpenSecrets}
                 >
                   <Password size={20} />
                 </HeaderGlobalAction>
               )}
               <HeaderGlobalAction
+                ref={profileButtonRef}
+                aria-controls="cuga-user-panel"
                 aria-label="User profile"
-                title={displayEmail || displayName || "User profile"}
                 isActive={userPanelOpen}
                 aria-expanded={userPanelOpen}
                 onClick={() => setUserPanelOpen((o) => !o)}
@@ -201,8 +258,32 @@ export function CugaHeader({
                 )}
               </HeaderGlobalAction>
             </HeaderGlobalBar>
+        {navigationItems.length > 0 && navigationOpen && <SideNav
+          ref={navigationRef}
+          aria-label="CUGA navigation"
+          expanded={navigationOpen}
+          isPersistent={false}
+          onToggle={(_event, expanded) => {
+            setNavigationOpen(expanded);
+            if (!expanded) document.getElementById("cuga-navigation-toggle")?.focus();
+          }}
+          onOverlayClick={() => setNavigationOpen(false)}
+          onSideNavBlur={() => setNavigationOpen(false)}
+        >
+          <SideNavItems>
+            {navigationItems.map((item) => <SideNavLink
+              key={item.label}
+              {...(LinkComponent && item.to ? { as: LinkComponent as any, to: item.to } : { href: item.to ?? item.href ?? "#" })}
+              isActive={isCurrent(item)}
+              onClick={(event: React.MouseEvent<HTMLAnchorElement>) => {
+                if (item.onClick) { event.preventDefault(); item.onClick(); }
+                setNavigationOpen(false);
+              }}
+            >{item.label}</SideNavLink>)}
+          </SideNavItems>
+        </SideNav>}
           </Header>
-          <div ref={panelRef} className="cuga-user-panel-wrapper">
+          <div id="cuga-user-panel" ref={panelRef} hidden={!userPanelOpen} className="cuga-user-panel-wrapper">
             <HeaderPanel expanded={userPanelOpen} aria-label="User profile">
               <div className="cuga-user-panel">
                 <div className="cuga-user-panel-header">
@@ -235,34 +316,32 @@ export function CugaHeader({
                 <ul className="cuga-user-menu-list">
                   {onOpenSecrets && (
                     <li>
-                      <button
-                        type="button"
+                      <Button
+                        kind="ghost"
                         className="cuga-user-menu-item"
                         onClick={() => { onOpenSecrets(); setUserPanelOpen(false); }}
                       >
                         <Password size={16} />
                         Manage Secrets
-                      </button>
+                      </Button>
                     </li>
                   )}
                   {authEnabled && (
                     <li>
-                      <button
-                        type="button"
+                      <Button
+                        kind="ghost"
                         className="cuga-user-menu-item"
                         onClick={() => auth.logout()}
                       >
                         <Logout size={16} />
                         Sign out
-                      </button>
+                      </Button>
                     </li>
                   )}
                 </ul>
               </div>
             </HeaderPanel>
           </div>
-        </div>
-      )}
-    />
+        </Theme>
   );
 }

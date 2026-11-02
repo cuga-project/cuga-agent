@@ -42,7 +42,8 @@ def test_supported_image_bakes_evolve_for_offline_runtime() -> None:
 
     project = (REPO_ROOT / "pyproject.toml").read_text()
     assert "altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]" in project
-    assert "altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]>=1.7.1,<2" in project
+    assert "altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]>=1.8.0,<2" in project
+    assert 'altk-evolve-core = { git =' not in project
     assert "github.com/AgentToolkit/altk-evolve/archive/" not in project
     assert "--frozen --no-editable --no-dev" in dockerfile
     assert "--group evolve-image" in dockerfile
@@ -238,8 +239,7 @@ def test_preload_evolve_uses_configured_models_without_extra_defaults(override) 
     modules = {
         "altk_evolve.config.guidelines": SimpleNamespace(
             guidelines_settings=SimpleNamespace(
-                consistency_embedding_model_small="BAAI/bge-small-en-v1.5",
-                consistency_embedding_model_large=override or "BAAI/bge-small-en-v1.5",
+                consistency_embedding_model_small=override or "BAAI/bge-small-en-v1.5",
                 consistency_embedding_trust_remote_code=False,
             )
         ),
@@ -252,12 +252,9 @@ def test_preload_evolve_uses_configured_models_without_extra_defaults(override) 
         "altk_evolve.embeddings": SimpleNamespace(
             get_embedding_model=loader,
             EmbeddingSettings=lambda: SimpleNamespace(embedding_provider="fastembed"),
-        ),
-        "altk_evolve.export_embeddings": SimpleNamespace(export_coderank=export),
-        "altk_evolve.embedding_assets": SimpleNamespace(
-            CODERANK_MODEL="nomic-ai/CodeRankEmbed",
             MINILM_MODEL="sentence-transformers/all-MiniLM-L6-v2",
         ),
+        "altk_evolve.export_embeddings": SimpleNamespace(export_coderank=export),
     }
     with patch.dict(sys.modules, modules):
         preload_evolve()
@@ -351,4 +348,18 @@ def test_image_evolve_embedding_settings_match_preloaded_bge(stage, monkeypatch)
     assert postgres.PostgresDBSettings(_env_file=None).embedding_model == expected
     settings = guidelines.GuidelinesSettings(_env_file=None)
     assert settings.consistency_embedding_model_small == expected
-    assert settings.consistency_embedding_model_large == expected
+    assert "EVOLVE_CONSISTENCY_EMBEDDING_MODEL_LARGE" not in env
+
+    # Exercise the preload consumer with the installed Evolve API/settings,
+    # replacing only model loading so this contract check needs no download.
+    from altk_evolve import embeddings
+    from scripts.preload_models import preload_evolve
+
+    monkeypatch.setattr(milvus, "milvus_other_settings", milvus_settings)
+    monkeypatch.setattr(postgres, "postgres_db_settings", postgres.PostgresDBSettings(_env_file=None))
+    monkeypatch.setattr(guidelines, "guidelines_settings", settings)
+    loader = MagicMock()
+    monkeypatch.setattr(embeddings, "get_embedding_model", loader)
+    preload_evolve()
+    loader.assert_called_once_with(expected, trust_remote_code=False)
+    loader.return_value.encode.assert_called_once_with(["airgap warmup"])

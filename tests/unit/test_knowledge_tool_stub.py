@@ -19,6 +19,8 @@ import pytest
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.e2b.e2b_executor import E2BExecutor
 
+pytestmark = pytest.mark.unit
+
 
 class _FakeKnowledgeTool:
     """Mirrors the attributes the wrapper attaches to a real tool."""
@@ -93,16 +95,8 @@ def test_stub_replaces_whitespace_thread_id(executor):
     assert forwarded["thread_id"] == "thread-abc-123"
 
 
-def test_stub_replaces_caller_supplied_thread_id(executor):
-    """A thread_id arriving in kwargs is overwritten, not preserved.
-
-    This test used to assert the opposite — "if the caller supplied a real
-    thread_id, don't second-guess it". That deference was the vulnerability
-    (GHSA-ffh4-qv86-xfxv): the code calling these stubs is model-written, so
-    "the caller" is the model, and honouring its thread_id let one run read and
-    overwrite another session's collection. The stub now scrubs identity out of
-    kwargs and states the run's own thread.
-    """
+def test_stub_overrides_explicit_non_empty_thread_id(executor):
+    """The conversation context must override a model-supplied thread_id."""
     stub = _stub(executor, "knowledge_search_knowledge")
     forwarded = _exec_stub(
         stub,
@@ -190,9 +184,8 @@ def test_stub_invalid_scope_returns_error(executor):
     assert "__called__" not in captured  # short-circuited before HTTP
 
 
-def test_stub_thread_id_block_skipped_when_no_session_scope(executor):
-    """No need to inject thread_id when the engine doesn't even allow
-    session scope — keeps the generated stub minimal."""
+def test_stub_injects_runtime_thread_for_agent_scope_citations(executor):
+    """Agent-scope citations also belong to the runtime conversation."""
 
     class _AgentOnlyTool:
         _knowledge_allowed_scopes = ("agent",)
@@ -200,4 +193,31 @@ def test_stub_thread_id_block_skipped_when_no_session_scope(executor):
         _knowledge_thread_id = "thread-xyz"
 
     stub = executor._serialize_knowledge_tool_stub("knowledge_search_knowledge", _AgentOnlyTool())
-    assert "_existing_tid" not in stub  # no thread_id block at all
+    forwarded = _exec_stub(
+        stub, "knowledge_search_knowledge", args=(), kwargs={"query": "q", "thread_id": "victim"}
+    )
+    assert forwarded["thread_id"] == "thread-xyz"
+
+
+def test_stub_discards_model_thread_without_runtime_context(executor):
+    class _NoThreadTool:
+        _knowledge_allowed_scopes = ("agent",)
+        _knowledge_default_scope = "agent"
+        _knowledge_thread_id = None
+
+    stub = executor._serialize_knowledge_tool_stub("knowledge_search_knowledge", _NoThreadTool())
+    forwarded = _exec_stub(
+        stub, "knowledge_search_knowledge", args=(), kwargs={"query": "q", "thread_id": "victim"}
+    )
+    assert "thread_id" not in forwarded
+
+
+def test_stub_overrides_positional_model_thread(executor):
+    stub = _stub(executor, "knowledge_search_knowledge")
+    forwarded = _exec_stub(
+        stub,
+        "knowledge_search_knowledge",
+        args=("q", "session", 5, 0.0, "agent-id", "victim"),
+        kwargs={},
+    )
+    assert forwarded["thread_id"] == "thread-abc-123"

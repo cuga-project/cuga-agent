@@ -47,6 +47,39 @@ The email of my assistant is jane@example.com"""
     return policy
 
 
+# Services that do not serve the secrets API, so the local-exemption warning does
+# not apply to them.
+_SERVICES_WITHOUT_SECRETS_API = frozenset({"registry", "appworld"})
+
+
+def _warn_if_secrets_unauthenticated(service: str | None = None) -> None:
+    """Print a conspicuous startup warning when the secrets API's local-machine
+    exemption is live (Decision 1 / Option A): auth is off, so any process on this
+    machine can list, create, update, or delete stored secrets with no login."""
+    if service in _SERVICES_WITHOUT_SECRETS_API:
+        return
+    if getattr(getattr(settings, "auth", None), "enabled", False):
+        return
+    # With the local exemption turned off (Decision 1 / Option B) and auth off, no
+    # caller can reach the secrets API, so the "any process can change secrets"
+    # warning would be false.
+    if not getattr(getattr(settings, "auth", None), "allow_local_admin", True):
+        return
+    console.print()
+    console.print(
+        Panel(
+            "[bold white]This is a LOCAL, UNAUTHENTICATED deployment.[/bold white]\n"
+            "Any process on this machine can read and change stored secrets — no login is required.\n"
+            "[bold]Do not use this configuration in production or on a shared/multi-user machine.[/bold]\n"
+            "To require login, set [bold]DYNACONF_AUTH__ENABLED=true[/bold] "
+            "(this also enforces the admin-role check — the two are not separate switches).",
+            title="[bold red]SECURITY[/bold red]",
+            border_style="red",
+        )
+    )
+    console.print()
+
+
 def _demo_uses_ssl() -> bool:
     return bool(os.environ.get("SSL_KEYFILE", "").strip() and os.environ.get("SSL_CERTFILE", "").strip())
 
@@ -177,9 +210,28 @@ def _check_opensandbox_reachable() -> bool:
         return False
 
 
-console = Console()
+def _configure_stream_encoding(stream) -> None:
+    """Prevent Unicode output from crashing on Windows consoles."""
+    reconfigure = getattr(stream, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        pass
 
-os.environ["DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED"] = "true"
+
+def _configure_console_encoding() -> None:
+    """Configure Windows standard streams for Unicode output."""
+    if os.name != "nt":
+        return
+    _configure_stream_encoding(sys.stdout)
+    _configure_stream_encoding(sys.stderr)
+
+
+_configure_console_encoding()
+
+console = Console()
 
 app = typer.Typer(
     help="Cuga CLI for managing services with direct execution",
@@ -596,6 +648,12 @@ def run_direct_service(
 
 def wait_for_direct_processes():
     """Wait for all direct processes to complete or be interrupted."""
+    # Every service path prints its ready panel and then blocks here, so this is the one
+    # place a footer under that panel reaches all of them. Skipped when output isn't a TTY.
+    if console.is_terminal:
+        console.print(
+            "[dim]⭐ Enjoying CUGA? Star it on GitHub: https://github.com/cuga-project/cuga-agent[/dim]"
+        )
     try:
         while direct_processes and not shutdown_event.is_set():
             # Check if any process has terminated
@@ -618,6 +676,28 @@ def wait_for_direct_processes():
         logger.info("Interrupted by user")
     finally:
         stop_direct_processes()
+
+
+def wait_for_direct_process(service_name: str) -> Optional[int]:
+    """Wait for one direct process to exit, then stop the others.
+
+    Returns the exit code of that process, or None if it was not running
+    or the wait was interrupted.
+    """
+    process = direct_processes.get(service_name)
+    return_code = None
+    try:
+        while process is not None and not shutdown_event.is_set():
+            return_code = process.poll()
+            if return_code is not None:
+                logger.info(f"{service_name} has terminated")
+                break
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+    finally:
+        stop_direct_processes()
+    return return_code
 
 
 @app.callback()
@@ -861,7 +941,7 @@ def _resolve_apps(
 def start(
     service: str = typer.Argument(
         ...,
-        help="Service to start: demo, demo_skills, demo_knowledge, demo_crm, demo_docs, demo_health, demo_supervisor, manager, registry, or appworld",
+        help="Service to start: demo, demo_skills, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, travel_agent, manager, registry, or appworld",
     ),
     host: str = typer.Option(
         "127.0.0.1",
@@ -1144,6 +1224,7 @@ def start(
       cuga start appworld                 # AppWorld servers
     """
     validate_service(service)
+    _warn_if_secrets_unauthenticated(service)
 
     if (reset or hard_reset) and service != "demo_knowledge":
         logger.warning(
@@ -2015,7 +2096,7 @@ def manage_service(action: str, service: str):
 def stop(
     service: str = typer.Argument(
         ...,
-        help="Service to stop: demo, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, travel_agent, registry, or appworld",
+        help="Service to stop: demo, demo_skills, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, travel_agent, manager, registry, or appworld",
     ),
 ):
     """
@@ -2073,7 +2154,7 @@ def viz():
 def status(
     service: str = typer.Argument(
         "all",
-        help="Service to check status: demo, demo_crm, demo_docs, demo_health, demo_supervisor, travel_agent, registry, appworld, or all",
+        help="Service to check status: demo, demo_skills, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, travel_agent, manager, registry, appworld, or all",
     ),
 ):
     """
@@ -2082,6 +2163,7 @@ def status(
     Available services:
       - demo: Shows status of both registry and demo agent (direct processes)
       - demo_skills: Same as demo
+      - demo_knowledge: Same as demo
       - demo_crm: Shows status of all CRM demo services (email sink, email MCP, CRM API, registry, demo)
       - demo_docs: Shows docs MCP, registry, and demo
       - demo_health: Shows oak-health API, registry, and demo
@@ -2099,7 +2181,7 @@ def status(
       cuga status registry     # Show status of registry only
       cuga status appworld     # Show status of AppWorld servers
     """
-    if service in ("demo", "demo_skills", "manager", "travel_agent"):
+    if service in ("demo", "demo_skills", "demo_knowledge", "manager", "travel_agent"):
         for service_name in ["registry", "demo"]:
             if service_name in direct_processes:
                 process = direct_processes[service_name]
@@ -2402,6 +2484,8 @@ def evaluate(
     Run Cuga on your test cases.
     """
     # start the registry
+    evaluation_exit_code = None
+    evaluation_process = None
     try:
         run_direct_service(
             "registry",
@@ -2433,7 +2517,7 @@ def evaluate(
             wait_for_registry_server(settings.server_ports.registry)
 
             # Then start demo - using explicit fastapi command
-            run_direct_service(
+            evaluation_process = run_direct_service(
                 "evaluation",
                 [
                     "uv",
@@ -2448,12 +2532,19 @@ def evaluate(
                     output_file_path,
                 ],
             )
-        wait_for_direct_processes()
+        # The registry never exits on its own, so wait for the evaluation only.
+        evaluation_exit_code = wait_for_direct_process("evaluation")
+        if evaluation_process is None:
+            # The evaluation never started, so a None exit code is not success.
+            logger.error("Evaluation process failed to start")
+            evaluation_exit_code = 1
 
     except Exception as e:
         logger.error(f"Error starting registry service: {e}")
         stop_direct_processes()
         raise typer.Exit(1)
+    if evaluation_exit_code:
+        raise typer.Exit(evaluation_exit_code)
     return
 
 

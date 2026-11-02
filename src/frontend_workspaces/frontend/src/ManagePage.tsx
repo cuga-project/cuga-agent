@@ -1,3 +1,4 @@
+import { ContentSkeleton, AsyncButton } from "agentic_chat/LoadingState";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useParams, useLocation } from "react-router-dom";
 import * as api from "./api";
@@ -58,6 +59,7 @@ import KnowledgePanel from "agentic_chat/KnowledgePanel";
 import VariablesSidebar from "agentic_chat/VariablesSidebar";
 import { ToolsConfig, type ConnectedApp, type ConnectedTool } from "./ToolsConfig";
 import { SecretsManager } from "./SecretsManager";
+import { SandboxSettings } from "./manage/SandboxSettings";
 import type { ToolEntry } from "./types/tools";
 import type { AgentItem } from "./ManageDashboard";
 import type { KnowledgeAttachmentSnapshot } from "./knowledge/useSessionKnowledgeAttachments";
@@ -467,9 +469,15 @@ export function ManagePage() {
   const [policies, setPolicies] = useState<NonNullable<AgentConfig["policies"]>>(DEFAULT_CONFIG.policies ?? { enablePolicies: true, policies: [] });
   const [history, setHistory] = useState<ConfigVersion[]>([]);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
-  // Events Studio entry — shown only when the events SERVICE answers (see getEventsStatus).
-  const [studioOn, setStudioOn] = useState(false);
-  useEffect(() => { api.getEventsStatus().then((s) => setStudioOn(!!s)).catch(() => {}); }, []);
+  // Code Sandbox section — shown only when the deployment provides a sandbox (the binding is mounted).
+  const [sandboxOn, setSandboxOn] = useState(false);
+  useEffect(() => {
+    api
+      .getSandboxSettings()
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s: api.SandboxSettingsStatus | null) => setSandboxOn(!!s?.available))
+      .catch(() => {});
+  }, []);
   // Live-config truth anchor. Sourced from GET /api/manage/config
   // (published=true) on mount and after every successful Publish — never
   // from optimistic client state. The pill in the header reads this so
@@ -490,6 +498,7 @@ export function ManagePage() {
       metric_type?: string;
     } | null
   >(null);
+  const [configLoading, setConfigLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
   const [showPoliciesModal, setShowPoliciesModal] = useState(false);
@@ -772,6 +781,8 @@ export function ManagePage() {
   }, [addToast]);
 
   const loadLatest = useCallback(async () => {
+    setConfigLoading(true);
+    setLoadError(null);
     const agentId = effectiveAgentId;
     const gen = ++loadLatestGenRef.current;
     const isStale = () => gen !== loadLatestGenRef.current || agentId !== effectiveAgentIdRef.current;
@@ -779,7 +790,7 @@ export function ManagePage() {
       skipDraftSaveRef.current = true;
       const [draftRes, toolsListRes] = await Promise.all([
         api.getManageConfig(true, agentId),
-        api.getToolsList(true),
+        api.getToolsList(true, agentId),
       ]);
       if (isStale()) return;
 
@@ -944,6 +955,8 @@ export function ManagePage() {
       setLoadError(errorMsg);
       addToast("error", "Load Error", errorMsg);
       skipDraftSaveRef.current = false;
+    } finally {
+      if (!isStale()) setConfigLoading(false);
     }
   }, [normalizeTools, addToast, effectiveAgentId]);
 
@@ -1104,14 +1117,13 @@ export function ManagePage() {
       const c: AgentConfig = {
         agent: { name: agentName, description: agentDescription || undefined, kind: agentKind },
         supervisor: agentKind === "supervisor" ? { subAgents, planApproval, _saveSeq: supervisorSaveSeqRef.current } : undefined,
-        // Supervisors have no LLM section in this UI (they use the environment's default
-        // model) — omit it so a stale DEFAULT_CONFIG.llm placeholder never gets saved and
-        // mistakenly overrides that default (see main.py's _resolve_stream_agent guard).
-        llm: agentKind === "supervisor" ? undefined : llmConfig,
+        // Preserve a model imported for a supervisor, while omitting the empty
+        // editor placeholder so environment defaults still apply.
+        llm: agentKind === "supervisor" && !llmConfig.model?.trim() ? undefined : llmConfig,
         tools: tools,
         feature_flags: featureFlags,
         homescreen,
-        special_instructions: specialInstructions || undefined,
+        special_instructions: specialInstructions,
         policies,
         knowledge: knowledgeConfig,
       };
@@ -1536,20 +1548,19 @@ export function ManagePage() {
       <CugaHeader
         title="CUGA Agent"
         agentContext={agentContext ?? undefined}
-        navItems={[
-          { label: "Agents", to: `/manage${search}` },
-          { label: "Chat", to: `/chat/${encodeURIComponent(effectiveAgentId)}` },
-          ...(studioOn ? [{ label: "Events Studio ⚗", to: "/studio" }] : []),
-        ]}
         linkComponent={Link}
         onOpenSecrets={() => setSecretsModalOpen(true)}
       />
 
-      <div className="manage-layout">
+      <div role="main" id="main-content" tabIndex={-1} className="manage-layout">
         <div className="manage-config-panel">
+          <div className="manage-config-panel-heading">
+            <p>Configuration</p>
+            <h1>{configLoading ? "Agent configuration" : agentName || effectiveAgentId}</h1>
+          </div>
           <div className="manage-config-scroll">
             <Layer withBackground>
-            <Accordion align="start" size="md">
+            {configLoading ? <ContentSkeleton label="Loading agent configuration…" rows={6} /> : loadError ? <Stack gap={4}><InlineNotification kind="error" title="Load Error" subtitle={loadError} lowContrast hideCloseButton /><Button kind="tertiary" onClick={() => void loadLatest()}>Retry</Button></Stack> : <Accordion align="start" size="md">
               <AccordionItem title="Agent" open>
                 <VStack gap={5}>
                   <FormGroup legendText="Name (required)" className="manage-agent-name-group">
@@ -1920,7 +1931,7 @@ export function ManagePage() {
                             }
                           }}
                         >
-                          {llmModelsLoading ? "Loading…" : "List models"}
+                          List models
                         </Button>
                       </div>
                       {llmModelsLoading && <InlineLoading description="Fetching models…" />}
@@ -2143,6 +2154,15 @@ export function ManagePage() {
               </AccordionItem>
               )}
 
+              {sandboxOn && (
+              <AccordionItem title="Code Sandbox (experimental)">
+                <SandboxSettings
+                  onError={(title, message) => addToast("error", title, message)}
+                  onSaved={(message) => addToast("success", "Code sandbox", message)}
+                />
+              </AccordionItem>
+              )}
+
               {agentKind !== "supervisor" && (
               <AccordionItem title="Tools" open>
                   <ToolsConfig
@@ -2161,7 +2181,7 @@ export function ManagePage() {
               {agentContext?.skills_enabled ? (
               <AccordionItem title="Skills">
                 {skillsLoading ? (
-                  <InlineLoading description="Loading skills…" />
+                  <ContentSkeleton label="Loading skills…" />
                 ) : skills.length === 0 ? (
                   <p className="cds--type-body-compact-01" style={{ color: "var(--cds-text-secondary)" }}>
                     No skills found. Add SKILL.md files under <code>.cuga/skills/</code> (default) or set <code>[skills] root</code> in settings.toml.
@@ -2262,7 +2282,7 @@ export function ManagePage() {
                         onClick={() => performDraftSave()}
                         disabled={draftSaving}
                       >
-                        {draftSaving ? "Saving…" : "Save welcome screen"}
+                        Save welcome screen
                       </Button>
                     </Stack>
                   </VStack>
@@ -2336,7 +2356,7 @@ export function ManagePage() {
                         onClick={() => performDraftSave()}
                         disabled={draftSaving}
                       >
-                        {draftSaving ? "Saving…" : "Save Flags"}
+                        Save Flags
                       </Button>
                     </Stack>
                   </VStack>
@@ -2503,7 +2523,7 @@ export function ManagePage() {
                     </Stack>
                   )}
               </AccordionItem>
-            </Accordion>
+            </Accordion>}
             </Layer>
 </div>
               <Layer withBackground className="manage-save-bar">
@@ -2525,18 +2545,17 @@ export function ManagePage() {
                     >
                       Import
                     </Button>
-                    <Button
-                      kind="primary"
+                    <AsyncButton
+                      kind="primary" busy={saveStatus === "saving"} busyLabel="Publishing…"
                       renderIcon={Save}
                       onClick={handleSaveClick}
-                      disabled={saveStatus === "saving"}
+                      disabled={saveStatus === "saving" || configLoading || !!loadError}
                       className="manage-save-bar-button"
                     >
-                      {saveStatus === "idle" && "Publish"}
-                      {saveStatus === "saving" && "Publishing…"}
+                      {(saveStatus === "idle" || saveStatus === "saving") && "Publish"}
                       {saveStatus === "success" && "Published"}
                       {saveStatus === "error" && "Error"}
-                    </Button>
+                    </AsyncButton>
                   </div>
                   {(loadError || currentVersion != null || importStatus !== "idle" || draftSaving) && (
                     <div className="manage-save-bar-status">
@@ -2626,7 +2645,8 @@ export function ManagePage() {
         <Layer withBackground className="manage-chat-panel">
           <p className="manage-chat-label">Try your configuration</p>
           <div className="manage-chat-wrap">
-            <CarbonChat
+            {configLoading ? <ContentSkeleton kind="chat" label="Loading agent preview…" /> : <CarbonChat
+              agentId={effectiveAgentId}
               contained={true}
               useDraft={true}
               attachmentScope="agent"
@@ -2638,7 +2658,7 @@ export function ManagePage() {
               onSessionDocsChanged={() => handleKnowledgeDocsChanged()}
               onOpenKnowledge={() => setShowKnowledgeModal(true)}
               onPreviewKnowledgeAttachment={handlePreviewKnowledgeAttachment}
-            />
+            />}
           </div>
         </Layer>
       </div>

@@ -21,7 +21,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionRouter
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
-from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor, CodeExecutionTimeout
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.acp_client.pending import (
     PendingACPDelegationRegistryFinalizedCancelled,
@@ -390,6 +390,10 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                 apps_list=None,
                 variable_manager=var_manager,
                 plan=exec_plan,
+                # Delegation closures invoke live host-side agents. Each child
+                # still selects its own configured Python execution backend.
+                mode="local",
+                execution_timeout=getattr(settings.supervisor, "delegation_execution_timeout", 300),
             )
 
             logger.debug(f"Execution output: {output.strip()[:500]}...")
@@ -435,6 +439,17 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                 if todo_state_update is not None:
                     base_update["task_todos"] = todo_state_update
             return base_update
+        except CodeExecutionTimeout:
+            error = AIMessage(
+                content="Supervisor delegation timed out. The delegated task did not finish within the configured time limit; no new answer was produced. Please retry or increase the supervisor delegation timeout."
+            )
+            updated_messages, _ = append(state, [error])
+            return create_error(
+                updated_messages,
+                error,
+                state.step_count,
+                additional_updates={**_budget_updates(), **_delegation_state_update(state)},
+            )
         except ACPPermissionPause as exc:
             return _create_acp_permission_command(state, exc, adapter.get_metadata(state) or {})
         except Exception as exc:

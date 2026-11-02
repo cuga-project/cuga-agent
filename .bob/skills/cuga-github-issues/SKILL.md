@@ -3,9 +3,9 @@ name: cuga-github-issues
 description: >-
   Create GitHub issues for cuga-agent (bugs, features, epics, designs, and related
   work) against origin using gh, with epic → feature → issue hierarchy and
-  GraphQL sub-issue linking. Use when the user says create new issues, report a
-  bug, file a bug, feature request, new feature, create an epic, GitHub issue,
-  sub-issue, or parent epic.
+  GraphQL sub-issue linking, and the required design-impact and area labels. Use
+  when the user says create new issues, report a bug, file a bug, feature request,
+  new feature, create an epic, GitHub issue, sub-issue, or parent epic.
 ---
 
 # CUGA GitHub issues
@@ -19,10 +19,14 @@ File issues against **origin** upstream with `gh`. Read companions as needed:
 
 1. Use upstream `origin` (not a fork-only default). Pass `--repo owner/name` when needed.
 2. Run `gh label list` for that repo. Only use label names that exist. Never invent labels.
-3. No promotional footers (“Made with Cursor”, etc.).
-4. Hierarchy depth is only: **Epic → Feature → Issue**. Never nest under a leaf issue. Never Feature → Feature. Never deeper than three levels.
-5. When parented: put `Part of #<number>.` at the top of the body, create the issue, then link with GraphQL `addSubIssue`. Body text alone is not enough. Verify parent afterward.
-6. Do not use unsupported `gh issue edit --set-parent`.
+3. **Labels (MUST).** Every issue you create gets exactly one `design-impact:` label and one `area:` label per area
+   the work changes, chosen with [../cuga-contributor-workflows/labels.md](../cuga-contributor-workflows/labels.md).
+   They come in addition to the type labels below (`bug`, `enhancement`, `needs-triage`, `type: epic`). Do not
+   create the issue without them.
+4. No promotional footers (“Made with Cursor”, etc.).
+5. Hierarchy depth is only: **Epic → Feature → Issue**. Never nest under a leaf issue. Never Feature → Feature. Never deeper than three levels.
+6. When parented: put `Part of #<number>.` at the top of the body, create the issue, then link with GraphQL `addSubIssue`. Body text alone is not enough. Verify parent afterward.
+7. Do not use unsupported `gh issue edit --set-parent`.
 
 ## Detect intent
 
@@ -55,7 +59,7 @@ List sub-issues of the candidate epic; prefer children whose titles start with `
 
 1. No parent search.
 2. Title: `[Epic] …` (or `[Epic]: …` if matching existing style in the repo).
-3. Labels: include `type: epic` plus other applicable existing labels.
+3. Labels: include `type: epic` plus the `design-impact:` and `area:` labels for the whole workstream (shared rule 3).
 4. Prefer REST create with `type=Epic` (see companion).
 5. Body: summary of the workstream and what child features will cover. Use feature-request sections where useful ([templates.md](templates.md)).
 
@@ -65,7 +69,7 @@ Non-bug work that is not itself an epic (`[Feature]`, `[Design]`, `[Refactor]`, 
 
 1. Parent **Epic is required**. Do not create with no parent.
 2. Confirm epic via placement rules above.
-3. Labels: always `--label needs-triage` plus other applicable existing labels (e.g. `enhancement`).
+3. Labels: always `--label needs-triage` plus other applicable existing labels (e.g. `enhancement`), plus the `design-impact:` and `area:` labels (shared rule 3).
 4. Title prefix from the table in [templates.md](templates.md).
 5. Body sections from `feature_request.yml` ([templates.md](templates.md)).
 6. Create, `addSubIssue` under the epic, verify.
@@ -81,7 +85,7 @@ Use when the user wants a sub-issue of an existing feature (bug/chore/task scope
 
 ## Create bug
 
-1. Labels: `--label bug` plus other applicable existing labels (template also uses `needs-triage` when present in the repo).
+1. Labels: `--label bug` plus other applicable existing labels (template also uses `needs-triage` when present in the repo), plus the `design-impact:` and `area:` labels (shared rule 3).
 2. Title prefix: `[Bug]: …`
 3. Body sections from `bug_report.yml` ([templates.md](templates.md)).
 4. Placement:
@@ -99,6 +103,7 @@ Use when the user wants a sub-issue of an existing feature (bug/chore/task scope
 
 - [ ] Correct upstream repo
 - [ ] Labels exist in `gh label list`
+- [ ] One `design-impact:` label and the `area:` labels set per [labels.md](../cuga-contributor-workflows/labels.md)
 - [ ] Hierarchy depth respected
 - [ ] Template sections filled from user/context
 - [ ] `addSubIssue` + parent verified when parented

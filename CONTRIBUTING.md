@@ -136,13 +136,9 @@ We provide specific PR templates to help you create well-structured pull request
 - **Documentation PRs**: `?template=docs.md` - For documentation updates and improvements
 - **Chore PRs**: `?template=chore.md` - For maintenance tasks, dependency updates, and refactoring
 
-Each template includes:
-- Related issue linking
-- Type of changes checkboxes
-- Testing checklist
-- Standard review checklist
-
-GitHub will also automatically suggest these templates when you create a new pull request.
+Each template is short: a line to link the issue it closes (`Closes #` / `Fixes #`), a **Summary**
+section, and, for features and bug fixes, a one-item testing checklist. GitHub does not offer these
+automatically; add the `?template=…` parameter above to the "open a pull request" URL to use one.
 
 ### Pre-PR Checklist (run locally)
 
@@ -233,10 +229,12 @@ If you are working in an AI-assisted IDE or using an AI agent (Cursor, Claude, B
 
 | Skill | What it does |
 |---|---|
-| `cuga-github-issues` | Creates GitHub issues (bugs, features, epics, and related work) with epic → feature → issue hierarchy and `gh` sub-issue linking |
-| `cuga-contributor-workflows` | Commit (Conventional Commits), create PRs via `gh` + PR templates, and run `uv run ruff check --fix` / `ruff format` |
+| `cuga-github-issues` | Creates GitHub issues (bugs, features, epics, and related work) with epic → feature → issue hierarchy, `gh` sub-issue linking, and the required `design-impact:` and `area:` labels |
+| `cuga-contributor-workflows` | Commit (Conventional Commits), push, create PRs via `gh` + PR templates, run `uv run ruff check --fix` / `ruff format`, and set the required labels |
 
-These skills follow repo conventions (Conventional Commits, `gh` CLI, no promotional footers). Agents should load them when you ask to create issues/bugs/features/epics, commit, open a PR, or run ruff.
+These skills follow repo conventions (Conventional Commits, `gh` CLI, no promotional footers). Agents should load them when you ask to create issues/bugs/features/epics, commit, push, open a PR, or run ruff.
+
+**Labels are required.** Before every push to a branch with a pull request, before opening a pull request, and when creating an issue, set the `design-impact:`, `area:`, and (for pull requests) `readability:` labels with the rules in [`labels.md`](.claude/skills/cuga-contributor-workflows/labels.md). CodeRabbit does not set these labels.
 
 ## IDE Setup Quick Links
 

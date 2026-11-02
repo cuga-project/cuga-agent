@@ -53,7 +53,9 @@ fi
 WHEEL="${wheels[0]}"
 echo "==> Wheel: $WHEEL"
 
-WORK_DIR="$(mktemp -d /tmp/cuga-pip-smoke.XXXXXX)"
+# Honor TMPDIR: CI points it at $RUNNER_TEMP, which shares a filesystem with the uv
+# cache (hardlinks, no copy). /tmp on ubuntu-26.04 runners has a quota too small for torch.
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cuga-pip-smoke.XXXXXX")"
 cleanup() {
   if [[ "${KEEP_WORK_DIR:-0}" == "1" ]]; then
     echo "==> Kept work dir: $WORK_DIR"
