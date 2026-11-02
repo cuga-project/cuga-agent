@@ -151,7 +151,7 @@ async def create_update_todos_tool(
             "'Current task todos' (Current Plan). This list is your own private scratchpad: it is "
             "not a connected application, is never shown to the user, and never needs to be "
             "mirrored anywhere. Do not create, complete, or sync these items in a real task "
-            "manager (Todoist, Simple Note, or any other app), and never match your own todo "
+            "manager, notes app, or any other app, and never match your own todo "
             "titles against records in a connected app. Tasks that live in a connected app are "
             "only in scope when the user's request refers to them."
         ),
