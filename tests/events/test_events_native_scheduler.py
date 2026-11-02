@@ -181,6 +181,12 @@ def test_cron_errors_name_the_field_and_the_fix():
         ns.next_cron("@daily", now)
     with pytest.raises(ValueError, match="out of range"):
         ns.next_cron("0 60 * * *", now)
+    # a matching early list entry must not hide a malformed later one
+    with pytest.raises(ValueError, match="out of range"):
+        ns.next_cron("0,60 9 * * 1", now)
+    # int() accepts underscores; a cron number must be digits only
+    with pytest.raises(ValueError, match="not a number"):
+        ns.next_cron("1_0 * * * *", now)
     assert ns.next_cron("0 9 * * 1-5", now) > now
     assert ns.next_cron("0 9 * * 7", now) > now
 

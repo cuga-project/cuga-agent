@@ -36,25 +36,26 @@ def enabled() -> bool:
 # ── standard cron (minute hour day-of-month month day-of-week) ─────────────────────────────────────
 def _num(s: str, spec: str) -> int:
     """One number inside a cron field, with an error that says what to write instead."""
-    try:
-        return int(s)
-    except ValueError:
+    if not (s.isascii() and s.isdigit()):
         raise ValueError(
             f"cron field {spec!r} has {s!r}, which is not a number; use numbers only (e.g. 1 for MON or JAN)"
-        ) from None
+        )
+    return int(s)
 
 
-def _field_matches(spec: str, value: int, lo: int, hi: int) -> bool:
-    """Does ``value`` match one cron field? Supports '*', 'a', 'a-b', 'a,b,c', '*/n', 'a-b/n'."""
+def _parts(spec: str, lo: int, hi: int):
+    """Yield (start, end, step) for every comma-separated entry, validating each one.
+
+    ``*/0`` is not a schedule — it used to reach the modulo in ``_field_matches`` and raise
+    ZeroDivisionError from deep inside the tick. Refuse it here, as a ValueError like every other
+    malformed field, so it is rejected when the expression is first parsed rather than exploding the
+    first time the row comes due.
+    """
     for part in spec.split(","):
         step = 1
         if "/" in part:
             part, step_s = part.split("/", 1)
             step = _num(step_s, spec)
-            # `*/0` is not a schedule — it used to reach the modulo below and raise
-            # ZeroDivisionError from deep inside the tick. Refuse it here, as a ValueError like
-            # every other malformed field, so it is rejected when the expression is first parsed
-            # rather than exploding the first time the row comes due.
             if step <= 0:
                 raise ValueError(f"cron step must be positive, got {step!r} in {spec!r}")
         if part == "*":
@@ -66,9 +67,20 @@ def _field_matches(spec: str, value: int, lo: int, hi: int) -> bool:
             start = end = _num(part, spec)
         if not (lo <= start <= hi and lo <= end <= hi):
             raise ValueError(f"cron field {spec!r} is out of range; allowed values are {lo}-{hi}")
-        if start <= value <= end and (value - start) % step == 0:
-            return True
-    return False
+        yield start, end, step
+
+
+def _validate_field(spec: str, lo: int, hi: int) -> None:
+    """Parse every entry in one field up front so no malformed part hides behind a matching one."""
+    for _ in _parts(spec, lo, hi):
+        pass
+
+
+def _field_matches(spec: str, value: int, lo: int, hi: int) -> bool:
+    """Does ``value`` match one cron field? Supports '*', 'a', 'a-b', 'a,b,c', '*/n', 'a-b/n'."""
+    return any(
+        start <= value <= end and (value - start) % step == 0 for start, end, step in _parts(spec, lo, hi)
+    )
 
 
 def _matches(expr: str, t: time.struct_time) -> bool:
@@ -96,6 +108,10 @@ def next_cron(expr: str, after: float) -> float:
             f"cron {expr!r} has {len(fields)} field(s); it needs exactly 5: "
             "minute hour day-of-month month day-of-week (macros like @daily are not supported)"
         )
+    # Validate every field and list entry before scanning: a matching early entry must not hide a
+    # malformed later one (e.g. '0,60 9 * * 1'), or the subscription would only fail on reschedule.
+    for spec, lo, hi in zip(fields, (0, 0, 1, 1, 0), (59, 23, 31, 12, 7)):
+        _validate_field(spec, lo, hi)
     # start at the next whole minute after `after`
     t = int(after) - (int(after) % 60) + 60
     for _ in range(366 * 24 * 60):
