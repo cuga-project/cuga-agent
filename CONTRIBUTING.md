@@ -290,3 +290,8 @@ For local development and testing:
 1. Open VS Code's Run and Debug panel
 2. Select the desired configuration from the dropdown
 3. Start debugging
+## Frontend design and implementation
+
+Follow the [frontend development rules](src/frontend_workspaces/AGENTS.md) for the
+shared IBM Carbon experience, asynchronous states, accessibility, and production
+build verification. These rules apply to frontend features and conflict resolutions.

@@ -1,5 +1,5 @@
 import { AsyncButton, useModalClose } from "agentic_chat/LoadingState";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useId } from "react";
 import {
   ComposedModal,
   ModalHeader,
@@ -13,13 +13,12 @@ import {
   FormGroup,
   Select,
   SelectItem,
-  Tile,
   ClickableTile,
   Checkbox,
 } from "@carbon/react";
-import { Template, Folder } from "@carbon/icons-react";
-import type { ToolEntry, ToolAuth, AuthType } from "./types/tools";
-import { AUTH_TYPE_OPTIONS } from "./types/tools";
+import { Template, Folder, Connect } from "@carbon/icons-react";
+import type { ToolEntry, ToolAuth, AuthType, GatewayServer, GatewayRunAs, GatewayToolDef } from "./types/tools";
+import { AUTH_TYPE_OPTIONS, parseGatewayInstanceUrl } from "./types/tools";
 import * as api from "./api";
 import "./AddToolModal.css";
 
@@ -28,11 +27,17 @@ interface AddToolModalProps {
   onSave: (tool: ToolEntry) => void;
   initial?: ToolEntry | null;
   agentId?: string;
+  /** Open as the dedicated MCP gateway form (no templates, type or connection choice). */
+  gatewayOnly?: boolean;
+  launcherButtonRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
 const emptyAuth: ToolAuth = { type: "none" };
 
-type McpConnectionMode = "url" | "url-http" | "command";
+type McpConnectionMode = "url" | "url-http" | "command" | "gateway";
+
+const GATEWAY_AUTH_TYPE: AuthType = "account_iam_apikey";
+const SECRET_REF_PREFIXES = ["db://", "vault://", "aws://"];
 
 // Pre-configured tool templates
 interface ToolTemplate {
@@ -44,6 +49,19 @@ interface ToolTemplate {
 }
 
 const TOOL_TEMPLATES: ToolTemplate[] = [
+  {
+    id: "mcp_gateway",
+    name: "MCP Gateway instance",
+    description: "Connect workspace tools as a signed-in user or service ID",
+    icon: Connect,
+    config: {
+      name: "",
+      type: "mcp",
+      mcpMode: "gateway",
+      description: "Tools from the MCP gateway",
+      transport: "http",
+    },
+  },
   {
     id: "filesystem",
     name: "Filesystem",
@@ -99,7 +117,7 @@ function initFromTool(initial: ToolEntry | null | undefined) {
   return {
     name: initial?.name ?? "",
     type: (initial?.type ?? "mcp") as "mcp" | "openapi",
-    mcpMode: (hasCmd ? "command" : transport === "http" ? "url-http" : "url") as McpConnectionMode,
+    mcpMode: (initial?.gateway ? "gateway" : hasCmd ? "command" : transport === "http" ? "url-http" : "url") as McpConnectionMode,
     url: initial?.url ?? "",
     command: initial?.command ?? "",
     argsText: (initial?.args ?? []).join("\n"),
@@ -107,15 +125,31 @@ function initFromTool(initial: ToolEntry | null | undefined) {
     authType: (!auth.type || auth.type === "none" ? "none" : auth.type) as AuthType,
     authKey: auth.key ?? "",
     authValue: val,
-    useSavedSecret: typeof val === "string" && (val.startsWith("db://") || val.startsWith("vault://") || val.startsWith("aws://")),
+    useSavedSecret: typeof val === "string" && SECRET_REF_PREFIXES.some((p) => val.startsWith(p)),
   };
 }
 
-export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModalProps) {
+export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly, launcherButtonRef }: AddToolModalProps) {
+  const formId = useId();
+  const modalElement = useRef<HTMLDivElement | null>(null);
+  const fallbackLauncher = useRef<HTMLElement | null>(typeof document === "undefined" ? null : document.activeElement as HTMLElement);
+  useEffect(() => () => {
+    // Callers unmount this dialog on close, so Carbon never receives open=false.
+    // Return focus after the modal is removed, including browsers that do not
+    // focus pointer-activated buttons automatically.
+    const launcher = launcherButtonRef?.current ?? fallbackLauncher.current;
+    requestAnimationFrame(() => {
+      if (!modalElement.current?.isConnected && launcher?.isConnected) launcher.focus();
+    });
+  }, [launcherButtonRef]);
   const init = initFromTool(initial);
+  const gatewayForm = !!gatewayOnly || !!initial?.gateway;
+  if (gatewayOnly && !initial) {
+    init.mcpMode = "gateway";
+    init.description = "Tools from the MCP gateway";
+  }
   const [submitting, setSubmitting] = useState(false);
   const [creatingSecret, setCreatingSecret] = useState(false);
-  const closeModal = useModalClose(submitting || creatingSecret, onClose);
   const [secretError, setSecretError] = useState("");
   const [secretsLoading, setSecretsLoading] = useState(true);
   const [name, setName] = useState(init.name);
@@ -138,7 +172,30 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
   const [inlineCreateOpen, setInlineCreateOpen] = useState(false);
   const [inlineCreateValue, setInlineCreateValue] = useState("");
   const [inlineCreateKey, setInlineCreateKey] = useState("");
-  const [showTemplates, setShowTemplates] = useState(!initial);
+  const [showTemplates, setShowTemplates] = useState(!initial && !gatewayForm);
+  // MCP gateway instance: the instance's servers and tools (after Connect) and the selection.
+  const [gatewayServers, setGatewayServers] = useState<GatewayServer[] | null>(null);
+  const [gatewaySelected, setGatewaySelected] = useState<Set<string>>(
+    () => new Set(initial?.gateway ? initial.include ?? [] : [])
+  );
+  const [gatewayRunAs, setGatewayRunAs] = useState<GatewayRunAs>(initial?.gateway?.run_as ?? "user");
+  const [gatewayConnecting, setGatewayConnecting] = useState(false);
+  const [gatewayError, setGatewayError] = useState("");
+  const [submitError, setSubmitError] = useState("");
+  const busy = submitting || creatingSecret || gatewayConnecting;
+  const closeModal = useModalClose(busy, onClose);
+  // Any route through the form can change a connection (including switching
+  // templates or connection modes). Never reuse tools discovered for another identity.
+  const discoveryContext = JSON.stringify([type, mcpMode, url, gatewayRunAs, authValue, useSavedSecret]);
+  const previousDiscoveryContext = useRef(discoveryContext);
+  useEffect(() => {
+    if (previousDiscoveryContext.current !== discoveryContext) {
+      setGatewayServers(null);
+      setGatewaySelected(new Set());
+      setGatewayError("");
+    }
+    previousDiscoveryContext.current = discoveryContext;
+  }, [discoveryContext]);
 
   useEffect(() => {
     setSecretsLoading(true);
@@ -168,6 +225,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
   }, [agentId]);
 
   const applyTemplate = (template: ToolTemplate) => {
+    if (busy) return;
     const config = template.config;
     setName(config.name || "");
     setType(config.type || "mcp");
@@ -184,76 +242,182 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
     setShowTemplates(false);
   };
 
+  const isGateway = type === "mcp" && mcpMode === "gateway";
+  const effectiveAuthType: AuthType = isGateway ? GATEWAY_AUTH_TYPE : authType;
   const authOption = AUTH_TYPE_OPTIONS.find((o) => o.value === authType);
-  const needsKey = authOption?.needsKey ?? false;
+  const needsKey = !isGateway && (authOption?.needsKey ?? false);
+  const gatewayInstanceId = isGateway ? parseGatewayInstanceUrl(url) : null;
+  const gatewayUserMode = isGateway && gatewayRunAs === "user";
+  // Definitions of the selected tools: from the last Connect, else as saved on the edited entry.
+  const selectedToolDefs: GatewayToolDef[] = (() => {
+    const known = new Map<string, GatewayToolDef>();
+    (initial?.gateway?.tools ?? []).forEach((t) => known.set(t.name, t));
+    (gatewayServers ?? []).forEach((sv) => sv.tools.forEach((t) => known.set(t.name, t)));
+    return [...gatewaySelected].sort().map((n) => known.get(n)).filter((t): t is GatewayToolDef => !!t);
+  })();
+  // A key typed now, else the saved secret ref (also the one stored on the edited entry).
+  const gatewayKeyRef = (() => {
+    const v = authValue.trim();
+    if (v && SECRET_REF_PREFIXES.some((p) => v.startsWith(p))) return v;
+    const prev = initial?.gateway ? initial.auth?.value ?? "" : "";
+    return !v && SECRET_REF_PREFIXES.some((p) => prev.startsWith(p)) ? prev : "";
+  })();
+  const gatewayPlainKey = (() => {
+    const v = authValue.trim();
+    return v && !SECRET_REF_PREFIXES.some((p) => v.startsWith(p)) ? v : "";
+  })();
+
+  const connectGateway = async () => {
+    if (busy) return;
+    setGatewayError("");
+    setGatewayConnecting(true);
+    try {
+      const res = await api.discoverGateway(
+        url.trim(),
+        gatewayUserMode
+          ? { runAs: "user" }
+          : gatewayPlainKey
+            ? { apiKey: gatewayPlainKey } // pragma: allowlist secret
+            : { apiKeyRef: gatewayKeyRef }, // pragma: allowlist secret
+        agentId
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setGatewayError(typeof data.detail === "string" ? data.detail : `Connect failed (${res.status})`);
+        return;
+      }
+      const servers: GatewayServer[] = data.servers ?? [];
+      setGatewayServers(servers);
+      // Keep only selected tools that still exist; new tools stay unselected.
+      const known = new Set(servers.flatMap((sv) => sv.tools.map((t) => t.name)));
+      setGatewaySelected((prev) => new Set([...prev].filter((n) => known.has(n))));
+    } catch (err) {
+      setGatewayError(err instanceof Error ? err.message : "Connect failed");
+    } finally {
+      setGatewayConnecting(false);
+    }
+  };
+
+  const toggleGatewayTools = (names: string[], checked: boolean) => {
+    setGatewaySelected((prev) => {
+      const next = new Set(prev);
+      names.forEach((n) => (checked ? next.add(n) : next.delete(n)));
+      return next;
+    });
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (submitting) return;
+    if (busy || !valid) return;
     setSubmitting(true);
     setSecretError("");
     try {
-    const isCommandMcp = type === "mcp" && mcpMode === "command";
-    const args = argsText.split("\n").map((s) => s.trim()).filter(Boolean);
-    const tool: ToolEntry = {
-      name: name.trim(),
-      type,
-      url: isCommandMcp ? undefined : (url.trim() || undefined),
-      description: description.trim() || undefined,
-    };
-    if (isCommandMcp) {
-      tool.command = command.trim();
-      tool.args = args.length ? args : undefined;
-      tool.transport = "stdio";
-      const envEntries = envText
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean)
-        .map((l) => {
-          const idx = l.indexOf("=");
-          return idx > 0 ? [l.slice(0, idx).trim(), l.slice(idx + 1).trim()] : null;
-        })
-        .filter((e): e is [string, string] => e !== null && e[0].length > 0);
-      if (envEntries.length > 0) {
-        tool.env = Object.fromEntries(envEntries);
+      setSubmitError("");
+      if (isGateway && gatewayUserMode) {
+        // No API key: the selected tools' definitions are saved, and calls carry each user's token.
+        onSave({
+          name: name.trim(),
+          type: "mcp",
+          url: url.trim(),
+          transport: "http",
+          description: description.trim() || undefined,
+          gateway: { instance_url: url.trim(), run_as: "user", tools: selectedToolDefs },
+          include: [...gatewaySelected].sort(),
+        });
+        onClose();
+        return;
       }
-    } else if (type === "mcp" && url.trim()) {
-      tool.transport = mcpMode === "url-http" ? "http" : "sse";
-    }
-    if (authType !== "none") {
-      let authValueFinal = authValue.trim();
-
-      if (saveAsNewSecret && authValueFinal) {
-        const baseSlug = saveAsNewSecretKey.trim()
-          ? saveAsNewSecretKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
-          : `${name.trim() || "tool"}-${authType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
-        const slug = baseSlug;
-        try {
-          const res = await api.createSecret(slug, authValueFinal, `Auth for ${name.trim() || "tool"}`, undefined, agentId);
-          if (!res.ok) throw new Error(`Failed to save secret (${res.status})`);
-          if (res.ok) {
-            const data = await res.json();
-            authValueFinal = data.ref || `db://${slug}`;
+      if (isGateway) {
+        // The API key is stored only as a secret; a typed key becomes a new secret first.
+        let ref = gatewayKeyRef;
+        if (gatewayPlainKey) {
+          const baseSlug = saveAsNewSecretKey.trim()
+            ? saveAsNewSecretKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
+            : `${name.trim() || "gateway"}-apikey-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+          try {
+            const res = await api.createSecret(baseSlug, gatewayPlainKey, `MCP gateway API key for ${name.trim()}`, undefined, agentId);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json().catch(() => ({}));
+            ref = data.ref || `db://${baseSlug}`;
+          } catch (err) {
+            setSubmitError(`The API key could not be saved as a secret (${err instanceof Error ? err.message : "error"}). Nothing was saved.`);
+            return;
           }
-        } catch (error) { throw error; }
+        }
+        onSave({
+          name: name.trim(),
+          type: "mcp",
+          url: url.trim(),
+          transport: "http",
+          description: description.trim() || undefined,
+          gateway: { instance_url: url.trim(), run_as: "service" },
+          auth: { type: GATEWAY_AUTH_TYPE, value: ref },
+          include: [...gatewaySelected].sort(),
+        });
+        onClose();
+        return;
       }
+      const isCommandMcp = type === "mcp" && mcpMode === "command";
+      const args = argsText.split("\n").map((s) => s.trim()).filter(Boolean);
+      const tool: ToolEntry = {
+        name: name.trim(),
+        type,
+        url: isCommandMcp ? undefined : (url.trim() || undefined),
+        description: description.trim() || undefined,
+      };
+      if (isCommandMcp) {
+        tool.command = command.trim();
+        tool.args = args.length ? args : undefined;
+        tool.transport = "stdio";
+        const envEntries = envText
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .map((l) => {
+            const idx = l.indexOf("=");
+            return idx > 0 ? [l.slice(0, idx).trim(), l.slice(idx + 1).trim()] : null;
+          })
+          .filter((e): e is [string, string] => e !== null && e[0].length > 0);
+        if (envEntries.length > 0) {
+          tool.env = Object.fromEntries(envEntries);
+        }
+      } else if (type === "mcp" && url.trim()) {
+        tool.transport = mcpMode === "url-http" ? "http" : "sse";
+      }
+      if (authType !== "none") {
+        let authValueFinal = authValue.trim();
 
-      if (authValueFinal) {
-        tool.auth = {
-          type: authType,
-          ...(needsKey && authKey.trim() && { key: authKey.trim() }),
-          value: authValueFinal,
-        };
-      } else if (initial?.auth && initial.auth.type !== "none") {
-        tool.auth = {
-          ...initial.auth,
-          type: authType,
-          ...(needsKey && authKey.trim() && { key: authKey.trim() }),
-        };
+        if (saveAsNewSecret && authValueFinal) {
+          const baseSlug = saveAsNewSecretKey.trim()
+            ? saveAsNewSecretKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
+            : `${name.trim() || "tool"}-${effectiveAuthType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+          const slug = baseSlug;
+          try {
+            const res = await api.createSecret(slug, authValueFinal, `Auth for ${name.trim() || "tool"}`, undefined, agentId);
+            if (!res.ok) throw new Error(`Failed to save secret (${res.status})`);
+            if (res.ok) {
+              const data = await res.json();
+              authValueFinal = data.ref || `db://${slug}`;
+            }
+          } catch (error) { throw error; }
+        }
+
+        if (authValueFinal) {
+          tool.auth = {
+            type: authType,
+            ...(needsKey && authKey.trim() && { key: authKey.trim() }),
+            value: authValueFinal,
+          };
+        } else if (initial?.auth && initial.auth.type !== "none") {
+          tool.auth = {
+            ...initial.auth,
+            type: authType,
+            ...(needsKey && authKey.trim() && { key: authKey.trim() }),
+          };
+        }
       }
-    }
-    onSave(tool);
-    onClose();
+      onSave(tool);
+      onClose();
     } catch (error) {
       setSecretError(error instanceof Error ? error.message : "Failed to save secret");
     } finally { setSubmitting(false); }
@@ -278,20 +442,185 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
     ? `Invalid env line${badEnvLines.length > 1 ? "s" : ""}: ${badEnvLines.map((l) => `"${l}"`).join(", ")}. Use KEY=VALUE format.`
     : "";
 
+  const gatewayValid =
+    !!gatewayInstanceId &&
+    gatewaySelected.size > 0 &&
+    (gatewayUserMode ? selectedToolDefs.length === gatewaySelected.size : !!(gatewayPlainKey || gatewayKeyRef));
   const valid = !nameError && !envError && description.trim().length > 0 && (
     type === "openapi"
       ? url.trim().length > 0
-      : isCommandMcp
-        ? command.trim().length > 0
-        : url.trim().length > 0
+      : isGateway
+        ? gatewayValid
+        : isCommandMcp
+          ? command.trim().length > 0
+          : url.trim().length > 0
   );
 
+  const secretFields = (
+    <>
+      <Checkbox
+        id="tool-use-saved-secret"
+        labelText="Use saved secret"
+        disabled={secretsLoading}
+        checked={useSavedSecret}
+        onChange={(_e, { checked }) => {
+          setUseSavedSecret(!!checked);
+          setInlineCreateOpen(false);
+        }}
+      />
+      {secretsLoading && <InlineLoading description="Loading saved secrets…" aria-live="polite" />}
+      {useSavedSecret ? (
+        <>
+          <Select
+            id="tool-auth-secret"
+            labelText="Secret"
+            value={authValue}
+            onChange={(e) => { setAuthValue(e.target.value); }}
+          >
+            <SelectItem value="" text="Select a secret" />
+            {secretsList.map((s) => (
+              <SelectItem
+                key={s.id}
+                value={s.ref}
+                text={s.description ? `${s.id} — ${s.description}` : s.id}
+              />
+            ))}
+          </Select>
+          <Button
+            kind="ghost"
+            size="sm"
+            style={{ marginTop: "0.5rem" }}
+            onClick={() => setInlineCreateOpen((v) => !v)}
+          >
+            {inlineCreateOpen ? "Cancel" : "Create new secret"}
+          </Button>
+          {inlineCreateOpen && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.5rem" }}>
+              <TextInput
+                id="tool-inline-secret-key"
+                type="text"
+                labelText="Key name"
+                value={inlineCreateKey}
+                onChange={(e) => setInlineCreateKey(e.target.value)}
+                placeholder="e.g. my-tool-api-key"
+                helperText="Optional; leave empty to auto-generate"
+              />
+              <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "flex-end" }}>
+                <TextInput
+                  id="tool-inline-secret-value"
+                  type="password"
+                  labelText="New secret value"
+                  value={inlineCreateValue}
+                  onChange={(e) => setInlineCreateValue(e.target.value)}
+                  placeholder="Secret value"
+                  autoComplete="off"
+                />
+                <AsyncButton
+                  busy={creatingSecret}
+                  busyLabel="Saving secret…"
+                  size="sm"
+                  style={{ marginTop: "auto" }}
+                  disabled={!inlineCreateValue.trim()}
+                  onClick={async () => {
+                    if (busy) return;
+                    setCreatingSecret(true);
+                    setSecretError("");
+                    try {
+                    const baseSlug = inlineCreateKey.trim()
+                      ? inlineCreateKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
+                      : `${name.trim() || "tool"}-${effectiveAuthType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+                    const slug = baseSlug || `${name.trim() || "tool"}-${effectiveAuthType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+                    const res = await api.createSecret(slug, inlineCreateValue.trim(), `Auth for ${name.trim() || "tool"}`, undefined, agentId);
+                    if (!res.ok) throw new Error(`Failed to save secret (${res.status})`);
+                    const created = await res.json();
+                    if (res.ok) {
+                      setAuthValue(created.ref || `db://${slug}`);
+                      setInlineCreateOpen(false);
+                      setInlineCreateKey("");
+                      setInlineCreateValue("");
+                      Promise.all([api.getSecrets(agentId), api.getSecretsConfig()])
+                        .then(async ([secretsRes, configRes]) => {
+                          let mode = "local";
+                          if (configRes.ok) {
+                            const cfg = await configRes.json();
+                            mode = cfg.mode || "local";
+                          }
+                          if (secretsRes.ok) {
+                            const data = await secretsRes.json();
+                            const raw: { id: string; description?: string; source?: string }[] = data.secrets || data.overrides || [];
+                            setSecretsList(raw.map((s) => ({
+                              id: s.id,
+                              description: s.description,
+                              ref: s.source === "vault" || mode === "vault"
+                                ? `vault://secret/${s.id}#value`
+                                : s.source === "env"
+                                  ? s.id
+                                  : `db://${s.id}`,
+                            })));
+                          }
+                        })
+                        .catch(() => {});
+                    }
+                    } catch (error) {
+                      setSecretError(error instanceof Error ? error.message : "Failed to save secret");
+                    } finally {
+                      setCreatingSecret(false);
+                    }
+                  }}
+                >
+                  Save
+                </AsyncButton>
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <TextInput
+            id="tool-auth-value"
+            type="password"
+            labelText="Secret / token / value"
+            value={authValue}
+            onChange={(e) => { setAuthValue(e.target.value); }}
+            placeholder="Leave empty to keep existing"
+            autoComplete="off"
+          />
+          {!isGateway && (
+            <Checkbox
+              id="tool-save-as-secret"
+              labelText="Save as new secret"
+              checked={saveAsNewSecret}
+              onChange={(_e, { checked }) => setSaveAsNewSecret(!!checked)}
+            />
+          )}
+          {(saveAsNewSecret || (isGateway && !!gatewayPlainKey)) && (
+            <TextInput
+              id="tool-save-as-secret-key"
+              type="text"
+              labelText="Key name"
+              value={saveAsNewSecretKey}
+              onChange={(e) => setSaveAsNewSecretKey(e.target.value)}
+              placeholder="e.g. my-tool-api-key"
+              helperText="Optional; leave empty to auto-generate"
+            />
+          )}
+        </>
+      )}
+    </>
+  );
+
+  const modalTitle = gatewayForm ? (initial ? "Edit MCP Gateway" : "Add MCP Gateway") : initial ? "Edit tool" : "Add tool";
+
   return (
-    <ComposedModal open onClose={closeModal} size="lg" isFullWidth preventCloseOnClickOutside>
-      <ModalHeader title={initial ? "Edit tool" : "Add tool"} buttonOnClick={closeModal} />
-      <form onSubmit={handleSubmit}>
-        <ModalBody hasScrollingContent className="add-tool-modal-body">
-          <fieldset className="cuga-loading-fieldset" disabled={submitting || creatingSecret}>
+    <ComposedModal ref={modalElement} launcherButtonRef={launcherButtonRef} aria-label={modalTitle} open onClose={closeModal} size="lg" preventCloseOnClickOutside className="add-tool-modal">
+      <ModalHeader
+        title={modalTitle}
+        buttonOnClick={closeModal}
+      />
+      <ModalBody hasScrollingContent className="add-tool-modal-body">
+        <form id={formId} onSubmit={handleSubmit}>
+          <fieldset className="cuga-loading-fieldset" disabled={busy}>
+          {submitError && <InlineNotification kind="error" lowContrast hideCloseButton title="Not saved" subtitle={submitError} />}
           {secretError && <InlineNotification kind="error" title={secretError} lowContrast hideCloseButton />}
           {!initial && showTemplates && (
             <div style={{ marginBottom: "1.5rem" }}>
@@ -305,6 +634,9 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
                   return (
                     <ClickableTile
                       key={template.id}
+                      role="button"
+                      aria-label={template.name}
+                      disabled={busy}
                       onClick={() => applyTemplate(template)}
                       style={{ padding: "1rem" }}
                     >
@@ -334,7 +666,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
               </div>
             </div>
           )}
-          {!initial && !showTemplates && (
+          {!initial && !showTemplates && !gatewayForm && (
             <div style={{ marginBottom: "1rem" }}>
               <Button
                 kind="ghost"
@@ -358,6 +690,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
               helperText={!nameError || name.trim() === "" ? "Lowercase letters, digits, underscores (e.g. my_tool)" : undefined}
             />
           </FormGroup>
+          {!gatewayForm && (
           <FormGroup legendText="">
             <Select
               id="tool-type"
@@ -369,7 +702,8 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
               <SelectItem value="openapi" text="OpenAPI service" />
             </Select>
           </FormGroup>
-          {type === "mcp" && (
+          )}
+          {type === "mcp" && !gatewayForm && (
             <FormGroup legendText="">
               <Select
                 id="tool-mcp-mode"
@@ -380,10 +714,26 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
                 <SelectItem value="url" text="URL (SSE)" />
                 <SelectItem value="url-http" text="URL (HTTP)" />
                 <SelectItem value="command" text="Command (stdio)" />
+                <SelectItem value="gateway" text="MCP Gateway instance" />
               </Select>
             </FormGroup>
           )}
-          {type === "mcp" && mcpMode === "command" ? (
+          {isGateway ? (
+            <FormGroup legendText="">
+              <TextInput
+                id="tool-gateway-url"
+                labelText="Gateway instance URL"
+                value={url}
+                onChange={(e) => {
+                  setUrl(e.target.value);
+                }}
+                placeholder="https://<gateway>/?instance=<instance id>"
+                invalid={url.trim() !== "" && !gatewayInstanceId}
+                invalidText="Copy the URL from the gateway instance page in your workspace; it ends with ?instance=<id>"
+                helperText="From the gateway instance page in your workspace"
+              />
+            </FormGroup>
+          ) : type === "mcp" && mcpMode === "command" ? (
             <>
               <FormGroup legendText="">
                 <TextInput
@@ -455,6 +805,91 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
               required
             />
           </FormGroup>
+          {isGateway ? (
+            <FormGroup legendText="Gateway access">
+              <Select
+                id="tool-gateway-run-as"
+                labelText="Tool calls run as"
+                value={gatewayRunAs}
+                onChange={(e) => {
+                  setGatewayRunAs(e.target.value as GatewayRunAs);
+                }}
+                helperText={
+                  gatewayRunAs === "user"
+                    ? "Each tool call uses the signed-in user’s identity and role. Scheduled runs need a service ID."
+                    : "The API key's service ID, for every user and for scheduled runs. The gateway sees one identity."
+                }
+              >
+                <SelectItem value="user" text="Signed-in user" />
+                <SelectItem value="service" text="Service ID (instance API key)" />
+              </Select>
+              {gatewayUserMode ? (
+                <p className="cds--type-helper-text-01" style={{ margin: "0.75rem 0 0.5rem" }}>
+                  Connect with your sign-in, then choose the tools this agent can use. No tools are selected automatically.
+                </p>
+              ) : (
+                <>
+                  <p className="cds--type-helper-text-01" style={{ margin: "0.75rem 0 0.5rem" }}>
+                    An API key created on the instance page, stored as a secret. It lists the instance's tools and makes the tool calls.
+                  </p>
+                  {secretFields}
+                </>
+              )}
+              <AsyncButton
+                busy={gatewayConnecting}
+                busyLabel={gatewayServers ? "Refreshing tools…" : "Connecting…"}
+                kind="tertiary"
+                size="sm"
+                style={{ marginTop: "0.75rem" }}
+                disabled={!gatewayInstanceId || (!gatewayUserMode && !(gatewayPlainKey || gatewayKeyRef)) || gatewayConnecting}
+                onClick={connectGateway}
+              >
+                {gatewayServers ? "Refresh tools" : "Connect"}
+              </AsyncButton>
+              {gatewayError && (
+                <InlineNotification kind="error" lowContrast hideCloseButton title="Connect failed" subtitle={gatewayError} />
+              )}
+              {gatewayServers && (
+                <div className="add-tool-gateway-tools" aria-label="Gateway tools">
+                  <p className="add-tool-gateway-selection" role="status" aria-live="polite">
+                    Select the tools this agent may use ({gatewaySelected.size} selected)
+                  </p>
+                  {gatewayServers.length === 0 && <p className="cds--type-helper-text-01">This instance has no tools yet.</p>}
+                  {gatewayServers.map((sv) => {
+                    const names = sv.tools.map((t) => t.name);
+                    const all = names.every((n) => gatewaySelected.has(n));
+                    return (
+                      <div key={sv.name} className="add-tool-gateway-server" role="group" aria-label={sv.name}>
+                        <Checkbox
+                          id={`gw-server-${sv.name}`}
+                          labelText={<strong>{sv.name} ({names.length})</strong>}
+                          checked={all && names.length > 0}
+                          indeterminate={!all && names.some((n) => gatewaySelected.has(n))}
+                          onChange={(_e, { checked }) => toggleGatewayTools(names, !!checked)}
+                        />
+                        <div className="add-tool-gateway-server-tools">
+                          {sv.tools.map((t) => (
+                            <Checkbox
+                              key={t.name}
+                              id={`gw-tool-${t.name}`}
+                              labelText={<><span className="add-tool-gateway-tool-name">{t.name}</span>{t.description && <span className="add-tool-gateway-tool-description">{t.description}</span>}</>}
+                              checked={gatewaySelected.has(t.name)}
+                              onChange={(_e, { checked }) => toggleGatewayTools([t.name], !!checked)}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {!gatewayServers && gatewaySelected.size > 0 && (
+                <p className="cds--type-helper-text-01" style={{ marginTop: "0.5rem" }}>
+                  {gatewaySelected.size} tools selected. Connect to change the selection.
+                </p>
+              )}
+            </FormGroup>
+          ) : (
           <FormGroup legendText="Authentication">
             <Select
               id="tool-auth-type"
@@ -475,161 +910,20 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
                 placeholder={authType === "header" ? "X-API-Key" : "api_key"}
               />
             )}
-            {authType !== "none" && (
-              <>
-                <Checkbox
-                  id="tool-use-saved-secret"
-                  labelText="Use saved secret"
-                  disabled={secretsLoading}
-                  checked={useSavedSecret}
-                  onChange={(_e, { checked }) => {
-                    setUseSavedSecret(!!checked);
-                    setInlineCreateOpen(false);
-                  }}
-                />
-                {secretsLoading && <InlineLoading description="Loading saved secrets…" aria-live="polite" />}
-                {useSavedSecret ? (
-                  <>
-                    <Select
-                      id="tool-auth-secret"
-                      labelText="Secret"
-                      value={authValue}
-                      onChange={(e) => setAuthValue(e.target.value)}
-                    >
-                      <SelectItem value="" text="Select a secret" />
-                      {secretsList.map((s) => (
-                        <SelectItem
-                          key={s.id}
-                          value={s.ref}
-                          text={s.description ? `${s.id} — ${s.description}` : s.id}
-                        />
-                      ))}
-                    </Select>
-                    <Button
-                      kind="ghost"
-                      size="sm"
-                      style={{ marginTop: "0.5rem" }}
-                      onClick={() => setInlineCreateOpen((v) => !v)}
-                    >
-                      {inlineCreateOpen ? "Cancel" : "Create new secret"}
-                    </Button>
-                    {inlineCreateOpen && (
-                      <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.5rem" }}>
-                        <TextInput
-                          id="tool-inline-secret-key"
-                          type="text"
-                          labelText="Key name"
-                          value={inlineCreateKey}
-                          onChange={(e) => setInlineCreateKey(e.target.value)}
-                          placeholder="e.g. my-tool-api-key"
-                          helperText="Optional; leave empty to auto-generate"
-                        />
-                        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "flex-end" }}>
-                          <TextInput
-                            id="tool-inline-secret-value"
-                            type="password"
-                            labelText="New secret value"
-                            value={inlineCreateValue}
-                            onChange={(e) => setInlineCreateValue(e.target.value)}
-                            placeholder="Secret value"
-                            autoComplete="off"
-                          />
-                          <AsyncButton
-                            busy={creatingSecret} busyLabel="Saving secret…"
-                            size="sm"
-                            style={{ marginTop: "auto" }}
-                            disabled={!inlineCreateValue.trim()}
-                            onClick={async () => {
-                              setCreatingSecret(true);
-                              setSecretError("");
-                              try {
-                              const baseSlug = inlineCreateKey.trim()
-                                ? inlineCreateKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
-                                : `${name.trim() || "tool"}-${authType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
-                              const slug = baseSlug || `${name.trim() || "tool"}-${authType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
-                              const res = await api.createSecret(slug, inlineCreateValue.trim(), `Auth for ${name.trim() || "tool"}`, undefined, agentId);
-                              if (!res.ok) throw new Error(`Failed to save secret (${res.status})`);
-                              if (res.ok) {
-                                setAuthValue(`db://${slug}`);
-                                setInlineCreateOpen(false);
-                                setInlineCreateKey("");
-                                Promise.all([api.getSecrets(agentId), api.getSecretsConfig()])
-                                  .then(async ([secretsRes, configRes]) => {
-                                    let mode = "local";
-                                    if (configRes.ok) {
-                                      const cfg = await configRes.json();
-                                      mode = cfg.mode || "local";
-                                    }
-                                    if (secretsRes.ok) {
-                                      const data = await secretsRes.json();
-                                      const raw: { id: string; description?: string; source?: string }[] = data.secrets || data.overrides || [];
-                                      setSecretsList(raw.map((s) => ({
-                                        id: s.id,
-                                        description: s.description,
-                                        ref: s.source === "vault" || mode === "vault"
-                                          ? `vault://secret/${s.id}#value`
-                                          : s.source === "env"
-                                            ? s.id
-                                            : `db://${s.id}`,
-                                      })));
-                                    }
-                                  })
-                                  .catch(() => {});
-                              }
-                              } catch (error) { setSecretError(error instanceof Error ? error.message : "Failed to save secret"); }
-                              finally { setCreatingSecret(false); }
-                            }}
-                          >
-                            Save
-                          </AsyncButton>
-                        </div>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <TextInput
-                      id="tool-auth-value"
-                      type="password"
-                      labelText="Secret / token / value"
-                      value={authValue}
-                      onChange={(e) => setAuthValue(e.target.value)}
-                      placeholder="Leave empty to keep existing"
-                      autoComplete="off"
-                    />
-                    <Checkbox
-                      id="tool-save-as-secret"
-                      labelText="Save as new secret"
-                      checked={saveAsNewSecret}
-                      onChange={(_e, { checked }) => setSaveAsNewSecret(!!checked)}
-                    />
-                    {saveAsNewSecret && (
-                      <TextInput
-                        id="tool-save-as-secret-key"
-                        type="text"
-                        labelText="Key name"
-                        value={saveAsNewSecretKey}
-                        onChange={(e) => setSaveAsNewSecretKey(e.target.value)}
-                        placeholder="e.g. my-tool-api-key"
-                        helperText="Optional; leave empty to auto-generate"
-                      />
-                    )}
-                  </>
-                )}
-              </>
-            )}
+            {authType !== "none" && secretFields}
           </FormGroup>
+          )}
           </fieldset>
-        </ModalBody>
+        </form>
+      </ModalBody>
         <ModalFooter>
-          <Button kind="secondary" disabled={submitting || creatingSecret} onClick={onClose}>
+          <Button kind="secondary" disabled={busy} onClick={closeModal}>
             Cancel
           </Button>
-          <AsyncButton kind="primary" type="submit" busy={submitting} busyLabel="Saving tool…" disabled={!valid || creatingSecret}>
-            {initial ? "Save" : "Add tool"}
+          <AsyncButton kind="primary" type="submit" form={formId} busy={submitting} busyLabel={isGateway ? "Saving gateway…" : "Saving tool…"} disabled={!valid || creatingSecret || gatewayConnecting}>
+            {initial ? "Save" : gatewayForm ? "Add gateway" : "Add tool"}
           </AsyncButton>
         </ModalFooter>
-      </form>
     </ComposedModal>
   );
 }

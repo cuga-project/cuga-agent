@@ -18,6 +18,8 @@ class Auth(BaseModel):
     - 'oauth2': AppWorld login done by the registry (it fetches the password and logs in)
     - 'oauth2_agent': AppWorld login done by the agent; the registry only attaches the
       token from the agent's own /auth/token call and never logs in itself
+    - 'account_iam_apikey': MCP gateway instance API key; the registry exchanges it at the
+      platform IAM for a short-lived token (see registry/mcp_gateway.py)
 
     Examples:
         # Header auth
@@ -70,6 +72,9 @@ class ServiceConfig(BaseModel):
     tools: Optional[List[str]] = (
         None  # list of tools for a specific service - needed in case we get each tool separately
     )
+    # MCP gateway instance: {"instance_url", "instance_id", "run_as"}. The url is then the
+    # gateway's /mcp/ endpoint and the auth an 'account_iam_apikey'.
+    gateway: Optional[Dict[str, Any]] = None
 
 
 class Service(BaseModel):
@@ -165,6 +170,9 @@ async def load_service_configs_from_db(agent_id: str = "cuga-default") -> Dict[s
             service_config = _create_service_config(
                 name, tool, is_mcp_server=tool.get("type", "mcp").lower() == "mcp"
             )
+            if service_config.gateway is not None:
+                # Manage saves the API key as a secret of this agent (draft and published share it).
+                service_config.gateway['secret_agent_id'] = agent_id.removesuffix('--draft')
             services[name] = service_config
 
         logger.info(f"Loaded {len(services)} services from database for agent '{agent_id}'")
@@ -172,6 +180,34 @@ async def load_service_configs_from_db(agent_id: str = "cuga-default") -> Dict[s
     except Exception as e:
         logger.error(f"Failed to load service configurations from database for agent '{agent_id}': {e}")
         return {}
+
+
+def _gateway_block(service_name: str, config: dict) -> Optional[Dict[str, Any]]:
+    """The normalized gateway block of an MCP gateway instance entry, or None.
+
+    The instance URL comes from ``gateway.instance_url`` or, for entries saved by the Manage
+    page, from ``url``. A bad URL is an error: the entry would otherwise connect elsewhere.
+    """
+    block = config.get('gateway')
+    if not isinstance(block, dict):
+        return None
+    from cuga.backend.tools_env.registry.mcp_gateway import RUN_AS_SERVICE, RUN_AS_USER, parse_instance_url
+
+    instance_url = block.get('instance_url') or config.get('url') or ''
+    try:
+        instance = parse_instance_url(instance_url)
+    except ValueError as e:
+        raise ValueError(f"MCP gateway entry '{service_name}': {e}") from e
+    normalized = {
+        'instance_url': instance.instance_url,
+        'instance_id': instance.instance_id,
+        'run_as': RUN_AS_USER if block.get('run_as') == RUN_AS_USER else RUN_AS_SERVICE,
+        '_mcp_url': instance.mcp_url,
+    }
+    if isinstance(block.get('tools'), list):
+        # User mode: tool definitions saved by Manage, served without listing the instance.
+        normalized['tools'] = block['tools']
+    return normalized
 
 
 def _create_service_config(service_name: str, config: dict, is_mcp_server: bool = False) -> ServiceConfig:
@@ -204,6 +240,13 @@ def _create_service_config(service_name: str, config: dict, is_mcp_server: bool 
                         else:
                             auth = Auth(type='header', key=key, value=value)
                         break
+
+    gateway = _gateway_block(service_name, config)
+    url = config.get('url')
+    transport = config.get('transport')
+    if gateway:
+        url = gateway.pop('_mcp_url')
+        transport = 'http'
 
     # Auto-detect service type if not explicitly specified
     service_type = config.get('type')
@@ -246,11 +289,11 @@ def _create_service_config(service_name: str, config: dict, is_mcp_server: bool 
     service_config = ServiceConfig(
         name=service_name,
         description=config.get('description'),
-        url=config.get('url'),
+        url=url,
         command=config.get('command'),
         args=config.get('args'),
         env=env_config,
-        transport=config.get('transport'),
+        transport=transport,
         auth=auth,
         include=config.get('include'),
         type=service_type,
@@ -259,6 +302,7 @@ def _create_service_config(service_name: str, config: dict, is_mcp_server: bool 
         ready_values=config.get('ready_values'),
         readiness_timeout_seconds=config.get('readiness_timeout_seconds'),
         tools=config.get('tools'),
+        gateway=gateway,
     )
 
     if 'api_overrides' in config:

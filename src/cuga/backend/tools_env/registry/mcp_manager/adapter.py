@@ -566,6 +566,9 @@ def apply_authentication(auth, headers: dict, query_params: dict):
     """
     if not auth or not auth.value:
         return
+    if str(auth.type).lower() == 'account_iam_apikey':
+        # Exchanged per transport by mcp_gateway.AccountIAMApiKeyAuth; never sent as is.
+        return
 
     import base64
 

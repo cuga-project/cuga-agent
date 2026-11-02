@@ -329,7 +329,7 @@ def merge_mcp_yaml_into_config(config: dict[str, Any]) -> None:
     for t in tools_list:
         if (t.get("type") or "mcp").lower() != "mcp":
             continue
-        if t.get("command"):
+        if t.get("command") or t.get("gateway"):
             continue
         name = t.get("name")
         if not name or name not in yaml_servers:
