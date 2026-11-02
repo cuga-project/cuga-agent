@@ -1,15 +1,15 @@
-You classify an AppWorld task by whether its completion expects a **return value**.
+You classify a task by whether its completion expects a **return value**.
 
 Choose exactly one label:
 
-- **ACTION** — the task only asks you to PERFORM or CHANGE something (place/buy an order, send a message or email, transfer/pay money, create/add/update/delete/set/mark, do a list of chores). Nothing specific is asked to be reported back; the deliverable is the side effect. The correct final answer is nothing.
-- **QUERY** — the task asks you to RETRIEVE, COMPUTE, or REPORT a specific value (how many, what is, get/show/find a value, a total/sum/average, a list of items, the content of a note or message). The correct final answer is that value.
+- **ACTION** — the task only asks you to PERFORM or CHANGE something (place or buy an order, send a message or email, transfer or pay money, create/add/update/delete/set/mark, do a list of chores). Nothing specific is asked to be reported back; the deliverable is the side effect. The correct final answer is nothing.
+- **QUERY** — the task asks you to RETRIEVE, COMPUTE, or REPORT a specific value (how many, what is, get/show/find a value, a total/sum/average, a list of items, the content of a document or message). The correct final answer is that value.
 
 Rules:
 - Decide from the **user intent** (what is asked), not from how much work the system did.
 - "Buy / order / send / pay the cheapest / best X" is **ACTION** even though it mentions finding X — the deliverable is the action, not a returned value.
 - If the task has an action AND an explicit request to report a value ("... and tell me the total"), it is **QUERY**.
-- If the requested value is delivered **inside the action itself** — a text/email/note whose *content* is the list, name, or data ("post the incidents, one per line", "reply with the room name") — it is **ACTION**: the deliverable is the sent artifact, and nothing is returned to the user. It is QUERY only when the user asks to be *told or shown* the value directly ("tell me", "what is", "how many").
+- If the requested value is delivered **inside the action itself** — a message, email, or document whose *content* is the list, name, or data ("post the incidents, one per line", "reply with the room name") — it is **ACTION**: the deliverable is the sent artifact, and nothing is returned to the user. It is QUERY only when the user asks to be *told or shown* the value directly ("tell me", "what is", "how many").
 - When genuinely unsure, answer **QUERY**.
 
 Respond with EXACTLY one word on a single line: `ACTION` or `QUERY`. No punctuation, no explanation.
@@ -23,11 +23,11 @@ Respond with EXACTLY one word on a single line: `ACTION` or `QUERY`. No punctuat
 - "Post the open incidents to the ops channel, one 'id - severity' per line." -> ACTION
 - "A teammate asked which conference room is free at 3pm; reply with the room name." -> ACTION
 - "Open a support ticket for the broken badge reader and assign it to facilities." -> ACTION
-- "Set the thermostat to 22 degrees." -> ACTION
-- "Add milk to my shopping list." -> ACTION
-- "How many unread emails do I have?" -> QUERY
-- "What is my current account balance?" -> QUERY
+- "Set the build server's maintenance window to Sunday 02:00." -> ACTION
+- "Add the new hire to the onboarding checklist." -> ACTION
+- "How many open tickets are assigned to me?" -> QUERY
+- "What is the remaining budget on the marketing project?" -> QUERY
 - "List the names of my direct reports." -> QUERY
-- "What was my total utility charge this billing period?" -> QUERY
-- "What does my latest sticky note say?" -> QUERY
-- "Place an order for milk and tell me the order total." -> QUERY
+- "What was our total cloud spend this billing period?" -> QUERY
+- "What does the latest release note say?" -> QUERY
+- "Order a replacement keyboard and tell me the order total." -> QUERY
