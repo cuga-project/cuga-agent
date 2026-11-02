@@ -47,6 +47,39 @@ The email of my assistant is jane@example.com"""
     return policy
 
 
+# Services that do not serve the secrets API, so the local-exemption warning does
+# not apply to them.
+_SERVICES_WITHOUT_SECRETS_API = frozenset({"registry", "appworld"})
+
+
+def _warn_if_secrets_unauthenticated(service: str | None = None) -> None:
+    """Print a conspicuous startup warning when the secrets API's local-machine
+    exemption is live (Decision 1 / Option A): auth is off, so any process on this
+    machine can list, create, update, or delete stored secrets with no login."""
+    if service in _SERVICES_WITHOUT_SECRETS_API:
+        return
+    if getattr(getattr(settings, "auth", None), "enabled", False):
+        return
+    # With the local exemption turned off (Decision 1 / Option B) and auth off, no
+    # caller can reach the secrets API, so the "any process can change secrets"
+    # warning would be false.
+    if not getattr(getattr(settings, "auth", None), "allow_local_admin", True):
+        return
+    console.print()
+    console.print(
+        Panel(
+            "[bold white]This is a LOCAL, UNAUTHENTICATED deployment.[/bold white]\n"
+            "Any process on this machine can read and change stored secrets — no login is required.\n"
+            "[bold]Do not use this configuration in production or on a shared/multi-user machine.[/bold]\n"
+            "To require login, set [bold]DYNACONF_AUTH__ENABLED=true[/bold] "
+            "(this also enforces the admin-role check — the two are not separate switches).",
+            title="[bold red]SECURITY[/bold red]",
+            border_style="red",
+        )
+    )
+    console.print()
+
+
 def _demo_uses_ssl() -> bool:
     return bool(os.environ.get("SSL_KEYFILE", "").strip() and os.environ.get("SSL_CERTFILE", "").strip())
 
@@ -199,8 +232,6 @@ def _configure_console_encoding() -> None:
 _configure_console_encoding()
 
 console = Console()
-
-os.environ["DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED"] = "true"
 
 app = typer.Typer(
     help="Cuga CLI for managing services with direct execution",
@@ -1193,6 +1224,7 @@ def start(
       cuga start appworld                 # AppWorld servers
     """
     validate_service(service)
+    _warn_if_secrets_unauthenticated(service)
 
     if (reset or hard_reset) and service != "demo_knowledge":
         logger.warning(

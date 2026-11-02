@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import execution_output_text
+
 pytestmark = pytest.mark.unit
 
 SANDBOX = "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node"
@@ -18,9 +20,9 @@ def _long_run() -> list:
     msgs = [HumanMessage(content="split the amazon prime bill")]
     for i in range(1, 8):
         msgs.append(AIMessage(content=f"step_{i}()"))
-        msgs.append(HumanMessage(content=f"Execution output step {i}: " + "x" * 6000))
+        msgs.append(HumanMessage(content=execution_output_text(f"step {i}: " + "x" * 6000)))
     msgs.append(AIMessage(content="lookup_bill()"))
-    msgs.append(HumanMessage(content="Execution output NEWEST: {'bill_id': 8216, 'amount': 46.67}"))
+    msgs.append(HumanMessage(content=execution_output_text("NEWEST: {'bill_id': 8216, 'amount': 46.67}")))
     return msgs
 
 
@@ -122,8 +124,8 @@ async def test_sandbox_verify_sees_newest_history_beyond_30k_chars():
     chain, captured = _capturing_chain("GATE: ok")
     await _run_node(reflection=False, verify=True, verify_chain=chain)
 
-    history = captured["agent_history"]
-    assert "NEWEST" in history, "the retrieved amount the write is grounded in reaches VERIFY"
+    assert "NEWEST" in captured["latest_output"], "the retrieved amount reaches VERIFY in its own section"
+    assert "NEWEST" not in captured["agent_history"]
     assert "46.67" in captured["write_arguments"]
 
 
@@ -138,8 +140,16 @@ async def test_sandbox_verify_budget_follows_the_context_fraction_setting():
     history = captured["agent_history"]
     # After the default 25% completion reserve, this leaves a small input budget.
     assert len(history) < 8_000
-    assert "NEWEST" in history
+    assert "NEWEST" in captured["latest_output"]
     assert "earlier messages omitted to fit the context budget]" in history
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify import verify_prompt
+    from cuga.backend.cuga_graph.utils.context_management_utils import model_input_budget_chars
+
+    rendered = verify_prompt().format_messages(**captured)
+    assert sum(len(message.content) for message in rendered) <= model_input_budget_chars(
+        MagicMock(spec=[]), 0, context_fraction=0.27
+    )
 
 
 @pytest.mark.asyncio

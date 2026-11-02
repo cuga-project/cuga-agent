@@ -37,6 +37,10 @@
     "./Citations": {
       "import": "./src/citations/index.ts",
       "default": "./src/citations/index.ts"
+    },
+    "./LoadingState": {
+      "import": "./src/LoadingState.tsx",
+      "default": "./src/LoadingState.tsx"
     }
   },
   "scripts": {
@@ -54,10 +58,11 @@
     "test:snapshot": "vite build --mode test && vitest run --testNamePattern=snapshot"
   },
   "devDependencies": {
-    "@carbon/ai-chat": "^0.5.1",
+    "@carbon/ai-chat": "^1.23.0",
+    "@carbon/ai-chat-components": "1.13.0",
     "@carbon/ibm-products": "^2.66.0",
-    "@carbon/icons-react": "^11.45.0",
-    "@carbon/react": "^1.62.0",
+    "@carbon/icons-react": "^11.91.0",
+    "@carbon/react": "^1.119.0",
     "@playwright/test": "^1.55.1",
     "@types/chrome": "^0.0.304",
     "@types/js-yaml": "^4.0.9",

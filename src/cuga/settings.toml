@@ -303,7 +303,7 @@ aws_region = ""
 
 [auth]
 enabled = false
-authorization_enabled = false
+allow_local_admin = true  # with auth off: true = same-machine callers may use the secrets and manage APIs; false = no caller can
 manage_roles = ["ServiceOwner", "ServiceAdmin"]
 chat_roles = ["ServiceOwner", "ServiceAdmin", "ServiceUser"]
 session_cookie_name = "cuga_session"

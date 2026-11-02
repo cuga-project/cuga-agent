@@ -1370,9 +1370,10 @@ Based on the conversation, refine this playbook to focus on what the user still 
         """
         logger.debug(f"check_tool_approval_for_code called with code: {code[:100]}...")
 
-        # Get all ToolApproval policies from storage
+        # Get all ToolApproval policies from storage. Strict: a store error raises
+        # instead of reading as "no policies", so the caller can fail closed.
         tool_approval_policies = await self.storage.list_policies(
-            policy_type=PolicyType.TOOL_APPROVAL, enabled_only=True, limit=100
+            policy_type=PolicyType.TOOL_APPROVAL, enabled_only=True, limit=100, strict=True
         )
 
         logger.debug(f"Found {len(tool_approval_policies)} enabled ToolApproval policies")

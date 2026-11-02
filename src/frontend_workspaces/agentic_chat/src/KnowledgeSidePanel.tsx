@@ -1,5 +1,7 @@
-import React, { useState, useRef, useEffect } from "react";
-import { X, FileText, Trash2, Upload, Lock } from "lucide-react";
+import { ContentSkeleton } from "./LoadingState";
+import React, { useState, useEffect, useRef } from "react";
+import { Close, Document, TrashCan, Locked } from "@carbon/icons-react";
+import { IconButton, Toggle, FileUploaderDropContainer, InlineLoading, InlineNotification } from "@carbon/react";
 import { useSessionKnowledgeAttachments } from "../../frontend/src/knowledge/useSessionKnowledgeAttachments";
 import * as api from "../../frontend/src/api";
 import "./KnowledgeSidePanel.css";
@@ -64,8 +66,6 @@ export function KnowledgeSidePanel({
   citationsEnabled = true,
   agentLabel,
 }: KnowledgeSidePanelProps) {
-  const [dragover, setDragover] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const agentScopeEnabled = knowledgeEnabled !== false && agentKnowledgeEnabled !== false;
   const sessionScopeEnabled = knowledgeEnabled !== false && sessionKnowledgeEnabled !== false;
 
@@ -79,21 +79,29 @@ export function KnowledgeSidePanel({
   // mentions is avoided by NOT resetting ``localAgentDocs`` on
   // every render — only on successful fetch.
   const [localAgentDocs, setLocalAgentDocs] = useState<KnowledgeDoc[]>([]);
+  const [agentDocsLoading, setAgentDocsLoading] = useState(agentDocsProp === undefined);
+  const [agentDocsError, setAgentDocsError] = useState("");
   useEffect(() => {
     if (agentDocsProp !== undefined) return; // parent owns the data
     if (!agentScopeEnabled || !isOpen) return;
     let cancelled = false;
+    setAgentDocsLoading(true);
+    setAgentDocsError("");
     (async () => {
       try {
         const res = await api.listKnowledgeDocuments();
-        if (!res.ok || cancelled) return;
+        if (cancelled) return;
+        if (!res.ok) throw new Error(`Failed to load documents (${res.status})`);
         const body = await res.json();
         if (cancelled) return;
         const docs = (body?.documents ?? []) as KnowledgeDoc[];
         setLocalAgentDocs(docs);
-      } catch {
+      } catch (error) {
+        if (!cancelled) setAgentDocsError(error instanceof Error ? error.message : "Failed to load documents");
         // Network/decode failure — keep the last-known docs to avoid
         // the 6→0→6 flicker the prior commit was trying to prevent.
+      } finally {
+        if (!cancelled) setAgentDocsLoading(false);
       }
     })();
     return () => {
@@ -109,15 +117,19 @@ export function KnowledgeSidePanel({
   // Per-session citations override. ``null`` = no override stored, follow
   // the agent-level default (on). Loaded from the session settings API on
   // mount / thread change; written back optimistically on toggle.
+  const [citationsSaving, setCitationsSaving] = useState(false);
+  const citationsRequestRef = useRef(0);
   const [sessionCitations, setSessionCitations] = useState<boolean | null>(null);
   useEffect(() => {
+    const request = ++citationsRequestRef.current;
+    setCitationsSaving(false);
     setSessionCitations(null); // reset when switching conversations
     if (!threadId) return;
     let cancelled = false;
     api
       .getSessionKnowledgeSettings(threadId)
       .then((r) => {
-        if (cancelled) return;
+        if (cancelled || request !== citationsRequestRef.current) return;
         const v = r.overrides?.citations_enabled;
         setSessionCitations(typeof v === "boolean" ? v : null);
       })
@@ -129,25 +141,30 @@ export function KnowledgeSidePanel({
     };
   }, [threadId]);
 
-  const handleSessionCitationsChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSessionCitationsChange = async (next: boolean) => {
     // Mirror the toggle's own disabled condition (sessionScopeEnabled + a real
     // thread) — a bare !threadId guard lets a programmatic dispatch write a
     // phantom session override while the session scope is off.
     if (!conversationReady) return;
-    const next = e.target.checked;
+    if (citationsSaving) return;
+    const request = ++citationsRequestRef.current;
+    setCitationsSaving(true);
     const prev = sessionCitations;
     setSessionCitations(next); // optimistic
     try {
       await api.patchSessionKnowledgeSettings(threadId, { citations_enabled: next });
     } catch (err) {
       console.error("Failed to update session citations setting:", err);
-      setSessionCitations(prev); // revert on failure
-    }
+      if (request === citationsRequestRef.current) setSessionCitations(prev); // revert only in the same conversation
+    } finally { if (request === citationsRequestRef.current) setCitationsSaving(false); }
   };
 
   const {
     documents: sessionDocs,
     isUploading: uploading,
+    isLoading: sessionDocsLoading,
+    isDeleting: deleting,
+    loadError: sessionDocsError,
     uploadFiles,
     deleteDocument,
   } = useSessionKnowledgeAttachments({
@@ -185,64 +202,18 @@ export function KnowledgeSidePanel({
     }
   };
 
-  const handleDragEnter = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (conversationReady && e.dataTransfer?.types.includes("Files")) {
-      setDragover(true);
-    }
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX;
-    const y = e.clientY;
-    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
-      setDragover(false);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-  };
-
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragover(false);
-    if (!conversationReady) return;
-    const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) {
-      await handleUpload(files);
-    }
-  };
-
-  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!conversationReady) return;
-    const files = Array.from(e.target.files ?? []);
-    if (files.length > 0) {
-      await handleUpload(files);
-    }
-    // Reset input so the same file can be selected again
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-  };
 
   return (
     <div className={`knowledge-panel ${inline ? "inline" : ""} ${isOpen ? "open" : "closed"}`}>
       <div className="knowledge-panel-header">
         <div className="knowledge-panel-title">
-          <FileText size={18} />
+          <Document size={18} />
           <span>Knowledge</span>
         </div>
         {!inline && (
-          <button className="knowledge-close-btn" onClick={onToggle} title="Close">
-            <X size={18} />
-          </button>
+          <IconButton kind="ghost" size="sm" label="Close Knowledge" onClick={onToggle}>
+            <Close />
+          </IconButton>
         )}
       </div>
 
@@ -268,13 +239,13 @@ export function KnowledgeSidePanel({
         {agentScopeEnabled && (
           <div className="knowledge-section">
             <div className="knowledge-section-title">Agent Knowledge</div>
-            {agentDocs.length === 0 ? (
+            {agentDocsProp === undefined && agentDocsLoading && agentDocs.length === 0 ? <ContentSkeleton label="Loading agent documents…" rows={2} /> : agentDocsError ? <InlineNotification kind="error" title={agentDocsError} lowContrast hideCloseButton /> : agentDocs.length === 0 ? (
               <div className="knowledge-empty">No agent documents</div>
             ) : (
               agentDocs.map((doc) => (
                 <div className="knowledge-doc-row knowledge-doc-row--agent" key={doc.filename}>
                   <div className="knowledge-doc-icon">
-                    <FileText size={16} />
+                    <Document size={16} />
                   </div>
                   <div className="knowledge-doc-info">
                     <span className="knowledge-doc-filename">{doc.filename}</span>
@@ -286,7 +257,7 @@ export function KnowledgeSidePanel({
               ))
             )}
             <div className="knowledge-agent-hint">
-              <Lock size={12} />
+              <Locked size={12} />
               <span>Managed in Settings</span>
             </div>
           </div>
@@ -302,27 +273,20 @@ export function KnowledgeSidePanel({
                   <span className="knowledge-session-citations-label">Citations for this chat</span>
                   <span className="knowledge-session-citations-help">Show numbered sources under answers</span>
                 </div>
-                <label className="knowledge-mini-switch" title="Citations for this chat">
-                  <input
-                    type="checkbox"
-                    role="switch"
-                    aria-checked={sessionCitations ?? true}
-                    aria-label="Citations for this chat"
-                    checked={sessionCitations ?? true}
-                    onChange={handleSessionCitationsChange}
-                    disabled={!conversationReady}
-                  />
-                  <span className="knowledge-mini-switch-track" />
-                </label>
+                <Toggle id="session-citations-toggle" size="sm" labelText="" aria-label="Citations for this chat"
+                  hideLabel labelA="Off" labelB="On" toggled={sessionCitations ?? true}
+                  onToggle={handleSessionCitationsChange} disabled={!conversationReady || citationsSaving} />
               </div>
             )}
-            {sessionDocs.length === 0 ? (
+            {citationsSaving && <InlineLoading description="Saving citation settings…" aria-live="polite" />}
+            {deleting && <InlineLoading description="Removing document…" aria-live="polite" />}
+            {sessionDocsLoading && sessionDocs.length === 0 ? <ContentSkeleton label="Loading conversation documents…" rows={2} /> : sessionDocsError ? <InlineNotification kind="error" title={sessionDocsError} lowContrast hideCloseButton /> : sessionDocs.length === 0 ? (
               <div className="knowledge-empty">No session documents</div>
             ) : (
               sessionDocs.map((doc) => (
                 <div className="knowledge-doc-row" key={doc.knowledge_filename}>
                   <div className="knowledge-doc-icon">
-                    <FileText size={16} />
+                    <Document size={16} />
                   </div>
                   <div className="knowledge-doc-info">
                     <span className="knowledge-doc-filename">{doc.display_name}</span>
@@ -330,49 +294,19 @@ export function KnowledgeSidePanel({
                       {(doc.chunk_count ?? 0)} chunks &middot; {doc.ingested_at ? relativeTime(doc.ingested_at) : "Just now"}
                     </span>
                   </div>
-                  <button
-                    className="knowledge-doc-delete"
-                    onClick={() => handleDeleteSessionDoc(doc.knowledge_filename)}
-                    title="Remove document"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  <IconButton kind="ghost" size="sm" label={`Remove document ${doc.display_name}`}
+                    disabled={deleting} onClick={() => handleDeleteSessionDoc(doc.knowledge_filename)}><TrashCan /></IconButton>
                 </div>
               ))
             )}
 
-            <button
-              type="button"
-              className={`knowledge-drop-zone ${dragover ? "dragover" : ""} ${conversationReady ? "" : "disabled"}`}
-              onClick={() => {
-                if (!uploading && conversationReady) {
-                  fileInputRef.current?.click();
-                }
-              }}
-              onDragEnter={handleDragEnter}
-              onDragLeave={handleDragLeave}
-              onDragOver={handleDragOver}
-              onDrop={handleDrop}
-              disabled={uploading || !conversationReady}
-              title={conversationReady ? "Add documents to this conversation" : "Session unavailable"}
-            >
-              <Upload size={20} />
-              <span>
-                {uploading
-                  ? "Uploading..."
-                  : conversationReady
-                    ? "Drop files here or click to add"
-                    : "Session files are temporarily unavailable"}
-              </span>
-            </button>
-
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              style={{ display: "none" }}
-              onChange={handleFileInputChange}
+            <FileUploaderDropContainer
+              labelText={conversationReady ? "Drag and drop files here or click to upload" : "Session files are temporarily unavailable"}
+              multiple disabled={uploading || !conversationReady}
+              onAddFiles={(_event, { addedFiles }) => { void handleUpload(addedFiles); }}
             />
+            {uploading && <InlineLoading description="Uploading..." />}
+
           </div>
         )}
           </>
