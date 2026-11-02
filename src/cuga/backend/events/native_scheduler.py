@@ -67,6 +67,8 @@ def _parts(spec: str, lo: int, hi: int):
             start = end = _num(part, spec)
         if not (lo <= start <= hi and lo <= end <= hi):
             raise ValueError(f"cron field {spec!r} is out of range; allowed values are {lo}-{hi}")
+        if start > end:
+            raise ValueError(f"cron field {spec!r} has an inverted range {start}-{end}; start must be <= end")
         yield start, end, step
 
 
