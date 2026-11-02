@@ -55,7 +55,7 @@ async def test_http_identity(monkeypatch):
             response = await client.post(
                 '/stream',
                 json={'query': 'hello'},
-                headers={'X-Agent-ID': agent, 'X-Thread-ID': f'probe-{agent}', 'X-Disable-History': 'true'},
+                headers={'X-Agent-ID': agent, 'X-Disable-History': 'true'},
             )
             assert response.status_code == 200, response.text
     assert [s['scope']['agent_id'] for s in seen] == ['sales-east', 'sales-west']

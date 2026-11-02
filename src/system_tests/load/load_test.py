@@ -1,5 +1,4 @@
 import asyncio
-import uuid
 import time
 import os
 import httpx
@@ -225,7 +224,7 @@ class LoadTest(BaseTestServerStream):
         print(f"\n--- Starting Load Test with {num_users} users ---")
 
         batch_start = time.monotonic()
-        thread_ids = [str(uuid.uuid4()) for _ in range(num_users)]
+        thread_ids = [await self.create_conversation() for _ in range(num_users)]
 
         tasks = []
         for i in range(num_users):

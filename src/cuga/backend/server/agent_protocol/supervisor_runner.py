@@ -95,7 +95,7 @@ class SupervisorAgentRunner:
             thread_id = (context_id or "").strip() or uuid.uuid4().hex
             agent_id = getattr(self._app_state, "agent_id", "cuga-default")
             await get_conversation_db().claim_thread(thread_id, self._caller_user_id, agent_id)
-            scoped_id = checkpoint_thread_id(thread_id, self._caller_user_id, agent_id)
+            scoped_id = checkpoint_thread_id(thread_id, self._caller_user_id, agent_id, entry="a2a")
             supervisor = await self._ensure_supervisor()
             result = await supervisor.invoke(message, thread_id=thread_id, checkpoint_thread_id=scoped_id)
             answer = getattr(result, "answer", None) or str(result)
