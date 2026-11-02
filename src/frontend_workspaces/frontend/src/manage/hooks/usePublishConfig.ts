@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../../api";
-import { isAbortError, type AddToast } from "./saveHelpers";
+import { isAbortError, parsePublishedVersion, type AddToast } from "./saveHelpers";
 import type { DraftSaveStatus } from "./useKnowledgeDraftSave";
 
 type LiveKnowledge = {
@@ -200,7 +200,8 @@ export function usePublishConfig(opts: {
 
         if (ac.signal.aborted) return;
 
-        setCurrentVersion(typeof data.version === "number" ? data.version : "draft");
+        const publishedVersion = parsePublishedVersion(data.version);
+        setCurrentVersion(publishedVersion ?? "draft");
         setSaveStatus("success");
         setLiveKnowledge({
           provider:
@@ -212,7 +213,7 @@ export function usePublishConfig(opts: {
           // default", so persisting a literal "(default)" would break the
           // Live-pill / Re-index divergence check. Rendering adds the label.
           model: typeof knowledgeConfig.embedding_model === "string" ? knowledgeConfig.embedding_model : "",
-          version: typeof data.version === "number" ? data.version : null,
+          version: publishedVersion,
           chunk_size: typeof knowledgeConfig.chunk_size === "number" ? knowledgeConfig.chunk_size : undefined,
           chunk_overlap:
             typeof knowledgeConfig.chunk_overlap === "number" ? knowledgeConfig.chunk_overlap : undefined,

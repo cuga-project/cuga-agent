@@ -77,7 +77,7 @@ import {
   storedRefMissingFromList,
 } from "./secretRefUtils";
 import { parseImportedSupervisorFields } from "./manage/parseImportedConfig";
-import { isAbortError } from "./manage/hooks/saveHelpers";
+import { isAbortError, parsePublishedVersion } from "./manage/hooks/saveHelpers";
 import "./ManagePage.css";
 
 export type { ToolEntry } from "./types/tools";
@@ -860,7 +860,7 @@ export function ManagePage() {
             setLiveKnowledge({
               provider: typeof liveKn.embedding_provider === "string" ? liveKn.embedding_provider : "fastembed",
               model: typeof liveKn.embedding_model === "string" ? liveKn.embedding_model : "",
-              version: typeof data.version === "number" ? data.version : null,
+              version: parsePublishedVersion(data.version),
               chunk_size: typeof liveKn.chunk_size === "number" ? liveKn.chunk_size : undefined,
               chunk_overlap: typeof liveKn.chunk_overlap === "number" ? liveKn.chunk_overlap : undefined,
               metric_type: typeof liveKn.metric_type === "string" ? liveKn.metric_type : undefined,
@@ -898,7 +898,7 @@ export function ManagePage() {
               out.feature_flags = { ...DEFAULT_CONFIG.feature_flags!, ...data.config.feature_flags };
             }
           }
-          version = typeof data.version === "number" ? data.version : null;
+          version = parsePublishedVersion(data.version);
         } else if (publishedRes.status >= 400) {
           const errorMsg = `Failed to load published config (${publishedRes.status} ${publishedRes.statusText})`;
           addToast("error", "Load Error", errorMsg);
