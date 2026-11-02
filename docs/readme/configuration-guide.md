@@ -379,6 +379,58 @@ if __name__ == "__main__":
 
 **Documentation**: [SDK Guide](https://docs.cuga.dev/docs/build/cuga-agent/) | [Policies Guide](https://docs.cuga.dev/docs/build/policies/)
 
+### Set environment variables before the first `cuga` import
+
+`cuga.config` loads `.env` and builds its Dynaconf settings when it is first imported, and `from cuga import CugaAgent` (or `cuga.sdk`) imports it. Environment variables that configure CUGA must be set **before** that first import. Writing to `os.environ` afterwards is silently ignored for settings that were already loaded.
+
+Wrong (the override comes too late and has no effect):
+
+```python
+import os
+from cuga.config import settings
+
+os.environ["DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED"] = "false"
+
+settings.advanced_features.tracker_enabled  # still the value loaded at import
+```
+
+Right (set the variable, then import):
+
+```python
+import os
+
+os.environ["DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED"] = "false"
+
+from cuga.config import settings
+
+settings.advanced_features.tracker_enabled  # False
+```
+
+Recommended: keep overrides in a `.env` file and point `ENV_FILE` at it before importing CUGA, as in [`docs/examples/cuga_as_mcp/main.py`](../examples/cuga_as_mcp/main.py):
+
+```python
+import os
+
+os.environ["ENV_FILE"] = os.path.join(os.path.dirname(__file__), ".env")
+
+from cuga import CugaAgent  # first cuga import comes after ENV_FILE
+```
+
+Variables read when `cuga.config` is imported (non-exhaustive):
+
+| Variable | Effect |
+| --- | --- |
+| `ENV_FILE` | `.env` file to load (values override the existing environment). Without it, the nearest `.env` is searched from the current directory. |
+| `ENV_FILE_PATH`, `SETTINGS_TOML_PATH`, `EVAL_CONFIG_TOML_PATH` | Settings files passed to Dynaconf |
+| `AGENT_SETTING_CONFIG` | Model preset TOML under `configurations/models/` |
+| `DYNACONF_*` | Any setting override, e.g. `DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED`, `DYNACONF_ADVANCED_FEATURES__LANGFUSE_TRACING`, `DYNACONF_FEATURES__CUGA_MODE`, `DYNACONF_OBSERVABILITY__*` (OpenLit and tracing read these loaded values when an agent starts) |
+| `CUGA_PACKAGE_ROOT`, `CUGA_CONFIGURATIONS_DIR`, `CUGA_LOGGING_DIR`, `CUGA_DBS_DIR` | Package, configuration, logging, and database directories |
+| `CUGA_STRICT_CONFIG` | Fail at import when the model or mode TOML is missing (default `1`) |
+| `FASTEMBED_CACHE_PATH` | Embedding model cache directory |
+| `WA_*` | Copied to the same name without the `WA_` prefix (WebArena / eval app URLs) |
+
+To change the model per call in a running process, pass `CugaAgent(model=...)` instead of rewriting environment variables.
+
 ### Run Receipt
 
 Answer "where did the tokens and the time go?" without an external observability

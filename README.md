@@ -259,7 +259,7 @@ async def main():
 asyncio.run(main())
 ```
 
-Configure a model before running the example. Replace the sample tool with your own service integration.
+Configure a model before running the example. Replace the sample tool with your own service integration. Set any `ENV_FILE`, `AGENT_SETTING_CONFIG`, or `DYNACONF_*` overrides before the first `cuga` import; see [environment variables and import order](docs/readme/configuration-guide.md#set-environment-variables-before-the-first-cuga-import).
 
 **[CugaAgent SDK](https://docs.cuga.dev/docs/build/cuga-agent/)** · **[CugaSupervisor](https://docs.cuga.dev/docs/build/cuga-supervisor/)** · **[Tool integration examples](docs/examples/cuga_with_runtime_tools/README.md)**
 
