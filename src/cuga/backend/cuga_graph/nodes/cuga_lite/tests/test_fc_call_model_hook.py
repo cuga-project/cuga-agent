@@ -325,7 +325,11 @@ def test_replay_rebuilds_bare_shells_and_closes_dangling_calls():
 
 
 def _policy_system(match):
-    return SimpleNamespace(agent=SimpleNamespace(check_tool_approval_for_code=AsyncMock(return_value=match)))
+    """A policy system that is already set up."""
+    return SimpleNamespace(
+        agent=SimpleNamespace(check_tool_approval_for_code=AsyncMock(return_value=match)),
+        ensure_initialized=AsyncMock(),
+    )
 
 
 def _approval_match():
