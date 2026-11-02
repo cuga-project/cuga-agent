@@ -361,7 +361,7 @@ def test_a_destructive_flag_is_flagged_only_against_a_task_that_keeps_the_data()
     text = _verify_prompt_text()
     rule_five = text.split("5. Destructive flags", 1)[1].split("Do NOT flag:", 1)[0]
     assert "asks only to add to that data or to keep it" in rule_five
-    assert '"add the kettle to my cart"' in rule_five
+    assert '"append these rows to the sheet"' in rule_five
     carve_outs = text.split("Do NOT flag:", 1)[1]
     assert "when the Current Task is to buy or order items" in carve_outs
     assert "part of the purchase, not a contradiction" in carve_outs
