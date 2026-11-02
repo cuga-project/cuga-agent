@@ -355,7 +355,7 @@ async def test_call_scoped_locks_do_not_accumulate():
 
 @pytest.mark.asyncio
 async def test_supervisor_invoke_puts_user_id_on_state():
-    from unittest.mock import MagicMock
+    from unittest.mock import AsyncMock, MagicMock
 
     from cuga.sdk import CugaSupervisor
 
@@ -369,7 +369,7 @@ async def test_supervisor_invoke_puts_user_id_on_state():
 
     supervisor = CugaSupervisor(agents={}, model=MagicMock(), auto_load_policies=False)
     supervisor._compiled_graph = SimpleNamespace(
-        ainvoke=fake_ainvoke, get_state=lambda _c: SimpleNamespace(next=None)
+        ainvoke=fake_ainvoke, aget_state=AsyncMock(return_value=SimpleNamespace(next=None))
     )
     await supervisor.invoke("hello", thread_id="t-shared", user_id="alice")
     assert captured["user_id"] == "alice"

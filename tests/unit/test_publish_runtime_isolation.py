@@ -196,3 +196,51 @@ def test_publishing_default_agent_still_applies_to_singleton(monkeypatch):
     assert applied.get("rebuilt") is True
     assert state.current_llm == "updated-llm"
     assert state.agent.special_instructions == "new-default"
+
+
+async def _seeded_default_agent(checkpointer):
+    """Build a cheap real entry graph (as test_entry_graph does) and seed one thread."""
+    from unittest.mock import MagicMock, patch
+
+    from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
+    from cuga.backend.llm.models import LLMManager
+
+    tool_provider = MagicMock(spec=ToolProviderInterface)
+    tool_provider.initialize = AsyncMock()
+    tool_provider.get_apps = AsyncMock(return_value=[])
+    tool_provider.reset = MagicMock()  # rebuild_agent_from_config resets the provider
+    # The constructor creates node LLMs too, so it must also run under the get_model patch.
+    with patch.object(LLMManager, "get_model", return_value=MagicMock()):
+        agent = CugaEntryGraph(None, tool_provider=tool_provider, supervisor_enabled=False)
+        await agent.build_graph(checkpointer=checkpointer)
+    cfg = {"configurable": {"thread_id": "default-thread"}}
+    await agent.graph.aupdate_state(cfg, {"input": "before publish"}, as_node=agent.chat.chat_agent.name)
+    return agent, cfg
+
+
+async def _rebuild(state):
+    from unittest.mock import MagicMock, patch
+
+    from cuga.backend.llm.models import LLMManager
+    from cuga.backend.server.manage_routes.apply import rebuild_production_agent
+
+    with patch.object(LLMManager, "get_model", return_value=MagicMock()):
+        await rebuild_production_agent(state, {})
+
+
+@pytest.mark.asyncio
+async def test_default_publish_rebuild_keeps_conversations_on_shared_saver():
+    """Publishing cuga-default rebuilds app_state.agent; the shared saver keeps its threads (#774)."""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    saver = MemorySaver()
+    agent, cfg = await _seeded_default_agent(saver)
+    old_graph = agent.graph
+    state = SimpleNamespace(agent=agent, checkpointer=saver, config_version=2)
+
+    await _rebuild(state)
+
+    assert agent.graph is not old_graph
+    assert agent._checkpoint_config_version == "2"
+    assert (await agent.graph.aget_state(cfg)).values["input"] == "before publish"

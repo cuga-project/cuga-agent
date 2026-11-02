@@ -7,10 +7,34 @@ on-disk file a locally running `cuga start manager` server uses. Redirect every
 test in this directory to a throwaway temp directory instead.
 """
 
+import functools
+import importlib.util
+from pathlib import Path
+
 import pytest
 import pytest_asyncio
 
 from cuga.backend.llm.models import LLMManager
+
+# The repo-root ``tests/fixtures/async_only_saver.py`` is the single copy of
+# AsyncOnlySaver. The `sdk` CI job collects only this directory under
+# --import-mode=importlib, so the repo root is not on sys.path and
+# ``import tests.fixtures...`` fails here; load the module from its file instead.
+_ASYNC_ONLY_SAVER_PATH = Path(__file__).resolve().parents[4] / "tests" / "fixtures" / "async_only_saver.py"
+
+
+@functools.lru_cache(maxsize=1)
+def _load_async_only_saver_module():
+    spec = importlib.util.spec_from_file_location("_cuga_test_async_only_saver", _ASYNC_ONLY_SAVER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def async_only_saver_cls():
+    """The ``AsyncOnlySaver`` class (sync saver API raises and records ``sync_calls``)."""
+    return _load_async_only_saver_module().AsyncOnlySaver
 
 
 @pytest.fixture(autouse=True)
