@@ -1000,7 +1000,8 @@ class AgentState(BaseModel):
     # makes it monotonic, so a caller that rebuilds state and passes the default 0 (the
     # server does exactly this per turn) cannot silently reset the ceiling.
     tool_calls_used_thread: Annotated[int, keep_highest] = 0
-    service_scope: Optional[Dict[str, str]] = Field(
+    # Values are strings, except ``config_fingerprint`` which the server stamps as a small dict.
+    service_scope: Optional[Dict[str, Any]] = Field(
         default_factory=lambda: {"tenant_id": "", "instance_id": ""},
         description="Tenant and instance context for multi-tenant/prod DB scoping",
     )

@@ -379,6 +379,7 @@ async def test_event_stream_persists_under_requested_agent_id(
 
     monkeypatch.setattr(main_mod.settings.supervisor, "enabled", True)
     _patch_agent_loop(monkeypatch, _ImmediateLoop)
+    monkeypatch.setattr("cuga.backend.server.config_store.load_config", AsyncMock(return_value=({}, "4")))
     monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", fake_save)
     monkeypatch.setattr(main_mod, "_knowledge_enabled_for_app_state", lambda _state: False)
     monkeypatch.setattr(main_mod, "_rehydrate_citation_ledger", AsyncMock())
@@ -408,28 +409,64 @@ async def test_event_stream_persists_under_requested_agent_id(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("is_resume", [False, True])
 @pytest.mark.parametrize("graph_version", ["3", "4"])
-async def test_stream_rejects_pending_approval_after_published_config_changes(
+async def test_stream_cancels_pending_approval_after_published_config_changes(
     monkeypatch, is_resume, graph_version
 ):
+    """A checkpoint that predates fingerprints is compared on its published version."""
     from cuga.backend.cuga_graph.state.agent_state import default_state
 
     checkpoint = default_state(page=None, observation=None, goal="")
     checkpoint.service_scope["published_config_version"] = "3"
+    pending = SimpleNamespace(values=checkpoint.model_dump(), next=("WaitForResponse",))
+    cleared = SimpleNamespace(values=checkpoint.model_dump(), next=())
     graph = MagicMock()
-    graph.aget_state = AsyncMock(
-        return_value=SimpleNamespace(values=checkpoint.model_dump(), next=("WaitForResponse",))
+    graph.aupdate_state = AsyncMock()
+
+    async def aget_state(_config):
+        return cleared if graph.aupdate_state.await_count >= 2 else pending
+
+    graph.aget_state = AsyncMock(side_effect=aget_state)
+    run_agent = SimpleNamespace(
+        graph=graph,
+        _checkpoint_config_version=graph_version,
+        policy_system=None,
+        enable_todos=None,
+        reflection_enabled=None,
+        shortlisting_tool_threshold=None,
+        cuga_lite_max_steps=None,
+        enable_filesystem_tools=None,
+        special_instructions=None,
+        chat=None,
     )
-    run_agent = SimpleNamespace(graph=graph, _checkpoint_config_version=graph_version)
 
-    def unexpected_loop(**_kwargs):
-        raise AssertionError("A stale approval must not invoke the graph")
+    class _ImmediateLoop:
+        def __init__(self, **_kwargs):
+            pass
 
-    _patch_agent_loop(monkeypatch, unexpected_loop)
-    load_config = AsyncMock(return_value=({}, "4"))
+        def get_langfuse_trace_id(self):
+            return None
+
+        async def run_stream(self, **_kwargs):
+            from cuga.backend.cuga_graph.utils.agent_loop import AgentLoopAnswer
+
+            yield AgentLoopAnswer(end=True, answer="fresh", tools=[])
+
+    _patch_agent_loop(monkeypatch, _ImmediateLoop)
+    load_config = AsyncMock(return_value=({"agent": {"kind": "single"}}, "4"))
     monkeypatch.setattr("cuga.backend.server.config_store.load_config", load_config)
+    fresh_agent = SimpleNamespace(**vars(run_agent))
+    fresh_agent._checkpoint_config_version = "4"
+    monkeypatch.setattr(main_mod, "_refresh_published_graph", AsyncMock(return_value=fresh_agent))
     monkeypatch.setattr(main_mod, "_assert_run_thread_access", AsyncMock())
+    monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", AsyncMock())
+    monkeypatch.setattr(main_mod, "_knowledge_enabled_for_app_state", lambda _state: False)
+    monkeypatch.setattr(main_mod, "_rehydrate_citation_ledger", AsyncMock())
+    monkeypatch.setattr(main_mod, "_dispatch_slash_for_stream", AsyncMock(return_value=None))
+    monkeypatch.setattr(main_mod.app_state, "agent_id", "cuga-default")
+    monkeypatch.setattr(main_mod.app_state, "current_llm", "default-llm")
     monkeypatch.setattr(main_mod.app_state, "stop_events", {})
     monkeypatch.setattr(main_mod.app_state, "output_format", None)
+    monkeypatch.setattr(main_mod.app_state, "knowledge_provider", None)
 
     chunks = [
         chunk
@@ -440,16 +477,21 @@ async def test_stream_rejects_pending_approval_after_published_config_changes(
             thread_id="thread-1",
             agent=run_agent,
             agent_id="sales-east",
+            current_llm=None,
         )
     ]
 
-    assert len(chunks) == 1
-    assert "older agent configuration" in chunks[0]
-    graph.aget_state.assert_awaited_once()
-    if graph_version == "3":
-        load_config.assert_awaited_once_with(None, "sales-east")
+    assert graph.aupdate_state.await_count == 2
+    assert chunks[0].startswith("event: pending_cancelled")
+    assert '"reason": "config_changed"' in chunks[0]
+    if is_resume:
+        assert len(chunks) == 2
+        assert chunks[1].startswith("event: Answer")
+        assert "pending approval was cancelled" in chunks[1]
     else:
-        load_config.assert_not_awaited()
+        assert "fresh" in chunks[-1]
+    # The published configuration is read under the turn lease on every request.
+    load_config.assert_awaited_once_with(None, "sales-east")
 
 
 @pytest.mark.asyncio

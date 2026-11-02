@@ -1,5 +1,6 @@
 """Utility functions for policy system."""
 
+import copy
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -174,6 +175,9 @@ async def apply_policies_data_to_storage(
     """
     errors: List[str] = []
     count = 0
+    # Normalization below edits the dicts; work on a copy so the caller's config (which the
+    # configuration fingerprint is computed from) stays as stored (#774).
+    policies_data = copy.deepcopy(policies_data or [])
     if clear_existing:
         existing_policies = await storage.list_policies(enabled_only=False)
         for policy_obj in existing_policies:

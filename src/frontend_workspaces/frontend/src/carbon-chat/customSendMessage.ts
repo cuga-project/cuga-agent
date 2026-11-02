@@ -57,6 +57,9 @@ export async function stopCugaAgent(threadId: string, agentId?: string) {
   }
 }
 
+/** Notices the server sends when the agent configuration changed under a conversation. */
+export type ConfigNotice = "config_changed" | "pending_cancelled";
+
 interface CugaStreamEvent {
   name: string;
   data: any;
@@ -132,6 +135,7 @@ export async function customSendMessage(
   actionResponse?: any,
   attachmentSnapshot?: KnowledgeAttachmentSnapshot[],
   agentId = api.getKnowledgeAgentId(),
+  onConfigNotice?: (notice: ConfigNotice) => void,
 ) {
   const userMessage = request.input.text?.trim() ?? "";
   
@@ -306,6 +310,12 @@ export async function customSendMessage(
         const serverId = typeof event.data === "string" ? event.data.trim() : null;
         if (serverId) adoptIssuedThreadId(serverId, generation);
         continue; // housekeeping only — no UI output
+      }
+
+      // Notices are shown by the host outside the transcript, so they add no message.
+      if (event.name === "config_changed" || event.name === "pending_cancelled") {
+        onConfigNotice?.(event.name);
+        continue;
       }
 
       // First event means backend is responding — create shell and hide loading indicator

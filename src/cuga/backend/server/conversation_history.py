@@ -118,6 +118,14 @@ class ConversationHistoryDB:
         except Exception as exc:
             if "duplicate column" not in str(exc).lower() and "already exists" not in str(exc).lower():
                 raise
+        # Last completed turn, used by the retention sweep; '' falls back to created_at.
+        try:
+            await store.execute(
+                "ALTER TABLE runtime_thread_owners ADD COLUMN last_turn_at TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower() and "already exists" not in str(exc).lower():
+                raise
         for idx_sql in [
             "CREATE INDEX IF NOT EXISTS idx_thread_id ON conversation_history(thread_id)",
             "CREATE INDEX IF NOT EXISTS idx_user_id ON conversation_history(user_id)",
@@ -265,6 +273,40 @@ class ConversationHistoryDB:
         store = self._get_store()
         await store.execute(sql, params)
         await store.commit()
+
+    async def mark_last_turn_at(self, thread_id: str, user_id: str) -> None:
+        """Record that a turn just ran on the thread. Best effort: failures are logged, not raised."""
+        try:
+            await self._ensure_schema()
+            store = self._get_store()
+            await store.execute(
+                """UPDATE runtime_thread_owners SET last_turn_at = ?
+                WHERE tenant_id = ? AND instance_id = ? AND thread_id = ? AND user_id = ?""",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    _tenant_id(),
+                    _instance_id(),
+                    thread_id.strip(),
+                    user_id,
+                ),
+            )
+            await store.commit()
+        except Exception as exc:
+            logger.error(f"mark_last_turn_at failed: {type(exc).__name__}")
+
+    async def get_idle_before(self, cutoff_iso: str, limit: int = 200) -> List[Dict[str, Any]]:
+        """Conversations in status ``new`` or ``active`` whose last activity predates ``cutoff_iso``.
+
+        Activity time is ``last_turn_at`` when set, else ``created_at``.
+        """
+        await self._ensure_schema()
+        return await self._get_store().fetchall(
+            """SELECT thread_id, user_id, agent_id FROM runtime_thread_owners
+            WHERE tenant_id = ? AND instance_id = ? AND status IN ('new', 'active')
+            AND COALESCE(NULLIF(last_turn_at, ''), created_at) < ?
+            LIMIT ?""",
+            (_tenant_id(), _instance_id(), cutoff_iso, limit),
+        )
 
     async def get_thread_statuses(self, user_id: str, agent_id: str) -> Dict[str, str]:
         """``thread_id -> status`` for every conversation the user owns with this agent."""
