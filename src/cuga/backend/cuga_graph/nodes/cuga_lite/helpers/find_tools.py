@@ -17,6 +17,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
 _BUNDLED_FIND_TOOLS_FEW_SHOT_JSON = (
     Path(__file__).resolve().parent.parent / "prompts" / "find_tools_few_shot_examples.json"
 )
+# Same task, rewritten to the plan-then-step prompt (cuga_lite_plan_then_step).
+_BUNDLED_PLAN_THEN_STEP_FEW_SHOT_JSON = (
+    Path(__file__).resolve().parent.parent / "prompts" / "find_tools_few_shot_examples_plan_then_step.json"
+)
 
 
 def _first_user_message_text(chat_messages: Optional[List[BaseMessage]]) -> Optional[str]:
@@ -142,20 +146,21 @@ async def create_find_tools_tool(
     )
 
 
-def _resolve_find_tools_few_shot_json_path() -> Optional[Path]:
-    if _BUNDLED_FIND_TOOLS_FEW_SHOT_JSON.is_file():
-        return _BUNDLED_FIND_TOOLS_FEW_SHOT_JSON
+def _resolve_find_tools_few_shot_json_path(plan_then_step: bool = False) -> Optional[Path]:
+    bundled = _BUNDLED_PLAN_THEN_STEP_FEW_SHOT_JSON if plan_then_step else _BUNDLED_FIND_TOOLS_FEW_SHOT_JSON
+    if bundled.is_file():
+        return bundled
     return None
 
 
-def _load_default_find_tools_few_shot_examples() -> List[Dict[str, str]]:
+def _load_default_find_tools_few_shot_examples(*, plan_then_step: bool = False) -> List[Dict[str, str]]:
     from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import normalize_mcp_few_shot_examples
 
-    path = _resolve_find_tools_few_shot_json_path()
+    path = _resolve_find_tools_few_shot_json_path(plan_then_step)
     if path is None:
         logger.debug(
             "Find-tools few-shot JSON not found (expected packaged %s or repo samples copy); skipping",
-            _BUNDLED_FIND_TOOLS_FEW_SHOT_JSON,
+            _BUNDLED_PLAN_THEN_STEP_FEW_SHOT_JSON if plan_then_step else _BUNDLED_FIND_TOOLS_FEW_SHOT_JSON,
         )
         return []
     try:

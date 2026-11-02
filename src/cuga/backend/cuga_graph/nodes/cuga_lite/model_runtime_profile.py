@@ -248,6 +248,19 @@ def resolve_step_discipline(
     return normalize_step_discipline(raw)
 
 
+def resolve_plan_then_step(
+    configurable: Optional[Dict[str, Any]],
+    model_name: Optional[str] = None,
+    *,
+    settings_fn: Optional[Callable[[], Any]] = None,
+) -> bool:
+    """CodeAct prompts ask for a short plan and code for its first step only. Default on.
+
+    Prompt-only: the per-block tool-call cap stays with ``cuga_lite_step_discipline``.
+    """
+    return _bool_coerce(_layered("cuga_lite_plan_then_step", configurable, model_name, settings_fn, True))
+
+
 def resolve_fc_prompt_fragments(
     configurable: Optional[Dict[str, Any]],
     model_name: Optional[str] = None,
