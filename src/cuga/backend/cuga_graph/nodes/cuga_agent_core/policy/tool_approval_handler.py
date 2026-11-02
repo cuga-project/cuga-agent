@@ -3,6 +3,7 @@
 Shared by CugaLite and CugaSupervisor via :class:`CoreGraphAdapter` seams.
 """
 
+import traceback
 from typing import Any, List, Optional
 
 from langchain_core.messages import AIMessage
@@ -19,6 +20,13 @@ from cuga.backend.cuga_graph.policy.models import PolicyDecisionOutcome
 from cuga.backend.cuga_graph.policy.observability import (
     append_policy_decisions,
     decision_from_metadata,
+)
+
+# The approval asked for when the tool-approval check could not run (#880). The
+# id stands in for a policy in the recorded decision; no stored policy has it.
+APPROVAL_CHECK_FAILED_POLICY_ID = "tool_approval_check_failed"
+APPROVAL_CHECK_FAILED_MESSAGE = (
+    "The tool-approval policies could not be checked, so this code needs your approval before it runs."
 )
 
 
@@ -127,6 +135,10 @@ class ToolApprovalHandler:
         ``ai_message`` is the assistant turn to persist with the interrupt; the
         default is a text message carrying ``content``. A function-calling turn
         passes its own ``AIMessage`` so the ``tool_calls`` survive the pause.
+
+        Fails closed: when the check itself fails (the policy store errors, or the
+        check raises) the code is not run unapproved; the run pauses for approval
+        as it does for a matched policy.
         """
         from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 
@@ -135,6 +147,7 @@ class ToolApprovalHandler:
 
             policy_system = PolicyConfigurable.from_config(config or {})
             logger.debug(f"Got policy system: {policy_system}")
+            await policy_system.ensure_initialized()
 
             context = PolicyConfigurable.create_context_from_state(state, config or {})
             logger.debug(f"Created context with user_input: '{context.user_input}'")
@@ -142,19 +155,49 @@ class ToolApprovalHandler:
             policy_match = await policy_system.agent.check_tool_approval_for_code(code, context)
             logger.debug(f"Policy match result: {policy_match}")
 
-            if not policy_match or not policy_match.matched:
-                logger.debug("No ToolApproval policy matched the generated code")
-                return None
+        except Exception as e:
+            # The error and traceback go in as arguments, not into the template: loguru
+            # formats the message, and braces in them (a pydantic error's input_value)
+            # would otherwise raise here and skip the pause. The traceback is plain
+            # text, not loguru's exception option, whose default diagnose mode would
+            # log this frame's locals: the generated code and the user's input.
+            logger.error(
+                "Tool approval check failed - pausing for approval instead of running the code: {}\n{}",
+                e,
+                traceback.format_exc(),
+            )
+            return ToolApprovalHandler._pause_for_approval(
+                adapter,
+                state,
+                code,
+                content,
+                {
+                    "policy_id": APPROVAL_CHECK_FAILED_POLICY_ID,
+                    "policy_name": "Tool approval check failed",
+                    "policy_confidence": 0.0,
+                    "policy_reasoning": "The tool-approval policies could not be checked.",
+                    "required_tools": [],
+                    "matched_tools": [],
+                    "required_apps": [],
+                    "approval_message": APPROVAL_CHECK_FAILED_MESSAGE,
+                    "show_code_preview": True,
+                },
+                ai_message=ai_message,
+            )
 
-            policy = policy_match.policy
-            logger.warning(f"Tool approval required by policy '{policy.name}' - routing to HITL")
+        if not policy_match or not policy_match.matched:
+            logger.debug("No ToolApproval policy matched the generated code")
+            return None
 
-            code_lines = code.split("\n")
-            preview_lines = code_lines
+        policy = policy_match.policy
+        logger.warning(f"Tool approval required by policy '{policy.name}' - routing to HITL")
 
-            approval_metadata = {
-                **adapter.get_metadata(state),
-                "policy_type": "tool_approval",
+        return ToolApprovalHandler._pause_for_approval(
+            adapter,
+            state,
+            code,
+            content,
+            {
                 "policy_id": policy.id,
                 "policy_name": policy.name,
                 "policy_confidence": policy_match.confidence,
@@ -165,27 +208,42 @@ class ToolApprovalHandler:
                 "approval_message": policy.approval_message
                 or "This tool requires your approval before execution.",
                 "show_code_preview": policy.show_code_preview,
-            }
+            },
+            ai_message=ai_message,
+        )
 
-            append_policy_decisions(
-                approval_metadata,
-                [
-                    decision_from_metadata(
-                        approval_metadata,
-                        outcome=PolicyDecisionOutcome.APPROVAL_REQUIRED,
-                    )
-                ],
-            )
+    @staticmethod
+    def _pause_for_approval(
+        adapter: CoreGraphAdapter,
+        state: Any,
+        code: str,
+        content: str,
+        policy_fields: dict,
+        *,
+        ai_message: Optional[AIMessage] = None,
+    ) -> Command:
+        """Record the tool-approval decision on state and return the HITL interrupt."""
+        approval_metadata = {
+            **adapter.get_metadata(state),
+            "policy_type": "tool_approval",
+            **policy_fields,
+        }
 
-            adapter.set_metadata(state, approval_metadata)
+        append_policy_decisions(
+            approval_metadata,
+            [
+                decision_from_metadata(
+                    approval_metadata,
+                    outcome=PolicyDecisionOutcome.APPROVAL_REQUIRED,
+                )
+            ],
+        )
 
-            return ToolApprovalHandler._create_approval_interrupt(
-                adapter, state, code, content, preview_lines, ai_message=ai_message
-            )
+        adapter.set_metadata(state, approval_metadata)
 
-        except Exception as e:
-            logger.error(f"Error checking tool approval policies: {e}", exc_info=True)
-            return None
+        return ToolApprovalHandler._create_approval_interrupt(
+            adapter, state, code, content, code.split("\n"), ai_message=ai_message
+        )
 
     @staticmethod
     def _create_approval_interrupt(

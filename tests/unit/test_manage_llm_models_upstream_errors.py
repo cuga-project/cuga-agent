@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from cuga.backend.server.auth import require_auth, require_manage_access
 from cuga.backend.server.manage_routes import llm_routes, router
 
-API_KEY = "sk-test-0123456789abcdefghij"
+API_KEY = "sk-test-0123456789abcdefghij"  # pragma: allowlist secret
 URL = "/api/manage/llm/models"
 
 
@@ -27,7 +27,7 @@ def client(monkeypatch) -> TestClient:
     app.include_router(router)
     app.dependency_overrides[require_auth] = lambda: None
     app.dependency_overrides[require_manage_access] = lambda: None
-    return TestClient(app)
+    return TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
 
 
 def _mock_provider(monkeypatch, handler):

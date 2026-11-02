@@ -70,7 +70,7 @@ Configure tools and policies beside a draft chat, then publish a version for use
 
 ### Watch the product tour
 
-https://github.com/user-attachments/assets/cb21fd61-b04b-4188-8f3e-e33197df1b9e
+https://github.com/user-attachments/assets/2c51ab34-cb7a-43f8-aa1d-9a4cf8e27b5c
 
 *Visual tour of the current UI with sample configuration, flows, run history, and memory records. It does not show a live agent run. [Media details](docs/readme/media.md).*
 

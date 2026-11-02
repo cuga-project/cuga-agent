@@ -204,7 +204,11 @@ validators = [
     Validator("secrets.vault_write_enabled", default=False),
     Validator("secrets.aws_region", default=""),
     Validator("auth.enabled", default=False),
-    Validator("auth.authorization_enabled", default=False),
+    # Decision 1 / Option A: with auth off, same-machine callers may reach the secrets
+    # and management APIs; remote callers may not. True keeps local/dev/demo installs
+    # working on upgrade. With False and auth off, no caller can reach these APIs
+    # (Decision 1 / Option B); turn on auth to use them.
+    Validator("auth.allow_local_admin", default=True),
     Validator("auth.manage_roles", default=["ServiceOwner", "ServiceAdmin"]),
     Validator("auth.chat_roles", default=["ServiceOwner", "ServiceAdmin", "ServiceUser"]),
     Validator("auth.session_cookie_name", default="cuga_session"),
