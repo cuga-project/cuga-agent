@@ -28,7 +28,7 @@ def _client(app_state, draft_app_state) -> TestClient:
     app.dependency_overrides[require_auth] = lambda: None
     app.state.app_state = app_state
     app.state.draft_app_state = draft_app_state
-    return TestClient(app)
+    return TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
 
 
 def _states():

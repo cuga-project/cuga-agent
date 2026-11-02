@@ -1,3 +1,4 @@
+import { ContentSkeleton } from "agentic_chat/LoadingState";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Checkbox, InlineLoading, InlineNotification, VStack } from "@carbon/react";
 import * as api from "../api";
@@ -29,6 +30,7 @@ export function SandboxSettings({ onError, onSaved }: Props) {
   const [status, setStatus] = useState<SandboxSettingsStatus | null>(null);
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState("");
   // The parent passes fresh callbacks on every render (each toast re-renders it).
   // Read them through refs so `call` stays stable and the mount effect runs once,
   // instead of re-fetching and re-testing the sandbox after every toast.
@@ -45,10 +47,13 @@ export function SandboxSettings({ onError, onSaved }: Props) {
   const call = useCallback(
     async (fn: () => Promise<Response>, okMessage?: string): Promise<SandboxSettingsStatus | null> => {
       setBusy(true);
+      setLoadError("");
       try {
         const res = await fn();
         if (!res.ok) {
-          onErrorRef.current("Code sandbox", await readError(res));
+          const message = await readError(res);
+          setLoadError(message);
+          onErrorRef.current("Code sandbox", message);
           return null;
         }
         const s: SandboxSettingsStatus = await res.json();
@@ -56,6 +61,7 @@ export function SandboxSettings({ onError, onSaved }: Props) {
         if (okMessage) onSavedRef.current?.(okMessage);
         return s;
       } catch (e) {
+        setLoadError(String(e));
         onErrorRef.current("Code sandbox", String(e));
         return null;
       } finally {
@@ -73,7 +79,7 @@ export function SandboxSettings({ onError, onSaved }: Props) {
     })();
   }, [call]);
 
-  if (!status) return <InlineLoading description="Loading sandbox settings…" />;
+  if (!status) return loadError ? <InlineNotification kind="error" title="Code sandbox" subtitle={loadError} lowContrast hideCloseButton /> : <ContentSkeleton label="Loading sandbox settings…" rows={2} />;
 
   const toggle = async (enable: boolean) => {
     setChecked(enable);

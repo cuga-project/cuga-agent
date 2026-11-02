@@ -22,11 +22,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge.engine import KnowledgeEngine
+
+pytestmark = pytest.mark.unit
 
 
 def _build_app(eng):
@@ -62,7 +65,7 @@ def test_user_supplied_bad_key_still_returns_400():
     Their input is broken — they need to see the error and fix it."""
     eng = KnowledgeEngine(_cfg())
     app = _build_app(eng)
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     with patch(
         "cuga.backend.knowledge.engine.create_embeddings",
         side_effect=_401_error(),
@@ -87,7 +90,7 @@ def test_env_var_fallback_failure_returns_200_with_warning(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-bad-env-var")
     eng = KnowledgeEngine(_cfg())
     app = _build_app(eng)
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     with patch(
         "cuga.backend.knowledge.engine.create_embeddings",
         side_effect=_401_error(),
@@ -114,7 +117,7 @@ def test_non_auth_engine_failures_still_block_save(monkeypatch):
     (e.g. unknown model crash, dim-detection logic bug) must still hard-fail."""
     eng = KnowledgeEngine(_cfg())
     app = _build_app(eng)
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     # Not a 401/auth-looking error
     with patch(
         "cuga.backend.knowledge.engine.create_embeddings",
@@ -137,7 +140,7 @@ def test_soft_fail_only_for_credentialed_providers():
     fallback is meaningful."""
     eng = KnowledgeEngine(_cfg())
     app = _build_app(eng)
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     # Change the model so embedding_changed=True → create_embeddings runs
     with patch(
         "cuga.backend.knowledge.engine.create_embeddings",

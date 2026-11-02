@@ -20,7 +20,7 @@ def _make_client() -> TestClient:
     app.include_router(router)
     app.dependency_overrides[require_auth] = lambda: None
     app.dependency_overrides[require_manage_access] = lambda: None
-    return TestClient(app)
+    return TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
 
 
 @pytest.mark.unit

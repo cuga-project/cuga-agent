@@ -20,6 +20,14 @@ console.log(fakeStream);
 // Base copy patterns
 const baseCopyPatterns = [
   {
+    from: path.join(path.dirname(require.resolve("@ibm/plex/package.json")), "IBM-Plex-Sans/fonts/complete/woff2"),
+    to: "fonts/plex-sans",
+  },
+  {
+    from: path.join(path.dirname(require.resolve("@ibm/plex/package.json")), "IBM-Plex-Mono/fonts/complete/woff2"),
+    to: "fonts/plex-mono",
+  },
+  {
     from: "./static/tailwind.js",
     to: "tailwind.js",
   },

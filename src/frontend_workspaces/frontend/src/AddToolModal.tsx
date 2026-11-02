@@ -1,3 +1,4 @@
+import { AsyncButton, useModalClose } from "agentic_chat/LoadingState";
 import React, { useState, useEffect } from "react";
 import {
   ComposedModal,
@@ -5,6 +6,8 @@ import {
   ModalBody,
   ModalFooter,
   Button,
+  InlineNotification,
+  InlineLoading,
   TextInput,
   TextArea,
   FormGroup,
@@ -110,6 +113,11 @@ function initFromTool(initial: ToolEntry | null | undefined) {
 
 export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModalProps) {
   const init = initFromTool(initial);
+  const [submitting, setSubmitting] = useState(false);
+  const [creatingSecret, setCreatingSecret] = useState(false);
+  const closeModal = useModalClose(submitting || creatingSecret, onClose);
+  const [secretError, setSecretError] = useState("");
+  const [secretsLoading, setSecretsLoading] = useState(true);
   const [name, setName] = useState(init.name);
   const [type, setType] = useState<"mcp" | "openapi">(init.type);
   const [mcpMode, setMcpMode] = useState<McpConnectionMode>(init.mcpMode);
@@ -133,6 +141,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
   const [showTemplates, setShowTemplates] = useState(!initial);
 
   useEffect(() => {
+    setSecretsLoading(true);
     Promise.all([api.getSecrets(agentId), api.getSecretsConfig()])
       .then(async ([secretsRes, configRes]) => {
         let mode = "local";
@@ -154,7 +163,8 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
           })));
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setSecretsLoading(false));
   }, [agentId]);
 
   const applyTemplate = (template: ToolTemplate) => {
@@ -179,6 +189,10 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
+    setSecretError("");
+    try {
     const isCommandMcp = type === "mcp" && mcpMode === "command";
     const args = argsText.split("\n").map((s) => s.trim()).filter(Boolean);
     const tool: ToolEntry = {
@@ -216,11 +230,12 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
         const slug = baseSlug;
         try {
           const res = await api.createSecret(slug, authValueFinal, `Auth for ${name.trim() || "tool"}`, undefined, agentId);
+          if (!res.ok) throw new Error(`Failed to save secret (${res.status})`);
           if (res.ok) {
             const data = await res.json();
             authValueFinal = data.ref || `db://${slug}`;
           }
-        } catch (_) {}
+        } catch (error) { throw error; }
       }
 
       if (authValueFinal) {
@@ -239,6 +254,9 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
     }
     onSave(tool);
     onClose();
+    } catch (error) {
+      setSecretError(error instanceof Error ? error.message : "Failed to save secret");
+    } finally { setSubmitting(false); }
   };
 
   const NAME_RE = /^[a-z][a-z0-9_]*$/;
@@ -269,10 +287,12 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
   );
 
   return (
-    <ComposedModal open onClose={onClose} size="lg" isFullWidth preventCloseOnClickOutside>
-      <ModalHeader title={initial ? "Edit tool" : "Add tool"} buttonOnClick={onClose} />
+    <ComposedModal open onClose={closeModal} size="lg" isFullWidth preventCloseOnClickOutside>
+      <ModalHeader title={initial ? "Edit tool" : "Add tool"} buttonOnClick={closeModal} />
       <form onSubmit={handleSubmit}>
         <ModalBody hasScrollingContent className="add-tool-modal-body">
+          <fieldset className="cuga-loading-fieldset" disabled={submitting || creatingSecret}>
+          {secretError && <InlineNotification kind="error" title={secretError} lowContrast hideCloseButton />}
           {!initial && showTemplates && (
             <div style={{ marginBottom: "1.5rem" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
@@ -460,12 +480,14 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
                 <Checkbox
                   id="tool-use-saved-secret"
                   labelText="Use saved secret"
+                  disabled={secretsLoading}
                   checked={useSavedSecret}
                   onChange={(_e, { checked }) => {
                     setUseSavedSecret(!!checked);
                     setInlineCreateOpen(false);
                   }}
                 />
+                {secretsLoading && <InlineLoading description="Loading saved secrets…" aria-live="polite" />}
                 {useSavedSecret ? (
                   <>
                     <Select
@@ -512,16 +534,21 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
                             placeholder="Secret value"
                             autoComplete="off"
                           />
-                          <Button
+                          <AsyncButton
+                            busy={creatingSecret} busyLabel="Saving secret…"
                             size="sm"
                             style={{ marginTop: "auto" }}
                             disabled={!inlineCreateValue.trim()}
                             onClick={async () => {
+                              setCreatingSecret(true);
+                              setSecretError("");
+                              try {
                               const baseSlug = inlineCreateKey.trim()
                                 ? inlineCreateKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
                                 : `${name.trim() || "tool"}-${authType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
                               const slug = baseSlug || `${name.trim() || "tool"}-${authType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
                               const res = await api.createSecret(slug, inlineCreateValue.trim(), `Auth for ${name.trim() || "tool"}`, undefined, agentId);
+                              if (!res.ok) throw new Error(`Failed to save secret (${res.status})`);
                               if (res.ok) {
                                 setAuthValue(`db://${slug}`);
                                 setInlineCreateOpen(false);
@@ -549,10 +576,12 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
                                   })
                                   .catch(() => {});
                               }
+                              } catch (error) { setSecretError(error instanceof Error ? error.message : "Failed to save secret"); }
+                              finally { setCreatingSecret(false); }
                             }}
                           >
                             Save
-                          </Button>
+                          </AsyncButton>
                         </div>
                       </div>
                     )}
@@ -590,14 +619,15 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
               </>
             )}
           </FormGroup>
+          </fieldset>
         </ModalBody>
         <ModalFooter>
-          <Button kind="secondary" onClick={onClose}>
+          <Button kind="secondary" disabled={submitting || creatingSecret} onClick={onClose}>
             Cancel
           </Button>
-          <Button kind="primary" type="submit" disabled={!valid}>
+          <AsyncButton kind="primary" type="submit" busy={submitting} busyLabel="Saving tool…" disabled={!valid || creatingSecret}>
             {initial ? "Save" : "Add tool"}
-          </Button>
+          </AsyncButton>
         </ModalFooter>
       </form>
     </ComposedModal>

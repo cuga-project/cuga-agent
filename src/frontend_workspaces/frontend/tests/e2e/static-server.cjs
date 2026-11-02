@@ -15,7 +15,9 @@ const fs = require("fs");
 const path = require("path");
 
 const PORT = Number(process.env.PORT) || 3002;
-const ROOT = path.resolve(__dirname, "..", "..", "dist");
+const ROOT = process.env.CUGA_FRONTEND_DIST
+  ? path.resolve(process.env.CUGA_FRONTEND_DIST)
+  : path.resolve(__dirname, "..", "..", "dist");
 
 const MIME = {
   ".html": "text/html; charset=utf-8",

@@ -44,6 +44,8 @@ import pytest
 from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge.engine import KnowledgeEngine, ReindexInProgressError
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Layer 2 — engine-level guard (apply_knowledge_config raises during reindex)
@@ -477,7 +479,7 @@ def app_with_engine(monkeypatch):
         lambda: "http://localhost:0",
     )
 
-    return TestClient(app), eng
+    return TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost"), eng
 
 
 class TestHttpReindexGuard:
