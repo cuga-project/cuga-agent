@@ -166,7 +166,7 @@ def test_publishing_default_agent_still_applies_to_singleton(monkeypatch):
         app_state.current_llm = "updated-llm"
         app_state.tools_include_by_app = {"updated": ["x"]}
 
-    async def _capture_rebuild(app_state, config):
+    async def _capture_rebuild(app_state, config, config_version):
         applied["rebuilt"] = True
         app_state.agent.special_instructions = config.get("special_instructions")
 
@@ -219,14 +219,14 @@ async def _seeded_default_agent(checkpointer):
     return agent, cfg
 
 
-async def _rebuild(state):
+async def _rebuild(state, config_version):
     from unittest.mock import MagicMock, patch
 
     from cuga.backend.llm.models import LLMManager
     from cuga.backend.server.manage_routes.apply import rebuild_production_agent
 
     with patch.object(LLMManager, "get_model", return_value=MagicMock()):
-        await rebuild_production_agent(state, {})
+        await rebuild_production_agent(state, {}, config_version)
 
 
 @pytest.mark.asyncio
@@ -237,9 +237,11 @@ async def test_default_publish_rebuild_keeps_conversations_on_shared_saver():
     saver = MemorySaver()
     agent, cfg = await _seeded_default_agent(saver)
     old_graph = agent.graph
-    state = SimpleNamespace(agent=agent, checkpointer=saver, config_version=2)
+    # The shared slot holds another agent's later publish; the rebuild must keep
+    # the version its own publish saved.
+    state = SimpleNamespace(agent=agent, checkpointer=saver, config_version=12)
 
-    await _rebuild(state)
+    await _rebuild(state, 2)
 
     assert agent.graph is not old_graph
     assert agent._checkpoint_config_version == "2"
