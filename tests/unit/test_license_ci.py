@@ -222,15 +222,23 @@ def descriptors():
     return {
         f"{profile}-{arch}": "ghcr.io/cuga-project/cuga@sha256:" + str(index) * 64
         for index, (profile, arch) in enumerate(
-            (("full", "amd64"), ("full", "arm64"), ("slim", "amd64"), ("slim", "arm64")), 1
+            (
+                ("full", "amd64"),
+                ("full", "arm64"),
+                ("slim", "amd64"),
+                ("slim", "arm64"),
+                ("dam", "amd64"),
+                ("dam", "arm64"),
+            ),
+            1,
         )
     }
 
 
 def test_promotion_reuses_scanned_digests_for_full_and_slim():
     commands = promote.promotion_commands("ghcr.io/cuga-project/cuga", "tag", "v1.2.3", "", descriptors())
-    assert len(commands) == 2
-    for command, suffix in zip(commands, ("", "-slim")):
+    assert len(commands) == 3
+    for command, suffix in zip(commands, ("", "-slim", "-dam")):
         actual_tags = {command[index + 1] for index, arg in enumerate(command) if arg == "--tag"}
         assert actual_tags == {
             f"ghcr.io/cuga-project/cuga:{tag}{suffix}" for tag in ("1.2.3", "1.2", "1", "latest")
@@ -241,6 +249,13 @@ def test_promotion_reuses_scanned_digests_for_full_and_slim():
 def test_promotion_validates_all_images_before_publishing_any_tag():
     values = descriptors()
     values["slim-arm64"] = "ghcr.io/other/image@sha256:" + "a" * 64
+    with pytest.raises(ValueError, match="scanned image digest"):
+        promote.promotion_commands("ghcr.io/cuga-project/cuga", "tag", "v1.2.3", "", values)
+
+
+def test_promotion_refuses_a_release_without_the_dam_image():
+    values = descriptors()
+    del values["dam-arm64"]
     with pytest.raises(ValueError, match="scanned image digest"):
         promote.promotion_commands("ghcr.io/cuga-project/cuga", "tag", "v1.2.3", "", values)
 
@@ -299,6 +314,6 @@ def test_manual_branch_dispatch_retains_its_explicit_tag_set(requested, expected
     commands = promote.promotion_commands(
         "ghcr.io/cuga-project/cuga", "branch", "main", requested, descriptors()
     )
-    for command, suffix in zip(commands, ("", "-slim")):
+    for command, suffix in zip(commands, ("", "-slim", "-dam")):
         actual_tags = {command[index + 1] for index, arg in enumerate(command) if arg == "--tag"}
         assert actual_tags == {f"ghcr.io/cuga-project/cuga:{expected}{suffix}"}
