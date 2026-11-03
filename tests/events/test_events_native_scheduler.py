@@ -172,6 +172,28 @@ def test_cron_step_zero_is_refused_by_the_parser():
             ns.next_cron(expr, time.time())
 
 
+def test_cron_errors_name_the_field_and_the_fix():
+    """Malformed cron expressions fail with an actionable message instead of a raw Python error."""
+    now = time.time()
+    with pytest.raises(ValueError, match="not a number"):
+        ns.next_cron("0 9 * * MON", now)
+    with pytest.raises(ValueError, match="needs exactly 5"):
+        ns.next_cron("@daily", now)
+    with pytest.raises(ValueError, match="out of range"):
+        ns.next_cron("0 60 * * *", now)
+    # a matching early list entry must not hide a malformed later one
+    with pytest.raises(ValueError, match="out of range"):
+        ns.next_cron("0,60 9 * * 1", now)
+    # int() accepts underscores; a cron number must be digits only
+    with pytest.raises(ValueError, match="not a number"):
+        ns.next_cron("1_0 * * * *", now)
+    # inverted ranges must fail before the year-long scan
+    with pytest.raises(ValueError, match="inverted range"):
+        ns.next_cron("10-5 * * * *", now)
+    assert ns.next_cron("0 9 * * 1-5", now) > now
+    assert ns.next_cron("0 9 * * 7", now) > now
+
+
 def test_process_due_retires_an_unschedulable_row_without_stalling_the_tick():
     """A malformed cron must cost ONE subscription, not every subscription behind it.
 
