@@ -6,7 +6,8 @@ set -eu
 # Every model call goes to DAM's Model Router on the loopback, which holds
 # the agent's provider credentials. The model is CUGA_MODEL, a provider-
 # qualified name such as `cb/<model>` (the agent's env sets it); without one,
-# the first Chat Completions model the agent's providers list.
+# the first Chat Completions model the router lists, which puts the
+# platform's preferred work model first.
 router="${PLATFORM_MODEL_ROUTER_URL:-http://127.0.0.1:24180}"
 export OPENAI_BASE_URL="$router/v1" OPENAI_API_KEY=dummy-placeholder
 MODEL_NAME="${CUGA_MODEL:-}"
