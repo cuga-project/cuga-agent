@@ -1,0 +1,41 @@
+# CUGA's runtime manifest for DAM. Built-in drivers are on by default; this
+# declares only what CUGA needs on top of them.
+manifestVersion: 1
+
+# No modelRouter section: DAM treats CUGA as an image's own harness, so it
+# offers no model picker and never asks a session for a model. CUGA still
+# reaches models through the Model Router on the loopback (cuga-platform),
+# on the one model CUGA_MODEL names, and stamps x-platform-session on every
+# call so DAM books its spend to the session.
+
+# Declared so the runtime answers initialize before any CUGA process runs.
+initializeCapabilities:
+  agentCapabilities: {"loadSession": true, "promptCapabilities": {"image": false, "audio": false, "embeddedContext": false}, "mcpCapabilities": {"http": true, "sse": true, "acp": false}, "sessionCapabilities": {"list": {}, "additionalDirectories": {}}}
+  authMethods: []
+  agentInfo: {"name": "cuga", "title": "CUGA"}
+
+drivers:
+  # A session's approvals are a setting of its CUGA process: a session that
+  # asks before each shell command runs in a process of its own.
+  harness-config:
+    file: "$HOME/.cuga/platform-settings.json"
+    sessionSettings:
+      approvals: { env: [CUGA_SESSION_APPROVALS] }
+    keys:
+      configOptions:
+        approvals: approvals
+    catalog:
+      options:
+        - id: approvals
+          name: Approvals
+          description: Whether CUGA asks before it runs a shell command
+          category: approvals
+          default: "auto"
+          choices:
+            - value: auto
+              name: "Auto-approve"
+              description: "Runs shell commands without asking."
+            - value: ask
+              name: "Ask every time"
+              description: "Asks before each shell command. Nobody is there to answer on a schedule, Slack or Telegram turn, so a command there is refused."
+              needsApproval: true

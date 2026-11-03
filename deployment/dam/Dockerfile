@@ -1,4 +1,6 @@
-ARG DAM_BASE=quay.io/dam-agents/platform-base@sha256:ddd4bf60c00c4ad53192a9ec679c61eebdc86828a172cb4a33164528099be715
+# DAM's default agent image: Debian with the agent-runtime and the platform's
+# own harnesses. This image adds CUGA as the one harness it runs.
+ARG DAM_BASE=quay.io/dam-agents/default@sha256:14f8b6e353dbb6a3c12b9784a88339a8cb2cff9938b1dd732cea19b004826f64
 
 FROM ${DAM_BASE} AS cuga-builder
 
@@ -9,12 +11,12 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 COPY deployment/dam/requirements.txt ./dam-requirements.txt
 
-# Keep CUGA separate from DAM's /app runtime. Use the package exclusions from
-# Dockerfile.ubi.slim to omit document processing and Evolve dependencies while
-# retaining the ACP extra needed by DAM chat.
+# Build on the base image's own Python so the venv runs there unchanged. The
+# exclusions are Dockerfile.ubi.slim's: no document processing or Evolve.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    UV_LINK_MODE=copy uv sync --frozen --no-dev --no-editable --extra acp \
-    --python 3.12 --no-python-downloads \
+    UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never \
+    uv sync --frozen --no-dev --no-editable --extra acp \
+    --python "$(command -v python3.12)" \
     --no-install-package torch \
     --no-install-package torchvision \
     --no-install-package easyocr \
@@ -63,37 +65,29 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     "from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver; assert AsyncSqliteSaver is not None"
 
 # Policy storage initializes this local embedding model on the first chat turn.
-# Cache it at build time so DAM does not need Hugging Face egress at runtime.
+# Cache it at build time so the agent does not need Hugging Face egress.
 RUN /opt/cuga/.venv/bin/python -c \
     "from fastembed import TextEmbedding; list(TextEmbedding('BAAI/bge-small-en-v1.5', cache_dir='/opt/cuga/fastembed-cache').embed(['ready']))"
 
 FROM ${DAM_BASE}
 
-USER root
-
-# Keep DAM's runtime libraries; the exclusions above affect Python packages.
-RUN dnf install -y --setopt=install_weak_deps=False \
-    mesa-libGL libxcb glib2 libXext libSM libXrender \
-    && dnf clean all && rm -rf /var/cache/dnf
-
 COPY --from=cuga-builder --chown=65532:0 /opt/cuga/.venv/ /opt/cuga/.venv/
 COPY --from=cuga-builder --chown=65532:0 /opt/cuga/fastembed-cache/ /opt/cuga/fastembed-cache/
+# The DAM integration: session store, checkpoints, DAM's MCP servers and the
+# terminal console, run by the launchers below.
 COPY --chown=65532:0 deployment/dam/cuga_dam/ /opt/cuga/dam-integration/deployment/dam/cuga_dam/
-COPY --chmod=0755 deployment/dam/prepare-workspace.sh /usr/local/bin/cuga-dam-prepare-workspace
-COPY --chmod=0755 deployment/dam/harness-chat.sh /usr/local/bin/harness-chat
-COPY --chmod=0755 deployment/dam/harness-terminal.sh /usr/local/bin/harness-terminal
-COPY --chown=65532:0 deployment/dam/shell-command-approval.md /opt/cuga/default-policies/shell-command-approval.md
-RUN ln -s /opt/cuga/.venv/bin/cuga /usr/local/bin/cuga \
-    && ln -s /opt/cuga/.venv/bin/cuga-acp /usr/local/bin/cuga-acp
+# The image's own manifest and launchers replace the default image's. With
+# no runtime-manifests/cuga.yaml, the runtime reads /app/runtime-manifest.yaml
+# alone, so it knows CUGA as its one harness.
+COPY deployment/dam/rootfs/ /
 
-# DAM's model-provider connection supplies OPENAI_BASE_URL and replaces the
-# placeholder authorization header at the gateway. No credential is baked in.
-ENV AGENT_SETTING_CONFIG=settings.openai.toml \
-    MODEL_NAME=azure/gpt-5.6-sol \
-    OPENAI_API_KEY=dummy-placeholder \
-    CUGA_FOLDER=/home/agent/work/.cuga \
-    DYNACONF_POLICY__CUGA_FOLDER=/home/agent/work/.cuga \
-    CUGA_DBS_DIR=/home/agent/work/.cuga/dbs \
+# The runtime reads PLATFORM_HARNESS to name the harness. No credential is
+# baked in: the Model Router on the agent's loopback serves every model call.
+ENV PLATFORM_HARNESS=cuga \
+    PLATFORM_ROOT_GENERATION=default-1/cuga-1 \
+    AGENT_SETTING_CONFIG=settings.openai.toml \
+    CUGA_SESSION_HEADER=x-platform-session \
+    CUGA_INSTRUCTION_FILES=/etc/AGENTS.md:/home/agent/AGENTS.md:/home/agent/work/AGENTS.md \
     CUGA_LOGGING_DIR=/tmp/cuga-logging \
     DYNACONF_SKILLS__ENABLED=true \
     DYNACONF_SKILLS__ROOT=agents \
@@ -102,9 +96,9 @@ ENV AGENT_SETTING_CONFIG=settings.openai.toml \
     DYNACONF_ADVANCED_FEATURES__SANDBOX_MODE=local \
     DYNACONF_ADVANCED_FEATURES__CUGA_LITE_BIND_TOOLS_MODE=all \
     DYNACONF_ADVANCED_FEATURES__CUGA_LITE_NL_AUTO_CONTINUE=true \
+    DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX=false \
     FASTEMBED_CACHE_PATH=/opt/cuga/fastembed-cache \
     HF_HUB_OFFLINE=1 \
-    DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX=false \
     LITELLM_LOCAL_MODEL_COST_MAP=True
 
 ARG CUGA_SOURCE_COMMIT
@@ -113,4 +107,3 @@ LABEL org.opencontainers.image.revision="${CUGA_SOURCE_COMMIT}" \
       org.opencontainers.image.source="https://github.com/cuga-project/cuga-agent"
 
 USER 65532
-WORKDIR /app
