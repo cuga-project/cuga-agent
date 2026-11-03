@@ -201,7 +201,7 @@ async def test_resuming_mid_turn_does_not_reset_the_run_budget(monkeypatch):
     assert len(CALLS_MADE) == 3
 
     await graph.ainvoke(None, config=config)  # resume 2 -> second block runs
-    state = graph.get_state(config).values
+    state = (await graph.aget_state(config)).values
 
     assert len(CALLS_MADE) == 5, (
         f"{len(CALLS_MADE)} calls against run cap 5 — resuming re-ran prepare and reset the budget"

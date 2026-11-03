@@ -638,12 +638,11 @@ class AgentLoop:
             return self.langfuse_handler.last_trace_id
         return None
 
-    def get_output(self, event):
+    async def get_output(self, event):
         logger.debug(f"get_output called with event type: {type(event)}")
 
-        state: AgentState = AgentState(
-            **self.graph.get_state({"configurable": {"thread_id": self.checkpoint_thread_id}}).values
-        )
+        snapshot = await self.graph.aget_state({"configurable": {"thread_id": self.checkpoint_thread_id}})
+        state: AgentState = AgentState(**snapshot.values)
         msg: AIMessage = state.messages[-1] if len(state.messages) > 0 else None
 
         # Handle tuple format from subgraphs=True
@@ -860,7 +859,7 @@ class AgentLoop:
                     if spawn_evt:
                         yield spawn_evt.format()
 
-            yield self.get_output(event)
+            yield await self.get_output(event)
         finally:
             if cb_token is not None:
                 _spawn_runtime.reset_event_callback(cb_token)
@@ -916,4 +915,4 @@ class AgentLoop:
             event_msg = self.get_event_message(event)
             await self.show_chat_even(event_msg)
             # logger.debug(f"current event: {event_msg.format()}")
-        return self.get_output(event)
+        return await self.get_output(event)

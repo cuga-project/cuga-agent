@@ -131,7 +131,7 @@ class SimpleAgentRunner:
             # If the thread is already parked on a HITL interrupt, this inbound
             # message is the approval response — resume the graph rather than
             # starting a fresh query (the auto_approve=False round-trip).
-            parked = self._pending_action(thread_id)
+            parked = await self._pending_action(thread_id)
             if parked is not None:
                 decision = self._decide(parked, message, approval)
                 logger.info(
@@ -184,7 +184,7 @@ class SimpleAgentRunner:
 
                 # Stream ended without a terminal answer. The graph may be
                 # paused on a human-in-the-loop interrupt awaiting approval.
-                pending = self._pending_action(thread_id)
+                pending = await self._pending_action(thread_id)
                 if not pending:
                     break
 
@@ -282,28 +282,28 @@ class SimpleAgentRunner:
                 return value
         return json.dumps(mapping, ensure_ascii=False)
 
-    def _pending_action(self, thread_id: str) -> Optional[dict]:
+    async def _pending_action(self, thread_id: str) -> Optional[dict]:
         """Return the pending ``hitl_action`` dict if the graph is paused, else None.
 
         Reads the published agent's graph state for ``thread_id``. The graph is
         only treated as paused when it has a ``next`` node *and* a non-empty
         ``hitl_action`` in state (set by the producing node, cleared after
         WaitForResponse resumes).
+
+        A failed checkpoint read raises rather than returning None: None means
+        "no pending approval", so swallowing the error would report success
+        while the graph is still paused.
         """
         agent = getattr(self._app_state, "agent", None)
         graph = getattr(agent, "graph", None)
         if graph is None:
             return None
-        try:
-            from cuga.backend.server.thread_scope import checkpoint_thread_id
+        from cuga.backend.server.thread_scope import checkpoint_thread_id
 
-            scoped_id = checkpoint_thread_id(
-                thread_id, self._caller_user_id, getattr(self._app_state, "agent_id", "cuga-default")
-            )
-            snapshot = graph.get_state({"configurable": {"thread_id": scoped_id}})
-        except Exception:
-            logger.debug(f"Could not read graph state for thread {thread_id}", exc_info=True)
-            return None
+        scoped_id = checkpoint_thread_id(
+            thread_id, self._caller_user_id, getattr(self._app_state, "agent_id", "cuga-default")
+        )
+        snapshot = await graph.aget_state({"configurable": {"thread_id": scoped_id}})
 
         if not getattr(snapshot, "next", None):
             return None
