@@ -1,15 +1,16 @@
-from cuga.backend.activity_tracker.tracker import ActivityTracker
-from cuga.backend.cuga_graph.utils.controller import AgentRunner as CugaAgent, ExperimentResult as AgentResult
-from fastmcp import FastMCP
 import os
-
-# Initialize components
-tracker = ActivityTracker()
-mcp = FastMCP("CUGA Running as MCP 🚀")
 
 # Set the environment file to the .env file in the current directory
 os.environ["ENV_FILE"] = os.path.join(os.path.dirname(__file__), ".env")
 os.environ["MCP_SERVERS_FILE"] = os.path.join(os.path.dirname(__file__), "mcp_servers.yaml")
+
+from cuga.backend.activity_tracker.tracker import ActivityTracker
+from cuga.backend.cuga_graph.utils.controller import AgentRunner as CugaAgent, ExperimentResult as AgentResult
+from fastmcp import FastMCP
+
+# Initialize components
+tracker = ActivityTracker()
+mcp = FastMCP("CUGA Running as MCP 🚀")
 
 
 @mcp.tool
