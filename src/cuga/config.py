@@ -174,6 +174,7 @@ validators = [
     Validator("advanced_features.sandbox_callback_url", default=""),
     Validator("advanced_features.execd_execution_timeout", default=120, is_type_of=int, gte=0),
     Validator("advanced_features.cuga_lite_nl_auto_continue", default=True),
+    Validator("advanced_features.cuga_lite_unexecuted_claim_retry", default=False),
     Validator("advanced_features.strip_harmony_control_tokens", default="auto"),
     Validator("advanced_features.cuga_lite_warn_suspect_args", default=True),
     Validator("features.chat", default=True),

@@ -58,6 +58,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import _first_us
 from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.tool_names import resolve_tool_names
 from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
     BLOCKED_CLAIM_CORRECTION,
+    DONE_CLAIM_CORRECTION,
     BlockedClaimEvidence,
     classify_nl_auto_continue_decision,
     normalize_assistant_text,
@@ -473,6 +474,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
             tools_available=bool(self._tools_context),
             code_executed=self._any_execution_ran(state),
             retry_used=bool(self.get_metadata(state).get("_blocked_claim_retry")),
+            done_retry_used=bool(self.get_metadata(state).get("_done_claim_retry")),
         )
         decision = await classify_nl_auto_continue_decision(model, content, reasoning, evidence=evidence)
         if decision.blocked_override:
@@ -481,12 +483,18 @@ class AgentGraphAdapter(CoreGraphAdapter):
             # persists through the auto-continue Command update.
             self.set_metadata(state, {**self.get_metadata(state), "_blocked_claim_retry": True})
             return BLOCKED_CLAIM_CORRECTION
+        if decision.done_claim_override:
+            self.set_metadata(state, {**self.get_metadata(state), "_done_claim_retry": True})
+            return DONE_CLAIM_CORRECTION
         return decision.auto_continue
 
     def _any_execution_ran(self, state: Any) -> bool:
         """Has any sandbox execution produced feedback this task? Detected via the
-        shared ``EXECUTION_OUTPUT_PREFIX`` emitted by ``execution_output_text``."""
+        shared ``EXECUTION_OUTPUT_PREFIX`` emitted by ``execution_output_text`` (CodeAct), or a
+        ``ToolMessage`` (function-calling mode, where results come back as tool messages)."""
         for msg in self.get_messages(state):
+            if isinstance(msg, ToolMessage):
+                return True
             if not isinstance(msg, HumanMessage):
                 continue
             content = getattr(msg, "content", None)
