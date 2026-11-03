@@ -1,6 +1,7 @@
 import asyncio
 import sqlite3
-from typing import Any, Dict, List, Optional
+import threading
+from typing import Any, Callable, Dict, List, Optional
 
 from cuga.backend.storage.embedding.base import EmbeddingSchemaConfig
 
@@ -24,21 +25,33 @@ class LocalEmbeddingStore:
         self._collection_name = collection_name
         self._schema = schema
         self._conn: Optional[sqlite3.Connection] = None
+        # Every query runs in a worker thread on this one connection, which
+        # sqlite3 cannot share between threads at once ("bad parameter or other
+        # API misuse"), so each query and the connection set-up hold this lock.
+        self._conn_lock = threading.Lock()
+
+    async def _run(self, fn: Callable[..., Any], *args: Any) -> Any:
+        def locked() -> Any:
+            with self._conn_lock:
+                return fn(*args)
+
+        return await asyncio.to_thread(locked)
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-            self._conn.enable_load_extension(True)
+            conn = sqlite3.connect(self._db_path, check_same_thread=False)
+            conn.enable_load_extension(True)
             try:
                 import sqlite_vec
 
-                sqlite_vec.load(self._conn)
+                sqlite_vec.load(conn)
             finally:
-                self._conn.enable_load_extension(False)
-            self._ensure_table()
+                conn.enable_load_extension(False)
+            self._ensure_table(conn)
+            self._conn = conn
         return self._conn
 
-    def _ensure_table(self) -> None:
+    def _ensure_table(self, conn: sqlite3.Connection) -> None:
         meta = self._schema.metadata_columns
         aux = self._schema.auxiliary_columns
         dim = self._schema.embedding_dim
@@ -51,8 +64,8 @@ class LocalEmbeddingStore:
             parts.append(f"+{k} {typ}")
         cols = ", ".join(parts)
         sql = f"CREATE VIRTUAL TABLE IF NOT EXISTS {self._collection_name} USING vec0({cols})"
-        self._conn.execute(sql)
-        self._conn.commit()
+        conn.execute(sql)
+        conn.commit()
 
     def _meta_keys(self) -> List[str]:
         return list(self._schema.metadata_columns.keys())
@@ -90,7 +103,7 @@ class LocalEmbeddingStore:
 
     async def add_many(self, items: List[tuple[str, List[float], Dict[str, Any]]]) -> None:
         """Bulk-insert items in a single transaction (issue #183 step 2)."""
-        await asyncio.to_thread(self._add_many_sync, items)
+        await self._run(self._add_many_sync, items)
 
     def _add_many_sync(self, items: List[tuple[str, List[float], Dict[str, Any]]]) -> None:
         if not items:
@@ -128,7 +141,7 @@ class LocalEmbeddingStore:
     async def search(
         self, query_embedding: List[float], limit: int, metadata_filter: Dict[str, Any]
     ) -> List[tuple]:
-        return await asyncio.to_thread(self._search_sync, query_embedding, limit, metadata_filter)
+        return await self._run(self._search_sync, query_embedding, limit, metadata_filter)
 
     def _search_sync(
         self, query_embedding: List[float], limit: int, metadata_filter: Dict[str, Any]
@@ -154,7 +167,7 @@ class LocalEmbeddingStore:
         return [c for c in ["tenant_id", "instance_id"] if c in meta]
 
     async def get(self, id: str, tenant_id: str = "", instance_id: str = "") -> Optional[Dict[str, Any]]:
-        return await asyncio.to_thread(self._get_sync, id, tenant_id, instance_id)
+        return await self._run(self._get_sync, id, tenant_id, instance_id)
 
     def _get_sync(self, id: str, tenant_id: str = "", instance_id: str = "") -> Optional[Dict[str, Any]]:
         conn = self._get_conn()
@@ -185,7 +198,7 @@ class LocalEmbeddingStore:
         return dict(zip(cols, row))
 
     async def delete(self, id: str, tenant_id: str = "", instance_id: str = "") -> None:
-        await asyncio.to_thread(self._delete_sync, id, tenant_id, instance_id)
+        await self._run(self._delete_sync, id, tenant_id, instance_id)
 
     def _delete_sync(self, id: str, tenant_id: str = "", instance_id: str = "") -> None:
         conn = self._get_conn()
@@ -208,7 +221,7 @@ class LocalEmbeddingStore:
         conn.commit()
 
     async def list(self, metadata_filter: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
-        return await asyncio.to_thread(self._list_sync, metadata_filter, limit)
+        return await self._run(self._list_sync, metadata_filter, limit)
 
     def _list_sync(self, metadata_filter: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
         conn = self._get_conn()
