@@ -30,6 +30,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     enforce_step_limit,
 )
 from cuga.backend.cuga_graph.utils.harmony import contains_harmony_tokens, strip_harmony_tokens
+from cuga.backend.cuga_graph.utils.surrogates import repair_message
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.fc_actions import (
     FC_PENDING_KEY,
     plan_tool_calls,
@@ -652,6 +653,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 state.step_count,
             )
 
+        # Same reply repair as call_model's CodeAct path (content, reasoning and
+        # tool-call arguments), before the reply is kept verbatim (#963).
+        response = repair_message(response)
         tool_calls = list(getattr(response, "tool_calls", None) or [])
         invalid_tool_calls = list(getattr(response, "invalid_tool_calls", None) or [])
         content = strip_harmony_tokens(normalize_assistant_text(getattr(response, "content", "")) or "")

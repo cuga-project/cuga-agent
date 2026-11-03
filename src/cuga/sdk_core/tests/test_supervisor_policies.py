@@ -80,8 +80,8 @@ def _isolated_supervisor(**kwargs) -> CugaSupervisor:
     )
 
 
-def _graph_values(supervisor: CugaSupervisor, thread_id: str) -> dict:
-    state = supervisor.graph.get_state({"configurable": {"thread_id": thread_id}})
+async def _graph_values(supervisor: CugaSupervisor, thread_id: str) -> dict:
+    state = await supervisor.graph.aget_state({"configurable": {"thread_id": thread_id}})
     return state.values if state else {}
 
 
@@ -336,7 +336,7 @@ class TestSupervisorPolicyE2E:
         )
 
         result = await supervisor.invoke("delete all customer records")
-        values = _graph_values(supervisor, result.thread_id)
+        values = await _graph_values(supervisor, result.thread_id)
         metadata = values.get("supervisor_metadata") or {}
 
         assert "POLICY_BLOCK" in result.answer
@@ -366,7 +366,7 @@ class TestSupervisorPolicyE2E:
         result = await supervisor.invoke(
             "Onboard Alice: find the user ID for Alice, then get her account value."
         )
-        values = _graph_values(supervisor, result.thread_id)
+        values = await _graph_values(supervisor, result.thread_id)
         metadata = values.get("supervisor_metadata") or {}
         selected = values.get("selected_agents") or []
         delegation_count = (values.get("metrics") or {}).get("delegation_count", 0)
@@ -395,7 +395,7 @@ class TestSupervisorPolicyE2E:
         )
 
         result = await supervisor.invoke("Get Alice's user id")
-        metadata = (_graph_values(supervisor, result.thread_id).get("supervisor_metadata")) or {}
+        metadata = (await _graph_values(supervisor, result.thread_id)).get("supervisor_metadata") or {}
         guides = metadata.get("guides") or []
 
         assert guides
@@ -431,14 +431,14 @@ class TestSupervisorPolicyE2E:
             "Find Alice's user id using the user_finder agent",
             thread_id=thread_id,
         )
-        values = _graph_values(supervisor, thread_id)
+        values = await _graph_values(supervisor, thread_id)
         metadata = values.get("supervisor_metadata") or {}
         steps_before = values.get("step_count", 0)
 
         assert metadata.get("policy_type") == "tool_approval"
         answer_lower = result.answer.lower()
         assert "approve" in answer_lower or "approval" in answer_lower or "paused" in answer_lower
-        state_before = supervisor.graph.get_state(config)
+        state_before = await supervisor.graph.aget_state(config)
         assert "WaitForResponse" in (state_before.next or ())
 
         hitl = values.get("hitl_action")
@@ -461,7 +461,7 @@ class TestSupervisorPolicyE2E:
             session_id=thread_id,
         )
         await supervisor.invoke(None, thread_id=thread_id, action_response=approval)
-        values_after = _graph_values(supervisor, thread_id)
+        values_after = await _graph_values(supervisor, thread_id)
         assert values_after.get("step_count", 0) > steps_before
 
     @pytest.mark.asyncio
@@ -494,7 +494,7 @@ class TestSupervisorPolicyE2E:
             "Find Alice's user id using the user_finder agent",
             thread_id=thread_id,
         )
-        values = _graph_values(supervisor, thread_id)
+        values = await _graph_values(supervisor, thread_id)
         steps_before = values.get("step_count", 0)
         delegation_before = (values.get("metrics") or {}).get("delegation_count", 0)
 
@@ -507,14 +507,14 @@ class TestSupervisorPolicyE2E:
             session_id=thread_id,
         )
         result = await supervisor.invoke(None, thread_id=thread_id, action_response=denial)
-        values_after = _graph_values(supervisor, thread_id)
+        values_after = await _graph_values(supervisor, thread_id)
 
         assert "cancel" in result.answer.lower()
         assert values_after.get("execution_complete") is True
         assert values_after.get("hitl_action") is None
         assert values_after.get("step_count", 0) == steps_before
         assert (values_after.get("metrics") or {}).get("delegation_count", 0) == delegation_before
-        state_after = supervisor.graph.get_state(config)
+        state_after = await supervisor.graph.aget_state(config)
         assert not state_after.next or state_after.next == ()
 
     @pytest.mark.asyncio
@@ -531,5 +531,7 @@ class TestSupervisorPolicyE2E:
         result = await supervisor.invoke("hello", thread_id="supervisor_formatter_e2e")
         assert result.answer == "FORMATTED_HELLO_RESPONSE"
 
-        metadata = (_graph_values(supervisor, "supervisor_formatter_e2e").get("supervisor_metadata")) or {}
+        metadata = (await _graph_values(supervisor, "supervisor_formatter_e2e")).get(
+            "supervisor_metadata"
+        ) or {}
         assert metadata.get("output_formatter_applied") is True

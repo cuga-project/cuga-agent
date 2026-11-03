@@ -122,7 +122,7 @@ async def test_rebuild_applies_new_instructions_before_build(monkeypatch, use_dr
     seen = []
     graph = SimpleNamespace(special_instructions="old")
 
-    async def build():
+    async def build(checkpointer=None):
         seen.append(graph.special_instructions)
 
     graph.build_graph = build
@@ -141,14 +141,14 @@ async def test_direct_edit_waits_for_member_triggered_rebuild(monkeypatch):
     seen = []
     graph = SimpleNamespace()
 
-    async def build():
+    async def build(checkpointer=None):
         seen.append(graph.special_instructions)
         if len(seen) == 1:
             started.set()
             await release.wait()
 
     graph.build_graph = build
-    state = SimpleNamespace(agent=graph, agent_graphs_cache={}, agent_graph_generations={})
+    state = SimpleNamespace(agent=graph, agent_graphs_cache={}, agent_graph_generations={}, checkpointer=None)
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(app_state=state)))
     monkeypatch.setattr(helpers, "_referrer_ids_for_agent", AsyncMock(return_value=["cuga-default"]))
     monkeypatch.setattr(

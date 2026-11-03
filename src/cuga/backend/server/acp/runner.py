@@ -62,7 +62,7 @@ class StdioCugaRunner:
                 yield AgentStreamEvent("error", final=True)
                 return
             try:
-                pending = _pending_action(agent, context_id)
+                pending = await _pending_action(agent, context_id)
             except Exception:
                 yield AgentStreamEvent("error", final=True)
                 return
@@ -91,7 +91,7 @@ class StdioCugaRunner:
             action_response=action_response,
         )
         try:
-            pending = _pending_action(agent, context_id)
+            pending = await _pending_action(agent, context_id)
         except Exception:
             yield AgentStreamEvent("error", final=True)
             return
@@ -119,10 +119,10 @@ class StdioCugaRunner:
             await agent.aclose()
 
 
-def _pending_action(agent: Any, context_id: str | None) -> dict[str, Any] | None:
+async def _pending_action(agent: Any, context_id: str | None) -> dict[str, Any] | None:
     if not context_id:
         return None
-    snapshot = agent.graph.get_state({"configurable": {"thread_id": context_id}})
+    snapshot = await agent.graph.aget_state({"configurable": {"thread_id": context_id}})
     if not getattr(snapshot, "next", None):
         return None
     pending = (getattr(snapshot, "values", None) or {}).get("hitl_action")
