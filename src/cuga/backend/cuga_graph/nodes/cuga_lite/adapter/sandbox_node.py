@@ -208,6 +208,39 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         )
 
         try:
+            # Lifecycle hooks (after_plan): hooks attached to the run see the whole code block before
+            # it runs and may block it; the block is then not executed and the hook's message goes
+            # back to the model. No-op when the run has no hooks.
+            hooks = configurable.get("cuga_hooks")
+            gate_message = hooks.after_plan(state.script) if hooks and state.script else None
+            if gate_message:
+                ToolCallTracker.stop_tracking()
+                new_messages = (
+                    replies_without_execution(fc_plan, gate_message)
+                    if fc_plan
+                    else [HumanMessage(content=gate_message)]
+                )
+                updated_messages, error_message = core_append_with_step_limit(
+                    adapter, state, new_messages, max_steps
+                )
+                skip_updates = {
+                    **fc_meta,
+                    "variables_storage": state.variables_storage,
+                    "variable_counter_state": state.variable_counter_state,
+                    "variable_creation_order": state.variable_creation_order,
+                    "tool_calls": state.tool_calls or [],
+                    **_budget_updates(),
+                }
+                if error_message:
+                    return core_create_error_command(
+                        adapter,
+                        updated_messages,
+                        error_message,
+                        state.step_count,
+                        additional_updates=skip_updates,
+                    )
+                return {"chat_messages": updated_messages, "step_count": state.step_count + 1, **skip_updates}
+
             if verify_enabled and state.script:
                 try:
                     configured_model = configurable.get("llm") or None

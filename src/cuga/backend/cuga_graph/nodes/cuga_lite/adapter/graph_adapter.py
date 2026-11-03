@@ -334,6 +334,13 @@ class AgentGraphAdapter(CoreGraphAdapter):
 
         if self._observed_tool_shapes:
             content += _format_observed_tool_shapes_block(self._observed_tool_shapes)
+        # Lifecycle hooks (before_llm_call): hooks attached to the run may add text to the system
+        # prompt on every model call (e.g. a checklist or a reminder). No-op when the run has no hooks.
+        hooks = (configurable or {}).get("cuga_hooks")
+        if hooks:
+            extra = hooks.before_llm_call((configurable or {}).get("thread_id"))
+            if extra:
+                content += "\n\n" + extra
         return content
 
     def get_tools_needing_probing(self) -> frozenset[str]:
