@@ -21,6 +21,37 @@ class StdioCugaRunner:
         self._initialization_lock = asyncio.Lock()
         self._initialized = False
         self._closed = False
+        self._session_by_context: dict[str, str] = {}
+        self._instructions_by_context: dict[str, str] = {}
+        self._model_by_context: dict[str, str] = {}
+
+    def describe_session(self, context_id: str, session_id: str, instructions: str) -> None:
+        """Record the ACP session id and the host instructions read at session start."""
+        self._session_by_context[context_id] = session_id
+        self._instructions_by_context[context_id] = instructions
+
+    def set_session_model(self, context_id: str, model: str) -> None:
+        """Run this session's next turns on ``model``; other sessions keep theirs."""
+        self._model_by_context[context_id] = model
+
+    def _llm_override(self, context_id: str | None) -> dict[str, Any] | None:
+        """The model and request headers this session's LLM calls carry.
+
+        ``CUGA_SESSION_HEADER`` names a header that carries the ACP session id on
+        every model call, so a model gateway in front of CUGA can attribute each
+        call to its session. Unset, no header is sent.
+        """
+        import os
+
+        override: dict[str, Any] = {}
+        model = self._model_by_context.get(context_id or "")
+        if model:
+            override["model"] = model
+        header = os.environ.get("CUGA_SESSION_HEADER", "").strip()
+        session_id = self._session_by_context.get(context_id or "")
+        if header and session_id:
+            override["default_headers"] = {header: session_id}
+        return override or None
 
     def _get_agent(self) -> Any:
         if self._agent is None:
@@ -86,11 +117,27 @@ class StdioCugaRunner:
             )
             invoke_message = None
 
-        result = await agent.invoke(
-            invoke_message,
-            thread_id=context_id,
-            action_response=action_response,
-        )
+        from cuga.backend.llm.models import reset_llm_override, set_current_llm_override
+
+        token = set_current_llm_override(self._llm_override(context_id))
+        try:
+            configurable: dict[str, Any] = {}
+            if self._llm_override(context_id):
+                from cuga.backend.llm.models import LLMManager
+                from cuga.config import settings
+
+                configurable["llm"] = LLMManager().get_model(settings.agent.code.model)
+            instructions = self._instructions_by_context.get(context_id or "")
+            if instructions:
+                configurable["special_instructions"] = instructions
+            result = await agent.invoke(
+                invoke_message,
+                thread_id=context_id,
+                action_response=action_response,
+                **({"config": {"configurable": configurable}} if configurable else {}),
+            )
+        finally:
+            reset_llm_override(token)
         try:
             pending = await _pending_action(agent, context_id)
         except Exception:

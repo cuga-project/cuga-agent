@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import math
 import re
 import threading
@@ -303,16 +304,23 @@ def _resolve_max_tokens_from_llm_cfg(llm_cfg: Mapping[str, Any], toml_default: i
     return value
 
 
-_current_llm_override: Optional[Dict[str, Any]] = None
+# A context variable, not a module global: one ACP process runs several
+# sessions at once, and each one's override must stay with its own turn.
+_current_llm_override: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+    "cuga_llm_override", default=None
+)
 
 
 def get_current_llm_override() -> Optional[Dict[str, Any]]:
-    return _current_llm_override
+    return _current_llm_override.get()
 
 
-def set_current_llm_override(override: Optional[Dict[str, Any]]) -> None:
-    global _current_llm_override
-    _current_llm_override = override
+def set_current_llm_override(override: Optional[Dict[str, Any]]) -> contextvars.Token:
+    return _current_llm_override.set(override)
+
+
+def reset_llm_override(token: contextvars.Token) -> None:
+    _current_llm_override.reset(token)
 
 
 class _ModelSettingsWrap:
