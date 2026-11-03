@@ -377,6 +377,29 @@ class AgentGraphAdapter(CoreGraphAdapter):
         # — an explicit non-none choice from configurable, a model profile or
         # settings is respected. Additive: no effect in codeact.
         if self._execution_mode(configurable) == EXECUTION_MODE_FUNCTION_CALLING:
+            ctx = self._tools_context_ref or {}
+            dyn = getattr(settings.advanced_features, "cuga_lite_fc_dynamic_tools", False)
+            if (
+                dyn
+                and self._resolved_bind_mode(configurable) == "none"
+                and ctx.get("_lc_bind_tools_find_tools") is not None
+                and ctx.get("_lc_bind_tools_executable_names")
+            ):
+                # Dynamic binding: find_tools plus the tools found or called so far in this thread,
+                # read from the history on every model call (no cap, no shortlister round-trip).
+                found = dynamic_tool_names(
+                    getattr(state, "chat_messages", None),
+                    list(ctx["_lc_bind_tools_executable_names"]),
+                    dyn,
+                    ctx.get("_lc_bind_tools_app_of") or {},
+                )
+                configurable = {
+                    **(configurable or {}),
+                    "cuga_lite_bind_tools_mode": "tools" if found else "find_tools",
+                    "cuga_lite_bind_tools_tool_names": found,
+                    "cuga_lite_bind_tools_include_find_tools": True,
+                }
+                logger.info("[fc] dynamic tools: binding find_tools + {} found tool(s)", len(found))
             if self._resolved_bind_mode(configurable) == "none":
                 # Advertise exactly the executable set prepare built (filtered per
                 # sub-task / relevant apps), not the registry-wide catalogue: a tool
@@ -851,3 +874,77 @@ class AgentGraphAdapter(CoreGraphAdapter):
 
     def build_sandbox_node(self, base_thread_id: Any, base_apps_list: Any):
         return create_sandbox_node(self, base_thread_id, base_apps_list)
+
+
+def dynamic_tool_names(
+    messages: Any, executable: List[str], mode: Any, app_of: Optional[Dict[str, str]] = None
+) -> List[str]:
+    """Tools to bind next to find_tools: ``True`` = the tools found or called so far; ``"apps"`` = every
+    executable tool of each app searched (find_tools ``app_name``) or used so far."""
+    found = found_tool_names(messages, executable, app_of)
+    if str(mode).lower() != "apps":
+        return found
+    apps = {tool_app_name(n, app_of) for n in found} | searched_apps(messages)
+    apps.discard("")
+    return [n for n in executable if tool_app_name(n, app_of) in apps]
+
+
+def tool_app_name(name: str, app_of: Optional[Dict[str, str]] = None) -> str:
+    """The app a tool belongs to: the provider's grouping when known, else the ``app__`` name prefix, else ''."""
+    if app_of and app_of.get(name):
+        return str(app_of[name])
+    return name.split("__", 1)[0] if "__" in name else ""
+
+
+def found_tool_names(
+    messages: Any, executable: List[str], app_of: Optional[Dict[str, str]] = None
+) -> List[str]:
+    """Executable tool names the thread has found (find_tools results) or called so far, in first-seen order.
+
+    A find_tools result is matched to the app it searched (its ``app_name`` argument): a tool counts as found when its
+    full name, or its name without the ``app__`` prefix, appears as a word in that result. ``app_of`` maps tool name
+    to app for providers whose names carry no prefix.
+    """
+    exe = list(executable)
+    by_app: Dict[str, List[str]] = {}
+    for n in exe:
+        by_app.setdefault(tool_app_name(n, app_of), []).append(n)
+    calls: Dict[str, Dict[str, Any]] = {}
+    out: List[str] = []
+
+    def add(n: str) -> None:
+        if n in exe and n not in out:
+            out.append(n)
+
+    for m in messages or []:
+        for tc in getattr(m, "tool_calls", None) or []:
+            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+            if name and "find_tools" in str(name):
+                calls[str(tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", ""))] = (
+                    tc.get("args") if isinstance(tc, dict) else {}
+                )
+            elif name:
+                add(str(name))
+        if isinstance(m, ToolMessage) and "find_tools" in str(getattr(m, "name", "") or ""):
+            text = _message_text(m)
+            app = str((calls.get(str(getattr(m, "tool_call_id", ""))) or {}).get("app_name") or "")
+            pool = by_app.get(app) or exe
+            for n in pool:
+                short = n.split("__", 1)[1] if "__" in n else n
+                if re.search(rf"(?<![\w]){re.escape(n)}(?![\w])", text) or re.search(
+                    rf"(?<![\w]){re.escape(short)}(?![\w])", text
+                ):
+                    add(n)
+    return out
+
+
+def searched_apps(messages: Any) -> set:
+    """The ``app_name`` arguments of the find_tools calls in the history."""
+    out = set()
+    for m in messages or []:
+        for tc in getattr(m, "tool_calls", None) or []:
+            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+            args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", None)
+            if name and "find_tools" in str(name) and isinstance(args, dict) and args.get("app_name"):
+                out.add(str(args["app_name"]))
+    return out
