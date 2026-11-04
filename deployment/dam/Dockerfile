@@ -1,6 +1,6 @@
 # DAM's default agent image: Debian with the agent-runtime and the platform's
 # own harnesses. This image adds CUGA as the one harness it runs.
-ARG DAM_BASE=quay.io/dam-agents/default@sha256:14f8b6e353dbb6a3c12b9784a88339a8cb2cff9938b1dd732cea19b004826f64
+ARG DAM_BASE=quay.io/dam-agents/default@sha256:c20ef03ae17b108f90a5e185320feaa192bc1334facd31f72dc4ef72f32818b6
 
 FROM ${DAM_BASE} AS cuga-builder
 
