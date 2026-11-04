@@ -1,5 +1,4 @@
 import asyncio
-import uuid
 import time
 import os
 import httpx
@@ -272,7 +271,7 @@ class LoadTestWithMockedLLM(BaseTestServerStream):
         print(f"\n--- Starting Mocked LLM Load Test with {self.num_users} users ---")
 
         batch_start = time.monotonic()
-        thread_ids = [str(uuid.uuid4()) for _ in range(self.num_users)]
+        thread_ids = [await self.create_conversation() for _ in range(self.num_users)]
 
         tasks = [
             self.run_single_user_task(i, thread_ids[i], thread_ids, batch_start)

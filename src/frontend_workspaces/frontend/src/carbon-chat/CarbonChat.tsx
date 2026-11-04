@@ -36,7 +36,8 @@ import {
   type SessionAttachmentItem,
   type KnowledgeAttachmentSnapshot,
 } from "../knowledge/useSessionKnowledgeAttachments";
-import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './customSendMessage';
+import { customSendMessage as customSendMessageImpl, stopCugaAgent, StreamHttpError } from './customSendMessage';
+import { getCurrentThreadId, getThreadGeneration, keepThread, showThread } from './threadState';
 import { customLoadHistory } from './customLoadHistory';
 import { useEventsInbox } from '../events/useEventsInbox';
 import { getResponseUserProfile } from './carbonChatHelpers';
@@ -58,24 +59,6 @@ export function generateUUID(): string {
     const r = (Math.random() * 16) | 0;
     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
   });
-}
-
-let currentThreadId: string | null = null;
-
-function resetThreadId() {
-  currentThreadId = null;
-}
-
-export function getOrCreateThreadId(): string {
-  if (!currentThreadId) {
-    currentThreadId = generateUUID();
-  }
-  return currentThreadId;
-}
-
-// Setter used by customSendMessage on a ``ThreadIdChanged`` SSE event.
-export function setThreadId(newThreadId: string): void {
-  currentThreadId = newThreadId;
 }
 
 const DEFAULT_HOMESCREEN = {
@@ -111,6 +94,7 @@ interface CarbonChatProps {
   onOpenKnowledge?: () => void;
   onOpenMemoryUsage?: (entityIds: string[], relationship: "used" | "saved") => void;
   onPreviewKnowledgeAttachment?: (attachment: KnowledgeAttachmentSnapshot) => void;
+  onStreamError?: (status: number, error?: string) => void;
 }
 
 interface ConversationMessage {
@@ -247,6 +231,7 @@ const CarbonChat = ({
   onOpenKnowledge,
   onOpenMemoryUsage,
   onPreviewKnowledgeAttachment,
+  onStreamError,
 }: CarbonChatProps) => {
   const hs = homescreen ?? DEFAULT_HOMESCREEN;
   const starterLabels = (hs.starters ?? DEFAULT_HOMESCREEN.starters ?? []).filter(Boolean).slice(0, 4);
@@ -409,7 +394,7 @@ const CarbonChat = ({
   // Keep the transport thread ID aligned with the parent-owned draft thread
   // even before the chat instance finishes booting.
   useEffect(() => {
-    currentThreadId = threadId ?? null;
+    keepThread(threadId ?? null);
   }, [threadId]);
 
   // Shared shadow-DOM walk (same candidate selectors + nested-container
@@ -513,11 +498,12 @@ const CarbonChat = ({
 
   // Fetch debug data from /api/agent/state
   const fetchDebugData = useCallback(async () => {
+    const activeThreadId = getCurrentThreadId();
+    if (!activeThreadId) return;
     setIsLoadingDebug(true);
     setDebugError(null);
     try {
-      const activeThreadId = currentThreadId || getOrCreateThreadId();
-      const response = await api.getAgentState(activeThreadId);
+      const response = await api.getAgentState(activeThreadId, agentId);
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
@@ -531,7 +517,7 @@ const CarbonChat = ({
     } finally {
       setIsLoadingDebug(false);
     }
-  }, []);
+  }, [agentId]);
 
   // Auto-refresh debug data when panel is open
   useEffect(() => {
@@ -798,29 +784,41 @@ const CarbonChat = ({
       instance: ChatInstance
     ) => {
       setTranscriptScope(conversationScope);
-      const sentThreadId = getOrCreateThreadId();
+      const startedAt = getThreadGeneration();
       const attachmentSnapshot = createMessageAttachmentSnapshot();
-      const result = await customSendMessageImpl(
-        request,
-        options,
-        instance,
-        useDraft,
-        disableHistory,
-        undefined,
-        attachmentScope === "session" ? attachmentSnapshot : undefined,
-        agentId,
-      );
-      
-      const context = sendContextRef.current;
-      if (context.agentId === agentId && currentThreadId === sentThreadId) {
-        if (context.threadId !== sentThreadId) skipNextHistoryLoadRef.current = sentThreadId;
-        context.onThreadChange?.(sentThreadId);
-        await refreshMessageAttachmentSnapshots(sentThreadId);
+      try {
+        const result = await customSendMessageImpl(
+          request,
+          options,
+          instance,
+          useDraft,
+          disableHistory,
+          undefined,
+          attachmentScope === "session" ? attachmentSnapshot : undefined,
+          agentId,
+        );
+
+        // A new chat gets its ID from the server during the send; skip if the user moved on.
+        const sentThreadId = getCurrentThreadId();
+        const context = sendContextRef.current;
+        if (sentThreadId && context.agentId === agentId && getThreadGeneration() === startedAt) {
+          // Same conversation echoed back as a prop: keep the live transcript.
+          if (context.threadId !== sentThreadId) skipNextHistoryLoadRef.current = sentThreadId;
+          setTranscriptScope(JSON.stringify([agentId, sentThreadId, useDraft]));
+          context.onThreadChange?.(sentThreadId);
+          await refreshMessageAttachmentSnapshots(sentThreadId);
+        }
+
+        return result;
+      } catch (err) {
+        if (err instanceof StreamHttpError) {
+          onStreamError?.(err.status, err.errorCode);
+        } else {
+          throw err;
+        }
       }
-      
-      return result;
     },
-    [agentId, attachmentScope, conversationScope, createMessageAttachmentSnapshot, disableHistory, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
+    [agentId, attachmentScope, conversationScope, createMessageAttachmentSnapshot, disableHistory, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
   );
 
   const handleChatReady = useCallback((instance: ChatInstance) => {
@@ -844,7 +842,7 @@ const CarbonChat = ({
       type: BusEventType.RESTART_CONVERSATION,
       handler: () => {
         console.log('[CarbonChat] RESTART_CONVERSATION event received');
-        resetThreadId();
+        showThread(null);
         setTranscriptScope(null);
         setHistoryLoading(false);
         sourcesByMessageKey.current.clear();
@@ -856,9 +854,10 @@ const CarbonChat = ({
     instance.on({
       type: BusEventType.STOP_STREAMING,
       handler: () => {
-        const tid = getOrCreateThreadId();
+        const tid = getCurrentThreadId();
+        if (!tid) return;
         console.log('[CarbonChat] STOP_STREAMING event received, calling /stop for thread:', tid);
-        stopCugaAgent(tid);
+        stopCugaAgent(tid, agentId);
       },
     });
     
@@ -892,10 +891,10 @@ const CarbonChat = ({
           };
           // Carbon installs this listener once; read the current agent after dropdown switches.
           const context = sendContextRef.current;
-          const approvedThreadId = getOrCreateThreadId();
-          if (user_defined.thread_id && user_defined.thread_id !== approvedThreadId) return;
+          const approvedThreadId = getCurrentThreadId();
+          if (!approvedThreadId || (user_defined.thread_id && user_defined.thread_id !== approvedThreadId)) return;
           await customSendMessageImpl(request, options, instance, context.useDraft, context.disableHistory, actionResponse, undefined, context.agentId);
-          if (sendContextRef.current.agentId === context.agentId && currentThreadId === approvedThreadId) {
+          if (sendContextRef.current.agentId === context.agentId && getCurrentThreadId() === approvedThreadId) {
             sendContextRef.current.onThreadChange?.(approvedThreadId);
           }
         }
@@ -913,12 +912,14 @@ const CarbonChat = ({
     const isCurrent = () => !cancelled && generation === historyReplayGenerationRef.current
       && chatInstanceRef.current === instance;
     if (threadId && skipNextHistoryLoadRef.current === threadId) {
-      // Same conversation echoed back after a send — keep citation state.
+      // Same conversation echoed back after a send — keep the transcript and citation state.
       skipNextHistoryLoadRef.current = null;
+      keepThread(threadId);
       setReconciledScope(conversationScope);
       return;
     }
     skipNextHistoryLoadRef.current = null;
+    showThread(threadId ?? null);
     setHistoryLoading(Boolean(threadId));
     sourcesByMessageKey.current.clear();
     setSourcesPanel(null);
@@ -989,7 +990,7 @@ const CarbonChat = ({
           {isLoadingDebug && <InlineLoading description="Loading..." />}
           {debugError && <InlineNotification kind="error" title="Error:" subtitle={debugError} lowContrast hideCloseButton />}
           {debugData && <div className="debug-data">
-            <div><p>Thread ID:</p><CodeSnippet type="single">{currentThreadId || 'None'}</CodeSnippet></div>
+            <div><p>Thread ID:</p><CodeSnippet type="single">{getCurrentThreadId() || 'None'}</CodeSnippet></div>
             {lastUpdateTime && <div><p>Last Updated:</p><p>{formatRelativeTime(lastUpdateTime)}</p></div>}
             <div><p>State Data:</p><CodeSnippet type="multi">{JSON.stringify(debugData, null, 2)}</CodeSnippet></div>
           </div>}
@@ -1139,7 +1140,7 @@ const CarbonChat = ({
                 const response = await api.getKnowledgeDocumentFile(
                   scope,
                   source.filename,
-                  currentThreadId ?? undefined,
+                  getCurrentThreadId() ?? undefined,
                 );
                 if (!response.ok) {
                   return false;
