@@ -15,6 +15,9 @@ database's own word rules, and every backend matches the same way. The rules:
   character pairs, as in Lucene's CJK bigram filter: a word inside an unspaced sentence matches
   without a dictionary, and a Korean noun matches with its particle attached.
 
+Terms longer than 255 characters (encoded blobs, not words anyone types) are dropped; Postgres
+caps a lexeme at 2 KB.
+
 Not handled: stemming and attached prefixes (Hebrew "ה", Arabic "ال", English plurals), and a
 one-character query in the unspaced scripts. Bump ``VERSION`` whenever a rule changes: stored
 indexes built by another version are rebuilt on first use.
@@ -27,6 +30,7 @@ import unicodedata
 import regex
 
 VERSION = 1
+_MAX_TERM_CHARS = 255
 
 _TERM = regex.compile(r"[\p{L}\p{M}\p{N}]+")
 _UNSPACED = regex.compile(
@@ -61,7 +65,12 @@ def _split_unspaced(word: str) -> list[str]:
 
 def terms(text: str) -> list[str]:
     """The keyword terms of ``text``, in order."""
-    return [term for word in _TERM.findall(_normalize(text)) for term in _split_unspaced(word)]
+    return [
+        term
+        for word in _TERM.findall(_normalize(text))
+        for term in _split_unspaced(word)
+        if len(term) <= _MAX_TERM_CHARS
+    ]
 
 
 def query_groups(query: str) -> list[list[str]]:
