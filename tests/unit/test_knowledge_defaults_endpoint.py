@@ -3,7 +3,8 @@ the UI's per-section "Reset to defaults" buttons.
 
 Contract:
   - Returns 200 with { defaults: { ... } }
-  - Defaults match a fresh KnowledgeConfig() (modulo internal fields)
+  - Defaults are the selected profile's resolved config (``?profile=``, default ``standard``)
+  - An unknown profile is a 400
   - Secrets are blank in the response (never leak a key via factory defaults)
   - persist_dir is excluded (path is environment-specific)
   - Underscore-prefixed internal fields (_vector_config_hash, etc.) are stripped
@@ -41,26 +42,40 @@ def test_defaults_endpoint_returns_200_with_defaults_dict():
     assert isinstance(body["defaults"], dict)
 
 
-def test_defaults_endpoint_matches_KnowledgeConfig_factory_defaults():
+def test_defaults_endpoint_matches_the_standard_profile_by_default():
     from cuga.backend.knowledge.config import KnowledgeConfig
 
     app = _build_app()
     client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
-    body = client.get("/api/manage/knowledge/defaults").json()
-    defaults = body["defaults"]
+    defaults = client.get("/api/manage/knowledge/defaults").json()["defaults"]
 
-    factory = KnowledgeConfig().to_dict(include_secrets=False)
-    factory = {k: v for k, v in factory.items() if not k.startswith("_")}
+    expected = KnowledgeConfig.coerce_and_validate({"rag_profile": "standard"}).to_dict(include_secrets=False)
+    expected = {
+        k: (str(v) if hasattr(v, "as_posix") else v) for k, v in expected.items() if not k.startswith("_")
+    }
 
-    # Coerce Path values to str for JSON comparison
-    def _normalize(v):
-        from pathlib import Path as _P
+    assert defaults == expected, f"endpoint returned {set(defaults) ^ set(expected)} diff vs standard"
 
-        return str(v) if isinstance(v, _P) else v
 
-    factory = {k: _normalize(v) for k, v in factory.items()}
+@pytest.mark.parametrize(
+    ("profile", "chunk_size", "chunk_overlap"),
+    [("speed", 1000, 100), ("standard", 800, 100), ("balanced", 800, 150), ("max_quality", 1000, 200)],
+)
+def test_defaults_endpoint_returns_each_profiles_values(profile, chunk_size, chunk_overlap):
+    """Reset must restore what the selected profile sets, not the bare dataclass values."""
+    app = _build_app()
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
+    defaults = client.get(f"/api/manage/knowledge/defaults?profile={profile}").json()["defaults"]
 
-    assert defaults == factory, f"endpoint returned {set(defaults) ^ set(factory)} diff vs factory"
+    assert defaults["rag_profile"] == profile
+    assert (defaults["chunk_size"], defaults["chunk_overlap"]) == (chunk_size, chunk_overlap)
+
+
+def test_defaults_endpoint_rejects_an_unknown_profile():
+    app = _build_app()
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
+    r = client.get("/api/manage/knowledge/defaults?profile=custom")
+    assert r.status_code == 400
 
 
 def test_defaults_endpoint_blanks_secret_fields():
