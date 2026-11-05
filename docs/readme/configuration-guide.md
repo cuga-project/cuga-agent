@@ -540,9 +540,8 @@ Keyword matching works the same way in every language:
   and an "ABC-123." that ends a sentence, but not "ABC-124".
 
 Stemming is not applied, so `invoices` does not match "invoice"; the meaning match usually
-covers it. Existing Postgres collections get their keyword index automatically the first time
-they are searched. On SQLite, re-ingest documents added before v0.3.0, which had no keyword
-index. The `speed` profile uses meaning only (`hybrid_mode = "off"` in
+covers it. Existing collections, on either backend, get their keyword index automatically the
+first time they are searched or added to. The `speed` profile uses meaning only (`hybrid_mode = "off"` in
 its profile file under `src/cuga/configurations/knowledge/knowledge_profiles/`).
 
 #### Disabling Knowledge
