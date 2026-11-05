@@ -1187,16 +1187,24 @@ class KnowledgeConfig:
                 "layout_engine",
                 "auto",
             ),
-            docling_drop_page_chrome=profile_docling.get(
-                "drop_page_chrome", docling.get("drop_page_chrome", "enforce")
+            docling_drop_page_chrome=_profile_key(
+                "DYNACONF_KNOWLEDGE__DOCLING__DROP_PAGE_CHROME",
+                profile_docling,
+                docling,
+                "drop_page_chrome",
+                "enforce",
             ),
             # Default must match the dataclass field (``"enforce"``, see
             # the field definition above). Earlier this defaulted to
             # ``"dry_run"``, which silently downgraded enforcement when a
             # profile omitted the key or profile loading failed. Closes
             # CodeRabbit M2.
-            search_junk_filter=profile_search.get("junk_filter", search.get("junk_filter", "enforce")),
-            search_hybrid_mode=profile_search.get("hybrid_mode", search.get("hybrid_mode", "auto")),
+            search_junk_filter=_profile_key(
+                "DYNACONF_KNOWLEDGE__SEARCH__JUNK_FILTER", profile_search, search, "junk_filter", "enforce"
+            ),
+            search_hybrid_mode=_profile_key(
+                "DYNACONF_KNOWLEDGE__SEARCH__HYBRID_MODE", profile_search, search, "hybrid_mode", "auto"
+            ),
             search_query_transform=profile_search.get(
                 "query_transform", search.get("query_transform", "off")
             ),

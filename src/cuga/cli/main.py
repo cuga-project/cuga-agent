@@ -1107,12 +1107,12 @@ def start(
     chunk_size: int | None = typer.Option(
         None,
         "--chunk-size",
-        help="Override knowledge chunk size in tokens (default 1000). Sets DYNACONF_KNOWLEDGE__CHUNKING__CHUNK_SIZE.",
+        help="Override knowledge chunk size in tokens (default: set by the RAG profile, 800 for standard). Sets DYNACONF_KNOWLEDGE__CHUNKING__CHUNK_SIZE.",
     ),
     chunk_overlap: int | None = typer.Option(
         None,
         "--chunk-overlap",
-        help="Override knowledge chunk overlap in tokens (default 200; must be < chunk_size). Sets DYNACONF_KNOWLEDGE__CHUNKING__CHUNK_OVERLAP.",
+        help="Override knowledge chunk overlap in tokens (default: set by the RAG profile, 100 for standard; must be < chunk_size). Sets DYNACONF_KNOWLEDGE__CHUNKING__CHUNK_OVERLAP.",
     ),
     vector_insert_batch_size: int | None = typer.Option(
         None,
@@ -1129,7 +1129,7 @@ def start(
     metric_type: str | None = typer.Option(
         None,
         "--knowledge-metric-type",
-        help="Vector-distance metric: 'COSINE' | 'IP' | 'L2'. Sets DYNACONF_KNOWLEDGE__SEARCH__METRIC_TYPE.",
+        help="Vector-distance metric. Only 'COSINE' is supported in this release; other values fail at startup. Sets DYNACONF_KNOWLEDGE__SEARCH__METRIC_TYPE.",
     ),
     max_upload_size_mb: int | None = typer.Option(
         None,

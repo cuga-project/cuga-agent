@@ -3487,7 +3487,7 @@ export default function KnowledgePanel({
                             </AccordionItem>
                             <AccordionItem title={sectionTitle("Chunking", chunkingStatus)}>
                               <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
-                                {ragProfiles && (knowledgeConfig.rag_profile ?? "standard") !== "custom" && (
+                                {ragProfiles && (
                                   <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: 0 }}>
                                     Values set by the <strong>{ragProfiles[knowledgeConfig.rag_profile ?? "standard"]?.name ?? "Standard"}</strong> profile. Edit to override.
                                   </p>

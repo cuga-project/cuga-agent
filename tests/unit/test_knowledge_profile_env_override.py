@@ -108,3 +108,27 @@ def test_end_to_end_from_settings_honours_the_override(monkeypatch):
     assert cfg.embedding_batch_size == 16, (
         f"profile ({cfg.rag_profile}) swallowed the operator override; got {cfg.embedding_batch_size}"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("env", "override", "field"),
+    [
+        ("DYNACONF_KNOWLEDGE__SEARCH__JUNK_FILTER", "off", "search_junk_filter"),  # standard: dry_run
+        ("DYNACONF_KNOWLEDGE__SEARCH__HYBRID_MODE", "off", "search_hybrid_mode"),  # standard: auto
+        (
+            "DYNACONF_KNOWLEDGE__DOCLING__DROP_PAGE_CHROME",
+            "off",
+            "docling_drop_page_chrome",
+        ),  # standard: dry_run
+    ],
+)
+def test_start_flags_beat_the_profile(monkeypatch, env, override, field):
+    """``cuga start --knowledge-search-junk-filter``, ``--knowledge-search-hybrid-mode`` and
+    ``--knowledge-docling-drop-page-chrome`` set these variables; the profile used to swallow them."""
+    from cuga.config import settings
+    from cuga.backend.knowledge.config import KnowledgeConfig
+
+    monkeypatch.setenv(env, override)
+    cfg = KnowledgeConfig.from_settings(settings)
+    assert getattr(cfg, field) == override, f"profile ({cfg.rag_profile}) swallowed {env}={override}"
