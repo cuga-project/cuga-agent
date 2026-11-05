@@ -4,10 +4,13 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import time
 
-import pandas as pd
+# pandas is imported where a DataFrame is built: importing it costs every
+# process that imports the tracker, which every agent does, seconds of a cold start.
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.code_agent_output import CodeAgentOutput
@@ -507,6 +510,8 @@ class ActivityTracker(object):
 
         # Create empty results.csv
         results_csv_path = os.path.join(experiment_dir, "results.csv")
+        import pandas as pd
+
         df = pd.DataFrame(columns=columns)
         df.to_csv(results_csv_path, index=False, encoding='utf-8')
 
@@ -935,6 +940,8 @@ class ActivityTracker(object):
             'total_cache_input_tokens',
         ]
 
+        import pandas as pd
+
         if not self.tasks:
             # Create empty DataFrame with headers if no tasks
             df = pd.DataFrame(columns=columns)
@@ -1157,7 +1164,7 @@ class ActivityTracker(object):
 
         return stats
 
-    def get_dataframe(self) -> pd.DataFrame:
+    def get_dataframe(self) -> "pd.DataFrame":
         """
         Get all tasks as a pandas DataFrame.
 
@@ -1176,6 +1183,8 @@ class ActivityTracker(object):
             'fail_category',
             'agent_v',
         ]
+
+        import pandas as pd
 
         if not self.tasks:
             return pd.DataFrame(columns=columns)

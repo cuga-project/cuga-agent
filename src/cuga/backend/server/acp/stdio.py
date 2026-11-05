@@ -59,6 +59,34 @@ def _load_runtime() -> Callable[..., Awaitable[None]]:
     return run_agent
 
 
+PREWARM_ENV = "CUGA_ACP_PREWARM"
+
+
+def _start_warm(agent: Any) -> asyncio.Task[None] | None:
+    """Start the agent's warm-up beside the connection, when the host asks for it.
+
+    A host that starts the process ahead of its first prompt, as DAM does, sets
+    ``CUGA_ACP_PREWARM=1``, so the first prompt finds the graph ready. A failed
+    warm-up is only a diagnostic: the first prompt initializes the agent again
+    and reports its own failure.
+    """
+    import os
+
+    warm = getattr(agent, "warm", None)
+    if os.environ.get(PREWARM_ENV, "").strip().lower() not in {"1", "true", "yes"} or not callable(warm):
+        return None
+
+    async def run() -> None:
+        try:
+            await warm()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logging.getLogger(__name__).warning("ACP warm-up failed (%s)", type(exc).__name__)
+
+    return asyncio.create_task(run())
+
+
 async def _stdio_streams() -> tuple[Any, Any]:
     from acp import stdio_streams
 
@@ -73,6 +101,7 @@ async def serve(
     """Run one injected or production CUGA adapter over SDK-managed stdio."""
     configure_logging()
     agent: Any | None = None
+    warming: asyncio.Task[None] | None = None
     status = 0
     primary_cancelled = False
     try:
@@ -86,6 +115,7 @@ async def serve(
         discard = _DiscardTextStream()
         with redirect_stdout(discard), redirect_stderr(discard):
             options = {"observers": list(observers)} if observers is not None else {}
+            warming = _start_warm(agent)
             await runtime(
                 agent,
                 input_stream=writer,
@@ -99,6 +129,9 @@ async def serve(
         logging.getLogger(__name__).error("ACP stdio startup failed (%s)", type(exc).__name__)
         status = 1
     finally:
+        if warming is not None and not warming.done():
+            warming.cancel()
+            await asyncio.gather(warming, return_exceptions=True)
         if agent is not None:
             try:
                 discard = _DiscardTextStream()

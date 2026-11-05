@@ -29,10 +29,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {profile: full, arch: amd64, runner: ubuntu-24.04, dockerfile: Dockerfile.ubi}
-          - {profile: full, arch: arm64, runner: ubuntu-24.04-arm, dockerfile: Dockerfile.ubi}
-          - {profile: slim, arch: amd64, runner: ubuntu-24.04, dockerfile: Dockerfile.ubi.slim}
-          - {profile: slim, arch: arm64, runner: ubuntu-24.04-arm, dockerfile: Dockerfile.ubi.slim}
+          - {profile: full, arch: amd64, runner: ubuntu-24.04, dockerfile: Dockerfile.ubi, venv: /app/.venv}
+          - {profile: full, arch: arm64, runner: ubuntu-24.04-arm, dockerfile: Dockerfile.ubi, venv: /app/.venv}
+          - {profile: slim, arch: amd64, runner: ubuntu-24.04, dockerfile: Dockerfile.ubi.slim, venv: /app/.venv}
+          - {profile: slim, arch: arm64, runner: ubuntu-24.04-arm, dockerfile: Dockerfile.ubi.slim, venv: /app/.venv}
+          # The DAM agent image (deployment/dam/README.md), named by kit.yaml.
+          - {profile: dam, arch: amd64, runner: ubuntu-24.04, dockerfile: deployment/dam/Dockerfile, venv: /opt/cuga/.venv}
+          - {profile: dam, arch: arm64, runner: ubuntu-24.04-arm, dockerfile: deployment/dam/Dockerfile, venv: /opt/cuga/.venv}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -62,15 +65,19 @@ jobs:
           load: true
           push: false
           tags: ${{ env.LICENSE_IMAGE }}
+          build-args: |
+            CUGA_SOURCE_COMMIT=${{ github.sha }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
       - name: Collect the built image Python inventory independently
+        env:
+          VENV: ${{ matrix.venv }}
         run: |
           mkdir -p license-reports
-          docker run --rm --network none --read-only --user 0 --entrypoint /app/.venv/bin/python \
+          docker run --rm --network none --read-only --user 0 --entrypoint "$VENV/bin/python" \
             --mount "type=bind,source=$PWD/scripts/licenses/check.py,target=/tmp/check-licenses.py,readonly" \
-            "$LICENSE_IMAGE" /tmp/check-licenses.py inventory python /app/.venv - > license-reports/inventory.json
+            "$LICENSE_IMAGE" /tmp/check-licenses.py inventory python "$VENV" - > license-reports/inventory.json
       - uses: ./.github/actions/license-scan
         with:
           target-type: image
@@ -138,7 +145,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish full and slim manifests without rebuilding
+      - name: Publish full, slim and dam manifests without rebuilding
         env:
           IMAGE_NAME: ${{ vars.IMAGE_NAME }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}

@@ -1,0 +1,3 @@
+#!/bin/sh
+export PYTHONPATH="/opt/cuga/dam-integration${PYTHONPATH:+:$PYTHONPATH}"
+exec cuga-platform /opt/cuga/.venv/bin/python -m deployment.dam.cuga_dam.terminal "$@"

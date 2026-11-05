@@ -1,6 +1,8 @@
 import asyncio
+import contextvars
 import math
 import re
+import sys
 import threading
 import weakref
 from datetime import date
@@ -76,6 +78,17 @@ def _get_reasoning_chat_openai():
 
 
 _get_reasoning_chat_openai._cls = None  # type: ignore[attr-defined]
+
+
+def _loaded_chat_watsonx() -> Any:
+    """ChatWatsonx when langchain_ibm is loaded, else None.
+
+    A watsonx model exists only once langchain_ibm is imported, so a check on a
+    model that may be one needs no import: importing it for the check loaded
+    ibm_watsonx_ai, seconds of a cold start, for an agent on another provider.
+    """
+    module = sys.modules.get("langchain_ibm")
+    return getattr(module, "ChatWatsonx", None) if module is not None else None
 
 
 def _get_reasoning_chat_litellm():
@@ -303,16 +316,23 @@ def _resolve_max_tokens_from_llm_cfg(llm_cfg: Mapping[str, Any], toml_default: i
     return value
 
 
-_current_llm_override: Optional[Dict[str, Any]] = None
+# A context variable, not a module global: one ACP process runs several
+# sessions at once, and each one's override must stay with its own turn.
+_current_llm_override: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+    "cuga_llm_override", default=None
+)
 
 
 def get_current_llm_override() -> Optional[Dict[str, Any]]:
-    return _current_llm_override
+    return _current_llm_override.get()
 
 
-def set_current_llm_override(override: Optional[Dict[str, Any]]) -> None:
-    global _current_llm_override
-    _current_llm_override = override
+def set_current_llm_override(override: Optional[Dict[str, Any]]) -> contextvars.Token:
+    return _current_llm_override.set(override)
+
+
+def reset_llm_override(token: contextvars.Token) -> None:
+    _current_llm_override.reset(token)
 
 
 class _ModelSettingsWrap:
@@ -497,11 +517,8 @@ class LLMManager:
         Keeps the authenticated APIClient (avoids IAM re-auth). Returns True when
         a rebind happened.
         """
-        try:
-            from langchain_ibm import ChatWatsonx
-        except ImportError:
-            return False
-        if not isinstance(model, ChatWatsonx):
+        ChatWatsonx = _loaded_chat_watsonx()
+        if ChatWatsonx is None or not isinstance(model, ChatWatsonx):
             return False
         client = cls._watsonx_api_client(model)
         if client is None:
@@ -558,9 +575,8 @@ class LLMManager:
         models = list(self._models.values())
         if self._pre_instantiated_model is not None:
             models.append(self._pre_instantiated_model)
-        try:
-            from langchain_ibm import ChatWatsonx
-        except ImportError:
+        ChatWatsonx = _loaded_chat_watsonx()
+        if ChatWatsonx is None:
             return 0
         for model in models:
             if not isinstance(model, ChatWatsonx):

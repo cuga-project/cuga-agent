@@ -1,0 +1,42 @@
+#!/bin/sh
+# Points CUGA at DAM before it starts: the Model Router, CUGA's state in the
+# home, the agent's skills and instructions, and the session's approvals.
+set -eu
+
+# Every model call goes to DAM's Model Router on the loopback, which holds
+# the agent's provider credentials. The model is CUGA_MODEL, a provider-
+# qualified name such as `cb/<model>` (the agent's env sets it); without one,
+# the first Chat Completions model the router lists, which puts the
+# platform's preferred work model first.
+router="${PLATFORM_MODEL_ROUTER_URL:-http://127.0.0.1:24180}"
+export OPENAI_BASE_URL="$router/v1" OPENAI_API_KEY=dummy-placeholder
+MODEL_NAME="${CUGA_MODEL:-}"
+if [ -z "$MODEL_NAME" ]; then
+    MODEL_NAME=$(/opt/cuga/.venv/bin/python -I /opt/cuga/platform/first-model.py "$router" || :)
+fi
+export MODEL_NAME="${MODEL_NAME:-platform-no-model}"
+
+approvals="${CUGA_SESSION_APPROVALS:-}"
+settings="$HOME/.cuga/platform-settings.json"
+if [ -z "$approvals" ] && [ -r "$settings" ]; then
+    approvals=$(/opt/cuga/.venv/bin/python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("approvals") or "")' "$settings" 2>/dev/null || :)
+fi
+[ "$approvals" = ask ] || approvals=auto
+
+# Sessions, checkpoints and skills are shared in ~/.cuga, so any process can
+# load any session; CUGA's skills root "agents" is then ~/.agents/skills, the
+# agent's own. Each approvals posture keeps its own policy folder and
+# database, so the shell approval policy never reaches a process that does not
+# ask.
+export CUGA_FOLDER="$HOME/.cuga"
+policies="$CUGA_FOLDER/policies-$approvals"
+export DYNACONF_POLICY__CUGA_FOLDER="$policies" CUGA_DBS_DIR="$CUGA_FOLDER/dbs-$approvals"
+mkdir -p "$CUGA_DBS_DIR" "$policies/tool_approvals"
+policy="$policies/tool_approvals/shell-command-approval.md"
+if [ "$approvals" = ask ]; then
+    [ -e "$policy" ] || cp /opt/cuga/default-policies/shell-command-approval.md "$policy"
+else
+    rm -f "$policy"
+fi
+
+exec "$@"

@@ -26,6 +26,7 @@ from acp.schema import (
     SessionCapabilities,
     SessionInfo,
     SessionListCapabilities,
+    SetSessionConfigOptionResponse,
     TextContentBlock,
     ToolCallUpdate,
     UserMessageChunk,
@@ -135,6 +136,7 @@ class CugaAcpAgent:
         configure = getattr(self._runner, "configure_session", None)
         if callable(configure):
             configure(record.context_id, mcp_servers or [])
+        self._describe_session(session_id, record.context_id)
         if self._store is not None:
             self._store.add(session_id, record.context_id, cwd, directories)
         async with self._sessions_lock:
@@ -365,6 +367,12 @@ class CugaAcpAgent:
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
+    async def warm(self) -> None:
+        """Let the runner do its first prompt's one-time work now, if it can."""
+        warm = getattr(self._runner, "warm", None)
+        if callable(warm):
+            await warm()
+
     async def shutdown(self) -> None:
         async with self._sessions_lock:
             self._closing = True
@@ -402,6 +410,7 @@ class CugaAcpAgent:
         configure = getattr(self._runner, "configure_session", None)
         if callable(configure):
             configure(saved.context_id, mcp_servers or [])
+        self._describe_session(session_id, saved.context_id)
         if self._client is None:
             raise RequestError.internal_error()
         for role, text in self._store.messages(session_id):
@@ -433,9 +442,29 @@ class CugaAcpAgent:
         del kwargs
         raise RequestError.method_not_found("session/set_mode")
 
-    async def set_config_option(self, **kwargs: Any) -> None:
+    async def set_config_option(
+        self, config_id: str, session_id: str, value: str | bool, **kwargs: Any
+    ) -> SetSessionConfigOptionResponse:
+        """Take a session's model from its client; any other option is unknown.
+
+        The model is a name the client's model endpoint resolves, sent before a
+        turn, so one process serves sessions on different models at once.
+        """
         del kwargs
-        raise RequestError.method_not_found("session/set_config_option")
+        record = self._session_or_error(session_id)
+        if config_id != "model" or not isinstance(value, str) or not value.strip():
+            raise RequestError.invalid_params()
+        set_model = getattr(self._runner, "set_session_model", None)
+        if callable(set_model):
+            set_model(record.context_id, value.strip())
+        return SetSessionConfigOptionResponse(configOptions=[])
+
+    def _describe_session(self, session_id: str, context_id: str) -> None:
+        describe = getattr(self._runner, "describe_session", None)
+        if callable(describe):
+            from cuga.backend.server.acp.instructions import read_instruction_files
+
+            describe(context_id, session_id, read_instruction_files())
 
     async def authenticate(self, **kwargs: Any) -> None:
         del kwargs

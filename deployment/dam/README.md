@@ -1,141 +1,63 @@
-# CUGA custom image for DAM
+# CUGA in DAM
 
-This directory builds a general-purpose CUGA agent image for DAM's text ACP
-interface. It starts from public CUGA `main` and adds only the integration
-needed for DAM chat, persistent sessions, DAM-managed tools and skills, and the
-separate terminal attachment. The Dockerfile pins a DAM platform-base image;
-DAM's server and credential gateway remain outside this image.
+This directory makes CUGA a DAM agent. The repository root carries a DAM
+starter kit, [`kit.yaml`](../../kit.yaml), and this directory builds the image
+it names. A DAM user creates a CUGA agent from the kit, by its catalog entry or
+by pasting this repository's link into DAM's Starter kits page.
 
-## Supported paths
+## What the agent does
 
 | Capability | How it works |
 | --- | --- |
-| DAM web chat and `dam run` | DAM starts `harness-chat`, which runs the deployment-owned `cuga_dam.entrypoint` through CUGA's shared ACP stdio host. |
-| Saved chat | The DAM runtime stores ACP `session/list` and `session/load` data in `$CUGA_FOLDER/acp-sessions.sqlite3`; LangGraph uses `$CUGA_FOLDER/acp-checkpoints.sqlite3`. Both are on DAM's persistent work volume. |
-| DAM tools and connections | The DAM runtime accepts HTTP/SSE MCP servers from the session and merges DAM's `~/.mcp.json`. It exposes every tool the granted servers advertise under a Python-safe name. DAM controls connection grants and server-side authorization. |
-| Schedules | DAM's scheduler delivers a task as an ACP turn. Its advertised schedule-management MCP tools are available to CUGA. A schedule precheck runs in the container before the ACP turn. |
-| Skills | DAM installs skills in `/home/agent/.agents/skills`. The launcher links that tree into CUGA's configured skills root on the persistent work volume. |
-| Native tools | Shell and filesystem tools are enabled in CUGA with the local execution backend. The shell approval policy requires a one-use human decision for each `run_command`; the ACP request shows the pending code. |
-| `dam chat` | DAM's PTY runs `harness-terminal`, which opens the deployment-owned CUGA text console with `:new` and `:quit`. This path does not speak ACP JSON-RPC over the terminal. |
+| Web chat, Slack, `dam run` | DAM starts `harness-chat`, which runs the DAM integration's `cuga_dam.entrypoint` through CUGA's shared ACP stdio host. |
+| Saved conversations | ACP `session/list` and `session/load` read `~/.cuga/acp-sessions.sqlite3`; LangGraph checkpoints are in `~/.cuga/acp-checkpoints.sqlite3`. Both live in the agent's home, so they survive a restart. |
+| Models | Every call goes to DAM's Model Router on the agent's loopback, which holds the provider credentials. The agent runs on one model: `CUGA_MODEL` in the agent's environment, a provider-qualified name such as `cb/<model>`. Left empty, CUGA takes the first Chat Completions model the router lists, which puts DAM's preferred work model first (DAM 0.2.26 and later, dam-agents/dam#6232; on an older DAM, set `CUGA_MODEL`). DAM offers no model picker for CUGA. |
+| Spend | CUGA sends the ACP session id in `x-platform-session` on each model call (`CUGA_SESSION_HEADER`), so DAM books every call to its session. |
+| Tools and connections | The DAM integration takes the HTTP/SSE MCP servers of the session and DAM's `~/.mcp.json`, and exposes each tool under a Python-safe name. |
+| Instructions | At the start of each session CUGA reads the files `CUGA_INSTRUCTION_FILES` lists: DAM's `/etc/AGENTS.md`, the owner's `~/AGENTS.md` and `~/work/AGENTS.md`. An edit applies from the next session. |
+| Skills | CUGA's skills root is `~/.agents/skills`, where DAM installs the agent's skills. |
+| Shell approvals | A session setting, **Approvals**: *Auto-approve* (default) runs shell commands, *Ask every time* asks before each `run_command`. An asking session runs in a CUGA process of its own, with its own policy folder; nobody answers on a schedule or Slack turn, so DAM refuses *Ask* there. |
+| `dam chat` | DAM's terminal runs `harness-terminal`, the DAM integration's CUGA text console with `:new` and `:quit`. |
 
-This is the proven text-chat scope. Image, audio, browser, and ACP-to-ACP MCP
-features are not advertised. Shell approval covers `run_command` only; it does
-not authorize filesystem tools or DAM MCP side effects. DAM's connection and
-network policies still apply to all outbound access.
+Image, audio and browser input are not advertised.
 
-## Image contents and defaults
+## The image
 
-The two-stage [Dockerfile](Dockerfile) extends a pinned DAM base, installs CUGA
-and its `acp` extra into `/opt/cuga/.venv`, and omits the large packages listed
-in CUGA's slim Dockerfile. The DAM-only SQLite packages are pinned in
-[requirements.txt](requirements.txt) and installed after CUGA's frozen lock;
-the deployment-owned Python runtime is copied into `/opt/cuga/dam-integration`.
-It caches the local policy embedding model at build
-time and runs as UID 65532. DAM's base entry point remains in charge of the
-container. No connection ID, Slack token, GitHub token, or usable model key is
-baked in. `OPENAI_API_KEY=dummy-placeholder` is a literal placeholder; a DAM
-model-provider connection supplies runtime access.
+The [Dockerfile](Dockerfile) starts from DAM's default agent image, pinned by
+digest, and installs CUGA with its `acp` extra into `/opt/cuga/.venv` on that
+image's Python. It leaves out the large packages `Dockerfile.ubi.slim` leaves
+out, adds the DAM integration's SQLite packages ([requirements.txt](requirements.txt)),
+and caches the policy embedding model at build time. `rootfs/` holds what it
+adds: the runtime manifest at `/app/runtime-manifest.yaml`, the launchers and
+the default shell approval policy. `PLATFORM_HARNESS=cuga`, so DAM's runtime
+runs CUGA as the agent's one harness. No credential is baked in.
 
-The image defaults to `MODEL_NAME=azure/gpt-5.6-sol`. Override it in the DAM
-agent environment if the selected model provider uses another route. Shell,
-filesystem, and skills are enabled by default through CUGA settings in the
-Dockerfile. CUGA Lite binds the complete tool provider and retries an unsupported
-"tools unavailable" claim before ending a turn. The launchers seed
-[shell-command-approval.md](shell-command-approval.md)
-only if the workspace policy file does not yet exist, preserving later edits.
+The DAM integration itself, [`cuga_dam/`](cuga_dam/), is copied to
+`/opt/cuga/dam-integration`: the session store and checkpoints, DAM's MCP
+servers and Slack instructions, and the terminal console. CUGA's own
+`cuga-acp` keeps its default capabilities unless a host supplies these.
 
-The launcher expects `/home/agent/work/.agents` to be absent or a symlink to
-`/home/agent/.agents`. It creates that link on first start and fails with a
-clear error if another file or directory occupies the path. A user migrating
-an older workspace should inspect that path before switching images.
+Bump the base digest when DAM releases a new default image, so the agent gets
+the current DAM runtime.
 
-## Source boundary
-
-CUGA core retains reusable ACP extension points for an injected agent factory,
-session store, MCP-capable runner, and exact approval details. The SDK accepts an
-injected checkpointer, and CUGA Lite handles dictionary JSON Schemas from
-LangChain tools. The concrete MCP file fallback, Slack instructions, SQLite
-session store and checkpointer setup, and PTY console are all in
-[`cuga_dam/`](cuga_dam/). The default `cuga-acp` command keeps its public-main
-capabilities unless a host explicitly supplies these extensions.
-
-## Build and local ACP check
-
-Build from the repository root after committing the source. Use the required
-source-commit label, a readable UTC-date/short-commit tag, and an immutable
-digest for deployment. The currently deployed CUGA DAM images use AMD64; verify
-the target cluster architecture before adding another platform.
+## Build and check locally
 
 ```sh
 revision=$(git rev-parse HEAD)
-short_revision=$(git rev-parse --short=8 HEAD)
-image_tag="$(date -u +%Y%m%d)-$short_revision"
-image="docker.io/vinodmut/cuga-dam:$image_tag"
 docker buildx build --platform linux/amd64 \
   --file deployment/dam/Dockerfile \
   --build-arg "CUGA_SOURCE_COMMIT=$revision" \
-  --tag "$image" --load .
+  --tag cuga-dam:dev --load .
 
-python deployment/dam/local_acp_client.py --image "$image" --check
+python deployment/dam/local_acp_client.py --image cuga-dam:dev --check
 ```
 
-The handshake check needs Docker and the `acp` Python extra in the local
-checkout; it does not call an LLM. To send a model prompt, supply a real local
-`OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `MODEL_NAME` and pass `--prompt`.
-The client passes these values at container start and asks before granting an
-ACP permission request. `--volume <name>` retains ACP state between local runs;
-`--session <id>` loads an existing session from that volume.
+The check needs Docker and the `acp` extra in the local checkout; it calls no
+model. To send a prompt, pass a real `OPENAI_BASE_URL`, `OPENAI_API_KEY` and
+`CUGA_MODEL` and `--prompt`.
 
-After the local and DAM checks pass, publish the same source revision:
+## Release
 
-```sh
-docker buildx build --platform linux/amd64 \
-  --file deployment/dam/Dockerfile \
-  --build-arg "CUGA_SOURCE_COMMIT=$revision" \
-  --tag "$image" --push .
-docker buildx imagetools inspect "$image"
-```
-
-## Configure an agent in DAM
-
-Create a new custom-image agent using the image digest and grant a model
-provider. The current DAM CLI's `dam agent create` command accepts templates
-but has no `--image` option; use a custom-image creation flow in the UI or API
-for this one step. The CLI can manage the resulting agent, connections,
-channels, schedules, skills, files, sessions, and approvals.
-
-Grant only the connections the agent should use and configure DAM network
-access separately. DAM injects connection credentials at runtime. For a Slack
-agent, bind a channel through DAM; the `platform-outbound` MCP server supplies
-reply and top-level post tools. For a named channel, CUGA can use
-`describe_channel` to find its ID before posting.
-
-Useful checks after creation:
-
-```sh
-dam run <agent> --prompt 'Reply with one short sentence.'
-dam session list <agent> --json
-dam chat <agent>
-dam skill list <agent> --json
-dam schedule create <agent> --name smoke --task 'Reply with OK.' --every 1m
-dam schedule list <agent> --json
-```
-
-Delete the smoke schedule after one observed fire. A scheduled task using a
-CUGA shell command pauses until someone approves that command. A task using
-only DAM MCP tools can complete unattended. Prechecks run before CUGA under
-DAM's scheduler and are outside the CUGA shell approval policy; DAM CLI 0.2.23
-documents exit 0 as run, exit 1 as skip, and other exits as running the task
-despite a broken check.
-
-## Validation record
-
-The focused ACP, DAM, and dictionary-schema suite passed 242 tests on the
-refactor worktree. It covers MCP server merging and aliasing, nullable tool
-schemas, session list/load, durable checkpoints, permission handling, and the
-terminal console. A local Linux/AMD64 image built successfully. The ACP
-handshake passed through `harness-chat`, a session was listed and reloaded from
-a persistent Docker volume after the client exited, and `harness-terminal`
-opened and exited normally. These local checks did not send an LLM prompt or
-exercise a live DAM connection. Rebuild the committed PR head and run the live
-DAM checks above before claiming image-level validation for the final revision.
+A release publishes `ghcr.io/cuga-project/cuga:<version>-dam` next to the full
+and slim images, and `kit.yaml` names that tag. Bump the tag in `kit.yaml` in
+the release that publishes it.

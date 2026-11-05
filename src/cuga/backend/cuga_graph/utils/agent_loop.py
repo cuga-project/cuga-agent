@@ -7,14 +7,12 @@ from uuid import UUID
 from langgraph.types import Command
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker
-from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
 from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.browser_models import NextAgentPlan
 from cuga.backend.cuga_graph.nodes.browser.qa_agent.prompts.load_prompt import QaAgentOutput
-from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
 from cuga.config import settings
 import logging
-from typing import Any, Dict, Generator, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Generator, List, Optional
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, ToolCall
@@ -26,6 +24,12 @@ from enum import Enum
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.observability.openlit_init import set_session_attribute
+
+# The browser environments import gymnasium and playwright; an agent that never
+# drives a browser must not pay for them at import.
+if TYPE_CHECKING:
+    from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
+    from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
 
 
 def _native_tool_calls(messages: Any) -> list:
@@ -341,7 +345,7 @@ class AgentLoop:
         langfuse_handler: Optional[Any],
         graph: CompiledStateGraph,
         tracker: ActivityTracker,
-        env_pointer: Optional[BrowserEnvGymAsync | ExtensionEnv] = None,
+        env_pointer: "Optional[BrowserEnvGymAsync | ExtensionEnv]" = None,
         logger_name: str = 'agent_loop',
         policy_system: Optional[Any] = None,
         enable_todos: Optional[bool] = None,

@@ -1,0 +1,23 @@
+# A DAM starter kit: create a DAM agent that runs CUGA, from this repository's
+# link. Its image is built from deployment/dam/ on each release.
+schemaVersion: v1
+id: cuga
+name: CUGA
+tagline: IBM's open-source generalist agent for enterprise tasks.
+description: >-
+  CUGA plans and runs long chains of tool calls against the tools you connect,
+  with policies checked before each call. It runs on the providers you attach,
+  and works in chat, Slack and schedules.
+category: productivity
+docsUrl: https://github.com/cuga-project/cuga-agent/blob/main/deployment/dam/README.md
+# No intake turn: the agent takes its brief from the user's first prompt.
+onboarding: false
+image:
+  ref: ghcr.io/cuga-project/cuga:0.4.3-dam
+  providers: [ibm-litellm, curve-bender, openai]
+# CUGA runs on one model per agent, named with its provider. Change it in the
+# agent's environment; left empty, CUGA takes the first Chat Completions
+# model the agent's providers list.
+env:
+  - name: CUGA_MODEL
+    value: ""

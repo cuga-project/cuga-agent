@@ -1,6 +1,7 @@
 # agents/base_agent.py
 import functools
 import json
+import sys
 from typing import Literal
 
 import openai
@@ -9,25 +10,6 @@ from abc import ABC
 from pydantic import ValidationError
 from langchain_core.runnables import RunnableLambda
 
-# from langchain_openai.chat_models import AzureChatOpenAI
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-except ImportError:
-    logger.warning("Langchain Google GenAI not installed, using OpenAI instead")
-    ChatGoogleGenerativeAI = None
-
-try:
-    from langchain_groq import ChatGroq
-except ImportError:
-    ChatGroq = None
-    logger.warning("Langchain Groq not installed, using OpenAI instead")
-
-try:
-    from langchain_litellm import ChatLiteLLM
-except ImportError:
-    ChatLiteLLM = None
-
-from langchain_ibm.chat_models import ChatWatsonx
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_core.language_models import BaseChatModel
@@ -40,6 +22,15 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.planner_output import
     APIPlannerOutputLiteNoHITL,
     APIPlannerOutputWX,
 )
+
+
+# Provider classes other than ChatOpenAI are looked up, never imported, here:
+# importing langchain_litellm alone loads litellm, seconds of every cold start.
+# A model of a provider exists only once its module is imported, so a module
+# that is not loaded yet means the model is not of that provider.
+def _is_provider_model(llm: object, module: str, name: str) -> bool:
+    cls = getattr(sys.modules.get(module), name, None)
+    return isinstance(cls, type) and isinstance(llm, cls)
 
 
 def _chat_openai_model_name(llm: BaseChatModel) -> str:
@@ -230,7 +221,7 @@ JSON schema:
         #     logger.debug("Rits model")
         #     parser = PydanticOutputParser(pydantic_object=schema)
         #     return prompt_template | llm.bind(extra_body={"guided_json": schema.model_json_schema()}) | parser
-        if isinstance(llm, ChatWatsonx):
+        if _is_provider_model(llm, "langchain_ibm", "ChatWatsonx"):
             logger.debug("Loading LLM for watsonx")
             model_id = llm.model_id
             logger.debug(f"Model ID: {model_id}")
@@ -280,12 +271,12 @@ JSON schema:
                 return prompt_template | llm
             parser = PydanticOutputParser(pydantic_object=schema)
             return (prompt_template | llm | parser).with_retry(stop_after_attempt=3)
-        elif ChatLiteLLM is not None and isinstance(llm, ChatLiteLLM):
+        elif _is_provider_model(llm, "langchain_litellm", "ChatLiteLLM"):
             logger.debug("Loading LLM for LiteLLM")
             parser = PydanticOutputParser(pydantic_object=schema)
             chain = prompt_template | llm | parser
             return chain.with_retry(stop_after_attempt=3)
-        elif isinstance(llm, ChatOpenAI) or (ChatGroq is not None and isinstance(llm, ChatGroq)):
+        elif isinstance(llm, ChatOpenAI) or _is_provider_model(llm, "langchain_groq", "ChatGroq"):
             return BaseAgent.create_validated_structured_output_chain(llm, schema, prompt_template)
         else:
             logger.debug("Getting model for azure")

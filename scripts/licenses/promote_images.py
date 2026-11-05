@@ -6,6 +6,11 @@ import subprocess
 from pathlib import Path
 
 
+# The tag suffix of each image profile the release builds; "dam" is the DAM
+# agent image that kit.yaml names.
+PROFILE_SUFFIXES = {"full": "", "slim": "-slim", "dam": "-dam"}
+
+
 def promotion_commands(repository, ref_type, ref_name, requested, descriptors):
     if not re.fullmatch(r"ghcr\.io/[a-z0-9._/-]+", repository):
         raise ValueError("Invalid GHCR repository")
@@ -22,15 +27,15 @@ def promotion_commands(repository, ref_type, ref_name, requested, descriptors):
     else:
         tags = ["latest"]
     commands = []
-    # Validate all four digests before changing any public release tag.
-    for profile in ("full", "slim"):
-        sources = [descriptors[f"{profile}-{arch}"] for arch in ("amd64", "arm64")]
+    # Validate every digest before changing any public release tag.
+    for profile, suffix in PROFILE_SUFFIXES.items():
+        sources = [descriptors.get(f"{profile}-{arch}", "") for arch in ("amd64", "arm64")]
         for source in sources:
             if not re.fullmatch(re.escape(repository) + r"@sha256:[0-9a-f]{64}", source):
                 raise ValueError("Missing or invalid scanned image digest")
         command = ["docker", "buildx", "imagetools", "create"]
         for tag in tags:
-            command += ["--tag", f"{repository}:{tag}{'-slim' if profile == 'slim' else ''}"]
+            command += ["--tag", f"{repository}:{tag}{suffix}"]
         commands.append(command + sources)
     return commands
 
