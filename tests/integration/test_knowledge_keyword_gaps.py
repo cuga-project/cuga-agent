@@ -410,3 +410,30 @@ def test_postgres_keyword_search_reuses_a_bounded_set_of_connections(make_adapte
 
     assert all(h == {source} for h in hits)
     assert 1 <= asyncio.run(_keyword_connections()) <= _PG_KEYWORD_POOL_SIZE
+
+
+@pytest.mark.pgvector
+def test_postgres_keyword_search_survives_dropped_connections(make_adapter, monkeypatch):
+    """After the server drops the pool's connections (restart, idle timeout), the next keyword
+    search reconnects instead of failing."""
+    import asyncpg
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwk")
+    adapter = make_adapter("pgvector", collection)
+    source = _add(adapter, collection, "invoice", "Invoice ABC-123 was issued.")
+    assert _hit_sources(adapter, "ABC-123") == {source}  # the pool now holds a connection
+
+    async def _terminate_keyword_connections() -> int:
+        conn = await asyncpg.connect(_pgvector_dsn())
+        try:
+            return await conn.fetchval(
+                "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity "
+                "WHERE application_name = 'cuga-knowledge-keyword'"
+            )
+        finally:
+            await conn.close()
+
+    assert asyncio.run(_terminate_keyword_connections()) >= 1
+
+    assert _hit_sources(adapter, "ABC-123") == {source}
