@@ -3370,10 +3370,9 @@ class KnowledgeEngine:
                 adapter = self._vector_stores[collection]
             # Adapters without a lexical index inherit the base class's
             # ``[]`` so this never raises — the engine degrades cleanly
-            # to pure-dense when (a) the adapter is pgvector, (b) the
-            # FTS table hasn't been created yet for a pre-upgrade
-            # collection, or (c) the query has no usable tokens after
-            # FTS5 sanitization.
+            # to pure-dense when (a) the collection has no keyword rows
+            # yet (a pre-FTS SQLite collection), (b) the query has no
+            # keyword terms, or (c) the keyword query fails.
             return adapter.search_lexical(q, k=k)
 
         # ``below_threshold_counter`` is a one-element list so the closure
