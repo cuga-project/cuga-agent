@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -37,6 +38,45 @@ def _pg_tsvector(text: str) -> str:
 def _pg_tsquery(group: list[str]) -> str:
     """One query group as a tsquery literal: its terms adjacent and in order (``<->``)."""
     return " <-> ".join(f"'{term}'" for term in group)
+
+
+_PG_KEYWORD_POOL_SIZE = 8
+_pg_keyword_pools: dict[str, Any] = {}
+_pg_keyword_pools_lock = threading.Lock()
+
+
+def _pg_keyword_pool(postgres_url: str):
+    """The keyword leg's connection pool for a database, created on first use.
+
+    The engine runs the dense and keyword legs concurrently, each in a worker thread with its own
+    short-lived event loop, so an asyncpg pool (bound to one loop) cannot be shared between them.
+    A psycopg pool is thread-safe: keyword calls from every thread reuse a few connections
+    instead of opening one per search.
+    """
+    with _pg_keyword_pools_lock:
+        pool = _pg_keyword_pools.get(postgres_url)
+        if pool is None:
+            from psycopg.rows import dict_row
+            from psycopg_pool import ConnectionPool
+
+            # ponytail: one pool per database URL for the process lifetime; add a shutdown hook
+            # if a deployment ever rotates the URL at runtime.
+            pool = ConnectionPool(
+                postgres_url,
+                min_size=0,
+                max_size=_PG_KEYWORD_POOL_SIZE,
+                # No server-side prepared statements: a collection dropped and re-created under
+                # the same name must not hit a stale cached plan on a pooled connection.
+                kwargs={
+                    "autocommit": True,
+                    "row_factory": dict_row,
+                    "prepare_threshold": None,
+                    "application_name": "cuga-knowledge-keyword",  # visible in pg_stat_activity
+                },
+                open=True,
+            )
+            _pg_keyword_pools[postgres_url] = pool
+        return pool
 
 
 def _doc_from_row(chunk_text: Any, meta_json: Any) -> Document:
@@ -300,28 +340,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             conn.commit()
         self._fts_ready = True
 
-    def _pg_keyword_run(self, work):
-        """Run ``work(conn)`` on a connection of its own. The engine runs the dense and keyword
-        legs concurrently, each in a thread with its own event loop, so the dense store's pool
-        (bound to one loop, and closed after each dense call) cannot be shared."""
-
-        async def _go():
-            import asyncpg
-
-            conn = await asyncpg.connect(self._postgres_url, command_timeout=60)
-            try:
-                return await work(conn)
-            finally:
-                await conn.close()
-
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(_go())
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(lambda: asyncio.run(_go())).result()
-
-    async def _pg_ensure_terms(self, conn) -> bool:
+    def _pg_ensure_terms(self, conn) -> bool:
         """Add the Postgres keyword column and its GIN index if missing, then fill every row
         without terms (rows ingested before the column existed, or whose term write failed).
 
@@ -331,31 +350,32 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         if self._fts_ready:
             return True
         table = self._collection
-        if await conn.fetchval("SELECT to_regclass($1)", table) is None:
+        if conn.execute("SELECT to_regclass(%s) AS t", (table,)).fetchone()["t"] is None:
             return False
-        has_column = await conn.fetchval(
-            "SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass($1) AND attname = $2 AND NOT attisdropped",
-            table,
-            _TERMS_COLUMN,
-        )
+        has_column = conn.execute(
+            "SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass(%s) AND attname = %s AND NOT attisdropped",
+            (table, _TERMS_COLUMN),
+        ).fetchone()
         if not has_column:
             index = f"idx_{hashlib.sha256(table.encode()).hexdigest()[:16]}_{_TERMS_COLUMN}"
-            async with conn.transaction():  # column and index together, or neither
-                await conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {_TERMS_COLUMN} tsvector")
-                await conn.execute(
-                    f"CREATE INDEX IF NOT EXISTS {index} ON {table} USING gin ({_TERMS_COLUMN})"
-                )
+            with conn.transaction():  # column and index together, or neither
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {_TERMS_COLUMN} tsvector")
+                conn.execute(f"CREATE INDEX IF NOT EXISTS {index} ON {table} USING gin ({_TERMS_COLUMN})")
         # ponytail: one pass on first use; a very large collection pays it on its first query.
         # Move it to engine warmup if that first-query latency matters.
         filled = 0
-        while rows := await conn.fetch(
+        while rows := conn.execute(
             f"SELECT id, tenant_id, instance_id, chunk_text FROM {table} WHERE {_TERMS_COLUMN} IS NULL LIMIT 500"
-        ):
-            await conn.executemany(
-                f"UPDATE {table} SET {_TERMS_COLUMN} = $1::text::tsvector "
-                "WHERE id = $2 AND tenant_id = $3 AND instance_id = $4",
-                [(_pg_tsvector(r["chunk_text"]), r["id"], r["tenant_id"], r["instance_id"]) for r in rows],
-            )
+        ).fetchall():
+            with conn.cursor() as cur:
+                cur.executemany(
+                    f"UPDATE {table} SET {_TERMS_COLUMN} = %s::text::tsvector "
+                    "WHERE id = %s AND tenant_id = %s AND instance_id = %s",
+                    [
+                        (_pg_tsvector(r["chunk_text"]), r["id"], r["tenant_id"], r["instance_id"])
+                        for r in rows
+                    ],
+                )
             filled += len(rows)
         if filled:
             logger.info("Indexed keyword terms for {} existing chunks in {}", filled, table)
@@ -364,25 +384,22 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
 
     def _pg_write_terms(self, items: list[tuple[str, dict[str, Any], str]]) -> None:
         scope = self._scope()
-
-        async def _write(conn):
-            await self._pg_ensure_terms(conn)
-            await conn.executemany(
-                f"UPDATE {self._collection} SET {_TERMS_COLUMN} = $1::text::tsvector "
-                "WHERE id = $2 AND tenant_id = $3 AND instance_id = $4",
-                [
-                    (_pg_tsvector(text), cid, scope["tenant_id"], scope["instance_id"])
-                    for cid, _meta, text in items
-                ],
-            )
-
-        self._pg_keyword_run(_write)
+        with _pg_keyword_pool(self._postgres_url).connection() as conn:
+            self._pg_ensure_terms(conn)
+            with conn.cursor() as cur:
+                cur.executemany(
+                    f"UPDATE {self._collection} SET {_TERMS_COLUMN} = %s::text::tsvector "
+                    "WHERE id = %s AND tenant_id = %s AND instance_id = %s",
+                    [
+                        (_pg_tsvector(text), cid, scope["tenant_id"], scope["instance_id"])
+                        for cid, _meta, text in items
+                    ],
+                )
 
     def _pg_search_lexical(self, groups: list[list[str]], k: int) -> list[tuple[Any, Any, float]]:
         scope = self._scope()
-
-        async def _search(conn):
-            if not await self._pg_ensure_terms(conn):
+        with _pg_keyword_pool(self._postgres_url).connection() as conn:
+            if not self._pg_ensure_terms(conn):
                 return []
             # BM25-style: each query group is weighted by its inverse document frequency in the
             # caller's scope, times its length-normalised frequency in the chunk (ts_rank_cd,
@@ -390,36 +407,39 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             # buries the right chunk under natural-language queries. The weights are computed
             # once (MATERIALIZED, one indexed count per group), and candidates come from one
             # indexed match on the union of the groups.
-            return await conn.fetch(
+            rows = conn.execute(
                 f"""
                 WITH n AS (
                     SELECT count(*)::float8 AS n FROM {self._collection}
-                    WHERE tenant_id = $2 AND instance_id = $3
+                    WHERE tenant_id = %(tenant)s AND instance_id = %(instance)s
                 ),
                 w AS MATERIALIZED (
                     SELECT g.q::tsquery AS q, ln(1 + (n.n - df.df + 0.5) / (df.df + 0.5)) AS idf
-                    FROM unnest($1::text[]) AS g(q)
+                    FROM unnest(%(groups)s::text[]) AS g(q)
                     CROSS JOIN n
                     CROSS JOIN LATERAL (
                         SELECT count(*)::float8 AS df FROM {self._collection}
-                        WHERE tenant_id = $2 AND instance_id = $3 AND {_TERMS_COLUMN} @@ g.q::tsquery
+                        WHERE tenant_id = %(tenant)s AND instance_id = %(instance)s
+                          AND {_TERMS_COLUMN} @@ g.q::tsquery
                     ) df
                 )
                 SELECT c.chunk_text, c.meta_json,
                        (SELECT sum(w.idf * ts_rank_cd(c.{_TERMS_COLUMN}, w.q, 1))
                         FROM w WHERE c.{_TERMS_COLUMN} @@ w.q) AS rank
                 FROM {self._collection} c
-                WHERE c.tenant_id = $2 AND c.instance_id = $3 AND c.{_TERMS_COLUMN} @@ $5::text::tsquery
-                ORDER BY rank DESC LIMIT $4
+                WHERE c.tenant_id = %(tenant)s AND c.instance_id = %(instance)s
+                  AND c.{_TERMS_COLUMN} @@ %(union)s::text::tsquery
+                ORDER BY rank DESC LIMIT %(k)s
                 """,
-                [_pg_tsquery(group) for group in groups],
-                scope["tenant_id"],
-                scope["instance_id"],
-                max(1, int(k)),
-                " | ".join(f"({_pg_tsquery(group)})" for group in groups),
-            )
-
-        return [(r["chunk_text"], r["meta_json"], float(r["rank"])) for r in self._pg_keyword_run(_search)]
+                {
+                    "groups": [_pg_tsquery(group) for group in groups],
+                    "union": " | ".join(f"({_pg_tsquery(group)})" for group in groups),
+                    "tenant": scope["tenant_id"],
+                    "instance": scope["instance_id"],
+                    "k": max(1, int(k)),
+                },
+            ).fetchall()
+        return [(r["chunk_text"], r["meta_json"], float(r["rank"])) for r in rows]
 
     def _fts_add(self, items: list[tuple[str, dict[str, Any], str]]) -> None:
         """Insert ``[(chunk_id, meta_payload, chunk_text), ...]`` rows.
