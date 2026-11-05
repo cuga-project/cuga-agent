@@ -336,3 +336,24 @@ def test_ingest_fails_before_any_vector_when_the_keyword_table_cannot_be_prepare
 
     assert _hit_sources(adapter, "dental") == {source}
     assert [doc.metadata["source"] for doc, _ in adapter.search("dental", k=5)] == [source]
+
+
+@pytest.mark.pgvector
+def test_postgres_failed_term_write_is_filled_by_the_next_search(make_adapter, monkeypatch):
+    """A failed keyword-term write keeps the ingest, and the next keyword search fills the row."""
+    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwh")
+    adapter = make_adapter("pgvector", collection)
+    _add(adapter, collection, "first", "Invoice ABC-100 was issued.")  # the keyword column exists
+    write = StorageBackedKnowledgeVectorStore._pg_write_terms
+
+    def _fail(self, items):
+        raise ConnectionError("connection reset")
+
+    monkeypatch.setattr(StorageBackedKnowledgeVectorStore, "_pg_write_terms", _fail)
+    source = _add(adapter, collection, "late", "The policy covers dental.")
+    monkeypatch.setattr(StorageBackedKnowledgeVectorStore, "_pg_write_terms", write)
+
+    assert _hit_sources(adapter, "dental") == {source}
