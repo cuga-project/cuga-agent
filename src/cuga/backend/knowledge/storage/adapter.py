@@ -340,8 +340,9 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         )
         if not has_column:
             index = f"idx_{hashlib.sha256(table.encode()).hexdigest()[:16]}_{_TERMS_COLUMN}"
-            await conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {_TERMS_COLUMN} tsvector")
-            await conn.execute(f"CREATE INDEX IF NOT EXISTS {index} ON {table} USING gin ({_TERMS_COLUMN})")
+            async with conn.transaction():  # column and index together, or neither
+                await conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {_TERMS_COLUMN} tsvector")
+                await conn.execute(f"CREATE INDEX IF NOT EXISTS {index} ON {table} USING gin ({_TERMS_COLUMN})")
         # ponytail: one pass on first use; a very large collection pays it on its first query.
         # Move it to engine warmup if that first-query latency matters.
         filled = 0
