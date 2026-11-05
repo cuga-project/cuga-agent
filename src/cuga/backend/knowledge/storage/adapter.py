@@ -431,6 +431,9 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             finally:
                 conn.close()
         except Exception as exc:  # noqa: BLE001 — never fail the ingest
+            if self._use_prod:
+                # The rows exist with no terms; the next keyword call's backfill fills them.
+                self._fts_ready = False
             logger.warning(
                 "BM25 FTS write failed for collection=%s items=%d: %s "
                 "(dense insert succeeded; lexical leg will return empty until backfill)",
