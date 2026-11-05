@@ -203,36 +203,61 @@ def test_identifier_matches_however_it_is_written(backend, query, make_adapter, 
     assert source not in _hit_sources(adapter, "ABC-124"), f"{backend}: ABC-124 matched ABC-123"
 
 
+OLD_FTS_SCHEMAS = {
+    # v0.3.0 to v0.4.5: unicode61 word rules, no tenant columns
+    "unicode61": "chunk_id UNINDEXED, source UNINDEXED, filename UNINDEXED, page UNINDEXED, "
+    "section_path UNINDEXED, chunk_text, tokenize=\"unicode61 remove_diacritics 2 tokenchars '._@-+'\"",
+    # shared tokenizer without tenant columns
+    "terms-no-tenant": "chunk_id UNINDEXED, source UNINDEXED, filename UNINDEXED, page UNINDEXED, "
+    "section_path UNINDEXED, chunk_text UNINDEXED, terms_v1, "
+    "tokenize=\"unicode61 remove_diacritics 0 categories 'L* M* N* Co'\"",
+}
+
+
 @pytest.mark.unit
-def test_keyword_index_from_an_older_tokenizer_is_rebuilt(tmp_path, monkeypatch):
-    """A keyword table built before the shared tokenizer is re-indexed from its stored text."""
+@pytest.mark.parametrize("old", [None, *OLD_FTS_SCHEMAS], ids=["no-keyword-index", *OLD_FTS_SCHEMAS])
+def test_existing_sqlite_collection_gets_a_complete_keyword_index(old, tmp_path, monkeypatch):
+    """A collection whose keyword index is missing (ingested before v0.3.0) or built by an older
+    schema is rebuilt from its vectors on first use, with every chunk, tenant scope and terms."""
     import sqlite3
+
+    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
 
     _set_tenant(monkeypatch, "tenant_a")
     collection = unique_collection("kwm")
-    db_path = tmp_path / "kb.db"
-    with sqlite3.connect(db_path) as conn:  # the schema shipped before the shared tokenizer
-        conn.execute(
-            f"CREATE VIRTUAL TABLE {collection}__fts USING fts5("
-            "chunk_id UNINDEXED, source UNINDEXED, filename UNINDEXED, "
-            "page UNINDEXED, section_path UNINDEXED, chunk_text, "
-            "tokenize=\"unicode61 remove_diacritics 2 tokenchars '._@-+'\")"
-        )
-        conn.executemany(
-            f"INSERT INTO {collection}__fts VALUES (?, ?, ?, ?, ?, ?)",
-            [
-                ("c1", f"{collection}/en.txt", "en.txt", 1, "", "The policy covers dental."),
-                ("c2", f"{collection}/hi.txt", "hi.txt", 1, "", CORPUS["hi"]),
-            ],
-        )
-    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
+    db_path = str(tmp_path / "kb.db")
+    first = StorageBackedKnowledgeVectorStore(collection, DeterministicEmbeddings(), local_db_path=db_path)
+    en = _add(first, collection, "en", "The policy covers dental.")
+    hi = _add(first, collection, "hi", CORPUS["hi"])
+    _set_tenant(monkeypatch, "tenant_b")
+    _add(first, collection, "other", "Tenant B also covers dental.")
+    with sqlite3.connect(db_path) as conn:  # replace the index with what an older release left
+        conn.execute(f"DROP TABLE {collection}__fts")
+        if old:
+            conn.execute(f"CREATE VIRTUAL TABLE {collection}__fts USING fts5({OLD_FTS_SCHEMAS[old]})")
 
-    adapter = StorageBackedKnowledgeVectorStore(
-        collection, DeterministicEmbeddings(), local_db_path=str(db_path)
-    )
+    _set_tenant(monkeypatch, "tenant_a")
+    fresh = StorageBackedKnowledgeVectorStore(collection, DeterministicEmbeddings(), local_db_path=db_path)
 
-    assert _hit_sources(adapter, "dental") == {f"{collection}/en.txt"}
-    assert _hit_sources(adapter, QUERIES["hi"]) == {f"{collection}/hi.txt"}
+    assert _hit_sources(fresh, "dental") == {en}
+    assert _hit_sources(fresh, QUERIES["hi"]) == {hi}
+
+
+@pytest.mark.unit
+def test_deleting_a_document_keeps_other_tenants_keyword_rows(make_adapter, monkeypatch):
+    """Tenants A and B both have "shared.txt"; A deleting it leaves B's keyword hits."""
+    collection = unique_collection("kwd")
+    _set_tenant(monkeypatch, "tenant_a")
+    adapter = make_adapter("sqlite", collection)
+    source = _add(adapter, collection, "shared", "Contract ZXQ-9001 renewal terms.")
+    _set_tenant(monkeypatch, "tenant_b")
+    _add(adapter, collection, "shared", "Contract ZXQ-9001 cancellation terms.")
+
+    _set_tenant(monkeypatch, "tenant_a")
+    adapter.delete_by_source(source)
+    _set_tenant(monkeypatch, "tenant_b")
+
+    assert _hit_sources(adapter, "ZXQ-9001") == {source}
 
 
 def _two_tenant_hits(backend, make_adapter, monkeypatch) -> tuple[set[str], str, str]:
@@ -287,17 +312,7 @@ def test_postgres_rows_from_before_the_keyword_column_are_indexed(make_adapter, 
 @pytest.mark.parametrize(
     "backend",
     [
-        pytest.param(
-            "sqlite",
-            marks=[
-                pytest.mark.unit,
-                pytest.mark.xfail(
-                    strict=True,
-                    raises=AssertionError,
-                    reason="known gap, fixed by PR B2 (tenant columns in FTS)",
-                ),
-            ],
-        ),
+        pytest.param("sqlite", marks=pytest.mark.unit),
         pytest.param("pgvector", marks=pytest.mark.pgvector),
     ],
 )
