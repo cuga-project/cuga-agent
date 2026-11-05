@@ -141,12 +141,9 @@ def _case(backend: str, lang: str, fixed_by: str | None = None):
     return pytest.param(backend, lang, marks=marks, id=f"{backend}-{lang}")
 
 
-NO_PG_KEYWORD = "PR B4 (Postgres keyword read path)"
-
-
 @pytest.mark.parametrize(
     ("backend", "lang"),
-    [_case("sqlite", lang) for lang in CORPUS] + [_case("pgvector", lang, NO_PG_KEYWORD) for lang in CORPUS],
+    [_case(backend, lang) for backend in ("sqlite", "pgvector") for lang in CORPUS],
 )
 def test_keyword_query_finds_exactly_its_document(backend, lang, make_adapter, monkeypatch):
     """A whole-word keyword query returns its document and not a letters-only distractor."""
@@ -164,15 +161,7 @@ def test_keyword_query_finds_exactly_its_document(backend, lang, make_adapter, m
 
 BOTH_BACKENDS = [
     pytest.param("sqlite", marks=pytest.mark.unit),
-    pytest.param(
-        "pgvector",
-        marks=[
-            pytest.mark.pgvector,
-            pytest.mark.xfail(
-                strict=True, raises=AssertionError, reason=f"known gap, fixed by {NO_PG_KEYWORD}"
-            ),
-        ],
-    ),
+    pytest.param("pgvector", marks=pytest.mark.pgvector),
 ]
 
 
@@ -261,21 +250,38 @@ def _two_tenant_hits(backend, make_adapter, monkeypatch) -> tuple[set[str], str,
     "backend",
     [
         pytest.param("sqlite", marks=pytest.mark.unit),
-        pytest.param(
-            "pgvector",
-            marks=[
-                pytest.mark.pgvector,
-                pytest.mark.xfail(
-                    strict=True, raises=AssertionError, reason=f"known gap, fixed by {NO_PG_KEYWORD}"
-                ),
-            ],
-        ),
+        pytest.param("pgvector", marks=pytest.mark.pgvector),
     ],
 )
 def test_keyword_search_finds_own_tenant_document(backend, make_adapter, monkeypatch):
     hits, _source_a, source_b = _two_tenant_hits(backend, make_adapter, monkeypatch)
 
     assert source_b in hits, f"{backend}: tenant B cannot find its own document"
+
+
+@pytest.mark.pgvector
+def test_postgres_rows_from_before_the_keyword_column_are_indexed(make_adapter, monkeypatch):
+    """A Postgres collection ingested before keyword search existed is indexed on first use."""
+    import asyncpg
+
+    from cuga.backend.knowledge.storage.adapter import _TERMS_COLUMN
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwp")
+    old = make_adapter("pgvector", collection)
+    source = _add(old, collection, "hi", CORPUS["hi"])
+
+    async def _drop_column():  # the table as it was before this column existed
+        conn = await asyncpg.connect(_pgvector_dsn())
+        try:
+            await conn.execute(f"ALTER TABLE {collection} DROP COLUMN {_TERMS_COLUMN}")
+        finally:
+            await conn.close()
+
+    asyncio.run(_drop_column())
+    fresh = make_adapter("pgvector", collection)
+
+    assert _hit_sources(fresh, QUERIES["hi"]) == {source}
 
 
 @pytest.mark.parametrize(
@@ -292,7 +298,6 @@ def test_keyword_search_finds_own_tenant_document(backend, make_adapter, monkeyp
                 ),
             ],
         ),
-        # Not xfail on pgvector: it must hold before and after the keyword read path lands.
         pytest.param("pgvector", marks=pytest.mark.pgvector),
     ],
 )
