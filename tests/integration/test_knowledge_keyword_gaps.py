@@ -106,6 +106,21 @@ def _adapter(backend: str, tmp_path, collection: str):
     return StorageBackedKnowledgeVectorStore(collection, DeterministicEmbeddings(), postgres_url=dsn)
 
 
+@pytest.fixture
+def make_adapter(tmp_path):
+    """Build adapters for a test and drop their collections afterwards, pass or fail."""
+    created = []
+
+    def _make(backend: str, collection: str):
+        adapter = _adapter(backend, tmp_path, collection)
+        created.append(adapter)
+        return adapter
+
+    yield _make
+    for adapter in created:
+        adapter.drop()
+
+
 def _add(adapter, collection: str, name: str, text: str) -> str:
     source = f"{collection}/{name}.txt"
     doc = Document(page_content=text, metadata={"source": source, "filename": f"{name}.txt", "page": 1})
@@ -120,7 +135,9 @@ def _hit_sources(adapter, query: str) -> set[str]:
 def _case(backend: str, lang: str, fixed_by: str | None = None):
     marks = [pytest.mark.unit] if backend == "sqlite" else [pytest.mark.pgvector]
     if fixed_by:
-        marks.append(pytest.mark.xfail(strict=True, reason=f"known gap, fixed by {fixed_by}"))
+        marks.append(
+            pytest.mark.xfail(strict=True, raises=AssertionError, reason=f"known gap, fixed by {fixed_by}")
+        )
     return pytest.param(backend, lang, marks=marks, id=f"{backend}-{lang}")
 
 
@@ -131,11 +148,11 @@ NO_PG_KEYWORD = "PR B4 (Postgres keyword read path)"
     ("backend", "lang"),
     [_case("sqlite", lang) for lang in CORPUS] + [_case("pgvector", lang, NO_PG_KEYWORD) for lang in CORPUS],
 )
-def test_keyword_query_finds_exactly_its_document(backend, lang, tmp_path, monkeypatch):
+def test_keyword_query_finds_exactly_its_document(backend, lang, make_adapter, monkeypatch):
     """A whole-word keyword query returns its document and not a letters-only distractor."""
     _set_tenant(monkeypatch, "tenant_a")
     collection = unique_collection("kw")
-    adapter = _adapter(backend, tmp_path, collection)
+    adapter = make_adapter(backend, collection)
     target = _add(adapter, collection, lang, CORPUS[lang])
     distractor = _add(adapter, collection, f"{lang}_letters", _letters_only(QUERIES[lang]))
 
@@ -151,7 +168,9 @@ BOTH_BACKENDS = [
         "pgvector",
         marks=[
             pytest.mark.pgvector,
-            pytest.mark.xfail(strict=True, reason=f"known gap, fixed by {NO_PG_KEYWORD}"),
+            pytest.mark.xfail(
+                strict=True, raises=AssertionError, reason=f"known gap, fixed by {NO_PG_KEYWORD}"
+            ),
         ],
     ),
 ]
@@ -163,11 +182,11 @@ BOTH_BACKENDS = [
     ids=["identifier", "email", "plain-word"],
 )
 @pytest.mark.parametrize("backend", BOTH_BACKENDS)
-def test_sentence_final_word_is_found(backend, query, tmp_path, monkeypatch):
+def test_sentence_final_word_is_found(backend, query, make_adapter, monkeypatch):
     """A word that ends a sentence (followed by a period) is still a keyword hit."""
     _set_tenant(monkeypatch, "tenant_a")
     collection = unique_collection("kws")
-    adapter = _adapter(backend, tmp_path, collection)
+    adapter = make_adapter(backend, collection)
     source = _add(
         adapter,
         collection,
@@ -184,11 +203,11 @@ def test_sentence_final_word_is_found(backend, query, tmp_path, monkeypatch):
     ids=["lowercase", "underscore", "full-width", "punctuated"],
 )
 @pytest.mark.parametrize("backend", BOTH_BACKENDS)
-def test_identifier_matches_however_it_is_written(backend, query, tmp_path, monkeypatch):
+def test_identifier_matches_however_it_is_written(backend, query, make_adapter, monkeypatch):
     """An identifier matches across case, separator and width, but a different one does not."""
     _set_tenant(monkeypatch, "tenant_a")
     collection = unique_collection("kwi")
-    adapter = _adapter(backend, tmp_path, collection)
+    adapter = make_adapter(backend, collection)
     source = _add(adapter, collection, "invoice", "Invoice ABC-123 was issued to Contoso.")
 
     assert source in _hit_sources(adapter, query), f"{backend}: {query!r} missed ABC-123"
@@ -227,6 +246,38 @@ def test_keyword_index_from_an_older_tokenizer_is_rebuilt(tmp_path, monkeypatch)
     assert _hit_sources(adapter, QUERIES["hi"]) == {f"{collection}/hi.txt"}
 
 
+def _two_tenant_hits(backend, make_adapter, monkeypatch) -> tuple[set[str], str, str]:
+    """Tenants A and B share a collection name; return tenant B's hits and both sources."""
+    collection = unique_collection("kwt")
+    _set_tenant(monkeypatch, "tenant_a")
+    adapter = make_adapter(backend, collection)
+    source_a = _add(adapter, collection, "a", "Tenant A contract ZXQ-9001 renewal terms.")
+    _set_tenant(monkeypatch, "tenant_b")
+    source_b = _add(adapter, collection, "b", "Tenant B contract ZXQ-9001 cancellation terms.")
+    return _hit_sources(adapter, "ZXQ-9001"), source_a, source_b
+
+
+@pytest.mark.parametrize(
+    "backend",
+    [
+        pytest.param("sqlite", marks=pytest.mark.unit),
+        pytest.param(
+            "pgvector",
+            marks=[
+                pytest.mark.pgvector,
+                pytest.mark.xfail(
+                    strict=True, raises=AssertionError, reason=f"known gap, fixed by {NO_PG_KEYWORD}"
+                ),
+            ],
+        ),
+    ],
+)
+def test_keyword_search_finds_own_tenant_document(backend, make_adapter, monkeypatch):
+    hits, _source_a, source_b = _two_tenant_hits(backend, make_adapter, monkeypatch)
+
+    assert source_b in hits, f"{backend}: tenant B cannot find its own document"
+
+
 @pytest.mark.parametrize(
     "backend",
     [
@@ -234,28 +285,18 @@ def test_keyword_index_from_an_older_tokenizer_is_rebuilt(tmp_path, monkeypatch)
             "sqlite",
             marks=[
                 pytest.mark.unit,
-                pytest.mark.xfail(strict=True, reason="known gap, fixed by PR B2 (tenant columns in FTS)"),
+                pytest.mark.xfail(
+                    strict=True,
+                    raises=AssertionError,
+                    reason="known gap, fixed by PR B2 (tenant columns in FTS)",
+                ),
             ],
         ),
-        pytest.param(
-            "pgvector",
-            marks=[
-                pytest.mark.pgvector,
-                pytest.mark.xfail(strict=True, reason=f"known gap, fixed by {NO_PG_KEYWORD}"),
-            ],
-        ),
+        # Not xfail on pgvector: it must hold before and after the keyword read path lands.
+        pytest.param("pgvector", marks=pytest.mark.pgvector),
     ],
 )
-def test_keyword_search_is_tenant_isolated(backend, tmp_path, monkeypatch):
-    """Two tenants share a collection name; each sees only its own keyword hits."""
-    collection = unique_collection("kwt")
-    _set_tenant(monkeypatch, "tenant_a")
-    adapter = _adapter(backend, tmp_path, collection)
-    source_a = _add(adapter, collection, "a", "Tenant A contract ZXQ-9001 renewal terms.")
-    _set_tenant(monkeypatch, "tenant_b")
-    source_b = _add(adapter, collection, "b", "Tenant B contract ZXQ-9001 cancellation terms.")
+def test_keyword_search_excludes_other_tenants(backend, make_adapter, monkeypatch):
+    hits, source_a, _source_b = _two_tenant_hits(backend, make_adapter, monkeypatch)
 
-    hits = _hit_sources(adapter, "ZXQ-9001")
-
-    assert source_b in hits, f"{backend}: tenant B cannot find its own document"
     assert source_a not in hits, f"{backend}: tenant B sees tenant A's document"
