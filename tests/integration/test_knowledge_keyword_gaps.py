@@ -380,3 +380,33 @@ def test_rare_word_outranks_common_words(backend, make_adapter, monkeypatch):
     assert hits and hits[0][0].metadata["source"] == target, (
         f"{backend}: ranked {[d.metadata['source'] for d, _ in hits]}"
     )
+
+
+@pytest.mark.pgvector
+def test_postgres_keyword_search_reuses_a_bounded_set_of_connections(make_adapter, monkeypatch):
+    """Concurrent keyword searches share a small pool instead of opening a connection each."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    import asyncpg
+
+    from cuga.backend.knowledge.storage.adapter import _PG_KEYWORD_POOL_SIZE
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwc")
+    adapter = make_adapter("pgvector", collection)
+    source = _add(adapter, collection, "invoice", "Invoice ABC-123 was issued.")
+
+    with ThreadPoolExecutor(max_workers=24) as workers:
+        hits = list(workers.map(lambda _: _hit_sources(adapter, "ABC-123"), range(24)))
+
+    async def _keyword_connections() -> int:
+        conn = await asyncpg.connect(_pgvector_dsn())
+        try:
+            return await conn.fetchval(
+                "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'cuga-knowledge-keyword'"
+            )
+        finally:
+            await conn.close()
+
+    assert all(h == {source} for h in hits)
+    assert 1 <= asyncio.run(_keyword_connections()) <= _PG_KEYWORD_POOL_SIZE
