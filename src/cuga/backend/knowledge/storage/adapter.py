@@ -22,10 +22,19 @@ from cuga.config import get_service_instance_id, get_tenant_id
 from loguru import logger
 
 # Keyword (FTS5) table columns. Only the terms column is indexed; it holds
-# ``lexical.terms(chunk_text)``, and its name carries the tokenizer version so a table built
-# by another version is detected and re-indexed (``_ensure_fts_table``).
+# ``lexical.terms(chunk_text)``, and its name carries the tokenizer version. A table without
+# that column or without the tenant columns is rebuilt from the vector table
+# (``_ensure_fts_table``).
 _TERMS_COLUMN = f"terms_v{lexical.VERSION}"
-_FTS_STORED_COLUMNS = "chunk_id, source, filename, page, section_path, chunk_text"
+_FTS_STORED_COLUMNS = "chunk_id, tenant_id, instance_id, source, filename, page, section_path, chunk_text"
+
+
+def _section_path_of(meta_json: Any) -> str:
+    """``section_path`` from a chunk's ``meta_json``, or ``""`` when absent or unreadable."""
+    try:
+        return str(json.loads(meta_json or "{}").get("section_path", "") or "")
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return ""
 
 
 def _pg_tsvector(text: str) -> str:
@@ -258,20 +267,22 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         return " OR ".join(f'"{" ".join(group)}"' for group in groups) if groups else None
 
     def _fts_state(self, conn) -> str:
-        """``missing``, ``stale`` (built by another tokenizer version) or ``current``."""
+        """``missing``, ``stale`` (another tokenizer version, or no tenant columns) or ``current``."""
         row = conn.execute("SELECT sql FROM sqlite_master WHERE name = ?", (self._fts_table(),)).fetchone()
         if row is None:
             return "missing"
-        return "current" if _TERMS_COLUMN in row[0] else "stale"
+        return "current" if _TERMS_COLUMN in row[0] and "tenant_id UNINDEXED" in row[0] else "stale"
 
     def _ensure_fts_table(self, conn) -> None:
-        """Create the FTS table, or re-index one built by another tokenizer version.
+        """Create the FTS table, rebuilt from the vector table when it is missing or stale.
+
+        The keyword index is derived data: every chunk's id, tenant, instance, source, page and
+        text are in the vector table. So a collection ingested before the keyword index existed,
+        or indexed by another tokenizer, or without tenant columns, gets a complete index here.
 
         Checked once per adapter. The write lock is taken only when there is work, and the
-        state is re-read under it, so concurrent adapters migrate a table once. FTS5 cannot
-        change a table's tokenizer, so a stale table is renamed, re-tokenized into a new one
-        from its stored text, and dropped, in one transaction (callers close the connection,
-        which rolls back a failed attempt).
+        state is re-read under it, so concurrent adapters rebuild a table once. The rebuild is
+        one transaction; callers close the connection, which rolls back a failed attempt.
         """
         if self._fts_ready:
             return
@@ -280,23 +291,39 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             conn.execute("BEGIN IMMEDIATE")
             state = self._fts_state(conn)
             if state == "stale":
-                conn.execute(f"ALTER TABLE {table} RENAME TO {table}_old")
+                conn.execute(f"DROP TABLE {table}")
             if state != "current":
                 # Terms are pre-split, so this tokenizer only splits on the spaces between them.
                 conn.execute(
                     f"CREATE VIRTUAL TABLE {table} USING fts5("
-                    "chunk_id UNINDEXED, source UNINDEXED, filename UNINDEXED, page UNINDEXED, "
-                    f"section_path UNINDEXED, chunk_text UNINDEXED, {_TERMS_COLUMN}, "
-                    "tokenize=\"unicode61 remove_diacritics 0 categories 'L* M* N* Co'\")"
+                    "chunk_id UNINDEXED, tenant_id UNINDEXED, instance_id UNINDEXED, source UNINDEXED, "
+                    "filename UNINDEXED, page UNINDEXED, section_path UNINDEXED, chunk_text UNINDEXED, "
+                    f"{_TERMS_COLUMN}, tokenize=\"unicode61 remove_diacritics 0 categories 'L* M* N* Co'\")"
                 )
-            if state == "stale":
-                conn.create_function("lexical_terms", 1, lambda text: " ".join(lexical.terms(text or "")))
-                conn.execute(
-                    f"INSERT INTO {table} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) "
-                    f"SELECT {_FTS_STORED_COLUMNS}, lexical_terms(chunk_text) FROM {table}_old"
-                )
-                conn.execute(f"DROP TABLE {table}_old")
-                logger.info("Re-indexed keyword table {} for tokenizer v{}", table, lexical.VERSION)
+                has_vectors = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name = ?", (self._collection,)
+                ).fetchone()
+                if has_vectors:
+                    import sqlite_vec
+
+                    conn.enable_load_extension(True)
+                    try:
+                        sqlite_vec.load(conn)
+                    finally:
+                        conn.enable_load_extension(False)
+                    conn.create_function("lexical_terms", 1, lambda text: " ".join(lexical.terms(text or "")))
+                    conn.create_function("section_path_of", 1, _section_path_of)
+                    cur = conn.execute(
+                        f"INSERT INTO {table} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) "
+                        "SELECT id, tenant_id, instance_id, source, filename, page, "
+                        f"section_path_of(meta_json), chunk_text, lexical_terms(chunk_text) FROM {self._collection}"
+                    )
+                    logger.info(
+                        "Built keyword table {} (tokenizer v{}) from {} stored chunks",
+                        table,
+                        lexical.VERSION,
+                        cur.rowcount,
+                    )
             conn.commit()
         self._fts_ready = True
 
@@ -342,7 +369,9 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             index = f"idx_{hashlib.sha256(table.encode()).hexdigest()[:16]}_{_TERMS_COLUMN}"
             async with conn.transaction():  # column and index together, or neither
                 await conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {_TERMS_COLUMN} tsvector")
-                await conn.execute(f"CREATE INDEX IF NOT EXISTS {index} ON {table} USING gin ({_TERMS_COLUMN})")
+                await conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS {index} ON {table} USING gin ({_TERMS_COLUMN})"
+                )
         # ponytail: one pass on first use; a very large collection pays it on its first query.
         # Move it to engine warmup if that first-query latency matters.
         filled = 0
@@ -409,15 +438,18 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             if self._use_prod:
                 self._pg_write_terms(items)
                 return
+            scope = self._scope()
             conn = self._fts_connect()
             try:
                 self._ensure_fts_table(conn)
                 conn.executemany(
                     f"INSERT INTO {self._fts_table()} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         (
                             cid,
+                            scope["tenant_id"],
+                            scope["instance_id"],
                             str(meta.get("source", "")),
                             str(meta.get("filename", "")),
                             int(meta.get("page", -1)) if meta.get("page", -1) is not None else -1,
@@ -454,9 +486,10 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             conn = self._fts_connect()
             try:
                 self._ensure_fts_table(conn)
+                scope = self._scope()
                 conn.execute(
-                    f"DELETE FROM {self._fts_table()} WHERE source = ?",
-                    (source_id,),
+                    f"DELETE FROM {self._fts_table()} WHERE source = ? AND tenant_id = ? AND instance_id = ?",
+                    (source_id, scope["tenant_id"], scope["instance_id"]),
                 )
                 conn.commit()
             finally:
@@ -499,8 +532,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         mapped to [0, 1] the same way.
 
         Returns ``[]`` when:
-          - the collection has no keyword rows (ingested before the
-            FTS leg existed, on SQLite),
+          - the collection has no keyword rows for the caller's tenant,
           - the query has no keyword terms (``lexical.query_groups``),
           - the underlying keyword query raises (defensive — never let a
             lexical-leg failure kill the dense leg).
@@ -523,6 +555,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         normalized = self._fts_match(query)
         if not normalized:
             return []
+        scope = self._scope()
         try:
             conn = self._fts_connect()
             try:
@@ -531,9 +564,9 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                     f"SELECT chunk_id, source, filename, page, section_path, "
                     f"chunk_text, bm25({self._fts_table()}) AS rank "
                     f"FROM {self._fts_table()} "
-                    f"WHERE {self._fts_table()} MATCH ? "
+                    f"WHERE {self._fts_table()} MATCH ? AND tenant_id = ? AND instance_id = ? "
                     f"ORDER BY rank LIMIT ?",
-                    (normalized, max(1, int(k))),
+                    (normalized, scope["tenant_id"], scope["instance_id"], max(1, int(k))),
                 ).fetchall()
             finally:
                 conn.close()
