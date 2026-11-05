@@ -10,7 +10,6 @@ from .common import CodeSyntaxError, SecurityValidator, CodeWrapper, VariableUti
 from .common.benchmark_mode import is_benchmark_mode
 from .local import LocalExecutor, LocalSandboxExecutor
 from .e2b import E2BExecutor
-from .docker import DockerExecutor
 from .opensandbox import OpenSandboxExecutor
 from .execd import connection as execd_connection
 from .native import NativeSandboxExecutor
@@ -90,6 +89,9 @@ class CodeExecutor:
     @classmethod
     def _get_docker_executor(cls) -> RemoteExecutor:
         if cls._docker_executor is None:
+            # The docker SDK loads only for an agent that runs code in Docker.
+            from .docker import DockerExecutor
+
             cls._docker_executor = DockerExecutor()
         return cls._docker_executor
 
