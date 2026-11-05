@@ -569,3 +569,105 @@ def knowledge_doctor():
             f"Grep logs for `cuga.knowledge.adaptation_applied` matching hash "
             f"{adapt_hash} to correlate prompt-assembly events to this config."
         )
+
+
+def _knowledge_server_base() -> str:
+    """``CUGA_API_BASE`` when set, else the local demo server on its configured port (7860)."""
+    base = os.environ.get("CUGA_API_BASE")
+    if base:
+        return base.rstrip("/")
+    from cuga.config import settings
+
+    return f"http://127.0.0.1:{settings.server_ports.demo}"
+
+
+def _knowledge_headers(agent_id: str, thread_id: Optional[str]) -> dict[str, str]:
+    return {"X-Agent-ID": agent_id, **({"X-Thread-ID": thread_id} if thread_id else {})}
+
+
+_MAX_FILES_PER_REQUEST = 10  # the server's default limits.max_files_per_request
+
+
+@knowledge_app.command("ingest", help="Upload documents to the knowledge base of a running cuga server.")
+def knowledge_ingest(
+    paths: list[Path] = typer.Argument(
+        ..., exists=True, dir_okay=False, readable=True, help="Files to ingest."
+    ),
+    agent_id: str = typer.Option(
+        "cuga-default", "--agent-id", help="Agent whose knowledge base gets the files."
+    ),
+    scope: str = typer.Option("agent", "--scope", help="'agent' (kept) or 'session' (needs --thread-id)."),
+    thread_id: Optional[str] = typer.Option(None, "--thread-id", help="Conversation for session scope."),
+):
+    """Upload files and wait for each to be indexed; exit 1 if any file failed."""
+    url = f"{_knowledge_server_base()}/api/knowledge/documents"
+    failed = 0
+    for start in range(0, len(paths), _MAX_FILES_PER_REQUEST):
+        batch = paths[start : start + _MAX_FILES_PER_REQUEST]
+        try:
+            r = httpx.post(
+                url,
+                headers=_knowledge_headers(agent_id, thread_id),
+                files=[("files", (p.name, p.read_bytes())) for p in batch],
+                data={"scope": scope, "wait": "true"},
+                timeout=600.0,
+            )
+        except httpx.HTTPError as e:
+            typer.secho(f"Could not reach {url}: {e}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        if r.status_code >= 400:  # e.g. a single file that fails to convert is a 400 with the reason
+            try:
+                reason = r.json().get("detail", r.text)
+            except ValueError:
+                reason = r.text
+            failed += len(batch)
+            typer.secho(f"FAILED   {', '.join(p.name for p in batch)}: {reason}", fg=typer.colors.RED)
+            continue
+        for task in r.json().get("tasks", []):
+            for name, file_task in (task.get("file_tasks") or {}).items():
+                status = file_task.get("status", "unknown")
+                if status in ("failed", "cancelled"):
+                    failed += 1
+                    typer.secho(f"FAILED   {name}: {file_task.get('error') or status}", fg=typer.colors.RED)
+                else:  # indexed, or skipped / superseded by another upload of the same file
+                    typer.echo(f"{status:<8} {name}")
+    raise typer.Exit(code=1 if failed else 0)
+
+
+@knowledge_app.command("search", help="Search the knowledge base of a running cuga server.")
+def knowledge_search(
+    query: str = typer.Argument(..., help="What to search for."),
+    agent_id: str = typer.Option("cuga-default", "--agent-id", help="Agent whose knowledge base to search."),
+    scope: str = typer.Option("agent", "--scope", help="'agent', 'session' (needs --thread-id) or 'all'."),
+    thread_id: Optional[str] = typer.Option(None, "--thread-id", help="Conversation for session scope."),
+    limit: int = typer.Option(5, "--limit", min=1, max=50, help="Number of results."),
+    as_json: bool = typer.Option(False, "--json", help="Print the full response as JSON."),
+):
+    """Print ranked results (file, page, score and the start of the matching text)."""
+    import json
+
+    url = f"{_knowledge_server_base()}/api/knowledge/search"
+    try:
+        r = httpx.post(
+            url,
+            headers=_knowledge_headers(agent_id, thread_id),
+            json={"query": query, "scope": scope, "limit": limit},
+            timeout=60.0,
+        )
+        r.raise_for_status()
+    except Exception as e:
+        typer.secho(f"Search at {url} failed: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    body = r.json()
+    if as_json:
+        typer.echo(json.dumps(body, indent=2, ensure_ascii=False))
+        return
+    results = body.get("results", [])
+    if not results:
+        typer.echo("No results.")
+        return
+    for rank, result in enumerate(results, start=1):
+        page = f" p.{result['page']}" if result.get("page") else ""
+        score = f"  score {result['score']:.3f}" if isinstance(result.get("score"), (int, float)) else ""
+        typer.echo(f"{rank}. {result.get('filename', '?')}{page}{score}")
+        typer.echo(f"   {' '.join(str(result.get('text', '')).split())[:160]}")
