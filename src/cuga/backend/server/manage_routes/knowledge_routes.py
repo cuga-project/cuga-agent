@@ -110,21 +110,26 @@ async def test_embeddings_connection(request: Request):
 
 
 @router.get("/knowledge/defaults")
-async def get_knowledge_defaults():
-    """Return the factory-default knowledge config (dataclass defaults).
+async def get_knowledge_defaults(profile: str = "standard"):
+    """Return the default knowledge config of a RAG profile (``?profile=``, default ``standard``).
 
-    Used by the UI's per-section "Reset to defaults" buttons. Returns the
-    same shape that ``KnowledgeConfig().to_dict(include_secrets=False)``
-    produces — secrets are blank, persist_dir is excluded. Crucially this is
-    NOT the user's settings.toml view — it's the canonical project defaults,
-    so reset semantics are predictable regardless of deployment overrides.
+    Used by the UI's per-section "Reset to defaults" buttons. A reset restores the values the
+    selected profile sets (its chunk size, embedder, reranker and so on), because that is what
+    an untouched install with that profile runs. The bare dataclass defaults are not used by any
+    profile, so resetting to them moved users off their profile. The shape is
+    ``KnowledgeConfig.to_dict(include_secrets=False)``: secrets are blank, persist_dir and
+    underscore-prefixed internal fields are excluded.
     """
-    try:
-        from cuga.backend.knowledge.config import KnowledgeConfig
+    from cuga.backend.knowledge.config import VALID_PROFILES, KnowledgeConfig
 
-        defaults = KnowledgeConfig().to_dict(include_secrets=False)
-        # Drop internal fields (anything underscore-prefixed) so the UI
-        # doesn't have to know about them.
+    if profile not in VALID_PROFILES:
+        raise HTTPException(
+            status_code=400, detail=f"Unknown profile {profile!r}; expected one of {VALID_PROFILES}"
+        )
+    try:
+        defaults = KnowledgeConfig.coerce_and_validate({"rag_profile": profile}).to_dict(
+            include_secrets=False
+        )
         public = {k: v for k, v in defaults.items() if not k.startswith("_")}
         return JSONResponse({"defaults": public})
     except Exception as e:

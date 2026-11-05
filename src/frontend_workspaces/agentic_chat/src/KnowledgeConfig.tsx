@@ -704,13 +704,17 @@ export default function KnowledgePanel({
     section: string;
     fields: string[];
   }>(null);
-  const [defaultsCache, setDefaultsCache] = useState<Record<string, any> | null>(null);
+  // Per-profile cache: a reset restores the selected profile's values, so switching profile
+  // must not reuse another profile's defaults.
+  const [defaultsCache, setDefaultsCache] = useState<Record<string, Record<string, any>>>({});
   const performReset = useCallback(async () => {
     if (!resetTarget) return;
+    const selected = knowledgeConfig?.rag_profile;
+    const profile = selected && selected !== "custom" ? selected : "standard";
     try {
-      let defaults = defaultsCache;
+      let defaults = defaultsCache[profile];
       if (!defaults) {
-        const res = await api.getKnowledgeDefaults();
+        const res = await api.getKnowledgeDefaults(profile);
         if (!res.ok) {
           onToast?.("error", "Reset failed", `Server returned ${res.status} ${res.statusText}`);
           setResetTarget(null);
@@ -718,21 +722,22 @@ export default function KnowledgePanel({
         }
         const j = await res.json();
         defaults = (j.defaults || {}) as Record<string, any>;
-        setDefaultsCache(defaults);
+        setDefaultsCache((cache) => ({ ...cache, [profile]: defaults as Record<string, any> }));
       }
       const updates: Record<string, any> = {};
       for (const f of resetTarget.fields) {
         if (f in defaults) updates[f] = defaults[f];
       }
       onKnowledgeConfigChange?.({ ...(knowledgeConfig as any), ...updates });
-      onToast?.("info", "Section reset", `Restored ${resetTarget.section} to factory defaults.`);
+      const profileName = ragProfiles?.[profile]?.name ?? profile;
+      onToast?.("info", "Section reset", `Restored ${resetTarget.section} to the ${profileName} profile's defaults.`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "unknown error";
       onToast?.("error", "Reset failed", msg);
     } finally {
       setResetTarget(null);
     }
-  }, [resetTarget, defaultsCache, knowledgeConfig, onKnowledgeConfigChange, onToast]);
+  }, [resetTarget, defaultsCache, knowledgeConfig, onKnowledgeConfigChange, onToast, ragProfiles]);
 
   // Save-state indicator: driven by the parent's ``draftSaveStatus`` prop,
   // which is sourced from the actual PATCH lifecycle in ManagePage
