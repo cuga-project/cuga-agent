@@ -131,6 +131,49 @@ def test_keyword_query_finds_exactly_its_document(backend, lang, tmp_path, monke
 
 
 @pytest.mark.parametrize(
+    "query",
+    ["K5A6FF80A", "user@example.com", "dental"],
+    ids=["identifier", "email", "plain-word"],
+)
+@pytest.mark.parametrize(
+    "backend",
+    [
+        pytest.param(
+            "sqlite",
+            marks=[
+                pytest.mark.unit,
+                pytest.mark.xfail(
+                    strict=True,
+                    reason="known gap, fixed by PR B1: '.' is a token char, so a sentence-final word "
+                    "is indexed with its period and never matches",
+                ),
+            ],
+        ),
+        pytest.param(
+            "pgvector",
+            marks=[
+                pytest.mark.pgvector,
+                pytest.mark.xfail(strict=True, reason=f"known gap, fixed by {NO_PG_KEYWORD}"),
+            ],
+        ),
+    ],
+)
+def test_sentence_final_word_is_found(backend, query, tmp_path, monkeypatch):
+    """A word that ends a sentence (followed by a period) is still a keyword hit."""
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kws")
+    adapter = _adapter(backend, tmp_path, collection)
+    source = _add(
+        adapter,
+        collection,
+        "final",
+        "Record K5A6FF80A. Contact user@example.com. The policy covers dental.",
+    )
+
+    assert source in _hit_sources(adapter, query), f"{backend}: sentence-final {query!r} not found"
+
+
+@pytest.mark.parametrize(
     "backend",
     [
         pytest.param(
