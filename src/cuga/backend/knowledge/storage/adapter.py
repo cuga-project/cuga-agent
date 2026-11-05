@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import sqlite3
@@ -25,6 +26,37 @@ from loguru import logger
 # by another version is detected and re-indexed (``_ensure_fts_table``).
 _TERMS_COLUMN = f"terms_v{lexical.VERSION}"
 _FTS_STORED_COLUMNS = "chunk_id, source, filename, page, section_path, chunk_text"
+
+
+def _pg_tsvector(text: str) -> str:
+    """``lexical.terms`` as a tsvector literal with positions. Postgres stores the literal's
+    lexemes as they are, so its locale and text-search parser never re-split a term."""
+    return " ".join(f"'{term}':{pos}" for pos, term in enumerate(lexical.terms(text or ""), start=1))
+
+
+def _pg_tsquery(groups: list[list[str]]) -> str:
+    """Any group (``|``), each group's terms adjacent and in order (``<->``), as a tsquery literal."""
+    return " | ".join("(" + " <-> ".join(f"'{term}'" for term in group) + ")" for group in groups)
+
+
+def _doc_from_row(chunk_text: Any, meta_json: Any) -> Document:
+    """A knowledge chunk row (``chunk_text``, ``meta_json``) as a Document."""
+    try:
+        extra = json.loads(meta_json) if meta_json else {}
+    except (json.JSONDecodeError, TypeError):
+        extra = {}
+    page = extra.get("page", -1)
+    metadata: dict[str, Any] = {
+        "source": extra.get("source", ""),
+        "filename": extra.get("filename", ""),
+        "page": None if page == -1 else page,
+    }
+    # Restore section_path when it was preserved at ingest. Empty values are omitted to keep
+    # result envelopes lean for non-Docling formats (txt, plain markdown).
+    if extra.get("section_path"):
+        metadata["section_path"] = extra["section_path"]
+    return Document(page_content=str(chunk_text or ""), metadata=metadata)
+
 
 # Strict whitelist for collection names. The engine sanitises upstream
 # (any non-[a-zA-Z0-9_] char becomes _) but the adapter is a public
@@ -152,7 +184,8 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         return max(0.0, min(1.0, 1.0 - d))
 
     # ------------------------------------------------------------------
-    # BM25 / lexical retrieval (sqlite-vec via FTS5; pgvector deferred)
+    # BM25 / lexical retrieval: an FTS5 sidecar table on SQLite, a tsvector
+    # column on the knowledge table itself on Postgres
     # Terms come from ``knowledge.lexical`` for both the index and the query,
     # so matching is the same in every language and on every backend.
     # ------------------------------------------------------------------
@@ -266,6 +299,100 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             conn.commit()
         self._fts_ready = True
 
+    def _pg_keyword_run(self, work):
+        """Run ``work(conn)`` on a connection of its own. The engine runs the dense and keyword
+        legs concurrently, each in a thread with its own event loop, so the dense store's pool
+        (bound to one loop, and closed after each dense call) cannot be shared."""
+
+        async def _go():
+            import asyncpg
+
+            conn = await asyncpg.connect(self._postgres_url, command_timeout=60)
+            try:
+                return await work(conn)
+            finally:
+                await conn.close()
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_go())
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(lambda: asyncio.run(_go())).result()
+
+    async def _pg_ensure_terms(self, conn) -> bool:
+        """Add the Postgres keyword column and its GIN index if missing, then fill every row
+        without terms (rows ingested before the column existed, or whose term write failed).
+
+        The column lives on the knowledge table, so tenant scope, deletes and drops apply to it
+        with no extra code. Checked once per adapter. ``False`` when the table does not exist yet.
+        """
+        if self._fts_ready:
+            return True
+        table = self._collection
+        if await conn.fetchval("SELECT to_regclass($1)", table) is None:
+            return False
+        has_column = await conn.fetchval(
+            "SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass($1) AND attname = $2 AND NOT attisdropped",
+            table,
+            _TERMS_COLUMN,
+        )
+        if not has_column:
+            index = f"idx_{hashlib.sha256(table.encode()).hexdigest()[:16]}_{_TERMS_COLUMN}"
+            await conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {_TERMS_COLUMN} tsvector")
+            await conn.execute(f"CREATE INDEX IF NOT EXISTS {index} ON {table} USING gin ({_TERMS_COLUMN})")
+        # ponytail: one pass on first use; a very large collection pays it on its first query.
+        # Move it to engine warmup if that first-query latency matters.
+        filled = 0
+        while rows := await conn.fetch(
+            f"SELECT id, tenant_id, instance_id, chunk_text FROM {table} WHERE {_TERMS_COLUMN} IS NULL LIMIT 500"
+        ):
+            await conn.executemany(
+                f"UPDATE {table} SET {_TERMS_COLUMN} = $1::text::tsvector "
+                "WHERE id = $2 AND tenant_id = $3 AND instance_id = $4",
+                [(_pg_tsvector(r["chunk_text"]), r["id"], r["tenant_id"], r["instance_id"]) for r in rows],
+            )
+            filled += len(rows)
+        if filled:
+            logger.info("Indexed keyword terms for {} existing chunks in {}", filled, table)
+        self._fts_ready = True
+        return True
+
+    def _pg_write_terms(self, items: list[tuple[str, dict[str, Any], str]]) -> None:
+        scope = self._scope()
+
+        async def _write(conn):
+            await self._pg_ensure_terms(conn)
+            await conn.executemany(
+                f"UPDATE {self._collection} SET {_TERMS_COLUMN} = $1::text::tsvector "
+                "WHERE id = $2 AND tenant_id = $3 AND instance_id = $4",
+                [
+                    (_pg_tsvector(text), cid, scope["tenant_id"], scope["instance_id"])
+                    for cid, _meta, text in items
+                ],
+            )
+
+        self._pg_keyword_run(_write)
+
+    def _pg_search_lexical(self, groups: list[list[str]], k: int) -> list[tuple[Any, Any, float]]:
+        scope = self._scope()
+
+        async def _search(conn):
+            if not await self._pg_ensure_terms(conn):
+                return []
+            return await conn.fetch(
+                f"SELECT chunk_text, meta_json, ts_rank_cd({_TERMS_COLUMN}, q) AS rank "
+                f"FROM {self._collection}, CAST($1::text AS tsquery) AS q "
+                f"WHERE tenant_id = $2 AND instance_id = $3 AND {_TERMS_COLUMN} @@ q "
+                "ORDER BY rank DESC LIMIT $4",
+                _pg_tsquery(groups),
+                scope["tenant_id"],
+                scope["instance_id"],
+                max(1, int(k)),
+            )
+
+        return [(r["chunk_text"], r["meta_json"], float(r["rank"])) for r in self._pg_keyword_run(_search)]
+
     def _fts_add(self, items: list[tuple[str, dict[str, Any], str]]) -> None:
         """Insert ``[(chunk_id, meta_payload, chunk_text), ...]`` rows.
 
@@ -274,10 +401,12 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         problem must not roll back a successful vector insert (the user
         would lose ingest progress for a recall optimisation).
         """
-        if not items or self._use_prod:
-            # pgvector hybrid not yet implemented — graceful no-op.
+        if not items:
             return
         try:
+            if self._use_prod:
+                self._pg_write_terms(items)
+                return
             conn = self._fts_connect()
             try:
                 self._ensure_fts_table(conn)
@@ -343,7 +472,6 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             try:
                 conn.execute(f"DROP TABLE IF EXISTS {self._fts_table()}")
                 conn.commit()
-                self._fts_ready = False
             finally:
                 conn.close()
         except Exception as exc:  # noqa: BLE001 — best-effort
@@ -362,17 +490,31 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         match) — SQLite FTS5's raw ``bm25()`` returns *negative* numbers
         where larger magnitude = better, so we invert + clip.
 
+        Postgres ranks with ``ts_rank_cd`` (non-negative, larger = better),
+        mapped to [0, 1] the same way.
+
         Returns ``[]`` when:
           - the collection has no keyword rows (ingested before the
-            FTS leg existed, or pgvector backend),
+            FTS leg existed, on SQLite),
           - the query has no keyword terms (``lexical.query_groups``),
-          - the underlying FTS query raises (defensive — never let a
+          - the underlying keyword query raises (defensive — never let a
             lexical-leg failure kill the dense leg).
         """
         if self._use_prod:
-            # Postgres FTS hybrid is a follow-up; for now degrade to
-            # dense-only on prod backends.
-            return []
+            groups = lexical.query_groups(query)
+            if not groups:
+                return []
+            try:
+                rows = self._pg_search_lexical(groups, k)
+            except Exception as exc:  # noqa: BLE001 — defensive, as for SQLite below
+                logger.warning(
+                    "Postgres keyword search failed for collection={} query={!r}: {}",
+                    self._collection,
+                    query[:40],
+                    exc,
+                )
+                return []
+            return [(_doc_from_row(text, meta), rank / (1.0 + rank)) for text, meta, rank in rows]
         normalized = self._fts_match(query)
         if not normalized:
             return []
@@ -726,26 +868,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             if len(row) < 4:
                 continue
             _, chunk_text, meta_json, distance = row[0], row[1], row[2], row[3]
-            try:
-                extra = json.loads(meta_json) if meta_json else {}
-            except (json.JSONDecodeError, TypeError):
-                extra = {}
-            page = extra.get("page", -1)
-            if page == -1:
-                page = None
-            metadata: dict[str, Any] = {
-                "source": extra.get("source", ""),
-                "filename": extra.get("filename", ""),
-                "page": page,
-            }
-            # Restore section_path when it was preserved at ingest. Empty
-            # values are omitted to keep result envelopes lean for non-
-            # Docling formats (txt, plain markdown).
-            _sp = extra.get("section_path", "")
-            if _sp:
-                metadata["section_path"] = _sp
-            doc = Document(page_content=str(chunk_text or ""), metadata=metadata)
-            out.append((doc, sim_fn(distance)))
+            out.append((_doc_from_row(chunk_text, meta_json), sim_fn(distance)))
         return out
 
     def delete_by_source(self, source_id: str) -> None:
@@ -833,3 +956,4 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         self._fts_drop()
         self._store = None
         self._dim = None
+        self._fts_ready = False
