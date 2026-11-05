@@ -581,8 +581,9 @@ export function getKnowledgeAccelerator(): Promise<Response> {
   return apiFetch("/api/manage/knowledge/accelerator");
 }
 
-export function getKnowledgeDefaults(): Promise<Response> {
-  return apiFetch("/api/manage/knowledge/defaults");
+// Defaults of a RAG profile: what "Reset to defaults" restores for that profile.
+export function getKnowledgeDefaults(profile: string): Promise<Response> {
+  return apiFetch(`/api/manage/knowledge/defaults?profile=${encodeURIComponent(profile)}`);
 }
 
 // Detected embedding-provider presets from .env / shell environment.
