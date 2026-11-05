@@ -41,11 +41,13 @@ _OPTIONAL_MARKS = regex.compile(
 
 
 def _normalize(text: str) -> str:
+    """NFKC, case folding, and removal of the optional marks."""
     decomposed = unicodedata.normalize("NFD", unicodedata.normalize("NFKC", text).casefold())
     return unicodedata.normalize("NFC", _OPTIONAL_MARKS.sub("", decomposed))
 
 
 def _split_unspaced(word: str) -> list[str]:
+    """Split a word's unspaced-script runs into overlapping character pairs."""
     out: list[str] = []
     pos = 0
     for run in _UNSPACED.finditer(word):
