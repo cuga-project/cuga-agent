@@ -13,7 +13,8 @@ class StdioCugaRunner:
     The web server's event stream depends on its full FastAPI lifespan and has
     legacy stdout writes, so it is unsafe for a protocol-clean stdio process.
     This narrow runner invokes the same CUGA graph through ``CugaAgent`` without
-    starting an HTTP server. Construction remains lazy until the first prompt.
+    starting an HTTP server. Construction remains lazy until the first prompt,
+    or until :meth:`warm` does it ahead of one.
     """
 
     def __init__(self) -> None:
@@ -65,6 +66,9 @@ class StdioCugaRunner:
         del context_id
         if self._closed:
             raise RuntimeError("ACP runner is closed")
+        return await self._initialize_default_agent()
+
+    async def _initialize_default_agent(self) -> Any:
         agent = self._get_agent()
         if self._initialized:
             return agent
@@ -76,6 +80,28 @@ class StdioCugaRunner:
                 _ = agent.graph
                 self._initialized = True
         return agent
+
+    async def warm(self) -> None:
+        """Do the first prompt's one-time work ahead of it.
+
+        A cold process spends tens of seconds importing the graph, loading the
+        local embedding model and compiling the graph, and the first prompt
+        used to wait for all of it. The imports and the model load run in a
+        worker thread, so the ACP connection keeps answering while they run;
+        the agent is then initialized on the event loop, as a prompt would.
+        A session's own agent, built for its MCP servers, reuses all of it.
+        """
+        if self._closed:
+            return
+        await asyncio.to_thread(_preload, self.preload_modules)
+        await self._before_warm_initialize()
+        await self._initialize_default_agent()
+
+    # Modules a host's runner imports on a first prompt, preloaded with CUGA's own.
+    preload_modules: tuple[str, ...] = ()
+
+    async def _before_warm_initialize(self) -> None:
+        """What a host's runner sets up before its default agent, such as a checkpointer."""
 
     async def run(
         self,
@@ -194,6 +220,32 @@ async def _pending_action(agent: Any, context_id: str | None) -> dict[str, Any] 
     if not isinstance(action_id, str) or not action_id:
         raise RuntimeError("Paused CUGA state has no valid permission action id")
     return result
+
+
+def _preload(extra_modules: tuple[str, ...] = ()) -> None:
+    """Import what an agent's first initialization imports, and load its embedding model."""
+    import importlib
+
+    for module in (*_PRELOAD_MODULES, *extra_modules):
+        importlib.import_module(module)
+    from cuga.backend.storage.embedding import get_embedding_config
+    from cuga.backend.storage.embedding.embedding_service import get_shared_text_embedding
+
+    config = get_embedding_config()
+    if config["provider"] == "local":
+        get_shared_text_embedding(config["model"])
+
+
+# What CugaAgent imports inside its methods on the way to a compiled graph.
+_PRELOAD_MODULES = (
+    "cuga.sdk",
+    "cuga.backend.llm.models",
+    "langchain_openai",
+    "cuga.backend.cuga_graph.policy.configurable",
+    "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph",
+    "cuga.backend.cuga_graph.nodes.answer.final_answer",
+    "cuga.backend.cuga_graph.utils.agent_loop",
+)
 
 
 def create_runner() -> StdioCugaRunner:

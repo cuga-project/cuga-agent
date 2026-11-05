@@ -367,6 +367,12 @@ class CugaAcpAgent:
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
+    async def warm(self) -> None:
+        """Let the runner do its first prompt's one-time work now, if it can."""
+        warm = getattr(self._runner, "warm", None)
+        if callable(warm):
+            await warm()
+
     async def shutdown(self) -> None:
         async with self._sessions_lock:
             self._closing = True

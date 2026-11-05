@@ -18,6 +18,11 @@ class DamRunner(StdioCugaRunner):
     """Bind DAM-managed tools and persistent checkpoints to ACP contexts."""
 
     mcp_transports = ("http", "sse")
+    preload_modules = (
+        "langgraph.checkpoint.sqlite.aio",
+        "fastmcp",
+        "langchain.mcp",
+    )
 
     def __init__(self) -> None:
         super().__init__()
@@ -62,6 +67,9 @@ class DamRunner(StdioCugaRunner):
             context = AsyncSqliteSaver.from_conn_string(str(path))
             self._checkpointer = await context.__aenter__()
             self._checkpointer_context = context
+
+    async def _before_warm_initialize(self) -> None:
+        await self._ensure_checkpointer()
 
     @staticmethod
     def _server_key(servers: list[Any]) -> str:

@@ -105,6 +105,85 @@ async def test_serve_constructs_agent_and_passes_it_to_sdk_runtime(
     assert runner.shutdown_calls == 1
 
 
+class _WarmingRunner(_Runner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.warm_calls = 0
+        self.warm_release = asyncio.Event()
+        self.warm_cancelled = False
+
+    async def warm(self) -> None:
+        self.warm_calls += 1
+        try:
+            await self.warm_release.wait()
+        except asyncio.CancelledError:
+            self.warm_cancelled = True
+            raise
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("prewarm", ["1", ""])
+async def test_serve_warms_the_runner_beside_the_connection_only_when_asked(
+    monkeypatch: pytest.MonkeyPatch, prewarm: str
+) -> None:
+    from cuga.backend.server.acp import stdio
+
+    runner = _WarmingRunner()
+
+    async def fake_streams() -> tuple[Any, Any]:
+        return object(), object()
+
+    async def runtime(agent: Any, **kwargs: Any) -> None:
+        del agent, kwargs
+        # The connection serves while the warm-up is still running.
+        await asyncio.sleep(0)
+        assert runner.warm_calls == (1 if prewarm else 0)
+
+    monkeypatch.setenv(stdio.PREWARM_ENV, prewarm)
+    monkeypatch.setattr(stdio, "_stdio_streams", fake_streams)
+    monkeypatch.setattr(stdio, "_load_runtime", lambda: runtime)
+
+    assert await stdio.serve(runner=runner) == 0
+    # A warm-up still running when the connection ends is cancelled before shutdown.
+    assert runner.warm_cancelled is bool(prewarm)
+    assert runner.shutdown_calls == 1
+
+
+@pytest.mark.unit
+async def test_serve_keeps_serving_when_the_warm_up_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from cuga.backend.server.acp import stdio
+
+    class _FailingWarmRunner(_Runner):
+        async def warm(self) -> None:
+            raise RuntimeError("secret warm-up detail")
+
+    runner = _FailingWarmRunner()
+    served: list[bool] = []
+
+    async def fake_streams() -> tuple[Any, Any]:
+        return object(), object()
+
+    async def runtime(agent: Any, **kwargs: Any) -> None:
+        del agent, kwargs
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        served.append(True)
+
+    monkeypatch.setenv(stdio.PREWARM_ENV, "1")
+    monkeypatch.setattr(stdio, "_stdio_streams", fake_streams)
+    monkeypatch.setattr(stdio, "_load_runtime", lambda: runtime)
+
+    assert await stdio.serve(runner=runner) == 0
+
+    assert served == [True]
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "ACP warm-up failed (RuntimeError)" in captured.err
+    assert "secret warm-up detail" not in captured.err
+
+
 @pytest.mark.unit
 async def test_serve_shuts_down_agent_when_runtime_is_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
     from cuga.backend.server.acp import stdio

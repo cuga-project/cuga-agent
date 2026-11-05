@@ -336,3 +336,44 @@ async def test_runner_shutdown_closes_once_and_is_idempotent(monkeypatch: pytest
     await runner.shutdown()
 
     assert agent.closed == 1
+
+
+@pytest.mark.unit
+async def test_runner_warm_initializes_the_agent_a_first_prompt_then_reuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import cuga.sdk
+    import cuga.backend.server.acp.runner as runner_module
+    from cuga.backend.server.acp.runner import StdioCugaRunner
+
+    preloads: list[int] = []
+    monkeypatch.setattr(cuga.sdk, "CugaAgent", _FakeAgent)
+    monkeypatch.setattr(runner_module, "_preload", lambda extra: preloads.append(extra))
+    runner = StdioCugaRunner()
+
+    await runner.warm()
+    assert preloads == [()]
+    assert len(_FakeAgent.instances) == 1
+    assert _FakeAgent.instances[0].initialize_calls == 1
+
+    events = [event async for event in runner.run("one", context_id="ctx")]
+
+    assert len(_FakeAgent.instances) == 1
+    assert _FakeAgent.instances[0].initialize_calls == 1
+    assert events[0].name == "final_answer"
+
+
+@pytest.mark.unit
+async def test_runner_warm_after_shutdown_does_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    import cuga.sdk
+    import cuga.backend.server.acp.runner as runner_module
+    from cuga.backend.server.acp.runner import StdioCugaRunner
+
+    monkeypatch.setattr(cuga.sdk, "CugaAgent", _FakeAgent)
+    monkeypatch.setattr(runner_module, "_preload", lambda extra: pytest.fail("a closed runner preloads nothing"))
+    runner = StdioCugaRunner()
+    await runner.shutdown()
+
+    await runner.warm()
+
+    assert _FakeAgent.instances == []
