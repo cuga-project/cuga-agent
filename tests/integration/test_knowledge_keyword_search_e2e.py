@@ -44,14 +44,21 @@ async def knowledge(request, tmp_path, monkeypatch):
     from cuga.backend.knowledge.config import KnowledgeConfig
     from cuga.backend.knowledge.engine import KnowledgeEngine
 
-    if request.param == "sqlite":
-        params = ("local", str(tmp_path / "cuga.db"), "")
-    else:
-        dsn = os.environ.get("CUGA_KNOWLEDGE_PGVECTOR_CONNECTION_STRING")
+    dsn = ""
+    if request.param == "pgvector":
+        dsn = os.environ.get("CUGA_KNOWLEDGE_PGVECTOR_CONNECTION_STRING", "")
         if not dsn:
             pytest.skip("CUGA_KNOWLEDGE_PGVECTOR_CONNECTION_STRING not set")
-        params = ("prod", "", dsn)
-    monkeypatch.setattr("cuga.backend.knowledge.engine.get_storage_connection_params", lambda: params)
+    mode, backend = ("prod", "storage_prod") if dsn else ("local", "storage_local")
+    # The engine picks its vector backend from cuga.config settings (storage.mode), so pin both
+    # the backend and the connection parameters; otherwise the pgvector case would run on SQLite.
+    monkeypatch.setattr(
+        "cuga.backend.knowledge.engine.knowledge_vector_backend_for_settings", lambda _s: backend
+    )
+    monkeypatch.setattr(
+        "cuga.backend.knowledge.engine.get_storage_connection_params",
+        lambda: (mode, str(tmp_path / "cuga.db"), dsn),
+    )
     engine = KnowledgeEngine(
         KnowledgeConfig(
             enabled=True,
@@ -60,12 +67,13 @@ async def knowledge(request, tmp_path, monkeypatch):
             embedding_model="",
             max_ingest_workers=1,
             max_pending_tasks=INVOICES + len(OTHER_LANGUAGES),
+            pgvector_connection_string=dsn,
         )
     )
     await engine.warmup()
     client = KnowledgeClient(engine, default_agent_id=unique_collection("kwe"))
     try:
-        yield engine, client
+        yield engine, client, request.param
     finally:
         await engine.drop_collection(client._resolve_collection("agent", None))
         await engine.aclose()
@@ -90,7 +98,7 @@ async def _top_filename(client, query: str) -> str:
 
 @pytest.mark.asyncio
 async def test_keyword_match_ranks_first_through_the_client(knowledge, tmp_path):
-    engine, client = knowledge
+    engine, client, backend = knowledge
     docs = {
         f"invoice_{i:02d}.txt": f"Invoice {_invoice(i)} was issued to Contoso for the backup service."
         for i in range(INVOICES)
@@ -100,6 +108,9 @@ async def test_keyword_match_ranks_first_through_the_client(knowledge, tmp_path)
         path = tmp_path / name
         path.write_text(text, encoding="utf-8")
         await _ingest(engine, client, path)
+
+    (adapter,) = engine._vector_stores.values()
+    assert adapter._use_prod == (backend == "pgvector"), f"{backend} case ran on the wrong storage backend"
 
     misses = [
         i for i in range(INVOICES) if await _top_filename(client, _invoice(i)) != f"invoice_{i:02d}.txt"
