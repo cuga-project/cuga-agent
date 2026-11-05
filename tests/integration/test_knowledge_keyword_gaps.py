@@ -300,3 +300,34 @@ def test_keyword_search_excludes_other_tenants(backend, make_adapter, monkeypatc
     hits, source_a, _source_b = _two_tenant_hits(backend, make_adapter, monkeypatch)
 
     assert source_a not in hits, f"{backend}: tenant B sees tenant A's document"
+
+
+@pytest.mark.unit
+def test_ingest_fails_before_any_vector_when_the_keyword_table_cannot_be_prepared(tmp_path, monkeypatch):
+    """A failed one-time keyword-table setup (for example a lock timeout during a re-index) fails
+    the ingest with nothing written, so a retry indexes the document for both legs. Swallowing it
+    after the vectors commit would leave chunks that keyword search can never find."""
+    import sqlite3
+
+    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwl")
+    adapter = StorageBackedKnowledgeVectorStore(
+        collection, DeterministicEmbeddings(), local_db_path=str(tmp_path / "kb.db")
+    )
+    prepare = StorageBackedKnowledgeVectorStore._ensure_fts_table
+
+    def _locked(self, conn):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(StorageBackedKnowledgeVectorStore, "_ensure_fts_table", _locked)
+    with pytest.raises(sqlite3.OperationalError):
+        _add(adapter, collection, "late", "The policy covers dental.")
+    assert adapter.search("dental", k=5) == [], "a vector was written before the failure"
+
+    monkeypatch.setattr(StorageBackedKnowledgeVectorStore, "_ensure_fts_table", prepare)
+    source = _add(adapter, collection, "late", "The policy covers dental.")
+
+    assert _hit_sources(adapter, "dental") == {source}
+    assert [doc.metadata["source"] for doc, _ in adapter.search("dental", k=5)] == [source]
