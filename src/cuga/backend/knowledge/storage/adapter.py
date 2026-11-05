@@ -74,6 +74,9 @@ def _pg_keyword_pool(postgres_url: str):
                     "application_name": "cuga-knowledge-keyword",  # visible in pg_stat_activity
                 },
                 open=True,
+                # Test a connection before handing it out, so a database restart or an idle
+                # disconnect costs one reconnect instead of a failed keyword call.
+                check=ConnectionPool.check_connection,
             )
             _pg_keyword_pools[postgres_url] = pool
         return pool
