@@ -21,22 +21,49 @@ from langchain_core.documents import Document
 
 from .helpers import DeterministicEmbeddings, unique_collection
 
-# Target documents, one per script. Queries are whole words that appear in exactly one doc.
+# Target documents, one per language. Each query is a word a user would type: without the
+# accents or vowel points the document has, in another case, or inside an unspaced sentence.
 CORPUS = {
     "en": "Invoice ABC-123 was issued to Contoso on 2026-01-15 for the backup service.",
+    "fr": "Le café de la gare ouvre à huit heures.",
+    "de": "Die Straße wird morgen gesperrt.",
+    "ru": "Резервное копирование выполняется каждую ночь.",
     "he": "המסמך מתאר את מדיניות הגיבוי של החברה.",
+    "he_points": "שָׁלוֹם לְכֻלָּם.",
+    "ar": "تُحْفَظُ النُّسْخَةُ كُلَّ لَيْلَةٍ.",
     "hi": "हिन्दी भाषा में यह दस्तावेज़ बैकअप नीति का वर्णन करता है।",
+    "bn": "বাংলা ভাষায় এই নথিটি লেখা হয়েছে।",
     "te": "తెలుగు భాషలో ఈ పత్రం బ్యాకప్ విధానాన్ని వివరిస్తుంది.",
     "ta": "தமிழ் மொழியில் இந்த ஆவணம் காப்புப் பிரதி கொள்கையை விவரிக்கிறது.",
+    "zh": "我们的数据备份策略每天执行一次。",
+    "ja": "毎晩コーヒーを飲みながらバックアップを確認します。",
+    "ko": "서울에서 백업 정책을 검토했습니다.",
+    "th": "นโยบายการสำรองข้อมูลของบริษัท",
 }
-QUERIES = {"en": "ABC-123", "he": "הגיבוי", "hi": "हिन्दी", "te": "తెలుగు", "ta": "தமிழ்"}
+QUERIES = {
+    "en": "ABC-123",
+    "fr": "cafe",
+    "de": "STRASSE",
+    "ru": "КОПИРОВАНИЕ",
+    "he": "הגיבוי",
+    "he_points": "שלום",
+    "ar": "النسخة",
+    "hi": "हिन्दी",
+    "bn": "বাংলা",
+    "te": "తెలుగు",
+    "ta": "தமிழ்",
+    "zh": "备份策略",
+    "ja": "バックアップ",
+    "ko": "서울",
+    "th": "ข้อมูล",
+}
 
 
 def _letters_only(word: str) -> str:
-    """The word's base letters, space-separated, with its vowel signs and viramas removed.
+    """The word's letters, space-separated, without its marks.
 
-    A tokenizer that splits words at combining marks indexes the target word as exactly
-    these letters, so this distractor matches the query only when tokenization is broken.
+    A tokenizer that splits words at combining marks, or matches single characters of an
+    unspaced script, matches this distractor; a correct one does not.
     """
     return " ".join(ch for ch in word if unicodedata.category(ch).startswith("L"))
 
@@ -98,23 +125,11 @@ def _case(backend: str, lang: str, fixed_by: str | None = None):
 
 
 NO_PG_KEYWORD = "PR B4 (Postgres keyword read path)"
-INDIC_TOKENIZER = "PR B1 (Indic-correct FTS5 tokenizer and query sanitizer)"
 
 
 @pytest.mark.parametrize(
     ("backend", "lang"),
-    [
-        _case("sqlite", "en"),
-        _case("sqlite", "he"),
-        _case("sqlite", "hi", INDIC_TOKENIZER),
-        _case("sqlite", "te", INDIC_TOKENIZER),
-        _case("sqlite", "ta", INDIC_TOKENIZER),
-        _case("pgvector", "en", NO_PG_KEYWORD),
-        _case("pgvector", "he", NO_PG_KEYWORD),
-        _case("pgvector", "hi", NO_PG_KEYWORD),
-        _case("pgvector", "te", NO_PG_KEYWORD),
-        _case("pgvector", "ta", NO_PG_KEYWORD),
-    ],
+    [_case("sqlite", lang) for lang in CORPUS] + [_case("pgvector", lang, NO_PG_KEYWORD) for lang in CORPUS],
 )
 def test_keyword_query_finds_exactly_its_document(backend, lang, tmp_path, monkeypatch):
     """A whole-word keyword query returns its document and not a letters-only distractor."""
@@ -130,34 +145,24 @@ def test_keyword_query_finds_exactly_its_document(backend, lang, tmp_path, monke
     assert distractor not in hits, f"{backend}: {QUERIES[lang]!r} matched a letters-only distractor"
 
 
+BOTH_BACKENDS = [
+    pytest.param("sqlite", marks=pytest.mark.unit),
+    pytest.param(
+        "pgvector",
+        marks=[
+            pytest.mark.pgvector,
+            pytest.mark.xfail(strict=True, reason=f"known gap, fixed by {NO_PG_KEYWORD}"),
+        ],
+    ),
+]
+
+
 @pytest.mark.parametrize(
     "query",
     ["K5A6FF80A", "user@example.com", "dental"],
     ids=["identifier", "email", "plain-word"],
 )
-@pytest.mark.parametrize(
-    "backend",
-    [
-        pytest.param(
-            "sqlite",
-            marks=[
-                pytest.mark.unit,
-                pytest.mark.xfail(
-                    strict=True,
-                    reason="known gap, fixed by PR B1: '.' is a token char, so a sentence-final word "
-                    "is indexed with its period and never matches",
-                ),
-            ],
-        ),
-        pytest.param(
-            "pgvector",
-            marks=[
-                pytest.mark.pgvector,
-                pytest.mark.xfail(strict=True, reason=f"known gap, fixed by {NO_PG_KEYWORD}"),
-            ],
-        ),
-    ],
-)
+@pytest.mark.parametrize("backend", BOTH_BACKENDS)
 def test_sentence_final_word_is_found(backend, query, tmp_path, monkeypatch):
     """A word that ends a sentence (followed by a period) is still a keyword hit."""
     _set_tenant(monkeypatch, "tenant_a")
@@ -171,6 +176,55 @@ def test_sentence_final_word_is_found(backend, query, tmp_path, monkeypatch):
     )
 
     assert source in _hit_sources(adapter, query), f"{backend}: sentence-final {query!r} not found"
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["abc-123", "ABC_123", "ＡＢＣ－１２３", "(ABC-123)"],
+    ids=["lowercase", "underscore", "full-width", "punctuated"],
+)
+@pytest.mark.parametrize("backend", BOTH_BACKENDS)
+def test_identifier_matches_however_it_is_written(backend, query, tmp_path, monkeypatch):
+    """An identifier matches across case, separator and width, but a different one does not."""
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwi")
+    adapter = _adapter(backend, tmp_path, collection)
+    source = _add(adapter, collection, "invoice", "Invoice ABC-123 was issued to Contoso.")
+
+    assert source in _hit_sources(adapter, query), f"{backend}: {query!r} missed ABC-123"
+    assert source not in _hit_sources(adapter, "ABC-124"), f"{backend}: ABC-124 matched ABC-123"
+
+
+@pytest.mark.unit
+def test_keyword_index_from_an_older_tokenizer_is_rebuilt(tmp_path, monkeypatch):
+    """A keyword table built before the shared tokenizer is re-indexed from its stored text."""
+    import sqlite3
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwm")
+    db_path = tmp_path / "kb.db"
+    with sqlite3.connect(db_path) as conn:  # the schema shipped before the shared tokenizer
+        conn.execute(
+            f"CREATE VIRTUAL TABLE {collection}__fts USING fts5("
+            "chunk_id UNINDEXED, source UNINDEXED, filename UNINDEXED, "
+            "page UNINDEXED, section_path UNINDEXED, chunk_text, "
+            "tokenize=\"unicode61 remove_diacritics 2 tokenchars '._@-+'\")"
+        )
+        conn.executemany(
+            f"INSERT INTO {collection}__fts VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                ("c1", f"{collection}/en.txt", "en.txt", 1, "", "The policy covers dental."),
+                ("c2", f"{collection}/hi.txt", "hi.txt", 1, "", CORPUS["hi"]),
+            ],
+        )
+    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
+
+    adapter = StorageBackedKnowledgeVectorStore(
+        collection, DeterministicEmbeddings(), local_db_path=str(db_path)
+    )
+
+    assert _hit_sources(adapter, "dental") == {f"{collection}/en.txt"}
+    assert _hit_sources(adapter, QUERIES["hi"]) == {f"{collection}/hi.txt"}
 
 
 @pytest.mark.parametrize(
