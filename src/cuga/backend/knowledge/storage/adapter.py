@@ -258,6 +258,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         return " OR ".join(f'"{" ".join(group)}"' for group in groups) if groups else None
 
     def _fts_state(self, conn) -> str:
+        """``missing``, ``stale`` (built by another tokenizer version) or ``current``."""
         row = conn.execute("SELECT sql FROM sqlite_master WHERE name = ?", (self._fts_table(),)).fetchone()
         if row is None:
             return "missing"
@@ -580,6 +581,15 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
     ) -> dict[str, int]:
         if not documents:
             return {"num_added": 0, "num_skipped": 0}
+        if not self._use_prod:
+            # Create or re-index the keyword table BEFORE any vector commits. A lock timeout
+            # during a one-time re-index then fails the ingest with nothing written, so a retry
+            # is safe; after it, no chunk can end up with a vector but no keyword row.
+            conn = self._fts_connect()
+            try:
+                self._ensure_fts_table(conn)
+            finally:
+                conn.close()
         self._ensure_store()
         texts = [d.page_content for d in documents]
         n = len(texts)
