@@ -429,7 +429,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                 FROM {self._collection} c
                 WHERE c.tenant_id = %(tenant)s AND c.instance_id = %(instance)s
                   AND c.{_TERMS_COLUMN} @@ %(union)s::text::tsquery
-                ORDER BY rank DESC LIMIT %(k)s
+                ORDER BY rank DESC, c.id LIMIT %(k)s  -- a stable order for ties, so results reproduce
                 """,
                 {
                     "groups": [_pg_tsquery(group) for group in groups],
