@@ -34,9 +34,9 @@ def _pg_tsvector(text: str) -> str:
     return " ".join(f"'{term}':{pos}" for pos, term in enumerate(lexical.terms(text or ""), start=1))
 
 
-def _pg_tsquery(groups: list[list[str]]) -> str:
-    """Any group (``|``), each group's terms adjacent and in order (``<->``), as a tsquery literal."""
-    return " | ".join("(" + " <-> ".join(f"'{term}'" for term in group) + ")" for group in groups)
+def _pg_tsquery(group: list[str]) -> str:
+    """One query group as a tsquery literal: its terms adjacent and in order (``<->``)."""
+    return " <-> ".join(f"'{term}'" for term in group)
 
 
 def _doc_from_row(chunk_text: Any, meta_json: Any) -> Document:
@@ -381,15 +381,39 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         async def _search(conn):
             if not await self._pg_ensure_terms(conn):
                 return []
+            # BM25-style: each query group is weighted by its inverse document frequency in the
+            # caller's scope, times its length-normalised frequency in the chunk (ts_rank_cd,
+            # normalisation 1). Plain ts_rank_cd weighs "the" like a rare identifier, which
+            # buries the right chunk under natural-language queries. The weights are computed
+            # once (MATERIALIZED, one indexed count per group), and candidates come from one
+            # indexed match on the union of the groups.
             return await conn.fetch(
-                f"SELECT chunk_text, meta_json, ts_rank_cd({_TERMS_COLUMN}, q) AS rank "
-                f"FROM {self._collection}, CAST($1::text AS tsquery) AS q "
-                f"WHERE tenant_id = $2 AND instance_id = $3 AND {_TERMS_COLUMN} @@ q "
-                "ORDER BY rank DESC LIMIT $4",
-                _pg_tsquery(groups),
+                f"""
+                WITH n AS (
+                    SELECT count(*)::float8 AS n FROM {self._collection}
+                    WHERE tenant_id = $2 AND instance_id = $3
+                ),
+                w AS MATERIALIZED (
+                    SELECT g.q::tsquery AS q, ln(1 + (n.n - df.df + 0.5) / (df.df + 0.5)) AS idf
+                    FROM unnest($1::text[]) AS g(q)
+                    CROSS JOIN n
+                    CROSS JOIN LATERAL (
+                        SELECT count(*)::float8 AS df FROM {self._collection}
+                        WHERE tenant_id = $2 AND instance_id = $3 AND {_TERMS_COLUMN} @@ g.q::tsquery
+                    ) df
+                )
+                SELECT c.chunk_text, c.meta_json,
+                       (SELECT sum(w.idf * ts_rank_cd(c.{_TERMS_COLUMN}, w.q, 1))
+                        FROM w WHERE c.{_TERMS_COLUMN} @@ w.q) AS rank
+                FROM {self._collection} c
+                WHERE c.tenant_id = $2 AND c.instance_id = $3 AND c.{_TERMS_COLUMN} @@ $5::text::tsquery
+                ORDER BY rank DESC LIMIT $4
+                """,
+                [_pg_tsquery(group) for group in groups],
                 scope["tenant_id"],
                 scope["instance_id"],
                 max(1, int(k)),
+                " | ".join(f"({_pg_tsquery(group)})" for group in groups),
             )
 
         return [(r["chunk_text"], r["meta_json"], float(r["rank"])) for r in self._pg_keyword_run(_search)]
