@@ -33,6 +33,13 @@ export function quoteSegments(snippet: string, quote?: string): Array<{ text: st
   ];
 }
 
+/** Whether the quoted passage ends past what a collapsed snippet shows (the panel collapses
+ * snippets over 350 characters), so the snippet should open expanded. */
+export function quoteBelowFold(source: Pick<MessageSource, 'snippet' | 'support_quote'>): boolean {
+  const at = source.support_quote ? source.snippet.indexOf(source.support_quote) : -1;
+  return at >= 0 && at + (source.support_quote?.length ?? 0) > 350;
+}
+
 /** Icon and label for a source's citation-check verdict; null when it wasn't checked. */
 export function supportInfo(support?: string): { Icon: CarbonIconType; label: string } | null {
   return (support && SUPPORT.get(support)) || null;
