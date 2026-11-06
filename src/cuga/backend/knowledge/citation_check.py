@@ -30,9 +30,17 @@ SUPPORTED, CONTRADICTED, NOT_STATED = "supported", "contradicted", "not_stated"
 _WORST_FIRST = (CONTRADICTED, NOT_STATED, SUPPORTED)
 NLI_MODEL = "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7"
 _MAX_CLAIM_CHARS = 400
-# A sentence ends at . ! ? followed by whitespace, at a CJK terminator, or at a line break.
-_BOUNDARY = re.compile(r"[.!?](?=\s)|[。！？]|\n")
-_TERMINATORS = ".!?。！？"
+# A sentence ends at . ! ? followed by whitespace, at a CJK, Devanagari (।), Urdu (۔) or Arabic (؟)
+# terminator, or at a line break.
+_BOUNDARY = re.compile(r"[.!?](?=\s)|[。！？।۔؟]|\n")
+_TERMINATORS = ".!?。！？।۔؟"
+_SENTENCES = re.compile(r"(?<=[.!?])\s+|(?<=[。！？।۔؟])|\n+")
+# The NLI model reads 512 tokens of source and claim together; longer sources are judged in
+# windows of whole sentences so nothing is cut off.
+_NLI_WINDOW_TOKENS = 400
+_NLI_BATCH = 32
+# An NLI "supported" needs a passage of one or two sentences that entails the claim on its own.
+_NLI_EVIDENCE = 0.5
 # A leading attribution ("The Chinese document states that ...", "According to the policy, ...").
 # NLI models judge the framed sentence as a claim about the document and answer "not stated";
 # the LLM checker reads past it. English only: for other languages prefer the llm checker.
@@ -87,7 +95,10 @@ async def check_citations(
         if checker == "llm":
             labels = await _llm_labels([(c, s) for c, _, s in pairs], generate)
         elif checker == "nli":
-            labels = await asyncio.to_thread(_nli_labels, [(_ATTRIBUTION.sub("", c), s) for c, _, s in pairs])
+            judged = await asyncio.to_thread(
+                _nli_judgements, [(_ATTRIBUTION.sub("", c), s) for c, _, s in pairs]
+            )
+            labels = [label for label, _ in judged]
         else:
             return {}
     except Exception:
@@ -127,9 +138,11 @@ async def _llm_labels(
 
 _nli: tuple[Any, Any, dict[int, str]] | None = None
 _nli_lock = threading.Lock()
+_RANK = {NOT_STATED: 0, CONTRADICTED: 1, SUPPORTED: 2}
 
 
-def _nli_labels(pairs: list[tuple[str, str]]) -> list[str]:
+def _nli_model() -> tuple[Any, Any, dict[int, str]]:
+    """(tokenizer, model, class index -> verdict), loaded once."""
     global _nli
     with _nli_lock:
         if _nli is None:
@@ -143,17 +156,85 @@ def _nli_labels(pairs: list[tuple[str, str]]) -> list[str]:
                 for i, n in names.items()
             }
             _nli = (tokenizer, model, to_verdict)
-        tokenizer, model, to_verdict = _nli
+        return _nli
+
+
+def _windows(source: str, count_tokens: Callable[[str], int]) -> list[list[str]]:
+    """The source's sentences, grouped into consecutive windows of at most _NLI_WINDOW_TOKENS."""
+    windows: list[list[str]] = []
+    size = 0
+    for sentence in (s.strip() for s in _SENTENCES.split(source)):
+        if not sentence:
+            continue
+        n = count_tokens(sentence)
+        if windows and size + n <= _NLI_WINDOW_TOKENS:
+            windows[-1].append(sentence)
+            size += n
+        else:
+            windows.append([sentence])
+            size = n
+    return windows or [[source]]
+
+
+def _nli_probs(pairs: list[tuple[str, str]]) -> list[list[float]]:
+    """Class probabilities per (claim, premise) pair, in batches of _NLI_BATCH."""
+    tokenizer, model, _ = _nli_model()
     import torch
 
+    probs: list[list[float]] = []
     with torch.no_grad():
-        batch = tokenizer(
-            [source for _, source in pairs],
-            [claim for claim, _ in pairs],
-            truncation="only_first",
-            max_length=512,
-            padding=True,
-            return_tensors="pt",
-        )
-        best = model(**batch).logits.argmax(dim=-1).tolist()
-    return [to_verdict[i] for i in best]
+        for start in range(0, len(pairs), _NLI_BATCH):
+            part = pairs[start : start + _NLI_BATCH]
+            batch = tokenizer(
+                [premise for _, premise in part],
+                [claim for claim, _ in part],
+                truncation="only_first",
+                max_length=512,
+                padding=True,
+                return_tensors="pt",
+            )
+            probs += model(**batch).logits.softmax(dim=-1).tolist()
+    return probs
+
+
+def _nli_judgements(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """(verdict, evidence) per (claim, source) pair.
+
+    The verdict comes from windows of whole sentences (most sources fit in one): supported if any
+    window entails the claim, otherwise contradicted if any contradicts it. Then the windows that
+    reached the verdict are checked one and two sentences at a time. A supported verdict with no
+    such passage entailing the claim on its own drops to not_stated: on long, low-information text
+    (repeated boilerplate, lists) the model reports entailment for claims the text never makes. The evidence is the
+    strongest passage for the verdict, or "" when none reaches _NLI_EVIDENCE.
+    """
+    tokenizer, _, to_verdict = _nli_model()
+    index = {verdict: i for i, verdict in to_verdict.items()}
+    windows = [
+        (k, window)
+        for k, (_, source) in enumerate(pairs)
+        for window in _windows(source, lambda text: len(tokenizer.tokenize(text)))
+    ]
+    labels = [NOT_STATED] * len(pairs)
+    window_labels = []
+    for (k, _), p in zip(windows, _nli_probs([(pairs[k][0], " ".join(w)) for k, w in windows])):
+        label = to_verdict[max(range(len(p)), key=p.__getitem__)]
+        window_labels.append(label)
+        if _RANK[label] > _RANK[labels[k]]:
+            labels[k] = label
+    # Evidence comes from every window that reached the pair's verdict, one and two sentences at a time.
+    passages = [
+        (k, passage)
+        for (k, w), label in zip(windows, window_labels)
+        if label == labels[k] != NOT_STATED
+        for passage in w + [" ".join(w[i : i + 2]) for i in range(len(w) - 1)]
+    ]
+    evidence, strength = [""] * len(pairs), [0.0] * len(pairs)
+    for (k, passage), p in zip(passages, _nli_probs([(pairs[k][0], x) for k, x in passages])):
+        if p[index[labels[k]]] > strength[k]:
+            strength[k], evidence[k] = p[index[labels[k]]], passage
+    for k in range(len(pairs)):
+        if strength[k] < _NLI_EVIDENCE:
+            evidence[k] = ""
+            if labels[k] == SUPPORTED:
+                labels[k] = NOT_STATED
+    return list(zip(labels, evidence))
