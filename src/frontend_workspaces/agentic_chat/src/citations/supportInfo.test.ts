@@ -1,6 +1,6 @@
 import { CheckmarkFilled, HelpFilled, Misuse } from '@carbon/icons-react';
 import { describe, expect, it } from 'vitest';
-import { quoteSegments, supportInfo } from './types';
+import { quoteBelowFold, quoteSegments, supportInfo } from './types';
 
 describe('supportInfo', () => {
   it.each([
@@ -30,5 +30,17 @@ describe('quoteSegments', () => {
   it('returns null without a quote or when the quote is not in the snippet', () => {
     expect(quoteSegments('Backups run daily.', undefined)).toBeNull();
     expect(quoteSegments('Backups run daily.', 'weekly')).toBeNull();
+  });
+});
+
+describe('quoteBelowFold', () => {
+  const filler = 'x'.repeat(400);
+  it('opens the snippet when the quote ends past the collapsed part', () => {
+    expect(quoteBelowFold({ snippet: `${filler} the cap is 220 dollars.`, support_quote: 'the cap is 220 dollars.' })).toBe(true);
+  });
+  it('keeps it collapsed when the quote is visible, missing or absent', () => {
+    expect(quoteBelowFold({ snippet: `the cap is 220 dollars. ${filler}`, support_quote: 'the cap is 220 dollars.' })).toBe(false);
+    expect(quoteBelowFold({ snippet: filler, support_quote: 'not there' })).toBe(false);
+    expect(quoteBelowFold({ snippet: filler })).toBe(false);
   });
 });
