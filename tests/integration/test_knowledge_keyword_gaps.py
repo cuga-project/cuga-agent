@@ -408,3 +408,60 @@ def test_postgres_failed_term_write_is_filled_by_the_next_search(make_adapter, m
     monkeypatch.setattr(StorageBackedKnowledgeVectorStore, "_pg_write_terms", write)
 
     assert _hit_sources(adapter, "dental") == {source}
+
+
+@pytest.mark.pgvector
+def test_postgres_keyword_setup_gives_up_on_a_busy_table(make_adapter, monkeypatch):
+    """Adding the keyword column to a table another session has open waits at most a few seconds:
+    the keyword leg is empty meanwhile, and the next call, once the table is free, completes it.
+    Without the timeout the ALTER queues behind that session and every query on the table
+    queues behind the ALTER."""
+    import time
+
+    import asyncpg
+
+    from cuga.backend.knowledge.storage.adapter import _TERMS_COLUMN
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwlk")
+    adapter = make_adapter("pgvector", collection)
+    source = _add(adapter, collection, "inv", "Invoice ZQX-4417 was paid.")
+    dsn = _pgvector_dsn()
+
+    async def search_while_the_table_is_open() -> tuple[list, float]:
+        conn = await asyncpg.connect(dsn)
+        try:
+            await conn.execute(f"ALTER TABLE {collection} DROP COLUMN {_TERMS_COLUMN}")  # before the upgrade
+            adapter._fts_ready = False
+            tx = conn.transaction()
+            await tx.start()
+            await conn.execute(f"SELECT 1 FROM {collection} LIMIT 1")  # holds the table open
+            started = time.monotonic()
+            hits = await asyncio.to_thread(adapter.search_lexical, "ZQX-4417")
+            elapsed = time.monotonic() - started
+            await tx.rollback()
+            return hits, elapsed
+        finally:
+            await conn.close()
+
+    hits, elapsed = asyncio.run(search_while_the_table_is_open())
+
+    assert hits == [] and elapsed < 10, f"keyword setup waited {elapsed:.1f}s on a busy table"
+    assert source in _hit_sources(adapter, "ZQX-4417")
+
+
+@pytest.mark.pgvector
+def test_concurrent_keyword_calls_skip_a_running_backfill(make_adapter, monkeypatch):
+    """While one call backfills keyword terms, others skip it instead of repeating the scan."""
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwbf")
+    adapter = make_adapter("pgvector", collection)
+    source = _add(adapter, collection, "inv", "Invoice ZQX-4417 was paid.")
+    adapter._fts_ready = False  # a fresh adapter on an existing collection
+
+    adapter._pg_ensure_lock.acquire()  # another call is backfilling
+    try:
+        assert adapter.search_lexical("ZQX-4417") == []
+    finally:
+        adapter._pg_ensure_lock.release()
+    assert source in _hit_sources(adapter, "ZQX-4417")
