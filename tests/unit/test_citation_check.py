@@ -32,11 +32,53 @@ pytestmark = pytest.mark.unit
         ("备份每天执行一次。[s1]加密存储【s2】", [("备份每天执行一次。", ["s1"]), ("加密存储", ["s2"])]),
         ("See `code [s9]` here.", []),
         ("- first point [s1]\n- second point [s2]", [("- first point", ["s1"]), ("- second point", ["s2"])]),
+        (
+            "छुट्टी मिलती है [s1]। वेतन हर महीने मिलता है [s2]।",
+            [("छुट्टी मिलती है", ["s1"]), ("वेतन हर महीने मिलता है", ["s2"])],
+        ),
     ],
-    ids=["marker-before-period", "marker-after-period", "two-ids", "cjk", "code-span", "bullets"],
+    ids=[
+        "marker-before-period",
+        "marker-after-period",
+        "two-ids",
+        "cjk",
+        "code-span",
+        "bullets",
+        "hindi-danda",
+    ],
 )
 def test_claims_are_the_sentences_markers_belong_to(text, expected):
     assert claims_by_marker(text) == expected
+
+
+def test_long_sources_are_judged_in_whole_sentence_windows(monkeypatch):
+    from cuga.backend.knowledge import citation_check
+
+    monkeypatch.setattr(citation_check, "_NLI_WINDOW_TOKENS", 4)
+    words = lambda text: len(text.split())  # noqa: E731
+    assert citation_check._windows("a b. c d e. f.", words) == [["a b."], ["c d e.", "f."]]
+    assert citation_check._windows("一二三。四五。", len) == [["一二三。"], ["四五。"]]
+
+
+def test_nli_support_needs_a_passage_that_entails_on_its_own(monkeypatch):
+    """The real model reports entailment from long boilerplate; a supported verdict must be backed
+    by one or two sentences that entail the claim by themselves."""
+    from cuga.backend.knowledge import citation_check as cc
+
+    entail, neutral = [0.9, 0.05, 0.05], [0.05, 0.9, 0.05]
+    to_verdict = {0: cc.SUPPORTED, 1: cc.NOT_STATED, 2: cc.CONTRADICTED}
+    monkeypatch.setattr(cc, "_nli_model", lambda: (SimpleNamespace(tokenize=str.split), None, to_verdict))
+    monkeypatch.setattr(
+        cc,
+        "_nli_probs",
+        lambda pairs: [entail if len(p.split()) > 8 or "36 months" in p else neutral for _, p in pairs],
+    )
+    boiler = "Section one covers inspections. Section two covers gloves. Section three covers lights."
+    claim = "The warranty lasts 36 months."
+    assert cc._nli_judgements([(claim, boiler), (claim, f"{boiler} The warranty lasts 36 months.")]) == [
+        (cc.NOT_STATED, ""),
+        (cc.SUPPORTED, "The warranty lasts 36 months."),
+    ]
 
 
 def _fake_llm(labels: dict[int, str], seen: list | None = None):
