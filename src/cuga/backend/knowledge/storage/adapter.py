@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -123,6 +124,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         self._store: Any = None
         self._dim: int | None = None
         self._fts_ready = False
+        self._pg_ensure_lock = threading.Lock()  # one Postgres keyword backfill at a time
 
     def _scope(self) -> dict[str, str]:
         return {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
@@ -331,6 +333,18 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         """
         if self._fts_ready:
             return True
+        # One backfill per adapter. Concurrent keyword calls skip it (their keyword leg is empty
+        # this once) rather than scan the same rows again and hold more connections.
+        if not self._pg_ensure_lock.acquire(blocking=False):
+            return False
+        try:
+            return await self._pg_add_and_fill_terms(conn)
+        finally:
+            self._pg_ensure_lock.release()
+
+    async def _pg_add_and_fill_terms(self, conn) -> bool:
+        if self._fts_ready:
+            return True
         table = self._collection
         if await conn.fetchval("SELECT to_regclass($1)", table) is None:
             return False
@@ -342,6 +356,9 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         if not has_column:
             index = f"idx_{hashlib.sha256(table.encode()).hexdigest()[:16]}_{_TERMS_COLUMN}"
             async with conn.transaction():  # column and index together, or neither
+                # ALTER TABLE queues behind any open transaction on the table, and every query on
+                # the table queues behind the ALTER. Give up after 2 s; the next keyword call retries.
+                await conn.execute("SET LOCAL lock_timeout = '2s'")
                 await conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {_TERMS_COLUMN} tsvector")
                 await conn.execute(
                     f"CREATE INDEX IF NOT EXISTS {index} ON {table} USING gin ({_TERMS_COLUMN})"
