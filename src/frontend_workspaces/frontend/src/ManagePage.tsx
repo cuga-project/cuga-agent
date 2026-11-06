@@ -156,6 +156,8 @@ export interface AgentConfig {
     agent_level_enabled?: boolean;
     session_level_enabled?: boolean;
     citations_enabled?: boolean;
+    citation_check?: string;
+    citation_strict?: boolean;
     rag_profile?: string;
     embedding_provider?: string;
     embedding_model?: string;
