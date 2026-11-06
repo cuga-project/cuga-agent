@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -132,6 +133,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         self._store: Any = None
         self._dim: int | None = None
         self._fts_ready = False
+        self._pg_ensure_lock = threading.Lock()  # one Postgres keyword backfill at a time
 
     def _scope(self) -> dict[str, str]:
         return {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
@@ -268,10 +270,11 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
 
     def _fts_state(self, conn) -> str:
         """``missing``, ``stale`` (another tokenizer version, or no tenant columns) or ``current``."""
-        row = conn.execute("SELECT sql FROM sqlite_master WHERE name = ?", (self._fts_table(),)).fetchone()
-        if row is None:
+        # The column list, not the CREATE text: a collection named e.g. "hr_terms_v1" would match it.
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({self._fts_table()})")}
+        if not columns:
             return "missing"
-        return "current" if _TERMS_COLUMN in row[0] and "tenant_id UNINDEXED" in row[0] else "stale"
+        return "current" if {_TERMS_COLUMN, "tenant_id"} <= columns else "stale"
 
     def _ensure_fts_table(self, conn) -> None:
         """Create the FTS table, rebuilt from the vector table when it is missing or stale.
@@ -357,6 +360,18 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         """
         if self._fts_ready:
             return True
+        # One backfill per adapter. Concurrent keyword calls skip it (their keyword leg is empty
+        # this once) rather than scan the same rows again and hold more connections.
+        if not self._pg_ensure_lock.acquire(blocking=False):
+            return False
+        try:
+            return await self._pg_add_and_fill_terms(conn)
+        finally:
+            self._pg_ensure_lock.release()
+
+    async def _pg_add_and_fill_terms(self, conn) -> bool:
+        if self._fts_ready:
+            return True
         table = self._collection
         if await conn.fetchval("SELECT to_regclass($1)", table) is None:
             return False
@@ -368,6 +383,9 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         if not has_column:
             index = f"idx_{hashlib.sha256(table.encode()).hexdigest()[:16]}_{_TERMS_COLUMN}"
             async with conn.transaction():  # column and index together, or neither
+                # ALTER TABLE queues behind any open transaction on the table, and every query on
+                # the table queues behind the ALTER. Give up after 2 s; the next keyword call retries.
+                await conn.execute("SET LOCAL lock_timeout = '2s'")
                 await conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {_TERMS_COLUMN} tsvector")
                 await conn.execute(
                     f"CREATE INDEX IF NOT EXISTS {index} ON {table} USING gin ({_TERMS_COLUMN})"
@@ -434,46 +452,53 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         """
         if not items:
             return
-        try:
-            if self._use_prod:
-                self._pg_write_terms(items)
-                return
-            scope = self._scope()
-            conn = self._fts_connect()
+        for attempt in (1, 2):
             try:
-                self._ensure_fts_table(conn)
-                conn.executemany(
-                    f"INSERT INTO {self._fts_table()} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    [
-                        (
-                            cid,
-                            scope["tenant_id"],
-                            scope["instance_id"],
-                            str(meta.get("source", "")),
-                            str(meta.get("filename", "")),
-                            int(meta.get("page", -1)) if meta.get("page", -1) is not None else -1,
-                            str(meta.get("section_path", "") or ""),
-                            text,
-                            " ".join(lexical.terms(text)),
-                        )
-                        for cid, meta, text in items
-                    ],
-                )
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception as exc:  # noqa: BLE001 — never fail the ingest
-            if self._use_prod:
-                # The rows exist with no terms; the next keyword call's backfill fills them.
+                self._fts_insert(items)
+                return
+            except Exception as exc:  # noqa: BLE001 — never fail the ingest
+                # SQLite: another adapter may have dropped the table since this one checked it.
+                # Postgres: the rows exist without terms. Check the table again (the Postgres
+                # check fills rows without terms) and retry once.
                 self._fts_ready = False
-            logger.warning(
-                "BM25 FTS write failed for collection=%s items=%d: %s "
-                "(dense insert succeeded; lexical leg will return empty until backfill)",
-                self._collection,
-                len(items),
-                exc,
+                if attempt == 2:
+                    logger.warning(
+                        "BM25 FTS write failed for collection={} items={}: {} "
+                        "(dense insert succeeded; lexical leg will return empty until backfill)",
+                        self._collection,
+                        len(items),
+                        exc,
+                    )
+
+    def _fts_insert(self, items: list[tuple[str, dict[str, Any], str]]) -> None:
+        if self._use_prod:
+            self._pg_write_terms(items)
+            return
+        scope = self._scope()
+        conn = self._fts_connect()
+        try:
+            self._ensure_fts_table(conn)
+            conn.executemany(
+                f"INSERT INTO {self._fts_table()} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        cid,
+                        scope["tenant_id"],
+                        scope["instance_id"],
+                        str(meta.get("source", "")),
+                        str(meta.get("filename", "")),
+                        int(meta.get("page", -1)) if meta.get("page", -1) is not None else -1,
+                        str(meta.get("section_path", "") or ""),
+                        text,
+                        " ".join(lexical.terms(text)),
+                    )
+                    for cid, meta, text in items
+                ],
             )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _fts_delete_by_source(self, source_id: str) -> None:
         """Delete FTS rows matching a source. Called from
