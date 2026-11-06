@@ -937,6 +937,31 @@ def _resolve_apps(
     )
 
 
+# Names that hold a credential must NEVER appear in logs even at INFO.
+# Redaction list is matched against the SUFFIX after the last ``__`` so
+# any new ``DYNACONF_..._API_KEY``-style env var is covered automatically.
+_SECRET_SUFFIXES = {"API_KEY", "TOKEN", "SECRET", "PASSWORD"}
+
+
+def _apply_knowledge_flag_env(flag_env: list[tuple[str, str | None]]) -> None:
+    """Set the env variable of every knowledge flag that was given.
+
+    Settings are already loaded in this process, and the agent config that
+    ``setup_demo_manage_config`` seeds for the server is built from them, so
+    reload them when a flag was set. ``reload()`` drops the defaults that the
+    validators in ``cuga.config`` fill in, so validate again.
+    """
+    given = [(env_name, value) for env_name, value in flag_env if value is not None]
+    for env_name, value in given:
+        os.environ[env_name] = value
+        suffix = env_name.split("__")[-1]
+        shown = "<redacted>" if suffix in _SECRET_SUFFIXES else value
+        logger.info(f"Embedding override: {suffix}={shown}")
+    if given:
+        settings.reload()
+        settings.validators.validate()
+
+
 @app.command(help="Start a specified service", short_help="Start service(s)")
 def start(
     service: str = typer.Argument(
@@ -1237,7 +1262,7 @@ def start(
         reset = True
 
     # Embedding overrides — set as DYNACONF env vars BEFORE the service blocks
-    # below so the engine picks them up when settings is first loaded. These
+    # below, which seed the server's config from settings. These
     # flags work for any service that touches the knowledge engine; the
     # validation of the provider value happens later inside KnowledgeConfig.
     _embedding_flag_env = [
@@ -1316,16 +1341,7 @@ def start(
         ("DYNACONF_KNOWLEDGE__DOCLING__DROP_PAGE_CHROME", knowledge_docling_drop_page_chrome),
         ("DYNACONF_KNOWLEDGE__SEARCH__HYBRID_MODE", knowledge_search_hybrid_mode),
     ]
-    # Names that hold a credential must NEVER appear in logs even at INFO.
-    # Redaction list is matched against the SUFFIX after the last ``__`` so
-    # any new ``DYNACONF_..._API_KEY``-style env var is covered automatically.
-    _SECRET_SUFFIXES = {"API_KEY", "TOKEN", "SECRET", "PASSWORD"}
-    for _env_name, _value in _embedding_flag_env:
-        if _value is not None:
-            os.environ[_env_name] = _value
-            _suffix = _env_name.split("__")[-1]
-            _shown = "<redacted>" if _suffix in _SECRET_SUFFIXES else _value
-            logger.info(f"Embedding override: {_suffix}={_shown}")
+    _apply_knowledge_flag_env(_embedding_flag_env)
 
     app_crm, app_email, app_digital_sales, app_docs, app_filesystem, app_oak_health = _resolve_apps(
         service, crm, email, digital_sales, docs, filesystem, no_email, oak_health
