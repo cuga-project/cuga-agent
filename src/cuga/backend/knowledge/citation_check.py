@@ -11,7 +11,7 @@ contradicted claims with AUC 0.96. The shipped reranker scored 0.81 and failed o
 
 Each pair gets ``supported``, ``contradicted`` or ``not_stated``. A source's verdict is the
 worst over the claims that cite it, with the passage of the source that verdict rests on (the
-LLM quotes it; for NLI it is the source sentence the model rates highest for that verdict).
+LLM quotes it; for NLI it is the one or two sentences that carry the verdict on their own).
 Checking never blocks an answer: on any failure, no verdicts.
 """
 
@@ -44,11 +44,15 @@ _NLI_BATCH = 32
 # An NLI "supported" needs a passage of one or two sentences that entails the claim on its own.
 _NLI_EVIDENCE = 0.5
 # A leading attribution ("The Chinese document states that ...", "According to the policy, ...",
-# "Under the leave rules, ..."). Not a bare "In ...,": "In 2024, revenue grew" is part of the claim.
+# "Under the leave rules, ..."). Except after "according to", the framing must name a document:
+# "Per month, ...", "Under 5 users, ..." and "In 2024, ..." are part of the claim.
 # NLI models judge the framed sentence as a claim about the document and answer "not stated";
 # the LLM checker reads past it. English only: for other languages prefer the llm checker.
 _ATTRIBUTION = re.compile(
-    r"^(?:(?:according to|under|per|based on|as (?:stated|described|set out) in) [^,]{1,80},\s*"
+    r"^(?:according to [^,]{1,80},\s*"
+    r"|(?:under|per|based on|as (?:stated|described|set out) in) (?:[^,]{0,60}\s)?"
+    r"(?:document|file|source|text|policy|policies|rules?|regulations?|guidelines?|terms|agreement|"
+    r"contract|handbook|manual|report|record|invoice|page|section|note|article)s?,\s*"
     r"|(?:the|this|that)\s+(?:[\w-]+\s+){0,3}"
     r"(?:document|file|source|text|policy|report|record|invoice|page|section|note|article)s?\s+"
     r"(?:states?|says?|mentions?|notes?|indicates?|explains?|shows?|reports?|confirms?|specifies?)"
@@ -70,7 +74,7 @@ class Verdicts(dict):
 def _locate(quote: str, source: str) -> str:
     """The span of ``source`` that ``quote`` copies, ignoring whitespace; "" if it isn't there."""
     words = quote.strip().strip("\"'“”‘’").split()
-    found = re.search(r"\s+".join(map(re.escape, words)), source) if words else None
+    found = re.search(r"\s+".join(map(re.escape, words)), source, re.IGNORECASE) if words else None
     return found.group(0) if found else ""
 
 
@@ -155,7 +159,13 @@ async def _llm_judgements(
     found = re.search(r"\{.*\}", reply, re.S)
     if not found:
         raise ValueError(f"citation check reply has no JSON object: {reply[:200]!r}")
-    answers = json.loads(found.group(0))
+    try:  # strict=False: a quote copied with its line breaks is still readable
+        answers = json.loads(found.group(0), strict=False)
+    except json.JSONDecodeError:
+        # A quote with an unescaped quote mark breaks the JSON; keep the verdicts without quotes.
+        answers = dict(re.findall(r'"(\d+)"\s*:\s*\{?\s*(?:"verdict"\s*:\s*)?"(\w+)"', found.group(0)))
+        if not answers:
+            raise
     allowed = {SUPPORTED, CONTRADICTED, NOT_STATED}
     judged = []
     for i in range(1, len(pairs) + 1):
