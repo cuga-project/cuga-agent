@@ -113,13 +113,15 @@ def test_citation_check_params_reach_the_answer_path(monkeypatch):
     from cuga.backend.knowledge import sources
     from cuga.sdk import CugaAgent
 
-    monkeypatch.setattr("cuga.backend.knowledge.engine.KnowledgeEngine", lambda config, **_: config)
+    monkeypatch.setattr(
+        "cuga.backend.knowledge.engine.KnowledgeEngine", lambda config, **_: SimpleNamespace(_config=config)
+    )
     monkeypatch.setattr(
         "cuga.backend.knowledge.client.KnowledgeClient", lambda engine, **_: SimpleNamespace(engine=engine)
     )
     agent = CugaAgent(enable_knowledge=True, citation_check="nli", citation_strict=True)
     try:
-        config = agent.knowledge.engine
+        config = agent.knowledge.engine._config
         assert (config.citation_check, config.citation_strict) == ("nli", True)
         assert (sources.effective_citation_check(), sources.effective_citation_strict()) == ("nli", True)
     finally:
@@ -226,3 +228,25 @@ def test_invoke_empty_answer_fallback_honours_strict_mode(monkeypatch):
         sources.set_agent_citation_strict_lookup(None)
 
     assert (result.answer, result.sources) == ("Issued to Globex .", [])
+
+
+def test_the_sdk_reads_the_engines_live_citation_check(monkeypatch):
+    """apply_knowledge_config replaces the engine's config; the answer path must follow it."""
+    from cuga.backend.knowledge import sources
+    from cuga.backend.knowledge.config import KnowledgeConfig
+    from cuga.sdk import CugaAgent
+
+    monkeypatch.setattr(
+        "cuga.backend.knowledge.engine.KnowledgeEngine", lambda config, **_: SimpleNamespace(_config=config)
+    )
+    monkeypatch.setattr(
+        "cuga.backend.knowledge.client.KnowledgeClient", lambda engine, **_: SimpleNamespace(engine=engine)
+    )
+    agent = CugaAgent(enable_knowledge=True)
+    try:
+        agent.knowledge.engine._config = KnowledgeConfig(citation_check="llm")
+        assert sources.effective_citation_check() == "llm"
+    finally:
+        sources.set_agent_citation_check_lookup(None)
+        sources.set_agent_citation_strict_lookup(None)
+        sources.set_agent_citations_lookup(None)

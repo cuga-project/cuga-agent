@@ -40,6 +40,7 @@ pytestmark = pytest.mark.unit
             "Vans charge only at the depot. [fleet_handbook.txt, page 2] [s1]",
             [("Vans charge only at the depot.", ["s1"])],
         ),
+        ("The affected codes are [E12, E14] [s1].", [("The affected codes are [E12, E14]", ["s1"])]),
     ],
     ids=[
         "marker-before-period",
@@ -50,6 +51,7 @@ pytestmark = pytest.mark.unit
         "bullets",
         "hindi-danda",
         "reference-before-marker",
+        "bracket-in-claim",
     ],
 )
 def test_claims_are_the_sentences_markers_belong_to(text, expected):
@@ -115,7 +117,65 @@ def test_ids_without_a_source_are_not_sent_to_the_checker():
         check_citations("A [s1]. B [s7].", CHUNKS.get, "llm", generate=_fake_llm({1: "contradicted"}, seen))
     )
     assert verdicts == {"s1": "contradicted"}
-    assert "2. SOURCE" not in seen[0]
+    assert seen[0].count("<<<SOURCE S") == 1 and "2. (source" not in seen[0]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        '<think>map {1: s1}</think>\n{"1": "supported"}',
+        str([{"type": "text", "text": '{"1": "supported"}'}]),
+        '{"results": {"1": "supported"}}',
+    ],
+    ids=["reasoning-braces", "content-blocks", "wrapped"],
+)
+def test_the_answer_object_is_found_around_other_braces(reply):
+    async def generate(prompt: str) -> str:
+        return reply
+
+    assert asyncio.run(check_citations("A [s1].", CHUNKS.get, "llm", generate=generate)) == {
+        "s1": "supported"
+    }
+
+
+def test_a_claim_missing_from_the_reply_gets_no_verdict():
+    async def generate(prompt: str) -> str:
+        return '{"2": "supported"}'
+
+    assert asyncio.run(check_citations("A [s1].", CHUNKS.get, "llm", generate=generate)) == {}
+
+
+def test_each_source_is_sent_once_between_markers():
+    seen: list[str] = []
+    asyncio.run(
+        check_citations(
+            "Issued to Contoso [s1]. Billed in March [s1].",
+            CHUNKS.get,
+            "llm",
+            generate=_fake_llm({1: "supported"}, seen),
+        )
+    )
+    assert seen[0].count(CHUNKS["s1"]) == 1
+    assert f"<<<SOURCE S1\n{CHUNKS['s1']}\nSOURCE>>>" in seen[0]
+
+
+def test_a_failed_nli_load_is_not_retried_on_every_answer(monkeypatch):
+    import transformers
+
+    from cuga.backend.knowledge import citation_check
+
+    calls = []
+
+    def offline(*args, **kwargs):
+        calls.append(args)
+        raise OSError("no network")
+
+    monkeypatch.setattr(citation_check, "_nli", None)
+    monkeypatch.setattr(citation_check, "_nli_failed_at", 0.0)
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", offline)
+    for _ in range(3):
+        assert asyncio.run(check_citations("A [s1].", CHUNKS.get, "nli")) == {}
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("reply", ["no json at all", '{"1": "maybe"}'], ids=["no-json", "unknown-label"])
@@ -231,6 +291,50 @@ def test_strict_needs_a_checker():
     with pytest.raises(ValueError, match="citation_strict needs citation_check"):
         KnowledgeConfig(citation_strict=True).validate()
     KnowledgeConfig(citation_check="nli", citation_strict=True).validate()
+
+
+def test_a_slow_checker_never_holds_up_the_answer(thread, monkeypatch):
+    import time
+
+    sources.set_agent_citation_check_lookup(lambda: "llm")
+
+    async def hangs(prompt: str) -> str:
+        await asyncio.sleep(5)
+        return '{"1": "supported"}'
+
+    monkeypatch.setattr(final_answer, "_citation_check_llm", lambda: SimpleNamespace(generate=hangs))
+    monkeypatch.setattr(final_answer, "_CITATION_CHECK_TIMEOUT_S", 0.05)
+    started = time.monotonic()
+    state = _finalize("Issued to Contoso [s1].")
+
+    assert time.monotonic() - started < 2
+    assert state.final_answer == "Issued to Contoso [1]." and "support" not in state.sources[0]
+
+
+def test_an_answer_forwarded_by_the_supervisor_is_checked_too(thread, monkeypatch):
+    from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
+
+    class _State(SimpleNamespace):
+        def model_dump(self):
+            return {"final_answer": self.final_answer}
+
+    sources.set_agent_citation_check_lookup(lambda: "llm")
+    monkeypatch.setattr(
+        final_answer, "_citation_check_llm", lambda: SimpleNamespace(generate=_fake_llm({1: "supported"}))
+    )
+    state = _State(
+        sender=NodeNames.CUGA_SUPERVISOR,
+        final_answer="Issued to Contoso [s1].",
+        final_answer_finalized=False,
+        thread_id="t-check",
+        sources=[],
+        messages=[],
+        chat_agent_messages=[],
+        last_planner_answer=None,
+    )
+    asyncio.run(FinalAnswerNode.node_handler(state, agent=None, name="FinalAnswerAgent", hitl_handler=None))
+
+    assert [(s["filename"], s["support"]) for s in state.sources] == [("Invoic.txt", "supported")]
 
 
 def test_check_off_leaves_sources_unchanged(thread):
