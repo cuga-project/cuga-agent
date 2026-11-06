@@ -131,8 +131,10 @@ class FinalAnswerNode(BaseNode):
                 return {}
 
             def source_text(cite_id: str) -> Optional[str]:
-                record = ledger.get(cite_id)  # only ids that will resolve: retrieved this turn
-                return record.text if record is not None and ledger.retrieved_this_turn(cite_id) else None
+                # Any id still in the ledger, earlier turns included: a supported
+                # earlier-turn citation is kept (apply_citation_resolution).
+                record = ledger.get(cite_id)
+                return record.text if record is not None else None
 
             from cuga.backend.knowledge.citation_check import check_citations
 
@@ -194,7 +196,8 @@ class FinalAnswerNode(BaseNode):
                 # Feature off (agent flag or session override): strip mode —
                 # markers are removed rather than resolved, sources stay [].
                 ledger = None
-            resolved, sources = resolve_citations(text, ledger)
+            verified = {cid for cid, verdict in (verdicts or {}).items() if verdict == "supported"}
+            resolved, sources = resolve_citations(text, ledger, verified)
             for source in sources:
                 if verdicts and source.get("cite_id") in verdicts:
                     source["support"] = verdicts[source["cite_id"]]
