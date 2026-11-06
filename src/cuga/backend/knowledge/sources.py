@@ -307,7 +307,7 @@ def _warn_unsupported_markers(text: str) -> None:
 
 
 def resolve_citations(
-    text: str, ledger: SourceLedger | None, verified: Collection[str] = ()
+    text: str, ledger: SourceLedger | None, verified: Collection[str] = (), strict: bool = False
 ) -> tuple[str, list[dict[str, Any]]]:
     """Rewrite ``[sN]`` markers into per-message display numbers ``[k]``.
 
@@ -315,6 +315,7 @@ def resolve_citations(
     - Ids missing from the ledger (hallucinated, or evicted) are stripped.
     - Ids from an earlier turn are stripped unless listed in ``verified``: the
       citation check found that the cited source supports its claim.
+    - ``strict``: every id not in ``verified`` is stripped, this turn's included.
     - Code fences (``` or ~~~, including unterminated/truncated ones),
       double-backtick inline spans, and single-backtick inline spans are
       left byte-identical.
@@ -350,7 +351,9 @@ def resolve_citations(
             # strip reasons in the log so monitoring can tell model
             # hallucination from stale-id reuse.
             in_ledger = record is not None
-            resolves = in_ledger and (ledger.retrieved_this_turn(cite_id) or cite_id in verified)
+            resolves = in_ledger and (
+                cite_id in verified or (not strict and ledger.retrieved_this_turn(cite_id))
+            )
             if not resolves:
                 if ledger is not None and cite_id not in warned:
                     reason = (
@@ -463,6 +466,26 @@ def effective_citation_check() -> str:
     except Exception:
         logger.exception("citation check lookup failed; checking off")
         return "off"
+
+
+# Wired next to citation_check: whether only supported citations are shown. Unwired -> False.
+_agent_strict_lookup: Callable[[], bool] | None = None
+
+
+def set_agent_citation_strict_lookup(fn: Callable[[], bool] | None) -> None:
+    global _agent_strict_lookup
+    _agent_strict_lookup = fn
+
+
+def effective_citation_strict() -> bool:
+    """Whether this agent shows only the citations the check found supported."""
+    if _agent_strict_lookup is None:
+        return False
+    try:
+        return bool(_agent_strict_lookup())
+    except Exception:
+        logger.exception("citation strict lookup failed; not strict")
+        return False
 
 
 def _coerce_override(value: Any, thread_id: str | None) -> bool | None:
