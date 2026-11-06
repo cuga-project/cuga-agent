@@ -5,7 +5,7 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { pageLabel, scopeLabel, supportInfo, type MessageSource } from './types';
+import { pageLabel, quoteSegments, scopeLabel, supportInfo, type MessageSource } from './types';
 import './SourcesPanel.css';
 
 /** Split snippet into plain/mark segments for the retrieving-query terms.
@@ -34,6 +34,25 @@ export interface SourcesPanelProps {
   /** Optional doc opener; when provided a "Open document" button renders.
    * Wire to GET /api/knowledge/documents/file via the host app's api module. */
   onOpenDocument?: (source: MessageSource) => Promise<boolean>;
+}
+
+/** The snippet, marking the passage the citation check quoted, or else the query's terms. */
+function SnippetText({ source }: { source: MessageSource }) {
+  const quoted = quoteSegments(source.snippet, source.support_quote);
+  const markClass = quoted ? `cuga-sources-panel__quote cuga-sources-panel__quote--${source.support}` : undefined;
+  return (
+    <>
+      {(quoted ?? highlightSegments(source.snippet, source.query)).map((seg, i) =>
+        seg.mark ? (
+          <mark key={i} className={markClass}>
+            {seg.text}
+          </mark>
+        ) : (
+          <span key={i}>{seg.text}</span>
+        ),
+      )}
+    </>
+  );
 }
 
 function SupportNote({ support }: { support?: string }) {
@@ -114,9 +133,7 @@ export default function SourcesPanel({
               className={`cuga-sources-panel__snippet${expanded[s.n] ? ' is-expanded' : ''}`}
               onClick={() => setExpanded((e) => ({ ...e, [s.n]: !e[s.n] }))}
             >
-              {highlightSegments(s.snippet, s.query).map((seg, i) =>
-                seg.mark ? <mark key={i}>{seg.text}</mark> : <span key={i}>{seg.text}</span>,
-              )}
+              <SnippetText source={s} />
             </blockquote>
             {s.snippet.length > 350 && (
               <button
