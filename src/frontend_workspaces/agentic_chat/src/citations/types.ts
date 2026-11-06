@@ -1,5 +1,3 @@
-import { CheckmarkFilled, HelpFilled, Misuse, type CarbonIconType } from '@carbon/icons-react';
-
 export interface MessageSource {
   n: number;
   cite_id: string;
@@ -11,19 +9,10 @@ export interface MessageSource {
   score?: number;
   query?: string;
   // Set when knowledge.citation_check is on: whether this source states what it is cited for.
-  support?: string; // "supported" | "contradicted" | "not_stated"
+  support?: CitationSupport;
 }
 
-const SUPPORT = new Map([
-  ['supported', { Icon: CheckmarkFilled, label: "Checked: states what it's cited for" }],
-  ['contradicted', { Icon: Misuse, label: "Checked: contradicts what it's cited for" }],
-  ['not_stated', { Icon: HelpFilled, label: "Checked: doesn't state what it's cited for" }],
-]);
-
-/** Icon and label for a source's citation-check verdict; null when it wasn't checked. */
-export function supportInfo(support?: string): { Icon: CarbonIconType; label: string } | null {
-  return (support && SUPPORT.get(support)) || null;
-}
+export type CitationSupport = 'supported' | 'contradicted' | 'not_stated';
 
 // Formats where "page" is a chunk ordinal, not a real page number. `.docx` is
 // here too: Word pagination is a render-time artifact (it reflows with viewport
