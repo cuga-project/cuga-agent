@@ -30,6 +30,8 @@ SUPPORTED, CONTRADICTED, NOT_STATED = "supported", "contradicted", "not_stated"
 _WORST_FIRST = (CONTRADICTED, NOT_STATED, SUPPORTED)
 NLI_MODEL = "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7"
 _MAX_CLAIM_CHARS = 400
+# A plain reference the model writes before the marker ("... stations. [handbook.txt, page 2] [s1]").
+_TRAILING_REF = re.compile(r"(?:\s*\[[^\]\n]*\])+\s*$")
 # A sentence ends at . ! ? followed by whitespace, at a CJK, Devanagari (।), Urdu (۔) or Arabic (؟)
 # terminator, or at a line break.
 _BOUNDARY = re.compile(r"[.!?](?=\s)|[。！？।۔؟]|\n")
@@ -56,12 +58,13 @@ _ATTRIBUTION = re.compile(
 def claims_by_marker(text: str) -> list[tuple[str, list[str]]]:
     """``(claim, [cite_id, ...])`` for each citation marker outside code spans.
 
-    A marker right after a sentence's terminator ("Contoso. [s1]") belongs to that sentence.
+    A marker right after a sentence's terminator ("Contoso. [s1]") belongs to that sentence, also
+    when a plain bracketed reference sits between them.
     """
     prose = _CODE_RE.sub(lambda m: " " * len(m.group(0)), text)  # keep offsets, drop code
     out = []
     for m in _MARKER_RE.finditer(prose):
-        before = prose[: m.start()].rstrip()
+        before = _TRAILING_REF.sub("", prose[: m.start()]).rstrip()
         body = before[:-1] if before[-1:] in _TERMINATORS else before
         start = max((b.end() for b in _BOUNDARY.finditer(body)), default=0)
         claim = " ".join(_MARKER_RE.sub(" ", before[start:]).split())[-_MAX_CLAIM_CHARS:]
