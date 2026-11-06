@@ -37,9 +37,7 @@ export function MessageSources({
             </span>
             {pageLabel(s) && <span className="cuga-msg-sources__page">{pageLabel(s)}</span>}
             {support && (
-              <span className={`cuga-support cuga-support--${s.support}`} aria-label={support.label}>
-                {support.mark}
-              </span>
+              <support.Icon size={12} className={`cuga-support cuga-support--${s.support}`} aria-label={support.label} />
             )}
             <span className={`cuga-msg-sources__dot cuga-msg-sources__dot--${s.scope}`} />
           </button>
