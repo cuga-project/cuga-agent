@@ -238,6 +238,12 @@ def test_a_failing_checker_never_blocks_the_answer(thread, monkeypatch):
         ("The Chinese document states that backups run daily", "backups run daily"),
         ("According to the policy, passwords expire after 90 days", "passwords expire after 90 days"),
         ("This invoice shows a total of $4,200", "a total of $4,200"),
+        (
+            "Under the meeting room rules, the large room is booked for two hours",
+            "the large room is booked for two hours",
+        ),
+        ("Per the travel policy, hotels are capped at 220 dollars", "hotels are capped at 220 dollars"),
+        ("In 2024, revenue grew", "In 2024, revenue grew"),
         ("Backups run daily", "Backups run daily"),
     ],
 )
