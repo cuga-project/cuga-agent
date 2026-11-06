@@ -10,7 +10,9 @@ On 36 labeled claims, including Chinese and Hindi sources, both separated suppor
 contradicted claims with AUC 0.96. The shipped reranker scored 0.81 and failed on Hindi.
 
 Each pair gets ``supported``, ``contradicted`` or ``not_stated``. A source's verdict is the
-worst over the claims that cite it. Checking never blocks an answer: on any failure, no verdicts.
+worst over the claims that cite it, with the passage of the source that verdict rests on (the
+LLM quotes it; for NLI it is the source sentence the model rates highest for that verdict).
+Checking never blocks an answer: on any failure, no verdicts.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ _MAX_CLAIM_CHARS = 400
 # A sentence ends at . ! ? followed by whitespace, at a CJK terminator, or at a line break.
 _BOUNDARY = re.compile(r"[.!?](?=\s)|[。！？]|\n")
 _TERMINATORS = ".!?。！？"
+_SENTENCES = re.compile(r"(?<=[.!?])\s+|(?<=[。！？])|\n+")
 # A leading attribution ("The Chinese document states that ...", "According to the policy, ...").
 # NLI models judge the framed sentence as a claim about the document and answer "not stated";
 # the LLM checker reads past it. English only: for other languages prefer the llm checker.
@@ -43,6 +46,23 @@ _ATTRIBUTION = re.compile(
     r"\s+(?:that\s+)?)",
     re.IGNORECASE,
 )
+
+
+class Verdicts(dict):
+    """cite_id -> verdict. ``quotes`` maps a cite_id to the exact passage of its source that a
+    supported or contradicted verdict rests on, when one was found in the source."""
+
+    # ponytail: a dict subclass carries the quotes without changing every caller of the verdicts.
+    def __init__(self, labels=(), quotes: dict[str, str] | None = None):
+        super().__init__(labels)
+        self.quotes = quotes or {}
+
+
+def _locate(quote: str, source: str) -> str:
+    """The span of ``source`` that ``quote`` copies, ignoring whitespace; "" if it isn't there."""
+    words = quote.strip().strip("\"'“”‘’").split()
+    found = re.search(r"\s+".join(map(re.escape, words)), source) if words else None
+    return found.group(0) if found else ""
 
 
 def claims_by_marker(text: str) -> list[tuple[str, list[str]]]:
@@ -69,8 +89,8 @@ async def check_citations(
     checker: str,
     *,
     generate: Callable[[str], Awaitable[str]] | None = None,
-) -> dict[str, str]:
-    """Verdict per cite_id for the citations in ``text``.
+) -> Verdicts:
+    """Verdict per cite_id for the citations in ``text``, with ``quotes`` (see ``Verdicts``).
 
     ``source_text(cite_id)`` returns the cited chunk, or None for an id that will not resolve.
     ``generate`` is the agent's LLM (``async (prompt) -> str``), needed for ``checker="llm"``.
@@ -82,33 +102,42 @@ async def check_citations(
         if (chunk := source_text(cid))
     ]
     if not pairs:
-        return {}
+        return Verdicts()
     try:
         if checker == "llm":
-            labels = await _llm_labels([(c, s) for c, _, s in pairs], generate)
+            judged = await _llm_judgements([(c, s) for c, _, s in pairs], generate)
         elif checker == "nli":
-            labels = await asyncio.to_thread(_nli_labels, [(_ATTRIBUTION.sub("", c), s) for c, _, s in pairs])
+            judged = await asyncio.to_thread(
+                _nli_judgements, [(_ATTRIBUTION.sub("", c), s) for c, _, s in pairs]
+            )
         else:
-            return {}
+            return Verdicts()
     except Exception:
         logger.exception("citation check ({}) failed; answer delivered without verdicts", checker)
-        return {}
-    verdicts: dict[str, list[str]] = {}
-    for (_, cid, _), label in zip(pairs, labels):
-        verdicts.setdefault(cid, []).append(label)
-    return {cid: next(v for v in _WORST_FIRST if v in found) for cid, found in verdicts.items()}
+        return Verdicts()
+    per_source: dict[str, list[tuple[str, str]]] = {}
+    for (_, cid, source), (label, quote) in zip(pairs, judged):
+        per_source.setdefault(cid, []).append((label, _locate(quote, source)))
+    verdicts = Verdicts()
+    for cid, found in per_source.items():
+        verdicts[cid] = next(v for v in _WORST_FIRST if any(label == v for label, _ in found))
+        quote = next((q for label, q in found if label == verdicts[cid] and q), "")
+        if quote and verdicts[cid] != NOT_STATED:
+            verdicts.quotes[cid] = quote
+    return verdicts
 
 
-async def _llm_labels(
+async def _llm_judgements(
     pairs: list[tuple[str, str]], generate: Callable[[str], Awaitable[str]] | None
-) -> list[str]:
+) -> list[tuple[str, str]]:
     if generate is None:
         raise ValueError("citation check 'llm' needs the agent's model")
     prompt = (
         "For each numbered item, decide whether the SOURCE supports the CLAIM. Judge only from the "
         "source text, which may be in a different language than the claim. Reply with one JSON "
-        'object mapping each item number to "supported", "contradicted" or "not_stated", and nothing '
-        "else.\n\n"
+        'object mapping each item number to {"verdict": "supported" | "contradicted" | "not_stated", '
+        '"quote": the shortest passage copied exactly from SOURCE, in its own language, that the '
+        'verdict rests on ("" for not_stated)}, and nothing else.\n\n'
         + "\n\n".join(
             f"{i}. SOURCE: {source}\n   CLAIM: {claim}" for i, (claim, source) in enumerate(pairs, 1)
         )
@@ -119,17 +148,23 @@ async def _llm_labels(
         raise ValueError(f"citation check reply has no JSON object: {reply[:200]!r}")
     answers = json.loads(found.group(0))
     allowed = {SUPPORTED, CONTRADICTED, NOT_STATED}
-    return [
-        label if (label := str(answers.get(str(i), "")).strip().lower()) in allowed else NOT_STATED
-        for i in range(1, len(pairs) + 1)
-    ]
+    judged = []
+    for i in range(1, len(pairs) + 1):
+        answer = answers.get(str(i), "")
+        label, quote = (
+            (answer.get("verdict", ""), answer.get("quote", "")) if isinstance(answer, dict) else (answer, "")
+        )
+        label = str(label).strip().lower()
+        judged.append((label if label in allowed else NOT_STATED, str(quote or "")))
+    return judged
 
 
 _nli: tuple[Any, Any, dict[int, str]] | None = None
 _nli_lock = threading.Lock()
 
 
-def _nli_labels(pairs: list[tuple[str, str]]) -> list[str]:
+def _nli_probs(pairs: list[tuple[str, str]]) -> tuple[list[list[float]], dict[int, str]]:
+    """Class probabilities per (claim, source) pair, and class index -> verdict."""
     global _nli
     with _nli_lock:
         if _nli is None:
@@ -155,5 +190,26 @@ def _nli_labels(pairs: list[tuple[str, str]]) -> list[str]:
             padding=True,
             return_tensors="pt",
         )
-        best = model(**batch).logits.argmax(dim=-1).tolist()
-    return [to_verdict[i] for i in best]
+        probs = model(**batch).logits.softmax(dim=-1).tolist()
+    return probs, to_verdict
+
+
+def _nli_judgements(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Verdict per pair, and for supported / contradicted pairs the source sentence the model
+    rates highest for that verdict."""
+    probs, to_verdict = _nli_probs(pairs)
+    labels = [to_verdict[max(range(len(p)), key=p.__getitem__)] for p in probs]
+    index = {verdict: i for i, verdict in to_verdict.items()}
+    candidates = []  # (pair index, sentence)
+    for k, ((claim, source), label) in enumerate(zip(pairs, labels)):
+        if label != NOT_STATED:
+            candidates += [(k, s.strip()) for s in _SENTENCES.split(source) if s.strip()]
+    quotes = [""] * len(pairs)
+    if candidates:
+        scores, _ = _nli_probs([(pairs[k][0], sentence) for k, sentence in candidates])
+        best: dict[int, float] = {}
+        for (k, sentence), p in zip(candidates, scores):
+            score = p[index[labels[k]]]
+            if score > best.get(k, -1.0):
+                best[k], quotes[k] = score, sentence
+    return list(zip(labels, quotes))
