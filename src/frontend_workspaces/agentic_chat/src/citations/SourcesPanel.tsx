@@ -5,7 +5,8 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { pageLabel, quoteBelowFold, quoteSegments, scopeLabel, supportInfo, type MessageSource } from './types';
+import { SupportIcon, supportInfo } from './SupportIcon';
+import { pageLabel, quoteBelowFold, quoteSegments, scopeLabel, type MessageSource } from './types';
 import './SourcesPanel.css';
 
 /** Split snippet into plain/mark segments for the retrieving-query terms.
@@ -65,7 +66,7 @@ function SupportNote({ support }: { support?: string }) {
   if (!info) return null;
   return (
     <div className="cuga-sources-panel__support">
-      <info.Icon size={14} className={`cuga-support cuga-support--${support}`} aria-hidden="true" />
+      <SupportIcon support={support} />
       {info.label}
     </div>
   );

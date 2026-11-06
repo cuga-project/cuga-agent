@@ -1,5 +1,3 @@
-import { CheckmarkFilled, HelpFilled, Misuse, type CarbonIconType } from '@carbon/icons-react';
-
 export interface MessageSource {
   n: number;
   cite_id: string;
@@ -11,16 +9,12 @@ export interface MessageSource {
   score?: number;
   query?: string;
   // Set when knowledge.citation_check is on: whether this source states what it is cited for.
-  support?: string; // "supported" | "contradicted" | "not_stated"
+  support?: CitationSupport;
   // The passage of this source the verdict rests on, exactly as it appears in the snippet.
   support_quote?: string;
 }
 
-const SUPPORT = new Map([
-  ['supported', { Icon: CheckmarkFilled, label: "Checked: states what it's cited for" }],
-  ['contradicted', { Icon: Misuse, label: "Checked: contradicts what it's cited for" }],
-  ['not_stated', { Icon: HelpFilled, label: "Checked: doesn't state what it's cited for" }],
-]);
+export type CitationSupport = 'supported' | 'contradicted' | 'not_stated';
 
 /** Split a snippet around the passage the citation check quoted; null when it has none. */
 export function quoteSegments(snippet: string, quote?: string): Array<{ text: string; mark: boolean }> | null {
@@ -38,11 +32,6 @@ export function quoteSegments(snippet: string, quote?: string): Array<{ text: st
 export function quoteBelowFold(source: Pick<MessageSource, 'snippet' | 'support_quote'>): boolean {
   const at = source.support_quote ? source.snippet.indexOf(source.support_quote) : -1;
   return at >= 0 && at + (source.support_quote?.length ?? 0) > 350;
-}
-
-/** Icon and label for a source's citation-check verdict; null when it wasn't checked. */
-export function supportInfo(support?: string): { Icon: CarbonIconType; label: string } | null {
-  return (support && SUPPORT.get(support)) || null;
 }
 
 // Formats where "page" is a chunk ordinal, not a real page number. `.docx` is

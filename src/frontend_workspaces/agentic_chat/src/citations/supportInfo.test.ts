@@ -1,6 +1,7 @@
 import { CheckmarkFilled, HelpFilled, Misuse } from '@carbon/icons-react';
 import { describe, expect, it } from 'vitest';
-import { quoteBelowFold, quoteSegments, supportInfo } from './types';
+import { supportInfo, worstSupport } from './SupportIcon';
+import { quoteBelowFold, quoteSegments } from './types';
 
 describe('supportInfo', () => {
   it.each([
@@ -42,5 +43,15 @@ describe('quoteBelowFold', () => {
     expect(quoteBelowFold({ snippet: `the cap is 220 dollars. ${filler}`, support_quote: 'the cap is 220 dollars.' })).toBe(false);
     expect(quoteBelowFold({ snippet: filler, support_quote: 'not there' })).toBe(false);
     expect(quoteBelowFold({ snippet: filler })).toBe(false);
+  });
+});
+
+describe('worstSupport', () => {
+  it('surfaces a contradiction first, then a source that does not state the claim', () => {
+    expect(worstSupport([{ support: 'supported' }, { support: 'not_stated' }, { support: 'contradicted' }])).toBe(
+      'contradicted',
+    );
+    expect(worstSupport([{ support: 'supported' }, { support: 'not_stated' }])).toBe('not_stated');
+    expect(worstSupport([{ support: 'supported' }, {}])).toBeUndefined();
   });
 });
