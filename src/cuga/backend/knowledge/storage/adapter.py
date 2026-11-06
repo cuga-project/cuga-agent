@@ -454,7 +454,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             return
         for attempt in (1, 2):
             try:
-                self._fts_insert(items)
+                self._fts_insert(items, replace=attempt == 2)
                 return
             except Exception as exc:  # noqa: BLE001 — never fail the ingest
                 # SQLite: another adapter may have dropped the table since this one checked it.
@@ -470,7 +470,9 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                         exc,
                     )
 
-    def _fts_insert(self, items: list[tuple[str, dict[str, Any], str]]) -> None:
+    def _fts_insert(self, items: list[tuple[str, dict[str, Any], str]], replace: bool = False) -> None:
+        """``replace``: on a retry, the table may just have been rebuilt from the vector table,
+        which already holds these chunks; delete them first so they are not indexed twice."""
         if self._use_prod:
             self._pg_write_terms(items)
             return
@@ -478,6 +480,10 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         conn = self._fts_connect()
         try:
             self._ensure_fts_table(conn)
+            if replace:
+                conn.executemany(
+                    f"DELETE FROM {self._fts_table()} WHERE chunk_id = ?", [(cid,) for cid, _, _ in items]
+                )
             conn.executemany(
                 f"INSERT INTO {self._fts_table()} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
