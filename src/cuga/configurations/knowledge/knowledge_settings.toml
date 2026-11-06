@@ -7,6 +7,9 @@ citations_enabled = true  # numbered [1] source citations in answers (UI toggle:
 # not_stated) to every source. "off" | "llm" (the agent's model, one extra call per cited answer)
 # | "nli" (local multilingual NLI model, ~1 GB download on first use, no API calls).
 citation_check = "off"
+# Show only citations the check found supported (needs citation_check "llm" or "nli"). If the
+# check fails, the answer is delivered without citations.
+citation_strict = false
 persist_dir = ""  # empty = default <cwd>/.cuga/knowledge/
 # Local: vectors in persist_dir/knowledge_vectors.db; metadata in persist_dir/metadata.db. Prod: storage.postgres_url.
 # Uploaded source files always remain under persist_dir/files/ (filesystem).
