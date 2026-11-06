@@ -26,6 +26,10 @@ CASES = [
     ("Data is backed up once a week [s3].", CONTRADICTED),
     ("Employees get one and a half days of leave every month [s4].", SUPPORTED),
     ("Employees get three days of leave every month [s4].", CONTRADICTED),
+    # framed the way agent answers phrase it
+    ("The Chinese document states that backups run once every day and are encrypted [s3].", SUPPORTED),
+    ("According to the invoice, INV-2026-0009 was issued to Contoso [s1].", SUPPORTED),
+    ("The invoice document states that INV-2026-0009 was issued to Globex [s1].", CONTRADICTED),
 ]
 
 
