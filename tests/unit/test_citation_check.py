@@ -67,17 +67,18 @@ def test_long_sources_are_judged_in_whole_sentence_windows(monkeypatch):
 
 def test_nli_support_needs_a_passage_that_entails_on_its_own(monkeypatch):
     """The real model reports entailment from long boilerplate; a supported verdict must be backed
-    by one or two sentences that entail the claim by themselves."""
+    by one or two sentences that entail the claim by themselves, the shorter when both do."""
     from cuga.backend.knowledge import citation_check as cc
 
-    entail, neutral = [0.9, 0.05, 0.05], [0.05, 0.9, 0.05]
+    def probs(passage: str) -> list[float]:
+        if "36 months" in passage:  # longer passages score a little higher, as the real model does
+            strength = 0.6 + 0.01 * len(passage.split())
+            return [strength, 1 - strength, 0.0]
+        return [0.9, 0.05, 0.05] if len(passage.split()) > 8 else [0.05, 0.9, 0.05]
+
     to_verdict = {0: cc.SUPPORTED, 1: cc.NOT_STATED, 2: cc.CONTRADICTED}
     monkeypatch.setattr(cc, "_nli_model", lambda: (SimpleNamespace(tokenize=str.split), None, to_verdict))
-    monkeypatch.setattr(
-        cc,
-        "_nli_probs",
-        lambda pairs: [entail if len(p.split()) > 8 or "36 months" in p else neutral for _, p in pairs],
-    )
+    monkeypatch.setattr(cc, "_nli_probs", lambda pairs: [probs(p) for _, p in pairs])
     boiler = "Section one covers inspections. Section two covers gloves. Section three covers lights."
     claim = "The warranty lasts 36 months."
     assert cc._nli_judgements([(claim, boiler), (claim, f"{boiler} The warranty lasts 36 months.")]) == [
