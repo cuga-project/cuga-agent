@@ -48,6 +48,13 @@
 .cuga-sources-panel__snippet:not(.is-expanded)::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0;
   height: 32px; background: linear-gradient(transparent, var(--cds-layer-02, #f4f4f4)); }
 .cuga-sources-panel__snippet mark { background: var(--cds-highlight, #d0e2ff); color: inherit; border-radius: 2px; }
+/* the passage the citation check quoted: tinted by its verdict, and underlined so it reads without colour */
+.cuga-sources-panel__snippet mark.cuga-sources-panel__quote { text-decoration: underline; text-decoration-thickness: 2px;
+  text-underline-offset: 2px; }
+.cuga-sources-panel__snippet mark.cuga-sources-panel__quote--supported {
+  background: var(--cds-notification-background-success, #defbe6); text-decoration-color: var(--cds-support-success, #24a148); }
+.cuga-sources-panel__snippet mark.cuga-sources-panel__quote--contradicted {
+  background: var(--cds-notification-background-error, #fff1f1); text-decoration-color: var(--cds-support-error, #da1e28); }
 .cuga-sources-panel__expand { border: none; background: none; cursor: pointer; padding: 4px 0 0;
   font: 400 12px "IBM Plex Sans", system-ui, sans-serif; color: var(--cds-link-primary, #0f62fe); }
 .cuga-sources-panel__expand:hover { text-decoration: underline; }
