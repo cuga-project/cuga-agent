@@ -145,3 +145,18 @@ def test_a_failing_checker_never_blocks_the_answer(thread, monkeypatch):
 
     assert state.final_answer == "Issued to Contoso [1]."
     assert state.sources and "support" not in state.sources[0]
+
+
+@pytest.mark.parametrize(
+    ("claim", "stripped"),
+    [
+        ("The Chinese document states that backups run daily", "backups run daily"),
+        ("According to the policy, passwords expire after 90 days", "passwords expire after 90 days"),
+        ("This invoice shows a total of $4,200", "a total of $4,200"),
+        ("Backups run daily", "Backups run daily"),
+    ],
+)
+def test_attribution_framing_is_removed_before_the_nli_check(claim, stripped):
+    from cuga.backend.knowledge.citation_check import _ATTRIBUTION
+
+    assert _ATTRIBUTION.sub("", claim) == stripped
