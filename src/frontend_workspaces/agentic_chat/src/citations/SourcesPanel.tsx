@@ -41,9 +41,7 @@ function SupportNote({ support }: { support?: string }) {
   if (!info) return null;
   return (
     <div className="cuga-sources-panel__support">
-      <span className={`cuga-support cuga-support--${support}`} aria-hidden="true">
-        {info.mark}
-      </span>
+      <info.Icon size={14} className={`cuga-support cuga-support--${support}`} aria-hidden="true" />
       {info.label}
     </div>
   );
