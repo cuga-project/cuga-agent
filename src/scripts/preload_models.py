@@ -141,7 +141,7 @@ def preload_readi() -> None:
 
     if importlib.util.find_spec("en_core_web_trf") is None:
         raise RuntimeError(
-            "READI requires the en_core_web_trf model installed by the evolve-image dependency group"
+            "READI requires the en_core_web_trf model from deployment/evolve-image-spacy-model.txt"
         )
     detector = build_readi_detector(extractor="spacy", model="en_core_web_trf")
     redacted = redact_text("John Smith lives in London.", detector)
