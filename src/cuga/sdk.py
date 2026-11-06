@@ -2624,9 +2624,13 @@ class CugaAgent:
             engine = KnowledgeEngine(config, chat_generator=CugaChatGenerator())
             # Gate citation-marker resolution on this agent's flag (module-global
             # hook — matches the session-override hook's single-process assumption).
-            from cuga.backend.knowledge.sources import set_agent_citations_lookup
+            from cuga.backend.knowledge.sources import (
+                set_agent_citation_check_lookup,
+                set_agent_citations_lookup,
+            )
 
             set_agent_citations_lookup(lambda: bool(config.citations_enabled))
+            set_agent_citation_check_lookup(lambda: config.citation_check)
             # Use agent_id from app_state if running in server, else "cuga-default"
             _agent_id = "cuga-default"
             try:
