@@ -75,19 +75,30 @@ def terms(text: str) -> list[str]:
     ]
 
 
+# Each group is one more match condition (and on Postgres one more count); a pasted paragraph of
+# Chinese makes hundreds of character pairs. Repeated groups add nothing.
+_MAX_QUERY_GROUPS = 64
+
+
 def query_groups(query: str) -> list[list[str]]:
     """The query's terms in groups: a document matches if it has any group, with that group's
     terms adjacent and in order.
 
     A query word that splits into several terms ("ABC-123", "user@example.com") is one group,
     matched as a phrase. Character pairs from unspaced scripts are separate groups, so a
-    sentence-long Chinese query ranks documents by how many pairs they share.
+    sentence-long Chinese query ranks documents by how many pairs they share. Repeated groups are
+    dropped and at most _MAX_QUERY_GROUPS are kept.
     """
     groups: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
     for word in query.split():
         word_terms = terms(word)
         if len(word_terms) > 1 and not any(_UNSPACED.match(t) for t in word_terms):
-            groups.append(word_terms)
+            candidates = [word_terms]
         else:
-            groups.extend([t] for t in word_terms)
-    return groups
+            candidates = [[t] for t in word_terms]
+        for group in candidates:
+            if tuple(group) not in seen:
+                seen.add(tuple(group))
+                groups.append(group)
+    return groups[:_MAX_QUERY_GROUPS]
