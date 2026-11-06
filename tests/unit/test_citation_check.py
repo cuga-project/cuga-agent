@@ -127,6 +127,25 @@ def test_quotes_are_the_exact_source_passages_the_verdicts_rest_on():
     assert verdicts.quotes == {"s1": "issued to\nContoso."}
 
 
+@pytest.mark.parametrize(
+    ("reply", "quotes"),
+    [
+        ('{"1": {"verdict": "supported", "quote": "issued to\nContoso."}}', {"s1": "issued to\nContoso."}),
+        ('{"1": {"verdict": "supported", "quote": "Invoice "INV-9" was issued"}}', {}),
+        ('{"1": {"verdict": "supported", "quote": "ISSUED TO CONTOSO."}}', {"s1": "issued to\nContoso."}),
+    ],
+    ids=["raw-line-break", "unescaped-quote-mark", "other-case"],
+)
+def test_a_badly_copied_quote_never_costs_the_verdict(reply, quotes):
+    chunks = {"s1": "Invoice INV-9 was issued to\nContoso."}
+
+    async def generate(prompt: str) -> str:
+        return reply
+
+    verdicts = asyncio.run(check_citations("Issued to Contoso [s1].", chunks.get, "llm", generate=generate))
+    assert (verdicts, verdicts.quotes) == ({"s1": "supported"}, quotes)
+
+
 @pytest.mark.parametrize("reply", ["no json at all", '{"1": "maybe"}'], ids=["no-json", "unknown-label"])
 def test_unusable_checker_replies_never_claim_support(reply):
     async def generate(prompt: str) -> str:
@@ -286,6 +305,9 @@ def test_a_failing_checker_never_blocks_the_answer(thread, monkeypatch):
         ),
         ("Per the travel policy, hotels are capped at 220 dollars", "hotels are capped at 220 dollars"),
         ("In 2024, revenue grew", "In 2024, revenue grew"),
+        ("Per month, employees accrue 2 days of leave", "Per month, employees accrue 2 days of leave"),
+        ("Under 5 users, the plan is free", "Under 5 users, the plan is free"),
+        ("Based on usage, fees are $10", "Based on usage, fees are $10"),
         ("Backups run daily", "Backups run daily"),
     ],
 )
