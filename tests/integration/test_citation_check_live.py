@@ -33,6 +33,28 @@ CASES = [
 ]
 
 
+@pytest.mark.parametrize("checker", ["llm", "nli"])
+def test_long_sources_support_only_what_they_state(checker):
+    """A fact past the NLI model's 512 tokens is still seen, and the same long text without the
+    fact supports nothing (whole-text NLI called the boilerplate alone "supported")."""
+    if checker == "nli":
+        pytest.importorskip("transformers")
+    from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
+
+    filler = " ".join(
+        f"Section {i} of the maintenance handbook describes routine inspection steps for the plant floor."
+        for i in range(60)
+    )
+    sources = {"s1": filler + " The QX-7741 pump warranty lasts 36 months from installation.", "s2": filler}
+    claim = "The QX-7741 pump warranty lasts 36 months"
+    generate = CugaChatGenerator().generate if checker == "llm" else None
+    verdicts = asyncio.run(
+        check_citations(f"{claim} [s1]. {claim} [s2].", sources.get, checker, generate=generate)
+    )
+    assert verdicts["s1"] == SUPPORTED
+    assert verdicts["s2"] != SUPPORTED
+
+
 def _verdicts(checker: str, generate=None) -> list[str]:
     async def run():
         return [
