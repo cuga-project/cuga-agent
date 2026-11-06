@@ -2645,8 +2645,9 @@ class CugaAgent:
             )
 
             set_agent_citations_lookup(lambda: bool(config.citations_enabled))
-            set_agent_citation_check_lookup(lambda: config.citation_check)
-            set_agent_citation_strict_lookup(lambda: config.citation_strict)
+            # The engine's live config: apply_knowledge_config can replace it.
+            set_agent_citation_check_lookup(lambda: engine._config.citation_check)
+            set_agent_citation_strict_lookup(lambda: engine._config.citation_strict)
             # Use agent_id from app_state if running in server, else "cuga-default"
             _agent_id = "cuga-default"
             try:
