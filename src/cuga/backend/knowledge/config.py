@@ -509,6 +509,10 @@ class KnowledgeConfig:
     # never triggers a reindex.
     # Per-session override lives in SessionKnowledgeState.overrides (session_provider.py); consumed via citations_enabled_for() in sources.py.
     citations_enabled: bool = True
+    # Check each citation against the source it cites (citation_check.py): "off", "llm" (the
+    # agent's model) or "nli" (local multilingual NLI model). Search-only, excluded from
+    # vector_config_hash like citations_enabled.
+    citation_check: str = "off"
     persist_dir: Path = field(default_factory=lambda: Path.cwd() / ".cuga" / "knowledge")
 
     # Embeddings
@@ -862,6 +866,8 @@ class KnowledgeConfig:
             raise ValueError(
                 f"citations_enabled must be a boolean, got {type(self.citations_enabled).__name__}"
             )
+        if self.citation_check not in ("off", "llm", "nli"):
+            raise ValueError(f"citation_check must be 'off', 'llm' or 'nli', got {self.citation_check!r}")
         # Reranker bounds: top_k_in 1..100; model name is a free string
         # (operators may point at fine-tuned variants); loading-time tests
         # reachability.
@@ -1107,6 +1113,7 @@ class KnowledgeConfig:
             agent_level_enabled=kb.get("agent_level_enabled", True),
             session_level_enabled=kb.get("session_level_enabled", True),
             citations_enabled=kb.get("citations_enabled", True),
+            citation_check=kb.get("citation_check", "off"),
             persist_dir=persist_dir,
             embedding_provider=embeddings.get("provider", "fastembed"),
             embedding_model=profile_embeddings.get("model", embeddings.get("model", "")),
