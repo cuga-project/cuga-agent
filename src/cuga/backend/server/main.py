@@ -346,7 +346,8 @@ async def _rehydrate_citation_ledger(
        cite_ids from the on-disk conversation to keep them collision-free.
        Only runs when the ledger is absent.
     2. begin_turn: scope citations to THIS turn's retrieval, so an id from an
-       earlier turn cannot resolve in this turn's answer.
+       earlier turn resolves in this turn's answer only if the citation check
+       verifies it.
 
     A HITL resume (tool approval, clarifying answer) re-enters ``event_stream``
     but is a CONTINUATION of the same logical turn — the pre-interrupt search
@@ -919,19 +920,16 @@ async def _app_lifespan(app: FastAPI):
             return bool(getattr(config, "citations_enabled", True))
 
         knowledge_sources.set_agent_citations_lookup(_agent_citations_lookup)
+
+        def _live_knowledge_config():
+            """The engine's current config (apply_knowledge_config can replace it), or None."""
+            return getattr(getattr(app_state, "knowledge_engine", None), "_config", None)
+
         knowledge_sources.set_agent_citation_check_lookup(
-            lambda: getattr(
-                getattr(getattr(app_state, "knowledge_engine", None), "_config", None),
-                "citation_check",
-                "off",
-            )
+            lambda: getattr(_live_knowledge_config(), "citation_check", "off")
         )
         knowledge_sources.set_agent_citation_strict_lookup(
-            lambda: getattr(
-                getattr(getattr(app_state, "knowledge_engine", None), "_config", None),
-                "citation_strict",
-                False,
-            )
+            lambda: getattr(_live_knowledge_config(), "citation_strict", False)
         )
 
         # Start background maintenance tasks (cleanup, purge, reconcile)

@@ -2143,6 +2143,17 @@ class CugaAgent:
             raise ValueError(f"citation_check must be 'off', 'llm' or 'nli', got {citation_check!r}")
         self._citation_check = citation_check  # None = follow knowledge settings
         self._citation_strict = citation_strict  # None = follow knowledge settings
+        if citation_strict:
+            # Checked here: the knowledge engine would reject it later, where agent setup only
+            # logs the error and runs without knowledge.
+            from cuga.config import settings
+
+            check = citation_check or (settings.get("knowledge") or {}).get("citation_check", "off")
+            if check == "off":
+                raise ValueError(
+                    "citation_strict needs a citation check: pass citation_check='llm' or 'nli', "
+                    "or set knowledge.citation_check"
+                )
 
         # Skills configuration
         self._enable_skills = enable_skills  # None = auto from settings
@@ -2644,8 +2655,8 @@ class CugaAgent:
                 set_agent_citations_lookup,
             )
 
-            set_agent_citations_lookup(lambda: bool(config.citations_enabled))
             # The engine's live config: apply_knowledge_config can replace it.
+            set_agent_citations_lookup(lambda: bool(engine._config.citations_enabled))
             set_agent_citation_check_lookup(lambda: engine._config.citation_check)
             set_agent_citation_strict_lookup(lambda: engine._config.citation_strict)
             # Use agent_id from app_state if running in server, else "cuga-default"
@@ -3054,8 +3065,9 @@ class CugaAgent:
         run_config["configurable"]["thread_id"] = thread_id
 
         # New user turn (not a HITL resume — that path returns above): scope
-        # citations to this turn's retrieval so an id from an earlier turn can't
-        # resolve in this answer. Mirrors the server's event_stream hook.
+        # citations to this turn's retrieval so an id from an earlier turn resolves
+        # in this answer only if the citation check verifies it. Mirrors the
+        # server's event_stream hook.
         try:
             from cuga.backend.knowledge.sources import begin_ledger_turn
 

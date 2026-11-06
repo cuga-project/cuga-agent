@@ -130,6 +130,15 @@ def test_citation_check_params_reach_the_answer_path(monkeypatch):
         sources.set_agent_citations_lookup(None)
 
 
+def test_strict_without_a_checker_is_rejected_when_the_agent_is_built():
+    """Agent setup only logs a knowledge error, so this must fail before it, not disable knowledge."""
+    from cuga.sdk import CugaAgent
+
+    with pytest.raises(ValueError, match="citation_strict needs a citation check"):
+        CugaAgent(citation_strict=True)
+    CugaAgent(citation_check="nli", citation_strict=True)
+
+
 def test_citation_check_param_rejects_unknown_checkers():
     from cuga.sdk import CugaAgent
 
@@ -244,8 +253,9 @@ def test_the_sdk_reads_the_engines_live_citation_check(monkeypatch):
     )
     agent = CugaAgent(enable_knowledge=True)
     try:
-        agent.knowledge.engine._config = KnowledgeConfig(citation_check="llm")
+        agent.knowledge.engine._config = KnowledgeConfig(citation_check="llm", citations_enabled=False)
         assert sources.effective_citation_check() == "llm"
+        assert sources.effective_citations_enabled(None) is False
     finally:
         sources.set_agent_citation_check_lookup(None)
         sources.set_agent_citation_strict_lookup(None)

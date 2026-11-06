@@ -935,6 +935,19 @@ export function ManagePage() {
       if (out.knowledge) {
         setKnowledgeConfig({ ...DEFAULT_KNOWLEDGE_CONFIG, ...out.knowledge });
         setKnowledgeSavedSnapshot(out.knowledge);
+        if (out.knowledge.citation_check === undefined) {
+          // Saved before the citation check existed: show what the engine runs (it may come from
+          // knowledge_settings.toml), not "Off".
+          api.getKnowledgeSettings()
+            .then((res) => (res.ok ? res.json() : null))
+            .then((sData) => {
+              if (isStale() || !sData?.knowledge) return;
+              const { citation_check, citation_strict } = sData.knowledge;
+              setKnowledgeConfig((prev) => ({ ...prev, citation_check, citation_strict }));
+              setKnowledgeSavedSnapshot((prev) => (prev ? { ...prev, citation_check, citation_strict } : prev));
+            })
+            .catch(() => {});
+        }
       } else {
         // Fallback: load from knowledge engine
         api.getKnowledgeSettings()
