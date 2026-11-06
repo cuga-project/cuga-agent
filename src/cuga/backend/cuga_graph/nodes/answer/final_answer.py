@@ -46,6 +46,19 @@ class HumanInTheLoopHandler:
         self._action_handlers[action_id] = handler
 
 
+_checker_llm = None
+
+
+def _citation_check_llm():
+    """The agent's model for the ``llm`` citation checker, created once."""
+    global _checker_llm
+    if _checker_llm is None:
+        from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
+
+        _checker_llm = CugaChatGenerator()
+    return _checker_llm
+
+
 class FinalAnswerNode(BaseNode):
     def __init__(
         self,
@@ -71,7 +84,7 @@ class FinalAnswerNode(BaseNode):
         self.node = node
 
     @staticmethod
-    def finalize_answer(state, answer_function: Optional[Callable[[str], str]] = None) -> None:
+    async def finalize_answer(state, answer_function: Optional[Callable[[str], str]] = None) -> None:
         """Ordered post-processing of the delivered answer — the single seam
         every terminal branch runs before END:
 
@@ -79,7 +92,8 @@ class FinalAnswerNode(BaseNode):
            (the same strip inside citation resolution then no-ops)
         2. answer function — opt-in deterministic ``(str) -> str``
            (``[final_answer].function`` or an SDK-injected callable)
-        3. citation resolution
+        3. citation check (``knowledge.citation_check``; off by default)
+        4. citation resolution, with each source's ``support`` verdict when checked
 
         The function runs before citation resolution so it never sees
         resolved [n] chips, and its output still gets sanitized/resolved.
@@ -90,11 +104,49 @@ class FinalAnswerNode(BaseNode):
         if "<|" in text:
             state.final_answer = strip_harmony_tokens(text)
         apply_answer_function(state, answer_function)
-        FinalAnswerNode.apply_citation_resolution(state)
+        verdicts = await FinalAnswerNode.check_citation_support(state)
+        FinalAnswerNode.apply_citation_resolution(state, verdicts)
         state.final_answer_finalized = True
 
     @staticmethod
-    def apply_citation_resolution(state) -> None:
+    async def check_citation_support(state) -> dict[str, str]:
+        """Verdict per cite_id (``supported`` / ``contradicted`` / ``not_stated``) from the
+        configured checker; ``{}`` when checking is off, nothing is cited, or the check fails."""
+        try:
+            from cuga.backend.knowledge.sources import (
+                effective_citation_check,
+                effective_citations_enabled,
+                get_ledger,
+                has_citation_markers,
+            )
+
+            mode = effective_citation_check()
+            text = state.final_answer or ""
+            if mode == "off" or not state.thread_id or not has_citation_markers(text):
+                return {}
+            if not effective_citations_enabled(state.thread_id):
+                return {}
+            ledger = get_ledger(state.thread_id, create=False)
+            if ledger is None:
+                return {}
+
+            def source_text(cite_id: str) -> Optional[str]:
+                record = ledger.get(cite_id)  # only ids that will resolve: retrieved this turn
+                return record.text if record is not None and ledger.retrieved_this_turn(cite_id) else None
+
+            from cuga.backend.knowledge.citation_check import check_citations
+
+            generate = _citation_check_llm().generate if mode == "llm" else None
+            verdicts = await check_citations(text, source_text, mode, generate=generate)
+            if verdicts:
+                logger.info("citation check ({}): {}", mode, verdicts)
+            return verdicts
+        except Exception:
+            logger.exception("citation check failed; answer delivered without verdicts")
+            return {}
+
+    @staticmethod
+    def apply_citation_resolution(state, verdicts: Optional[dict] = None) -> None:
         """Rewrite [sN] ledger markers in final_answer into per-message [n]
         display numbers and attach self-contained source snapshots.
 
@@ -143,6 +195,9 @@ class FinalAnswerNode(BaseNode):
                 # markers are removed rather than resolved, sources stay [].
                 ledger = None
             resolved, sources = resolve_citations(text, ledger)
+            for source in sources:
+                if verdicts and source.get("cite_id") in verdicts:
+                    source["support"] = verdicts[source["cite_id"]]
             state.final_answer = resolved
             state.sources = sources
         except Exception:
@@ -163,7 +218,7 @@ class FinalAnswerNode(BaseNode):
             state.sender = name
             final_answer_content = state.chat_agent_messages[-1].content
             state.final_answer = final_answer_content
-            FinalAnswerNode.finalize_answer(state, answer_function)
+            await FinalAnswerNode.finalize_answer(state, answer_function)
             final_answer_output = FinalAnswerOutput(
                 thoughts=["Chat response provided directly."], final_answer=state.final_answer
             )
@@ -174,7 +229,7 @@ class FinalAnswerNode(BaseNode):
         # Handle EntryRouter when final_answer is already set (no apps matched)
         if state.sender == NodeNames.ENTRY_ROUTER and state.final_answer:
             state.sender = name
-            FinalAnswerNode.finalize_answer(state, answer_function)
+            await FinalAnswerNode.finalize_answer(state, answer_function)
             final_answer_output = FinalAnswerOutput(
                 thoughts=[
                     "No applications matched the request. Providing available applications information."
@@ -186,7 +241,7 @@ class FinalAnswerNode(BaseNode):
             return Command(update=state.model_dump(), goto=NodeNames.END)
         if state.sender == NodeNames.CUGA_LITE:
             state.sender = name
-            FinalAnswerNode.finalize_answer(state, answer_function)
+            await FinalAnswerNode.finalize_answer(state, answer_function)
             final_answer_output = FinalAnswerOutput(
                 thoughts=[],
                 final_answer=state.final_answer,
@@ -270,5 +325,5 @@ class FinalAnswerNode(BaseNode):
         # Apply the answer function and resolve [sN] citation markers into
         # display numbers (must be the last mutation of final_answer; chat
         # history above keeps raw ids).
-        FinalAnswerNode.finalize_answer(state, answer_function)
+        await FinalAnswerNode.finalize_answer(state, answer_function)
         final_answer_output.final_answer = state.final_answer
