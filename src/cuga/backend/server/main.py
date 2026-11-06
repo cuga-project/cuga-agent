@@ -919,12 +919,13 @@ async def _app_lifespan(app: FastAPI):
             return bool(getattr(config, "citations_enabled", True))
 
         knowledge_sources.set_agent_citations_lookup(_agent_citations_lookup)
+
+        def _live_knowledge_config():
+            """The engine's current config (apply_knowledge_config can replace it), or None."""
+            return getattr(getattr(app_state, "knowledge_engine", None), "_config", None)
+
         knowledge_sources.set_agent_citation_check_lookup(
-            lambda: getattr(
-                getattr(getattr(app_state, "knowledge_engine", None), "_config", None),
-                "citation_check",
-                "off",
-            )
+            lambda: getattr(_live_knowledge_config(), "citation_check", "off")
         )
 
         # Start background maintenance tasks (cleanup, purge, reconcile)
