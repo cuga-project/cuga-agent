@@ -105,3 +105,31 @@ def test_invoke_empty_answer_fallback_resolves_markers_and_overrides_stale_sourc
     assert result.sources[0]["cite_id"] == "s1"
     assert result.sources[0]["n"] == 1
     assert result.sources[0]["filename"] == "report.pdf"
+
+
+def test_citation_check_params_reach_the_answer_path(monkeypatch):
+    """CugaAgent(citation_check=..., citation_strict=...) override the knowledge settings for
+    this agent, and the final answer reads them."""
+    from cuga.backend.knowledge import sources
+    from cuga.sdk import CugaAgent
+
+    monkeypatch.setattr("cuga.backend.knowledge.engine.KnowledgeEngine", lambda config, **_: config)
+    monkeypatch.setattr(
+        "cuga.backend.knowledge.client.KnowledgeClient", lambda engine, **_: SimpleNamespace(engine=engine)
+    )
+    agent = CugaAgent(enable_knowledge=True, citation_check="nli", citation_strict=True)
+    try:
+        config = agent.knowledge.engine
+        assert (config.citation_check, config.citation_strict) == ("nli", True)
+        assert (sources.effective_citation_check(), sources.effective_citation_strict()) == ("nli", True)
+    finally:
+        sources.set_agent_citation_check_lookup(None)
+        sources.set_agent_citation_strict_lookup(None)
+        sources.set_agent_citations_lookup(None)
+
+
+def test_citation_check_param_rejects_unknown_checkers():
+    from cuga.sdk import CugaAgent
+
+    with pytest.raises(ValueError, match="citation_check must be"):
+        CugaAgent(citation_check="reranker")
