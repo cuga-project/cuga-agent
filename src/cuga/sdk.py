@@ -2143,6 +2143,17 @@ class CugaAgent:
             raise ValueError(f"citation_check must be 'off', 'llm' or 'nli', got {citation_check!r}")
         self._citation_check = citation_check  # None = follow knowledge settings
         self._citation_strict = citation_strict  # None = follow knowledge settings
+        if citation_strict:
+            # Checked here: the knowledge engine would reject it later, where agent setup only
+            # logs the error and runs without knowledge.
+            from cuga.config import settings
+
+            check = citation_check or (settings.get("knowledge") or {}).get("citation_check", "off")
+            if check == "off":
+                raise ValueError(
+                    "citation_strict needs a citation check: pass citation_check='llm' or 'nli', "
+                    "or set knowledge.citation_check"
+                )
 
         # Skills configuration
         self._enable_skills = enable_skills  # None = auto from settings
