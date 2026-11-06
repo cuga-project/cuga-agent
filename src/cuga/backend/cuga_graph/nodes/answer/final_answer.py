@@ -208,7 +208,9 @@ class FinalAnswerNode(BaseNode):
                 # Feature off (agent flag or session override): strip mode —
                 # markers are removed rather than resolved, sources stay [].
                 ledger = None
-            verified = {cid for cid, verdict in (verdicts or {}).items() if verdict == "supported"}
+            from cuga.backend.knowledge.citation_check import SUPPORTED
+
+            verified = {cid for cid, verdict in (verdicts or {}).items() if verdict == SUPPORTED}
             resolved, sources = resolve_citations(text, ledger, verified)
             for source in sources:
                 if verdicts and source.get("cite_id") in verdicts:
