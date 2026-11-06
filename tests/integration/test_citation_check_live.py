@@ -4,10 +4,14 @@ NLI model (~1 GB) on first use."""
 
 import asyncio
 import re
+from types import SimpleNamespace
 
 import pytest
 
+from cuga.backend.cuga_graph.nodes.answer.final_answer import FinalAnswerNode
+from cuga.backend.knowledge import sources
 from cuga.backend.knowledge.citation_check import CONTRADICTED, SUPPORTED, check_citations
+from cuga.backend.knowledge.sources import _reset_all_ledgers_for_tests, get_ledger
 
 pytestmark = pytest.mark.e2e
 
@@ -60,3 +64,36 @@ def test_llm_checker_separates_supported_from_contradicted():
 def test_nli_checker_separates_supported_from_contradicted():
     pytest.importorskip("transformers")
     _assert_separates(_verdicts("nli"))
+
+
+@pytest.mark.parametrize("checker", ["llm", "nli"])
+def test_a_follow_up_keeps_a_supported_earlier_citation_and_strips_a_misattributed_one(checker, monkeypatch):
+    if checker == "nli":
+        pytest.importorskip("transformers")
+    _reset_all_ledgers_for_tests()
+    ledger = get_ledger("t-live")
+    ledger.begin_turn()
+    for key in ("s1", "s3"):  # the invoice and the Chinese backup policy become s1 and s2
+        ledger.register(
+            SimpleNamespace(
+                text=SOURCES[key], filename=f"{key}.txt", page=1, scope="agent", score=0.9, section_path=""
+            ),
+            query="q",
+        )
+    ledger.begin_turn()  # the follow-up answers without searching again
+    monkeypatch.setattr(sources, "_agent_flag_lookup", lambda: True)
+    sources.set_agent_citation_check_lookup(lambda: checker)
+    state = SimpleNamespace(
+        final_answer="INV-2026-0009 was issued to Contoso [s1]. Passwords are rotated every 90 days [s2].",
+        thread_id="t-live",
+        sources=[],
+        final_answer_finalized=False,
+    )
+    try:
+        asyncio.run(FinalAnswerNode.finalize_answer(state))
+    finally:
+        sources.set_agent_citation_check_lookup(None)
+
+    assert [(s["filename"], s["support"]) for s in state.sources] == [("s1.txt", SUPPORTED)]
+    assert state.final_answer.startswith("INV-2026-0009 was issued to Contoso [1].")
+    assert "[2]" not in state.final_answer
