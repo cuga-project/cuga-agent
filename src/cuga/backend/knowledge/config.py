@@ -513,6 +513,9 @@ class KnowledgeConfig:
     # agent's model) or "nli" (local multilingual NLI model). Search-only, excluded from
     # vector_config_hash like citations_enabled.
     citation_check: str = "off"
+    # Show only the citations the check found supported, instead of every citation with its
+    # verdict. Needs citation_check "llm" or "nli". If the check fails, citations are withheld.
+    citation_strict: bool = False
     persist_dir: Path = field(default_factory=lambda: Path.cwd() / ".cuga" / "knowledge")
 
     # Embeddings
@@ -868,6 +871,10 @@ class KnowledgeConfig:
             )
         if self.citation_check not in ("off", "llm", "nli"):
             raise ValueError(f"citation_check must be 'off', 'llm' or 'nli', got {self.citation_check!r}")
+        if not isinstance(self.citation_strict, bool):
+            raise ValueError(f"citation_strict must be a boolean, got {type(self.citation_strict).__name__}")
+        if self.citation_strict and self.citation_check == "off":
+            raise ValueError("citation_strict needs citation_check 'llm' or 'nli'")
         # Reranker bounds: top_k_in 1..100; model name is a free string
         # (operators may point at fine-tuned variants); loading-time tests
         # reachability.
@@ -1114,6 +1121,7 @@ class KnowledgeConfig:
             session_level_enabled=kb.get("session_level_enabled", True),
             citations_enabled=kb.get("citations_enabled", True),
             citation_check=kb.get("citation_check", "off"),
+            citation_strict=kb.get("citation_strict", False),
             persist_dir=persist_dir,
             embedding_provider=embeddings.get("provider", "fastembed"),
             embedding_model=profile_embeddings.get("model", embeddings.get("model", "")),
