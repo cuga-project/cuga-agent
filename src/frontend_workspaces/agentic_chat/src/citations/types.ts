@@ -12,6 +12,8 @@ export interface MessageSource {
   query?: string;
   // Set when knowledge.citation_check is on: whether this source states what it is cited for.
   support?: string; // "supported" | "contradicted" | "not_stated"
+  // The passage of this source the verdict rests on, exactly as it appears in the snippet.
+  support_quote?: string;
 }
 
 const SUPPORT = new Map([
@@ -19,6 +21,17 @@ const SUPPORT = new Map([
   ['contradicted', { Icon: Misuse, label: "Checked: contradicts what it's cited for" }],
   ['not_stated', { Icon: HelpFilled, label: "Checked: doesn't state what it's cited for" }],
 ]);
+
+/** Split a snippet around the passage the citation check quoted; null when it has none. */
+export function quoteSegments(snippet: string, quote?: string): Array<{ text: string; mark: boolean }> | null {
+  const at = quote ? snippet.indexOf(quote) : -1;
+  if (!quote || at < 0) return null;
+  return [
+    { text: snippet.slice(0, at), mark: false },
+    { text: quote, mark: true },
+    { text: snippet.slice(at + quote.length), mark: false },
+  ];
+}
 
 /** Icon and label for a source's citation-check verdict; null when it wasn't checked. */
 export function supportInfo(support?: string): { Icon: CarbonIconType; label: string } | null {
