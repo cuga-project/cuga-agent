@@ -214,8 +214,9 @@ def test_the_sdk_reads_the_engines_live_citation_check(monkeypatch):
     )
     agent = CugaAgent(enable_knowledge=True)
     try:
-        agent.knowledge.engine._config = KnowledgeConfig(citation_check="llm")
+        agent.knowledge.engine._config = KnowledgeConfig(citation_check="llm", citations_enabled=False)
         assert sources.effective_citation_check() == "llm"
+        assert sources.effective_citations_enabled(None) is False
     finally:
         sources.set_agent_citation_check_lookup(None)
         sources.set_agent_citation_strict_lookup(None)

@@ -132,7 +132,8 @@ class SourceLedger:
 
         Rehydration (restore) runs before this and deliberately does NOT add to
         the turn set, so a rehydrated prior-turn id stays out of scope until it
-        is actually re-retrieved this turn.
+        is actually re-retrieved this turn, or the citation check verifies it
+        (resolve_citations' ``verified``).
         """
         with self._lock:
             self._turn_ids.clear()

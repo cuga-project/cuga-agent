@@ -2632,8 +2632,8 @@ class CugaAgent:
                 set_agent_citations_lookup,
             )
 
-            set_agent_citations_lookup(lambda: bool(config.citations_enabled))
             # The engine's live config: apply_knowledge_config can replace it.
+            set_agent_citations_lookup(lambda: bool(engine._config.citations_enabled))
             set_agent_citation_check_lookup(lambda: engine._config.citation_check)
             set_agent_citation_strict_lookup(lambda: engine._config.citation_strict)
             # Use agent_id from app_state if running in server, else "cuga-default"
@@ -3042,8 +3042,9 @@ class CugaAgent:
         run_config["configurable"]["thread_id"] = thread_id
 
         # New user turn (not a HITL resume — that path returns above): scope
-        # citations to this turn's retrieval so an id from an earlier turn can't
-        # resolve in this answer. Mirrors the server's event_stream hook.
+        # citations to this turn's retrieval so an id from an earlier turn resolves
+        # in this answer only if the citation check verifies it. Mirrors the
+        # server's event_stream hook.
         try:
             from cuga.backend.knowledge.sources import begin_ledger_turn
 
