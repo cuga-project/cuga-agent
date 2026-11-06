@@ -179,3 +179,50 @@ def test_invoke_empty_answer_fallback_checks_citations_like_the_final_answer(mon
 
     assert result.answer == "Issued to Contoso [1]."
     assert [(s["filename"], s["support"]) for s in result.sources] == [("inv.txt", "supported")]
+
+
+def test_invoke_empty_answer_fallback_honours_strict_mode(monkeypatch):
+    """Strict mode holds on the fallback path too: a contradicted citation is stripped."""
+    import json
+
+    from cuga.backend.cuga_graph.nodes.answer import final_answer
+    from cuga.backend.knowledge import sources
+    from cuga.sdk import CugaAgent
+
+    agent = CugaAgent(auto_load_policies=False)
+
+    async def _noop_initialized():
+        return None
+
+    async def _contradicted(prompt: str) -> str:
+        return json.dumps({"1": "contradicted"})
+
+    monkeypatch.setattr(agent, "_ensure_initialized", _noop_initialized)
+    monkeypatch.setattr(final_answer, "_citation_check_llm", lambda: SimpleNamespace(generate=_contradicted))
+    sources.set_agent_citation_check_lookup(lambda: "llm")
+    sources.set_agent_citation_strict_lookup(lambda: True)
+    thread_id = "sdk-fallback-strict"
+    chunk = SimpleNamespace(
+        text="Invoice INV-9 was issued to Contoso.",
+        filename="inv.txt",
+        page=1,
+        scope="agent",
+        score=0.9,
+        section_path="",
+    )
+    agent._compiled_graph = _StubGraph(
+        {
+            "final_answer": "",
+            "chat_messages": [AIMessage(content="Issued to Globex [s1].")],
+            "variables_storage": {},
+            "tool_calls": [],
+        },
+        on_ainvoke=lambda: get_ledger(thread_id).register(chunk, query="q"),
+    )
+    try:
+        result = asyncio.run(agent.invoke("question", thread_id=thread_id))
+    finally:
+        sources.set_agent_citation_check_lookup(None)
+        sources.set_agent_citation_strict_lookup(None)
+
+    assert (result.answer, result.sources) == ("Issued to Globex .", [])
