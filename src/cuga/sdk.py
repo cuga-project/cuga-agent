@@ -133,9 +133,11 @@ class InvokeResult(BaseModel):
     sources: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="Citation sources for the answer: [{n, cite_id, filename, page, "
-        "section_path, scope, snippet, score, query}] — populated when knowledge "
+        "section_path, scope, snippet, score, query, support}] — populated when knowledge "
         "citations are enabled and the answer cites retrieved chunks. "
-        "section_path and score are optional (omitted when absent). Stream "
+        "section_path and score are optional (omitted when absent); support "
+        "(supported | contradicted | not_stated) is present when knowledge.citation_check "
+        "checked the source. Stream "
         "consumers: the FinalAnswerAgent node update carries both final_answer "
         "and sources.",
     )
