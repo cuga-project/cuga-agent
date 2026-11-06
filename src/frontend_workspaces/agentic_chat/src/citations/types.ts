@@ -8,6 +8,19 @@ export interface MessageSource {
   snippet: string;
   score?: number;
   query?: string;
+  // Set when knowledge.citation_check is on: whether this source states what it is cited for.
+  support?: string; // "supported" | "contradicted" | "not_stated"
+}
+
+const SUPPORT = new Map([
+  ['supported', { mark: '✓', label: "Checked: states what it's cited for" }],
+  ['contradicted', { mark: '✗', label: "Checked: contradicts what it's cited for" }],
+  ['not_stated', { mark: '?', label: "Checked: doesn't state what it's cited for" }],
+]);
+
+/** Mark and label for a source's citation-check verdict; null when it wasn't checked. */
+export function supportInfo(support?: string): { mark: string; label: string } | null {
+  return (support && SUPPORT.get(support)) || null;
 }
 
 // Formats where "page" is a chunk ordinal, not a real page number. `.docx` is
