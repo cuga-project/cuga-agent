@@ -36,6 +36,10 @@ pytestmark = pytest.mark.unit
             "छुट्टी मिलती है [s1]। वेतन हर महीने मिलता है [s2]।",
             [("छुट्टी मिलती है", ["s1"]), ("वेतन हर महीने मिलता है", ["s2"])],
         ),
+        (
+            "Vans charge only at the depot. [fleet_handbook.txt, page 2] [s1]",
+            [("Vans charge only at the depot.", ["s1"])],
+        ),
     ],
     ids=[
         "marker-before-period",
@@ -45,6 +49,7 @@ pytestmark = pytest.mark.unit
         "code-span",
         "bullets",
         "hindi-danda",
+        "reference-before-marker",
     ],
 )
 def test_claims_are_the_sentences_markers_belong_to(text, expected):
