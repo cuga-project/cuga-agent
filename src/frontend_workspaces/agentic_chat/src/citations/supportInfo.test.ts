@@ -1,6 +1,6 @@
 import { CheckmarkFilled, HelpFilled, Misuse } from '@carbon/icons-react';
 import { describe, expect, it } from 'vitest';
-import { supportInfo } from './types';
+import { supportInfo, worstSupport } from './SupportIcon';
 
 describe('supportInfo', () => {
   it.each([
@@ -15,5 +15,15 @@ describe('supportInfo', () => {
     expect(supportInfo(undefined)).toBeNull();
     expect(supportInfo('maybe')).toBeNull();
     expect(supportInfo('constructor')).toBeNull();
+  });
+});
+
+describe('worstSupport', () => {
+  it('surfaces a contradiction first, then a source that does not state the claim', () => {
+    expect(worstSupport([{ support: 'supported' }, { support: 'not_stated' }, { support: 'contradicted' }])).toBe(
+      'contradicted',
+    );
+    expect(worstSupport([{ support: 'supported' }, { support: 'not_stated' }])).toBe('not_stated');
+    expect(worstSupport([{ support: 'supported' }, {}])).toBeUndefined();
   });
 });
