@@ -21,7 +21,7 @@ import logging
 import re
 import threading
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -84,9 +84,10 @@ class SourceLedger:
         self._counter = 0
         self._max = max_records
         self._lock = threading.Lock()
-        # cite_ids retrieved during the CURRENT turn. A marker only resolves to
-        # a source retrieved this turn; ids from earlier turns (or rehydrated
-        # from history) are stripped like a miss. Cleared by begin_turn().
+        # cite_ids retrieved during the CURRENT turn. A marker resolves to a
+        # source retrieved this turn; ids from earlier turns (or rehydrated
+        # from history) are stripped like a miss unless the citation check
+        # verified them (resolve_citations' ``verified``). Cleared by begin_turn().
         self._turn_ids: set[str] = set()
 
     def __len__(self) -> int:
@@ -305,11 +306,15 @@ def _warn_unsupported_markers(text: str) -> None:
             return
 
 
-def resolve_citations(text: str, ledger: SourceLedger | None) -> tuple[str, list[dict[str, Any]]]:
+def resolve_citations(
+    text: str, ledger: SourceLedger | None, verified: Collection[str] = ()
+) -> tuple[str, list[dict[str, Any]]]:
     """Rewrite ``[sN]`` markers into per-message display numbers ``[k]``.
 
     - Display numbers are assigned in order of first appearance.
     - Ids missing from the ledger (hallucinated, or evicted) are stripped.
+    - Ids from an earlier turn are stripped unless listed in ``verified``: the
+      citation check found that the cited source supports its claim.
     - Code fences (``` or ~~~, including unterminated/truncated ones),
       double-backtick inline spans, and single-backtick inline spans are
       left byte-identical.
@@ -336,17 +341,21 @@ def resolve_citations(text: str, ledger: SourceLedger | None) -> tuple[str, list
             if not cite_id:
                 continue
             record = ledger.get(cite_id) if ledger is not None else None
-            # A marker resolves only when its source was retrieved THIS turn.
-            # Absent (hallucinated/evicted) OR from an earlier turn both strip:
-            # citing text whose provenance we can't tie to this answer is worse
-            # than no citation. Strip-mode (ledger is None) removes silently by
-            # design. Split the two live-ledger strip reasons in the log so
-            # monitoring can tell model hallucination from stale-id reuse.
+            # A marker resolves when its source was retrieved THIS turn, or when
+            # the citation check verified that the cited source supports the
+            # claim. Otherwise absent (hallucinated/evicted) and unverified
+            # earlier-turn ids both strip: citing text whose provenance we can't
+            # tie to this answer is worse than no citation. Strip-mode (ledger
+            # is None) removes silently by design. Split the two live-ledger
+            # strip reasons in the log so monitoring can tell model
+            # hallucination from stale-id reuse.
             in_ledger = record is not None
-            this_turn = in_ledger and ledger is not None and ledger.retrieved_this_turn(cite_id)
-            if not this_turn:
+            resolves = in_ledger and (ledger.retrieved_this_turn(cite_id) or cite_id in verified)
+            if not resolves:
                 if ledger is not None and cite_id not in warned:
-                    reason = "not from this turn's retrieval" if in_ledger else "not in ledger"
+                    reason = (
+                        "not from this turn's retrieval and not verified" if in_ledger else "not in ledger"
+                    )
                     logger.warning("citation marker [%s] %s — stripped", cite_id, reason)
                     warned.add(cite_id)
                 continue
