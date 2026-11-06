@@ -1984,6 +1984,8 @@ class CugaAgent:
         filesystem_sync: Optional[bool] = None,
         enable_knowledge: Optional[bool] = None,
         enable_citations: Optional[bool] = None,
+        citation_check: Optional[str] = None,
+        citation_strict: Optional[bool] = None,
         enable_skills: Optional[bool] = None,
         skills_folder: Optional[str] = None,
         shortlister: Optional["Shortlister"] = None,
@@ -2009,6 +2011,8 @@ class CugaAgent:
             filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
             enable_knowledge: If True, enable knowledge tools; False to disable; None to auto-detect from settings
             enable_citations: None = follow knowledge settings; True/False override knowledge.citations_enabled for this agent instance
+            citation_check: None = follow knowledge settings; "off", "llm" (the agent's model) or "nli" (local model) checks each citation against its source
+            citation_strict: None = follow knowledge settings; True shows only citations the check found supported (needs a citation_check)
             enable_skills: If True, enable agent skills (SKILL.md / load_skill). None = auto from settings.
             skills_folder: Workspace root or `.cuga` folder containing `skills/`. Defaults to cwd / CUGA_FOLDER env var.
             shortlister: How to shrink a large tool set before the model sees it, e.g.
@@ -2133,6 +2137,10 @@ class CugaAgent:
         # Knowledge configuration
         self._enable_knowledge = enable_knowledge  # None = auto from settings
         self._enable_citations = enable_citations  # None = follow knowledge settings
+        if citation_check not in (None, "off", "llm", "nli"):
+            raise ValueError(f"citation_check must be 'off', 'llm' or 'nli', got {citation_check!r}")
+        self._citation_check = citation_check  # None = follow knowledge settings
+        self._citation_strict = citation_strict  # None = follow knowledge settings
 
         # Skills configuration
         self._enable_skills = enable_skills  # None = auto from settings
@@ -2617,6 +2625,10 @@ class CugaAgent:
             config = KnowledgeConfig.from_settings(settings)
             if self._enable_citations is not None:
                 config.citations_enabled = self._enable_citations
+            if self._citation_check is not None:
+                config.citation_check = self._citation_check
+            if self._citation_strict is not None:
+                config.citation_strict = self._citation_strict  # KnowledgeEngine validates the combination
             from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
 
             # Inject cuga's LLM for optional query transformation (multi_query / HyDE);
