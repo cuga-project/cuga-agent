@@ -3040,8 +3040,9 @@ class CugaAgent:
         run_config["configurable"]["thread_id"] = thread_id
 
         # New user turn (not a HITL resume — that path returns above): scope
-        # citations to this turn's retrieval so an id from an earlier turn can't
-        # resolve in this answer. Mirrors the server's event_stream hook.
+        # citations to this turn's retrieval so an id from an earlier turn resolves
+        # in this answer only if the citation check verifies it. Mirrors the
+        # server's event_stream hook.
         try:
             from cuga.backend.knowledge.sources import begin_ledger_turn
 

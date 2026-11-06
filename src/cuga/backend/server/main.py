@@ -346,7 +346,8 @@ async def _rehydrate_citation_ledger(
        cite_ids from the on-disk conversation to keep them collision-free.
        Only runs when the ledger is absent.
     2. begin_turn: scope citations to THIS turn's retrieval, so an id from an
-       earlier turn cannot resolve in this turn's answer.
+       earlier turn resolves in this turn's answer only if the citation check
+       verifies it.
 
     A HITL resume (tool approval, clarifying answer) re-enters ``event_stream``
     but is a CONTINUATION of the same logical turn — the pre-interrupt search
