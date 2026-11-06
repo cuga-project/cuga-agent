@@ -67,6 +67,26 @@ def test_nli_checker_separates_supported_from_contradicted():
 
 
 @pytest.mark.parametrize("checker", ["llm", "nli"])
+def test_supported_verdicts_quote_their_source(checker):
+    """The quote is a passage of the cited source itself, in its own language (Chinese, Hindi)."""
+    if checker == "nli":
+        pytest.importorskip("transformers")
+    from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
+
+    generate = CugaChatGenerator().generate if checker == "llm" else None
+    supported = [claim for claim, want in CASES if want == SUPPORTED]
+    quoted = 0
+    for claim in supported:
+        cid = re.search(r"\[(s\d+)\]", claim).group(1)
+        verdicts = asyncio.run(check_citations(claim, SOURCES.get, checker, generate=generate))
+        if verdicts.get(cid) == SUPPORTED:
+            quote = verdicts.quotes.get(cid, "")
+            assert quote in SOURCES[cid], (claim, quote)
+            quoted += bool(quote)
+    assert quoted >= len(supported) - 1
+
+
+@pytest.mark.parametrize("checker", ["llm", "nli"])
 @pytest.mark.parametrize("case", ["follow-up", "strict"])
 def test_a_supported_citation_is_kept_and_a_misattributed_one_stripped(case, checker, monkeypatch):
     """follow-up: both citations come from the previous turn. strict: both from this turn, with
