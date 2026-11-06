@@ -36,11 +36,13 @@ _MAX_CLAIM_CHARS = 400
 _BOUNDARY = re.compile(r"[.!?](?=\s)|[。！？]|\n")
 _TERMINATORS = ".!?。！？"
 _SENTENCES = re.compile(r"(?<=[.!?])\s+|(?<=[。！？])|\n+")
-# A leading attribution ("The Chinese document states that ...", "According to the policy, ...").
+# A leading attribution ("The Chinese document states that ...", "According to the policy, ...",
+# "Under the leave rules, ..."). Not a bare "In ...,": "In 2024, revenue grew" is part of the claim.
 # NLI models judge the framed sentence as a claim about the document and answer "not stated";
 # the LLM checker reads past it. English only: for other languages prefer the llm checker.
 _ATTRIBUTION = re.compile(
-    r"^(?:according to [^,]{1,80},\s*|(?:the|this|that)\s+(?:[\w-]+\s+){0,3}"
+    r"^(?:(?:according to|under|per|based on|as (?:stated|described|set out) in) [^,]{1,80},\s*"
+    r"|(?:the|this|that)\s+(?:[\w-]+\s+){0,3}"
     r"(?:document|file|source|text|policy|report|record|invoice|page|section|note|article)s?\s+"
     r"(?:states?|says?|mentions?|notes?|indicates?|explains?|shows?|reports?|confirms?|specifies?)"
     r"\s+(?:that\s+)?)",
