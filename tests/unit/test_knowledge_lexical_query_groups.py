@@ -1,0 +1,23 @@
+"""Keyword query groups: repeated groups are dropped and long queries are capped."""
+
+import pytest
+
+from cuga.backend.knowledge import lexical
+
+pytestmark = pytest.mark.unit
+
+
+def test_repeated_words_make_one_group():
+    assert lexical.query_groups("backup the backup ABC-123 abc-123") == [["backup"], ["the"], ["abc", "123"]]
+
+
+def test_a_pasted_chinese_paragraph_is_capped():
+    paragraph = "".join(chr(0x4E00 + i) for i in range(200))  # 200 distinct characters, 199 pairs
+    groups = lexical.query_groups(paragraph)
+    assert len(groups) == lexical._MAX_QUERY_GROUPS
+    assert len({tuple(g) for g in groups}) == len(groups)
+
+
+def test_repeated_chinese_pairs_are_counted_once():
+    sentence = "我们的数据备份策略每天执行一次"
+    assert lexical.query_groups(" ".join([sentence] * 5)) == lexical.query_groups(sentence)
