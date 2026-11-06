@@ -128,6 +128,27 @@ def test_checked_answer_carries_support_on_each_source(thread, monkeypatch):
     ]
 
 
+def test_an_earlier_turn_citation_is_kept_only_when_verified(thread, monkeypatch):
+    thread.begin_turn()  # a follow-up answered from the previous turn's search results
+    sources.set_agent_citation_check_lookup(lambda: "llm")
+    monkeypatch.setattr(
+        final_answer,
+        "_citation_check_llm",
+        lambda: SimpleNamespace(generate=_fake_llm({1: "supported", 2: "contradicted"})),
+    )
+    state = _finalize("Issued to Contoso [s1]. Backups run weekly [s2].")
+
+    assert state.final_answer == "Issued to Contoso [1]. Backups run weekly ."
+    assert [(s["filename"], s["support"]) for s in state.sources] == [("Invoic.txt", "supported")]
+
+
+def test_earlier_turn_citations_strip_when_checking_is_off(thread):
+    thread.begin_turn()
+    sources.set_agent_citation_check_lookup(lambda: "off")
+    state = _finalize("Issued to Contoso [s1].")
+    assert (state.final_answer, state.sources) == ("Issued to Contoso .", [])
+
+
 def test_check_off_leaves_sources_unchanged(thread):
     sources.set_agent_citation_check_lookup(lambda: "off")
     state = _finalize("Issued to Contoso [s1].")
