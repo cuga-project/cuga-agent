@@ -1,4 +1,5 @@
 import json
+import asyncio
 from typing import Literal, Dict, Callable, Optional
 
 from langchain_core.messages import AIMessage
@@ -47,6 +48,8 @@ class HumanInTheLoopHandler:
 
 
 _checker_llm = None
+# A slow checker (a hung model call, the NLI model's first download) never holds up the answer.
+_CITATION_CHECK_TIMEOUT_S = 30.0
 
 
 def _citation_check_llm():
@@ -139,10 +142,19 @@ class FinalAnswerNode(BaseNode):
             from cuga.backend.knowledge.citation_check import check_citations
 
             generate = _citation_check_llm().generate if mode == "llm" else None
-            verdicts = await check_citations(text, source_text, mode, generate=generate)
+            verdicts = await asyncio.wait_for(
+                check_citations(text, source_text, mode, generate=generate), _CITATION_CHECK_TIMEOUT_S
+            )
             if verdicts:
                 logger.info("citation check ({}): {}", mode, verdicts)
             return verdicts
+        except TimeoutError:
+            logger.warning(
+                "citation check ({}) took over {}s; answer delivered without verdicts",
+                mode,
+                _CITATION_CHECK_TIMEOUT_S,
+            )
+            return {}
         except Exception:
             logger.exception("citation check failed; answer delivered without verdicts")
             return {}
@@ -264,8 +276,11 @@ class FinalAnswerNode(BaseNode):
                 # Forward-only: the sub-agent's FinalAnswerNode already ran
                 # finalize_answer (function applied, citations resolved), so
                 # re-applying the function here would feed it resolved [n]
-                # chips. Citation resolution alone is idempotent by design.
-                FinalAnswerNode.apply_citation_resolution(state)
+                # chips. Citation resolution alone is idempotent by design. An answer that still
+                # carries [sN] markers is checked first, as finalize_answer would.
+                FinalAnswerNode.apply_citation_resolution(
+                    state, await FinalAnswerNode.check_citation_support(state)
+                )
                 state.final_answer_finalized = True
                 final_answer_output = FinalAnswerOutput(
                     thoughts=[],
