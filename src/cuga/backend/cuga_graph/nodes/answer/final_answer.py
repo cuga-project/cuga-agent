@@ -199,9 +199,12 @@ class FinalAnswerNode(BaseNode):
                 ledger = None
             verified = {cid for cid, verdict in (verdicts or {}).items() if verdict == "supported"}
             resolved, sources = resolve_citations(text, ledger, verified, strict=effective_citation_strict())
+            quotes = getattr(verdicts, "quotes", {})
             for source in sources:
                 if verdicts and source.get("cite_id") in verdicts:
                     source["support"] = verdicts[source["cite_id"]]
+                if source.get("cite_id") in quotes:
+                    source["support_quote"] = quotes[source["cite_id"]]
             state.final_answer = resolved
             state.sources = sources
         except Exception:
