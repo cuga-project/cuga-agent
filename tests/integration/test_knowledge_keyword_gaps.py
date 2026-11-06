@@ -262,32 +262,24 @@ def test_deleting_a_document_keeps_other_tenants_keyword_rows(make_adapter, monk
 
 @pytest.mark.unit
 def test_an_old_keyword_table_is_rebuilt_even_when_its_name_mentions_the_terms_column(tmp_path, monkeypatch):
-    """The table's columns decide whether it is current, not its CREATE text, which holds the name.
-    Left unmigrated, Hindi is unsearchable (old tokenizer) and new chunks get no keyword rows."""
+    """The table's columns decide whether it is current, not its CREATE text, which holds the name."""
     import sqlite3
+
+    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
 
     _set_tenant(monkeypatch, "tenant_a")
     collection = unique_collection("hr_terms_v1")
-    db_path = tmp_path / "kb.db"
-    with sqlite3.connect(db_path) as conn:  # the schema shipped before the shared tokenizer
-        conn.execute(
-            f"CREATE VIRTUAL TABLE {collection}__fts USING fts5(chunk_id UNINDEXED, source UNINDEXED, "
-            "filename UNINDEXED, page UNINDEXED, section_path UNINDEXED, chunk_text, "
-            "tokenize=\"unicode61 remove_diacritics 2 tokenchars '._@-+'\")"
-        )
-        conn.execute(
-            f"INSERT INTO {collection}__fts VALUES (?, ?, ?, ?, ?, ?)",
-            ("c1", f"{collection}/hi.txt", "hi.txt", 1, "", CORPUS["hi"]),
-        )
-    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
+    db_path = str(tmp_path / "kb.db")
+    first = StorageBackedKnowledgeVectorStore(collection, DeterministicEmbeddings(), local_db_path=db_path)
+    hi = _add(first, collection, "hi", CORPUS["hi"])
+    with sqlite3.connect(db_path) as conn:  # the index an older release left
+        conn.execute(f"DROP TABLE {collection}__fts")
+        conn.execute(f"CREATE VIRTUAL TABLE {collection}__fts USING fts5({OLD_FTS_SCHEMAS['unicode61']})")
+    fresh = StorageBackedKnowledgeVectorStore(collection, DeterministicEmbeddings(), local_db_path=db_path)
+    new = _add(fresh, collection, "new", "Invoice ZQX-4417 was paid.")
 
-    adapter = StorageBackedKnowledgeVectorStore(
-        collection, DeterministicEmbeddings(), local_db_path=str(db_path)
-    )
-    new = _add(adapter, collection, "new", "Invoice ZQX-4417 was paid.")
-
-    assert _hit_sources(adapter, QUERIES["hi"]) == {f"{collection}/hi.txt"}
-    assert _hit_sources(adapter, "ZQX-4417") == {new}
+    assert _hit_sources(fresh, QUERIES["hi"]) == {hi}
+    assert _hit_sources(fresh, "ZQX-4417") == {new}
 
 
 @pytest.mark.unit
@@ -309,6 +301,9 @@ def test_keyword_writes_recover_after_another_engine_drops_the_table(tmp_path, m
     source = _add(adapter, collection, "second", "Invoice ZQX-4417 was paid.")
 
     assert source in _hit_sources(adapter, "ZQX-4417")
+    with sqlite3.connect(tmp_path / "kb.db") as conn:  # the rebuild already holds the new chunk
+        counts = dict(conn.execute(f"SELECT source, count(*) FROM {collection}__fts GROUP BY source"))
+    assert counts == {f"{collection}/first.txt": 1, source: 1}
 
 
 def _two_tenant_hits(backend, make_adapter, monkeypatch) -> tuple[set[str], str, str]:
