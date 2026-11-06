@@ -435,6 +435,27 @@ def set_agent_citations_lookup(fn: Callable[[], bool] | None) -> None:
     _agent_flag_lookup = fn
 
 
+# Wired next to the citations flag: the agent-level citation_check mode ("off" | "llm" | "nli"),
+# read from the LIVE engine config each call. Unwired -> "off".
+_agent_check_lookup: Callable[[], str] | None = None
+
+
+def set_agent_citation_check_lookup(fn: Callable[[], str] | None) -> None:
+    global _agent_check_lookup
+    _agent_check_lookup = fn
+
+
+def effective_citation_check() -> str:
+    """The citation check mode for this agent: "off", "llm" or "nli"."""
+    if _agent_check_lookup is None:
+        return "off"
+    try:
+        return str(_agent_check_lookup() or "off")
+    except Exception:
+        logger.exception("citation check lookup failed; checking off")
+        return "off"
+
+
 def _coerce_override(value: Any, thread_id: str | None) -> bool | None:
     """Coerce a citations_enabled override to a bool; None when unusable."""
     if isinstance(value, bool):
