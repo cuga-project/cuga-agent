@@ -1,3 +1,5 @@
+import { CheckmarkFilled, HelpFilled, Misuse, type CarbonIconType } from '@carbon/icons-react';
+
 export interface MessageSource {
   n: number;
   cite_id: string;
@@ -13,13 +15,13 @@ export interface MessageSource {
 }
 
 const SUPPORT = new Map([
-  ['supported', { mark: '✓', label: "Checked: states what it's cited for" }],
-  ['contradicted', { mark: '✗', label: "Checked: contradicts what it's cited for" }],
-  ['not_stated', { mark: '?', label: "Checked: doesn't state what it's cited for" }],
+  ['supported', { Icon: CheckmarkFilled, label: "Checked: states what it's cited for" }],
+  ['contradicted', { Icon: Misuse, label: "Checked: contradicts what it's cited for" }],
+  ['not_stated', { Icon: HelpFilled, label: "Checked: doesn't state what it's cited for" }],
 ]);
 
-/** Mark and label for a source's citation-check verdict; null when it wasn't checked. */
-export function supportInfo(support?: string): { mark: string; label: string } | null {
+/** Icon and label for a source's citation-check verdict; null when it wasn't checked. */
+export function supportInfo(support?: string): { Icon: CarbonIconType; label: string } | null {
   return (support && SUPPORT.get(support)) || null;
 }
 
