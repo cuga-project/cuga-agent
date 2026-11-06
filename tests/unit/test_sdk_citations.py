@@ -105,3 +105,49 @@ def test_invoke_empty_answer_fallback_resolves_markers_and_overrides_stale_sourc
     assert result.sources[0]["cite_id"] == "s1"
     assert result.sources[0]["n"] == 1
     assert result.sources[0]["filename"] == "report.pdf"
+
+
+def test_invoke_empty_answer_fallback_checks_citations_like_the_final_answer(monkeypatch):
+    """The fallback text bypassed FinalAnswerNode, so it must get the same citation check."""
+    import json
+
+    from cuga.backend.cuga_graph.nodes.answer import final_answer
+    from cuga.backend.knowledge import sources
+    from cuga.sdk import CugaAgent
+
+    agent = CugaAgent(auto_load_policies=False)
+
+    async def _noop_initialized():
+        return None
+
+    async def _supported(prompt: str) -> str:
+        return json.dumps({"1": "supported"})
+
+    monkeypatch.setattr(agent, "_ensure_initialized", _noop_initialized)
+    monkeypatch.setattr(final_answer, "_citation_check_llm", lambda: SimpleNamespace(generate=_supported))
+    sources.set_agent_citation_check_lookup(lambda: "llm")
+    thread_id = "sdk-fallback-check"
+    chunk = SimpleNamespace(
+        text="Invoice INV-9 was issued to Contoso.",
+        filename="inv.txt",
+        page=1,
+        scope="agent",
+        score=0.9,
+        section_path="",
+    )
+    agent._compiled_graph = _StubGraph(
+        {
+            "final_answer": "",
+            "chat_messages": [AIMessage(content="Issued to Contoso [s1].")],
+            "variables_storage": {},
+            "tool_calls": [],
+        },
+        on_ainvoke=lambda: get_ledger(thread_id).register(chunk, query="q"),
+    )
+    try:
+        result = asyncio.run(agent.invoke("question", thread_id=thread_id))
+    finally:
+        sources.set_agent_citation_check_lookup(None)
+
+    assert result.answer == "Issued to Contoso [1]."
+    assert [(s["filename"], s["support"]) for s in result.sources] == [("inv.txt", "supported")]
