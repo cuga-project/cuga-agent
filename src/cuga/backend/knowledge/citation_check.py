@@ -33,6 +33,16 @@ _MAX_CLAIM_CHARS = 400
 # A sentence ends at . ! ? followed by whitespace, at a CJK terminator, or at a line break.
 _BOUNDARY = re.compile(r"[.!?](?=\s)|[。！？]|\n")
 _TERMINATORS = ".!?。！？"
+# A leading attribution ("The Chinese document states that ...", "According to the policy, ...").
+# NLI models judge the framed sentence as a claim about the document and answer "not stated";
+# the LLM checker reads past it. English only: for other languages prefer the llm checker.
+_ATTRIBUTION = re.compile(
+    r"^(?:according to [^,]{1,80},\s*|(?:the|this|that)\s+(?:[\w-]+\s+){0,3}"
+    r"(?:document|file|source|text|policy|report|record|invoice|page|section|note|article)s?\s+"
+    r"(?:states?|says?|mentions?|notes?|indicates?|explains?|shows?|reports?|confirms?|specifies?)"
+    r"\s+(?:that\s+)?)",
+    re.IGNORECASE,
+)
 
 
 def claims_by_marker(text: str) -> list[tuple[str, list[str]]]:
@@ -77,7 +87,7 @@ async def check_citations(
         if checker == "llm":
             labels = await _llm_labels([(c, s) for c, _, s in pairs], generate)
         elif checker == "nli":
-            labels = await asyncio.to_thread(_nli_labels, [(c, s) for c, _, s in pairs])
+            labels = await asyncio.to_thread(_nli_labels, [(_ATTRIBUTION.sub("", c), s) for c, _, s in pairs])
         else:
             return {}
     except Exception:
