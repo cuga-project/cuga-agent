@@ -224,20 +224,23 @@ def _nli_judgements(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
         window_labels.append(label)
         if _RANK[label] > _RANK[labels[k]]:
             labels[k] = label
-    # Evidence comes from every window that reached the pair's verdict, one and two sentences at a time.
+    # Evidence comes from every window that reached the pair's verdict: the shortest passage that
+    # carries the verdict on its own, one sentence if one does, else two.
     passages = [
-        (k, passage)
+        (k, size, passage)
         for (k, w), label in zip(windows, window_labels)
         if label == labels[k] != NOT_STATED
-        for passage in w + [" ".join(w[i : i + 2]) for i in range(len(w) - 1)]
+        for size, group in ((1, w), (2, [" ".join(w[i : i + 2]) for i in range(len(w) - 1)]))
+        for passage in group
     ]
-    evidence, strength = [""] * len(pairs), [0.0] * len(pairs)
-    for (k, passage), p in zip(passages, _nli_probs([(pairs[k][0], x) for k, x in passages])):
-        if p[index[labels[k]]] > strength[k]:
-            strength[k], evidence[k] = p[index[labels[k]]], passage
+    best: dict[tuple[int, int], tuple[float, str]] = {}
+    for (k, size, passage), p in zip(passages, _nli_probs([(pairs[k][0], x) for k, _, x in passages])):
+        if p[index[labels[k]]] > best.get((k, size), (0.0, ""))[0]:
+            best[k, size] = (p[index[labels[k]]], passage)
+    evidence = [""] * len(pairs)
     for k in range(len(pairs)):
-        if strength[k] < _NLI_EVIDENCE:
-            evidence[k] = ""
-            if labels[k] == SUPPORTED:
-                labels[k] = NOT_STATED
+        carrying = [best[k, size][1] for size in (1, 2) if best.get((k, size), (0.0, ""))[0] >= _NLI_EVIDENCE]
+        evidence[k] = carrying[0] if carrying else ""
+        if not evidence[k] and labels[k] == SUPPORTED:
+            labels[k] = NOT_STATED
     return list(zip(labels, evidence))
