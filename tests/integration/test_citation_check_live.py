@@ -67,7 +67,10 @@ def test_nli_checker_separates_supported_from_contradicted():
 
 
 @pytest.mark.parametrize("checker", ["llm", "nli"])
-def test_a_follow_up_keeps_a_supported_earlier_citation_and_strips_a_misattributed_one(checker, monkeypatch):
+@pytest.mark.parametrize("case", ["follow-up", "strict"])
+def test_a_supported_citation_is_kept_and_a_misattributed_one_stripped(case, checker, monkeypatch):
+    """follow-up: both citations come from the previous turn. strict: both from this turn, with
+    citation_strict on, so the misattributed one is stripped even though it was retrieved now."""
     if checker == "nli":
         pytest.importorskip("transformers")
     _reset_all_ledgers_for_tests()
@@ -80,9 +83,11 @@ def test_a_follow_up_keeps_a_supported_earlier_citation_and_strips_a_misattribut
             ),
             query="q",
         )
-    ledger.begin_turn()  # the follow-up answers without searching again
+    if case == "follow-up":
+        ledger.begin_turn()  # the follow-up answers without searching again
     monkeypatch.setattr(sources, "_agent_flag_lookup", lambda: True)
     sources.set_agent_citation_check_lookup(lambda: checker)
+    sources.set_agent_citation_strict_lookup(lambda: case == "strict")
     state = SimpleNamespace(
         final_answer="INV-2026-0009 was issued to Contoso [s1]. Passwords are rotated every 90 days [s2].",
         thread_id="t-live",
@@ -93,6 +98,7 @@ def test_a_follow_up_keeps_a_supported_earlier_citation_and_strips_a_misattribut
         asyncio.run(FinalAnswerNode.finalize_answer(state))
     finally:
         sources.set_agent_citation_check_lookup(None)
+        sources.set_agent_citation_strict_lookup(None)
 
     assert [(s["filename"], s["support"]) for s in state.sources] == [("s1.txt", SUPPORTED)]
     assert state.final_answer.startswith("INV-2026-0009 was issued to Contoso [1].")
