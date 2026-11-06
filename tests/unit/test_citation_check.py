@@ -102,6 +102,7 @@ def thread(monkeypatch):
     monkeypatch.setattr(sources, "_agent_flag_lookup", lambda: True)
     yield ledger
     sources.set_agent_citation_check_lookup(None)
+    sources.set_agent_citation_strict_lookup(None)
 
 
 def _finalize(answer: str):
@@ -147,6 +148,41 @@ def test_earlier_turn_citations_strip_when_checking_is_off(thread):
     sources.set_agent_citation_check_lookup(lambda: "off")
     state = _finalize("Issued to Contoso [s1].")
     assert (state.final_answer, state.sources) == ("Issued to Contoso .", [])
+
+
+def test_strict_shows_only_supported_citations(thread, monkeypatch):
+    sources.set_agent_citation_check_lookup(lambda: "llm")
+    sources.set_agent_citation_strict_lookup(lambda: True)
+    monkeypatch.setattr(
+        final_answer,
+        "_citation_check_llm",
+        lambda: SimpleNamespace(generate=_fake_llm({1: "supported", 2: "contradicted"})),
+    )
+    state = _finalize("Issued to Contoso [s1]. Backups run weekly [s2].")
+
+    assert state.final_answer == "Issued to Contoso [1]. Backups run weekly ."
+    assert [(s["filename"], s["support"]) for s in state.sources] == [("Invoic.txt", "supported")]
+
+
+def test_strict_withholds_citations_when_the_check_fails(thread, monkeypatch):
+    sources.set_agent_citation_check_lookup(lambda: "llm")
+    sources.set_agent_citation_strict_lookup(lambda: True)
+
+    async def broken(prompt: str) -> str:
+        raise TimeoutError("model unavailable")
+
+    monkeypatch.setattr(final_answer, "_citation_check_llm", lambda: SimpleNamespace(generate=broken))
+    state = _finalize("Issued to Contoso [s1].")
+
+    assert (state.final_answer, state.sources) == ("Issued to Contoso .", [])
+
+
+def test_strict_needs_a_checker():
+    from cuga.backend.knowledge.config import KnowledgeConfig
+
+    with pytest.raises(ValueError, match="citation_strict needs citation_check"):
+        KnowledgeConfig(citation_strict=True).validate()
+    KnowledgeConfig(citation_check="nli", citation_strict=True).validate()
 
 
 def test_check_off_leaves_sources_unchanged(thread):
