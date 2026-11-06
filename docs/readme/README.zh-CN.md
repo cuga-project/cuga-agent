@@ -30,6 +30,8 @@ CUGA 可根据业务请求，在应用、API 和文档之间执行操作。你�
 
 ## 快速开始
 
+在中国大陆？请先按[在中国大陆使用](#在中国大陆使用)配置镜像，再执行以下步骤。
+
 需要 **Python 3.12** 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
 
 ```bash
@@ -57,7 +59,7 @@ from langchain_core.tools import tool
 
 @tool
 def get_weather(city: str) -> str:
-    """返回指定城市的当前天气。"""
+    """返回指定城市的天气（示例数据）。"""
     return f"{city}：晴，24°C"
 
 agent = CugaAgent(tools=[get_weather])
