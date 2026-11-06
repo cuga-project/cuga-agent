@@ -33,6 +33,13 @@
 .cuga-sources-panel__file { font-weight: 600; font-size: 13px; color: var(--cds-text-primary, #161616);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: plaintext; }
 .cuga-sources-panel__meta { margin-left: auto; flex: none; font-size: 11px; color: var(--cds-text-secondary, #525252); }
+/* citation check verdict (knowledge.citation_check): the glyph carries the colour, the label stays body text */
+.cuga-support { flex: none; }
+.cuga-support--supported { color: var(--cds-support-success, #24a148); }
+.cuga-support--contradicted { color: var(--cds-support-error, #da1e28); }
+.cuga-support--not_stated { color: var(--cds-text-secondary, #525252); }
+.cuga-sources-panel__support { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 4px 0 0 26px;
+  color: var(--cds-text-primary, #161616); }
 .cuga-sources-panel__section { font-size: 11px; color: var(--cds-text-secondary, #525252); margin: 4px 0 0 26px; }
 .cuga-sources-panel__snippet { margin: 8px 0 0; padding: 10px 12px; border-radius: 4px; cursor: pointer;
   background: var(--cds-layer-02, #f4f4f4); font-size: 13px; line-height: 1.5; white-space: pre-wrap;

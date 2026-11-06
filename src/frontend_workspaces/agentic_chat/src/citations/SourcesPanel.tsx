@@ -5,7 +5,7 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { pageLabel, scopeLabel, type MessageSource } from './types';
+import { pageLabel, scopeLabel, supportInfo, type MessageSource } from './types';
 import './SourcesPanel.css';
 
 /** Split snippet into plain/mark segments for the retrieving-query terms.
@@ -34,6 +34,17 @@ export interface SourcesPanelProps {
   /** Optional doc opener; when provided a "Open document" button renders.
    * Wire to GET /api/knowledge/documents/file via the host app's api module. */
   onOpenDocument?: (source: MessageSource) => Promise<boolean>;
+}
+
+function SupportNote({ support }: { support?: string }) {
+  const info = supportInfo(support);
+  if (!info) return null;
+  return (
+    <div className="cuga-sources-panel__support">
+      <info.Icon size={14} className={`cuga-support cuga-support--${support}`} aria-hidden="true" />
+      {info.label}
+    </div>
+  );
 }
 
 export default function SourcesPanel({
@@ -97,6 +108,7 @@ export default function SourcesPanel({
                 {pageLabel(s) ? ` · ${pageLabel(s)}` : ''}
               </span>
             </div>
+            <SupportNote support={s.support} />
             {s.section_path && <div className="cuga-sources-panel__section">{s.section_path}</div>}
             <blockquote
               className={`cuga-sources-panel__snippet${expanded[s.n] ? ' is-expanded' : ''}`}
