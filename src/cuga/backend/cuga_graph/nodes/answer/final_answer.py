@@ -111,7 +111,9 @@ class FinalAnswerNode(BaseNode):
     @staticmethod
     async def check_citation_support(state) -> dict[str, str]:
         """Verdict per cite_id (``supported`` / ``contradicted`` / ``not_stated``) from the
-        configured checker; ``{}`` when checking is off, nothing is cited, or the check fails."""
+        configured checker; ``{}`` when checking is off, nothing is cited, or the check fails.
+        A checked result is a ``citation_check.Verdicts``, whose ``quotes`` hold the passages
+        (read with ``getattr``; a copy of the dict drops them)."""
         try:
             from cuga.backend.knowledge.sources import (
                 effective_citation_check,
