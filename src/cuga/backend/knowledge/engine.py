@@ -485,6 +485,14 @@ class _JunkFilterStats:
             self.reasons = {}
 
 
+def _top_meaning_score(results: list["SearchResult"]) -> float | None:
+    """Highest meaning (cosine) score in ``results``; keyword-only scores are on another scale.
+
+    ``None`` when no result has a meaning score (every hit came from keywords alone).
+    """
+    return max((r.score for r in results if not getattr(r, "score_from_keywords", False)), default=None)
+
+
 def _rrf_fuse(
     dense: list["SearchResult"],
     lexical: list["SearchResult"],
@@ -514,9 +522,16 @@ def _rrf_fuse(
     on the other side contributes 0 to the sum).
 
     Returns a new list with the SAME SearchResult objects (no copy,
-    same identity) reordered by fused score. The SearchResult.score
-    field keeps its dense value so ``score_threshold`` semantics elsewhere
-    in the code stay unchanged.
+    same identity) reordered by fused score. A chunk found by both legs
+    keeps its dense SearchResult, so its ``score`` is the cosine score; a
+    chunk found by the keyword leg only carries its keyword score and
+    ``score_from_keywords=True``.
+
+    Ties: a dense-only and a keyword-only chunk at the same rank have the
+    same fused score. The tie goes to the chunk that contains the query's
+    terms (it has a lexical rank); filename only breaks the remaining ties.
+    On exact-identifier lookups, breaking these ties by filename put the
+    wrong chunk first in about 7% of queries.
     """
     if not lexical:
         return dense  # No lexical signal → identity (cheap, common path).
@@ -565,6 +580,7 @@ def _rrf_fuse(
         items.values(),
         key=lambda v: (
             -v[0].rrf_score if v[0].rrf_score is not None else 0.0,
+            v[0].lexical_rank is None,  # on a tie, the chunk that matched the query's terms first
             v[0].filename,
             v[0].page if v[0].page is not None else -1,
         ),
@@ -631,7 +647,7 @@ def _apply_junk_filter(
     #     arbitrary noise and may drop the only relevant chunk).
     #   - ``r.score < 0.5 * top`` → only candidates the model itself
     #     said were a lot worse than #1.
-    top_score = results[0].score if results else 0.0
+    top_score = _top_meaning_score(results) or 0.0
     _gap_active = top_score >= 0.3
 
     # B6 hardening: the classifier runs over potentially-malformed data
@@ -665,7 +681,12 @@ def _apply_junk_filter(
         # chunk is BOTH classifier-flagged AND far below the top.
         # This catches the "1 high-quality hit + 15 noise" failure
         # mode without flipping the global dry_run knob.
-        _drop_via_gap = mode == "dry_run" and _gap_active and r.score < 0.5 * top_score
+        _drop_via_gap = (
+            mode == "dry_run"
+            and _gap_active
+            and not getattr(r, "score_from_keywords", False)
+            and r.score < 0.5 * top_score
+        )
         if _drop_via_gap:
             # Decorate the reason so a grep'd log line shows the
             # dual-trigger (classifier said junk AND score said junk).
@@ -758,6 +779,10 @@ class SearchResult:
     dense_rank: int | None = None
     lexical_rank: int | None = None
     rrf_score: float | None = None
+    # True when ``score`` is a keyword (BM25 / ts_rank) score: the chunk was found by the
+    # keyword leg only. Keyword scores are not on the cosine scale, so confidence and
+    # relative-score decisions must skip them (``_top_meaning_score``).
+    score_from_keywords: bool = False
     # Cross-scope RRF score, populated by ``search_multi`` when more
     # than one scope contributed to the fused ranking. Distinct from
     # ``rrf_score`` (which is the in-scope dense+lexical fusion); this
@@ -3385,7 +3410,9 @@ class KnowledgeEngine:
         # path is intentionally counted as 0 here.
         below_threshold_counter = [0]
 
-        def _materialize(scored, seen_texts: set[str], *, apply_score_threshold: bool) -> list[SearchResult]:
+        def _materialize(
+            scored, seen_texts: set[str], *, apply_score_threshold: bool, keyword: bool = False
+        ) -> list[SearchResult]:
             out: list[SearchResult] = []
             for doc, score in scored:
                 if apply_score_threshold and score < score_threshold:
@@ -3403,6 +3430,7 @@ class KnowledgeEngine:
                         score=round(score, 4),
                         scope=scope,
                         section_path=doc.metadata.get("section_path", "") or "",
+                        score_from_keywords=keyword,
                     )
                 )
             return out
@@ -3479,7 +3507,7 @@ class KnowledgeEngine:
         seen_dense: set[str] = set()
         dense_results = _materialize(dense_scored, seen_dense, apply_score_threshold=True)
         seen_lex: set[str] = set()
-        lexical_results = _materialize(lexical_scored, seen_lex, apply_score_threshold=False)
+        lexical_results = _materialize(lexical_scored, seen_lex, apply_score_threshold=False, keyword=True)
 
         # Track the raw candidate count BEFORE any threshold / dedup
         # collapse, for the wire ``candidates`` field. ``candidates``
@@ -3513,9 +3541,12 @@ class KnowledgeEngine:
                         asyncio.to_thread(_do_lexical_search, first_k, qv) for qv in _variants.lexical_extra
                     ]
                 _scored_legs = await asyncio.gather(*_legs, return_exceptions=True)
+                _leg_is_keyword = [False] * len(_variants.dense_extra) + [True] * (
+                    len(_legs) - len(_variants.dense_extra)
+                )
                 _variant_lists = [
-                    _materialize(sc, set(), apply_score_threshold=False)
-                    for sc in _scored_legs
+                    _materialize(sc, set(), apply_score_threshold=False, keyword=is_kw)
+                    for sc, is_kw in zip(_scored_legs, _leg_is_keyword)
                     if isinstance(sc, list)
                 ]
                 _variant_lists = [vl for vl in _variant_lists if vl]
@@ -3761,8 +3792,9 @@ class KnowledgeEngine:
             scoped_results, scoped_stats = outcome
             by_scope_results[scope_name] = scoped_results
             stats.by_scope[scope_name] = scoped_stats
-            if scoped_results:
-                stats.top_score_by_scope[scope_name] = scoped_results[0].score
+            top = _top_meaning_score(scoped_results)
+            if top is not None:
+                stats.top_score_by_scope[scope_name] = top
 
         # Stamp cross-scope RRF rank on every chunk. Each scope contributes
         # its in-scope ranked list; chunks are fused across scopes via
