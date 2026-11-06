@@ -3184,15 +3184,19 @@ class CugaAgent:
             if final_answer:
                 final_answer = _apply_answer_function_to_text(final_answer, self._answer_function)
 
-            from cuga.backend.knowledge.sources import (
-                get_ledger,
-                has_citation_markers,
-                resolve_citations,
-            )
+            from cuga.backend.knowledge.sources import has_citation_markers
 
             if final_answer and has_citation_markers(final_answer):
-                ledger = get_ledger(thread_id, create=False)
-                final_answer, fallback_sources = resolve_citations(final_answer, ledger)
+                from types import SimpleNamespace
+
+                from cuga.backend.cuga_graph.nodes.answer.final_answer import FinalAnswerNode
+
+                # The same steps as FinalAnswerNode: the citation check, then resolution (strip
+                # mode when citations are off for this thread).
+                fallback = SimpleNamespace(final_answer=final_answer, thread_id=thread_id, sources=[])
+                verdicts = await FinalAnswerNode.check_citation_support(fallback)
+                FinalAnswerNode.apply_citation_resolution(fallback, verdicts)
+                final_answer, fallback_sources = fallback.final_answer, fallback.sources
             else:
                 fallback_sources = []
 
