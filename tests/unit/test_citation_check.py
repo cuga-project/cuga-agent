@@ -70,6 +70,21 @@ def test_ids_without_a_source_are_not_sent_to_the_checker():
     assert "2. SOURCE" not in seen[0]
 
 
+def test_quotes_are_the_exact_source_passages_the_verdicts_rest_on():
+    chunks = {"s1": "Invoice INV-9 was issued to\nContoso. It covers backups.", "s2": "The total is $4,200."}
+    reply = {
+        1: {"verdict": "supported", "quote": "issued to Contoso."},  # the source breaks the line
+        2: {"verdict": "contradicted", "quote": "The total is $9,999."},  # not in the source
+    }
+    verdicts = asyncio.run(
+        check_citations(
+            "Issued to Contoso [s1]. Total $1 [s2].", chunks.get, "llm", generate=_fake_llm(reply)
+        )
+    )
+    assert verdicts == {"s1": "supported", "s2": "contradicted"}
+    assert verdicts.quotes == {"s1": "issued to\nContoso."}
+
+
 @pytest.mark.parametrize("reply", ["no json at all", '{"1": "maybe"}'], ids=["no-json", "unknown-label"])
 def test_unusable_checker_replies_never_claim_support(reply):
     async def generate(prompt: str) -> str:
@@ -183,6 +198,19 @@ def test_strict_needs_a_checker():
     with pytest.raises(ValueError, match="citation_strict needs citation_check"):
         KnowledgeConfig(citation_strict=True).validate()
     KnowledgeConfig(citation_check="nli", citation_strict=True).validate()
+
+
+def test_the_supporting_passage_rides_on_its_source(thread, monkeypatch):
+    sources.set_agent_citation_check_lookup(lambda: "llm")
+    reply = {1: {"verdict": "supported", "quote": "issued to Contoso"}}
+    monkeypatch.setattr(
+        final_answer, "_citation_check_llm", lambda: SimpleNamespace(generate=_fake_llm(reply))
+    )
+    state = _finalize("Issued to Contoso [s1].")
+    assert (state.sources[0]["support"], state.sources[0]["support_quote"]) == (
+        "supported",
+        "issued to Contoso",
+    )
 
 
 def test_check_off_leaves_sources_unchanged(thread):
