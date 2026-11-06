@@ -165,6 +165,7 @@ class FinalAnswerNode(BaseNode):
             import re as _re
 
             from cuga.backend.knowledge.sources import (
+                effective_citation_strict,
                 effective_citations_enabled,
                 get_ledger,
                 has_citation_markers,
@@ -197,7 +198,7 @@ class FinalAnswerNode(BaseNode):
                 # markers are removed rather than resolved, sources stay [].
                 ledger = None
             verified = {cid for cid, verdict in (verdicts or {}).items() if verdict == "supported"}
-            resolved, sources = resolve_citations(text, ledger, verified)
+            resolved, sources = resolve_citations(text, ledger, verified, strict=effective_citation_strict())
             for source in sources:
                 if verdicts and source.get("cite_id") in verdicts:
                     source["support"] = verdicts[source["cite_id"]]
