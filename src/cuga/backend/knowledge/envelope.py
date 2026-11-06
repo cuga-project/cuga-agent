@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from cuga.backend.knowledge.engine import (
+    _top_meaning_score,
     _JunkFilterStats,
     _MultiSearchStats,
     SearchResult,
@@ -225,8 +226,9 @@ def build_retrieval_envelope(
         assert single_scope_name is not None, (
             "single_stats requires single_scope_name to attribute the bucket"
         )
-        if results:
-            top_score_by_scope[single_scope_name] = results[0].score
+        top = _top_meaning_score(results)
+        if top is not None:
+            top_score_by_scope[single_scope_name] = top
         by_scope_stats[single_scope_name] = _stats_to_by_scope_entry(
             single_stats,
             returned=returned_by_scope.get(single_scope_name, 0),
