@@ -226,10 +226,11 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
 
     def _fts_state(self, conn) -> str:
         """``missing``, ``stale`` (built by another tokenizer version) or ``current``."""
-        row = conn.execute("SELECT sql FROM sqlite_master WHERE name = ?", (self._fts_table(),)).fetchone()
-        if row is None:
+        # The column list, not the CREATE text: a collection named e.g. "hr_terms_v1" would match it.
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({self._fts_table()})")}
+        if not columns:
             return "missing"
-        return "current" if _TERMS_COLUMN in row[0] else "stale"
+        return "current" if _TERMS_COLUMN in columns else "stale"
 
     def _ensure_fts_table(self, conn) -> None:
         """Create the FTS table, or re-index one built by another tokenizer version.
@@ -278,37 +279,46 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         if not items or self._use_prod:
             # pgvector hybrid not yet implemented — graceful no-op.
             return
-        try:
-            conn = self._fts_connect()
+        for attempt in (1, 2):
             try:
-                self._ensure_fts_table(conn)
-                conn.executemany(
-                    f"INSERT INTO {self._fts_table()} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    [
-                        (
-                            cid,
-                            str(meta.get("source", "")),
-                            str(meta.get("filename", "")),
-                            int(meta.get("page", -1)) if meta.get("page", -1) is not None else -1,
-                            str(meta.get("section_path", "") or ""),
-                            text,
-                            " ".join(lexical.terms(text)),
-                        )
-                        for cid, meta, text in items
-                    ],
-                )
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception as exc:  # noqa: BLE001 — never fail the ingest
-            logger.warning(
-                "BM25 FTS write failed for collection=%s items=%d: %s "
-                "(dense insert succeeded; lexical leg will return empty until backfill)",
-                self._collection,
-                len(items),
-                exc,
+                self._fts_insert(items)
+                return
+            except Exception as exc:  # noqa: BLE001 — never fail the ingest
+                # Another adapter may have dropped the table since this one checked it: check
+                # again and retry once. The failed insert was never committed.
+                self._fts_ready = False
+                if attempt == 2:
+                    logger.warning(
+                        "BM25 FTS write failed for collection={} items={}: {} "
+                        "(dense insert succeeded; lexical leg will return empty until backfill)",
+                        self._collection,
+                        len(items),
+                        exc,
+                    )
+
+    def _fts_insert(self, items: list[tuple[str, dict[str, Any], str]]) -> None:
+        conn = self._fts_connect()
+        try:
+            self._ensure_fts_table(conn)
+            conn.executemany(
+                f"INSERT INTO {self._fts_table()} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        cid,
+                        str(meta.get("source", "")),
+                        str(meta.get("filename", "")),
+                        int(meta.get("page", -1)) if meta.get("page", -1) is not None else -1,
+                        str(meta.get("section_path", "") or ""),
+                        text,
+                        " ".join(lexical.terms(text)),
+                    )
+                    for cid, meta, text in items
+                ],
             )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _fts_delete_by_source(self, source_id: str) -> None:
         """Delete FTS rows matching a source. Called from
