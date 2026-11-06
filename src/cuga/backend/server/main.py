@@ -929,11 +929,7 @@ async def _app_lifespan(app: FastAPI):
             lambda: getattr(_live_knowledge_config(), "citation_check", "off")
         )
         knowledge_sources.set_agent_citation_strict_lookup(
-            lambda: getattr(
-                getattr(getattr(app_state, "knowledge_engine", None), "_config", None),
-                "citation_strict",
-                False,
-            )
+            lambda: getattr(_live_knowledge_config(), "citation_strict", False)
         )
 
         # Start background maintenance tasks (cleanup, purge, reconcile)
