@@ -4,7 +4,7 @@
 // (Dropping it = 'React is not defined' -> blank page. See KnowledgeConfig.tsx.)
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React from 'react';
-import { pageLabel, scopeLabel, type MessageSource } from './types';
+import { pageLabel, scopeLabel, supportInfo, type MessageSource } from './types';
 
 const MAX_VISIBLE = 8;
 
@@ -21,22 +21,30 @@ export function MessageSources({
   return (
     <div className="cuga-msg-sources" role="list" aria-label="Answer sources">
       <span className="cuga-msg-sources__label">Sources</span>
-      {visible.map((s) => (
-        <button
-          key={s.n}
-          role="listitem"
-          className="cuga-msg-sources__card"
-          onClick={() => onOpen(s.n)}
-          title={`${s.filename} — ${scopeLabel(s.scope)}`}
-        >
-          <span className="cuga-msg-sources__badge">{s.n}</span>
-          <span className="cuga-msg-sources__file" dir="auto">
-            {s.filename}
-          </span>
-          {pageLabel(s) && <span className="cuga-msg-sources__page">{pageLabel(s)}</span>}
-          <span className={`cuga-msg-sources__dot cuga-msg-sources__dot--${s.scope}`} />
-        </button>
-      ))}
+      {visible.map((s) => {
+        const support = supportInfo(s.support);
+        return (
+          <button
+            key={s.n}
+            role="listitem"
+            className="cuga-msg-sources__card"
+            onClick={() => onOpen(s.n)}
+            title={`${s.filename} — ${scopeLabel(s.scope)}${support ? ` — ${support.label}` : ''}`}
+          >
+            <span className="cuga-msg-sources__badge">{s.n}</span>
+            <span className="cuga-msg-sources__file" dir="auto">
+              {s.filename}
+            </span>
+            {pageLabel(s) && <span className="cuga-msg-sources__page">{pageLabel(s)}</span>}
+            {support && (
+              <span className={`cuga-support cuga-support--${s.support}`} aria-label={support.label}>
+                {support.mark}
+              </span>
+            )}
+            <span className={`cuga-msg-sources__dot cuga-msg-sources__dot--${s.scope}`} />
+          </button>
+        );
+      })}
       {hidden > 0 && (
         <button
           className="cuga-msg-sources__card cuga-msg-sources__more"
