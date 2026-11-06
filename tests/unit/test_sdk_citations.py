@@ -113,13 +113,15 @@ def test_citation_check_params_reach_the_answer_path(monkeypatch):
     from cuga.backend.knowledge import sources
     from cuga.sdk import CugaAgent
 
-    monkeypatch.setattr("cuga.backend.knowledge.engine.KnowledgeEngine", lambda config, **_: config)
+    monkeypatch.setattr(
+        "cuga.backend.knowledge.engine.KnowledgeEngine", lambda config, **_: SimpleNamespace(_config=config)
+    )
     monkeypatch.setattr(
         "cuga.backend.knowledge.client.KnowledgeClient", lambda engine, **_: SimpleNamespace(engine=engine)
     )
     agent = CugaAgent(enable_knowledge=True, citation_check="nli", citation_strict=True)
     try:
-        config = agent.knowledge.engine
+        config = agent.knowledge.engine._config
         assert (config.citation_check, config.citation_strict) == ("nli", True)
         assert (sources.effective_citation_check(), sources.effective_citation_strict()) == ("nli", True)
     finally:
