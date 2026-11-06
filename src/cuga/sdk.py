@@ -2615,6 +2615,8 @@ class CugaAgent:
             from cuga.config import settings
 
             config = KnowledgeConfig.from_settings(settings)
+            if self._enable_knowledge is not None:
+                config.enabled = self._enable_knowledge
             if self._enable_citations is not None:
                 config.citations_enabled = self._enable_citations
             from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
