@@ -246,6 +246,57 @@ def test_keyword_index_from_an_older_tokenizer_is_rebuilt(tmp_path, monkeypatch)
     assert _hit_sources(adapter, QUERIES["hi"]) == {f"{collection}/hi.txt"}
 
 
+@pytest.mark.unit
+def test_an_old_keyword_table_is_rebuilt_even_when_its_name_mentions_the_terms_column(tmp_path, monkeypatch):
+    """The table's columns decide whether it is current, not its CREATE text, which holds the name.
+    Left unmigrated, Hindi is unsearchable (old tokenizer) and new chunks get no keyword rows."""
+    import sqlite3
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("hr_terms_v1")
+    db_path = tmp_path / "kb.db"
+    with sqlite3.connect(db_path) as conn:  # the schema shipped before the shared tokenizer
+        conn.execute(
+            f"CREATE VIRTUAL TABLE {collection}__fts USING fts5(chunk_id UNINDEXED, source UNINDEXED, "
+            "filename UNINDEXED, page UNINDEXED, section_path UNINDEXED, chunk_text, "
+            "tokenize=\"unicode61 remove_diacritics 2 tokenchars '._@-+'\")"
+        )
+        conn.execute(
+            f"INSERT INTO {collection}__fts VALUES (?, ?, ?, ?, ?, ?)",
+            ("c1", f"{collection}/hi.txt", "hi.txt", 1, "", CORPUS["hi"]),
+        )
+    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
+
+    adapter = StorageBackedKnowledgeVectorStore(
+        collection, DeterministicEmbeddings(), local_db_path=str(db_path)
+    )
+    new = _add(adapter, collection, "new", "Invoice ZQX-4417 was paid.")
+
+    assert _hit_sources(adapter, QUERIES["hi"]) == {f"{collection}/hi.txt"}
+    assert _hit_sources(adapter, "ZQX-4417") == {new}
+
+
+@pytest.mark.unit
+def test_keyword_writes_recover_after_another_engine_drops_the_table(tmp_path, monkeypatch):
+    """An adapter remembers its keyword table is ready; when another engine sharing the database
+    drops it, the next write checks again instead of failing for good."""
+    import sqlite3
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwd")
+    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
+
+    adapter = StorageBackedKnowledgeVectorStore(
+        collection, DeterministicEmbeddings(), local_db_path=str(tmp_path / "kb.db")
+    )
+    _add(adapter, collection, "first", "The policy covers dental.")
+    with sqlite3.connect(tmp_path / "kb.db") as conn:  # another engine drops the keyword table
+        conn.execute(f"DROP TABLE {collection}__fts")
+    source = _add(adapter, collection, "second", "Invoice ZQX-4417 was paid.")
+
+    assert source in _hit_sources(adapter, "ZQX-4417")
+
+
 def _two_tenant_hits(backend, make_adapter, monkeypatch) -> tuple[set[str], str, str]:
     """Tenants A and B share a collection name; return tenant B's hits and both sources."""
     collection = unique_collection("kwt")
