@@ -464,9 +464,10 @@ CUGA includes a built-in knowledge base powered by LangChain and local vector st
 When enabled, the agent can search, ingest, and manage documents.
 
 The default embedding model is `intfloat/multilingual-e5-small`, which covers about 100 languages and
-runs locally as an int8 ONNX model. Knowledge bases built with another model keep working: a server
-keeps the model its saved agent config names, and an SDK knowledge base is re-embedded once, on first
-use, with the configured model. To pick another model, set it in the knowledge settings.
+runs locally as an int8 ONNX model. Knowledge bases built with another model keep that model: a
+server keeps the model its saved agent config names, and an SDK knowledge base keeps the model it was
+built with. To move a server agent to another model, change it in the knowledge settings, which
+re-embeds its documents; for the SDK, use a new `knowledge.persist_dir` and add the documents again.
 
 **Try the knowledge demo:** same as the main demo but with the knowledge engine on (upload documents and query them):
 

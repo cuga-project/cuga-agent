@@ -1,5 +1,5 @@
-"""Default embedder: multilingual-e5-small as an int8 ONNX model, and knowledge bases built with
-another model are re-embedded before use instead of being searched with incompatible vectors."""
+"""Default embedder: multilingual-e5-small as an int8 ONNX model. Knowledge bases built with
+another model keep it, and a restart keeps a saved agent's model unless this start names another."""
 
 import asyncio
 
@@ -12,6 +12,7 @@ from cuga.backend.knowledge.fastembed_models import register
 pytestmark = pytest.mark.unit
 
 E5 = "intfloat/multilingual-e5-small"
+SAVED_BGE = {"knowledge": {"embedding_provider": "fastembed", "embedding_model": "BAAI/bge-small-en-v1.5"}}
 
 
 def test_e5_small_registers_with_fastembed_once():
@@ -28,69 +29,38 @@ def test_default_profiles_use_the_multilingual_model(profile):
     assert load_profile(profile)["embeddings"]["model"] == E5
 
 
-def _engine(tmp_path, pinned_model, reindex_result=None):
+def test_a_collection_built_with_another_model_keeps_that_model(tmp_path, monkeypatch):
+    """A knowledge base built before the default changed is still searched with its own model."""
+    from cuga.backend.knowledge import engine as engine_mod
+
     eng = KnowledgeEngine(KnowledgeConfig(enabled=True, persist_dir=tmp_path, embedding_model=E5))
-    calls = []
+    monkeypatch.setattr(eng, "_ensure_embeddings", lambda: None)
 
     async def get_collection_config(collection):
-        return {"embedding_provider": "fastembed", "embedding_model": pinned_model}
+        return {"embedding_provider": "fastembed", "embedding_model": "BAAI/bge-small-en-v1.5"}
 
-    async def reindex(collection):
-        calls.append(collection)
-        if reindex_result:
-            return reindex_result
-        eng._reindex_in_progress.add(collection)
-        asyncio.get_running_loop().call_later(0.3, eng._reindex_in_progress.discard, collection)
-        return {"status": "started"}
-
-    eng._metadata.get_collection_config = get_collection_config
-    eng.reindex = reindex
-    return eng, calls
-
-
-def test_a_collection_built_with_another_model_is_re_embedded_and_waited_for(tmp_path):
-    eng, calls = _engine(tmp_path, "BAAI/bge-small-en-v1.5")
-    asyncio.run(eng._reembed_if_model_changed("kb_agent_default"))
-    assert calls == ["kb_agent_default"]
-    assert "kb_agent_default" not in eng._reindex_in_progress
-
-
-@pytest.mark.parametrize(
-    ("collection", "pinned"),
-    [("kb_agent_default", E5), ("kb_agent_cuga_default_29bf621b0ad3", "BAAI/bge-small-en-v1.5")],
-)
-def test_same_model_or_a_hashed_collection_is_left_alone(tmp_path, collection, pinned):
-    eng, calls = _engine(tmp_path, pinned)
-    asyncio.run(eng._reembed_if_model_changed(collection))
-    assert calls == []
-
-
-def test_nothing_stored_to_re_embed_does_not_wait(tmp_path):
-    eng, calls = _engine(
-        tmp_path, "BAAI/bge-small-en-v1.5", reindex_result={"status": "no_documents", "count": 0}
-    )
-    asyncio.run(asyncio.wait_for(eng._reembed_if_model_changed("kb_sess_abc"), timeout=5))
-    assert calls == ["kb_sess_abc"]
+    monkeypatch.setattr(eng._metadata, "get_collection_config", get_collection_config)
+    monkeypatch.setattr(engine_mod, "create_embeddings", lambda cfg: cfg.embedding_model)
+    assert asyncio.run(eng._resolve_embeddings_for_collection("kb_agent_default")) == "BAAI/bge-small-en-v1.5"
 
 
 @pytest.mark.parametrize(
     ("saved", "env", "expected"),
     [
+        (SAVED_BGE, {}, ("fastembed", "BAAI/bge-small-en-v1.5")),
         (
-            {"knowledge": {"embedding_provider": "fastembed", "embedding_model": "BAAI/bge-small-en-v1.5"}},
-            {},
+            SAVED_BGE,
+            {"DYNACONF_KNOWLEDGE__EMBEDDINGS__PROVIDER": "fastembed"},
             ("fastembed", "BAAI/bge-small-en-v1.5"),
         ),
-        (
-            {"knowledge": {"embedding_provider": "fastembed", "embedding_model": "BAAI/bge-small-en-v1.5"}},
-            {"DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL": E5},
-            None,
-        ),
+        (SAVED_BGE, {"DYNACONF_KNOWLEDGE__EMBEDDINGS__PROVIDER": "huggingface"}, None),
+        (SAVED_BGE, {"DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL": E5}, None),
         (None, {}, None),
     ],
 )
 def test_restart_keeps_the_saved_embedder_unless_this_start_sets_one(monkeypatch, saved, env, expected):
-    """Documents survive restarts, so re-seeding keeps the model they were indexed with."""
+    """Documents survive restarts, so re-seeding keeps the model they were indexed with. Naming
+    the same provider keeps the saved model; another provider or a model replaces it."""
     from cuga.backend.server import config_store, demo_manage_setup
 
     for key in ("DYNACONF_KNOWLEDGE__EMBEDDINGS__PROVIDER", "DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL"):

@@ -456,10 +456,9 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
 
 
 async def _saved_embedding(agent_id: str) -> tuple[str, str] | None:
-    """The embedding provider and model of the agent's saved config, unless this start sets them."""
-    if os.environ.get("DYNACONF_KNOWLEDGE__EMBEDDINGS__PROVIDER") or os.environ.get(
-        "DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL"
-    ):
+    """The embedding provider and model of the agent's saved config, unless this start names a
+    model or another provider (the saved model belongs to the saved provider)."""
+    if os.environ.get("DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL"):
         return None
     from cuga.backend.server.config_store import load_config
 
@@ -469,6 +468,8 @@ async def _saved_embedding(agent_id: str) -> tuple[str, str] | None:
         return None
     knowledge = (config or {}).get("knowledge") or {}
     provider, model = knowledge.get("embedding_provider"), knowledge.get("embedding_model")
+    if os.environ.get("DYNACONF_KNOWLEDGE__EMBEDDINGS__PROVIDER", provider) != provider:
+        return None
     return (provider, model) if provider and model else None
 
 
