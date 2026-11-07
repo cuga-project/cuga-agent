@@ -266,6 +266,14 @@ def _format_observed_tool_shapes_block(shapes: Dict[str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# Sent when an answer cites sources but no knowledge search ran this turn (#1124).
+SEARCH_BEFORE_CITING_CORRECTION = (
+    "Your answer cites sources, but no knowledge search ran in this turn, so those citations "
+    "would be removed. Run the knowledge search for this question now, then answer from its "
+    "results and cite only those."
+)
+
+
 class AgentGraphAdapter(CoreGraphAdapter):
     """CoreGraphAdapter implementation for the CugaLite single-agent graph."""
 
@@ -469,6 +477,11 @@ class AgentGraphAdapter(CoreGraphAdapter):
         """Bool as in the base contract; a non-empty ``str`` means "continue, and
         use this text as the synthetic user message" (unverified-blocker retry,
         issue #610)."""
+        if any("knowledge_search" in name for name in self._tools_context):
+            from cuga.backend.knowledge.sources import needs_search_before_citing
+
+            if needs_search_before_citing(content, getattr(state, "thread_id", None)):
+                return SEARCH_BEFORE_CITING_CORRECTION
         evidence = BlockedClaimEvidence(
             tools_available=bool(self._tools_context),
             code_executed=self._any_execution_ran(state),
