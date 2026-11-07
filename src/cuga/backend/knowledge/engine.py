@@ -951,6 +951,13 @@ def _purge_model_cache(cache_root: Path) -> None:
     shutil.rmtree(lock_dir, ignore_errors=True)
 
 
+def _e5_prefixes(model_name: str) -> tuple[str, str]:
+    """E5-family models need "query: " / "passage: " on their inputs to reach their published recall."""
+    m = (model_name or "").lower()
+    is_e5 = "e5" in m and ("intfloat" in m or "multilingual" in m or m.startswith("e5"))
+    return ("query: ", "passage: ") if is_e5 else ("", "")
+
+
 class _FastEmbedEmbeddings(Embeddings):
     """LangChain Embeddings adapter around fastembed.TextEmbedding.
 
@@ -1012,10 +1019,7 @@ class _FastEmbedEmbeddings(Embeddings):
         # E5-family prefix: required for any intfloat/e5-* model to reach
         # published recall numbers. Detected from model name. Non-E5 models
         # see a no-op (empty prefixes).
-        m = (model_name or "").lower()
-        is_e5 = "e5" in m and ("intfloat" in m or "multilingual" in m or m.startswith("e5"))
-        self._query_prefix = "query: " if is_e5 else ""
-        self._passage_prefix = "passage: " if is_e5 else ""
+        self._query_prefix, self._passage_prefix = _e5_prefixes(model_name)
 
     def _detect_active_providers(self) -> list[str]:
         # fastembed nests the ORT session under model.model.model — versions vary.
@@ -1096,6 +1100,7 @@ class _PyTorchEmbeddings(Embeddings):
         # Some tokenizers report a sentinel like 1e30 for "no limit"; cap to 512.
         if self._max_seq_len > 8192:
             self._max_seq_len = 512
+        self._query_prefix, self._passage_prefix = _e5_prefixes(model_name)
 
     @staticmethod
     def _mean_pool(last_hidden_state, attention_mask):
@@ -1110,14 +1115,14 @@ class _PyTorchEmbeddings(Embeddings):
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         import torch
 
-        enc = self._tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=self._max_seq_len,
-            return_tensors="pt",
-        ).to(self._device)
         with torch.no_grad():
+            enc = self._tokenizer(
+                texts,
+                padding=True,
+                truncation=True,
+                max_length=self._max_seq_len,
+                return_tensors="pt",
+            ).to(self._device)
             out = self._model(**enc)
         pooled = self._mean_pool(out.last_hidden_state, enc["attention_mask"])
         pooled = torch.nn.functional.normalize(pooled, p=2, dim=1)
@@ -1128,13 +1133,14 @@ class _PyTorchEmbeddings(Embeddings):
         # Smaller internal batch keeps MPS memory bounded; outer batching is
         # done by the adapter for progress granularity.
         BATCH = 32
+        texts = [self._passage_prefix + t for t in texts]
         out: list[list[float]] = []
         for i in range(0, len(texts), BATCH):
             out.extend(self._embed_batch(texts[i : i + BATCH]))
         return out
 
     def embed_query(self, text: str) -> list[float]:
-        return self._embed_batch([text])[0]
+        return self._embed_batch([self._query_prefix + text])[0]
 
 
 def _is_local_http_host(hostname: str | None) -> bool:
@@ -4782,20 +4788,19 @@ class KnowledgeEngine:
             except Exception:
                 pass  # fall through to approximate
 
-        # 2. HuggingFace provider — embedder loaded its own tokenizer.
+        # 2. HuggingFace provider — a tokenizer of its own, not the embedder's.
+        # The embedder calls its tokenizer with truncation and padding on, chunking
+        # calls it with both off, and each switch mutates the shared Rust tokenizer:
+        # parallel ingest threads then fail with "Already borrowed".
         if provider == "huggingface":
-            try:
-                self._ensure_embeddings()
-                emb = self._default_embeddings
-                if getattr(emb, "_tokenizer", None) is not None:
-                    return _make(
-                        "hf",
-                        emb._tokenizer,
-                        self._config.embedding_model or "huggingface",
-                        _hf_tokenizer_seq_limit(emb._tokenizer),
-                    )
-            except Exception:
-                pass
+            tok = _load_hf_tokenizer_for_chunking(self._config.embedding_model or "BAAI/bge-small-en-v1.5")
+            if tok is not None:
+                return _make(
+                    "hf",
+                    tok,
+                    self._config.embedding_model or "huggingface",
+                    _hf_tokenizer_seq_limit(tok),
+                )
 
         # 3. litellm/openrouter/openai routes.
         if provider in ("litellm", "openrouter", "openai"):
