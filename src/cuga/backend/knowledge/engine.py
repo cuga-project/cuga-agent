@@ -2431,42 +2431,8 @@ class KnowledgeEngine:
 
         return filename
 
-    async def _reembed_if_model_changed(self, collection: str) -> None:
-        """Re-embed a collection whose vectors came from another embedding model before using it.
-
-        Collections without a config hash in their name (the SDK's agent collection, session
-        collections) keep their name when the configured model changes. Their old vectors would
-        then be searched with the new model and return unrelated chunks, with no error. Hashed
-        collections get a new name per embedding config and are migrated by the server instead.
-        """
-        if re.search(r"_[0-9a-f]{12}$", collection):
-            return
-        pinned = await self._metadata.get_collection_config(collection)
-        if not pinned or (pinned.get("embedding_provider"), pinned.get("embedding_model")) == (
-            self._config.embedding_provider,
-            self._config.embedding_model,
-        ):
-            return
-        if collection not in self._reindex_in_progress:
-            logger.warning(
-                f"Knowledge base {collection} was embedded with {pinned.get('embedding_model')}; "
-                f"re-embedding its documents with {self._config.embedding_model} before use."
-            )
-            try:
-                result = await self.reindex(collection)
-            except ReindexBusyError:
-                return  # uploads are running; the next call retries
-            if result.get("status") == "no_documents":
-                logger.warning(
-                    f"Knowledge base {collection} has no stored files to re-embed; search it after re-uploading."
-                )
-                return
-        while collection in self._reindex_in_progress:  # the re-embed runs in the background
-            await asyncio.sleep(0.2)
-
     async def _create_task_entry(self, collection: str, filename: str) -> dict[str, Any]:
         coll = _sanitize_collection(collection)
-        await self._reembed_if_model_changed(coll)
         if coll in self._reindex_in_progress:
             raise ReindexInProgressError()
         return await self._create_task_entry_internal(coll, filename)
@@ -3335,7 +3301,6 @@ class KnowledgeEngine:
         """
         await self._ensure_metadata_ready()
         collection = _sanitize_collection(collection)
-        await self._reembed_if_model_changed(collection)
         limit = max(1, min(limit, 100))
         score_threshold = max(0.0, min(score_threshold, 1.0))
 
