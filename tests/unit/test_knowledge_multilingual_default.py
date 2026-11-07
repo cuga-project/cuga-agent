@@ -55,6 +55,7 @@ def test_a_collection_built_with_another_model_keeps_that_model(tmp_path, monkey
         ),
         (SAVED_BGE, {"DYNACONF_KNOWLEDGE__EMBEDDINGS__PROVIDER": "huggingface"}, None),
         (SAVED_BGE, {"DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL": E5}, None),
+        (SAVED_BGE, {"DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL": "  "}, ("fastembed", "BAAI/bge-small-en-v1.5")),
         (None, {}, None),
     ],
 )
