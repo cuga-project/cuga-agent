@@ -70,6 +70,8 @@ Tool Approval Example (with HITL):
 
 from typing import Callable, List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
 import asyncio
+import functools
+import inspect
 import sys
 import time
 import uuid
@@ -105,6 +107,34 @@ from cuga.backend.cuga_graph.utils.run_receipt import (
 )
 
 _llm_manager_instance = None
+
+
+def _restores_run_context(fn):
+    """Restore the caller's run-context variables when ``invoke``/``stream`` finishes.
+
+    Otherwise the finished run's config, and the knowledge engine it holds, stays referenced
+    from the caller's context; an agent created afterwards then cannot open knowledge.
+    """
+    if inspect.isasyncgenfunction(fn):
+
+        @functools.wraps(fn)
+        async def gen(*args, **kwargs):
+            from cuga.backend.cuga_graph.utils.langfuse_tracing import restore_run_context
+
+            with restore_run_context():
+                async for item in fn(*args, **kwargs):
+                    yield item
+
+        return gen
+
+    @functools.wraps(fn)
+    async def run(*args, **kwargs):
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import restore_run_context
+
+        with restore_run_context():
+            return await fn(*args, **kwargs)
+
+    return run
 
 
 def _get_llm_manager():
@@ -2772,6 +2802,7 @@ class CugaAgent:
                 raise
             return None
 
+    @_restores_run_context
     async def invoke(
         self,
         message: Union[str, List[BaseMessage], None] = None,
@@ -3304,6 +3335,7 @@ class CugaAgent:
             ),
         )
 
+    @_restores_run_context
     async def stream(
         self,
         message: Union[str, List[BaseMessage], None] = None,

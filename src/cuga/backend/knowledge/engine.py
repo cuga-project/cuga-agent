@@ -1805,7 +1805,12 @@ class KnowledgeEngine:
             acquire_exclusive_nonblocking(self._lock_file)
         except OSError:
             self._lock_file.close()
-            raise RuntimeError("Knowledge engine already running in another process. Start with --workers 1")
+            raise RuntimeError(
+                f"Knowledge data in {config.persist_dir} is already open in another knowledge engine: "
+                "another server worker, or another CugaAgent in this process that is still in use. "
+                "Run the server with one worker; in the SDK, reuse one agent's knowledge or call "
+                "`await agent.aclose()` on the other agent first."
+            )
 
         # Default embeddings (lazy — initialized on first use to speed up startup)
         self._default_embeddings = None
