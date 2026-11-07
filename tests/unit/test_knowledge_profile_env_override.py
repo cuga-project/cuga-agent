@@ -108,3 +108,21 @@ def test_end_to_end_from_settings_honours_the_override(monkeypatch):
     assert cfg.embedding_batch_size == 16, (
         f"profile ({cfg.rag_profile}) swallowed the operator override; got {cfg.embedding_batch_size}"
     )
+
+
+@pytest.mark.unit
+def test_embedding_model_env_beats_the_standard_profile(monkeypatch):
+    """`cuga start --embedding-model` sets this variable; the standard profile names its own model."""
+    from cuga.backend.knowledge.config import KnowledgeConfig
+    from cuga.config import settings
+
+    monkeypatch.delenv("DYNACONF_KNOWLEDGE__SEARCH__RAG_PROFILE", raising=False)
+    monkeypatch.setenv("DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL", "intfloat/multilingual-e5-small")
+    settings.reload()
+    settings.validators.validate()
+    try:
+        assert KnowledgeConfig.from_settings(settings).embedding_model == "intfloat/multilingual-e5-small"
+    finally:
+        monkeypatch.undo()
+        settings.reload()
+        settings.validators.validate()
