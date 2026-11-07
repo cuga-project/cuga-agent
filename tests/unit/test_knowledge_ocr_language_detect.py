@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 
 def test_accurate_mode_uses_tesseract_auto(monkeypatch, tmp_path):
     """When the ``tesseract`` binary is on PATH, accurate mode must select it
@@ -265,14 +267,21 @@ def _capture_init_log(eng) -> str:
     return " ".join(logs)
 
 
-def test_layout_engine_auto_mps_engages_transformers(monkeypatch, tmp_path):
-    """The original `auto` + MPS case from the user's bug report: `auto`
-    must promote to the PyTorch (`transformers`) engine so layout actually
-    runs on MPS, instead of falling back to ONNX-CPU silently."""
+@pytest.mark.unit
+def test_layout_engine_auto_mps_uses_onnx(monkeypatch, tmp_path):
+    """On Apple Silicon Docling runs on CPU: its models fail on MPS (the layout
+    model builds float64 tensors, the table model rejects MPS), so handing it
+    MPS made every PDF upload fail on a Mac with default settings."""
+    from docling.datamodel.accelerator_options import AcceleratorDevice
+    from docling.datamodel.base_models import InputFormat
+
     eng = _build_eng_for_layout(monkeypatch, tmp_path, layout_engine="auto", device_label="mps")
     joined = _capture_init_log(eng)
-    assert "layout_engine='transformers'" in joined, joined
-    assert "layout_device='mps'" in joined, joined
+    assert "layout_engine='onnx'" in joined, joined
+    assert "layout_device='cpu'" in joined, joined
+    (converter,) = eng._docling_converters.values()
+    options = converter.format_to_options[InputFormat.PDF].pipeline_options
+    assert options.accelerator_options.device == AcceleratorDevice.CPU
 
 
 def test_layout_engine_auto_cuda_engages_transformers(monkeypatch, tmp_path):
@@ -311,12 +320,13 @@ def test_explicit_transformers_is_honored_on_cpu(monkeypatch, tmp_path):
     assert "layout_device='cpu'" in joined, joined
 
 
+@pytest.mark.unit
 def test_auto_gpu_and_explicit_transformers_share_cache(monkeypatch, tmp_path):
     """`auto`+GPU and explicit `transformers` resolve to the same effective
     engine — they must share a cached converter, not build twice."""
     from cuga.backend.knowledge import engine as engine_mod
 
-    eng = _build_eng_for_layout(monkeypatch, tmp_path, layout_engine="auto", device_label="mps")
+    eng = _build_eng_for_layout(monkeypatch, tmp_path, layout_engine="auto", device_label="cuda")
     eng._get_docling_converter()
     # Two cache entries for two distinct (mode, effective_engine) combinations
     # would mean we wasted a model load. We expect one.

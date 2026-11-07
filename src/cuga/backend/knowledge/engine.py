@@ -893,6 +893,16 @@ def _detect_accelerator(use_gpu: bool) -> tuple[str, list[str]]:
     return device, providers
 
 
+def _docling_device(use_gpu: bool) -> str:
+    """The device Docling's models run on: CUDA when available, otherwise CPU.
+
+    Docling's models fail on Apple's MPS (the layout model builds float64 tensors, the
+    table model rejects MPS), so on a Mac Docling runs on CPU while embeddings keep the GPU.
+    """
+    device, _ = _detect_accelerator(use_gpu)
+    return "cuda" if device == "cuda" else "cpu"
+
+
 # --- Embedding factory ---
 
 
@@ -2858,12 +2868,12 @@ class KnowledgeEngine:
             # glance. Also includes the active config so the line is
             # self-describing if shared in a bug report.
             # Per-stage device honesty:
-            #   - layout: depends on the resolved engine (transformers → MPS/CUDA;
+            #   - layout: depends on the resolved engine (transformers → CUDA or CPU;
             #     ONNX is CPU-only regardless of device_label).
             #   - embed: the local accelerator backing fastembed/huggingface,
             #     or "N/A — cloud" for openai/openrouter/ollama.
             # We surface both so a single timing line is enough to diagnose.
-            _device_label, _ = _detect_accelerator(self._config.use_gpu)
+            _device_label = _docling_device(self._config.use_gpu)
             _eff_layout_engine, _layout_device = self._resolve_layout(
                 self._config.docling_layout_engine or "auto", _device_label
             )
@@ -5088,7 +5098,7 @@ class KnowledgeEngine:
             mode = "accurate"
 
         layout_engine_choice = (self._config.docling_layout_engine or "auto").lower()
-        device_label, _ = _detect_accelerator(self._config.use_gpu)
+        device_label = _docling_device(self._config.use_gpu)
         effective_layout_engine, _ = self._resolve_layout(layout_engine_choice, device_label)
 
         # Cache by EFFECTIVE engine so explicit "transformers" and "auto"
@@ -5110,7 +5120,6 @@ class KnowledgeEngine:
         try:
             device_enum = {
                 "cuda": AcceleratorDevice.CUDA,
-                "mps": AcceleratorDevice.MPS,
                 "cpu": AcceleratorDevice.CPU,
             }.get(device_label, AcceleratorDevice.AUTO)
             pipeline_options.accelerator_options = AcceleratorOptions(device=device_enum)
