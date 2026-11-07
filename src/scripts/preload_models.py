@@ -61,11 +61,15 @@ def preload_fastembed() -> None:
     print("→ Preloading fastembed models...")
     from fastembed import TextEmbedding
 
+    from cuga.backend.knowledge.fastembed_models import register
+
     cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
     models = [
-        "BAAI/bge-small-en-v1.5",  # default embedding model
+        "intfloat/multilingual-e5-small",  # default knowledge embedding model
+        "BAAI/bge-small-en-v1.5",  # policies, tool shortlisting and Evolve
     ]
     for model_name in models:
+        register(model_name)
         print(f"  Downloading {model_name}...")
         model = TextEmbedding(model_name, cache_dir=cache_dir)
         # Run one inference pass to ensure ONNX runtime initializes

@@ -965,6 +965,10 @@ class _FastEmbedEmbeddings(Embeddings):
         from fastembed import TextEmbedding
         import os
 
+        from cuga.backend.knowledge.fastembed_models import register
+
+        register(model_name)
+
         # fastembed defaults cache_dir to ~/fastembed_cache which resolves to
         # /tmp/fastembed_cache when HOME=/tmp (container). Explicitly pass the
         # build-time cache so it finds the pre-extracted model dir immediately,
