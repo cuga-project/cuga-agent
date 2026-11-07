@@ -371,6 +371,14 @@
 .cuga-composer-toolbar__manage, .cuga-composer-chip__name, .cuga-carbon-message-attachment { font-size: 0.75rem; }
 .cuga-composer-chip__action { width: 2rem; height: 2rem; }
 .cuga-composer-chip { background: var(--cds-layer-02); border-color: var(--cds-border-subtle-01); }
+/* State colours must win over the neutral chip style above. */
+.cuga-composer-chip.cuga-composer-chip--uploading { border-color: var(--cds-border-interactive, #0f62fe); }
+.cuga-composer-chip.cuga-composer-chip--error {
+  border-color: var(--cds-support-error, #da1e28);
+  background: var(--cds-notification-background-error, #fff1f1);
+}
+.cuga-composer-chip__error-icon { flex: none; fill: var(--cds-support-error, #da1e28); }
+.cuga-composer-chip__status { flex: none; font-size: 0.75rem; color: var(--cds-text-error, #da1e28); }
 .cuga-slash-dropdown { font-family: "IBM Plex Sans", sans-serif; border-radius: 0; }
 .cuga-slash-option { min-height: 3rem; }
 .cuga-slash-option__name, .debug-section code, .debug-section pre { font-family: "IBM Plex Mono", monospace; }
