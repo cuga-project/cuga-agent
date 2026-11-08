@@ -99,6 +99,18 @@ def _norm(value: Union[None, str, HookResult]) -> HookResult:
     return value
 
 
+def _report_failure(hook: Any, name: str, args: tuple, exc: Exception) -> None:
+    """A hook that failed says so to whoever watches it: an optional attribute, which only an audit sets. The run goes on as
+    it would without this, and a failure here changes nothing."""
+    report = getattr(hook, "_report_failure", None)
+    if report is None:
+        return
+    try:
+        report(name, args, exc)
+    except Exception as second:
+        logger.warning("hook {}.{} failure not reported: {}", type(hook).__name__, name, second)
+
+
 class HookRegistry:
     """Calls every hook in order and records one HookEvent per hook call."""
 
@@ -137,6 +149,7 @@ class HookRegistry:
                 raise
             except Exception as exc:  # a broken hook must not break the agent
                 logger.warning("hook {}.{} failed: {}", type(hook).__name__, name, exc)
+                _report_failure(hook, name, call_args, exc)
                 continue
             if res.message:
                 messages.append(res.message)
