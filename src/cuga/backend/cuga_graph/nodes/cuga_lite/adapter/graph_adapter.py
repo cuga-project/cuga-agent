@@ -399,7 +399,10 @@ class AgentGraphAdapter(CoreGraphAdapter):
                     "cuga_lite_bind_tools_tool_names": found,
                     "cuga_lite_bind_tools_include_find_tools": True,
                 }
-                logger.info("[fc] dynamic tools: binding find_tools + {} found tool(s)", len(found))
+                logger.info(
+                    "[fc] dynamic tools: binding find_tools + {} tool(s) (found, searched apps, no app)",
+                    len(found),
+                )
             if self._resolved_bind_mode(configurable) == "none":
                 # Advertise exactly the executable set prepare built (filtered per
                 # sub-task / relevant apps), not the registry-wide catalogue: a tool
@@ -880,13 +883,19 @@ def dynamic_tool_names(
     messages: Any, executable: List[str], mode: Any, app_of: Optional[Dict[str, str]] = None
 ) -> List[str]:
     """Tools to bind next to find_tools: ``True`` = the tools found or called so far; ``"apps"`` = every
-    executable tool of each app searched (find_tools ``app_name``) or used so far."""
+    executable tool of each app searched (find_tools ``app_name``) or used so far. Executable tools of no app
+    are always included."""
     found = found_tool_names(messages, executable, app_of)
-    if str(mode).lower() != "apps":
-        return found
-    apps = {tool_app_name(n, app_of) for n in found} | searched_apps(messages)
-    apps.discard("")
-    return [n for n in executable if tool_app_name(n, app_of) in apps]
+    if str(mode).lower() == "apps":
+        apps = {tool_app_name(n, app_of) for n in found} | searched_apps(messages)
+        apps.discard("")
+        found = [n for n in executable if tool_app_name(n, app_of) in apps]
+    # Tools of no app (spawn_agent, get_agent_result and other in-graph tools) are never found by an app
+    # search, so they are bound always; without this the prompt names a tool the model cannot call.
+    # find_tools itself is bound through cuga_lite_bind_tools_include_find_tools.
+    return found + [
+        n for n in executable if n != "find_tools" and not tool_app_name(n, app_of) and n not in found
+    ]
 
 
 def tool_app_name(name: str, app_of: Optional[Dict[str, str]] = None) -> str:
