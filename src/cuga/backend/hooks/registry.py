@@ -308,6 +308,8 @@ def wrap_provider_with_hooks(provider: Any, registry: HookRegistry) -> Any:
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 
     class HookedToolProvider(ToolProviderInterface):
+        _cuga_hooks = True  # a class attribute: an instance attribute lookup would reach the inner provider
+
         def __init__(self, inner: Any):
             self._inner = inner
             self._wrapped: Dict[int, BaseTool] = {}
@@ -339,6 +341,12 @@ def wrap_provider_with_hooks(provider: Any, registry: HookRegistry) -> Any:
             return self._wrap(await self._inner.get_all_tools())
 
     return HookedToolProvider(provider)
+
+
+def unwrap_hooked_provider(provider: Any) -> Any:
+    """The provider inside ``wrap_provider_with_hooks``, for type checks (ToolGuard's ``unwrap_tool_provider``
+    stops at the hooks wrapper). Any other provider is returned as is."""
+    return provider._inner if getattr(type(provider), "_cuga_hooks", False) else provider
 
 
 class HooksCallback(BaseCallbackHandler):
