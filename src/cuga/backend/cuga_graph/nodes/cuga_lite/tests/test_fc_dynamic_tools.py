@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import StructuredTool
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter import graph_adapter as ga
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import (
@@ -13,11 +14,27 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import (
     searched_apps,
     tool_app_name,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import render_tools_markdown
+from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.base import ShortlistCandidate
 from cuga.config import settings
 
 pytestmark = pytest.mark.unit
 
 EXE = ["google_mail__send_email", "google_mail__list_emails", "slack__post_message", "files__read_file"]
+
+
+def _noop(value: str = "") -> str:
+    return value
+
+
+def _find_tools_result(query, *names, description="", reasoning="Matches the query."):
+    """A find_tools result as the shortlister renders it: the query, then one entry per returned tool."""
+    tools = [
+        StructuredTool.from_function(func=_noop, name=n, description=description or f"{n} tool")
+        for n in names
+    ]
+    candidates = [ShortlistCandidate(name=n, reasoning=reasoning) for n in names]
+    return render_tools_markdown(candidates, tools, query)
 
 
 def _history():
@@ -29,9 +46,7 @@ def _history():
                 {"name": "find_tools", "args": {"query": "send", "app_name": "google_mail"}, "id": "c1"}
             ],
         ),
-        ToolMessage(
-            content="send_email(to, subject, body): send an email", tool_call_id="c1", name="find_tools"
-        ),
+        ToolMessage(content=_find_tools_result("send", "send_email"), tool_call_id="c1", name="find_tools"),
         AIMessage(
             content="", tool_calls=[{"name": "files__read_file", "args": {"file_path": "a"}, "id": "c2"}]
         ),
@@ -41,6 +56,23 @@ def _history():
 
 def test_found_tools_are_matched_within_the_searched_app_and_called_tools_are_kept():
     assert found_tool_names(_history(), EXE) == ["google_mail__send_email", "files__read_file"]
+
+
+def test_only_the_returned_entries_count_not_the_query_or_descriptions():
+    result = _find_tools_result(
+        "use list_emails or send_email",
+        "send_email",
+        description="Send an email. Call list_emails first for the thread id.",
+        reasoning="Better than slack__post_message for this task.",
+    )
+    history = [
+        HumanMessage(content="task"),
+        AIMessage(
+            content="", tool_calls=[{"name": "find_tools", "args": {"app_name": "google_mail"}, "id": "c1"}]
+        ),
+        ToolMessage(content=result, tool_call_id="c1", name="find_tools"),
+    ]
+    assert found_tool_names(history, EXE) == ["google_mail__send_email"]
 
 
 def test_nothing_found_at_the_start():
@@ -58,7 +90,9 @@ def test_unprefixed_names_use_the_providers_app_map():
     history = [
         HumanMessage(content="task"),
         AIMessage(content="", tool_calls=[{"name": "find_tools", "args": {"app_name": "gmail"}, "id": "c1"}]),
-        ToolMessage(content="gmail_send_email(to, body)", tool_call_id="c1", name="find_tools"),
+        ToolMessage(
+            content=_find_tools_result("send", "gmail_send_email"), tool_call_id="c1", name="find_tools"
+        ),
     ]
     assert found_tool_names(history, exe, app_of) == ["gmail_send_email"]
     assert tool_app_name("slack_send_channel_message", app_of) == "slack"
@@ -84,7 +118,9 @@ def test_apps_mode_with_the_providers_app_map():
     history = [
         HumanMessage(content="task"),
         AIMessage(content="", tool_calls=[{"name": "find_tools", "args": {"app_name": "gmail"}, "id": "c1"}]),
-        ToolMessage(content="gmail_send_email(to, body)", tool_call_id="c1", name="find_tools"),
+        ToolMessage(
+            content=_find_tools_result("send", "gmail_send_email"), tool_call_id="c1", name="find_tools"
+        ),
     ]
     assert dynamic_tool_names(history, exe, "apps", app_of) == ["gmail_send_email", "gmail_find_email"]
 
