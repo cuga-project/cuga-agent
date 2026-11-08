@@ -145,9 +145,9 @@ class HookRegistry:
             call_args = (answer, *args[1:]) if name == "before_reply" and answer is not None else args
             try:
                 res = _norm(getattr(hook, name)(*call_args))
-            except HookBlocked:
-                raise
             except Exception as exc:  # a broken hook must not break the agent
+                if isinstance(exc, HookBlocked) and name == "before_tool_call":
+                    raise  # a before_tool_call hook may also block the call by raising HookBlocked
                 logger.warning("hook {}.{} failed: {}", type(hook).__name__, name, exc)
                 _report_failure(hook, name, call_args, exc)
                 continue
@@ -238,13 +238,13 @@ def wrap_tools_with_hooks(tools: List[BaseTool], registry: HookRegistry) -> List
                     f"{tool.name}() takes at most {len(order)} positional arguments ({len(pos)} given)"
                 )
             kwargs = {**dict(zip(order, pos)), **kwargs}
-            args = {
-                k: v for k, v in kwargs.items() if v is not None
-            }  # schema defaults are not part of the call
+            # Hooks see the call without None values (mostly schema defaults); the tool gets the call as made,
+            # so an explicit None for a required or non-None-default field still reaches it.
+            args = {k: v for k, v in kwargs.items() if v is not None}
             blocked = registry.before_tool_call(tool.name, args)
             if blocked:
                 raise HookBlocked(blocked)
-            result = await tool.ainvoke(args)
+            result = await tool.ainvoke(kwargs)
             note = registry.after_tool_call(tool.name, args, result)
             return registry.attach_note(result, note) if note else result
 
