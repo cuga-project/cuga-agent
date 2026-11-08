@@ -68,11 +68,37 @@ def test_events_are_recorded_per_run_and_sent_to_listeners():
     seen = []
     reg.add_listener(seen.append)
     reg.before_tool_call("send", {"to": "a@x.com"})
-    reg.start_run()
-    reg.before_tool_call("send", {"to": "blocked@x.com"})
-    events = reg.run_events()
+    with reg.run("t-1"):
+        reg.before_tool_call("send", {"to": "blocked@x.com"})
+        events = reg.run_events()
     assert len(seen) == 2 and len(events) == 1
     assert events[0]["hook"] == "before_tool_call" and events[0]["message"] == "not allowed"
+    assert events[0]["thread_id"] == "t-1"
+    assert reg.run_events() == []  # nothing is kept after the run, nor outside one
+
+
+@pytest.mark.asyncio
+async def test_concurrent_runs_keep_their_own_events_and_notes():
+    import asyncio
+
+    class Noter(AgentHooks):
+        def after_tool_call(self, tool, args, result):
+            return f"note for {args['to']}"
+
+    reg = HookRegistry([Noter()])
+
+    async def one(thread_id):
+        with reg.run(thread_id):
+            reg.on_user_message(f"hello from {thread_id}", thread_id)
+            await asyncio.sleep(0)  # let the other run go in between
+            reg.attach_note([], reg.after_tool_call("send", {"to": thread_id}, []))
+            await asyncio.sleep(0)
+            return reg.run_events(), reg.before_llm_call(thread_id)
+
+    (events_a, carried_a), (events_b, carried_b) = await asyncio.gather(one("t-a"), one("t-b"))
+    assert {e["thread_id"] for e in events_a} == {"t-a"} and len(events_a) == 2
+    assert {e["thread_id"] for e in events_b} == {"t-b"} and len(events_b) == 2
+    assert carried_a == "note for t-a" and carried_b == "note for t-b"
 
 
 def test_no_hooks_is_falsy_and_returns_nothing():
