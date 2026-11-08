@@ -107,6 +107,19 @@ async def test_direct_provider_detected_through_toolguard_decorator():
 
 
 @pytest.mark.asyncio
+async def test_tagged_tool_recorded_under_its_app_through_enabled_toolguard():
+    """With ToolGuard on (the default), the guarded copy must keep ``metadata["app_name"]``."""
+    tool = _structured(_echo, "echo")
+    tool.metadata = {"app_name": "gmail"}
+    guarded = ToolGuardingToolProvider(DirectLangChainToolsProvider(tools=[tool]), enabled=True)
+
+    context = await _prepare(guarded)
+    calls = await _record_one_call(context["echo"], x=3)
+
+    assert [c["app_name"] for c in calls] == ["gmail"]
+
+
+@pytest.mark.asyncio
 async def test_positional_args_recorded_under_real_parameter_names():
     provider = DirectLangChainToolsProvider(tools=[_structured(_echo, "echo")])
 

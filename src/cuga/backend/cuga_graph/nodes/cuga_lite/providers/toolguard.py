@@ -344,6 +344,11 @@ class ToolGuardingToolProvider(ToolProviderInterface):
         target_func = getattr(target_tool, "func", None)
         target_coroutine = getattr(target_tool, "coroutine", None)
 
+        # LangChain tool metadata: SDK tools name their app in metadata["app_name"],
+        # which direct tool call recording and ToolGuide target_apps read.
+        if getattr(source_tool, "metadata", None):
+            target_tool.metadata = dict(source_tool.metadata)
+
         for attr in _METADATA_ATTRS:
             value = None
             found = False
