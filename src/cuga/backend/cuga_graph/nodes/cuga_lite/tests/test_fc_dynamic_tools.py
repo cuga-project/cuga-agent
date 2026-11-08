@@ -151,9 +151,8 @@ def test_tools_of_no_app_are_kept_next_to_the_found_tools():
     ]
 
 
-@pytest.mark.asyncio
-async def test_resolve_bind_tools_binds_the_tools_of_no_app_and_find_tools_once(monkeypatch):
-    monkeypatch.setattr(settings.advanced_features, "cuga_lite_fc_dynamic_tools", "apps", raising=False)
+async def _bind_dynamically(messages):
+    """The configurable resolve_bind_tools hands to bind_tools in function-calling mode with dynamic binding."""
     captured = []
 
     async def fake_resolve(active_model, **kwargs):
@@ -170,11 +169,48 @@ async def test_resolve_bind_tools_binds_the_tools_of_no_app_and_find_tools_once(
         },
         base_tool_provider=None,
     )
-    state = SimpleNamespace(chat_messages=[HumanMessage(content="task")])
+    state = SimpleNamespace(chat_messages=messages)
     with patch.object(ga, "resolve_model_with_bind_tools", new=AsyncMock(side_effect=fake_resolve)):
         await adapter.resolve_bind_tools(state, object(), {"cuga_lite_execution_mode": "function_calling"})
-
     (cfg,) = captured
+    return cfg
+
+
+@pytest.mark.asyncio
+async def test_resolve_bind_tools_binds_the_tools_of_no_app_and_find_tools_once(monkeypatch):
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_fc_dynamic_tools", "apps", raising=False)
+    cfg = await _bind_dynamically([HumanMessage(content="task")])
     assert cfg["cuga_lite_bind_tools_mode"] == "tools"
     assert cfg["cuga_lite_bind_tools_tool_names"] == ["spawn_agent", "get_agent_result"]
     assert cfg["cuga_lite_bind_tools_include_find_tools"] is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_bind_tools_applies_the_bind_cap_from_settings(monkeypatch):
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_fc_dynamic_tools", "apps", raising=False)
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_bind_tools_max_count", 5, raising=False)
+    cfg = await _bind_dynamically(_history())
+    assert cfg["cuga_lite_bind_tools_tool_names"] == [
+        "google_mail__send_email",
+        "files__read_file",
+        "spawn_agent",
+        "get_agent_result",
+    ]
+
+
+def test_apps_mode_over_the_cap_binds_the_found_tools_instead():
+    # App-wide: 3 tools + 2 of no app + find_tools = 6. A cap of 5 would hand the set to the shortlister.
+    assert dynamic_tool_names(_history(), EXE_WITH_IN_GRAPH, "apps", max_count=5) == [
+        "google_mail__send_email",
+        "files__read_file",
+        "spawn_agent",
+        "get_agent_result",
+    ]
+    assert dynamic_tool_names(_history(), EXE_WITH_IN_GRAPH, "apps", max_count=6) == [
+        "google_mail__send_email",
+        "google_mail__list_emails",
+        "files__read_file",
+        "spawn_agent",
+        "get_agent_result",
+    ], "at the cap the app-wide set still fits"
+    assert len(dynamic_tool_names(_history(), EXE_WITH_IN_GRAPH, "apps", max_count=0)) == 5, "cap off"

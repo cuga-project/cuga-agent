@@ -44,6 +44,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import (
     _bind_tools_mode_from_settings,
+    bind_tools_max_count_from_settings,
     resolve_model_with_bind_tools,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
@@ -386,12 +387,13 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 and ctx.get("_lc_bind_tools_executable_names")
             ):
                 # Dynamic binding: find_tools plus the tools found or called so far in this thread,
-                # read from the history on every model call (no cap, no shortlister round-trip).
+                # read from the history on every model call (no shortlister round-trip while under the cap).
                 found = dynamic_tool_names(
                     getattr(state, "chat_messages", None),
                     list(ctx["_lc_bind_tools_executable_names"]),
                     dyn,
                     ctx.get("_lc_bind_tools_app_of") or {},
+                    bind_tools_max_count_from_settings(),
                 )
                 configurable = {
                     **(configurable or {}),
@@ -880,22 +882,40 @@ class AgentGraphAdapter(CoreGraphAdapter):
 
 
 def dynamic_tool_names(
-    messages: Any, executable: List[str], mode: Any, app_of: Optional[Dict[str, str]] = None
+    messages: Any,
+    executable: List[str],
+    mode: Any,
+    app_of: Optional[Dict[str, str]] = None,
+    max_count: int = 0,
 ) -> List[str]:
     """Tools to bind next to find_tools: ``True`` = the tools found or called so far; ``"apps"`` = every
     executable tool of each app searched (find_tools ``app_name``) or used so far. Executable tools of no app
-    are always included."""
+    are always included.
+
+    When the ``"apps"`` set plus find_tools would exceed the bind cap ``max_count`` (> 0), the found and called
+    tools are bound instead: over the cap, the shortlister re-ranks against the first user message and could
+    drop a tool the thread has already found or used.
+    """
     found = found_tool_names(messages, executable, app_of)
-    if str(mode).lower() == "apps":
-        apps = {tool_app_name(n, app_of) for n in found} | searched_apps(messages)
-        apps.discard("")
-        found = [n for n in executable if tool_app_name(n, app_of) in apps]
     # Tools of no app (spawn_agent, get_agent_result and other in-graph tools) are never found by an app
     # search, so they are bound always; without this the prompt names a tool the model cannot call.
     # find_tools itself is bound through cuga_lite_bind_tools_include_find_tools.
-    return found + [
-        n for n in executable if n != "find_tools" and not tool_app_name(n, app_of) and n not in found
-    ]
+    no_app = [n for n in executable if n != "find_tools" and not tool_app_name(n, app_of)]
+    if str(mode).lower() == "apps":
+        apps = {tool_app_name(n, app_of) for n in found} | searched_apps(messages)
+        apps.discard("")
+        app_wide = [n for n in executable if tool_app_name(n, app_of) in apps]
+        if max_count > 0 and len(app_wide) + len(no_app) + 1 > max_count:
+            logger.warning(
+                "[fc] dynamic tools: the {} tool(s) of the searched apps do not fit the bind cap {}; "
+                "binding the {} found or called tool(s) instead",
+                len(app_wide),
+                max_count,
+                len(found),
+            )
+        else:
+            found = app_wide
+    return found + [n for n in no_app if n not in found]
 
 
 def tool_app_name(name: str, app_of: Optional[Dict[str, str]] = None) -> str:
