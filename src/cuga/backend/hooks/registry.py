@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Union
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.tools import BaseTool, StructuredTool
@@ -111,15 +113,28 @@ def _report_failure(hook: Any, name: str, args: tuple, exc: Exception) -> None:
         logger.warning("hook {}.{} failure not reported: {}", type(hook).__name__, name, second)
 
 
+@dataclass
+class _Run:
+    """The hook state of one invoke(). It lives in a context variable, so concurrent invocations of one agent
+    each have their own, and it is dropped when the invocation ends."""
+
+    registry: "HookRegistry"
+    thread_id: Optional[str]
+    events: List[HookEvent] = field(default_factory=list)
+    carried: List[str] = field(default_factory=list)  # tool notes that could not be attached
+
+
+_RUN: ContextVar[Optional[_Run]] = ContextVar("cuga_hooks_run", default=None)
+
+
 class HookRegistry:
     """Calls every hook in order and records one HookEvent per hook call."""
 
     def __init__(self, hooks: Optional[List[AgentHooks]] = None):
         self.hooks: List[AgentHooks] = list(hooks or [])
-        self.events: List[HookEvent] = []
         self.listeners: List[Callable[[HookEvent], None]] = []
-        self.thread_id: Optional[str] = None
-        self._run_start = 0
+        self._started_threads: Set[str] = set()
+        self._idle = _Run(self, None)  # outside a run: events only go to listeners
 
     def __bool__(self) -> bool:
         return bool(self.hooks)
@@ -130,12 +145,37 @@ class HookRegistry:
     def add_listener(self, fn: Callable[[HookEvent], None]) -> None:
         self.listeners.append(fn)
 
-    def start_run(self) -> None:
-        """Mark the start of one invoke(); run_events() returns the events from here on."""
-        self._run_start = len(self.events)
+    @contextmanager
+    def run(self, thread_id: Optional[str]) -> Iterator[None]:
+        """One invoke(): its events, thread id and carried notes stay inside this block (and its asyncio tasks)."""
+        token = _RUN.set(_Run(self, thread_id))
+        try:
+            yield
+        finally:
+            _RUN.reset(token)
+
+    def in_run(self) -> bool:
+        run = _RUN.get()
+        return run is not None and run.registry is self
+
+    def _run(self) -> _Run:
+        return _RUN.get() if self.in_run() else self._idle
+
+    @property
+    def thread_id(self) -> Optional[str]:
+        return self._run().thread_id
+
+    def set_thread(self, thread_id: Optional[str]) -> None:
+        """The thread of the current run (invoke() may create it); a later message on it is not a new session."""
+        self._run().thread_id = thread_id
+        if thread_id is not None:
+            self._started_threads.add(thread_id)
+
+    def thread_started(self, thread_id: Optional[str]) -> bool:
+        return thread_id is not None and thread_id in self._started_threads
 
     def run_events(self) -> List[Dict[str, Any]]:
-        return [e.to_dict() for e in self.events[self._run_start :]]
+        return [e.to_dict() for e in self._run().events]
 
     def _call(self, name: str, summary: str, *args: Any) -> HookResult:
         messages: List[str] = []
@@ -163,8 +203,10 @@ class HookRegistry:
             outcome = "answer" if name == "on_user_message" else "rewrite"
         else:
             outcome = "observe"
-        event = HookEvent(name, self.thread_id, summary, outcome, message, details, answer=answer)
-        self.events.append(event)
+        run = self._run()
+        event = HookEvent(name, run.thread_id, summary, outcome, message, details, answer=answer)
+        if run is not self._idle:
+            run.events.append(event)
         for fn in self.listeners:
             try:
                 fn(event)
@@ -174,7 +216,7 @@ class HookRegistry:
 
     # -- the nine hooks ------------------------------------------------------------------------------------------
     def session_start(self, thread_id: Optional[str]) -> None:
-        self.thread_id = thread_id
+        self.set_thread(thread_id)
         self._call("session_start", f"thread {thread_id}", thread_id)
 
     def on_user_message(self, message: str, thread_id: Optional[str]) -> HookResult:
@@ -182,7 +224,8 @@ class HookRegistry:
 
     def before_llm_call(self, thread_id: Optional[str] = None) -> Optional[str]:
         message = self._call("before_llm_call", "model call", thread_id).message
-        carried, self._carried = getattr(self, "_carried", []), []  # tool notes that could not be attached
+        run = self._run()
+        carried, run.carried = run.carried, []
         return "\n\n".join(carried + ([message] if message else [])) or None
 
     def after_llm_call(self, text: str) -> None:
@@ -209,7 +252,7 @@ class HookRegistry:
         if isinstance(result, dict):
             prev = result.get("hook_note")
             return {**result, "hook_note": f"{prev}\n{note}" if prev else note}
-        self._carried = getattr(self, "_carried", []) + [note]
+        self._run().carried.append(note)
         return result
 
     def before_reply(self, answer: str) -> HookResult:

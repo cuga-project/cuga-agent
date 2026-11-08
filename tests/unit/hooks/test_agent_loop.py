@@ -194,10 +194,53 @@ async def test_hook_events_cover_the_whole_lifecycle(monkeypatch):
     assert any(e["hook"] == "before_llm_call" and e["outcome"] == "inject" for e in result.hook_events)
     order = [e["hook"] for e in result.hook_events]
     assert order[0] == "session_start" and order[-1] == "on_task_end"
-    assert agent.hooks.run_events() == result.hook_events
+    assert agent.hooks.run_events() == []  # the registry keeps no events after the invocation
 
 
 def test_scripted_model_needs_the_marker_to_use_a_script_entry():
     model = ScriptedModel(script=["ANSWER:x"], seen=[])
     out = model.invoke([SystemMessage(content="no marker here")])
     assert out.content == "helper reply" and model.step == 0
+
+
+class CountingHooks(AgentHooks):
+    def __init__(self):
+        self.sessions: List[Optional[str]] = []
+        self.messages: List[str] = []
+
+    def before_llm_call(self, thread_id):
+        return MARKER
+
+    def session_start(self, thread_id):
+        self.sessions.append(thread_id)
+
+    def on_user_message(self, message, thread_id):
+        self.messages.append(message)
+
+
+async def test_session_start_fires_once_per_thread(monkeypatch):
+    hooks = CountingHooks()
+    _, agent = _run(monkeypatch, ["ANSWER:done"], hooks)
+
+    for thread_id in ("t-a", "t-b", "t-a"):
+        await agent.invoke("Say something.", thread_id=thread_id)
+    first = await agent.invoke("Say something.")  # invoke() creates the thread id
+    await agent.invoke("Again.", thread_id=first.thread_id)
+
+    assert hooks.sessions == ["t-a", "t-b", None]
+
+
+async def test_concurrent_invocations_each_run_the_hooks(monkeypatch):
+    import asyncio
+
+    hooks = CountingHooks()
+    _, agent = _run(monkeypatch, ["ANSWER:done"], hooks)
+
+    a, b = await asyncio.gather(
+        agent.invoke("Message A.", thread_id="t-a"), agent.invoke("Message B.", thread_id="t-b")
+    )
+
+    assert sorted(hooks.messages) == ["Message A.", "Message B."]
+    for result, thread_id in ((a, "t-a"), (b, "t-b")):
+        assert result.hook_events and {e["thread_id"] for e in result.hook_events} == {thread_id}
+        assert [e["hook"] for e in result.hook_events].count("on_user_message") == 1

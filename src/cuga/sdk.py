@@ -2081,7 +2081,6 @@ class CugaAgent:
         from cuga.backend.hooks import HookRegistry
 
         self.hooks = HookRegistry(list(hooks or []))
-        self._hooks_depth = 0
         if self.hooks:
             from cuga.backend.hooks import HooksCallback, wrap_provider_with_hooks, wrap_tools_with_hooks
 
@@ -2802,12 +2801,10 @@ class CugaAgent:
         user turn in the same thread. Events of this invocation are returned in ``result.hook_events``.
         """
         reg = self.hooks
-        self._hooks_depth += 1
-        try:
-            thread_id = kwargs.get("thread_id")
-            reg.start_run()
+        thread_id = kwargs.get("thread_id")
+        with reg.run(thread_id):
             if isinstance(message, str):
-                if thread_id is None or thread_id != reg.thread_id:
+                if not reg.thread_started(thread_id):
                     reg.session_start(thread_id)
                 guard = reg.on_user_message(message, thread_id)
                 if guard.answer is not None:  # a hook answered (e.g. an intent guard): the agent does not run
@@ -2816,7 +2813,7 @@ class CugaAgent:
                         answer=guard.answer, thread_id=thread_id, hook_events=reg.run_events()
                     )
             result = await self.invoke(message, **kwargs)
-            reg.thread_id = result.thread_id
+            reg.set_thread(result.thread_id)
             for attempt in range(3):
                 reply = reg.before_reply(result.answer or "")
                 if reply.message and not result.error and attempt < 2:  # sent back to work (at most twice)
@@ -2829,8 +2826,6 @@ class CugaAgent:
             reg.on_task_end(result.answer or "")
             result.hook_events = reg.run_events()
             return result
-        finally:
-            self._hooks_depth -= 1
 
     async def invoke(
         self,
@@ -2915,7 +2910,7 @@ class CugaAgent:
             result = await agent.invoke(None, thread_id="user-123", action_response=approval)
             ```
         """
-        if self.hooks and self._hooks_depth == 0:
+        if self.hooks and not self.hooks.in_run():
             return await self._invoke_with_hooks(
                 message,
                 thread_id=thread_id,
