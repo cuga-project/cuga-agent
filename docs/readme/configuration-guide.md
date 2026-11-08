@@ -205,7 +205,7 @@ and omit `WXO_API_KEY` — local instances are auto-detected and don't require a
 CUGA does not require OpenAI: OpenAI-compatible endpoints work through the standard override, including Chinese providers. Two services are commonly unreachable from mainland China and have workarounds:
 
 - **PyPI is slow:** use a local mirror, for example `pip install cuga -i https://pypi.tuna.tsinghua.edu.cn/simple`. With uv, set `UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple` rather than adding a `uv.toml` to the project root, which would make uv ignore the `[tool.uv]` section of `pyproject.toml`. A changed index re-resolves `uv.lock`; don't commit that change. torch and torchvision still come from the PyTorch CPU index pinned in `pyproject.toml`, not the mirror.
-- **Hugging Face is blocked:** with the default `[storage.embedding] provider = "local"`, policies and knowledge download a small embedding model from Hugging Face on first use. Set `HF_ENDPOINT=https://hf-mirror.com`, or preload the models ahead of time (this also needs `HF_ENDPOINT` set):
+- **Hugging Face is blocked:** with the default `[storage.embedding] provider = "local"`, policies and knowledge download small embedding models from Hugging Face on first use. Set `HF_ENDPOINT=https://hf-mirror.com`, or preload the models ahead of time (this also needs `HF_ENDPOINT` set):
 
   ```bash
   export FASTEMBED_CACHE_PATH="$HOME/.cache/cuga/fastembed"
@@ -473,6 +473,11 @@ and for `knowledge.pgvector_connection_string` if you set it. The `storage.postg
 also holds other data, such as policies, so move what you still need first. The rebuilt knowledge
 base uses the configured model: the profile's, or `DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL` when that
 is set.
+
+An existing knowledge base needs only its own model in the model cache, so an offline or air-gapped
+install keeps searching and adding documents after an upgrade. A new knowledge base needs
+`multilingual-e5-small`: preload it before going offline (see [Using CUGA in mainland
+China](#using-cuga-in-mainland-china)).
 
 **Try the knowledge demo:** same as the main demo but with the knowledge engine on (upload documents and query them):
 
@@ -985,7 +990,7 @@ When an app exposes many tools, CUGA shrinks the set before the model sees it. T
 
 `embedding` compares one vector built from your question against one vector per tool (name + description + parameter names + return field names). It is strong at **recall** but weak at separating near-identical tools such as `get_contacts` (list) and `get_contact` (by id) — so `hybrid` is usually the better choice for discovery, and `embedding` for the provider cap where only "don't drop the needed tool" matters.
 
-Embeddings are local by default (`BAAI/bge-small-en-v1.5` via fastembed) — the same weights knowledge and policy already load, so there is one ONNX session and nothing extra for airgapped preload to fetch. Ranking makes no network call and is not billed. Setting `embedding_provider = "openai"` trades that away for a hosted model. Either way the *agent* still calls an LLM for its own reasoning — only the shortlister's ranking step is affected. The first call while a local model is still downloading is served by `fallback_strategy`, so **a query never waits on a download**.
+Embeddings are local by default (`BAAI/bge-small-en-v1.5` via fastembed) — the same weights policies already load, so there is one ONNX session and nothing extra for airgapped preload to fetch. Ranking makes no network call and is not billed. Setting `embedding_provider = "openai"` trades that away for a hosted model. Either way the *agent* still calls an LLM for its own reasoning — only the shortlister's ranking step is affected. The first call while a local model is still downloading is served by `fallback_strategy`, so **a query never waits on a download**.
 
 In **server mode** the catalogue is embedded at startup and again whenever the tool list changes, so the first `find_tools` after boot uses cosine rather than falling back. Vectors are keyed by content hash, so adding a tool embeds one document rather than the whole catalogue. The SDK stays lazy.
 
