@@ -5,6 +5,8 @@ from langchain_core.tools import tool
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
 
+pytestmark = pytest.mark.unit
+
 
 @tool
 def gmail_send_email(to: str, body: str) -> str:
