@@ -2280,22 +2280,22 @@ class KnowledgeEngine:
         return self._record_managers[collection]
 
     async def _resolve_embeddings_for_collection(self, collection: str) -> Embeddings:
-        self._ensure_embeddings()
         cfg = await self._metadata.get_collection_config(collection)
-        if cfg:
-            pinned_provider = cfg["embedding_provider"]
-            pinned_model = cfg["embedding_model"]
-            if (
-                pinned_provider == self._config.embedding_provider
-                and pinned_model == self._config.embedding_model
-            ):
-                return self._default_embeddings
+        if cfg and (cfg["embedding_provider"], cfg["embedding_model"]) != (
+            self._config.embedding_provider,
+            self._config.embedding_model,
+        ):
+            # A collection pinned to another model never loads the default one: offline, with
+            # only the pinned model cached (an upgrade that changed the default), that load fails.
             from dataclasses import replace
 
             pinned_cfg = replace(
-                self._config, embedding_provider=pinned_provider, embedding_model=pinned_model
+                self._config,
+                embedding_provider=cfg["embedding_provider"],
+                embedding_model=cfg["embedding_model"],
             )
             return create_embeddings(pinned_cfg)
+        self._ensure_embeddings()
         return self._default_embeddings
 
     def _create_vector_adapter(self, collection: str, embeddings: Embeddings):
@@ -2352,14 +2352,13 @@ class KnowledgeEngine:
         await asyncio.to_thread(_sync_put)
 
     async def _ensure_collection_config(self, collection: str) -> None:
+        if await self._metadata.get_collection_config(collection):
+            return  # pinned: its own model embeds the upload, the default is not needed
         self._ensure_embeddings()
-        if not await self._metadata.get_collection_config(collection):
-            provider = self._config.embedding_provider
-            model = self._config.embedding_model
-            await self._metadata.set_collection_config(
-                collection, provider, model, self._default_embedding_dim
-            )
-            logger.info(f"Created collection {collection} (dim={self._default_embedding_dim})")
+        provider = self._config.embedding_provider
+        model = self._config.embedding_model
+        await self._metadata.set_collection_config(collection, provider, model, self._default_embedding_dim)
+        logger.info(f"Created collection {collection} (dim={self._default_embedding_dim})")
 
     def _get_collection_lock(self, collection: str) -> asyncio.Lock:
         if collection not in self._collection_locks:

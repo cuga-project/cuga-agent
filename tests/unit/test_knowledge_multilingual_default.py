@@ -30,11 +30,16 @@ def test_default_profiles_use_the_multilingual_model(profile):
 
 
 def test_a_collection_built_with_another_model_keeps_that_model(tmp_path, monkeypatch):
-    """A knowledge base built before the default changed is still searched with its own model."""
+    """A knowledge base built before the default changed is still searched with its own model,
+    without loading the default one: offline, with only the old model cached, that load fails."""
     from cuga.backend.knowledge import engine as engine_mod
 
     eng = KnowledgeEngine(KnowledgeConfig(enabled=True, persist_dir=tmp_path, embedding_model=E5))
-    monkeypatch.setattr(eng, "_ensure_embeddings", lambda: None)
+
+    def default_model_not_cached():
+        raise ValueError(f"Could not load model {E5} from any source.")
+
+    monkeypatch.setattr(eng, "_ensure_embeddings", default_model_not_cached)
 
     async def get_collection_config(collection):
         return {"embedding_provider": "fastembed", "embedding_model": "BAAI/bge-small-en-v1.5"}
@@ -42,6 +47,7 @@ def test_a_collection_built_with_another_model_keeps_that_model(tmp_path, monkey
     monkeypatch.setattr(eng._metadata, "get_collection_config", get_collection_config)
     monkeypatch.setattr(engine_mod, "create_embeddings", lambda cfg: cfg.embedding_model)
     assert asyncio.run(eng._resolve_embeddings_for_collection("kb_agent_default")) == "BAAI/bge-small-en-v1.5"
+    asyncio.run(eng._ensure_collection_config("kb_agent_default"))  # an upload into it: no default load
 
 
 @pytest.mark.parametrize(
