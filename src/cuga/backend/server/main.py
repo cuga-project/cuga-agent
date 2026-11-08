@@ -303,6 +303,24 @@ async def warm_shortlister_catalogue(agent_id: Optional[str] = None) -> int:
         return 0
 
 
+async def wait_for_saved_knowledge_config(app_state, timeout_s: float = 120.0) -> None:
+    """Wait until startup has applied the saved knowledge config, so warmup loads the agent's model.
+
+    The engine starts with the settings' model and the saved config switches it seconds later.
+    Warming first loads a model the agent may not use, and fails offline when only the agent's
+    model is cached; a failed warmup keeps the agent's knowledge tools out of the registry.
+    """
+    applied = getattr(app_state, "knowledge_startup_config_applied", None)
+    if applied is None:  # not started by the server lifespan: nothing is pending
+        return
+    try:
+        await asyncio.wait_for(applied.wait(), timeout_s)
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"Saved knowledge config not applied within {timeout_s:g}s; warming the settings' model"
+        )
+
+
 async def run_knowledge_startup(app_state, kb_config, *, init_fn) -> None:
     """Lifespan knowledge boot: isolate init failures so the server still starts."""
     if kb_config.enabled:
@@ -974,6 +992,7 @@ async def _app_lifespan(app: FastAPI):
             logger.info(f"Knowledge MCP server starting on http://127.0.0.1:{kb_config.mcp_port}")
 
         async def _warm():
+            await wait_for_saved_knowledge_config(app_state)
             try:
                 app_state.set_subsystem_status(
                     "knowledge", "starting", "Loading knowledge embedding + parser models"
@@ -1005,6 +1024,9 @@ async def _app_lifespan(app: FastAPI):
         kb_config = KnowledgeConfig.from_settings(settings)
     except Exception:
         kb_config = KnowledgeConfig()
+
+    # Set once the saved knowledge config is applied below; warmup waits for it.
+    app_state.knowledge_startup_config_applied = asyncio.Event()
 
     async def _init_knowledge() -> None:
         await run_knowledge_startup(
@@ -1168,6 +1190,7 @@ async def _app_lifespan(app: FastAPI):
                 "Startup: failed to apply saved knowledge config (engine will use settings.toml only): %s",
                 _kb_err,
             )
+    app_state.knowledge_startup_config_applied.set()
 
     # Initialise knowledge_config_hash on app_state so that resolve_collection()
     # can route to the correct hash-based collection from the first request.

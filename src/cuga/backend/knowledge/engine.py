@@ -2083,16 +2083,19 @@ class KnowledgeEngine:
         # check-and-set is serialized so concurrent callers can't both construct
         # the model. (Several callers reach here from different to_thread workers:
         # probe, per-collection resolve, ingest tokenizer.)
-        if self._default_embeddings is not None:
+        if self._default_embeddings is not None and self._default_embedding_dim is not None:
             return
         with self._embedder_init_lock:
-            if self._default_embeddings is not None:
+            if self._default_embeddings is not None and self._default_embedding_dim is not None:
                 return
             # Flagged for the health probe: on a cold cache this call downloads
             # the model, and that wait must read as "preparing", not "broken".
             self._embedder_initializing = True
             try:
-                self._default_embeddings = create_embeddings(self._config)
+                # A config applied before the first load (the server applies its saved config at
+                # startup) sets the embedder without its dimension: measure that one, don't rebuild.
+                if self._default_embeddings is None:
+                    self._default_embeddings = create_embeddings(self._config)
                 self._default_embedding_dim = _get_embedding_dim(self._default_embeddings)
             except Exception:
                 # Half-init guard: _get_embedding_dim does a live embed_query call,

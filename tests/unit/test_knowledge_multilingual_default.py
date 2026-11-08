@@ -80,3 +80,50 @@ def test_restart_keeps_the_saved_embedder_unless_this_start_sets_one(monkeypatch
 
     monkeypatch.setattr(config_store, "load_config", load_config)
     assert asyncio.run(demo_manage_setup._saved_embedding("cuga-default")) == expected
+
+
+def test_a_saved_config_applied_before_the_first_load_still_gets_its_dimension(tmp_path, monkeypatch):
+    """At server start the saved config is applied before warmup loads anything. Applying it builds
+    the agent's embedder without its dimension; the first load must measure that embedder, not skip
+    it, or every new collection is created without a dimension."""
+    from cuga.backend.knowledge import engine as engine_mod
+
+    class _Embedder:
+        def embed_query(self, text):
+            return [0.0] * 7
+
+    built = []
+    monkeypatch.setattr(
+        engine_mod, "create_embeddings", lambda cfg: built.append(cfg.embedding_model) or _Embedder()
+    )
+    eng = KnowledgeEngine(KnowledgeConfig(enabled=True, persist_dir=tmp_path, embedding_model=E5))
+    eng.apply_knowledge_config(
+        {"embedding_provider": "fastembed", "embedding_model": "BAAI/bge-small-en-v1.5"}
+    )
+
+    eng._ensure_embeddings()
+
+    assert eng._default_embedding_dim == 7
+    assert built == ["BAAI/bge-small-en-v1.5"], "the applied embedder was rebuilt or the default was loaded"
+
+
+def test_server_warmup_waits_for_the_saved_knowledge_config():
+    """Warmup loads the model the saved config selects: it starts only after startup applied it."""
+    from types import SimpleNamespace
+
+    from cuga.backend.server.main import wait_for_saved_knowledge_config
+
+    async def scenario():
+        state = SimpleNamespace(knowledge_startup_config_applied=asyncio.Event())
+        warm = asyncio.create_task(wait_for_saved_knowledge_config(state))
+        await asyncio.sleep(0.05)
+        waiting = not warm.done()
+        state.knowledge_startup_config_applied.set()
+        await asyncio.wait_for(warm, 1)
+        await wait_for_saved_knowledge_config(SimpleNamespace(), timeout_s=0.01)  # no lifespan: no wait
+        await wait_for_saved_knowledge_config(
+            SimpleNamespace(knowledge_startup_config_applied=asyncio.Event()), timeout_s=0.01
+        )  # never applied: warms anyway after the timeout
+        return waiting
+
+    assert asyncio.run(scenario())
