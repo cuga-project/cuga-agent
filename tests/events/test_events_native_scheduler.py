@@ -172,6 +172,7 @@ def test_cron_step_zero_is_refused_by_the_parser():
             ns.next_cron(expr, time.time())
 
 
+@pytest.mark.unit
 def test_cron_errors_name_the_field_and_the_fix():
     """Malformed cron expressions fail with an actionable message instead of a raw Python error."""
     now = time.time()
@@ -190,8 +191,11 @@ def test_cron_errors_name_the_field_and_the_fix():
     # inverted ranges must fail before the year-long scan
     with pytest.raises(ValueError, match="inverted range"):
         ns.next_cron("10-5 * * * *", now)
-    assert ns.next_cron("0 9 * * 1-5", now) > now
-    assert ns.next_cron("0 9 * * 7", now) > now
+    # valid weekday schedules still compute the exact next fire time
+    sat = time.mktime((2026, 1, 3, 12, 0, 0, 0, 0, -1))  # Saturday
+    assert time.localtime(ns.next_cron("0 9 * * 1-5", sat))[:5] == (2026, 1, 5, 9, 0)
+    sun = time.mktime((2026, 1, 4, 10, 0, 0, 0, 0, -1))  # Sunday, after 09:00
+    assert time.localtime(ns.next_cron("0 9 * * 7", sun))[:5] == (2026, 1, 11, 9, 0)
 
 
 def test_process_due_retires_an_unschedulable_row_without_stalling_the_tick():
