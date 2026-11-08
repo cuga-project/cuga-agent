@@ -905,14 +905,19 @@ def tool_app_name(name: str, app_of: Optional[Dict[str, str]] = None) -> str:
     return name.split("__", 1)[0] if "__" in name else ""
 
 
+# One tool entry of a find_tools result, as ``_render_find_tools_markdown`` writes it: "## 1. `tool_name`".
+_FIND_TOOLS_ENTRY = re.compile(r"^## \d+\. `([^`\n]+)`", re.MULTILINE)
+
+
 def found_tool_names(
     messages: Any, executable: List[str], app_of: Optional[Dict[str, str]] = None
 ) -> List[str]:
     """Executable tool names the thread has found (find_tools results) or called so far, in first-seen order.
 
     A find_tools result is matched to the app it searched (its ``app_name`` argument): a tool counts as found when its
-    full name, or its name without the ``app__`` prefix, appears as a word in that result. ``app_of`` maps tool name
-    to app for providers whose names carry no prefix.
+    full name, or its name without the ``app__`` prefix, is one of the result's tool entries. The query, descriptions
+    and reasoning in the result do not count. ``app_of`` maps tool name to app for providers whose names carry no
+    prefix.
     """
     exe = list(executable)
     by_app: Dict[str, List[str]] = {}
@@ -935,14 +940,12 @@ def found_tool_names(
             elif name:
                 add(str(name))
         if isinstance(m, ToolMessage) and "find_tools" in str(getattr(m, "name", "") or ""):
-            text = _message_text(m)
+            returned = set(_FIND_TOOLS_ENTRY.findall(_message_text(m)))
             app = str((calls.get(str(getattr(m, "tool_call_id", ""))) or {}).get("app_name") or "")
             pool = by_app.get(app) or exe
             for n in pool:
                 short = n.split("__", 1)[1] if "__" in n else n
-                if re.search(rf"(?<![\w]){re.escape(n)}(?![\w])", text) or re.search(
-                    rf"(?<![\w]){re.escape(short)}(?![\w])", text
-                ):
+                if n in returned or short in returned:
                     add(n)
     return out
 
