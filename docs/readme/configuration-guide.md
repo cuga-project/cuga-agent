@@ -467,10 +467,12 @@ The default embedding model is `intfloat/multilingual-e5-small`, which covers ab
 runs locally as an int8 ONNX model. Knowledge bases built with another model keep that model: a
 server keeps the model its saved agent config names, and an SDK knowledge base keeps the model it was
 built with. To move a server agent to another model, change it in the knowledge settings and select
-**Re-index now**. To rebuild an SDK knowledge base, add its documents again in new storage (a new
-`knowledge.persist_dir`, or with `storage.mode = "prod"` a new database for `storage.postgres_url` and
-for `knowledge.pgvector_connection_string` if you set it); it is built with the
-configured model: the profile's, or `DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL` when that is set.
+**Re-index now**. To rebuild an SDK knowledge base, add its documents again in new storage: a new
+`knowledge.persist_dir` and, with `storage.mode = "prod"`, a new database for `storage.postgres_url`
+and for `knowledge.pgvector_connection_string` if you set it. The `storage.postgres_url` database
+also holds other data, such as policies, so move what you still need first. The rebuilt knowledge
+base uses the configured model: the profile's, or `DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL` when that
+is set.
 
 **Try the knowledge demo:** same as the main demo but with the knowledge engine on (upload documents and query them):
 
