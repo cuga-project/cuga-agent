@@ -2785,6 +2785,44 @@ class CugaAgent:
         execution_mode: Optional[str] = None,
         step_discipline: Optional[str] = None,
     ) -> InvokeResult:
+        # One Langfuse trace per call when advanced_features.langfuse_tracing is on (see observability/langfuse_sdk.py).
+        from cuga.backend.observability.langfuse_sdk import run_trace
+
+        config = dict(config) if config else {}
+        config["configurable"] = dict(config.get("configurable") or {})
+        with run_trace("cuga.invoke", message, thread_id, config) as trace:
+            result = await self._invoke_untraced(
+                message,
+                thread_id=thread_id,
+                config=config,
+                action_response=action_response,
+                user_context=user_context,
+                track_tool_calls=track_tool_calls,
+                variables=variables,
+                shortlister=shortlister,
+                execution_mode=execution_mode,
+                step_discipline=step_discipline,
+            )
+            trace.end(
+                result.answer,
+                error=result.error,
+                metadata={"thread_id": result.thread_id, "tool_calls": len(result.tool_calls or [])},
+            )
+            return result
+
+    async def _invoke_untraced(
+        self,
+        message: Union[str, List[BaseMessage], None] = None,
+        thread_id: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
+        action_response: Optional[Any] = None,
+        user_context: Optional[str] = None,
+        track_tool_calls: bool = False,
+        variables: Optional[Dict[str, Any]] = None,
+        shortlister: Optional["Shortlister"] = None,
+        execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
+    ) -> InvokeResult:
         """
         Invoke the agent with a message and get the response.
 
@@ -3314,6 +3352,38 @@ class CugaAgent:
         execution_mode: Optional[str] = None,
         step_discipline: Optional[str] = None,
     ):
+        # One Langfuse trace per call when advanced_features.langfuse_tracing is on (see observability/langfuse_sdk.py).
+        from cuga.backend.observability.langfuse_sdk import run_trace
+
+        config = dict(config) if config else {}
+        config["configurable"] = dict(config.get("configurable") or {})
+        with run_trace("cuga.stream", message, thread_id, config) as trace:
+            last = None
+            async for state in self._stream_untraced(
+                message,
+                thread_id=thread_id,
+                config=config,
+                action_response=action_response,
+                shortlister=shortlister,
+                execution_mode=execution_mode,
+                step_discipline=step_discipline,
+            ):
+                last = state
+                yield state
+            from cuga.backend.observability.langfuse_sdk import final_answer
+
+            trace.end(final_answer(last))
+
+    async def _stream_untraced(
+        self,
+        message: Union[str, List[BaseMessage], None] = None,
+        thread_id: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
+        action_response: Optional[Any] = None,  # ActionResponse for resuming after HITL
+        shortlister: Optional["Shortlister"] = None,
+        execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
+    ):
         """
         Stream the agent's execution step by step.
 
@@ -3518,6 +3588,9 @@ class CugaAgent:
         """
         for tool in tools:
             self.add_tool(tool)
+
+    invoke.__doc__ = _invoke_untraced.__doc__
+    stream.__doc__ = _stream_untraced.__doc__
 
 
 class CugaSupervisor:
@@ -3888,6 +3961,33 @@ class CugaSupervisor:
         tenant_id: Optional[str] = None,
         checkpoint_thread_id: Optional[str] = None,
     ) -> InvokeResult:
+        # One Langfuse trace per call when advanced_features.langfuse_tracing is on (see observability/langfuse_sdk.py).
+        from cuga.backend.observability.langfuse_sdk import run_trace
+
+        trace_config: Dict[str, Any] = {"callbacks": list(self._callbacks or [])}
+        with run_trace("cuga.supervisor", message, thread_id, trace_config) as trace:
+            result = await self._invoke_untraced(
+                message,
+                thread_id=thread_id,
+                action_response=action_response,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                checkpoint_thread_id=checkpoint_thread_id,
+                _callbacks=trace_config["callbacks"] or None,
+            )
+            trace.end(result.answer, error=result.error, metadata={"thread_id": result.thread_id})
+            return result
+
+    async def _invoke_untraced(
+        self,
+        message: Optional[str],
+        thread_id: Optional[str] = None,
+        action_response: Optional[Any] = None,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        checkpoint_thread_id: Optional[str] = None,
+        _callbacks: Optional[List[Any]] = None,
+    ) -> InvokeResult:
         """
         Invoke the supervisor with a message.
 
@@ -3922,8 +4022,9 @@ class CugaSupervisor:
             )
 
         config = {"configurable": {}}
-        if self._callbacks:
-            config["callbacks"] = self._callbacks
+        callbacks = _callbacks if _callbacks is not None else self._callbacks
+        if callbacks:
+            config["callbacks"] = callbacks
         if self._policy_system:
             config["configurable"]["policy_system"] = self._policy_system
 
@@ -4072,8 +4173,11 @@ class CugaSupervisor:
             self._compiled_graph = None
             logger.info(f"Removed agent '{name}' - graph will be recreated on next invocation")
 
+    # Convenience function for quick usage
 
-# Convenience function for quick usage
+    invoke.__doc__ = _invoke_untraced.__doc__
+
+
 async def run_agent(
     message: str,
     tools: Optional[List[BaseTool]] = None,
