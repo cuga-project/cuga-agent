@@ -2415,12 +2415,16 @@ class CugaAgent:
                     DirectLangChainToolsProvider,
                 )
 
-                provider_for_knowledge = unwrap_tool_provider(self.tool_provider)
+                from cuga.backend.hooks.registry import unwrap_hooked_provider, wrap_tools_with_hooks
+
+                provider_for_knowledge = unwrap_hooked_provider(unwrap_tool_provider(self.tool_provider))
                 if kb_enabled and isinstance(provider_for_knowledge, DirectLangChainToolsProvider):
                     existing_names = {t.name for t in provider_for_knowledge.tools}
                     knowledge_tools = self.knowledge.get_langchain_tools()
                     new_tools = [t for t in knowledge_tools if t.name not in existing_names]
                     if new_tools:
+                        if self.hooks:  # the same tool-call hooks as the tools given at construction
+                            new_tools = wrap_tools_with_hooks(new_tools, self.hooks)
                         self.tool_provider.add_tools(new_tools)
                         logger.info(f"Auto-injected {len(new_tools)} knowledge tools into SDK agent")
                 # Mark success only after injection completes (or knowledge disabled)
@@ -3554,11 +3558,14 @@ class CugaAgent:
             invalidate_toolguard_provider,
         )
         from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+        from cuga.backend.hooks.registry import unwrap_hooked_provider, wrap_tools_with_hooks
 
-        base_provider = unwrap_tool_provider(self.tool_provider)
+        base_provider = unwrap_hooked_provider(unwrap_tool_provider(self.tool_provider))
         if isinstance(base_provider, DirectLangChainToolsProvider) and hasattr(
             self.tool_provider, "add_tool"
         ):
+            if self.hooks:  # the same tool-call hooks as the tools given at construction
+                (tool,) = wrap_tools_with_hooks([tool], self.hooks)
             self.tool_provider.add_tool(tool)
             invalidate_toolguard_provider(self.tool_provider)  # noqa: F821
             # Reset graph so it gets recreated with new tools
