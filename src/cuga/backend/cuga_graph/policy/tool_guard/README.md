@@ -148,10 +148,13 @@ CugaAgent
 
 The wrapper is transparent until a guard policy exists.
 
-Direct SDK tools are enforced at runtime under the app name `"runtime_tools"`.
-If a `ToolGuide` uses `target_apps`, it must include `"runtime_tools"` for
-directly provided LangChain/runtime tools; otherwise the runtime app filter will
-treat the guard as not applicable.
+Direct SDK tools are enforced at runtime under their app name: the tool's
+`metadata["app_name"]`, or `"runtime_tools"` for tools without it. If a
+`ToolGuide` uses `target_apps`, it must include that app name (for example
+`"gmail"` for a tool with `metadata={"app_name": "gmail"}`, else
+`"runtime_tools"`); otherwise the runtime app filter will treat the guard as not
+applicable. Setting `metadata["app_name"]` on a tool later moves it out of
+`"runtime_tools"`, so update `target_apps` with it.
 
 ---
 
@@ -207,7 +210,8 @@ await agent.policies.update_tool_guard(
 
 ## Generating guard code
 
-For direct SDK tools, the virtual app name is usually:
+For direct SDK tools, the app name is the tool's `metadata["app_name"]`, or for
+tools without it:
 
 ```python
 "runtime_tools"
@@ -226,8 +230,9 @@ guard_code = await agent.policies.generate_tool_guard_code(
 If `app_name` is omitted, ToolGuard tries to auto-detect the app exposing the target tool. If multiple apps expose the same tool name, pass `app_name` explicitly.
 
 For runtime enforcement, `target_apps` is also checked. Direct SDK tools use
-`"runtime_tools"` at runtime, so policies scoped with `target_apps` must include
-`"runtime_tools"` to enforce on those tools.
+their `metadata["app_name"]` at runtime, or `"runtime_tools"` without it, so
+policies scoped with `target_apps` must include that app name to enforce on
+those tools.
 
 Then store the generated code:
 

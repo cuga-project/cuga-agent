@@ -9,6 +9,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     AppDefinition,
     ToolProviderInterface,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
     ToolGuardingToolProvider,
     configure_toolguard_provider,
@@ -248,6 +249,25 @@ async def test_toolguard_provider_keeps_langchain_metadata_for_tool_guides() -> 
     }
     (enriched,) = PolicyEnactment.apply_tool_guide([guarded_tool], guides)
     assert enriched.description.endswith("Check the fare first.")
+
+
+@pytest.mark.asyncio
+async def test_toolguard_provider_guards_tagged_sdk_tool_under_its_app() -> None:
+    calls: list[dict[str, Any]] = []
+    tagged = _make_recording_tool(calls)
+    tagged.metadata = {"app_name": "travel"}
+    provider = ToolGuardingToolProvider(DirectLangChainToolsProvider(tools=[tagged]), policy_storage=object())
+    runtime = FakeRuntime(error=None)
+
+    async def fake_get_runtime() -> FakeRuntime:
+        return runtime
+
+    provider._get_or_create_toolguard_runtime = fake_get_runtime  # type: ignore[method-assign]
+
+    (guarded_tool,) = await provider.get_all_tools()
+    await guarded_tool.ainvoke({"user_id": "uid_1", "flight_id": "AB12", "passengers": 2})
+
+    assert [c["app_name"] for c in runtime.calls] == ["travel"]
 
 
 @pytest.mark.asyncio
