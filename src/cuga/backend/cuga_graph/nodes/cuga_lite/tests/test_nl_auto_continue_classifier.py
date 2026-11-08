@@ -350,3 +350,26 @@ async def test_done_claim_override_ignores_genuine_tool_free_answer(_done_retry_
         evidence=_FULL_EVIDENCE,
     )
     assert decision.done_claim_override is False
+
+
+# ── claim_override_decision: the overrides alone (function-calling mode) ────
+
+
+def test_claim_override_decision_matches_the_classifier_overrides(_done_retry_on):
+    """No LLM, same overrides and precedence as after a finalize verdict."""
+    done = mod.claim_override_decision(OBSERVED_DONE_CLAIM, None, evidence=_FULL_EVIDENCE)
+    assert (done.auto_continue, done.done_claim_override, done.blocked_override) == (True, True, False)
+
+    blocked = mod.claim_override_decision(OBSERVED_BLOCKER_STRINGS[0], None, evidence=_FULL_EVIDENCE)
+    assert (blocked.auto_continue, blocked.blocked_override) == (True, True)
+
+    plain = mod.claim_override_decision("Let me check the billing tools next.", None, evidence=_FULL_EVIDENCE)
+    assert plain == mod.AutoContinueDecision(auto_continue=False), "no planning fast-path here"
+
+
+def test_claim_override_decision_off_with_nl_auto_continue_off(_done_retry_on, monkeypatch):
+    monkeypatch.setattr(mod.settings.advanced_features, "cuga_lite_nl_auto_continue", False, raising=False)
+    for text in (OBSERVED_DONE_CLAIM, OBSERVED_BLOCKER_STRINGS[0]):
+        assert mod.claim_override_decision(text, None, evidence=_FULL_EVIDENCE) == mod.AutoContinueDecision(
+            auto_continue=False
+        )

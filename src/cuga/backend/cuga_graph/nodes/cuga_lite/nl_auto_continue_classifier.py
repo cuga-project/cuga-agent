@@ -365,6 +365,26 @@ async def classify_nl_auto_continue_decision(
     # If the finalize is an inability claim the harness can positively
     # contradict (tools bound, nothing executed, retry unspent), override once
     # with a corrective continue instead.
+    return claim_override_decision(visible, reasoning, evidence=evidence)
+
+
+def claim_override_decision(
+    assistant_visible: Any,
+    reasoning_excerpt: Optional[Any],
+    *,
+    evidence: Optional[BlockedClaimEvidence] = None,
+) -> AutoContinueDecision:
+    """The claim overrides alone, for a turn that is already final: no LLM call.
+
+    The CodeAct path reaches this after the classifier chose finalize. Function-calling
+    mode has no classifier — a reply without tool calls is final — so it calls this
+    directly. Both paths use the same settings, evidence and one-shot markers, and
+    both are active only when ``cuga_lite_nl_auto_continue`` is on.
+    """
+    if not getattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True):
+        return AutoContinueDecision(auto_continue=False)
+    visible = normalize_assistant_text(assistant_visible)
+    reasoning = normalize_assistant_text(reasoning_excerpt)
     if _blocked_override_applies(visible, reasoning, evidence):
         logger.warning(
             "NL auto-continue: turn-1 inability claim with tools bound and zero executed "
@@ -377,7 +397,7 @@ async def classify_nl_auto_continue_decision(
             "— overriding finalize with one corrective retry (unexecuted claim)"
         )
         return AutoContinueDecision(auto_continue=True, done_claim_override=True)
-    return finalize
+    return AutoContinueDecision(auto_continue=False)
 
 
 async def classify_nl_auto_continue(
