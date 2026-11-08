@@ -67,3 +67,17 @@ async def test_add_tool_works_with_a_hooked_direct_provider():
         await (await _tool(agent, "delete")).ainvoke({"key": "k"})
     assert await (await _tool(agent, "read")).ainvoke({"key": "k"}) == "value"
     assert calls == [("read", "k")]
+
+
+@pytest.mark.asyncio
+async def test_tools_of_a_hooked_provider_are_tracked_once():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
+
+    calls.clear()
+    agent = _agent(tool_provider=DirectLangChainToolsProvider(tools=[read], app_name="kv"))
+    ToolCallTracker.start_tracking()
+    try:
+        assert await (await _tool(agent, "read")).ainvoke({"key": "k"}) == "value"
+    finally:
+        tracked = ToolCallTracker.stop_tracking()
+    assert [(c["name"], c["arguments"]) for c in tracked] == [("read", {"key": "k"})]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -266,8 +267,14 @@ def _fmt_call(tool: str, args: Dict[str, Any]) -> str:
     return f"{tool}({', '.join(f'{k}={v!r}' for k, v in args.items())})"[:200]
 
 
-def wrap_tools_with_hooks(tools: List[BaseTool], registry: HookRegistry) -> List[BaseTool]:
-    """before_tool_call / after_tool_call around each tool. A block raises HookBlocked with the hook's message."""
+def wrap_tools_with_hooks(
+    tools: List[BaseTool], registry: HookRegistry, record: bool = False
+) -> List[BaseTool]:
+    """before_tool_call / after_tool_call around each tool. A block raises HookBlocked with the hook's message.
+
+    ``record``: record each call with ``ToolCallTracker`` (tracked tool calls, Langfuse). For tools of a tool provider:
+    the provider's own recording is bypassed by the wrapper, and the agent records only the tools given as ``tools=``.
+    """
 
     def wrap(tool: BaseTool) -> BaseTool:
         schema = tool.args_schema
@@ -287,7 +294,28 @@ def wrap_tools_with_hooks(tools: List[BaseTool], registry: HookRegistry) -> List
             blocked = registry.before_tool_call(tool.name, args)
             if blocked:
                 raise HookBlocked(blocked)
-            result = await tool.ainvoke(kwargs)
+            if not record:
+                result = await tool.ainvoke(kwargs)
+            else:
+                started, result, error = time.time(), None, None
+                try:
+                    result = await tool.ainvoke(kwargs)
+                except BaseException as exc:
+                    error = "cancelled" if isinstance(exc, asyncio.CancelledError) else str(exc)
+                    raise
+                finally:
+                    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
+
+                    ToolCallTracker.record_call(
+                        tool_name=tool.name,
+                        arguments=args,
+                        result=result,
+                        app_name=(tool.metadata or {}).get("app_name"),
+                        operation_id=tool.name,
+                        duration_ms=(time.time() - started) * 1000,
+                        error=error,
+                        param_names=order,
+                    )
             note = registry.after_tool_call(tool.name, args, result)
             return registry.attach_note(result, note) if note else result
 
@@ -324,7 +352,7 @@ def wrap_provider_with_hooks(provider: Any, registry: HookRegistry) -> Any:
                     out.append(t)
                     continue
                 if id(t) not in self._wrapped:
-                    self._wrapped[id(t)] = wrap_tools_with_hooks([t], registry)[0]
+                    self._wrapped[id(t)] = wrap_tools_with_hooks([t], registry, record=True)[0]
                 out.append(self._wrapped[id(t)])
             return out
 
