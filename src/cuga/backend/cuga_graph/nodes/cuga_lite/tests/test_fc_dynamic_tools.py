@@ -1,5 +1,6 @@
 """Function-calling dynamic tool binding: tools found by find_tools or already called, per searched app."""
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import (
@@ -8,6 +9,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import (
     searched_apps,
     tool_app_name,
 )
+
+pytestmark = pytest.mark.unit
 
 EXE = ["google_mail__send_email", "google_mail__list_emails", "slack__post_message", "files__read_file"]
 
