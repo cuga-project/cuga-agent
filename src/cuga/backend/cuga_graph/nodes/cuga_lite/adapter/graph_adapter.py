@@ -509,9 +509,13 @@ class AgentGraphAdapter(CoreGraphAdapter):
         )
 
     def _any_execution_ran(self, state: Any) -> bool:
-        """Has any sandbox execution produced feedback this task? Detected via the
+        """Has any sandbox execution produced feedback in this thread? Detected via the
         shared ``EXECUTION_OUTPUT_PREFIX`` emitted by ``execution_output_text`` (CodeAct), or a
-        ``ToolMessage`` (function-calling mode, where results come back as tool messages)."""
+        ``ToolMessage`` (function-calling mode, where results come back as tool messages).
+
+        The whole retained thread counts, not only the current turn: a later turn may
+        truthfully report work an earlier turn executed ("I sent it above"), so the claim
+        retries stay off once anything has run."""
         for msg in self.get_messages(state):
             if isinstance(msg, ToolMessage):
                 return True

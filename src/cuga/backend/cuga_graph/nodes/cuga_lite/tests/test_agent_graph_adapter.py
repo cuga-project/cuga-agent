@@ -20,7 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 
 def _get_adapter_class():
@@ -541,3 +541,19 @@ def test_any_execution_ran_counts_function_calling_tool_messages():
         chat_messages=[ToolMessage(content='{"ok": true}', tool_call_id="c1")], cuga_lite_metadata={}
     )
     assert adapter._any_execution_ran(state) is True
+
+
+def test_any_execution_ran_counts_earlier_turns_of_the_thread():
+    """A follow-up turn may truthfully report work an earlier turn executed, so execution
+    anywhere in the retained thread keeps the claim retries off."""
+    from langchain_core.messages import ToolMessage
+
+    adapter = _make_adapter()
+    thread = [
+        HumanMessage(content="send the invoice"),
+        AIMessage(content="", tool_calls=[{"name": "send", "args": {}, "id": "c1", "type": "tool_call"}]),
+        ToolMessage(content='{"ok": true}', tool_call_id="c1"),
+        AIMessage(content="The invoice has been sent."),
+        HumanMessage(content="did you send it?"),
+    ]
+    assert adapter._any_execution_ran(SimpleNamespace(chat_messages=thread, cuga_lite_metadata={})) is True
