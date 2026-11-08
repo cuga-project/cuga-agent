@@ -110,3 +110,30 @@ async def test_a_failing_report_is_only_logged():
     with pytest.raises(HookBlocked, match="not allowed"):  # the next hook still runs
         await wrapped.ainvoke({"to": "blocked@x.com"})
     assert calls == ["ok@x.com"]
+
+
+class BlocksOutsideToolCalls(AgentHooks):
+    def before_reply(self, answer):
+        raise HookBlocked("not a tool call")
+
+    def on_task_end(self, answer):
+        raise HookBlocked("not a tool call")
+
+
+def test_hook_blocked_from_a_lifecycle_hook_is_logged_and_skipped():
+    reg = HookRegistry([BlocksOutsideToolCalls(), Rewrite(" [ok]")])
+    assert reg.before_reply("done").answer == "done [ok]"
+    reg.on_task_end("done")  # does not raise
+
+
+@pytest.mark.asyncio
+async def test_hook_blocked_raised_by_a_before_tool_call_hook_still_blocks():
+    class Raises(AgentHooks):
+        def before_tool_call(self, tool, args):
+            raise HookBlocked("raised block")
+
+    calls.clear()
+    (wrapped,) = wrap_tools_with_hooks([send], HookRegistry([Raises()]))
+    with pytest.raises(HookBlocked, match="raised block"):
+        await wrapped.ainvoke({"to": "ok@x.com"})
+    assert calls == []

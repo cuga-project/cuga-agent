@@ -1,5 +1,7 @@
 """Tool-call hooks: positional arguments, and tools that come from a custom tool provider."""
 
+from typing import Optional
+
 import pytest
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
@@ -91,3 +93,24 @@ async def test_note_on_a_list_result_goes_to_the_next_model_call():
     )
     assert await wrapped.ainvoke({}) == [1, 2]
     assert "check the policy" in reg.before_llm_call()
+
+
+class _NullableArgs(BaseModel):
+    parent: Optional[str] = Field(...)
+    limit: Optional[int] = Field(5)
+
+
+async def _list_items(parent: Optional[str], limit: Optional[int] = 5):
+    return {"parent": parent, "limit": limit}
+
+
+@pytest.mark.asyncio
+async def test_explicit_none_arguments_reach_the_tool():
+    rec = _Recorder()
+    nullable = StructuredTool.from_function(
+        coroutine=_list_items, name="list_items", description="List items.", args_schema=_NullableArgs
+    )
+    (tool,) = wrap_tools_with_hooks([nullable], HookRegistry([rec]))
+    assert await tool.ainvoke({"parent": None}) == {"parent": None, "limit": 5}
+    assert await tool.coroutine(parent="p", limit=None) == {"parent": "p", "limit": None}
+    assert rec.calls == [("list_items", {"limit": 5}), ("list_items", {"parent": "p"})]
