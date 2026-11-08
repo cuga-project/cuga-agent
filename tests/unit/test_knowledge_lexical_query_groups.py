@@ -21,3 +21,9 @@ def test_a_pasted_chinese_paragraph_is_capped():
 def test_repeated_chinese_pairs_are_counted_once():
     sentence = "我们的数据备份策略每天执行一次"
     assert lexical.query_groups(" ".join([sentence] * 5)) == lexical.query_groups(sentence)
+
+
+@pytest.mark.parametrize("query", ["Tyler MacDuff's child", "Tyler MacDuff\u2019s child"])
+def test_a_possessive_still_matches_the_bare_name(query):
+    """A possessive split into its own word: as the phrase "macduff s" it missed "MacDuff"."""
+    assert lexical.query_groups(query) == [["tyler"], ["macduff"], ["s"], ["child"]]
