@@ -80,3 +80,33 @@ def test_no_hooks_is_falsy_and_returns_nothing():
     assert not reg
     assert reg.before_tool_call("send", {"to": "a@x.com"}) is None
     assert reg.before_llm_call() is None
+
+
+class Audited(Broken):
+    def __init__(self, report_raises=False):
+        self.reports, self.report_raises = [], report_raises
+
+    def _report_failure(self, name, args, exc):
+        if self.report_raises:
+            raise RuntimeError("bug in the audit")
+        self.reports.append((name, args, str(exc)))
+
+
+@pytest.mark.asyncio
+async def test_a_failed_hook_is_reported_to_its_audit_and_the_call_goes_on():
+    calls.clear()
+    audited = Audited()
+    (wrapped,) = wrap_tools_with_hooks([send], HookRegistry([audited]))
+    assert await wrapped.ainvoke({"to": "ok@x.com"}) == "sent"
+    assert calls == ["ok@x.com"]
+    assert audited.reports == [("before_tool_call", ("send", {"to": "ok@x.com"}), "bug in a hook")]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_report_is_only_logged():
+    calls.clear()
+    (wrapped,) = wrap_tools_with_hooks([send], HookRegistry([Audited(report_raises=True), Block()]))
+    assert await wrapped.ainvoke({"to": "ok@x.com"}) == "sent"
+    with pytest.raises(HookBlocked, match="not allowed"):  # the next hook still runs
+        await wrapped.ainvoke({"to": "blocked@x.com"})
+    assert calls == ["ok@x.com"]
