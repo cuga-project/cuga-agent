@@ -474,10 +474,13 @@ also holds other data, such as policies, so move what you still need first. The 
 base uses the configured model: the profile's, or `DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL` when that
 is set.
 
-An existing knowledge base needs only its own model in the model cache, so an offline or air-gapped
-install keeps searching and adding documents after an upgrade. A new knowledge base needs
-`multilingual-e5-small`: preload it before going offline (see [Using CUGA in mainland
-China](#using-cuga-in-mainland-china)).
+Offline, searching an existing knowledge base needs only the model it was built with, so an
+air-gapped install keeps searching it after an upgrade. Everything else must be in the model cache
+before going offline: the model for new knowledge bases (`multilingual-e5-small` under the
+`standard` and `speed` profiles), Docling's models to parse PDFs, and, under `balanced` or
+`max_quality`, that profile's embedding and reranker models. The preload script in [Using CUGA in
+mainland China](#using-cuga-in-mainland-china) fetches the first two; for the others, start CUGA
+once with that profile while online, which loads them.
 
 **Try the knowledge demo:** same as the main demo but with the knowledge engine on (upload documents and query them):
 
