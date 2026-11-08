@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
 from cuga.backend.hooks import HookRegistry, wrap_provider_with_hooks, wrap_tools_with_hooks
 
+pytestmark = pytest.mark.unit
+
 
 class _Args(BaseModel):
     user_id: str = Field(...)

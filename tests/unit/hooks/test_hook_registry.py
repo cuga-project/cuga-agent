@@ -5,6 +5,8 @@ from langchain_core.tools import tool
 
 from cuga.backend.hooks import AgentHooks, HookBlocked, HookRegistry, HookResult, wrap_tools_with_hooks
 
+pytestmark = pytest.mark.unit
+
 
 class Block(AgentHooks):
     def before_tool_call(self, tool, args):
