@@ -2798,11 +2798,24 @@ class CugaAgent:
                 raise
             return None
 
+    async def _approval_pending(self, thread_id: Optional[str]) -> bool:
+        """True when the thread's graph stopped for a human-in-the-loop approval (``state.next`` is set)."""
+        if not thread_id:
+            return False
+        try:
+            state = await self.graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return bool(state.next)
+        except Exception as e:
+            logger.debug(f"Could not check interrupt state: {e}")
+            return False
+
     async def _invoke_with_hooks(self, message: Any, **kwargs: Any) -> "InvokeResult":
         """Run invoke() inside the session_start, on_user_message, before_reply and on_task_end hooks.
 
         A before_reply hook can send the agent back to work (at most twice); its message becomes the next
-        user turn in the same thread. Events of this invocation are returned in ``result.hook_events``.
+        user turn in the same thread. A run paused for approval gets no before_reply or on_task_end: they run
+        when ``invoke(None, action_response=...)`` finishes it. Events of this invocation are returned in
+        ``result.hook_events``.
         """
         reg = self.hooks
         thread_id = kwargs.get("thread_id")
@@ -2817,8 +2830,12 @@ class CugaAgent:
                         answer=guard.answer, thread_id=thread_id, hook_events=reg.run_events()
                     )
             result = await self.invoke(message, **kwargs)
-            reg.set_thread(result.thread_id)
+            kwargs["action_response"] = None  # a send-back is a new user turn, not another resume
             for attempt in range(3):
+                reg.set_thread(result.thread_id)
+                if not result.error and await self._approval_pending(result.thread_id):
+                    result.hook_events = reg.run_events()  # the task is not over
+                    return result
                 reply = reg.before_reply(result.answer or "")
                 if reply.message and not result.error and attempt < 2:  # sent back to work (at most twice)
                     kwargs["thread_id"] = result.thread_id

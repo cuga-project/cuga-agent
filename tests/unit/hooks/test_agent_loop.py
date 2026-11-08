@@ -244,3 +244,62 @@ async def test_concurrent_invocations_each_run_the_hooks(monkeypatch):
     for result, thread_id in ((a, "t-a"), (b, "t-b")):
         assert result.hook_events and {e["thread_id"] for e in result.hook_events} == {thread_id}
         assert [e["hook"] for e in result.hook_events].count("on_user_message") == 1
+
+
+class _FakeAgent:
+    """Just the parts of CugaAgent that ``_invoke_with_hooks`` uses; invoke() records its calls."""
+
+    _invoke_with_hooks = CugaAgent._invoke_with_hooks
+
+    def __init__(self, hooks: AgentHooks, pending: List[bool]):
+        from cuga.backend.hooks import HookRegistry
+
+        self.hooks = HookRegistry([hooks])
+        self.pending = pending
+        self.calls: List[tuple] = []
+
+    async def invoke(self, message, **kwargs):
+        from cuga.sdk import InvokeResult
+
+        self.calls.append((message, kwargs["action_response"]))
+        return InvokeResult(answer=f"answer {len(self.calls)}", thread_id="t-1")
+
+    async def _approval_pending(self, thread_id):
+        return self.pending.pop(0) if self.pending else False
+
+
+def _kwargs(**overrides):
+    base = dict(
+        thread_id="t-1",
+        config=None,
+        action_response=None,
+        user_context=None,
+        track_tool_calls=False,
+        variables=None,
+        shortlister=None,
+        execution_mode=None,
+        step_discipline=None,
+    )
+    return {**base, **overrides}
+
+
+async def test_a_run_paused_for_approval_gets_no_reply_hooks():
+    hooks = RecordingHooks(send_backs=1)
+    agent = _FakeAgent(hooks, pending=[True])
+
+    result = await agent._invoke_with_hooks("Delete the record.", **_kwargs())
+
+    assert agent.calls == [("Delete the record.", None)]  # no send-back into the paused thread
+    assert hooks.replies == [] and hooks.ended == []
+    assert {e["hook"] for e in result.hook_events} == {"session_start", "on_user_message"}
+
+
+async def test_a_send_back_after_a_resume_is_a_new_turn():
+    hooks = RecordingHooks(send_backs=1)
+    agent = _FakeAgent(hooks, pending=[False, False])
+
+    result = await agent._invoke_with_hooks(None, **_kwargs(action_response="approved"))
+
+    assert agent.calls == [(None, "approved"), (SEND_BACK, None)]
+    assert hooks.replies == ["answer 1", "answer 2"] and hooks.ended == ["answer 2"]
+    assert result.answer == "answer 2"
