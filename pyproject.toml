@@ -60,7 +60,7 @@ dependencies = [
     # routing params, 1.89.0..1.89.6); 1.84.0+ fixed GHSA-4xpc-pv4p-pm3w (Host header auth bypass).
     "litellm>=1.89.7",
     "tavily-python",
-    "fastembed>=0.4.0",
+    "fastembed>=0.6.0",
     "a2a-sdk[http-server]>=0.3.22",
     "sqlite-vec>=0.1.6", # GHSA-vrcx-gx3g-j3h8 affects <0.1.3 only; 0.1.6 is safe
     "pgvector>=0.4.2",
