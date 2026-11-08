@@ -50,6 +50,12 @@ logger = loguru_logger
 # short of a process restart.
 _REINDEX_WORKER_TIMEOUT_S = 1800  # 30 min; matches the deferred-flip wall-clock cap
 
+# A keyword leg slower than this is left out of that search, which then ranks by meaning only,
+# as it does when a collection has no keyword index. Its thread runs on: after an upgrade the
+# first keyword call rebuilds the keyword index (about a minute per 50,000 chunks), which must
+# finish, but must not hold up a search past the agent's tool timeout.
+_KEYWORD_LEG_BUDGET_S = 5.0
+
 # Strong-ref set for fire-and-forget reindex worker tasks — the event loop keeps
 # only WEAK refs to create_task() results, so a GC mid-run would drop the finally
 # that clears the busy flag. done_callback discards on completion.
@@ -3375,6 +3381,18 @@ class KnowledgeEngine:
             # keyword terms, or (c) the keyword query fails.
             return adapter.search_lexical(q, k=k)
 
+        async def _lexical_within_budget(k: int, q: str = query):
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(_do_lexical_search, k, q), _KEYWORD_LEG_BUDGET_S
+                )
+            except asyncio.TimeoutError:  # the thread is not stopped; only this search stops waiting
+                logger.warning(
+                    f"Keyword search on {collection} took over {_KEYWORD_LEG_BUDGET_S:g}s; this search "
+                    "ranked by meaning only. The keyword call keeps running in the background."
+                )
+                return []
+
         # ``below_threshold_counter`` is a one-element list so the closure
         # can mutate it (avoid `nonlocal` since this function is itself a
         # closure of ``search_with_stats``). Counts dense+lexical chunks
@@ -3439,8 +3457,7 @@ class KnowledgeEngine:
         # added latency is bounded by the dense call.
         if _hybrid_on:
             dense_task = asyncio.to_thread(_do_dense_search, first_k)
-            lexical_task = asyncio.to_thread(_do_lexical_search, first_k)
-            dense_scored, lexical_scored = await asyncio.gather(dense_task, lexical_task)
+            dense_scored, lexical_scored = await asyncio.gather(dense_task, _lexical_within_budget(first_k))
         else:
             dense_scored = await asyncio.to_thread(_do_dense_search, first_k)
             lexical_scored = []
@@ -3508,9 +3525,7 @@ class KnowledgeEngine:
             if _variants is not None and _variants.active:
                 _legs = [asyncio.to_thread(_do_dense_search, first_k, qv) for qv in _variants.dense_extra]
                 if _hybrid_on:
-                    _legs += [
-                        asyncio.to_thread(_do_lexical_search, first_k, qv) for qv in _variants.lexical_extra
-                    ]
+                    _legs += [_lexical_within_budget(first_k, qv) for qv in _variants.lexical_extra]
                 _scored_legs = await asyncio.gather(*_legs, return_exceptions=True)
                 _variant_lists = [
                     _materialize(sc, set(), apply_score_threshold=False)
