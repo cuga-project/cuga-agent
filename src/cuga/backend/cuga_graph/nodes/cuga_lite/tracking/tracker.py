@@ -211,6 +211,7 @@ class ToolCallTracker:
         error: Optional[str] = None,
         arg_defaults: Optional[Dict[str, Any]] = None,
         param_names: Optional[List[str]] = None,
+        langchain_tool: bool = False,
     ) -> None:
         """Record a tool call.
 
@@ -226,7 +227,22 @@ class ToolCallTracker:
                 (only used for the pagination facts, see #750)
             param_names: The tool's declared parameter names, when known
                 (only used to tell whether the tool paginates, see #750)
+            langchain_tool: The call ran through a LangChain tool (only used by the
+                Langfuse record, see observability/langfuse_sdk.py)
         """
+        # Langfuse sees every call, also when the caller did not ask for tracked calls.
+        from cuga.backend.observability.langfuse_sdk import record_tool_call
+
+        record_tool_call(
+            tool_name,
+            arguments,
+            result,
+            app_name=app_name,
+            duration_ms=duration_ms,
+            error=error,
+            langchain_tool=langchain_tool,
+        )
+
         if not ToolCallTracker.is_enabled():
             return
 
@@ -547,6 +563,7 @@ def make_recording_awaitable(
                 duration_ms=duration_ms,
                 error=error_msg,
                 param_names=param_names,
+                langchain_tool=True,
             )
 
     return _recorded
