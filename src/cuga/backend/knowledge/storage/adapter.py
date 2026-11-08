@@ -167,6 +167,10 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         self._dim: int | None = None
         self._fts_ready = False
         self._pg_ensure_lock = threading.Lock()  # one Postgres keyword backfill at a time
+        # One keyword-table setup at a time in this process. A re-index of an old table holds
+        # SQLite's write lock for about a minute per 50,000 chunks: searches skip the keyword leg
+        # meanwhile, and writes wait for it here instead of timing out on the lock.
+        self._fts_ensure_lock = threading.Lock()
 
     def _scope(self) -> dict[str, str]:
         return {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
@@ -309,15 +313,27 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             return "missing"
         return "current" if _TERMS_COLUMN in columns else "stale"
 
-    def _ensure_fts_table(self, conn) -> None:
+    def _ensure_fts_table(self, conn, wait: bool = True) -> bool:
         """Create the FTS table, or re-index one built by another tokenizer version.
 
         Checked once per adapter. The write lock is taken only when there is work, and the
         state is re-read under it, so concurrent adapters migrate a table once. FTS5 cannot
         change a table's tokenizer, so a stale table is renamed, re-tokenized into a new one
         from its stored text, and dropped, in one transaction (callers close the connection,
-        which rolls back a failed attempt).
+        which rolls back a failed attempt). ``False`` only when ``wait`` is false and another
+        call in this process is setting the table up.
         """
+        if self._fts_ready:
+            return True
+        if not self._fts_ensure_lock.acquire(blocking=wait):
+            return False
+        try:
+            self._ensure_fts_table_locked(conn)
+        finally:
+            self._fts_ensure_lock.release()
+        return True
+
+    def _ensure_fts_table_locked(self, conn) -> None:
         if self._fts_ready:
             return
         if self._fts_state(conn) != "current":
@@ -599,7 +615,8 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         try:
             conn = self._fts_connect()
             try:
-                self._ensure_fts_table(conn)
+                if not self._ensure_fts_table(conn, wait=False):
+                    return []  # another call is re-indexing; this search ranks by meaning only
                 rows = conn.execute(
                     f"SELECT chunk_id, source, filename, page, section_path, "
                     f"chunk_text, bm25({self._fts_table()}) AS rank "

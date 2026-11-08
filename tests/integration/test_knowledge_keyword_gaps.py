@@ -286,6 +286,70 @@ def test_keyword_writes_recover_after_another_engine_drops_the_table(tmp_path, m
     assert source in _hit_sources(adapter, "ZQX-4417")
 
 
+@pytest.mark.unit
+def test_during_a_reindex_search_skips_keywords_and_uploads_wait(tmp_path, monkeypatch):
+    """While one call re-indexes an old keyword table (about a minute at 50,000 chunks), another
+    search in the process skips the keyword leg at once instead of queueing for SQLite's write
+    lock, and an upload waits for the re-index instead of failing with "database is locked"."""
+    import sqlite3
+    import threading
+    import time
+
+    from cuga.backend.knowledge import lexical
+    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwr")
+    db_path = tmp_path / "kb.db"
+    with sqlite3.connect(db_path) as conn:  # the schema shipped before the shared tokenizer
+        conn.execute(
+            f"CREATE VIRTUAL TABLE {collection}__fts USING fts5(chunk_id UNINDEXED, source UNINDEXED, "
+            "filename UNINDEXED, page UNINDEXED, section_path UNINDEXED, chunk_text, "
+            "tokenize=\"unicode61 remove_diacritics 2 tokenchars '._@-+'\")"
+        )
+        conn.executemany(
+            f"INSERT INTO {collection}__fts VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (f"c{i}", f"{collection}/old{i}.txt", f"old{i}.txt", 1, "", f"The policy covers dental {i}.")
+                for i in range(16)
+            ],
+        )
+    adapter = StorageBackedKnowledgeVectorStore(
+        collection, DeterministicEmbeddings(), local_db_path=str(db_path)
+    )
+    real_terms = lexical.terms
+
+    def slow_terms(text):  # 16 stored chunks x 0.5 s: a re-index well past SQLite's 5 s lock wait
+        time.sleep(0.5)
+        return real_terms(text)
+
+    monkeypatch.setattr(lexical, "terms", slow_terms)
+    reindex = threading.Thread(target=_hit_sources, args=(adapter, "dental"))
+    reindex.start()
+    time.sleep(0.5)
+
+    upload: dict = {}
+
+    def _upload():
+        try:
+            upload["source"] = _add(adapter, collection, "new", "Invoice ZQX-4417 was paid.")
+        except Exception as exc:  # noqa: BLE001 — the assertion below reports it
+            upload["error"] = repr(exc)
+
+    uploader = threading.Thread(target=_upload)
+    uploader.start()
+    t = time.monotonic()
+    during = _hit_sources(adapter, "dental")
+    waited = time.monotonic() - t
+    reindex.join(timeout=30)
+    uploader.join(timeout=30)
+
+    assert during == set() and waited < 1.0, f"search waited {waited:.1f}s for the re-index"
+    assert "error" not in upload, upload.get("error")
+    assert _hit_sources(adapter, "ZQX-4417") == {upload["source"]}
+    assert len(adapter.search_lexical("dental", k=20)) == 16
+
+
 def _two_tenant_hits(backend, make_adapter, monkeypatch) -> tuple[set[str], str, str]:
     """Tenants A and B share a collection name; return tenant B's hits and both sources."""
     collection = unique_collection("kwt")
