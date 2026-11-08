@@ -306,6 +306,8 @@ class AgentGraphAdapter(CoreGraphAdapter):
         self._spawn_futures: Dict[str, Any] = spawn_futures_ref if spawn_futures_ref is not None else {}
         self._weak_schema_tool_names: frozenset = frozenset()
         self._observed_tool_shapes: Dict[str, str] = {}
+        # Tool name -> app name. Populated by prepare_node.
+        self._tool_apps: Dict[str, str] = {}
 
     def get_messages(self, state: Any) -> List[BaseMessage]:
         return list(state.chat_messages or [])
@@ -335,6 +337,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
         if self._observed_tool_shapes:
             content += _format_observed_tool_shapes_block(self._observed_tool_shapes)
         return content
+
+    def get_tool_apps(self) -> Dict[str, str]:
+        return self._tool_apps
 
     def get_tools_needing_probing(self) -> frozenset[str]:
         return self._weak_schema_tool_names - self._observed_tool_shapes.keys()

@@ -237,6 +237,11 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 app_tools = await adapter._base_tool_provider.get_tools(app.name)
                 app_to_tools_map[app.name] = app_tools
 
+        # Tool name -> app, so ToolApproval required_apps matches tools by app, not only by name prefix
+        adapter._tool_apps = {
+            tool.name: app_name for app_name, app_tools in app_to_tools_map.items() for tool in app_tools
+        }
+
         enable_find_tools = total_tool_count > shortlisting_threshold or _web_search_enabled()
 
         if enable_find_tools:

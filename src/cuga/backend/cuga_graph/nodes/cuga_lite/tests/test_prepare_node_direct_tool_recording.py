@@ -71,8 +71,8 @@ def _state():
     )
 
 
-async def _prepare(provider):
-    """Run prepare_tools_and_apps and return the adapter's tool context."""
+async def _prepare_adapter(provider):
+    """Run prepare_tools_and_apps and return the adapter."""
     from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import (
         create_prepare_tools_and_apps_node,
     )
@@ -84,7 +84,12 @@ async def _prepare(provider):
     ):
         node = create_prepare_tools_and_apps_node(adapter, lc_bind_tools_meta={})
         await node(_state(), config={"configurable": {"enable_todos": False}})
-    return adapter._tools_context
+    return adapter
+
+
+async def _prepare(provider):
+    """Run prepare_tools_and_apps and return the adapter's tool context."""
+    return (await _prepare_adapter(provider))._tools_context
 
 
 async def _record_one_call(tool_callable, **kwargs):
@@ -117,6 +122,17 @@ async def test_tagged_tool_recorded_under_its_app_through_enabled_toolguard():
     calls = await _record_one_call(context["echo"], x=3)
 
     assert [c["app_name"] for c in calls] == ["gmail"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_maps_each_tool_to_its_app_for_tool_approval():
+    tagged = _structured(_echo, "echo")
+    tagged.metadata = {"app_name": "gmail"}
+    provider = DirectLangChainToolsProvider(tools=[tagged, _structured(_echo, "plain")])
+
+    adapter = await _prepare_adapter(ToolGuardingToolProvider(provider, enabled=True))
+
+    assert adapter._tool_apps == {"echo": "gmail", "plain": "runtime_tools"}
 
 
 @pytest.mark.asyncio

@@ -1354,7 +1354,9 @@ Based on the conversation, refine this playbook to focus on what the user still 
         logger.debug(f"Matched {len(matches)} Tool Guide policies")
         return matches
 
-    async def check_tool_approval_for_code(self, code: str, context: PolicyContext) -> Optional[PolicyMatch]:
+    async def check_tool_approval_for_code(
+        self, code: str, context: PolicyContext, tool_apps: Optional[Dict[str, str]] = None
+    ) -> Optional[PolicyMatch]:
         """
         Check if generated code requires tool approval.
 
@@ -1364,6 +1366,8 @@ Based on the conversation, refine this playbook to focus on what the user still 
         Args:
             code: The generated code to check
             context: Current policy context
+            tool_apps: Optional map of tool name to app name, so ``required_apps`` matches
+                tools by their app and not only by an ``<app>_`` name prefix
 
         Returns:
             PolicyMatch if approval is required, None otherwise
@@ -1394,7 +1398,7 @@ Based on the conversation, refine this playbook to focus on what the user still 
 
             # Check if this policy's tools/apps are used in the code
             applies, tool_names = self._check_code_uses_tools(
-                code, policy.required_tools, policy.required_apps
+                code, policy.required_tools, policy.required_apps, tool_apps=tool_apps
             )
 
             logger.debug(f"Policy '{policy.name}' applies: {applies}, matched tools: {tool_names}")
@@ -1428,7 +1432,11 @@ Based on the conversation, refine this playbook to focus on what the user still 
         return None
 
     def _check_code_uses_tools(
-        self, code: str, required_tools: List[str], required_apps: Optional[List[str]]
+        self,
+        code: str,
+        required_tools: List[str],
+        required_apps: Optional[List[str]],
+        tool_apps: Optional[Dict[str, str]] = None,
     ) -> tuple[bool, List[str]]:
         """
         Check if code uses any of the specified tools or apps.
@@ -1437,6 +1445,7 @@ Based on the conversation, refine this playbook to focus on what the user still 
             code: Generated code to check
             required_tools: List of tool names (or '*' for all)
             required_apps: List of app names (optional)
+            tool_apps: Map of tool name to app name (optional)
 
         Returns:
             Tuple of (applies, matched_tool_names)
@@ -1465,5 +1474,14 @@ Based on the conversation, refine this playbook to focus on what the user still 
                 if re.search(app_pattern, code):
                     app_tools = re.findall(rf'\b({re.escape(app_name)}_\w+)\s*\(', code)
                     matched_tools.extend(app_tools)
+
+            # Tools whose app is known match by app, whatever their name
+            for tool_name, tool_app in (tool_apps or {}).items():
+                if (
+                    tool_app in required_apps
+                    and tool_name not in matched_tools
+                    and re.search(rf'\b{re.escape(tool_name)}\s*\(', code)
+                ):
+                    matched_tools.append(tool_name)
 
         return len(matched_tools) > 0, matched_tools
