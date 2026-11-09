@@ -30,7 +30,7 @@ CUGA 可根据业务请求，在应用、API 和文档之间执行操作。你�
 
 ## 快速开始
 
-在中国大陆？请先按[在中国大陆使用](#在中国大陆使用)配置镜像，再执行以下步骤。
+在中国大陆？请先按[在中国大陆使用](#在中国大陆使用)设置镜像环境变量，再在同一终端中执行以下步骤。
 
 需要 **Python 3.12** 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
 
@@ -78,16 +78,18 @@ CUGA 无需依赖 OpenAI 官方托管服务，可接入兼容 OpenAI API 的模�
 **1. 使用国内 PyPI 镜像加速安装**（以[清华大学 TUNA 镜像](https://mirrors.tuna.tsinghua.edu.cn/help/pypi/)为例）：
 
 ```bash
-# pip
-pip install cuga -i https://pypi.tuna.tsinghua.edu.cn/simple
-
 # uv：通过环境变量指定默认索引
 # （不要在项目根目录新建 uv.toml，否则 pyproject.toml 中的 [tool.uv] 配置会被忽略）
 export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
-uv sync --python 3.12
 ```
 
 更换索引后 uv 会重新解析依赖并改写 `uv.lock`，请勿提交该改动。注意：torch 和 torchvision 仍从 pyproject.toml 中指定的 PyTorch CPU 索引（download.pytorch.org）下载，不经过该镜像。如果本机没有 Python 3.12，uv 会从 GitHub 下载，可能较慢；可先自行安装 Python 3.12，或用 `UV_PYTHON_INSTALL_MIRROR` 指定镜像。
+
+只安装 Python 库、不克隆仓库时，可以直接用 pip：
+
+```bash
+pip install cuga -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
 
 **2. 配置 Hugging Face 镜像**：默认配置下，策略和知识库功能会从 Hugging Face 下载嵌入模型，并在本地运行。如果无法直接访问 Hugging Face，可以配置镜像地址：
 
@@ -95,7 +97,9 @@ uv sync --python 3.12
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
-也可以预先下载所需模型（同样需要设置 `HF_ENDPOINT`）：
+设置好以上环境变量后，回到[快速开始](#快速开始)，在同一终端中继续。
+
+（可选）完成快速开始中的 `uv sync` 后，可以在仓库目录中预先下载所需模型（同样需要设置 `HF_ENDPOINT`）：
 
 ```bash
 export FASTEMBED_CACHE_PATH="$HOME/.cache/cuga/fastembed"
