@@ -510,7 +510,8 @@ class KnowledgeConfig:
     # Per-session override lives in SessionKnowledgeState.overrides (session_provider.py); consumed via citations_enabled_for() in sources.py.
     citations_enabled: bool = True
     # Check each citation against the source it cites (citation_check.py): "off", "llm" (the
-    # agent's model) or "nli" (local multilingual NLI model). Search-only, excluded from
+    # agent's model) or "nli" (local multilingual NLI model). With "off", only citations reused
+    # from an earlier turn are checked, with the agent's model. Search-only, excluded from
     # vector_config_hash like citations_enabled.
     citation_check: str = "off"
     # Show only the citations the check found supported, instead of every citation with its
