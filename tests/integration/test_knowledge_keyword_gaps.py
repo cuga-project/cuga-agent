@@ -214,17 +214,27 @@ def test_identifier_matches_however_it_is_written(backend, query, make_adapter, 
     assert source not in _hit_sources(adapter, "ABC-124"), f"{backend}: ABC-124 matched ABC-123"
 
 
+@pytest.mark.parametrize(
+    ("query", "texts"),
+    [
+        ("Paris/London", ("The Paris office opens at nine.", "The London office opens at ten.")),
+        ("IPv4/IPv6", ("Legacy hosts use IPv4.", "New hosts use IPv6 only.")),
+    ],
+    ids=["words", "identifiers"],
+)
 @pytest.mark.parametrize("backend", BOTH_BACKENDS)
-def test_words_joined_by_ordinary_punctuation_find_either_word(backend, make_adapter, monkeypatch):
+def test_words_joined_by_ordinary_punctuation_find_either_word(
+    backend, query, texts, make_adapter, monkeypatch
+):
     """ "Paris/London" finds a document about either city, not only one with both words adjacent."""
     _set_tenant(monkeypatch, "tenant_a")
     collection = unique_collection("kwp")
     adapter = make_adapter(backend, collection)
-    paris = _add(adapter, collection, "paris", "The Paris office opens at nine.")
-    london = _add(adapter, collection, "london", "The London office opens at ten.")
+    first = _add(adapter, collection, "first", texts[0])
+    second = _add(adapter, collection, "second", texts[1])
 
-    hits = _hit_sources(adapter, "Paris/London")
-    assert {paris, london} <= hits, f"{backend}: Paris/London found {hits}"
+    hits = _hit_sources(adapter, query)
+    assert {first, second} <= hits, f"{backend}: {query} found {hits}"
 
 
 @pytest.mark.unit
