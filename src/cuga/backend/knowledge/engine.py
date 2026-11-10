@@ -2282,24 +2282,39 @@ class KnowledgeEngine:
             self._record_managers[collection] = rm
         return self._record_managers[collection]
 
-    async def _resolve_embeddings_for_collection(self, collection: str) -> Embeddings:
+    async def _pinned_config(self, collection: str) -> "KnowledgeConfig | None":
+        """The config of a collection pinned to a model other than the default, else None."""
         cfg = await self._metadata.get_collection_config(collection)
-        if cfg and (cfg["embedding_provider"], cfg["embedding_model"]) != (
+        if not cfg or (cfg["embedding_provider"], cfg["embedding_model"]) == (
             self._config.embedding_provider,
             self._config.embedding_model,
         ):
+            return None
+        from dataclasses import replace
+
+        return replace(
+            self._config,
+            embedding_provider=cfg["embedding_provider"],
+            embedding_model=cfg["embedding_model"],
+        )
+
+    async def _resolve_embeddings_for_collection(self, collection: str) -> Embeddings:
+        pinned = await self._pinned_config(collection)
+        if pinned is not None:
             # A collection pinned to another model never loads the default one: offline, with
             # only the pinned model cached (an upgrade that changed the default), that load fails.
-            from dataclasses import replace
-
-            pinned_cfg = replace(
-                self._config,
-                embedding_provider=cfg["embedding_provider"],
-                embedding_model=cfg["embedding_model"],
-            )
-            return create_embeddings(pinned_cfg)
+            return create_embeddings(pinned)
         self._ensure_embeddings()
         return self._default_embeddings
+
+    async def _pinned_model(self, collection: str) -> "tuple[KnowledgeConfig, Embeddings] | None":
+        """A collection pinned to a model other than the default: that model's config and the
+        embedder its vector store already holds, so the model is not loaded twice. Else None."""
+        pinned = await self._pinned_config(collection)
+        if pinned is None:
+            return None
+        await self._ensure_vector_store_cached(collection)
+        return pinned, self._vector_stores[collection].embeddings
 
     def _create_vector_adapter(self, collection: str, embeddings: Embeddings):
         from cuga.backend.knowledge.vector_store import create_vector_store
@@ -2581,8 +2596,11 @@ class KnowledgeEngine:
 
             _check_supersede()
 
+            # Chunks are sized by the model that embeds them: sized for the default, a chunk can
+            # run past a pinned model's token limit, and the text past it is never embedded.
+            pinned = await self._pinned_model(collection)
             t_parse = time.monotonic()
-            docs = await asyncio.to_thread(self._load_document, file_path)
+            docs = await asyncio.to_thread(self._load_document, file_path, pinned)
             stage_timings["parse_s"] = round(time.monotonic() - t_parse, 3)
             if not docs:
                 raise ValueError(f"No content extracted from {filename}")
@@ -4728,8 +4746,11 @@ class KnowledgeEngine:
         """Get chunk_size and chunk_overlap from _config (source of truth after publish)."""
         return self._config.chunk_size, self._config.chunk_overlap
 
-    def get_chunking_tokenizer(self) -> ChunkingTokenizer:
-        """Resolve the tokenizer + safe max for the active embedder.
+    def get_chunking_tokenizer(
+        self, pinned: "tuple[KnowledgeConfig, Embeddings] | None" = None
+    ) -> ChunkingTokenizer:
+        """Resolve the tokenizer + safe max for the active embedder, or for ``pinned``, a
+        collection's own model and embedder (see ``_pinned_model``).
         SINGLE dispatcher. Both ``_build_docling_chunker`` and
         ``_build_text_splitter`` consume this; before the refactor each
         had its own copy of the provider branching.
@@ -4745,8 +4766,15 @@ class KnowledgeEngine:
           4. everything else -> 'approximate' kind (cohere/voyage/gemini
               when their HF lookup 404s, plain-named local models, etc.)
         """
-        provider = (self._config.embedding_provider or "").lower()
-        model_raw = self._config.embedding_model or ""
+        config, pinned_embeddings = pinned or (self._config, None)
+        provider = (config.embedding_provider or "").lower()
+        model_raw = config.embedding_model or ""
+
+        def _embedder() -> Embeddings:
+            if pinned_embeddings is not None:
+                return pinned_embeddings
+            self._ensure_embeddings()
+            return self._default_embeddings
 
         def _make(kind: str, encoder: Any, name: str, safe_max: int) -> ChunkingTokenizer:
             """Construct + log a ChunkingTokenizer in one place. Computes
@@ -4775,14 +4803,13 @@ class KnowledgeEngine:
         # 1. fastembed — exact match via the embedder's own ONNX tokenizer.
         if provider == "fastembed":
             try:
-                self._ensure_embeddings()
-                emb = self._default_embeddings
+                emb = _embedder()
                 if isinstance(emb, _FastEmbedEmbeddings):
-                    seq = _fastembed_docling_seq_limit(self._config.embedding_model or "")
+                    seq = _fastembed_docling_seq_limit(model_raw)
                     return _make(
                         "fastembed",
                         emb._model,
-                        f"fastembed:{self._config.embedding_model or 'default'}",
+                        f"fastembed:{model_raw or 'default'}",
                         seq,
                     )
             except Exception:
@@ -4791,13 +4818,12 @@ class KnowledgeEngine:
         # 2. HuggingFace provider — embedder loaded its own tokenizer.
         if provider == "huggingface":
             try:
-                self._ensure_embeddings()
-                emb = self._default_embeddings
+                emb = _embedder()
                 if getattr(emb, "_tokenizer", None) is not None:
                     return _make(
                         "hf",
                         emb._tokenizer,
-                        self._config.embedding_model or "huggingface",
+                        model_raw or "huggingface",
                         _hf_tokenizer_seq_limit(emb._tokenizer),
                     )
             except Exception:
@@ -4876,7 +4902,9 @@ class KnowledgeEngine:
             tok.name, chunk_size, tok.recommended_chunk_tokens, tok.safe_max_tokens
         )
 
-    def _build_text_splitter(self, chunk_size: int, chunk_overlap: int):
+    def _build_text_splitter(
+        self, chunk_size: int, chunk_overlap: int, pinned: "tuple[KnowledgeConfig, Embeddings] | None" = None
+    ):
         """Token-aware splitter via the unified ``get_chunking_tokenizer``
         dispatch. See #387 follow-up — both this and ``_build_docling_chunker``
         used to carry their own provider-branch copy; now they share the
@@ -4885,7 +4913,7 @@ class KnowledgeEngine:
         ``tok.safe_max_tokens`` already accounts for the embedder-wrapping
         margin for HF kinds (see ``_hf_tokenizer_seq_limit`` /
         ``_HF_TOKEN_SAFETY_MARGIN``)."""
-        tok = self.get_chunking_tokenizer()
+        tok = self.get_chunking_tokenizer(pinned)
         self._warn_chunk_size_above_retrieval_recommended(chunk_size, tok)
         cap = min(chunk_size, tok.safe_max_tokens)
         overlap = min(chunk_overlap, max(cap // 4, 1))
@@ -4934,7 +4962,9 @@ class KnowledgeEngine:
             return len(tok.encoder.tokenize(text))
         return len(tok.encoder.encode(text))
 
-    def _build_docling_chunker(self, chunk_size: int):
+    def _build_docling_chunker(
+        self, chunk_size: int, pinned: "tuple[KnowledgeConfig, Embeddings] | None" = None
+    ):
         """Build a HybridChunker that respects our chunk_size config.
 
         HybridChunker combines hierarchical (heading-aware) splitting with
@@ -4950,7 +4980,7 @@ class KnowledgeEngine:
         try:
             from docling_core.transforms.chunker import HybridChunker
 
-            tok_info = self.get_chunking_tokenizer()
+            tok_info = self.get_chunking_tokenizer(pinned)
             self._warn_chunk_size_above_retrieval_recommended(chunk_size, tok_info)
             cap = min(chunk_size, tok_info.safe_max_tokens)
             provider = (self._config.embedding_provider or "").lower()
@@ -5322,19 +5352,28 @@ class KnowledgeEngine:
         )
         return converter
 
-    def _load_plain_text(self, file_path: Path, chunk_size: int, chunk_overlap: int) -> list[Document]:
+    def _load_plain_text(
+        self,
+        file_path: Path,
+        chunk_size: int,
+        chunk_overlap: int,
+        pinned: "tuple[KnowledgeConfig, Embeddings] | None" = None,
+    ) -> list[Document]:
         """Read a file as plain text and token-aware split it — no Docling involved."""
         text = file_path.read_text(errors="replace")
         # Token-aware split when we have an HF tokenizer for the active
         # embedder — guarantees no chunk exceeds the model's max_seq_length.
         # Falls back to char-based for providers without an HF tokenizer
         # (legacy fastembed default, cohere/voyage/gemini under cl100k).
-        splitter = self._build_text_splitter(chunk_size, chunk_overlap)
+        splitter = self._build_text_splitter(chunk_size, chunk_overlap, pinned)
         chunks = splitter.split_text(text)
         return [Document(page_content=chunk, metadata={"page": i + 1}) for i, chunk in enumerate(chunks)]
 
-    def _load_document(self, file_path: Path) -> list[Document]:
-        """Load a document using Docling for supported formats, fallback for plain text."""
+    def _load_document(
+        self, file_path: Path, pinned: "tuple[KnowledgeConfig, Embeddings] | None" = None
+    ) -> list[Document]:
+        """Load a document using Docling for supported formats, fallback for plain text, chunked
+        for the default model or for ``pinned``, a collection's own model (see ``_pinned_model``)."""
         suffix = file_path.suffix.lower()
         logger.info(
             f"Loading document: {file_path.name} (suffix={suffix}, size={file_path.stat().st_size} bytes)"
@@ -5350,12 +5389,12 @@ class KnowledgeEngine:
                 if suffix == ".md":
                     # Markdown is already plain text. Only fall back when
                     # importing the document-processing stack fails.
-                    docs = self._load_plain_text(file_path, chunk_size, chunk_overlap)
+                    docs = self._load_plain_text(file_path, chunk_size, chunk_overlap, pinned)
                 else:
                     raise _docling_not_installed_error(file_path) from e
             else:
                 try:
-                    chunker = self._build_docling_chunker(chunk_size)
+                    chunker = self._build_docling_chunker(chunk_size, pinned)
                     loader_kwargs: dict = {
                         "file_path": str(file_path),
                         "export_type": ExportType.DOC_CHUNKS,
@@ -5384,7 +5423,7 @@ class KnowledgeEngine:
             ".cfg",
             ".conf",
         ):
-            docs = self._load_plain_text(file_path, chunk_size, chunk_overlap)
+            docs = self._load_plain_text(file_path, chunk_size, chunk_overlap, pinned)
         else:
             try:
                 from langchain_docling import DoclingLoader
@@ -5393,7 +5432,7 @@ class KnowledgeEngine:
                 raise _docling_not_installed_error(file_path) from e
 
             try:
-                chunker = self._build_docling_chunker(chunk_size)
+                chunker = self._build_docling_chunker(chunk_size, pinned)
                 loader_kwargs = {
                     "file_path": str(file_path),
                     "export_type": ExportType.DOC_CHUNKS,
@@ -5444,7 +5483,7 @@ class KnowledgeEngine:
         # is docling-bounded (<=512 always) and the char-based ``approximate``
         # path has no exact counter here, so both fall to the coarse net below.
         if docs:
-            tok_info = self.get_chunking_tokenizer()
+            tok_info = self.get_chunking_tokenizer(pinned)
             if tok_info.kind in ("hf", "tiktoken"):
                 try:
                     over = sum(
@@ -5456,7 +5495,7 @@ class KnowledgeEngine:
                     logger.debug(f"post-chunk token check skipped for {file_path.name}: {e!r}")
                     over = 0
                 if over:
-                    splitter = self._build_text_splitter(chunk_size, chunk_overlap)
+                    splitter = self._build_text_splitter(chunk_size, chunk_overlap, pinned)
                     n_before = len(docs)
                     docs = splitter.split_documents(docs)
                     logger.warning(
@@ -5473,7 +5512,7 @@ class KnowledgeEngine:
         if docs and any(len(d.page_content) > _EMERGENCY_CHAR_THRESHOLD for d in docs):
             # Use the token-aware splitter — guarantees the safety-split
             # output fits the embedder regardless of script density.
-            splitter = self._build_text_splitter(chunk_size, chunk_overlap)
+            splitter = self._build_text_splitter(chunk_size, chunk_overlap, pinned)
             n_before = len(docs)
             docs = splitter.split_documents(docs)
             logger.warning(

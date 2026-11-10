@@ -107,6 +107,65 @@ def test_a_saved_config_applied_before_the_first_load_still_gets_its_dimension(t
     assert built == ["BAAI/bge-small-en-v1.5"], "the applied embedder was rebuilt or the default was loaded"
 
 
+def test_an_upload_into_a_pinned_collection_is_chunked_for_that_model(tmp_path, monkeypatch):
+    """Chunks are sized by the model that embeds them. Sized for the default model, a chunk can run
+    past the pinned model's token limit, and the text past it is never embedded."""
+    pytest.importorskip("sqlite_vec")
+    from cuga.backend.knowledge import engine as engine_mod
+
+    class _Words:  # a tokenizer whose tokens are words
+        def __init__(self, limit):
+            self.model_max_length = limit
+
+        def tokenize(self, text):
+            return text.split()
+
+    embedded = []
+
+    class _Embedder:
+        def __init__(self, limit):
+            self._tokenizer = _Words(limit)
+
+        def embed_documents(self, texts):
+            embedded.extend(texts)
+            return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+
+        def embed_query(self, text):
+            return [1.0, 0.0, 0.0, 0.0]
+
+    limits = {"default-model": 10_000, "pinned-model": 32}
+    built = []
+    monkeypatch.setattr(
+        engine_mod,
+        "create_embeddings",
+        lambda cfg: built.append(cfg.embedding_model) or _Embedder(limits[cfg.embedding_model]),
+    )
+    monkeypatch.setattr(
+        engine_mod, "get_storage_connection_params", lambda: ("local", str(tmp_path / "s.db"), "")
+    )
+    eng = KnowledgeEngine(
+        KnowledgeConfig(
+            enabled=True,
+            persist_dir=tmp_path,
+            embedding_provider="huggingface",
+            embedding_model="default-model",
+            chunk_size=400,
+            chunk_overlap=0,
+        )
+    )
+    doc = tmp_path / "doc.txt"
+    doc.write_text(" ".join(f"word{i}" for i in range(600)))
+
+    async def upload():
+        await eng._ensure_metadata_ready()
+        await eng._metadata.set_collection_config("kb", "huggingface", "pinned-model", 4)
+        return await eng.ingest("kb", doc)
+
+    assert asyncio.run(upload())["status"] == "completed"
+    assert max(len(text.split()) for text in embedded) <= limits["pinned-model"]
+    assert built == ["pinned-model"], "the default model was loaded, or the pinned one twice"
+
+
 def test_server_warmup_waits_for_the_saved_knowledge_config():
     """Warmup loads the model the saved config selects: it starts only after startup applied it."""
     from types import SimpleNamespace
