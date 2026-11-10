@@ -318,7 +318,8 @@ def _warn_unsupported_markers(text: str) -> None:
 
 
 def needs_search_before_citing(text: str, thread_id: str | None) -> bool:
-    """True, once per turn, when ``text`` cites sources but none of them was retrieved this turn.
+    """True, once per turn, when ``text`` cites sources, none of them was retrieved this turn, and
+    some do not resolve to any source in the thread (the citation check verifies the others).
 
     ``resolve_citations`` would strip every marker the citation check does not verify, and the
     user could get the answer with no sources. That happens when the model answers from a document's preview in the prompt, or
@@ -338,6 +339,11 @@ def needs_search_before_citing(text: str, thread_id: str | None) -> bool:
         return False
     ledger = get_ledger(thread_id, create=True)
     if ledger is None or any(ledger.retrieved_this_turn(cid) for cid in ids):
+        return False
+    # Ids from an earlier turn's search are left to the citation check, which keeps the supported
+    # ones for one check instead of another model turn and a search. Only markers that resolve to
+    # nothing need the search.
+    if all(ledger.get(cid) is not None for cid in ids):
         return False
     return ledger.claim_search_retry()
 

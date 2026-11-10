@@ -136,8 +136,9 @@ class InvokeResult(BaseModel):
         "section_path, scope, snippet, score, query, support}] — populated when knowledge "
         "citations are enabled and the answer cites retrieved chunks. "
         "section_path and score are optional (omitted when absent); support "
-        "(supported | contradicted | not_stated) is present when knowledge.citation_check "
-        "checked the source. Stream "
+        "(supported | contradicted | not_stated) is present when the citation check judged the "
+        "source: every cited source with knowledge.citation_check on, and citations reused from an "
+        "earlier turn with it off; support_quote holds the passage the verdict rests on. Stream "
         "consumers: the FinalAnswerAgent node update carries both final_answer "
         "and sources.",
     )
