@@ -226,6 +226,19 @@ def test_words_joined_by_ordinary_punctuation_find_either_word(
     assert {first, second} <= hits, f"{backend}: {query} found {hits}"
 
 
+@pytest.mark.parametrize("backend", BOTH_BACKENDS)
+def test_a_possessive_query_does_not_match_every_possessive(backend, make_adapter, monkeypatch):
+    """ "MacDuff's" finds MacDuff, not every chunk with a possessive: its one-letter tail is no
+    search term of its own."""
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwo")
+    adapter = make_adapter(backend, collection)
+    macduff = _add(adapter, collection, "macduff", "Tyler MacDuff joined the team in May.")
+    _add(adapter, collection, "contoso", "Contoso's invoice was paid on time.")
+
+    assert _hit_sources(adapter, "MacDuff's") == {macduff}
+
+
 @pytest.mark.unit
 def test_keyword_index_from_an_older_tokenizer_is_rebuilt(tmp_path, monkeypatch):
     """A keyword table built before the shared tokenizer is re-indexed from its stored text."""

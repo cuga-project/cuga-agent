@@ -78,8 +78,7 @@ def terms(text: str) -> list[str]:
 # Each group is one more match condition (and on Postgres one more count); a pasted paragraph of
 # Chinese makes hundreds of character pairs. Repeated groups add nothing.
 _MAX_QUERY_GROUPS = 64
-# Whitespace and apostrophes end a query word: a possessive must not turn a name into a phrase.
-_QUERY_WORD_BREAK = regex.compile(r"[\s'\u2019]+")
+_QUERY_WORD_BREAK = regex.compile(r"\s+")
 # Inside a query word, punctuation other than these separates alternatives ("Paris/London"). These
 # join one identifier's parts: "ABC-123", "user@example.com", "engine.py", "AT&T", and Hebrew
 # acronyms written with a quote or gershayim ("צה״ל").
@@ -94,10 +93,11 @@ def query_groups(query: str) -> list[list[str]]:
     each one group; a part whose terms are joined by an identifier's punctuation ("ABC-123",
     "user@example.com", "Node.js") is matched as a phrase. A word whose parts are all single
     letters ("I/O", "A/B") stays one phrase: a one-letter group matches almost every document.
-    Character pairs from unspaced scripts are separate groups, so a
-    sentence-long Chinese query ranks documents by how many pairs they share. An apostrophe ends a
-    word, so "MacDuff's" also finds "MacDuff". Repeated groups are dropped and at most
-    _MAX_QUERY_GROUPS are kept.
+    For the same reason a one-letter part of a longer word is dropped: a possessive or a plural in
+    parentheses ("MacDuff's", "office(s)") or an elided article ("l'homme"). An apostrophe
+    separates parts, so "MacDuff's" finds "MacDuff". Character pairs from unspaced scripts are
+    separate groups, so a sentence-long Chinese query ranks documents by how many pairs they share.
+    Repeated groups are dropped and at most _MAX_QUERY_GROUPS are kept.
     """
     groups: list[list[str]] = []
     seen: set[tuple[str, ...]] = set()
@@ -109,7 +109,7 @@ def query_groups(query: str) -> list[list[str]]:
         elif len(parts) > 1 and all(len(part) == 1 and len(part[0]) == 1 for part in parts):
             candidates = [word_terms]
         else:
-            candidates = parts
+            candidates = [part for part in parts if len(part) > 1 or len(part[0]) > 1] or parts
         for group in candidates:
             if tuple(group) not in seen:
                 seen.add(tuple(group))
