@@ -276,9 +276,12 @@ async def test_query_or_body_thread_does_not_bypass_ownership(runtime, path, met
 )
 @pytest.mark.parametrize("storage_error", [RuntimeError, PermissionError])
 async def test_storage_failure_fails_closed(runtime, monkeypatch, path, method, storage_error):
+    await runtime.conversation()  # an existing conversation, so only storage can fail
     monkeypatch.setattr(runtime.db, "claim_thread", AsyncMock(side_effect=storage_error("database down")))
     response = await runtime.client.request(method, path, headers=runtime.headers(), json={"query": "hello"})
-    assert response.status_code == 404, response.text
+    # Retryable, so the client keeps the conversation; still fails closed (#774).
+    assert response.status_code == 503, response.text
+    assert response.headers["retry-after"] == "2"
     assert not runtime.seen
     assert not runtime.main.app_state.stop_events
     runtime.clear.assert_not_called()
@@ -676,7 +679,7 @@ async def test_generator_storage_failure_yields_error_event(runtime, monkeypatch
     response = await runtime.client.post("/stream", headers=runtime.headers(), json={"query": "hello"})
     assert response.status_code == 200, response.text
     assert "event: Error" in response.text
-    assert "Conversation not found" in response.text
+    assert "Conversation temporarily unavailable, please retry" in response.text
     assert not runtime.seen
 
 

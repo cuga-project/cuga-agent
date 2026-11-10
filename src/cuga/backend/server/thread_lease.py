@@ -8,6 +8,11 @@ Clock skew between replicas is tolerated because the TTL is several renew interv
 Known limit: checkpoint writes are not fenced. A holder paused beyond the TTL (a stalled event
 loop or VM) can keep writing until its next renewal fails and its turn sees the stop event, so it
 may overlap with the holder that took over. Fencing is left to the cross-replica safety work.
+
+Known limit: only web ``/stream`` turns and conversation deletion take this lease. ``/run``, A2A
+and the extension do not yet, so a non-web call already running when a conversation is deleted
+can still write its checkpoint until it finishes. New calls are refused once the conversation is
+marked deleted. Making every writer hold the lease is also left to the cross-replica safety work.
 """
 
 import asyncio
@@ -122,26 +127,44 @@ async def keep_lease(
     token: LeaseToken,
     stop_event: Optional[asyncio.Event] = None,
     renew_seconds: Optional[float] = None,
+    ttl_seconds: Optional[float] = None,
 ):
     """Renew an acquired lease while the body runs, then release it, also on cancellation.
 
-    If the lease is lost, ``stop_event`` is set so the running turn stops.
+    If the lease is lost, ``stop_event`` is set so the running turn stops. A renewal that errors is
+    retried until the TTL has actually run out since the last success, so one storage hiccup does
+    not kill the turn; a renewal that finds another holder stops the turn at once.
     """
 
     async def _renew_loop() -> None:
+        ttl = ttl_seconds or _ttl_seconds()
         interval = renew_seconds or _renew_seconds()
+        if interval > ttl / 3:
+            # Renewing at or past the TTL lets the lease lapse mid-turn: renew three times per TTL.
+            logger.warning(
+                f"thread lease renew interval {interval}s is too close to the {ttl}s TTL; using {ttl / 3}s"
+            )
+            interval = ttl / 3
+        last_renewed = time.monotonic()
+        delay = interval
         while True:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(delay)
             try:
-                held = await lease.renew(token)
+                held = await lease.renew(token, ttl_seconds=ttl)
             except Exception:
-                logger.exception("lease renewal failed")
+                if time.monotonic() - last_renewed < ttl:
+                    logger.warning("lease renewal failed; retrying before the lease expires", exc_info=True)
+                    delay = interval / 4
+                    continue
+                logger.exception("lease renewal kept failing until the lease expired")
                 held = False
             if not held:
                 logger.error("lease lost for a running turn; stopping it")
                 if stop_event is not None:
                     stop_event.set()
                 return
+            last_renewed = time.monotonic()
+            delay = interval
 
     renew_task = asyncio.create_task(_renew_loop())
     try:

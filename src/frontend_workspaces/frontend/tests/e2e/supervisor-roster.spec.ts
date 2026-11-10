@@ -17,7 +17,7 @@ async function stub(page, members = [{ kind: "internal", ref: "weatherbot" }, { 
     else if (url.pathname === "/api/agents") body = { agents };
     else if (url.pathname === "/api/manage/config") body = { version: 3, config: { agent: agents.find(a => a.id === id), supervisor: { subAgents: id === "other" ? [{ kind: "internal", ref: "pricebot" }] : members } } };
     else if (url.pathname === "/api/tools/list") body = { tools: [{ name: "global_tool", app: "cuga_web", description: "Global registry tool" }] };
-    else if (url.pathname === "/api/conversation-threads") body = { threads: [] };
+    else if (url.pathname === "/api/conversations") body = [];
     else if (url.pathname === "/api/skills") body = { skills: [] };
     else if (url.pathname === "/api/commands") body = [];
     await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });

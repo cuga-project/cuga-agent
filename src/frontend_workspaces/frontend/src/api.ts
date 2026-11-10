@@ -424,7 +424,7 @@ export interface ConversationThread {
   title: string;
   timestamp: number;
   preview: string;
-  status?: string;           // "new" | "active" | "legacy"
+  status?: string;           // "new" | "active" | "legacy" | "external"
 }
 
 export async function getConversations(agentId?: string): Promise<ConversationThread[]> {

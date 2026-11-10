@@ -9,7 +9,7 @@ test("personal inventory replaces pages instead of accumulating 1000 memories", 
     if (path === "/api/auth/config") body = { enabled: false, authorization_enabled: false };
     else if (path === "/api/ui/config") body = { evolve_memory_enabled: true, agent_registry: false };
     else if (path === "/api/commands") body = [];
-    else if (path === "/api/conversation-threads") body = { threads: [] };
+    else if (path === "/api/conversations") body = [];
     else if (path.endsWith("/settings")) body = { instance_enabled: true, user_enabled: true, effective_enabled: true, episodic_enabled: true };
     else if (path === "/api/memory/entities") {
       const offset = Number(url.searchParams.get("cursor") ?? 0);

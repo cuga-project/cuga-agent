@@ -140,7 +140,8 @@ export async function customSendMessage(
     return;
   }
 
-  const threadId = getCurrentThreadId();
+  // This turn's conversation. A new chat learns its ID from thread_created below (#774).
+  let threadId = getCurrentThreadId();
   const generation = getThreadGeneration();
   const responseID = generateUUID();
   const responseUserProfile = getCachedResponseUserProfile(useDraft, agentId);
@@ -304,7 +305,11 @@ export async function customSendMessage(
 
       if (event.name === "thread_created") {
         const serverId = typeof event.data === "string" ? event.data.trim() : null;
-        if (serverId) adoptIssuedThreadId(serverId, generation);
+        if (serverId) {
+          // Abort and this turn's approval cards must use the real ID, even if the user moved on.
+          if (!threadId) threadId = serverId;
+          adoptIssuedThreadId(serverId, generation);
+        }
         continue; // housekeeping only — no UI output
       }
 

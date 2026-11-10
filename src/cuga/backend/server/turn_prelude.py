@@ -13,12 +13,13 @@ class ThreadUnavailable(Exception):
         self.reason = reason
 
 
-async def check_turn_state(graph: Any, checkpoint_key: str, status: str, checkpointer_kind: str) -> None:
-    """Raise ``ThreadUnavailable`` unless the conversation can continue from its checkpoint.
+async def check_turn_state(graph: Any, checkpoint_key: str, status: str, checkpointer_kind: str) -> Any:
+    """Return the checkpoint snapshot, or raise ``ThreadUnavailable`` if the turn cannot continue.
 
     A present checkpoint always wins. Without one, only a ``new`` conversation starts empty;
     an ``active`` one fails closed, except with the in-memory checkpointer, where a restart
-    loses state by design.
+    loses state by design. The caller runs the turn on the returned snapshot instead of reading
+    it again, so a second read cannot fail and silently start the conversation empty.
     """
     try:
         snapshot = await graph.aget_state({"configurable": {"thread_id": checkpoint_key}})
@@ -35,10 +36,10 @@ async def check_turn_state(graph: Any, checkpoint_key: str, status: str, checkpo
             except Exception as exc:
                 logger.exception("checkpoint does not load as AgentState")
                 raise ThreadUnavailable("incompatible") from exc
-        return
+        return snapshot
     if status == "new":
-        return
+        return snapshot
     if checkpointer_kind == "memory":
         logger.warning("no checkpoint for an active conversation (in-memory checkpointer); starting fresh")
-        return
+        return snapshot
     raise ThreadUnavailable("missing")

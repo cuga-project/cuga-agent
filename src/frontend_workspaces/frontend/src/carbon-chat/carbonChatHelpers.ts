@@ -283,7 +283,7 @@ export function parseAnswerEventData(
   return result;
 }
 
-export function buildToolApprovalCard(policyInfo: PolicyInfo, policyData: any, threadId: string) {
+export function buildToolApprovalCard(policyInfo: PolicyInfo, policyData: any, threadId: string | null) {
   const approvalMsg =
     policyData.metadata?.approval_message ||
     "This tool requires your approval before execution.";

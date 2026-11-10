@@ -109,7 +109,7 @@ class ConversationHistoryDB:
             tenant_id TEXT NOT NULL, instance_id TEXT NOT NULL, thread_id TEXT NOT NULL,
             user_id TEXT NOT NULL, agent_id TEXT NOT NULL, created_at TEXT NOT NULL,
             PRIMARY KEY (tenant_id, instance_id, thread_id))""")
-        # Conversation status for session continuity (#774): new | active | legacy | deleted.
+        # Conversation status for session continuity (#774): new | active | legacy | external | deleted.
         # Owners recorded before the column existed are conversations that cannot be continued.
         try:
             await store.execute(
@@ -138,6 +138,7 @@ class ConversationHistoryDB:
 
         Resource access can reserve only the user; the first run binds the agent.
         Ownership survives history deletion because checkpoints may still exist.
+        A deleted conversation's ID can never be claimed again, even by its owner (#774).
         With create=False, check existing ownership without inserting or binding;
         None means no owner or legacy records, while "" is an existing unbound owner.
         Storage errors propagate: callers must fail closed.
@@ -146,10 +147,12 @@ class ConversationHistoryDB:
         await self._ensure_schema()
         store = self._get_store()
         scope = (_tenant_id(), _instance_id(), thread_id)
-        owner_sql = """SELECT user_id, agent_id FROM runtime_thread_owners
+        owner_sql = """SELECT user_id, agent_id, status FROM runtime_thread_owners
             WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?"""
         owner = await store.fetchone(owner_sql, scope)
         if owner:
+            if owner["status"] == "deleted":
+                raise ThreadOwnershipError("Access denied: conversation was deleted")
             if owner["user_id"] != user_id:
                 raise ThreadOwnershipError("Access denied: thread belongs to another user")
             if agent_id and owner["agent_id"] and owner["agent_id"] != agent_id:
@@ -187,12 +190,15 @@ class ConversationHistoryDB:
                         WHERE tenant_id = ? AND instance_id = ? AND thread_id = ? AND user_id <> ?
                     ) ON CONFLICT (tenant_id, instance_id, thread_id) DO NOTHING""",
                     scope
-                    # Binding pre-existing history keeps the thread read-only in the web UI.
+                    # Binding pre-existing history keeps the thread read-only in the web UI. Web
+                    # conversations are created by create_conversation, so a new ID claimed here
+                    # comes from /run, A2A or the extension: its checkpoint lives under that
+                    # entry's key, so the web UI shows it read-only too (#774).
                     + (
                         user_id,
                         claimed_agent,
                         datetime.now(timezone.utc).isoformat(),
-                        "legacy" if legacy else "active",
+                        "legacy" if legacy else "external",
                     )
                     + scope
                     + (user_id,)

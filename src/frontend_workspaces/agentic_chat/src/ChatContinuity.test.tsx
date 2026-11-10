@@ -48,7 +48,7 @@ describe("adopting the server-issued thread ID", () => {
     state.showThread(null);
     const startedAt = state.getThreadGeneration();
 
-    state.adoptIssuedThreadId("srv-1", startedAt);
+    expect(state.adoptIssuedThreadId("srv-1", startedAt)).toBe(true);
 
     expect(state.getCurrentThreadId()).toBe("srv-1");
   });
@@ -59,7 +59,7 @@ describe("adopting the server-issued thread ID", () => {
     const startedAt = state.getThreadGeneration();
     state.showThread(null); // New chat while the first send is still streaming
 
-    state.adoptIssuedThreadId("srv-1", startedAt);
+    expect(state.adoptIssuedThreadId("srv-1", startedAt)).toBe(false);
 
     expect(state.getCurrentThreadId()).toBeNull();
   });
@@ -68,8 +68,24 @@ describe("adopting the server-issued thread ID", () => {
     const state = await import("../../frontend/src/carbon-chat/threadState");
     state.showThread("existing");
 
-    state.adoptIssuedThreadId("srv-1", state.getThreadGeneration());
+    expect(state.adoptIssuedThreadId("srv-1", state.getThreadGeneration())).toBe(false);
 
     expect(state.getCurrentThreadId()).toBe("existing");
+  });
+
+  it("tells listeners as soon as a new chat adopts its ID, and only then", async () => {
+    const state = await import("../../frontend/src/carbon-chat/threadState");
+    const heard: string[] = [];
+    const unsubscribe = state.onThreadIssued((id) => heard.push(id));
+    state.showThread(null);
+    const startedAt = state.getThreadGeneration();
+
+    state.adoptIssuedThreadId("srv-1", startedAt);
+    state.adoptIssuedThreadId("srv-2", startedAt); // already has an ID
+    unsubscribe();
+    state.showThread(null);
+    state.adoptIssuedThreadId("srv-3", state.getThreadGeneration());
+
+    expect(heard).toEqual(["srv-1"]);
   });
 });

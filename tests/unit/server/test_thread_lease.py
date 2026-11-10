@@ -57,3 +57,31 @@ async def test_keep_lease_renews_releases_and_stops_the_turn_when_lost(lease):
         await store.execute("UPDATE thread_leases SET holder_id = 'other' WHERE thread_id = 't1'")
         await store.commit()
         await asyncio.wait_for(stop.wait(), timeout=5.0)
+
+    # One failed renewal is retried while the lease is still valid, so the turn keeps running.
+    renew = lease.renew
+    failures = iter([True])
+
+    async def flaky_renew(*args, **kwargs):
+        if next(failures, False):
+            raise RuntimeError("database is locked")
+        return await renew(*args, **kwargs)
+
+    stop = asyncio.Event()
+    token = await lease.acquire("t2", ttl_seconds=0.1)
+    lease.renew = flaky_renew
+    async with keep_lease(lease, token, stop_event=stop, renew_seconds=0.02, ttl_seconds=0.1):
+        await asyncio.sleep(0.15)
+        assert not stop.is_set()
+        with pytest.raises(ThreadBusy):
+            await lease.acquire("t2")
+
+    # Renewals that keep failing stop the turn once the TTL has run out.
+    async def broken_renew(*args, **kwargs):
+        raise RuntimeError("database down")
+
+    stop = asyncio.Event()
+    token = await lease.acquire("t3", ttl_seconds=0.1)
+    lease.renew = broken_renew
+    async with keep_lease(lease, token, stop_event=stop, renew_seconds=0.02, ttl_seconds=0.1):
+        await asyncio.wait_for(stop.wait(), timeout=5.0)

@@ -66,7 +66,7 @@ interface ConversationThread {
   latest_version: number;
   first_message: string;
   updated_at: string;
-  status?: string;  // "new" | "active" | "legacy"
+  status?: string;  // "new" | "active" | "legacy" | "external"
 }
 
 interface AppTool {
@@ -662,7 +662,7 @@ export function ChatLanding() {
   }, [effectiveChatThreadId]);
 
   const refreshKnowledgeDocCount = useCallback(
-    async (threadId: string) => {
+    async (threadId: string | null) => {
       if (!knowledgeEnabled || (!agentKnowledgeEnabled && !sessionKnowledgeEnabled)) {
         setKnowledgeDocCount(0);
         return;
@@ -670,7 +670,10 @@ export function ChatLanding() {
       try {
         const [agentDocsResponse, sessionDocsResponse] = await Promise.all([
           agentKnowledgeEnabled ? api.listKnowledgeDocuments() : Promise.resolve(null),
-          sessionKnowledgeEnabled ? api.listSessionKnowledgeDocuments(threadId) : Promise.resolve(null),
+          // A new chat has no session documents yet: count the agent's only.
+          sessionKnowledgeEnabled && threadId
+            ? api.listSessionKnowledgeDocuments(threadId)
+            : Promise.resolve(null),
         ]);
 
         const agentDocs = agentDocsResponse && agentDocsResponse.ok
@@ -703,9 +706,7 @@ export function ChatLanding() {
   }, [draftThread.threadId, selectedThreadId]);
 
   useEffect(() => {
-    if (effectiveChatThreadId) {
-      void refreshKnowledgeDocCount(effectiveChatThreadId);
-    }
+    void refreshKnowledgeDocCount(effectiveChatThreadId ?? null);
   }, [effectiveChatThreadId, refreshKnowledgeDocCount, sessionDocsVersion]);
 
   const handleSessionDocsChanged = useCallback(() => {
@@ -739,6 +740,9 @@ export function ChatLanding() {
         addToast("warning", "Response still running", "Another response is still running in this conversation. Try again in a moment.");
       } else if (error === "unavailable") {
         setSelectedThreadUnavailable(true);
+      } else {
+        // Any other 409 (e.g. from a proxy): never leave the message unanswered.
+        addToast("warning", "Couldn't send", "This message could not be sent. Try again in a moment.");
       }
     }
   }, [addToast, createAndActivateDraftThread, selectedThreadId]);
@@ -1472,8 +1476,8 @@ export function ChatLanding() {
       )}
       {/* Keep the chat instance and its active stream alive while viewing memory. */}
         <div role="main" id={activeView === "memory" && memoryEnabled ? undefined : "main-content"} tabIndex={-1} className="chat-content-area" hidden={activeView === "memory" && memoryEnabled} style={{ display: activeView === "memory" && memoryEnabled ? "none" : undefined, position: "relative", height: `calc(100dvh - ${headerHeight}px)` }}>
-          {/* Conversations from before session continuity are read-only */}
-          {selectedThreadStatus === "legacy" && (
+          {/* Conversations from before session continuity, or started outside the web UI, are read-only */}
+          {(selectedThreadStatus === "legacy" || selectedThreadStatus === "external") && (
             <div style={{
               padding: "0.75rem 1rem",
               background: "var(--cds-layer-accent-01, #e0e0e0)",
@@ -1481,7 +1485,9 @@ export function ChatLanding() {
               fontSize: "0.8125rem",
               color: "var(--cds-text-secondary)",
             }}>
-              This conversation was created before conversations could be continued. Start a new conversation to keep going.
+              {selectedThreadStatus === "external"
+                ? "This conversation was started outside the web UI (API or extension) and can't be continued here. Start a new conversation to keep going."
+                : "This conversation was created before conversations could be continued. Start a new conversation to keep going."}
             </div>
           )}
           {/* The saved state of this conversation cannot be loaded */}
@@ -1511,12 +1517,13 @@ export function ChatLanding() {
             attachmentScope="session"
             knowledgeEnabled={knowledgeEnabled}
             sessionKnowledgeEnabled={sessionKnowledgeEnabled}
-            isReadonly={selectedThreadStatus === "legacy" || selectedThreadUnavailable}
+            isReadonly={selectedThreadStatus === "legacy" || selectedThreadStatus === "external" || selectedThreadUnavailable}
             onThreadChange={handleThreadChange}
             onRestart={createAndActivateDraftThread}
             homescreen={homescreenConfig}
             sessionDocsVersion={sessionDocsVersion}
             onSessionDocsChanged={handleSessionDocsChanged}
+            resolveThreadId={conversationIdForUpload}
             onOpenKnowledge={handleToggleKnowledge}
             onOpenMemoryUsage={memoryEnabled ? (entityIds, relationship) => {
               setFocusedMemoryRelationship(relationship);
@@ -1894,6 +1901,7 @@ export function ChatLanding() {
                   isOpen={true}
                   onToggle={handleToggleWorkspace}
                   threadId={activeKnowledgeThreadId}
+                  resolveThreadId={conversationIdForUpload}
                   sessionDocsVersion={sessionDocsVersion}
                   onSessionDocsChanged={() => {
                     handleSessionDocsChanged();
