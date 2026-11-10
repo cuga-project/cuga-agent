@@ -35,6 +35,16 @@ def _pg_tsvector(text: str) -> str:
     return " ".join(f"'{term}':{pos}" for pos, term in enumerate(lexical.terms(text or ""), start=1))
 
 
+# One Postgres keyword backfill batch: the next 500 rows in primary-key order after ($1, $2, $3),
+# with the text of those that have no terms yet. Each batch starts where the last one ended, so it
+# reads only rows after it; a "terms IS NULL" filter re-reads every filled row on every batch.
+_PG_FILL_BATCH = (
+    "SELECT tenant_id, instance_id, id, CASE WHEN " + _TERMS_COLUMN + " IS NULL THEN chunk_text END "
+    "AS pending_text FROM {table} WHERE (tenant_id, instance_id, id) > ($1, $2, $3) "
+    "ORDER BY tenant_id, instance_id, id LIMIT 500"
+)
+
+
 def _pg_tsquery(groups: list[list[str]]) -> str:
     """Any group (``|``), each group's terms adjacent and in order (``<->``), as a tsquery literal."""
     return " | ".join("(" + " <-> ".join(f"'{term}'" for term in group) + ")" for group in groups)
@@ -381,16 +391,19 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                 )
         # ponytail: one pass on first use; a very large collection pays it on its first query.
         # Move it to engine warmup if that first-query latency matters.
-        filled = 0
-        while rows := await conn.fetch(
-            f"SELECT id, tenant_id, instance_id, chunk_text FROM {table} WHERE {_TERMS_COLUMN} IS NULL LIMIT 500"
-        ):
-            await conn.executemany(
-                f"UPDATE {table} SET {_TERMS_COLUMN} = $1::text::tsvector "
-                "WHERE id = $2 AND tenant_id = $3 AND instance_id = $4",
-                [(_pg_tsvector(r["chunk_text"]), r["id"], r["tenant_id"], r["instance_id"]) for r in rows],
-            )
-            filled += len(rows)
+        filled, after = 0, ("", "", "")
+        while rows := await conn.fetch(_PG_FILL_BATCH.format(table=table), *after):
+            after = (rows[-1]["tenant_id"], rows[-1]["instance_id"], rows[-1]["id"])
+            if pending := [r for r in rows if r["pending_text"] is not None]:
+                await conn.executemany(
+                    f"UPDATE {table} SET {_TERMS_COLUMN} = $1::text::tsvector "
+                    "WHERE id = $2 AND tenant_id = $3 AND instance_id = $4",
+                    [
+                        (_pg_tsvector(r["pending_text"]), r["id"], r["tenant_id"], r["instance_id"])
+                        for r in pending
+                    ],
+                )
+                filled += len(pending)
         if filled:
             logger.info("Indexed keyword terms for {} existing chunks in {}", filled, table)
         self._fts_ready = True
@@ -434,10 +447,11 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
     def _fts_add(self, items: list[tuple[str, dict[str, Any], str]]) -> None:
         """Insert ``[(chunk_id, meta_payload, chunk_text), ...]`` rows.
 
-        Called from ``add_documents`` after the dense insert succeeded.
-        Failures here are logged + swallowed: a transient FTS write
-        problem must not roll back a successful vector insert (the user
-        would lose ingest progress for a recall optimisation).
+        Called from ``add_documents`` after the dense insert succeeded, and tried twice. On SQLite
+        a second failure is logged and swallowed: a transient FTS write problem must not roll back
+        a successful vector insert. On Postgres it is raised, and ``add_documents`` removes the
+        document: its rows would have no terms, and an adapter that already checked its keyword
+        column never looks for such rows again.
         """
         if not items:
             return
@@ -451,6 +465,8 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                 # check fills rows without terms) and retry once.
                 self._fts_ready = False
                 if attempt == 2:
+                    if self._use_prod:
+                        raise
                     logger.warning(
                         "BM25 FTS write failed for collection={} items={}: {} "
                         "(dense insert succeeded; lexical leg will return empty until backfill)",
@@ -903,12 +919,15 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             )
             for cid, _emb, meta in items
         ]
+        _t_fts = time.monotonic()
+        try:
+            self._fts_add(_fts_items)
+        except Exception:  # Postgres only: the document's terms could not be written
+            if source_for_rollback:
+                self.delete_by_source(source_for_rollback)
+            raise
         if stage_timings is not None:
-            _t_fts = time.monotonic()
-            self._fts_add(_fts_items)
             stage_timings["fts_s"] = round(time.monotonic() - _t_fts, 3)
-        else:
-            self._fts_add(_fts_items)
         return {"num_added": count, "num_skipped": 0}
 
     def search(self, query: str, k: int = 10) -> list[tuple[Document, float]]:

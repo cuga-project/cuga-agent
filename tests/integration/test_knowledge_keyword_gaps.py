@@ -454,24 +454,100 @@ def test_ingest_fails_before_any_vector_when_the_keyword_table_cannot_be_prepare
 
 
 @pytest.mark.pgvector
-def test_postgres_failed_term_write_is_filled_by_the_next_search(make_adapter, monkeypatch):
-    """A failed keyword-term write keeps the ingest, and the next keyword search fills the row."""
-    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
+def test_postgres_failed_term_write_fails_the_upload_for_every_adapter(make_adapter, monkeypatch):
+    """A document whose keyword terms cannot be written is removed and its upload fails. Kept, its
+    rows had no terms, and an adapter that had already searched never looked for such rows again,
+    so keyword search in every other process missed the document."""
+    import asyncpg
+
+    from cuga.backend.knowledge.storage.adapter import _TERMS_COLUMN, StorageBackedKnowledgeVectorStore
 
     _set_tenant(monkeypatch, "tenant_a")
     collection = unique_collection("kwh")
-    adapter = make_adapter("pgvector", collection)
-    _add(adapter, collection, "first", "Invoice ABC-100 was issued.")  # the keyword column exists
+    writer = make_adapter("pgvector", collection)
+    _add(writer, collection, "first", "Invoice ABC-100 was issued.")
+    reader = make_adapter("pgvector", collection)
+    assert _hit_sources(reader, "ABC-100")  # warm: its keyword column is checked
     write = StorageBackedKnowledgeVectorStore._pg_write_terms
 
     def _fail(self, items):
         raise ConnectionError("connection reset")
 
     monkeypatch.setattr(StorageBackedKnowledgeVectorStore, "_pg_write_terms", _fail)
-    source = _add(adapter, collection, "late", "The policy covers dental.")
+    with pytest.raises(ConnectionError):
+        _add(writer, collection, "late", "The policy covers dental.")
     monkeypatch.setattr(StorageBackedKnowledgeVectorStore, "_pg_write_terms", write)
 
-    assert _hit_sources(adapter, "dental") == {source}
+    async def rows_without_terms() -> int:
+        conn = await asyncpg.connect(_pgvector_dsn())
+        try:
+            return await conn.fetchval(f"SELECT count(*) FROM {collection} WHERE {_TERMS_COLUMN} IS NULL")
+        finally:
+            await conn.close()
+
+    assert asyncio.run(rows_without_terms()) == 0
+    dense_hits = {doc.metadata["source"] for doc, _ in reader.search("dental", k=5)}
+    assert f"{collection}/late.txt" not in dense_hits, "the failed document's vectors were kept"
+    source = _add(writer, collection, "late", "The policy covers dental.")  # the retry
+    assert _hit_sources(reader, "dental") == {source}
+
+
+@pytest.mark.pgvector
+def test_postgres_backfill_batches_skip_rows_already_filled(make_adapter, monkeypatch):
+    """Each backfill batch starts where the last one ended: its cost does not grow with the rows
+    already filled. Filtering on "terms IS NULL" re-read every filled row on every batch."""
+    import json as _json
+
+    import asyncpg
+
+    from cuga.backend.knowledge.storage.adapter import _PG_FILL_BATCH, _TERMS_COLUMN
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwbc")
+    adapter = make_adapter("pgvector", collection)
+    _add(adapter, collection, "seed", "Invoice ABC-100 was issued.")
+    batch = _PG_FILL_BATCH.format(table=collection)
+
+    async def buffers_read(conn, after) -> int:
+        plan = await conn.fetchval(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {batch}", *after)
+        top = (_json.loads(plan) if isinstance(plan, str) else plan)[0]["Plan"]
+        return top["Shared Hit Blocks"] + top["Shared Read Blocks"]
+
+    async def first_and_last_batch() -> tuple[int, int]:
+        conn = await asyncpg.connect(_pgvector_dsn())
+        try:
+            columns = [
+                r["attname"]
+                for r in await conn.fetch(
+                    "SELECT attname FROM pg_attribute WHERE attrelid = $1::regclass AND attnum > 0 "
+                    "AND NOT attisdropped ORDER BY attnum",
+                    collection,
+                )
+            ]
+            copied = ", ".join(
+                {"id": "'r' || lpad(g::text, 5, '0')", _TERMS_COLUMN: "NULL"}.get(c, c) for c in columns
+            )
+            await conn.execute(
+                f"INSERT INTO {collection} ({', '.join(columns)}) "
+                f"SELECT {copied} FROM {collection}, generate_series(1, 5000) AS g"
+            )
+            await conn.execute(f"ANALYZE {collection}")
+            first = await buffers_read(conn, ("", "", ""))
+            cut = await conn.fetchrow(
+                f"SELECT tenant_id, instance_id, id FROM {collection} ORDER BY tenant_id, instance_id, id "
+                "OFFSET 4500 LIMIT 1"
+            )
+            await conn.execute(  # the batches before the cut are done
+                f"UPDATE {collection} SET {_TERMS_COLUMN} = ''::tsvector "
+                "WHERE (tenant_id, instance_id, id) < ($1, $2, $3)",
+                *cut,
+            )
+            return first, await buffers_read(conn, tuple(cut))
+        finally:
+            await conn.close()
+
+    first, last = asyncio.run(first_and_last_batch())
+    assert last <= 3 * first, f"the last batch read {last} buffers, the first {first}"
 
 
 @pytest.mark.pgvector
