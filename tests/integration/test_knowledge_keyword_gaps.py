@@ -203,6 +203,19 @@ def test_identifier_matches_however_it_is_written(backend, query, make_adapter, 
     assert source not in _hit_sources(adapter, "ABC-124"), f"{backend}: ABC-124 matched ABC-123"
 
 
+@pytest.mark.parametrize("backend", BOTH_BACKENDS)
+def test_words_joined_by_ordinary_punctuation_find_either_word(backend, make_adapter, monkeypatch):
+    """ "Paris/London" finds a document about either city, not only one with both words adjacent."""
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwp")
+    adapter = make_adapter(backend, collection)
+    paris = _add(adapter, collection, "paris", "The Paris office opens at nine.")
+    london = _add(adapter, collection, "london", "The London office opens at ten.")
+
+    hits = _hit_sources(adapter, "Paris/London")
+    assert {paris, london} <= hits, f"{backend}: Paris/London found {hits}"
+
+
 @pytest.mark.unit
 def test_keyword_index_from_an_older_tokenizer_is_rebuilt(tmp_path, monkeypatch):
     """A keyword table built before the shared tokenizer is re-indexed from its stored text."""

@@ -27,3 +27,28 @@ def test_repeated_chinese_pairs_are_counted_once():
 def test_a_possessive_still_matches_the_bare_name(query):
     """A possessive split into its own word: as the phrase "macduff s" it missed "MacDuff"."""
     assert lexical.query_groups(query) == [["tyler"], ["macduff"], ["s"], ["child"]]
+
+
+@pytest.mark.parametrize(
+    "query", ["Paris/London", "Paris,London", "Paris&London", "Paris+London", "Paris|London"]
+)
+def test_words_joined_by_ordinary_punctuation_match_separately(query):
+    """Matched as the phrase "paris london", these found neither a Paris nor a London document."""
+    assert lexical.query_groups(query) == [["paris"], ["london"]]
+
+
+@pytest.mark.parametrize(
+    ("query", "phrase"),
+    [
+        ("ABC-123", ["abc", "123"]),
+        ("ＡＢＣ－１２３", ["abc", "123"]),
+        ("abc_def", ["abc", "def"]),
+        ("user@example.com", ["user", "example", "com"]),
+        ("engine.py", ["engine", "py"]),
+        ("10:30", ["10", "30"]),
+        ("COVID/19", ["covid", "19"]),
+        ("(ABC-123)", ["abc", "123"]),
+    ],
+)
+def test_identifiers_stay_phrases(query, phrase):
+    assert lexical.query_groups(query) == [phrase]
