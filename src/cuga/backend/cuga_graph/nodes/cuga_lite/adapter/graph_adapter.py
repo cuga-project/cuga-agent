@@ -269,7 +269,8 @@ def _format_observed_tool_shapes_block(shapes: Dict[str, str]) -> str:
 # Sent when an answer cites sources but no knowledge search ran this turn (#1124).
 SEARCH_BEFORE_CITING_CORRECTION = (
     "Your answer cites sources, but no knowledge search ran in this turn, so those citations "
-    "would be removed. Run the knowledge search for this question now, then answer from its "
+    "would be removed. Even if earlier results already cover it, write code now that calls the "
+    "knowledge search tool with a query for the user's latest question, then answer from its "
     "results and cite only those."
 )
 
