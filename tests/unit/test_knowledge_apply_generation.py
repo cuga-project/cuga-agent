@@ -8,10 +8,13 @@ import asyncio
 import tempfile
 from pathlib import Path
 
+import pytest
 from langchain_core.documents import Document
 
 from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge.engine import KnowledgeEngine
+
+pytestmark = pytest.mark.unit
 
 
 def _cfg(**over):
@@ -28,7 +31,7 @@ def test_stale_ingest_worker_records_superseded_when_apply_generation_bumps():
     eng = KnowledgeEngine(_cfg())
     assert eng._apply_generation == 0
 
-    def fake_load(path):
+    def fake_load(path, pinned=None):
         eng._apply_generation += 1  # simulate concurrent commit_knowledge_update
         return [Document(page_content="hi", metadata={"source": "f.txt"})]
 

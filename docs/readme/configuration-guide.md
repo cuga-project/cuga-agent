@@ -205,7 +205,7 @@ and omit `WXO_API_KEY` — local instances are auto-detected and don't require a
 CUGA does not require OpenAI: OpenAI-compatible endpoints work through the standard override, including Chinese providers. Two services are commonly unreachable from mainland China and have workarounds:
 
 - **PyPI is slow:** use a local mirror, for example `pip install cuga -i https://pypi.tuna.tsinghua.edu.cn/simple`. With uv, set `UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple` rather than adding a `uv.toml` to the project root, which would make uv ignore the `[tool.uv]` section of `pyproject.toml`. A changed index re-resolves `uv.lock`; don't commit that change. torch and torchvision still come from the PyTorch CPU index pinned in `pyproject.toml`, not the mirror. Without Python 3.12, uv downloads it from GitHub, which can be slow; install it yourself first or set `UV_PYTHON_INSTALL_MIRROR`.
-- **Hugging Face is blocked:** with the default `[storage.embedding] provider = "local"`, policies and knowledge download a small embedding model from Hugging Face on first use. Set `HF_ENDPOINT=https://hf-mirror.com`, or preload the models ahead of time (this also needs `HF_ENDPOINT` set):
+- **Hugging Face is blocked:** with the default `[storage.embedding] provider = "local"`, policies and knowledge download small embedding models from Hugging Face on first use. Set `HF_ENDPOINT=https://hf-mirror.com`, or preload the models ahead of time (this also needs `HF_ENDPOINT` set):
 
   ```bash
   export FASTEMBED_CACHE_PATH="$HOME/.cache/cuga/fastembed"
@@ -462,6 +462,25 @@ redaction mechanism.
 CUGA includes a built-in knowledge base powered by LangChain and local vector stores. **Docling** is integrated for document ingestion: it parses and normalizes PDFs, Office files, HTML, Markdown, images, and other supported types before chunking and embedding, so the pipeline stays self-contained with no external document services.
 
 When enabled, the agent can search, ingest, and manage documents.
+
+The default embedding model is `intfloat/multilingual-e5-small`, which covers about 100 languages and
+runs locally as an int8 ONNX model. Knowledge bases built with another model keep that model: a
+server keeps the model its saved agent config names, and an SDK knowledge base keeps the model it was
+built with. To move a server agent to another model, change it in the knowledge settings and select
+**Re-index now**. To rebuild an SDK knowledge base, add its documents again in new storage: a new
+`knowledge.persist_dir` and, with `storage.mode = "prod"`, a new database for `storage.postgres_url`
+and for `knowledge.pgvector_connection_string` if you set it. The `storage.postgres_url` database
+also holds other data, such as policies, so move what you still need first. The rebuilt knowledge
+base uses the configured model: the profile's, or `DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL` when that
+is set.
+
+Offline, searching an existing knowledge base needs only the model it was built with, so an
+air-gapped install keeps searching it after an upgrade. Everything else must be in the model cache
+before going offline: the model for new knowledge bases (`multilingual-e5-small` under the
+`standard` and `speed` profiles), Docling's models to parse PDFs, and, under `balanced` or
+`max_quality`, that profile's embedding and reranker models. The preload script in [Using CUGA in
+mainland China](#using-cuga-in-mainland-china) fetches the first two; for the others, start CUGA
+once with that profile while online, which loads them.
 
 **Try the knowledge demo:** same as the main demo but with the knowledge engine on (upload documents and query them):
 
@@ -974,7 +993,7 @@ When an app exposes many tools, CUGA shrinks the set before the model sees it. T
 
 `embedding` compares one vector built from your question against one vector per tool (name + description + parameter names + return field names). It is strong at **recall** but weak at separating near-identical tools such as `get_contacts` (list) and `get_contact` (by id) — so `hybrid` is usually the better choice for discovery, and `embedding` for the provider cap where only "don't drop the needed tool" matters.
 
-Embeddings are local by default (`BAAI/bge-small-en-v1.5` via fastembed) — the same weights knowledge and policy already load, so there is one ONNX session and nothing extra for airgapped preload to fetch. Ranking makes no network call and is not billed. Setting `embedding_provider = "openai"` trades that away for a hosted model. Either way the *agent* still calls an LLM for its own reasoning — only the shortlister's ranking step is affected. The first call while a local model is still downloading is served by `fallback_strategy`, so **a query never waits on a download**.
+Embeddings are local by default (`BAAI/bge-small-en-v1.5` via fastembed) — the same weights policies already load, so there is one ONNX session and nothing extra for airgapped preload to fetch. Ranking makes no network call and is not billed. Setting `embedding_provider = "openai"` trades that away for a hosted model. Either way the *agent* still calls an LLM for its own reasoning — only the shortlister's ranking step is affected. The first call while a local model is still downloading is served by `fallback_strategy`, so **a query never waits on a download**.
 
 In **server mode** the catalogue is embedded at startup and again whenever the tool list changes, so the first `find_tools` after boot uses cosine rather than falling back. Vectors are keyed by content hash, so adding a tool embeds one document rather than the whole catalogue. The SDK stays lazy.
 
