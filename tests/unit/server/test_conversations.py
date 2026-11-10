@@ -402,6 +402,27 @@ async def test_legacy_delete_removes_only_the_callers_own_history(server):
     assert (await server.client.delete("/api/conversations/shared")).status_code == 404
 
 
+async def test_a_failed_shared_legacy_delete_changes_nothing(server, monkeypatch):
+    await server.db.save_conversation("cuga-default", "shared", 1, "alice", [])
+    await server.db.save_conversation("cuga-default", "shared", 1, "bob", [])
+    store = server.db._get_store()
+    execute_batch = store.execute_batch
+
+    async def fails_midway(statements):
+        # Commit nothing: a failure part-way through the one transaction.
+        if any("SET status = 'deleted'" in sql for sql, _ in statements):
+            raise RuntimeError("database is locked")
+        return await execute_batch(statements)
+
+    monkeypatch.setattr(store, "execute_batch", fails_midway)
+
+    response = await server.client.delete("/api/conversations/shared")
+
+    assert response.status_code == 503, response.text  # retryable, not a 404 on the retry
+    assert await server.db.get_latest_version("cuga-default", "shared", "alice") == 1  # still there
+    assert await server.db.get_thread_status("shared", "bob", "cuga-default") is None  # not retired
+
+
 async def test_legacy_delete_by_its_only_user_cleans_up_and_retires_the_id(server):
     await server.db.save_conversation("cuga-default", "old", 1, "alice", [])
 

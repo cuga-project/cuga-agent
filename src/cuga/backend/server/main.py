@@ -3625,15 +3625,13 @@ async def delete_conversation(
             await conversation_db.claim_thread(conversation_id, user_id, agent_id)
         except ThreadOwnershipError:
             # Another user also has history under this ID. Knowledge and uploads are keyed by
-            # thread ID alone, so remove only the caller's own rows, then retire the ID so no
-            # one can claim it and reach the leftover uploads (#774).
-            if not await conversation_db.delete_thread(agent_id, conversation_id, user_id):
-                raise HTTPException(status_code=500, detail="Failed to delete conversation")
+            # thread ID alone, so remove only the caller's own rows and retire the ID in the same
+            # transaction: no one can then claim it and reach the leftover uploads (#774).
             try:
-                await conversation_db.retire_thread(conversation_id, user_id, agent_id)
+                await conversation_db.delete_thread_and_retire(agent_id, conversation_id, user_id)
             except Exception as exc:
-                logger.error(f"Failed to retire conversation: {type(exc).__name__}")
-                raise HTTPException(status_code=500, detail="Failed to delete conversation") from exc
+                logger.error(f"Failed to delete shared conversation: {type(exc).__name__}")
+                raise _conversation_unavailable() from exc
             return JSONResponse({"status": "success", "message": "Conversation deleted"})
         except Exception as exc:
             logger.error(f"Conversation claim failed: {type(exc).__name__}")

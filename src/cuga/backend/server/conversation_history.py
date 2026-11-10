@@ -272,24 +272,6 @@ class ConversationHistoryDB:
         await store.execute(sql, params)
         await store.commit()
 
-    async def retire_thread(self, thread_id: str, user_id: str, agent_id: str) -> None:
-        """Mark a thread ID ``deleted`` for good, adding an owner row if it has none (#774).
-
-        Used for a legacy ID shared by several users: its uploads are keyed by thread ID alone, so
-        they cannot be removed for one user, and the retired ID keeps anyone from claiming them.
-        """
-        await self._ensure_schema()
-        store = self._get_store()
-        scope = (_tenant_id(), _instance_id(), thread_id.strip())
-        await store.execute(
-            """INSERT INTO runtime_thread_owners
-            (tenant_id, instance_id, thread_id, user_id, agent_id, created_at, status)
-            VALUES (?, ?, ?, ?, ?, ?, 'deleted')
-            ON CONFLICT (tenant_id, instance_id, thread_id) DO UPDATE SET status = 'deleted'""",
-            scope + (user_id, agent_id, datetime.now(timezone.utc).isoformat()),
-        )
-        await store.commit()
-
     async def get_thread_statuses(self, user_id: str, agent_id: str) -> Dict[str, str]:
         """``thread_id -> status`` for every conversation the user owns with this agent."""
         await self._ensure_schema()
@@ -479,32 +461,59 @@ class ConversationHistoryDB:
             logger.error(f"Error deleting stream events: {e}")
             return False
 
+    def _delete_history_statements(self, agent_id: str, thread_id: str, user_id: str) -> list:
+        scope = (_tenant_id(), _instance_id(), agent_id, thread_id, user_id)
+        where = "tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?"
+        return [
+            (
+                "INSERT INTO conversation_deletion_outbox SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM conversation_history WHERE "
+                + where
+                + ") OR EXISTS (SELECT 1 FROM stream_events WHERE "
+                + where
+                + ")",
+                (str(uuid.uuid4()), *scope, datetime.now(timezone.utc).isoformat(), *scope, *scope),
+            ),
+            ("DELETE FROM conversation_history WHERE " + where, scope),
+            ("DELETE FROM stream_events WHERE " + where, scope),
+        ]
+
     async def delete_thread(self, agent_id: str, thread_id: str, user_id: str) -> bool:
         try:
             await self._ensure_schema()
-            store = self._get_store()
-            tenant_id = _tenant_id()
-            inst_id = _instance_id()
-            scope = (tenant_id, inst_id, agent_id, thread_id, user_id)
-            where = "tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?"
-            await store.execute_batch(
-                [
-                    (
-                        "INSERT INTO conversation_deletion_outbox SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM conversation_history WHERE "
-                        + where
-                        + ") OR EXISTS (SELECT 1 FROM stream_events WHERE "
-                        + where
-                        + ")",
-                        (str(uuid.uuid4()), *scope, datetime.now(timezone.utc).isoformat(), *scope, *scope),
-                    ),
-                    ("DELETE FROM conversation_history WHERE " + where, scope),
-                    ("DELETE FROM stream_events WHERE " + where, scope),
-                ]
+            await self._get_store().execute_batch(
+                self._delete_history_statements(agent_id, thread_id, user_id)
             )
             return True
         except Exception as e:
             logger.error(f"Error deleting thread: {e}")
             return False
+
+    async def delete_thread_and_retire(self, agent_id: str, thread_id: str, user_id: str) -> None:
+        """Delete the caller's history and mark the thread ID ``deleted`` for good, in one transaction.
+
+        Used for a legacy ID shared by several users (#774): its uploads are keyed by thread ID
+        alone, so they cannot be removed for one user, and the retired ID keeps anyone from claiming
+        them. Atomic, so the ID is never left claimable with the caller's history already gone.
+        Storage errors propagate: the caller's history is then unchanged and the delete can be retried.
+        """
+        await self._ensure_schema()
+        retire = (
+            """INSERT INTO runtime_thread_owners
+            (tenant_id, instance_id, thread_id, user_id, agent_id, created_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'deleted')
+            ON CONFLICT (tenant_id, instance_id, thread_id) DO UPDATE SET status = 'deleted'""",
+            (
+                _tenant_id(),
+                _instance_id(),
+                thread_id.strip(),
+                user_id,
+                agent_id,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        await self._get_store().execute_batch(
+            [retire, *self._delete_history_statements(agent_id, thread_id, user_id)]
+        )
 
     async def pending_source_deletions(self) -> list[dict]:
         """Read a bounded batch of committed deletion events for this instance."""
