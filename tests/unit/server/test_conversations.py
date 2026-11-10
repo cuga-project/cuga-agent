@@ -408,13 +408,14 @@ async def test_a_failed_shared_legacy_delete_changes_nothing(server, monkeypatch
     store = server.db._get_store()
     execute_batch = store.execute_batch
 
-    async def fails_midway(statements):
-        # Commit nothing: a failure part-way through the one transaction.
+    async def fails_after_the_writes(statements):
+        # Run the real transaction, then fail on a last statement: the retire row and the history
+        # deletes have executed by then, so this proves the database rolls them back.
         if any("SET status = 'deleted'" in sql for sql, _ in statements):
-            raise RuntimeError("database is locked")
+            statements = [*statements, ("INSERT INTO no_such_table VALUES (1)", ())]
         return await execute_batch(statements)
 
-    monkeypatch.setattr(store, "execute_batch", fails_midway)
+    monkeypatch.setattr(store, "execute_batch", fails_after_the_writes)
 
     response = await server.client.delete("/api/conversations/shared")
 
