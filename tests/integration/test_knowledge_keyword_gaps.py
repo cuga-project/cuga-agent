@@ -352,6 +352,88 @@ def test_keyword_search_recovers_after_another_engine_drops_the_table(tmp_path, 
 
 
 @pytest.mark.unit
+def test_a_keyword_rebuild_does_not_block_uploads_to_other_collections(tmp_path, monkeypatch):
+    """Collections share one SQLite file. Rebuilding one collection's keyword table (about a minute
+    at 50,000 chunks) must not hold the database's write lock while it tokenizes, or an upload to
+    another collection fails with "database is locked" after SQLite's 5 s wait."""
+    import sqlite3
+    import threading
+    import time
+
+    from cuga.backend.knowledge import lexical
+    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
+
+    _set_tenant(monkeypatch, "tenant_a")
+    db = str(tmp_path / "kb.db")
+    slow, other = unique_collection("kwrs"), unique_collection("kwro")
+    seeded = StorageBackedKnowledgeVectorStore(slow, DeterministicEmbeddings(), local_db_path=db)
+    for i in range(40):
+        _add(seeded, slow, f"doc{i}", f"The policy covers dental {i}.")
+    with sqlite3.connect(db) as conn:  # its keyword table is missing: the next search rebuilds it
+        conn.execute(f"DROP TABLE {slow}__fts")
+    real_terms = lexical.terms
+
+    def slow_terms(text):  # 40 chunks x 0.3 s: a rebuild past SQLite's 5 s wait and the write's retry
+        time.sleep(0.3)
+        return real_terms(text)
+
+    monkeypatch.setattr(lexical, "terms", slow_terms)
+    rebuild = threading.Thread(
+        target=_hit_sources,
+        args=(StorageBackedKnowledgeVectorStore(slow, DeterministicEmbeddings(), local_db_path=db), "dental"),
+    )
+    rebuild.start()
+    time.sleep(0.5)
+    uploader = StorageBackedKnowledgeVectorStore(other, DeterministicEmbeddings(), local_db_path=db)
+    source = _add(uploader, other, "invoice", "Invoice ZQX-4417 was paid.")  # must not raise
+    rebuild.join(timeout=60)
+    monkeypatch.setattr(lexical, "terms", real_terms)
+
+    assert _hit_sources(uploader, "ZQX-4417") == {source}
+    assert len(seeded.search_lexical("dental", k=60)) == 40
+
+
+@pytest.mark.unit
+def test_a_chunk_deleted_during_a_keyword_rebuild_is_not_indexed(tmp_path, monkeypatch):
+    """The rebuild reads and tokenizes the stored chunks before it takes the write lock; a chunk
+    deleted in between must not come back as a keyword hit."""
+    import sqlite3
+
+    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
+
+    _set_tenant(monkeypatch, "tenant_a")
+    db = str(tmp_path / "kb.db")
+    collection = unique_collection("kwdl")
+    adapter = StorageBackedKnowledgeVectorStore(collection, DeterministicEmbeddings(), local_db_path=db)
+    source = _add(adapter, collection, "kept", "Invoice ZQX-4417 was paid.")
+    with sqlite3.connect(db) as conn:
+        conn.execute(f"DROP TABLE {collection}__fts")
+    read = StorageBackedKnowledgeVectorStore._fts_rows_from_vectors
+
+    def read_then_delete(self, conn):  # a chunk read here is deleted before the lock is taken
+        rows = read(self, conn)
+        return rows + [
+            (
+                "gone",
+                "tenant_a",
+                rows[0][2],
+                f"{collection}/gone.txt",
+                "gone.txt",
+                1,
+                "",
+                "Ghost QQX-9999.",
+                "ghost qqx 9999",
+            )
+        ]
+
+    monkeypatch.setattr(StorageBackedKnowledgeVectorStore, "_fts_rows_from_vectors", read_then_delete)
+    fresh = StorageBackedKnowledgeVectorStore(collection, DeterministicEmbeddings(), local_db_path=db)
+
+    assert _hit_sources(fresh, "ZQX-4417") == {source}
+    assert _hit_sources(fresh, "QQX-9999") == set()
+
+
+@pytest.mark.unit
 def test_during_a_reindex_search_skips_keywords_and_uploads_wait(tmp_path, monkeypatch):
     """While one call re-indexes an old keyword table (about a minute at 50,000 chunks), another
     search in the process skips the keyword leg at once instead of queueing for SQLite's write

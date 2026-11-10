@@ -318,6 +318,10 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             return
         if self._fts_state(conn) != "current":
             table = self._fts_table()
+            # Tokenize the stored chunks before taking the write lock. It takes about a minute per
+            # 50,000 chunks, and every collection writes to this database file: holding the lock
+            # that long made uploads to other collections fail with "database is locked".
+            rows = self._fts_rows_from_vectors(conn)
             conn.execute("BEGIN IMMEDIATE")
             state = self._fts_state(conn)
             if state == "stale":
@@ -330,32 +334,58 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                     "filename UNINDEXED, page UNINDEXED, section_path UNINDEXED, chunk_text UNINDEXED, "
                     f"{_TERMS_COLUMN}, tokenize=\"unicode61 remove_diacritics 0 categories 'L* M* N* Co'\")"
                 )
-                has_vectors = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE name = ?", (self._collection,)
-                ).fetchone()
-                if has_vectors:
-                    import sqlite_vec
-
-                    conn.enable_load_extension(True)
-                    try:
-                        sqlite_vec.load(conn)
-                    finally:
-                        conn.enable_load_extension(False)
+                if rows is not None:
+                    insert = f"INSERT INTO {table} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) "
+                    conn.executemany(insert + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+                    # Chunks deleted since the read above must not come back as keyword hits.
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE chunk_id NOT IN (SELECT id FROM {self._collection})"
+                    )
+                    # Chunks stored since the read above: few, so tokenized under the lock.
                     conn.create_function("lexical_terms", 1, lambda text: " ".join(lexical.terms(text or "")))
                     conn.create_function("section_path_of", 1, _section_path_of)
-                    cur = conn.execute(
-                        f"INSERT INTO {table} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) "
-                        "SELECT id, tenant_id, instance_id, source, filename, page, "
-                        f"section_path_of(meta_json), chunk_text, lexical_terms(chunk_text) FROM {self._collection}"
-                    )
+                    late = conn.execute(
+                        insert + "SELECT id, tenant_id, instance_id, source, filename, page, "
+                        f"section_path_of(meta_json), chunk_text, lexical_terms(chunk_text) FROM {self._collection} "
+                        f"WHERE id NOT IN (SELECT chunk_id FROM {table})"
+                    ).rowcount
                     logger.info(
                         "Built keyword table {} (tokenizer v{}) from {} stored chunks",
                         table,
                         lexical.VERSION,
-                        cur.rowcount,
+                        len(rows) + late,
                     )
             conn.commit()
         self._fts_ready = True
+
+    def _fts_rows_from_vectors(self, conn) -> list[tuple] | None:
+        """A keyword row per stored chunk, read and tokenized without the write lock; ``None``
+        when the collection has no vector table yet."""
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (self._collection,)).fetchone():
+            return None
+        import sqlite_vec
+
+        conn.enable_load_extension(True)
+        try:
+            sqlite_vec.load(conn)
+        finally:
+            conn.enable_load_extension(False)
+        return [
+            (
+                cid,
+                tenant,
+                instance,
+                source,
+                filename,
+                page,
+                _section_path_of(meta),
+                text,
+                " ".join(lexical.terms(text or "")),
+            )
+            for cid, tenant, instance, source, filename, page, meta, text in conn.execute(
+                f"SELECT id, tenant_id, instance_id, source, filename, page, meta_json, chunk_text FROM {self._collection}"
+            ).fetchall()
+        ]
 
     def _pg_keyword_run(self, work):
         """Run ``work(conn)`` on a connection of its own. The engine runs the dense and keyword
