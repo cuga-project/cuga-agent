@@ -410,35 +410,33 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         return True
 
     def _pg_batch_terms(self, batch: list[tuple[str, list[float], dict[str, Any]]], bare: list[bool]):
-        """Write one ``add_many`` batch's keyword terms in the transaction that inserts it, so once
-        the keyword column exists no chunk is stored without terms, even if the process dies.
+        """The keyword terms of one ``add_many`` batch, written in the INSERT that stores the
+        chunks: once the keyword column exists, no chunk is stored without terms, even if the
+        process dies. A second UPDATE of the same rows would write every chunk into the vector
+        (HNSW) index twice, since the terms column is indexed and the update cannot be in place.
 
         Without the column (a collection from before keyword search, or a new table) the rows go
         in bare, and ``bare`` records it. Adding the column waits for this transaction to end, and
         the backfill that runs after it fills them; until the column exists no adapter has marked
         its terms complete.
         """
-        table, scope = self._collection, self._scope()
-        rows = [
-            (_pg_tsvector(meta.get("chunk_text", "") or ""), cid, scope["tenant_id"], scope["instance_id"])
-            for cid, _embedding, meta in batch
-        ]
+        table = self._collection
+        terms = [_pg_tsvector(meta.get("chunk_text", "") or "") for _cid, _embedding, meta in batch]
 
-        async def _write(conn) -> None:
+        async def _columns(conn) -> dict[str, tuple[str, list[str]]]:
+            # The INSERT's own lock, taken before the check: adding the column needs a lock that
+            # conflicts with it, so the column cannot appear between this check and the insert.
+            await conn.execute(f"LOCK TABLE {table} IN ROW EXCLUSIVE MODE")
             if await conn.fetchval(
                 "SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass($1) AND attname = $2 AND NOT attisdropped",
                 table,
                 _TERMS_COLUMN,
             ):
-                await conn.executemany(
-                    f"UPDATE {table} SET {_TERMS_COLUMN} = $1::text::tsvector "
-                    "WHERE id = $2 AND tenant_id = $3 AND instance_id = $4",
-                    rows,
-                )
-            else:
-                bare.append(True)
+                return {_TERMS_COLUMN: ("::text::tsvector", terms)}
+            bare.append(True)
+            return {}
 
-        return _write
+        return _columns
 
     def _pg_search_lexical(self, groups: list[list[str]], k: int) -> list[tuple[Any, Any, float]]:
         scope = self._scope()
@@ -835,7 +833,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                 chunk = items[i : i + insert_bs]
                 try:
                     if self._use_prod:
-                        await self._store.add_many(chunk, then=self._pg_batch_terms(chunk, bare))
+                        await self._store.add_many(chunk, columns=self._pg_batch_terms(chunk, bare))
                     else:
                         await self._store.add_many(chunk)
                 except Exception:

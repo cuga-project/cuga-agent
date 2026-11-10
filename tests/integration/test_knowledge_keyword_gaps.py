@@ -525,6 +525,34 @@ def test_postgres_terms_are_written_with_their_vectors(make_adapter, monkeypatch
 
 
 @pytest.mark.pgvector
+def test_postgres_terms_go_in_the_insert_not_a_second_update(make_adapter, monkeypatch):
+    """Once the keyword column exists, an upload writes each chunk's terms in its INSERT. A second
+    UPDATE of the same rows cannot be done in place (the terms column is indexed), so it wrote
+    every chunk into the vector (HNSW) index twice and left a dead row behind."""
+    import asyncpg.connection
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwin")
+    adapter = make_adapter("pgvector", collection)
+    _add(adapter, collection, "first", "Invoice ABC-100 was issued.")  # the keyword column now exists
+    statements: list[str] = []
+    for name in ("execute", "executemany"):
+        real = getattr(asyncpg.connection.Connection, name)
+
+        async def spy(self, query, *args, _real=real, **kwargs):
+            statements.append(" ".join(str(query).split()))
+            return await _real(self, query, *args, **kwargs)
+
+        monkeypatch.setattr(asyncpg.connection.Connection, name, spy)
+    source = _add(adapter, collection, "late", "The policy covers dental.")
+
+    inserts = [q for q in statements if q.startswith(f"INSERT INTO {collection} ")]
+    assert inserts and all("terms_v1" in q for q in inserts), inserts
+    assert not [q for q in statements if q.startswith(f"UPDATE {collection} ")]
+    assert _hit_sources(adapter, "dental") == {source}
+
+
+@pytest.mark.pgvector
 def test_postgres_upload_into_a_busy_table_without_the_keyword_column(make_adapter, monkeypatch):
     """An upload into a collection from before keyword search never waits to add the keyword
     column, even while another session has the table open; its chunks are indexed when a search
