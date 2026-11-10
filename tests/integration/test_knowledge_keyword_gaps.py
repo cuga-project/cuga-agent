@@ -203,17 +203,27 @@ def test_identifier_matches_however_it_is_written(backend, query, make_adapter, 
     assert source not in _hit_sources(adapter, "ABC-124"), f"{backend}: ABC-124 matched ABC-123"
 
 
+@pytest.mark.parametrize(
+    ("query", "texts"),
+    [
+        ("Paris/London", ("The Paris office opens at nine.", "The London office opens at ten.")),
+        ("IPv4/IPv6", ("Legacy hosts use IPv4.", "New hosts use IPv6 only.")),
+    ],
+    ids=["words", "identifiers"],
+)
 @pytest.mark.parametrize("backend", BOTH_BACKENDS)
-def test_words_joined_by_ordinary_punctuation_find_either_word(backend, make_adapter, monkeypatch):
+def test_words_joined_by_ordinary_punctuation_find_either_word(
+    backend, query, texts, make_adapter, monkeypatch
+):
     """ "Paris/London" finds a document about either city, not only one with both words adjacent."""
     _set_tenant(monkeypatch, "tenant_a")
     collection = unique_collection("kwp")
     adapter = make_adapter(backend, collection)
-    paris = _add(adapter, collection, "paris", "The Paris office opens at nine.")
-    london = _add(adapter, collection, "london", "The London office opens at ten.")
+    first = _add(adapter, collection, "first", texts[0])
+    second = _add(adapter, collection, "second", texts[1])
 
-    hits = _hit_sources(adapter, "Paris/London")
-    assert {paris, london} <= hits, f"{backend}: Paris/London found {hits}"
+    hits = _hit_sources(adapter, query)
+    assert {first, second} <= hits, f"{backend}: {query} found {hits}"
 
 
 OLD_FTS_SCHEMAS = {
@@ -467,14 +477,27 @@ def test_ingest_fails_before_any_vector_when_the_keyword_table_cannot_be_prepare
     assert [doc.metadata["source"] for doc, _ in adapter.search("dental", k=5)] == [source]
 
 
-@pytest.mark.pgvector
-def test_postgres_failed_term_write_fails_the_upload_for_every_adapter(make_adapter, monkeypatch):
-    """A document whose keyword terms cannot be written is removed and its upload fails. Kept, its
-    rows had no terms, and an adapter that had already searched never looked for such rows again,
-    so keyword search in every other process missed the document."""
+def _rows_without_terms(collection: str) -> int:
     import asyncpg
 
-    from cuga.backend.knowledge.storage.adapter import _TERMS_COLUMN, StorageBackedKnowledgeVectorStore
+    from cuga.backend.knowledge.storage.adapter import _TERMS_COLUMN
+
+    async def _count() -> int:
+        conn = await asyncpg.connect(_pgvector_dsn())
+        try:
+            return await conn.fetchval(f"SELECT count(*) FROM {collection} WHERE {_TERMS_COLUMN} IS NULL")
+        finally:
+            await conn.close()
+
+    return asyncio.run(_count())
+
+
+@pytest.mark.pgvector
+def test_postgres_terms_are_written_with_their_vectors(make_adapter, monkeypatch):
+    """Keyword terms are written in the transaction that inserts the chunks: when writing them
+    fails, the chunks are not stored either, and the retry indexes both. Written afterwards, a
+    failure left rows without terms that an adapter which had already searched never filled."""
+    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
 
     _set_tenant(monkeypatch, "tenant_a")
     collection = unique_collection("kwh")
@@ -482,28 +505,65 @@ def test_postgres_failed_term_write_fails_the_upload_for_every_adapter(make_adap
     _add(writer, collection, "first", "Invoice ABC-100 was issued.")
     reader = make_adapter("pgvector", collection)
     assert _hit_sources(reader, "ABC-100")  # warm: its keyword column is checked
-    write = StorageBackedKnowledgeVectorStore._pg_write_terms
+    batch_terms = StorageBackedKnowledgeVectorStore._pg_batch_terms
 
-    def _fail(self, items):
-        raise ConnectionError("connection reset")
+    def _failing(self, batch, bare):
+        async def _write(conn):
+            raise ConnectionError("connection reset")
 
-    monkeypatch.setattr(StorageBackedKnowledgeVectorStore, "_pg_write_terms", _fail)
+        return _write
+
+    monkeypatch.setattr(StorageBackedKnowledgeVectorStore, "_pg_batch_terms", _failing)
     with pytest.raises(ConnectionError):
         _add(writer, collection, "late", "The policy covers dental.")
-    monkeypatch.setattr(StorageBackedKnowledgeVectorStore, "_pg_write_terms", write)
+    monkeypatch.setattr(StorageBackedKnowledgeVectorStore, "_pg_batch_terms", batch_terms)
 
-    async def rows_without_terms() -> int:
+    assert _rows_without_terms(collection) == 0
+    dense_hits = {doc.metadata["source"] for doc, _ in reader.search("dental", k=5)}
+    assert f"{collection}/late.txt" not in dense_hits, "the chunks were stored without their terms"
+    source = _add(writer, collection, "late", "The policy covers dental.")  # the retry
+    assert _hit_sources(reader, "dental") == {source}
+
+
+@pytest.mark.pgvector
+def test_postgres_upload_into_a_busy_table_without_the_keyword_column(make_adapter, monkeypatch):
+    """An upload into a collection from before keyword search never waits to add the keyword
+    column, even while another session has the table open; its chunks are indexed when a search
+    adds the column."""
+    import time
+
+    import asyncpg
+
+    from cuga.backend.knowledge.storage.adapter import _TERMS_COLUMN
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwbu")
+    old = make_adapter("pgvector", collection)
+    first = _add(old, collection, "first", "Invoice ZQX-4417 was paid.")
+    fresh = make_adapter("pgvector", collection)
+
+    async def upload_while_the_table_is_open() -> float:
         conn = await asyncpg.connect(_pgvector_dsn())
         try:
-            return await conn.fetchval(f"SELECT count(*) FROM {collection} WHERE {_TERMS_COLUMN} IS NULL")
+            await conn.execute(f"ALTER TABLE {collection} DROP COLUMN {_TERMS_COLUMN}")  # before the upgrade
+            tx = conn.transaction()
+            await tx.start()
+            await conn.execute(f"SELECT 1 FROM {collection} LIMIT 1")  # holds the table open
+            started = time.monotonic()
+            await asyncio.to_thread(_add, fresh, collection, "late", "Invoice QQR-9921 was paid.")
+            elapsed = time.monotonic() - started
+            await tx.rollback()
+            return elapsed
         finally:
             await conn.close()
 
-    assert asyncio.run(rows_without_terms()) == 0
-    dense_hits = {doc.metadata["source"] for doc, _ in reader.search("dental", k=5)}
-    assert f"{collection}/late.txt" not in dense_hits, "the failed document's vectors were kept"
-    source = _add(writer, collection, "late", "The policy covers dental.")  # the retry
-    assert _hit_sources(reader, "dental") == {source}
+    elapsed = asyncio.run(upload_while_the_table_is_open())
+
+    assert elapsed < 5, f"the upload waited {elapsed:.1f}s for the busy table"
+    reader = make_adapter("pgvector", collection)
+    assert _hit_sources(reader, "ZQX-4417") == {first}
+    assert _hit_sources(reader, "QQR-9921") == {f"{collection}/late.txt"}
+    assert _rows_without_terms(collection) == 0
 
 
 @pytest.mark.pgvector
