@@ -1,6 +1,6 @@
 import hashlib
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from loguru import logger
 
@@ -167,8 +167,12 @@ class ProdEmbeddingStore:
     async def add_many(
         self,
         items: List[tuple[str, List[float], Dict[str, Any]]],
+        then: Optional[Callable[[Any], Awaitable[None]]] = None,
     ) -> None:
         """Bulk-upsert items via a single ``executemany`` (issue #183 step 3).
+
+        ``then(conn)``, when given, runs in the same transaction after the rows are written, so
+        a caller's writes that belong with these rows commit or roll back with them.
 
         One ``pool.acquire`` and one ``conn.transaction`` per batch instead of
         per item, which is the big win on pgvector where each row was
@@ -185,6 +189,8 @@ class ProdEmbeddingStore:
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.executemany(sql, rows)
+                if then is not None:
+                    await then(conn)
 
     async def search(
         self, query_embedding: List[float], limit: int, metadata_filter: Dict[str, Any]
