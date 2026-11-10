@@ -49,7 +49,12 @@ def test_supported_image_bakes_evolve_for_offline_runtime() -> None:
     assert "--group evolve-image" in dockerfile
     for package in ("stanza", "udtools", "udapi"):
         assert f"--no-install-package {package}" in dockerfile
-    assert "uv pip install" not in dockerfile
+    # Everything comes from the lock except READI's model, which is pinned by hash.
+    model_install = (
+        "uv pip install --no-config --no-deps --require-hashes -r deployment/evolve-image-spacy-model.txt"
+    )
+    assert dockerfile.count("uv pip install") == dockerfile.count(model_install) == 1
+    assert "--hash=sha256:" in (REPO_ROOT / "deployment/evolve-image-spacy-model.txt").read_text()
     assert "SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers" in dockerfile
     assert "uv run --no-sync playwright install" in dockerfile
     assert "RUN uv run --no-sync python src/scripts/preload_models.py" in dockerfile
@@ -61,6 +66,12 @@ def test_supported_image_bakes_evolve_for_offline_runtime() -> None:
     assert "embedded-evolve-supervisor.py" not in dockerfile
     assert "container_services.py" in entrypoint
     assert not (REPO_ROOT / "Dockerfile.memory").exists()
+
+
+@pytest.mark.unit
+def test_uv_lock_has_no_direct_url_packages() -> None:
+    """uv downloads a direct-URL wheel whole on every fresh sync, whether or not it installs it."""
+    assert "source = { url = " not in (REPO_ROOT / "uv.lock").read_text()
 
 
 @pytest.mark.unit

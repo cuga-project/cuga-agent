@@ -288,7 +288,9 @@ test_llm = "scripts.commands:test_llm"
 evolve-image = [
     "altk-evolve-core[pii-semantic]>=1.8.0,<2; python_version>='3.12'",
     "readi-privacy==0.1.7; python_version>='3.12'",
-    "en-core-web-trf @ https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl ; python_version>='3.12'",
+    # READI's spaCy model needs this. The model itself is a 436 MiB direct-URL wheel that
+    # uv would download on every fresh sync, so Dockerfile.ubi installs it by hash instead.
+    "spacy-curated-transformers>=0.2.2,<1.0.0; python_version>='3.12'",
 ]
 dev = [
     "pytz>=2025.1",
