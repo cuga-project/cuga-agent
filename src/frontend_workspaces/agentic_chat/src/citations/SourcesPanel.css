@@ -33,6 +33,13 @@
 .cuga-sources-panel__file { font-weight: 600; font-size: 13px; color: var(--cds-text-primary, #161616);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: plaintext; }
 .cuga-sources-panel__meta { margin-left: auto; flex: none; font-size: 11px; color: var(--cds-text-secondary, #525252); }
+/* citation check verdict (knowledge.citation_check): the glyph carries the colour, the label stays body text */
+.cuga-support { flex: none; }
+.cuga-support--supported { color: var(--cds-support-success, #24a148); }
+.cuga-support--contradicted { color: var(--cds-support-error, #da1e28); }
+.cuga-support--not_stated { color: var(--cds-text-secondary, #525252); }
+.cuga-sources-panel__support { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 4px 0 0 26px;
+  color: var(--cds-text-primary, #161616); }
 .cuga-sources-panel__section { font-size: 11px; color: var(--cds-text-secondary, #525252); margin: 4px 0 0 26px; }
 .cuga-sources-panel__snippet { margin: 8px 0 0; padding: 10px 12px; border-radius: 4px; cursor: pointer;
   background: var(--cds-layer-02, #f4f4f4); font-size: 13px; line-height: 1.5; white-space: pre-wrap;
@@ -41,6 +48,13 @@
 .cuga-sources-panel__snippet:not(.is-expanded)::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0;
   height: 32px; background: linear-gradient(transparent, var(--cds-layer-02, #f4f4f4)); }
 .cuga-sources-panel__snippet mark { background: var(--cds-highlight, #d0e2ff); color: inherit; border-radius: 2px; }
+/* the passage the citation check quoted: tinted by its verdict, and underlined so it reads without colour */
+.cuga-sources-panel__snippet mark.cuga-sources-panel__quote { text-decoration: underline; text-decoration-thickness: 2px;
+  text-underline-offset: 2px; }
+.cuga-sources-panel__snippet mark.cuga-sources-panel__quote--supported {
+  background: var(--cds-notification-background-success, #defbe6); text-decoration-color: var(--cds-support-success, #24a148); }
+.cuga-sources-panel__snippet mark.cuga-sources-panel__quote--contradicted {
+  background: var(--cds-notification-background-error, #fff1f1); text-decoration-color: var(--cds-support-error, #da1e28); }
 .cuga-sources-panel__expand { border: none; background: none; cursor: pointer; padding: 4px 0 0;
   font: 400 12px "IBM Plex Sans", system-ui, sans-serif; color: var(--cds-link-primary, #0f62fe); }
 .cuga-sources-panel__expand:hover { text-decoration: underline; }

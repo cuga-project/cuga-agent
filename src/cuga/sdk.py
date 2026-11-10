@@ -133,9 +133,11 @@ class InvokeResult(BaseModel):
     sources: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="Citation sources for the answer: [{n, cite_id, filename, page, "
-        "section_path, scope, snippet, score, query}] — populated when knowledge "
+        "section_path, scope, snippet, score, query, support}] — populated when knowledge "
         "citations are enabled and the answer cites retrieved chunks. "
-        "section_path and score are optional (omitted when absent). Stream "
+        "section_path and score are optional (omitted when absent); support "
+        "(supported | contradicted | not_stated) is present when knowledge.citation_check "
+        "checked the source. Stream "
         "consumers: the FinalAnswerAgent node update carries both final_answer "
         "and sources.",
     )
@@ -1984,6 +1986,8 @@ class CugaAgent:
         filesystem_sync: Optional[bool] = None,
         enable_knowledge: Optional[bool] = None,
         enable_citations: Optional[bool] = None,
+        citation_check: Optional[str] = None,
+        citation_strict: Optional[bool] = None,
         enable_skills: Optional[bool] = None,
         skills_folder: Optional[str] = None,
         shortlister: Optional["Shortlister"] = None,
@@ -2009,6 +2013,8 @@ class CugaAgent:
             filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
             enable_knowledge: If True, enable knowledge tools; False to disable; None to auto-detect from settings
             enable_citations: None = follow knowledge settings; True/False override knowledge.citations_enabled for this agent instance
+            citation_check: None = follow knowledge settings; "off", "llm" (the agent's model) or "nli" (local model) checks each citation against its source
+            citation_strict: None = follow knowledge settings; True shows only citations the check found supported (needs a citation_check)
             enable_skills: If True, enable agent skills (SKILL.md / load_skill). None = auto from settings.
             skills_folder: Workspace root or `.cuga` folder containing `skills/`. Defaults to cwd / CUGA_FOLDER env var.
             shortlister: How to shrink a large tool set before the model sees it, e.g.
@@ -2133,6 +2139,21 @@ class CugaAgent:
         # Knowledge configuration
         self._enable_knowledge = enable_knowledge  # None = auto from settings
         self._enable_citations = enable_citations  # None = follow knowledge settings
+        if citation_check not in (None, "off", "llm", "nli"):
+            raise ValueError(f"citation_check must be 'off', 'llm' or 'nli', got {citation_check!r}")
+        self._citation_check = citation_check  # None = follow knowledge settings
+        self._citation_strict = citation_strict  # None = follow knowledge settings
+        if citation_strict:
+            # Checked here: the knowledge engine would reject it later, where agent setup only
+            # logs the error and runs without knowledge.
+            from cuga.config import settings
+
+            check = citation_check or (settings.get("knowledge") or {}).get("citation_check", "off")
+            if check == "off":
+                raise ValueError(
+                    "citation_strict needs a citation check: pass citation_check='llm' or 'nli', "
+                    "or set knowledge.citation_check"
+                )
 
         # Skills configuration
         self._enable_skills = enable_skills  # None = auto from settings
@@ -2617,6 +2638,10 @@ class CugaAgent:
             config = KnowledgeConfig.from_settings(settings)
             if self._enable_citations is not None:
                 config.citations_enabled = self._enable_citations
+            if self._citation_check is not None:
+                config.citation_check = self._citation_check
+            if self._citation_strict is not None:
+                config.citation_strict = self._citation_strict  # KnowledgeEngine validates the combination
             from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
 
             # Inject cuga's LLM for optional query transformation (multi_query / HyDE);
@@ -2624,9 +2649,16 @@ class CugaAgent:
             engine = KnowledgeEngine(config, chat_generator=CugaChatGenerator())
             # Gate citation-marker resolution on this agent's flag (module-global
             # hook — matches the session-override hook's single-process assumption).
-            from cuga.backend.knowledge.sources import set_agent_citations_lookup
+            from cuga.backend.knowledge.sources import (
+                set_agent_citation_check_lookup,
+                set_agent_citation_strict_lookup,
+                set_agent_citations_lookup,
+            )
 
-            set_agent_citations_lookup(lambda: bool(config.citations_enabled))
+            # The engine's live config: apply_knowledge_config can replace it.
+            set_agent_citations_lookup(lambda: bool(engine._config.citations_enabled))
+            set_agent_citation_check_lookup(lambda: engine._config.citation_check)
+            set_agent_citation_strict_lookup(lambda: engine._config.citation_strict)
             # Use agent_id from app_state if running in server, else "cuga-default"
             _agent_id = "cuga-default"
             try:
@@ -3033,8 +3065,9 @@ class CugaAgent:
         run_config["configurable"]["thread_id"] = thread_id
 
         # New user turn (not a HITL resume — that path returns above): scope
-        # citations to this turn's retrieval so an id from an earlier turn can't
-        # resolve in this answer. Mirrors the server's event_stream hook.
+        # citations to this turn's retrieval so an id from an earlier turn resolves
+        # in this answer only if the citation check verifies it. Mirrors the
+        # server's event_stream hook.
         try:
             from cuga.backend.knowledge.sources import begin_ledger_turn
 
@@ -3180,15 +3213,19 @@ class CugaAgent:
             if final_answer:
                 final_answer = _apply_answer_function_to_text(final_answer, self._answer_function)
 
-            from cuga.backend.knowledge.sources import (
-                get_ledger,
-                has_citation_markers,
-                resolve_citations,
-            )
+            from cuga.backend.knowledge.sources import has_citation_markers
 
             if final_answer and has_citation_markers(final_answer):
-                ledger = get_ledger(thread_id, create=False)
-                final_answer, fallback_sources = resolve_citations(final_answer, ledger)
+                from types import SimpleNamespace
+
+                from cuga.backend.cuga_graph.nodes.answer.final_answer import FinalAnswerNode
+
+                # The same steps as FinalAnswerNode: the citation check, then resolution (strip
+                # mode when citations are off for this thread).
+                fallback = SimpleNamespace(final_answer=final_answer, thread_id=thread_id, sources=[])
+                verdicts = await FinalAnswerNode.check_citation_support(fallback)
+                FinalAnswerNode.apply_citation_resolution(fallback, verdicts)
+                final_answer, fallback_sources = fallback.final_answer, fallback.sources
             else:
                 fallback_sources = []
 
