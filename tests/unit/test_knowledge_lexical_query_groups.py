@@ -25,8 +25,25 @@ def test_repeated_chinese_pairs_are_counted_once():
 
 @pytest.mark.parametrize("query", ["Tyler MacDuff's child", "Tyler MacDuff\u2019s child"])
 def test_a_possessive_still_matches_the_bare_name(query):
-    """A possessive split into its own word: as the phrase "macduff s" it missed "MacDuff"."""
-    assert lexical.query_groups(query) == [["tyler"], ["macduff"], ["s"], ["child"]]
+    """A possessive must not join the name into a phrase ("macduff s" missed "MacDuff"), and its
+    one-letter tail must not become a group of its own: "s" matches nearly every chunk."""
+    assert lexical.query_groups(query) == [["tyler"], ["macduff"], ["child"]]
+
+
+@pytest.mark.parametrize(
+    ("query", "groups"),
+    [
+        ("office(s)", [["office"]]),
+        ("l'homme", [["homme"]]),
+        ("rock'n'roll", [["rock"], ["roll"]]),
+        ("Plan B", [["plan"], ["b"]]),
+        ("C", [["c"]]),
+    ],
+)
+def test_one_letter_tails_of_a_longer_word_are_dropped(query, groups):
+    """A one-letter part of a longer word (a possessive, a plural in parentheses, an elided
+    article) is dropped; a word that is one letter on its own is kept."""
+    assert lexical.query_groups(query) == groups
 
 
 @pytest.mark.parametrize(
@@ -40,7 +57,6 @@ def test_a_possessive_still_matches_the_bare_name(query):
         ("Node.js/Python", [["node", "js"], ["python"]]),
         ("GPT-4/Claude", [["gpt", "4"], ["claude"]]),
         ("2023/2024", [["2023"], ["2024"]]),
-        ("office(s)", [["office"], ["s"]]),
     ],
 )
 def test_words_joined_by_ordinary_punctuation_match_separately(query, groups):

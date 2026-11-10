@@ -219,11 +219,11 @@ def test_partial_insert_rollback_clears_orphans(clean_tenant, monkeypatch):
 
     call_count = {"n": 0}
 
-    async def flaky_add_many(items, then=None):
+    async def flaky_add_many(items, columns=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             # First sub-batch commits via the real pool — orphan rows on disk.
-            await real_add_many(items, then=then)
+            await real_add_many(items, columns=columns)
             return
         # Second sub-batch raises BEFORE pgvector commits — the rollback
         # path is responsible for cleaning up the orphans from call 1.
@@ -333,10 +333,10 @@ def test_rollback_respects_tenant_scope_isolation(clean_tenant, monkeypatch):
     real_add_many = adapter._store.add_many
     call_count = {"n": 0}
 
-    async def flaky_add_many(items, then=None):
+    async def flaky_add_many(items, columns=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
-            await real_add_many(items, then=then)
+            await real_add_many(items, columns=columns)
             return
         raise asyncpg.exceptions.PostgresError("simulated mid-batch failure")
 

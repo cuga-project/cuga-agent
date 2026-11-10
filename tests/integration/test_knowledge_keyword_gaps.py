@@ -226,6 +226,19 @@ def test_words_joined_by_ordinary_punctuation_find_either_word(
     assert {first, second} <= hits, f"{backend}: {query} found {hits}"
 
 
+@pytest.mark.parametrize("backend", BOTH_BACKENDS)
+def test_a_possessive_query_does_not_match_every_possessive(backend, make_adapter, monkeypatch):
+    """ "MacDuff's" finds MacDuff, not every chunk with a possessive: its one-letter tail is no
+    search term of its own."""
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwo")
+    adapter = make_adapter(backend, collection)
+    macduff = _add(adapter, collection, "macduff", "Tyler MacDuff joined the team in May.")
+    _add(adapter, collection, "contoso", "Contoso's invoice was paid on time.")
+
+    assert _hit_sources(adapter, "MacDuff's") == {macduff}
+
+
 @pytest.mark.unit
 def test_keyword_index_from_an_older_tokenizer_is_rebuilt(tmp_path, monkeypatch):
     """A keyword table built before the shared tokenizer is re-indexed from its stored text."""
@@ -522,6 +535,34 @@ def test_postgres_terms_are_written_with_their_vectors(make_adapter, monkeypatch
     assert f"{collection}/late.txt" not in dense_hits, "the chunks were stored without their terms"
     source = _add(writer, collection, "late", "The policy covers dental.")  # the retry
     assert _hit_sources(reader, "dental") == {source}
+
+
+@pytest.mark.pgvector
+def test_postgres_terms_go_in_the_insert_not_a_second_update(make_adapter, monkeypatch):
+    """Once the keyword column exists, an upload writes each chunk's terms in its INSERT. A second
+    UPDATE of the same rows cannot be done in place (the terms column is indexed), so it wrote
+    every chunk into the vector (HNSW) index twice and left a dead row behind."""
+    import asyncpg.connection
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwin")
+    adapter = make_adapter("pgvector", collection)
+    _add(adapter, collection, "first", "Invoice ABC-100 was issued.")  # the keyword column now exists
+    statements: list[str] = []
+    for name in ("execute", "executemany"):
+        real = getattr(asyncpg.connection.Connection, name)
+
+        async def spy(self, query, *args, _real=real, **kwargs):
+            statements.append(" ".join(str(query).split()))
+            return await _real(self, query, *args, **kwargs)
+
+        monkeypatch.setattr(asyncpg.connection.Connection, name, spy)
+    source = _add(adapter, collection, "late", "The policy covers dental.")
+
+    inserts = [q for q in statements if q.startswith(f"INSERT INTO {collection} ")]
+    assert inserts and all("terms_v1" in q for q in inserts), inserts
+    assert not [q for q in statements if q.startswith(f"UPDATE {collection} ")]
+    assert _hit_sources(adapter, "dental") == {source}
 
 
 @pytest.mark.pgvector
