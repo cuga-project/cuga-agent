@@ -409,21 +409,36 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         self._fts_ready = True
         return True
 
-    def _pg_write_terms(self, items: list[tuple[str, dict[str, Any], str]]) -> None:
-        scope = self._scope()
+    def _pg_batch_terms(self, batch: list[tuple[str, list[float], dict[str, Any]]], bare: list[bool]):
+        """Write one ``add_many`` batch's keyword terms in the transaction that inserts it, so once
+        the keyword column exists no chunk is stored without terms, even if the process dies.
 
-        async def _write(conn):
-            await self._pg_ensure_terms(conn)
-            await conn.executemany(
-                f"UPDATE {self._collection} SET {_TERMS_COLUMN} = $1::text::tsvector "
-                "WHERE id = $2 AND tenant_id = $3 AND instance_id = $4",
-                [
-                    (_pg_tsvector(text), cid, scope["tenant_id"], scope["instance_id"])
-                    for cid, _meta, text in items
-                ],
-            )
+        Without the column (a collection from before keyword search, or a new table) the rows go
+        in bare, and ``bare`` records it. Adding the column waits for this transaction to end, and
+        the backfill that runs after it fills them; until the column exists no adapter has marked
+        its terms complete.
+        """
+        table, scope = self._collection, self._scope()
+        rows = [
+            (_pg_tsvector(meta.get("chunk_text", "") or ""), cid, scope["tenant_id"], scope["instance_id"])
+            for cid, _embedding, meta in batch
+        ]
 
-        self._pg_keyword_run(_write)
+        async def _write(conn) -> None:
+            if await conn.fetchval(
+                "SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass($1) AND attname = $2 AND NOT attisdropped",
+                table,
+                _TERMS_COLUMN,
+            ):
+                await conn.executemany(
+                    f"UPDATE {table} SET {_TERMS_COLUMN} = $1::text::tsvector "
+                    "WHERE id = $2 AND tenant_id = $3 AND instance_id = $4",
+                    rows,
+                )
+            else:
+                bare.append(True)
+
+        return _write
 
     def _pg_search_lexical(self, groups: list[list[str]], k: int) -> list[tuple[Any, Any, float]]:
         scope = self._scope()
@@ -469,28 +484,25 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         return [(r["chunk_text"], r["meta_json"], float(r["rank"])) for r in self._pg_keyword_run(_search)]
 
     def _fts_add(self, items: list[tuple[str, dict[str, Any], str]]) -> None:
-        """Insert ``[(chunk_id, meta_payload, chunk_text), ...]`` rows.
+        """Insert ``[(chunk_id, meta_payload, chunk_text), ...]`` rows into the SQLite keyword table.
 
-        Called from ``add_documents`` after the dense insert succeeded, and tried twice. On SQLite
-        a second failure is logged and swallowed: a transient FTS write problem must not roll back
-        a successful vector insert. On Postgres it is raised, and ``add_documents`` removes the
-        document: its rows would have no terms, and an adapter that already checked its keyword
-        column never looks for such rows again.
+        Called from ``add_documents`` after the dense insert succeeded.
+        Failures here are logged + swallowed: a transient FTS write
+        problem must not roll back a successful vector insert (the user
+        would lose ingest progress for a recall optimisation). On Postgres
+        the terms were written with the vectors (``_pg_batch_terms``).
         """
-        if not items:
+        if not items or self._use_prod:
             return
         for attempt in (1, 2):
             try:
                 self._fts_insert(items)
                 return
             except Exception as exc:  # noqa: BLE001 — never fail the ingest
-                # SQLite: another adapter may have dropped the table since this one checked it.
-                # Postgres: the rows exist without terms. Check the table again (the Postgres
-                # check fills rows without terms) and retry once.
+                # Another adapter may have dropped the table since this one checked it: check the
+                # table again and retry once.
                 self._fts_ready = False
                 if attempt == 2:
-                    if self._use_prod:
-                        raise
                     logger.warning(
                         "BM25 FTS write failed for collection={} items={}: {} "
                         "(dense insert succeeded; lexical leg will return empty until backfill)",
@@ -500,9 +512,6 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                     )
 
     def _fts_insert(self, items: list[tuple[str, dict[str, Any], str]]) -> None:
-        if self._use_prod:
-            self._pg_write_terms(items)
-            return
         conn = self._fts_connect()
         try:
             self._ensure_fts_table(conn)
@@ -841,6 +850,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                     "incomplete."
                 )
         source_for_rollback = items[0][2].get("source") if items else None
+        bare: list[bool] = []  # Postgres batches stored before the keyword column existed
 
         async def _add_all() -> int:
             n = 0
@@ -848,7 +858,10 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             for i in range(0, total_items, insert_bs):
                 chunk = items[i : i + insert_bs]
                 try:
-                    await self._store.add_many(chunk)
+                    if self._use_prod:
+                        await self._store.add_many(chunk, then=self._pg_batch_terms(chunk, bare))
+                    else:
+                        await self._store.add_many(chunk)
                 except Exception:
                     # If we'd already committed earlier batches, clean them
                     # up before re-raising so the next ingest attempt
@@ -922,6 +935,13 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
 
         t_insert = time.monotonic()
         count = self._run_embedding_coro(_add_all())
+        if bare:
+            # No keyword column yet (a new table, or one from before keyword search): add it and
+            # fill these rows now if the table is free; if it is busy, the next keyword search does.
+            try:
+                self._pg_keyword_run(self._pg_ensure_terms)
+            except Exception as exc:  # noqa: BLE001 — the chunks are stored; only keywords wait
+                logger.info("Keyword column for {} not added yet: {}", self._collection, exc)
         if stage_timings is not None:
             stage_timings["insert_s"] = round(time.monotonic() - t_insert, 3)
 
@@ -944,12 +964,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             for cid, _emb, meta in items
         ]
         _t_fts = time.monotonic()
-        try:
-            self._fts_add(_fts_items)
-        except Exception:  # Postgres only: the document's terms could not be written
-            if source_for_rollback:
-                self.delete_by_source(source_for_rollback)
-            raise
+        self._fts_add(_fts_items)
         if stage_timings is not None:
             stage_timings["fts_s"] = round(time.monotonic() - _t_fts, 3)
         return {"num_added": count, "num_skipped": 0}
