@@ -623,7 +623,9 @@ def knowledge_ingest(
             failed += len(batch)
             typer.secho(f"FAILED   {', '.join(p.name for p in batch)}: {reason}", fg=typer.colors.RED)
             continue
-        for task in r.json().get("tasks", []):
+        body = r.json()
+        # One file comes back as its task; several come back as {"tasks": [...]}.
+        for task in body["tasks"] if "tasks" in body else [body]:
             for name, file_task in (task.get("file_tasks") or {}).items():
                 status = file_task.get("status", "unknown")
                 if status in ("failed", "cancelled"):

@@ -1,12 +1,17 @@
-"""``cuga knowledge ingest`` and ``cuga knowledge search`` against a faked server."""
+"""``cuga knowledge ingest`` and ``cuga knowledge search`` against a faked server and the real upload route."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
+from cuga.backend.knowledge.auth import KnowledgeIdentity, require_internal_or_auth
+from cuga.backend.knowledge.routes import knowledge_router
 from cuga.cli.knowledge_cmds import knowledge_app
 
 pytestmark = pytest.mark.unit
@@ -117,3 +122,69 @@ def test_ingest_reports_the_servers_reason_for_a_rejected_upload(tmp_path, monke
 
     assert "FAILED   broken.pdf: Conversion failed for: broken.pdf" in result.output
     assert result.exit_code == 1
+
+
+class _RouteEngine:
+    """Just enough engine for the real upload route: every file ends with ``status``."""
+
+    def __init__(self, status: str):
+        self._config = SimpleNamespace(enabled=True, max_files_per_request=10)
+        self._status = status
+        self._names: dict[str, str] = {}
+
+    async def _sanitize_and_validate(self, collection, tmp_path, replace_duplicates, original_name):
+        return original_name
+
+    async def _create_task_entry(self, collection, filename):
+        task_id = f"task-{len(self._names)}"
+        self._names[task_id] = filename
+        return {"task_id": task_id}
+
+    async def _run_ingest(self, collection, tmp_path, filename, task_id, replace_duplicates):
+        return None
+
+    async def get_task(self, task_id):
+        name = self._names[task_id]
+        return {"task_id": task_id, "status": self._status, "file_tasks": {name: {"status": self._status}}}
+
+
+async def _identity(request: Request) -> KnowledgeIdentity:
+    return KnowledgeIdentity(
+        user_id=None, tenant_id=None, agent_id="cuga-default", thread_id=None, auth_mode="external"
+    )
+
+
+@pytest.mark.parametrize(
+    ("count", "status", "expected_lines", "exit_code"),
+    [
+        (1, "indexed", ["indexed  doc_0.txt"], 0),
+        (11, "indexed", [f"indexed  doc_{i}.txt" for i in range(11)], 0),
+        (1, "cancelled", ["FAILED   doc_0.txt: cancelled"], 1),
+    ],
+    ids=["one-file", "last-batch-of-one", "one-cancelled-file"],
+)
+def test_ingest_reports_every_file_from_the_real_upload_route(
+    tmp_path, monkeypatch, count, status, expected_lines, exit_code
+):
+    """The route returns one file's task on its own, not in ``tasks``; that file must still be reported."""
+    app = FastAPI()
+    app.include_router(knowledge_router)
+    app.dependency_overrides[require_internal_or_auth] = _identity
+    app.state.app_state = SimpleNamespace(knowledge_engine=_RouteEngine(status), knowledge_provider=None)
+    client = TestClient(app, base_url="http://kb.test")
+
+    def _post(url, *, timeout, **kwargs):
+        return client.post(url, **kwargs)
+
+    paths = []
+    for i in range(count):
+        p = tmp_path / f"doc_{i}.txt"
+        p.write_text(f"document {i}")
+        paths.append(str(p))
+    monkeypatch.setenv("CUGA_API_BASE", "http://kb.test")
+    monkeypatch.setattr("cuga.cli.knowledge_cmds.httpx.post", _post)
+
+    result = CliRunner().invoke(knowledge_app, ["ingest", *paths])
+
+    assert result.output.splitlines() == expected_lines
+    assert result.exit_code == exit_code
