@@ -305,10 +305,6 @@ interface KnowledgeConfigValues {
   // snippets in answers. Agent-level default; per-session override
   // lives in the session settings API, not this config.
   citations_enabled?: boolean;
-  // Check each citation against its source: "off" | "llm" (agent's model) | "nli" (local model).
-  // Strict shows only the citations the check supports; the backend rejects strict without a check.
-  citation_check?: string;
-  citation_strict?: boolean;
   rag_profile?: string;
   embedding_provider?: string;
   embedding_model?: string;
@@ -2654,40 +2650,6 @@ export default function KnowledgePanel({
                                   size="sm"
                                 />
                               </Stack>
-                              {citationsEnabled && (
-                                <Stack gap={4} style={{ paddingLeft: "2rem" }}>
-                                  <Select
-                                    id="knowledge-citation-check"
-                                    labelText="Check each citation against its source"
-                                    helperText="Each source then shows whether it states what it's cited for."
-                                    size="sm"
-                                    value={knowledgeConfig.citation_check ?? "off"}
-                                    onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
-                                      const check = e.target.value;
-                                      onKnowledgeConfigChange({
-                                        ...knowledgeConfig,
-                                        citation_check: check,
-                                        ...(check === "off" ? { citation_strict: false } : {}),
-                                      });
-                                    }}
-                                  >
-                                    <SelectItem value="off" text="Off" />
-                                    <SelectItem value="llm" text="With the agent's model (one extra call per answer)" />
-                                    <SelectItem value="nli" text="With a local model (no API calls; about 1 GB, downloaded once)" />
-                                  </Select>
-                                  {(knowledgeConfig.citation_check ?? "off") !== "off" && (
-                                    <Toggle
-                                      id="knowledge-citation-strict"
-                                      labelText="Show only citations the check supports"
-                                      labelA="Off"
-                                      labelB="On"
-                                      toggled={knowledgeConfig.citation_strict ?? false}
-                                      onToggle={(checked: boolean) => onKnowledgeConfigChange({ ...knowledgeConfig, citation_strict: checked })}
-                                      size="sm"
-                                    />
-                                  )}
-                                </Stack>
-                              )}
                             </Stack>
                           </Tile>
                         </Stack>
