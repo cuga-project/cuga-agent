@@ -89,6 +89,7 @@ class SourceLedger:
         # from history) are stripped like a miss unless the citation check
         # verified them (resolve_citations' ``verified``). Cleared by begin_turn().
         self._turn_ids: set[str] = set()
+        self._search_retry_used = False
 
     def __len__(self) -> int:
         return len(self._by_key)
@@ -137,10 +138,19 @@ class SourceLedger:
         """
         with self._lock:
             self._turn_ids.clear()
+            self._search_retry_used = False
 
     def retrieved_this_turn(self, cite_id: str) -> bool:
         with self._lock:
             return cite_id.lower() in self._turn_ids
+
+    def claim_search_retry(self) -> bool:
+        """True the first time per turn: the caller may send the model back to search once."""
+        with self._lock:
+            if self._search_retry_used:
+                return False
+            self._search_retry_used = True
+            return True
 
     def get(self, cite_id: str) -> SourceRecord | None:
         return self._by_cite_id.get(cite_id.lower())
@@ -305,6 +315,31 @@ def _warn_unsupported_markers(text: str) -> None:
                 m.group(0),
             )
             return
+
+
+def needs_search_before_citing(text: str, thread_id: str | None) -> bool:
+    """True, once per turn, when ``text`` cites sources but none of them was retrieved this turn.
+
+    ``resolve_citations`` would strip every marker the citation check does not verify, and the
+    user could get the answer with no sources. That happens when the model answers from a document's preview in the prompt, or
+    from memory, without searching (#1124). The caller sends the model back to search.
+    """
+    if not thread_id or not effective_citations_enabled(thread_id):
+        return False
+    prose = [part for i, part in enumerate(_CODE_RE.split(text or "")) if not i % 2]
+    ids = [
+        cid.lower()
+        for part in prose
+        for m in _MARKER_RE.finditer(part)
+        for cid in re.split(r"[\s,]+", m.group(1))
+        if cid
+    ]
+    if not ids:
+        return False
+    ledger = get_ledger(thread_id, create=True)
+    if ledger is None or any(ledger.retrieved_this_turn(cid) for cid in ids):
+        return False
+    return ledger.claim_search_retry()
 
 
 def resolve_citations(
