@@ -80,17 +80,21 @@ def terms(text: str) -> list[str]:
 _MAX_QUERY_GROUPS = 64
 # Whitespace and apostrophes end a query word: a possessive must not turn a name into a phrase.
 _QUERY_WORD_BREAK = regex.compile(r"[\s'\u2019]+")
-# An identifier: a digit, or two terms joined by a dash, "_", ".", "@" or ":".
-_IDENTIFIER = regex.compile(r"\p{N}|[\p{L}\p{M}][\p{Pd}_.@:][\p{L}\p{M}]")
+# Inside a query word, punctuation other than these separates alternatives ("Paris/London"). These
+# join one identifier's parts: "ABC-123", "user@example.com", "engine.py", "AT&T", and Hebrew
+# acronyms written with a quote or gershayim ("צה״ל").
+_SEPARATOR = regex.compile(r'[^\p{L}\p{M}\p{N}\p{Pd}_.@:&"\u05f3\u05f4]+')
 
 
 def query_groups(query: str) -> list[list[str]]:
     """The query's terms in groups: a document matches if it has any group, with that group's
     terms adjacent and in order.
 
-    A query word that splits into several terms and looks like an identifier ("ABC-123",
-    "user@example.com", "engine.py") is one group, matched as a phrase. Words joined by other
-    punctuation ("Paris/London", "R&D") are separate groups. Character pairs from unspaced scripts are separate groups, so a
+    A query word joined by other punctuation splits into its parts ("Paris/London", "IPv4/IPv6"),
+    each one group; a part whose terms are joined by an identifier's punctuation ("ABC-123",
+    "user@example.com", "Node.js") is matched as a phrase. A word whose parts are all single
+    letters ("I/O", "A/B") stays one phrase: a one-letter group matches almost every document.
+    Character pairs from unspaced scripts are separate groups, so a
     sentence-long Chinese query ranks documents by how many pairs they share. An apostrophe ends a
     word, so "MacDuff's" also finds "MacDuff". Repeated groups are dropped and at most
     _MAX_QUERY_GROUPS are kept.
@@ -98,15 +102,14 @@ def query_groups(query: str) -> list[list[str]]:
     groups: list[list[str]] = []
     seen: set[tuple[str, ...]] = set()
     for word in _QUERY_WORD_BREAK.split(query):
-        word_terms = terms(word)
-        if (
-            len(word_terms) > 1
-            and not any(_UNSPACED.match(t) for t in word_terms)
-            and _IDENTIFIER.search(_normalize(word))
-        ):
+        parts = [part for part in map(terms, _SEPARATOR.split(_normalize(word))) if part]
+        word_terms = [term for part in parts for term in part]  # terms(word): punctuation is no term
+        if any(_UNSPACED.match(t) for t in word_terms):
+            candidates = [[t] for t in word_terms]
+        elif len(parts) > 1 and all(len(part) == 1 and len(part[0]) == 1 for part in parts):
             candidates = [word_terms]
         else:
-            candidates = [[t] for t in word_terms]
+            candidates = parts
         for group in candidates:
             if tuple(group) not in seen:
                 seen.add(tuple(group))

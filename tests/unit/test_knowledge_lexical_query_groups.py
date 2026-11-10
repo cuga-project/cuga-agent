@@ -30,11 +30,23 @@ def test_a_possessive_still_matches_the_bare_name(query):
 
 
 @pytest.mark.parametrize(
-    "query", ["Paris/London", "Paris,London", "Paris&London", "Paris+London", "Paris|London"]
+    ("query", "groups"),
+    [
+        ("Paris/London", [["paris"], ["london"]]),
+        ("Paris,London", [["paris"], ["london"]]),
+        ("Paris+London", [["paris"], ["london"]]),
+        ("Paris|London", [["paris"], ["london"]]),
+        ("IPv4/IPv6", [["ipv4"], ["ipv6"]]),
+        ("Node.js/Python", [["node", "js"], ["python"]]),
+        ("GPT-4/Claude", [["gpt", "4"], ["claude"]]),
+        ("2023/2024", [["2023"], ["2024"]]),
+        ("office(s)", [["office"], ["s"]]),
+    ],
 )
-def test_words_joined_by_ordinary_punctuation_match_separately(query):
-    """Matched as the phrase "paris london", these found neither a Paris nor a London document."""
-    assert lexical.query_groups(query) == [["paris"], ["london"]]
+def test_words_joined_by_ordinary_punctuation_match_separately(query, groups):
+    """Matched as one phrase ("paris london"), these found neither a Paris nor a London document.
+    Each part keeps its own identifier phrase ("node.js")."""
+    assert lexical.query_groups(query) == groups
 
 
 @pytest.mark.parametrize(
@@ -46,9 +58,17 @@ def test_words_joined_by_ordinary_punctuation_match_separately(query):
         ("user@example.com", ["user", "example", "com"]),
         ("engine.py", ["engine", "py"]),
         ("10:30", ["10", "30"]),
-        ("COVID/19", ["covid", "19"]),
         ("(ABC-123)", ["abc", "123"]),
+        ("AT&T", ["at", "t"]),
+        ("R&D", ["r", "d"]),
+        ("I/O", ["i", "o"]),
+        ("A/B", ["a", "b"]),
+        ('דו"ח', ["דו", "ח"]),
+        ("צה״ל", ["צה", "ל"]),
+        ("מנכ׳ל", ["מנכ", "ל"]),
     ],
 )
 def test_identifiers_stay_phrases(query, phrase):
+    """Names and acronyms written with punctuation, and words made only of single letters joined by
+    any punctuation, stay one phrase: split, a one-letter term matches almost every document."""
     assert lexical.query_groups(query) == [phrase]
