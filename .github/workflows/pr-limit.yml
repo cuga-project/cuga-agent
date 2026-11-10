@@ -1,0 +1,44 @@
+# Hard cap: at most 5 open pull requests per author, drafts included.
+# The 5 oldest stay open; every newer one is closed with a comment.
+# Bot accounts are exempt. Logic and tests: .github/scripts/pr_limit.py,
+# tests/unit/test_pr_limit_script.py.
+#
+# Also make the "PR limit" commit status a required check on main.
+#
+# pull_request_target runs this workflow from the base branch, so a pull
+# request cannot change the rules it is checked against. It never checks out
+# or runs pull request code.
+name: PR limit
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, closed, ready_for_review, converted_to_draft]
+  schedule:
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: pr-limit-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  pr-limit:
+    name: PR limit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Enforce the open pull request limit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_LIMIT: "5"
+        run: python3 .github/scripts/pr_limit.py
