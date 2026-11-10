@@ -272,6 +272,24 @@ class ConversationHistoryDB:
         await store.execute(sql, params)
         await store.commit()
 
+    async def retire_thread(self, thread_id: str, user_id: str, agent_id: str) -> None:
+        """Mark a thread ID ``deleted`` for good, adding an owner row if it has none (#774).
+
+        Used for a legacy ID shared by several users: its uploads are keyed by thread ID alone, so
+        they cannot be removed for one user, and the retired ID keeps anyone from claiming them.
+        """
+        await self._ensure_schema()
+        store = self._get_store()
+        scope = (_tenant_id(), _instance_id(), thread_id.strip())
+        await store.execute(
+            """INSERT INTO runtime_thread_owners
+            (tenant_id, instance_id, thread_id, user_id, agent_id, created_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'deleted')
+            ON CONFLICT (tenant_id, instance_id, thread_id) DO UPDATE SET status = 'deleted'""",
+            scope + (user_id, agent_id, datetime.now(timezone.utc).isoformat()),
+        )
+        await store.commit()
+
     async def get_thread_statuses(self, user_id: str, agent_id: str) -> Dict[str, str]:
         """``thread_id -> status`` for every conversation the user owns with this agent."""
         await self._ensure_schema()
@@ -398,7 +416,14 @@ class ConversationHistoryDB:
             logger.error(f"Error retrieving thread history: {e}")
             return []
 
-    async def get_latest_version(self, agent_id: str, thread_id: str, user_id: str) -> int:
+    async def get_latest_version(
+        self, agent_id: str, thread_id: str, user_id: str, *, strict: bool = False
+    ) -> int:
+        """The caller's latest history version, or 0 if there is none.
+
+        Storage errors also give 0 unless ``strict=True``, where they propagate so the caller can
+        fail closed instead of treating the conversation as missing (#774).
+        """
         try:
             await self._ensure_schema()
             store = self._get_store()
@@ -414,6 +439,8 @@ class ConversationHistoryDB:
             v = result.get("max") if result else None
             return v if v is not None else 0
         except Exception as e:
+            if strict:
+                raise
             logger.error(f"Error getting latest version: {e}")
             return 0
 

@@ -257,6 +257,25 @@ async def test_a_storage_failure_is_retryable_not_a_missing_conversation(server,
     assert server.turns == turns_before
 
 
+async def test_a_legacy_lookup_failure_is_retryable_not_a_missing_conversation(server, monkeypatch):
+    # A conversation from before owner rows, whose history lookup then fails.
+    await server.db.save_conversation("cuga-default", "old", 1, "alice", [])
+    store = server.db._get_store()
+    fetchone = store.fetchone
+
+    async def failing_version_lookup(sql, *args, **kwargs):
+        if "MAX(version)" in sql:
+            raise RuntimeError("db down")
+        return await fetchone(sql, *args, **kwargs)
+
+    monkeypatch.setattr(store, "fetchone", failing_version_lookup)
+
+    response = await server.client.delete("/api/conversations/old")
+
+    assert response.status_code == 503, response.text
+    assert response.headers["retry-after"] == "2"
+
+
 async def test_two_sends_at_once_give_one_turn_and_one_conflict(server):
     thread_id = await server.create()
     gate = server.hold_turns()
@@ -341,6 +360,31 @@ async def test_delete_waits_for_a_running_turn(server):
     assert (await server.client.delete(f"/api/conversations/{thread_id}")).status_code == 200
 
 
+async def test_delete_stops_when_it_loses_the_lease(server, monkeypatch):
+    from cuga.backend.server import thread_lease
+
+    thread_id = await server.create()
+    await server.send(thread_id)
+    monkeypatch.setattr(thread_lease, "_renew_seconds", lambda: 0.02)
+
+    async def taken_over(*args):
+        # Another holder takes the lease while cleanup runs; wait for keep_lease to notice.
+        store = thread_lease.get_thread_lease()._get_store()
+        await store.execute("UPDATE thread_leases SET holder_id = 'other'")
+        await store.commit()
+        await asyncio.sleep(0.2)
+
+    monkeypatch.setattr(
+        server.main, "_delete_session_knowledge_for_thread", AsyncMock(side_effect=taken_over)
+    )
+
+    response = await server.client.delete(f"/api/conversations/{thread_id}")
+
+    assert response.status_code == 503, response.text  # retryable: every step is idempotent
+    server.main.delete_thread_uploads.assert_not_awaited()  # stopped before the next step
+    assert await server.db.get_thread_status(thread_id, "alice", "cuga-default") == "active"
+
+
 async def test_legacy_delete_removes_only_the_callers_own_history(server):
     await server.db.save_conversation("cuga-default", "shared", 1, "alice", [])
     await server.db.save_conversation("cuga-default", "shared", 1, "bob", [])
@@ -350,6 +394,10 @@ async def test_legacy_delete_removes_only_the_callers_own_history(server):
 
     assert await server.db.get_latest_version("cuga-default", "shared", "alice") == 0
     assert await server.db.get_latest_version("cuga-default", "shared", "bob") == 1
+    # The ID is retired: bob keeps his own history but cannot claim the thread, which is what
+    # workspace access checks, so the leftover thread-keyed uploads stay unreachable.
+    with pytest.raises(ThreadOwnershipError):
+        await server.db.claim_thread("shared", "bob", create=False)
     server.user["sub"] = "carol"
     assert (await server.client.delete("/api/conversations/shared")).status_code == 404
 

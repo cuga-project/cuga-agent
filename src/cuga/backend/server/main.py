@@ -132,6 +132,10 @@ async def _assert_thread_access(
         raise _conversation_unavailable() from exc
 
 
+class _LeaseLost(Exception):
+    """A long operation noticed it no longer holds the conversation's lease."""
+
+
 def _conversation_unavailable() -> HTTPException:
     """A storage failure: retryable, and not a sign that the conversation is gone (#774).
 
@@ -3608,7 +3612,12 @@ async def delete_conversation(
 
     if status is None:
         # History with no owner row predates thread ownership.
-        if await conversation_db.get_latest_version(agent_id, conversation_id, user_id) <= 0:
+        try:
+            latest = await conversation_db.get_latest_version(agent_id, conversation_id, user_id, strict=True)
+        except Exception as exc:
+            logger.error(f"Conversation lookup failed: {type(exc).__name__}")
+            raise _conversation_unavailable() from exc
+        if latest <= 0:
             raise HTTPException(status_code=404, detail="Conversation not found")
         try:
             # The caller's history proves ownership: bind it, then clean up like any owned
@@ -3616,10 +3625,16 @@ async def delete_conversation(
             await conversation_db.claim_thread(conversation_id, user_id, agent_id)
         except ThreadOwnershipError:
             # Another user also has history under this ID. Knowledge and uploads are keyed by
-            # thread ID alone, so remove only the caller's own rows.
-            if await conversation_db.delete_thread(agent_id, conversation_id, user_id):
-                return JSONResponse({"status": "success", "message": "Conversation deleted"})
-            raise HTTPException(status_code=500, detail="Failed to delete conversation")
+            # thread ID alone, so remove only the caller's own rows, then retire the ID so no
+            # one can claim it and reach the leftover uploads (#774).
+            if not await conversation_db.delete_thread(agent_id, conversation_id, user_id):
+                raise HTTPException(status_code=500, detail="Failed to delete conversation")
+            try:
+                await conversation_db.retire_thread(conversation_id, user_id, agent_id)
+            except Exception as exc:
+                logger.error(f"Failed to retire conversation: {type(exc).__name__}")
+                raise HTTPException(status_code=500, detail="Failed to delete conversation") from exc
+            return JSONResponse({"status": "success", "message": "Conversation deleted"})
         except Exception as exc:
             logger.error(f"Conversation claim failed: {type(exc).__name__}")
             raise _conversation_unavailable() from exc
@@ -3633,21 +3648,37 @@ async def delete_conversation(
     except ThreadBusy:
         return JSONResponse(status_code=409, content={"error": "conflict", "retry_after_ms": 2000})
     try:
-        # Renewed while cleanup runs, so a slow delete cannot lose the lease to a new turn.
-        async with keep_lease(lease, token):
+        # Renewed while cleanup runs, so a slow delete cannot lose the lease to a new turn. If the
+        # lease is lost anyway, stop before the next step: every step is safe to retry.
+        lost = asyncio.Event()
+        async with keep_lease(lease, token, stop_event=lost):
+
+            def still_held() -> None:
+                if lost.is_set():
+                    raise _LeaseLost()
+
             handle = getattr(request.app.state.app_state, "checkpointer_handle", None)
             if handle is not None:
                 # /run, A2A and the extension keep their own checkpoints of this conversation (#774).
                 for entry in ("web", "run", "a2a", "ext"):
+                    still_held()
                     await handle.saver.adelete_thread(
                         _checkpoint_thread_id(conversation_id, user_id, agent_id, entry)
                     )
+            still_held()
             await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
+            still_held()
             await delete_thread_uploads(conversation_id)
+            still_held()
             await _release_sandbox_thread(conversation_id, agent_id)
+            still_held()
             if not await conversation_db.delete_thread(agent_id, conversation_id, user_id):
                 raise RuntimeError("history delete failed")
+            still_held()
             await conversation_db.set_thread_status(conversation_id, user_id, "deleted")
+    except _LeaseLost as e:
+        logger.error("Lost the conversation lease during delete; stopped before the next step")
+        raise _conversation_unavailable() from e
     except Exception as e:
         logger.error(f"Failed to delete conversation: {type(e).__name__}")
         raise HTTPException(status_code=500, detail="Failed to delete conversation") from e
