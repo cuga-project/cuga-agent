@@ -208,6 +208,14 @@ def create_call_model_node(
                     {"role": "user", "content": f"Tool result ({tool_name}):\n{tool_content}"}
                 )
 
+            elif msg_role == "system":
+                # A caller's instructions, e.g. invoke([SystemMessage(...), HumanMessage(...)]).
+                # Appended to the system prompt, the one place every provider accepts them.
+                modified_messages.append(msg)
+                # Once each: an SDK caller sends it with every turn, and the thread keeps every copy.
+                if msg.text and f"\n\n{msg.text}" not in messages_for_model[0]["content"]:
+                    messages_for_model[0]["content"] += f"\n\n{msg.text}"
+
             else:
                 modified_messages.append(msg)
                 logger.warning("call_model: skipping message {} with unknown role: {}", i, msg_role)
