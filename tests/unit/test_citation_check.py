@@ -251,9 +251,44 @@ def test_an_earlier_turn_citation_is_kept_only_when_verified(thread, monkeypatch
     assert [(s["filename"], s["support"]) for s in state.sources] == [("Invoic.txt", "supported")]
 
 
-def test_earlier_turn_citations_strip_when_checking_is_off(thread):
+def test_with_the_check_off_only_citations_reused_from_an_earlier_turn_are_checked(thread, monkeypatch):
+    """A follow-up answered from the previous turn's results keeps a reused citation the agent's
+    model finds supported; this turn's own citations are not sent to the model."""
+    thread.begin_turn()
+    thread.register(
+        SimpleNamespace(
+            text="Refunds take 5 days.",
+            filename="Refund.txt",
+            page=1,
+            scope="agent",
+            score=0.9,
+            section_path="",
+        ),
+        query="q",
+    )  # s3, retrieved this turn
+    sources.set_agent_citation_check_lookup(lambda: "off")
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        final_answer,
+        "_citation_check_llm",
+        lambda: SimpleNamespace(generate=_fake_llm({1: "supported"}, prompts)),
+    )
+    state = _finalize("Issued to Contoso [s1]. Refunds take 5 days [s3].")
+
+    assert state.final_answer == "Issued to Contoso [1]. Refunds take 5 days [2]."
+    assert [(s["filename"], s.get("support")) for s in state.sources] == [
+        ("Invoic.txt", "supported"),
+        ("Refund.txt", None),
+    ]
+    assert len(prompts) == 1 and "Contoso" in prompts[0] and "Refunds" not in prompts[0]
+
+
+def test_with_the_check_off_an_unsupported_reused_citation_still_strips(thread, monkeypatch):
     thread.begin_turn()
     sources.set_agent_citation_check_lookup(lambda: "off")
+    monkeypatch.setattr(
+        final_answer, "_citation_check_llm", lambda: SimpleNamespace(generate=_fake_llm({1: "not_stated"}))
+    )
     state = _finalize("Issued to Contoso [s1].")
     assert (state.final_answer, state.sources) == ("Issued to Contoso .", [])
 
@@ -291,6 +326,19 @@ def test_strict_needs_a_checker():
     with pytest.raises(ValueError, match="citation_strict needs citation_check"):
         KnowledgeConfig(citation_strict=True).validate()
     KnowledgeConfig(citation_check="nli", citation_strict=True).validate()
+
+
+def test_with_the_check_off_an_answer_citing_this_turn_only_calls_no_model(thread, monkeypatch):
+    built: list[bool] = []
+    sources.set_agent_citation_check_lookup(lambda: "off")
+    monkeypatch.setattr(
+        final_answer,
+        "_citation_check_llm",
+        lambda: built.append(True) or SimpleNamespace(generate=_fake_llm({1: "supported"})),
+    )
+    state = _finalize("Issued to Contoso [s1].")
+    assert state.final_answer == "Issued to Contoso [1]." and "support" not in state.sources[0]
+    assert built == [], "the model was built for an answer with nothing reused"
 
 
 def test_a_slow_checker_never_holds_up_the_answer(thread, monkeypatch):

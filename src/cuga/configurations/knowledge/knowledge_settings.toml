@@ -6,6 +6,8 @@ citations_enabled = true  # numbered [1] source citations in answers (UI toggle:
 # Check that each cited source supports its claim; adds "support" (supported | contradicted |
 # not_stated) to every source. "off" | "llm" (the agent's model, one extra call per cited answer)
 # | "nli" (local multilingual NLI model, ~1 GB download on first use, no API calls).
+# With "off", only citations reused from an earlier answer are checked, with the agent's model:
+# they are kept only when supported. Answers citing this turn's sources make no extra call.
 citation_check = "off"
 # Show only citations the check found supported (needs citation_check "llm" or "nli"). If the
 # check fails, the answer is delivered without citations.
