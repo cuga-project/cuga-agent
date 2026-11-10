@@ -164,7 +164,7 @@ class FinalAnswerNode(BaseNode):
             if verdicts:
                 logger.info("citation check ({}): {}", mode, verdicts)
             return verdicts
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):  # distinct classes before Python 3.11
             logger.warning(
                 "citation check ({}) took over {}s; answer delivered without verdicts",
                 mode,
