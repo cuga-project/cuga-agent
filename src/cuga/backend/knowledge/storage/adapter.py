@@ -645,6 +645,10 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             finally:
                 conn.close()
         except sqlite3.OperationalError as exc:
+            # Another engine sharing the database may have dropped or rebuilt the table: check
+            # it again on the next call (which rebuilds it from the stored chunks) instead of
+            # staying empty until the next write.
+            self._fts_ready = False
             logger.debug(
                 "BM25 FTS not available for collection=%s (query degrades to dense-only): %s",
                 self._collection,

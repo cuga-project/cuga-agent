@@ -330,6 +330,28 @@ def test_keyword_writes_recover_after_another_engine_drops_the_table(tmp_path, m
 
 
 @pytest.mark.unit
+def test_keyword_search_recovers_after_another_engine_drops_the_table(tmp_path, monkeypatch):
+    """A search that finds the keyword table gone checks the table again on the next search,
+    which rebuilds it from the stored chunks. Before, keyword search stayed empty until a write."""
+    import sqlite3
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kws")
+    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
+
+    adapter = StorageBackedKnowledgeVectorStore(
+        collection, DeterministicEmbeddings(), local_db_path=str(tmp_path / "kb.db")
+    )
+    source = _add(adapter, collection, "first", "Invoice ZQX-4417 was paid.")
+    assert _hit_sources(adapter, "ZQX-4417") == {source}
+    with sqlite3.connect(tmp_path / "kb.db") as conn:  # another engine drops the keyword table
+        conn.execute(f"DROP TABLE {collection}__fts")
+
+    _hit_sources(adapter, "ZQX-4417")  # finds the table gone
+    assert _hit_sources(adapter, "ZQX-4417") == {source}
+
+
+@pytest.mark.unit
 def test_during_a_reindex_search_skips_keywords_and_uploads_wait(tmp_path, monkeypatch):
     """While one call re-indexes an old keyword table (about a minute at 50,000 chunks), another
     search in the process skips the keyword leg at once instead of queueing for SQLite's write
