@@ -80,14 +80,17 @@ def terms(text: str) -> list[str]:
 _MAX_QUERY_GROUPS = 64
 # Whitespace and apostrophes end a query word: a possessive must not turn a name into a phrase.
 _QUERY_WORD_BREAK = regex.compile(r"[\s'\u2019]+")
+# An identifier: a digit, or two terms joined by a dash, "_", ".", "@" or ":".
+_IDENTIFIER = regex.compile(r"\p{N}|[\p{L}\p{M}][\p{Pd}_.@:][\p{L}\p{M}]")
 
 
 def query_groups(query: str) -> list[list[str]]:
     """The query's terms in groups: a document matches if it has any group, with that group's
     terms adjacent and in order.
 
-    A query word that splits into several terms ("ABC-123", "user@example.com") is one group,
-    matched as a phrase. Character pairs from unspaced scripts are separate groups, so a
+    A query word that splits into several terms and looks like an identifier ("ABC-123",
+    "user@example.com", "engine.py") is one group, matched as a phrase. Words joined by other
+    punctuation ("Paris/London", "R&D") are separate groups. Character pairs from unspaced scripts are separate groups, so a
     sentence-long Chinese query ranks documents by how many pairs they share. An apostrophe ends a
     word, so "MacDuff's" also finds "MacDuff". Repeated groups are dropped and at most
     _MAX_QUERY_GROUPS are kept.
@@ -96,7 +99,11 @@ def query_groups(query: str) -> list[list[str]]:
     seen: set[tuple[str, ...]] = set()
     for word in _QUERY_WORD_BREAK.split(query):
         word_terms = terms(word)
-        if len(word_terms) > 1 and not any(_UNSPACED.match(t) for t in word_terms):
+        if (
+            len(word_terms) > 1
+            and not any(_UNSPACED.match(t) for t in word_terms)
+            and _IDENTIFIER.search(_normalize(word))
+        ):
             candidates = [word_terms]
         else:
             candidates = [[t] for t in word_terms]
