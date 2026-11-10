@@ -653,7 +653,7 @@ def knowledge_search(
         r = httpx.post(
             url,
             headers=_knowledge_headers(agent_id, thread_id),
-            json={"query": query, "scope": scope, "limit": limit},
+            json={"query": query, "scope": scope, "limit": limit, "include_scores": True},
             timeout=60.0,
         )
         r.raise_for_status()

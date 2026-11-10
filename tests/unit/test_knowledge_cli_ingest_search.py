@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from cuga.backend.knowledge.auth import KnowledgeIdentity, require_internal_or_auth
+from cuga.backend.knowledge.engine import SearchResult, _JunkFilterStats
 from cuga.backend.knowledge.routes import knowledge_router
 from cuga.cli.knowledge_cmds import knowledge_app
 
@@ -88,7 +89,7 @@ def test_search_prints_ranked_results(monkeypatch):
     assert result.exit_code == 0, result.output
     url, kwargs = calls[0]
     assert url == "http://kb.test/api/knowledge/search"
-    assert kwargs["json"] == {"query": "INV-2026-0007", "scope": "agent", "limit": 2}
+    assert kwargs["json"] == {"query": "INV-2026-0007", "scope": "agent", "limit": 2, "include_scores": True}
     assert kwargs["headers"] == {"X-Agent-ID": "cuga-default"}
     assert "1. invoice_07.txt p.1  score 0.810" in result.output
     assert "2. invoice_11.txt  score 0.420" in result.output
@@ -154,6 +155,21 @@ async def _identity(request: Request) -> KnowledgeIdentity:
     )
 
 
+def _serve_knowledge_routes(monkeypatch, engine) -> None:
+    """Send the CLI's requests to the real knowledge routes, backed by ``engine``."""
+    app = FastAPI()
+    app.include_router(knowledge_router)
+    app.dependency_overrides[require_internal_or_auth] = _identity
+    app.state.app_state = SimpleNamespace(knowledge_engine=engine, knowledge_provider=None)
+    client = TestClient(app, base_url="http://kb.test")
+
+    def _post(url, *, timeout, **kwargs):
+        return client.post(url, **kwargs)
+
+    monkeypatch.setenv("CUGA_API_BASE", "http://kb.test")
+    monkeypatch.setattr("cuga.cli.knowledge_cmds.httpx.post", _post)
+
+
 @pytest.mark.parametrize(
     ("count", "status", "expected_lines", "exit_code"),
     [
@@ -167,24 +183,47 @@ def test_ingest_reports_every_file_from_the_real_upload_route(
     tmp_path, monkeypatch, count, status, expected_lines, exit_code
 ):
     """The route returns one file's task on its own, not in ``tasks``; that file must still be reported."""
-    app = FastAPI()
-    app.include_router(knowledge_router)
-    app.dependency_overrides[require_internal_or_auth] = _identity
-    app.state.app_state = SimpleNamespace(knowledge_engine=_RouteEngine(status), knowledge_provider=None)
-    client = TestClient(app, base_url="http://kb.test")
-
-    def _post(url, *, timeout, **kwargs):
-        return client.post(url, **kwargs)
-
+    _serve_knowledge_routes(monkeypatch, _RouteEngine(status))
     paths = []
     for i in range(count):
         p = tmp_path / f"doc_{i}.txt"
         p.write_text(f"document {i}")
         paths.append(str(p))
-    monkeypatch.setenv("CUGA_API_BASE", "http://kb.test")
-    monkeypatch.setattr("cuga.cli.knowledge_cmds.httpx.post", _post)
 
     result = CliRunner().invoke(knowledge_app, ["ingest", *paths])
 
     assert result.output.splitlines() == expected_lines
     assert result.exit_code == exit_code
+
+
+class _SearchEngine:
+    """Just enough engine for the real search route."""
+
+    _config = SimpleNamespace(
+        enabled=True,
+        default_limit=5,
+        default_score_threshold=0.0,
+        search_junk_filter="off",
+        citations_enabled=False,
+    )
+
+    async def search_with_stats(self, collection, query, limit, score_threshold, scope):
+        hits = [
+            SearchResult(
+                text="Invoice INV-2026-0007 was issued to Contoso.",
+                filename="invoice_07.txt",
+                page=1,
+                score=0.81,
+            )
+        ]
+        return hits, _JunkFilterStats()
+
+
+def test_search_prints_scores_from_the_real_search_route(monkeypatch):
+    """The route leaves scores out unless the request asks for them."""
+    _serve_knowledge_routes(monkeypatch, _SearchEngine())
+
+    result = CliRunner().invoke(knowledge_app, ["search", "INV-2026-0007"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines()[0] == "1. invoice_07.txt p.1  score 0.810"
