@@ -20,7 +20,7 @@ import {
   type MessageResponse,
 } from '@carbon/ai-chat';
 import { Button, IconButton, ComposedModal, ModalHeader, ModalBody, ModalFooter, InlineLoading, InlineNotification, CodeSnippet } from '@carbon/react';
-import { Document, Renew, Attachment, Close, Code } from "@carbon/icons-react";
+import { Document, Renew, Attachment, Close, Code, WarningFilled } from "@carbon/icons-react";
 import {
   registerCiteElement,
   CITE_CLICK_EVENT,
@@ -176,6 +176,7 @@ function ComposerToolbar({
                   <div
                     key={item.id}
                     className={`cuga-composer-chip cuga-composer-chip--${item.status}`}
+                    title={item.status === "error" ? `Upload failed: ${item.error || "unknown error"}` : undefined}
                   >
                     {(item.status === "uploading" || item.status === "deleting") && <InlineLoading iconDescription={item.status === "deleting" ? "Removing file…" : "Uploading file…"} aria-live="polite" className="cuga-composer-chip__loading" />}
                     <Button kind="ghost" size="sm"
@@ -187,8 +188,13 @@ function ComposerToolbar({
                       }}
                       disabled={!previewSnapshot || !onPreviewAttachment}
                     >
-                      {item.status !== "uploading" && item.status !== "deleting" && <Document size={16} />}
+                      {item.status === "error" ? (
+                        <WarningFilled size={16} className="cuga-composer-chip__error-icon" aria-hidden="true" />
+                      ) : (
+                        item.status !== "uploading" && item.status !== "deleting" && <Document size={16} />
+                      )}
                       <span className="cuga-composer-chip__name">{item.displayName}</span>
+                      {item.status === "error" && <span className="cuga-composer-chip__status">Upload failed</span>}
                     </Button>
                     {item.kind === "upload" && item.status === "error" && (
                       <IconButton kind="ghost" size="sm" label={`Retry upload ${item.displayName}`}
