@@ -164,7 +164,7 @@ def test_process_due_bounded_run_retires_after_deadline():
 
 
 def test_cron_step_zero_is_refused_by_the_parser():
-    """`*/0` is not a schedule. It used to reach the modulo inside _field_matches and raise
+    """`*/0` is not a schedule. It used to reach the modulo inside the match check and raise
     ZeroDivisionError from deep inside a tick; now it is refused as a ValueError like any other
     malformed field, so a bad expression fails where it is PARSED rather than when it first fires."""
     for expr in ("*/0 * * * *", "* */0 * * *", "0 0 * * */0", "*/-1 * * * *"):
@@ -198,11 +198,30 @@ def test_cron_errors_name_the_field_and_the_fix():
     assert time.localtime(ns.next_cron("0 9 * * 7", sun))[:5] == (2026, 1, 11, 9, 0)
 
 
+@pytest.mark.unit
+def test_cron_fields_are_parsed_once_before_the_scan(monkeypatch):
+    """The minute-by-minute scan matches against parsed fields; it must not re-parse the spec
+    strings for every candidate minute (an annual schedule such as '0 0 1 1 *' walks ~500k
+    candidates, so re-parsing per candidate would stall the event loop)."""
+    calls = 0
+    real_parts = ns._parts
+
+    def counting_parts(spec, lo, hi):
+        nonlocal calls
+        calls += 1
+        return real_parts(spec, lo, hi)
+
+    monkeypatch.setattr(ns, "_parts", counting_parts)
+    # an annual schedule: the next fire is months away, so the scan is long
+    assert ns.next_cron("0 0 1 1 *", time.mktime((2026, 2, 1, 0, 0, 0, 0, 0, -1)))
+    assert calls == 5  # one parse per field, all before the scan starts
+
+
 def test_process_due_retires_an_unschedulable_row_without_stalling_the_tick():
     """A malformed cron must cost ONE subscription, not every subscription behind it.
 
     The reschedule used to sit outside the per-subscription try. `next_cron` raises ValueError for
-    an expression it can never satisfy and `_field_matches` raises on a bad token or `*/0`, so the
+    an expression it can never satisfy and the field parser raises on a bad token or `*/0`, so the
     exception escaped `process_due` entirely: every row after the bad one was skipped, and because
     the bad row stayed due it repeated on EVERY tick. One typo silently froze every later schedule.
 
