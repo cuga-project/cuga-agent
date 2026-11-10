@@ -114,7 +114,12 @@ class FinalAnswerNode(BaseNode):
     @staticmethod
     async def check_citation_support(state) -> dict[str, str]:
         """Verdict per cite_id (``supported`` / ``contradicted`` / ``not_stated``) from the
-        configured checker; ``{}`` when checking is off, nothing is cited, or the check fails."""
+        configured checker; ``{}`` when nothing is cited or the check fails.
+
+        With the check off, only citations reused from an earlier turn are checked, with the
+        agent's model: they are kept only when supported, and a follow-up answered from the
+        previous turn's results would otherwise lose them all. An answer citing only this
+        turn's sources makes no extra call."""
         try:
             from cuga.backend.knowledge.sources import (
                 effective_citation_check,
@@ -125,7 +130,7 @@ class FinalAnswerNode(BaseNode):
 
             mode = effective_citation_check()
             text = state.final_answer or ""
-            if mode == "off" or not state.thread_id or not has_citation_markers(text):
+            if not state.thread_id or not has_citation_markers(text):
                 return {}
             if not effective_citations_enabled(state.thread_id):
                 return {}
@@ -133,11 +138,22 @@ class FinalAnswerNode(BaseNode):
             if ledger is None:
                 return {}
 
+            reused_only = mode == "off"
+            if reused_only:
+                from cuga.backend.knowledge.citation_check import claims_by_marker
+
+                cited = {cid for _, ids in claims_by_marker(text) for cid in ids}
+                if not any(ledger.get(c) is not None and not ledger.retrieved_this_turn(c) for c in cited):
+                    return {}
+                mode = "llm"
+
             def source_text(cite_id: str) -> Optional[str]:
                 # Any id still in the ledger, earlier turns included: a supported
                 # earlier-turn citation is kept (apply_citation_resolution).
                 record = ledger.get(cite_id)
-                return record.text if record is not None else None
+                if record is None or (reused_only and ledger.retrieved_this_turn(cite_id)):
+                    return None
+                return record.text
 
             from cuga.backend.knowledge.citation_check import check_citations
 
