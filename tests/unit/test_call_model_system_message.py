@@ -23,3 +23,24 @@ async def test_system_message_is_appended_to_the_system_prompt(content):
     assert outbound[0]["content"].endswith("\n\nAnswer in English.")
     assert [m["role"] for m in outbound].count("system") == 1
     assert any(isinstance(m, SystemMessage) for m in persisted), "kept in history for later turns"
+
+
+@pytest.mark.asyncio
+async def test_a_system_message_sent_every_turn_is_added_once():
+    """An SDK caller sends its SystemMessage with every turn, and the thread keeps each copy."""
+    from langchain_core.messages import AIMessage
+
+    captured: list[list[dict]] = []
+    rule = "Answer in English."
+    await _run_turn(
+        [
+            SystemMessage(content=rule),
+            HumanMessage(content="Quel temps fait-il ?"),
+            AIMessage(content="It is sunny."),
+            SystemMessage(content=rule),
+            HumanMessage(content="Et demain ?"),
+        ],
+        captured,
+    )
+
+    assert captured[0][0]["content"].count(rule) == 1
