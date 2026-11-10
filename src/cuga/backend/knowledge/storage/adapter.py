@@ -30,6 +30,22 @@ _TERMS_COLUMN = f"terms_v{lexical.VERSION}"
 _FTS_STORED_COLUMNS = "chunk_id, tenant_id, instance_id, source, filename, page, section_path, chunk_text"
 
 
+# Rows per write transaction when a keyword table is rebuilt: about 0.7 s each at 300-word chunks,
+# so uploads to other collections in the same file get the lock in between.
+_FTS_BUILD_BATCH = 2000
+_FTS_BUILD_PAUSE_S = 0.2
+
+
+def _fts_create_sql(name: str) -> str:
+    """The keyword table. Terms are pre-split, so its tokenizer only splits on the spaces between them."""
+    return (
+        f"CREATE VIRTUAL TABLE {name} USING fts5("
+        "chunk_id UNINDEXED, tenant_id UNINDEXED, instance_id UNINDEXED, source UNINDEXED, "
+        "filename UNINDEXED, page UNINDEXED, section_path UNINDEXED, chunk_text UNINDEXED, "
+        f"{_TERMS_COLUMN}, tokenize=\"unicode61 remove_diacritics 0 categories 'L* M* N* Co'\")"
+    )
+
+
 def _section_path_of(meta_json: Any) -> str:
     """``section_path`` from a chunk's ``meta_json``, or ``""`` when absent or unreadable."""
     try:
@@ -318,37 +334,50 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             return
         if self._fts_state(conn) != "current":
             table = self._fts_table()
-            # Tokenize the stored chunks before taking the write lock. It takes about a minute per
-            # 50,000 chunks, and every collection writes to this database file: holding the lock
-            # that long made uploads to other collections fail with "database is locked".
+            # Every collection writes to this database file, and SQLite waits 5 s for its write
+            # lock: a rebuild that held it for one long transaction (16 s at 50,000 chunks of 300
+            # words) made uploads to other collections fail with "database is locked". So the
+            # chunks are read and tokenized without the lock, written to a staging table in short
+            # transactions, and swapped in by one short transaction that reconciles the chunks
+            # deleted or stored meanwhile.
             rows = self._fts_rows_from_vectors(conn)
+            build = f"{table}_build"
+            if rows is not None:
+                conn.execute(f"DROP TABLE IF EXISTS {build}")  # a leftover from an interrupted rebuild
+                conn.execute(_fts_create_sql(build))
+                insert = f"INSERT INTO {build} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                for start in range(0, len(rows), _FTS_BUILD_BATCH):
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.executemany(insert, rows[start : start + _FTS_BUILD_BATCH])
+                    conn.commit()
+                    # A waiting writer checks the lock about every 100 ms; without a gap it would
+                    # rarely catch one between batches and could still wait past its 5 s.
+                    time.sleep(_FTS_BUILD_PAUSE_S)
             conn.execute("BEGIN IMMEDIATE")
             state = self._fts_state(conn)
-            if state == "stale":
-                conn.execute(f"DROP TABLE {table}")
-            if state != "current":
-                # Terms are pre-split, so this tokenizer only splits on the spaces between them.
-                conn.execute(
-                    f"CREATE VIRTUAL TABLE {table} USING fts5("
-                    "chunk_id UNINDEXED, tenant_id UNINDEXED, instance_id UNINDEXED, source UNINDEXED, "
-                    "filename UNINDEXED, page UNINDEXED, section_path UNINDEXED, chunk_text UNINDEXED, "
-                    f"{_TERMS_COLUMN}, tokenize=\"unicode61 remove_diacritics 0 categories 'L* M* N* Co'\")"
-                )
+            if state == "current":  # another adapter finished first
                 if rows is not None:
-                    insert = f"INSERT INTO {table} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) "
-                    conn.executemany(insert + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
-                    # Chunks deleted since the read above must not come back as keyword hits.
+                    conn.execute(f"DROP TABLE {build}")
+            else:
+                if state == "stale":
+                    conn.execute(f"DROP TABLE {table}")
+                if rows is None:
+                    conn.execute(_fts_create_sql(table))
+                else:
+                    # Chunks deleted since the read must not come back as keyword hits; chunks
+                    # stored since are few, so they are tokenized under the lock.
                     conn.execute(
-                        f"DELETE FROM {table} WHERE chunk_id NOT IN (SELECT id FROM {self._collection})"
+                        f"DELETE FROM {build} WHERE chunk_id NOT IN (SELECT id FROM {self._collection})"
                     )
-                    # Chunks stored since the read above: few, so tokenized under the lock.
                     conn.create_function("lexical_terms", 1, lambda text: " ".join(lexical.terms(text or "")))
                     conn.create_function("section_path_of", 1, _section_path_of)
                     late = conn.execute(
-                        insert + "SELECT id, tenant_id, instance_id, source, filename, page, "
+                        f"INSERT INTO {build} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) "
+                        "SELECT id, tenant_id, instance_id, source, filename, page, "
                         f"section_path_of(meta_json), chunk_text, lexical_terms(chunk_text) FROM {self._collection} "
-                        f"WHERE id NOT IN (SELECT chunk_id FROM {table})"
+                        f"WHERE id NOT IN (SELECT chunk_id FROM {build})"
                     ).rowcount
+                    conn.execute(f"ALTER TABLE {build} RENAME TO {table}")
                     logger.info(
                         "Built keyword table {} (tokenizer v{}) from {} stored chunks",
                         table,
