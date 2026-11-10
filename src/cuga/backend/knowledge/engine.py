@@ -4529,7 +4529,9 @@ class KnowledgeEngine:
                 try:
                     adapter.drop()
                 except Exception as e:
-                    logger.debug(f"Drop collection {collection}: {e}")
+                    logger.warning(
+                        f"Could not drop the vectors of {collection}; its table is left behind: {e}"
+                    )
 
         files_dir = self._files_dir / collection
         if files_dir.exists():
@@ -4546,17 +4548,9 @@ class KnowledgeEngine:
         with self._vector_store_lock:
             adapter = self._vector_stores.pop(collection, None)
             self._record_managers.pop(collection, None)
-            if adapter:
-                try:
-                    adapter.drop()
-                except Exception as e:
-                    logger.debug(f"Drop collection vectors {collection}: {e}")
-            else:
-                try:
-                    temp = self._create_vector_adapter(collection, embeddings)
-                    temp.drop()
-                except Exception as e:
-                    logger.debug(f"Drop uncached collection {collection}: {e}")
+            # A failed drop stops the caller with the collection intact. Swallowing it let reindex
+            # re-ingest on top of the old vectors: mixed rows, or a dimension error on insert.
+            (adapter or self._create_vector_adapter(collection, embeddings)).drop()
         await self._metadata.delete_collection_metadata(collection)
         logger.info(f"Dropped collection vectors {collection} (files preserved)")
 
