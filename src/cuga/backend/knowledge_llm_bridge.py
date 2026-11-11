@@ -18,8 +18,8 @@ class CugaChatGenerator:
     the code agent). Implements ``async generate(prompt) -> str`` for the
     knowledge engine's query-transform (multi_query / HyDE)."""
 
-    def __init__(self) -> None:
-        self._model = None
+    def __init__(self, model=None) -> None:
+        self._model = model  # None: the configured agent model, loaded on first use
 
     async def generate(self, prompt: str) -> str:
         if self._model is None:

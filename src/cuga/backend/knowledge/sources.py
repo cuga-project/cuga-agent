@@ -21,7 +21,7 @@ import logging
 import re
 import threading
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -84,10 +84,12 @@ class SourceLedger:
         self._counter = 0
         self._max = max_records
         self._lock = threading.Lock()
-        # cite_ids retrieved during the CURRENT turn. A marker only resolves to
-        # a source retrieved this turn; ids from earlier turns (or rehydrated
-        # from history) are stripped like a miss. Cleared by begin_turn().
+        # cite_ids retrieved during the CURRENT turn. A marker resolves to a
+        # source retrieved this turn; ids from earlier turns (or rehydrated
+        # from history) are stripped like a miss unless the citation check
+        # verified them (resolve_citations' ``verified``). Cleared by begin_turn().
         self._turn_ids: set[str] = set()
+        self._search_retry_used = False
 
     def __len__(self) -> int:
         return len(self._by_key)
@@ -131,14 +133,24 @@ class SourceLedger:
 
         Rehydration (restore) runs before this and deliberately does NOT add to
         the turn set, so a rehydrated prior-turn id stays out of scope until it
-        is actually re-retrieved this turn.
+        is actually re-retrieved this turn, or the citation check verifies it
+        (resolve_citations' ``verified``).
         """
         with self._lock:
             self._turn_ids.clear()
+            self._search_retry_used = False
 
     def retrieved_this_turn(self, cite_id: str) -> bool:
         with self._lock:
             return cite_id.lower() in self._turn_ids
+
+    def claim_search_retry(self) -> bool:
+        """True the first time per turn: the caller may send the model back to search once."""
+        with self._lock:
+            if self._search_retry_used:
+                return False
+            self._search_retry_used = True
+            return True
 
     def get(self, cite_id: str) -> SourceRecord | None:
         return self._by_cite_id.get(cite_id.lower())
@@ -305,11 +317,47 @@ def _warn_unsupported_markers(text: str) -> None:
             return
 
 
-def resolve_citations(text: str, ledger: SourceLedger | None) -> tuple[str, list[dict[str, Any]]]:
+def needs_search_before_citing(text: str, thread_id: str | None) -> bool:
+    """True, once per turn, when ``text`` cites sources, none of them was retrieved this turn, and
+    some do not resolve to any source in the thread (the citation check verifies the others).
+
+    ``resolve_citations`` would strip every marker the citation check does not verify, and the
+    user could get the answer with no sources. That happens when the model answers from a document's preview in the prompt, or
+    from memory, without searching (#1124). The caller sends the model back to search.
+    """
+    if not thread_id or not effective_citations_enabled(thread_id):
+        return False
+    prose = [part for i, part in enumerate(_CODE_RE.split(text or "")) if not i % 2]
+    ids = [
+        cid.lower()
+        for part in prose
+        for m in _MARKER_RE.finditer(part)
+        for cid in re.split(r"[\s,]+", m.group(1))
+        if cid
+    ]
+    if not ids:
+        return False
+    ledger = get_ledger(thread_id, create=True)
+    if ledger is None or any(ledger.retrieved_this_turn(cid) for cid in ids):
+        return False
+    # Ids from an earlier turn's search are left to the citation check, which keeps the supported
+    # ones for one check instead of another model turn and a search. Only markers that resolve to
+    # nothing need the search.
+    if all(ledger.get(cid) is not None for cid in ids):
+        return False
+    return ledger.claim_search_retry()
+
+
+def resolve_citations(
+    text: str, ledger: SourceLedger | None, verified: Collection[str] = (), strict: bool = False
+) -> tuple[str, list[dict[str, Any]]]:
     """Rewrite ``[sN]`` markers into per-message display numbers ``[k]``.
 
     - Display numbers are assigned in order of first appearance.
     - Ids missing from the ledger (hallucinated, or evicted) are stripped.
+    - Ids from an earlier turn are stripped unless listed in ``verified``: the
+      citation check found that the cited source supports its claim.
+    - ``strict``: every id not in ``verified`` is stripped, this turn's included.
     - Code fences (``` or ~~~, including unterminated/truncated ones),
       double-backtick inline spans, and single-backtick inline spans are
       left byte-identical.
@@ -336,17 +384,23 @@ def resolve_citations(text: str, ledger: SourceLedger | None) -> tuple[str, list
             if not cite_id:
                 continue
             record = ledger.get(cite_id) if ledger is not None else None
-            # A marker resolves only when its source was retrieved THIS turn.
-            # Absent (hallucinated/evicted) OR from an earlier turn both strip:
-            # citing text whose provenance we can't tie to this answer is worse
-            # than no citation. Strip-mode (ledger is None) removes silently by
-            # design. Split the two live-ledger strip reasons in the log so
-            # monitoring can tell model hallucination from stale-id reuse.
+            # A marker resolves when its source was retrieved THIS turn, or when
+            # the citation check verified that the cited source supports the
+            # claim. Otherwise absent (hallucinated/evicted) and unverified
+            # earlier-turn ids both strip: citing text whose provenance we can't
+            # tie to this answer is worse than no citation. Strip-mode (ledger
+            # is None) removes silently by design. Split the two live-ledger
+            # strip reasons in the log so monitoring can tell model
+            # hallucination from stale-id reuse.
             in_ledger = record is not None
-            this_turn = in_ledger and ledger is not None and ledger.retrieved_this_turn(cite_id)
-            if not this_turn:
+            resolves = in_ledger and (
+                cite_id in verified or (not strict and ledger.retrieved_this_turn(cite_id))
+            )
+            if not resolves:
                 if ledger is not None and cite_id not in warned:
-                    reason = "not from this turn's retrieval" if in_ledger else "not in ledger"
+                    reason = (
+                        "not from this turn's retrieval and not verified" if in_ledger else "not in ledger"
+                    )
                     logger.warning("citation marker [%s] %s — stripped", cite_id, reason)
                     warned.add(cite_id)
                 continue
@@ -433,6 +487,47 @@ _agent_flag_lookup: Callable[[], bool] | None = None
 def set_agent_citations_lookup(fn: Callable[[], bool] | None) -> None:
     global _agent_flag_lookup
     _agent_flag_lookup = fn
+
+
+# Wired next to the citations flag: the agent-level citation_check mode ("off" | "llm" | "nli"),
+# read from the LIVE engine config each call. Unwired -> "off".
+_agent_check_lookup: Callable[[], str] | None = None
+
+
+def set_agent_citation_check_lookup(fn: Callable[[], str] | None) -> None:
+    global _agent_check_lookup
+    _agent_check_lookup = fn
+
+
+def effective_citation_check() -> str:
+    """The citation check mode for this agent: "off", "llm" or "nli"."""
+    if _agent_check_lookup is None:
+        return "off"
+    try:
+        return str(_agent_check_lookup() or "off")
+    except Exception:
+        logger.exception("citation check lookup failed; checking off")
+        return "off"
+
+
+# Wired next to citation_check: whether only supported citations are shown. Unwired -> False.
+_agent_strict_lookup: Callable[[], bool] | None = None
+
+
+def set_agent_citation_strict_lookup(fn: Callable[[], bool] | None) -> None:
+    global _agent_strict_lookup
+    _agent_strict_lookup = fn
+
+
+def effective_citation_strict() -> bool:
+    """Whether this agent shows only the citations the check found supported."""
+    if _agent_strict_lookup is None:
+        return False
+    try:
+        return bool(_agent_strict_lookup())
+    except Exception:
+        logger.exception("citation strict lookup failed; not strict")
+        return False
 
 
 def _coerce_override(value: Any, thread_id: str | None) -> bool | None:

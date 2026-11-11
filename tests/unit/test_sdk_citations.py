@@ -105,3 +105,175 @@ def test_invoke_empty_answer_fallback_resolves_markers_and_overrides_stale_sourc
     assert result.sources[0]["cite_id"] == "s1"
     assert result.sources[0]["n"] == 1
     assert result.sources[0]["filename"] == "report.pdf"
+
+
+def test_citation_check_params_reach_the_answer_path(monkeypatch):
+    """CugaAgent(citation_check=..., citation_strict=...) override the knowledge settings for
+    this agent, and the final answer reads them."""
+    from cuga.backend.cuga_graph.nodes.answer import final_answer
+    from cuga.backend.knowledge import sources
+    from cuga.sdk import CugaAgent
+
+    monkeypatch.setattr(
+        "cuga.backend.knowledge.engine.KnowledgeEngine", lambda config, **_: SimpleNamespace(_config=config)
+    )
+    monkeypatch.setattr(
+        "cuga.backend.knowledge.client.KnowledgeClient", lambda engine, **_: SimpleNamespace(engine=engine)
+    )
+    agent = CugaAgent(enable_knowledge=True, citation_check="nli", citation_strict=True)
+    try:
+        config = agent.knowledge.engine._config
+        assert (config.citation_check, config.citation_strict) == ("nli", True)
+        assert (sources.effective_citation_check(), sources.effective_citation_strict()) == ("nli", True)
+        assert final_answer._sdk_agent_model is agent._model  # the "llm" checker uses this agent's model
+    finally:
+        sources.set_agent_citation_check_lookup(None)
+        sources.set_agent_citation_strict_lookup(None)
+        sources.set_agent_citations_lookup(None)
+        final_answer.set_citation_check_model(None)
+
+
+def test_strict_without_a_checker_is_rejected_when_the_agent_is_built():
+    """Agent setup only logs a knowledge error, so this must fail before it, not disable knowledge."""
+    from cuga.sdk import CugaAgent
+
+    with pytest.raises(ValueError, match="citation_strict needs a citation check"):
+        CugaAgent(citation_strict=True)
+    CugaAgent(citation_check="nli", citation_strict=True)
+
+
+def test_strict_from_the_settings_is_checked_against_the_agent_s_checker(monkeypatch):
+    """Strict mode set in the knowledge settings with the agent's checker turned off would fail
+    later, in agent setup, and leave the agent without knowledge."""
+    from cuga.config import settings
+    from cuga.sdk import CugaAgent
+
+    monkeypatch.setitem(settings.get("knowledge"), "citation_strict", True)
+    monkeypatch.setitem(settings.get("knowledge"), "citation_check", "llm")
+    with pytest.raises(ValueError, match="citation_strict needs a citation check"):
+        CugaAgent(citation_check="off")
+    CugaAgent(citation_check="off", citation_strict=False)
+    CugaAgent()
+
+
+def test_citation_check_param_rejects_unknown_checkers():
+    from cuga.sdk import CugaAgent
+
+    with pytest.raises(ValueError, match="citation_check must be"):
+        CugaAgent(citation_check="reranker")
+
+
+def test_invoke_empty_answer_fallback_checks_citations_like_the_final_answer(monkeypatch):
+    """The fallback text bypassed FinalAnswerNode, so it must get the same citation check."""
+    import json
+
+    from cuga.backend.cuga_graph.nodes.answer import final_answer
+    from cuga.backend.knowledge import sources
+    from cuga.sdk import CugaAgent
+
+    agent = CugaAgent(auto_load_policies=False)
+
+    async def _noop_initialized():
+        return None
+
+    async def _supported(prompt: str) -> str:
+        return json.dumps({"1": "supported"})
+
+    monkeypatch.setattr(agent, "_ensure_initialized", _noop_initialized)
+    monkeypatch.setattr(final_answer, "_citation_check_llm", lambda: SimpleNamespace(generate=_supported))
+    sources.set_agent_citation_check_lookup(lambda: "llm")
+    thread_id = "sdk-fallback-check"
+    chunk = SimpleNamespace(
+        text="Invoice INV-9 was issued to Contoso.",
+        filename="inv.txt",
+        page=1,
+        scope="agent",
+        score=0.9,
+        section_path="",
+    )
+    agent._compiled_graph = _StubGraph(
+        {
+            "final_answer": "",
+            "chat_messages": [AIMessage(content="Issued to Contoso [s1].")],
+            "variables_storage": {},
+            "tool_calls": [],
+        },
+        on_ainvoke=lambda: get_ledger(thread_id).register(chunk, query="q"),
+    )
+    try:
+        result = asyncio.run(agent.invoke("question", thread_id=thread_id))
+    finally:
+        sources.set_agent_citation_check_lookup(None)
+
+    assert result.answer == "Issued to Contoso [1]."
+    assert [(s["filename"], s["support"]) for s in result.sources] == [("inv.txt", "supported")]
+
+
+def test_invoke_empty_answer_fallback_honours_strict_mode(monkeypatch):
+    """Strict mode holds on the fallback path too: a contradicted citation is stripped."""
+    import json
+
+    from cuga.backend.cuga_graph.nodes.answer import final_answer
+    from cuga.backend.knowledge import sources
+    from cuga.sdk import CugaAgent
+
+    agent = CugaAgent(auto_load_policies=False)
+
+    async def _noop_initialized():
+        return None
+
+    async def _contradicted(prompt: str) -> str:
+        return json.dumps({"1": "contradicted"})
+
+    monkeypatch.setattr(agent, "_ensure_initialized", _noop_initialized)
+    monkeypatch.setattr(final_answer, "_citation_check_llm", lambda: SimpleNamespace(generate=_contradicted))
+    sources.set_agent_citation_check_lookup(lambda: "llm")
+    sources.set_agent_citation_strict_lookup(lambda: True)
+    thread_id = "sdk-fallback-strict"
+    chunk = SimpleNamespace(
+        text="Invoice INV-9 was issued to Contoso.",
+        filename="inv.txt",
+        page=1,
+        scope="agent",
+        score=0.9,
+        section_path="",
+    )
+    agent._compiled_graph = _StubGraph(
+        {
+            "final_answer": "",
+            "chat_messages": [AIMessage(content="Issued to Globex [s1].")],
+            "variables_storage": {},
+            "tool_calls": [],
+        },
+        on_ainvoke=lambda: get_ledger(thread_id).register(chunk, query="q"),
+    )
+    try:
+        result = asyncio.run(agent.invoke("question", thread_id=thread_id))
+    finally:
+        sources.set_agent_citation_check_lookup(None)
+        sources.set_agent_citation_strict_lookup(None)
+
+    assert (result.answer, result.sources) == ("Issued to Globex .", [])
+
+
+def test_the_sdk_reads_the_engines_live_citation_check(monkeypatch):
+    """apply_knowledge_config replaces the engine's config; the answer path must follow it."""
+    from cuga.backend.knowledge import sources
+    from cuga.backend.knowledge.config import KnowledgeConfig
+    from cuga.sdk import CugaAgent
+
+    monkeypatch.setattr(
+        "cuga.backend.knowledge.engine.KnowledgeEngine", lambda config, **_: SimpleNamespace(_config=config)
+    )
+    monkeypatch.setattr(
+        "cuga.backend.knowledge.client.KnowledgeClient", lambda engine, **_: SimpleNamespace(engine=engine)
+    )
+    agent = CugaAgent(enable_knowledge=True)
+    try:
+        agent.knowledge.engine._config = KnowledgeConfig(citation_check="llm", citations_enabled=False)
+        assert sources.effective_citation_check() == "llm"
+        assert sources.effective_citations_enabled(None) is False
+    finally:
+        sources.set_agent_citation_check_lookup(None)
+        sources.set_agent_citation_strict_lookup(None)
+        sources.set_agent_citations_lookup(None)
