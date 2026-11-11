@@ -12,12 +12,16 @@ contradicted claims with AUC 0.96. The shipped reranker scored 0.81 and failed o
 Each pair gets ``supported``, ``contradicted`` or ``not_stated``. A source's verdict is the
 worst over the claims that cite it, with the passage of the source that verdict rests on (the
 LLM quotes it; for NLI it is the one or two sentences that carry the verdict on their own).
+Where a citation must be verified (reused from an earlier turn, or any in strict mode),
+``keep_supported_markers`` decides per marker instead: one unsupported sentence does not take
+the source away from the sentences it supports.
 Checking never blocks an answer: on any failure, no verdicts.
 """
 
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import re
 import threading
@@ -69,12 +73,15 @@ _ATTRIBUTION = re.compile(
 
 class Verdicts(dict):
     """cite_id -> verdict. ``quotes`` maps a cite_id to the exact passage of its source that a
-    supported or contradicted verdict rests on, when one was found in the source."""
+    supported or contradicted verdict rests on, when one was found in the source. ``markers``
+    holds ``(marker index, cite_id, verdict, quote)`` per checked pair; the verdict is None when
+    the checker gave no answer for it."""
 
     # ponytail: a dict subclass carries the quotes without changing every caller of the verdicts.
     def __init__(self, labels=(), quotes: dict[str, str] | None = None):
         super().__init__(labels)
         self.quotes = quotes or {}
+        self.markers: list[tuple[int, str, str | None, str]] = []
 
 
 def _locate(quote: str, source: str) -> str:
@@ -90,16 +97,27 @@ def claims_by_marker(text: str) -> list[tuple[str, list[str]]]:
     A marker right after a sentence's terminator ("Contoso. [s1]") belongs to that sentence, also
     when a plain bracketed reference sits between them.
     """
+    return [(claim, ids) for _, claim, ids in _indexed_claims(text)]
+
+
+def _indexed_claims(text: str) -> list[tuple[int, str, list[str]]]:
+    """``claims_by_marker`` with each marker's index among the markers outside code spans, in the
+    order ``sources.resolve_citations`` meets them."""
     prose = _CODE_RE.sub(lambda m: " " * len(m.group(0)), text)  # keep offsets, drop code
     out = []
-    for m in _MARKER_RE.finditer(prose):
-        before = _TRAILING_REF.sub("", prose[: m.start()]).rstrip()
-        body = before[:-1] if before[-1:] in _TERMINATORS else before
-        start = max((b.end() for b in _BOUNDARY.finditer(body)), default=0)
-        claim = " ".join(_MARKER_RE.sub(" ", before[start:]).split())[-_MAX_CLAIM_CHARS:]
-        ids = [i.lower() for i in re.split(r"[\s,]+", m.group(1)) if i]
-        if claim:
-            out.append((claim, ids))
+    index = itertools.count()
+    offset = 0
+    for n, part in enumerate(_CODE_RE.split(text)):  # odd parts are code
+        for m in () if n % 2 else _MARKER_RE.finditer(part):
+            k = next(index)
+            before = _TRAILING_REF.sub("", prose[: offset + m.start()]).rstrip()
+            body = before[:-1] if before[-1:] in _TERMINATORS else before
+            start = max((b.end() for b in _BOUNDARY.finditer(body)), default=0)
+            claim = " ".join(_MARKER_RE.sub(" ", before[start:]).split())[-_MAX_CLAIM_CHARS:]
+            ids = [i.lower() for i in re.split(r"[\s,]+", m.group(1)) if i]
+            if claim:
+                out.append((k, claim, ids))
+        offset += len(part)
     return out
 
 
@@ -116,8 +134,8 @@ async def check_citations(
     ``generate`` is the agent's LLM (``async (prompt) -> str``), needed for ``checker="llm"``.
     """
     pairs = [
-        (claim, cid, chunk)
-        for claim, ids in claims_by_marker(text)
+        (k, claim, cid, chunk)
+        for k, claim, ids in _indexed_claims(text)
         for cid in ids
         if (chunk := source_text(cid))
     ]
@@ -125,27 +143,68 @@ async def check_citations(
         return Verdicts()
     try:
         if checker == "llm":
-            judged = await _llm_judgements([(c, s) for c, _, s in pairs], generate)
+            judged = await _llm_judgements([(c, s) for _, c, _, s in pairs], generate)
         elif checker == "nli":
             judged = await asyncio.to_thread(
-                _nli_judgements, [(_ATTRIBUTION.sub("", c), s) for c, _, s in pairs]
+                _nli_judgements, [(_ATTRIBUTION.sub("", c), s) for _, c, _, s in pairs]
             )
         else:
             return Verdicts()
     except Exception:
         logger.exception("citation check ({}) failed; answer delivered without verdicts", checker)
         return Verdicts()
+    # label None: the checker's reply had no answer for this pair
+    return _per_source(
+        [
+            (k, cid, label, _locate(quote, source))
+            for (k, _, cid, source), (label, quote) in zip(pairs, judged)
+        ]
+    )
+
+
+def _per_source(markers: list[tuple[int, str, str | None, str]]) -> Verdicts:
+    """Each source's worst verdict over its markers, with the quote that verdict rests on."""
     per_source: dict[str, list[tuple[str, str]]] = {}
-    for (_, cid, source), (label, quote) in zip(pairs, judged):
-        if label is not None:  # None: the checker's reply had no answer for this pair
-            per_source.setdefault(cid, []).append((label, _locate(quote, source)))
+    for _, cid, label, quote in markers:
+        if label is not None:
+            per_source.setdefault(cid, []).append((label, quote))
     verdicts = Verdicts()
+    verdicts.markers = markers
     for cid, found in per_source.items():
         verdicts[cid] = next(v for v in _WORST_FIRST if any(label == v for label, _ in found))
         quote = next((q for label, q in found if label == verdicts[cid] and q), "")
         if quote and verdicts[cid] != NOT_STATED:
             verdicts.quotes[cid] = quote
     return verdicts
+
+
+def keep_supported_markers(text: str, verdicts: dict, must_verify: Callable[[str], bool]) -> tuple[str, dict]:
+    """Drop each marker of a citation that must be verified where the check did not find that
+    marker's own claim supported, and recompute the verdicts over the markers left.
+
+    A source the answer cites for three sentences it states and for one summary sentence it does
+    not state keeps its three markers; deciding per source dropped all four. Verdicts without
+    per-marker results (a plain dict) are returned unchanged.
+    """
+    markers = getattr(verdicts, "markers", None)
+    drop = {(k, cid) for k, cid, label, _ in markers or () if label != SUPPORTED and must_verify(cid)}
+    if not drop:
+        return text, verdicts
+    for cid in sorted({cid for _, cid in drop}):
+        logger.warning("citation marker [{}] whose claim the check did not find supported — stripped", cid)
+    index = itertools.count()
+
+    def _sub(match: re.Match[str]) -> str:
+        k = next(index)
+        ids = [i for i in re.split(r"[\s,]+", match.group(1)) if i]
+        kept = [i for i in ids if (k, i.lower()) not in drop]
+        if len(kept) == len(ids):
+            return match.group(0)
+        return f"[{', '.join(kept)}]" if kept else ""
+
+    parts = _CODE_RE.split(text)
+    text = "".join(part if i % 2 else _MARKER_RE.sub(_sub, part) for i, part in enumerate(parts))
+    return text, _per_source([m for m in markers if (m[0], m[1]) not in drop])
 
 
 def _quoted(source: str) -> str:

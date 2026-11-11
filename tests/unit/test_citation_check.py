@@ -541,3 +541,62 @@ def test_the_llm_checker_answers_with_the_model_this_run_uses(monkeypatch):
     assert run() == "sdk agent's model"
     assert run({"configurable": {"llm": _Model("published model")}}) == "published model"
     assert run({"configurable": {"llm": _Model("model published later")}}) == "model published later"
+
+
+def test_markers_needing_verification_are_kept_where_their_own_claim_is_supported():
+    """Per marker, not per source: inside a group only the unsupported id goes, and markers in
+    code spans are neither counted nor touched."""
+    from cuga.backend.knowledge.citation_check import keep_supported_markers
+
+    text = "Issued to Contoso [s1, s2]. Run `cite([s1])` now. Billed $4,200 [s2]. All paid [s1]."
+    verdicts = asyncio.run(
+        check_citations(
+            text,
+            CHUNKS.get,
+            "llm",
+            generate=_fake_llm({1: "supported", 2: "not_stated", 3: "supported", 4: "not_stated"}),
+        )
+    )
+    assert verdicts == {"s1": "not_stated", "s2": "not_stated"}  # worst per source, as before
+
+    kept, after = keep_supported_markers(text, verdicts, lambda cid: True)
+    assert kept == "Issued to Contoso [s1]. Run `cite([s1])` now. Billed $4,200 [s2]. All paid ."
+    assert after == {"s1": "supported", "s2": "supported"}
+    assert keep_supported_markers(text, verdicts, lambda cid: False) == (text, verdicts)
+    assert keep_supported_markers(text, {"s1": "supported"}, lambda cid: True) == (text, {"s1": "supported"})
+
+
+def test_a_follow_up_keeps_each_reused_citation_where_its_source_states_the_claim(thread, monkeypatch):
+    """A follow-up cited each reused source for a sentence it states and again for a summary
+    sentence no single source states. Judged per source, the summary took every citation away
+    (seen live: four supported markers stripped); judged per marker, only the summary's go."""
+    thread.begin_turn()  # a follow-up answered from the previous turn's search results
+    sources.set_agent_citation_check_lookup(lambda: "off")
+    monkeypatch.setattr(
+        final_answer,
+        "_citation_check_llm",
+        lambda: SimpleNamespace(
+            generate=_fake_llm({1: "supported", 2: "supported", 3: "not_stated", 4: "not_stated"})
+        ),
+    )
+    state = _finalize("Issued to Contoso [s1]. Backups run every night [s2]. So records are safe [s1][s2].")
+
+    assert state.final_answer == "Issued to Contoso [1]. Backups run every night [2]. So records are safe ."
+    assert [(s["filename"], s["support"]) for s in state.sources] == [
+        ("Invoic.txt", "supported"),
+        ("Backup.txt", "supported"),
+    ]
+
+
+def test_strict_keeps_each_marker_whose_own_claim_is_supported(thread, monkeypatch):
+    sources.set_agent_citation_check_lookup(lambda: "llm")
+    sources.set_agent_citation_strict_lookup(lambda: True)
+    monkeypatch.setattr(
+        final_answer,
+        "_citation_check_llm",
+        lambda: SimpleNamespace(generate=_fake_llm({1: "supported", 2: "contradicted"})),
+    )
+    state = _finalize("Issued to Contoso [s1]. Issued to Fabrikam [s1].")
+
+    assert state.final_answer == "Issued to Contoso [1]. Issued to Fabrikam ."
+    assert [(s["filename"], s["support"]) for s in state.sources] == [("Invoic.txt", "supported")]
