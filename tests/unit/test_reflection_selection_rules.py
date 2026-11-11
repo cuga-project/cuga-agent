@@ -31,6 +31,23 @@ def test_category_rule_names_the_structured_field_and_the_all_x_wording():
     assert "the set is defined by the field, not by the wording" in text
 
 
+def test_the_structured_field_rule_is_scoped_to_types_and_categories():
+    """The "all X" override only applies when X is a type or a category.
+
+    Unscoped, the bullet reads as covering a task whose set really is defined
+    by name text, which is the over-reach #1102's flat tips list introduced.
+    """
+    text = _system_text()
+    assert 'and X names a type or category' in text
+
+
+def test_an_explicit_name_or_description_criterion_is_still_honoured():
+    """A task saying "all files whose name contains draft" means that text."""
+    text = _system_text()
+    assert "spells out a name or description criterion" in text
+    assert "you filter on it as written" in text
+
+
 def test_broad_keyword_search_tip_is_retained():
     """The selection rule narrows; the discovery tip must still broaden.
 
