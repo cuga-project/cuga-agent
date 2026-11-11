@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -14,25 +16,83 @@ from typing import Any
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
+from cuga.backend.knowledge import lexical
 from cuga.backend.knowledge.storage.schema import knowledge_embedding_schema
 from cuga.backend.knowledge.vector_store_base import VectorStoreAdapter
 from cuga.config import get_service_instance_id, get_tenant_id
 from loguru import logger
 
-# Compiled once per process — `re.sub` against an inline pattern works
-# through Python's small (~512-entry) cache, but the lexical query path
-# is hot enough that an explicit module-level binding removes the
-# cache lookup per query. The character class keeps:
-#   - \w  (Unicode-aware: handles Hebrew/CJK/accented Latin)
-#   - whitespace
-#   - identifier connectors users routinely put in queries:
-#       .  version strings ("v1.2.3"), file paths ("src/foo.py")
-#       -  SKUs, ticket IDs ("ABC-123", "Q1-2024")
-#       @  email addresses ("user@example.com")
-#       +  version build tags, phone numbers
-# Everything else (FTS5-reserved syntax: quotes, parens, operators)
-# becomes whitespace and gets split out at the tokenisation step.
-_FTS_STRIP_RE: re.Pattern[str] = re.compile(r"[^\w\s.@\-+]+", re.UNICODE)
+# Keyword (FTS5) table columns. Only the terms column is indexed; it holds
+# ``lexical.terms(chunk_text)``, and its name carries the tokenizer version. A table without
+# that column or without the tenant columns is rebuilt from the vector table
+# (``_ensure_fts_table``).
+_TERMS_COLUMN = f"terms_v{lexical.VERSION}"
+_FTS_STORED_COLUMNS = "chunk_id, tenant_id, instance_id, source, filename, page, section_path, chunk_text"
+
+
+# Rows per write transaction when a keyword table is rebuilt: about 0.7 s each at 300-word chunks,
+# so uploads to other collections in the same file get the lock in between.
+_FTS_BUILD_BATCH = 2000
+_FTS_BUILD_PAUSE_S = 0.2
+
+
+def _fts_create_sql(name: str) -> str:
+    """The keyword table. Terms are pre-split, so its tokenizer only splits on the spaces between them."""
+    return (
+        f"CREATE VIRTUAL TABLE {name} USING fts5("
+        "chunk_id UNINDEXED, tenant_id UNINDEXED, instance_id UNINDEXED, source UNINDEXED, "
+        "filename UNINDEXED, page UNINDEXED, section_path UNINDEXED, chunk_text UNINDEXED, "
+        f"{_TERMS_COLUMN}, tokenize=\"unicode61 remove_diacritics 0 categories 'L* M* N* Co'\")"
+    )
+
+
+def _section_path_of(meta_json: Any) -> str:
+    """``section_path`` from a chunk's ``meta_json``, or ``""`` when absent or unreadable."""
+    try:
+        return str(json.loads(meta_json or "{}").get("section_path", "") or "")
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return ""
+
+
+def _pg_tsvector(text: str) -> str:
+    """``lexical.terms`` as a tsvector literal with positions. Postgres stores the literal's
+    lexemes as they are, so its locale and text-search parser never re-split a term."""
+    return " ".join(f"'{term}':{pos}" for pos, term in enumerate(lexical.terms(text or ""), start=1))
+
+
+# One Postgres keyword backfill batch: the next 500 rows in primary-key order after ($1, $2, $3),
+# with the text of those that have no terms yet. Each batch starts where the last one ended, so it
+# reads only rows after it; a "terms IS NULL" filter re-reads every filled row on every batch.
+_PG_FILL_BATCH = (
+    "SELECT tenant_id, instance_id, id, CASE WHEN " + _TERMS_COLUMN + " IS NULL THEN chunk_text END "
+    "AS pending_text FROM {table} WHERE (tenant_id, instance_id, id) > ($1, $2, $3) "
+    "ORDER BY tenant_id, instance_id, id LIMIT 500"
+)
+
+
+def _pg_tsquery(groups: list[list[str]]) -> str:
+    """Any group (``|``), each group's terms adjacent and in order (``<->``), as a tsquery literal."""
+    return " | ".join("(" + " <-> ".join(f"'{term}'" for term in group) + ")" for group in groups)
+
+
+def _doc_from_row(chunk_text: Any, meta_json: Any) -> Document:
+    """A knowledge chunk row (``chunk_text``, ``meta_json``) as a Document."""
+    try:
+        extra = json.loads(meta_json) if meta_json else {}
+    except (json.JSONDecodeError, TypeError):
+        extra = {}
+    page = extra.get("page", -1)
+    metadata: dict[str, Any] = {
+        "source": extra.get("source", ""),
+        "filename": extra.get("filename", ""),
+        "page": None if page == -1 else page,
+    }
+    # Restore section_path when it was preserved at ingest. Empty values are omitted to keep
+    # result envelopes lean for non-Docling formats (txt, plain markdown).
+    if extra.get("section_path"):
+        metadata["section_path"] = extra["section_path"]
+    return Document(page_content=str(chunk_text or ""), metadata=metadata)
+
 
 # Strict whitelist for collection names. The engine sanitises upstream
 # (any non-[a-zA-Z0-9_] char becomes _) but the adapter is a public
@@ -98,6 +158,12 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         self._vector_insert_batch_size = max(1, int(vector_insert_batch_size))
         self._store: Any = None
         self._dim: int | None = None
+        self._fts_ready = False
+        self._pg_ensure_lock = threading.Lock()  # one Postgres keyword backfill at a time
+        # One keyword-table setup at a time in this process. A re-index of an old table holds
+        # SQLite's write lock for about a minute per 50,000 chunks: searches skip the keyword leg
+        # meanwhile, and writes wait for it here instead of timing out on the lock.
+        self._fts_ensure_lock = threading.Lock()
 
     @property
     def embeddings(self) -> Embeddings:
@@ -163,7 +229,10 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         return max(0.0, min(1.0, 1.0 - d))
 
     # ------------------------------------------------------------------
-    # BM25 / lexical retrieval (sqlite-vec via FTS5; pgvector deferred)
+    # BM25 / lexical retrieval: an FTS5 sidecar table on SQLite, a tsvector
+    # column on the knowledge table itself on Postgres
+    # Terms come from ``knowledge.lexical`` for both the index and the query,
+    # so matching is the same in every language and on every backend.
     # ------------------------------------------------------------------
     #
     # We maintain a parallel FTS5 virtual table per collection so a
@@ -174,9 +243,9 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
     # Design choices:
     #  - Mirror columns into FTS so a search hit returns full Document
     #    metadata in one query (no JOIN, no chunk_id → main lookup).
-    #  - Lazy create: the FTS table is only created the first time we
-    #    insert. Existing pre-upgrade collections work — dense-only —
-    #    until they're re-ingested OR the user runs a backfill.
+    #  - Lazy create: the FTS table is created on first use. A collection
+    #    ingested before the FTS leg existed stays dense-only until re-ingested;
+    #    one indexed by an older tokenizer is re-indexed from its stored text.
     #  - Graceful degrade: every public method tolerates "FTS not yet
     #    materialised" and returns ``[]`` rather than raising. This is
     #    what lets ``engine.search_with_stats`` always call
@@ -223,117 +292,322 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         return conn
 
     @staticmethod
-    def _normalize_fts_query(query: str) -> str | None:
-        """Sanitise an FTS5 MATCH expression that preserves identifier-like
-        tokens AND uses OR (not AND) so a multi-word query doesn't
-        require every token to be present.
+    def _fts_match(query: str) -> str | None:
+        """FTS5 MATCH expression: any query group, each group's terms as a phrase.
 
-        Why OR not AND:
-          - RRF already enforces co-occurrence at the *fusion* layer
-            (chunks ranked by both legs win), so demanding AND inside the
-            lexical leg double-penalises. The previous AND-joined version
-            wiped out recall on identifier queries by requiring the user
-            to type the document's exact tokenisation.
-          - BM25 with OR returns chunks containing ANY query term,
-            ranked by term-frequency × inverse-document-frequency. The
-            top hits are still the chunks where MOST terms appear; the
-            ones with one weak match contribute low scores that RRF
-            naturally deprioritises.
-
-        Returns ``None`` for zero-token queries so callers can short-
-        circuit before opening a connection.
+        OR, not AND: RRF already rewards chunks found by both legs, and BM25 ranks chunks with
+        more of the terms first. Terms hold only letters, marks and digits, so quoting them
+        cannot inject FTS5 syntax. ``None`` when the query has no terms.
         """
+        groups = lexical.query_groups(query)
+        return " OR ".join(f'"{" ".join(group)}"' for group in groups) if groups else None
 
-        # Strip FTS5 reserved syntax but KEEP word chars + whitespace +
-        # identifier connectors. Uses the module-level compiled pattern.
-        safe = _FTS_STRIP_RE.sub(" ", query).strip()
-        # Now split on whitespace. Tokens that contain ONLY identifier
-        # connectors with no letters/digits ("---", ".", "-_-") are
-        # noise; drop them.
-        tokens: list[str] = []
-        for raw in safe.split():
-            stripped = raw.strip("._@-+")
-            if stripped and any(ch.isalnum() for ch in raw):
-                tokens.append(raw)
-        if not tokens:
+    def _fts_state(self, conn) -> str:
+        """``missing``, ``stale`` (another tokenizer version, or no tenant columns) or ``current``."""
+        # The column list, not the CREATE text: a collection named e.g. "hr_terms_v1" would match it.
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({self._fts_table()})")}
+        if not columns:
+            return "missing"
+        return "current" if {_TERMS_COLUMN, "tenant_id"} <= columns else "stale"
+
+    def _ensure_fts_table(self, conn, wait: bool = True) -> bool:
+        """Create the FTS table, rebuilt from the vector table when it is missing or stale.
+
+        The keyword index is derived data: every chunk's id, tenant, instance, source, page and
+        text are in the vector table. So a collection ingested before the keyword index existed,
+        or indexed by another tokenizer, or without tenant columns, gets a complete index here.
+
+        Checked once per adapter. The write lock is taken only when there is work, and the
+        state is re-read under it, so concurrent adapters rebuild a table once. The rebuild is
+        one transaction; callers close the connection, which rolls back a failed attempt.
+        ``False`` only when ``wait`` is false and another call in this process is setting the
+        table up.
+        """
+        if self._fts_ready:
+            return True
+        if not self._fts_ensure_lock.acquire(blocking=wait):
+            return False
+        try:
+            self._ensure_fts_table_locked(conn)
+        finally:
+            self._fts_ensure_lock.release()
+        return True
+
+    def _ensure_fts_table_locked(self, conn) -> None:
+        if self._fts_ready:
+            return
+        if self._fts_state(conn) != "current":
+            table = self._fts_table()
+            # Every collection writes to this database file, and SQLite waits 5 s for its write
+            # lock: a rebuild that held it for one long transaction (16 s at 50,000 chunks of 300
+            # words) made uploads to other collections fail with "database is locked". So the
+            # chunks are read and tokenized without the lock, written to a staging table in short
+            # transactions, and swapped in by one short transaction that reconciles the chunks
+            # deleted or stored meanwhile.
+            rows = self._fts_rows_from_vectors(conn)
+            build = f"{table}_build"
+            if rows is not None:
+                conn.execute(f"DROP TABLE IF EXISTS {build}")  # a leftover from an interrupted rebuild
+                conn.execute(_fts_create_sql(build))
+                insert = f"INSERT INTO {build} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                for start in range(0, len(rows), _FTS_BUILD_BATCH):
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.executemany(insert, rows[start : start + _FTS_BUILD_BATCH])
+                    conn.commit()
+                    # A waiting writer checks the lock about every 100 ms; without a gap it would
+                    # rarely catch one between batches and could still wait past its 5 s.
+                    time.sleep(_FTS_BUILD_PAUSE_S)
+            conn.execute("BEGIN IMMEDIATE")
+            state = self._fts_state(conn)
+            if state == "current":  # another adapter finished first
+                if rows is not None:
+                    conn.execute(f"DROP TABLE {build}")
+            else:
+                if state == "stale":
+                    conn.execute(f"DROP TABLE {table}")
+                if rows is None:
+                    conn.execute(_fts_create_sql(table))
+                else:
+                    # Chunks deleted since the read must not come back as keyword hits; chunks
+                    # stored since are few, so they are tokenized under the lock.
+                    conn.execute(
+                        f"DELETE FROM {build} WHERE chunk_id NOT IN (SELECT id FROM {self._collection})"
+                    )
+                    conn.create_function("lexical_terms", 1, lambda text: " ".join(lexical.terms(text or "")))
+                    conn.create_function("section_path_of", 1, _section_path_of)
+                    late = conn.execute(
+                        f"INSERT INTO {build} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) "
+                        "SELECT id, tenant_id, instance_id, source, filename, page, "
+                        f"section_path_of(meta_json), chunk_text, lexical_terms(chunk_text) FROM {self._collection} "
+                        f"WHERE id NOT IN (SELECT chunk_id FROM {build})"
+                    ).rowcount
+                    conn.execute(f"ALTER TABLE {build} RENAME TO {table}")
+                    logger.info(
+                        "Built keyword table {} (tokenizer v{}) from {} stored chunks",
+                        table,
+                        lexical.VERSION,
+                        len(rows) + late,
+                    )
+            conn.commit()
+        self._fts_ready = True
+
+    def _fts_rows_from_vectors(self, conn) -> list[tuple] | None:
+        """A keyword row per stored chunk, read and tokenized without the write lock; ``None``
+        when the collection has no vector table yet."""
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (self._collection,)).fetchone():
             return None
-        # Quote each token so FTS5 reserved words ("AND", "OR", "NEAR",
-        # "NOT") inside the query are matched as literal text instead of
-        # parsed as operators. Then join with explicit OR so the lexical
-        # leg returns chunks matching ANY term (RRF picks the best).
-        return " OR ".join(f'"{t}"' for t in tokens)
+        import sqlite_vec
 
-    def _ensure_fts_table(self, conn) -> None:
-        """Create the FTS5 virtual table if it doesn't already exist.
-        Idempotent: ``CREATE VIRTUAL TABLE IF NOT EXISTS`` short-circuits
-        on the second call, so checking in every ``add_documents`` is free.
+        conn.enable_load_extension(True)
+        try:
+            sqlite_vec.load(conn)
+        finally:
+            conn.enable_load_extension(False)
+        return [
+            (
+                cid,
+                tenant,
+                instance,
+                source,
+                filename,
+                page,
+                _section_path_of(meta),
+                text,
+                " ".join(lexical.terms(text or "")),
+            )
+            for cid, tenant, instance, source, filename, page, meta, text in conn.execute(
+                f"SELECT id, tenant_id, instance_id, source, filename, page, meta_json, chunk_text FROM {self._collection}"
+            ).fetchall()
+        ]
 
-        Tokeniser choice:
-          ``unicode61 remove_diacritics 2 tokenchars '._@-+'``
-            - ``unicode61`` Unicode-aware tokeniser. ``\\w`` matches Hebrew,
-              CJK, accented Latin natively.
-            - ``remove_diacritics 2`` folds accents so a query for "cafe"
-              matches a doc with "café" (and vice versa).
-            - ``tokenchars '._@-+'`` PRESERVES identifier connectors
-              inside tokens — must match the set the query sanitiser
-              keeps (``_FTS_STRIP_RE``) so "user@example.com" is one
-              token on both sides.
+    def _pg_keyword_run(self, work):
+        """Run ``work(conn)`` on a connection of its own. The engine runs the dense and keyword
+        legs concurrently, each in a thread with its own event loop, so the dense store's pool
+        (bound to one loop, and closed after each dense call) cannot be shared."""
 
-          Porter stemmer (English suffix stripping) is deliberately NOT
-          included: it's a no-op on non-Latin scripts and on identifier
-          tokens like "v1.2.3" / "user_id" it only adds work. Language-
-          specific stemming is a Phase-3 follow-up.
+        async def _go():
+            import asyncpg
+
+            conn = await asyncpg.connect(self._postgres_url, command_timeout=60)
+            try:
+                return await work(conn)
+            finally:
+                await conn.close()
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_go())
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(lambda: asyncio.run(_go())).result()
+
+    async def _pg_ensure_terms(self, conn) -> bool:
+        """Add the Postgres keyword column and its GIN index if missing, then fill every row
+        without terms (rows ingested before the column existed, or whose term write failed).
+
+        The column lives on the knowledge table, so tenant scope, deletes and drops apply to it
+        with no extra code. Checked once per adapter. ``False`` when the table does not exist yet.
         """
-        sql = (
-            f"CREATE VIRTUAL TABLE IF NOT EXISTS {self._fts_table()} USING fts5("
-            "chunk_id UNINDEXED, source UNINDEXED, filename UNINDEXED, "
-            "page UNINDEXED, section_path UNINDEXED, chunk_text, "
-            "tokenize=\"unicode61 remove_diacritics 2 tokenchars '._@-+'\")"
+        if self._fts_ready:
+            return True
+        # One backfill per adapter. Concurrent keyword calls skip it (their keyword leg is empty
+        # this once) rather than scan the same rows again and hold more connections.
+        if not self._pg_ensure_lock.acquire(blocking=False):
+            return False
+        try:
+            return await self._pg_add_and_fill_terms(conn)
+        finally:
+            self._pg_ensure_lock.release()
+
+    async def _pg_add_and_fill_terms(self, conn) -> bool:
+        if self._fts_ready:
+            return True
+        table = self._collection
+        if await conn.fetchval("SELECT to_regclass($1)", table) is None:
+            return False
+        has_column = await conn.fetchval(
+            "SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass($1) AND attname = $2 AND NOT attisdropped",
+            table,
+            _TERMS_COLUMN,
         )
-        conn.execute(sql)
+        if not has_column:
+            index = f"idx_{hashlib.sha256(table.encode()).hexdigest()[:16]}_{_TERMS_COLUMN}"
+            async with conn.transaction():  # column and index together, or neither
+                # ALTER TABLE queues behind any open transaction on the table, and every query on
+                # the table queues behind the ALTER. Give up after 2 s; the next keyword call retries.
+                await conn.execute("SET LOCAL lock_timeout = '2s'")
+                await conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {_TERMS_COLUMN} tsvector")
+                await conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS {index} ON {table} USING gin ({_TERMS_COLUMN})"
+                )
+        # ponytail: one pass on first use; a very large collection pays it on its first query.
+        # Move it to engine warmup if that first-query latency matters.
+        filled, after = 0, ("", "", "")
+        while rows := await conn.fetch(_PG_FILL_BATCH.format(table=table), *after):
+            after = (rows[-1]["tenant_id"], rows[-1]["instance_id"], rows[-1]["id"])
+            if pending := [r for r in rows if r["pending_text"] is not None]:
+                await conn.executemany(
+                    f"UPDATE {table} SET {_TERMS_COLUMN} = $1::text::tsvector "
+                    "WHERE id = $2 AND tenant_id = $3 AND instance_id = $4",
+                    [
+                        (_pg_tsvector(r["pending_text"]), r["id"], r["tenant_id"], r["instance_id"])
+                        for r in pending
+                    ],
+                )
+                filled += len(pending)
+        if filled:
+            logger.info("Indexed keyword terms for {} existing chunks in {}", filled, table)
+        self._fts_ready = True
+        return True
+
+    def _pg_batch_terms(self, batch: list[tuple[str, list[float], dict[str, Any]]], bare: list[bool]):
+        """The keyword terms of one ``add_many`` batch, written in the INSERT that stores the
+        chunks: once the keyword column exists, no chunk is stored without terms, even if the
+        process dies. A second UPDATE of the same rows would write every chunk into the vector
+        (HNSW) index twice, since the terms column is indexed and the update cannot be in place.
+
+        Without the column (a collection from before keyword search, or a new table) the rows go
+        in bare, and ``bare`` records it. Adding the column waits for this transaction to end, and
+        the backfill that runs after it fills them; until the column exists no adapter has marked
+        its terms complete.
+        """
+        table = self._collection
+        terms = [_pg_tsvector(meta.get("chunk_text", "") or "") for _cid, _embedding, meta in batch]
+
+        async def _columns(conn) -> dict[str, tuple[str, list[str]]]:
+            # The INSERT's own lock, taken before the check: adding the column needs a lock that
+            # conflicts with it, so the column cannot appear between this check and the insert.
+            await conn.execute(f"LOCK TABLE {table} IN ROW EXCLUSIVE MODE")
+            if await conn.fetchval(
+                "SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass($1) AND attname = $2 AND NOT attisdropped",
+                table,
+                _TERMS_COLUMN,
+            ):
+                return {_TERMS_COLUMN: ("::text::tsvector", terms)}
+            bare.append(True)
+            return {}
+
+        return _columns
+
+    def _pg_search_lexical(self, groups: list[list[str]], k: int) -> list[tuple[Any, Any, float]]:
+        scope = self._scope()
+
+        async def _search(conn):
+            if not await self._pg_ensure_terms(conn):
+                return []
+            return await conn.fetch(
+                f"SELECT chunk_text, meta_json, ts_rank_cd({_TERMS_COLUMN}, q) AS rank "
+                f"FROM {self._collection}, CAST($1::text AS tsquery) AS q "
+                f"WHERE tenant_id = $2 AND instance_id = $3 AND {_TERMS_COLUMN} @@ q "
+                "ORDER BY rank DESC LIMIT $4",
+                _pg_tsquery(groups),
+                scope["tenant_id"],
+                scope["instance_id"],
+                max(1, int(k)),
+            )
+
+        return [(r["chunk_text"], r["meta_json"], float(r["rank"])) for r in self._pg_keyword_run(_search)]
 
     def _fts_add(self, items: list[tuple[str, dict[str, Any], str]]) -> None:
-        """Insert ``[(chunk_id, meta_payload, chunk_text), ...]`` rows.
+        """Insert ``[(chunk_id, meta_payload, chunk_text), ...]`` rows into the SQLite keyword table.
 
         Called from ``add_documents`` after the dense insert succeeded.
         Failures here are logged + swallowed: a transient FTS write
         problem must not roll back a successful vector insert (the user
-        would lose ingest progress for a recall optimisation).
+        would lose ingest progress for a recall optimisation). On Postgres
+        the terms were written with the vectors (``_pg_batch_terms``).
         """
         if not items or self._use_prod:
-            # pgvector hybrid not yet implemented — graceful no-op.
             return
-        try:
-            conn = self._fts_connect()
+        for attempt in (1, 2):
             try:
-                self._ensure_fts_table(conn)
+                self._fts_insert(items, replace=attempt == 2)
+                return
+            except Exception as exc:  # noqa: BLE001 — never fail the ingest
+                # Another adapter may have dropped the table since this one checked it: check the
+                # table again and retry once.
+                self._fts_ready = False
+                if attempt == 2:
+                    logger.warning(
+                        "BM25 FTS write failed for collection={} items={}: {} "
+                        "(dense insert succeeded; lexical leg will return empty until backfill)",
+                        self._collection,
+                        len(items),
+                        exc,
+                    )
+
+    def _fts_insert(self, items: list[tuple[str, dict[str, Any], str]], replace: bool = False) -> None:
+        """``replace``: on a retry, the table may just have been rebuilt from the vector table,
+        which already holds these chunks; delete them first so they are not indexed twice."""
+        scope = self._scope()
+        conn = self._fts_connect()
+        try:
+            self._ensure_fts_table(conn)
+            if replace:
                 conn.executemany(
-                    f"INSERT INTO {self._fts_table()} "
-                    "(chunk_id, source, filename, page, section_path, chunk_text) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    [
-                        (
-                            cid,
-                            str(meta.get("source", "")),
-                            str(meta.get("filename", "")),
-                            int(meta.get("page", -1)) if meta.get("page", -1) is not None else -1,
-                            str(meta.get("section_path", "") or ""),
-                            text,
-                        )
-                        for cid, meta, text in items
-                    ],
+                    f"DELETE FROM {self._fts_table()} WHERE chunk_id = ?", [(cid,) for cid, _, _ in items]
                 )
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception as exc:  # noqa: BLE001 — never fail the ingest
-            logger.warning(
-                "BM25 FTS write failed for collection=%s items=%d: %s "
-                "(dense insert succeeded; lexical leg will return empty until backfill)",
-                self._collection,
-                len(items),
-                exc,
+            conn.executemany(
+                f"INSERT INTO {self._fts_table()} ({_FTS_STORED_COLUMNS}, {_TERMS_COLUMN}) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        cid,
+                        scope["tenant_id"],
+                        scope["instance_id"],
+                        str(meta.get("source", "")),
+                        str(meta.get("filename", "")),
+                        int(meta.get("page", -1)) if meta.get("page", -1) is not None else -1,
+                        str(meta.get("section_path", "") or ""),
+                        text,
+                        " ".join(lexical.terms(text)),
+                    )
+                    for cid, meta, text in items
+                ],
             )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _fts_delete_by_source(self, source_id: str) -> None:
         """Delete FTS rows matching a source. Called from
@@ -346,9 +620,10 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             conn = self._fts_connect()
             try:
                 self._ensure_fts_table(conn)
+                scope = self._scope()
                 conn.execute(
-                    f"DELETE FROM {self._fts_table()} WHERE source = ?",
-                    (source_id,),
+                    f"DELETE FROM {self._fts_table()} WHERE source = ? AND tenant_id = ? AND instance_id = ?",
+                    (source_id, scope["tenant_id"], scope["instance_id"]),
                 )
                 conn.commit()
             finally:
@@ -387,37 +662,54 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         match) — SQLite FTS5's raw ``bm25()`` returns *negative* numbers
         where larger magnitude = better, so we invert + clip.
 
+        Postgres ranks with ``ts_rank_cd`` (non-negative, larger = better),
+        mapped to [0, 1] the same way.
+
         Returns ``[]`` when:
-          - the collection's FTS table doesn't exist yet (pre-upgrade
-            collection, or pgvector backend),
-          - the query has zero usable tokens after sanitization,
-          - the underlying FTS query raises (defensive — never let a
+          - the collection has no keyword rows for the caller's tenant,
+          - the query has no keyword terms (``lexical.query_groups``),
+          - the underlying keyword query raises (defensive — never let a
             lexical-leg failure kill the dense leg).
         """
         if self._use_prod:
-            # Postgres FTS hybrid is a follow-up; for now degrade to
-            # dense-only on prod backends.
-            return []
-        normalized = self._normalize_fts_query(query)
+            groups = lexical.query_groups(query)
+            if not groups:
+                return []
+            try:
+                rows = self._pg_search_lexical(groups, k)
+            except Exception as exc:  # noqa: BLE001 — defensive, as for SQLite below
+                logger.warning(
+                    "Postgres keyword search failed for collection={} query={!r}: {}",
+                    self._collection,
+                    query[:40],
+                    exc,
+                )
+                return []
+            return [(_doc_from_row(text, meta), rank / (1.0 + rank)) for text, meta, rank in rows]
+        normalized = self._fts_match(query)
         if not normalized:
             return []
+        scope = self._scope()
         try:
             conn = self._fts_connect()
             try:
-                # If the FTS table was never created (pre-upgrade
-                # collection), the SELECT raises an OperationalError.
-                # Catch + log + return [] so the dense leg still answers.
+                if not self._ensure_fts_table(conn, wait=False):
+                    return []  # another call is re-indexing; this search ranks by meaning only
                 rows = conn.execute(
                     f"SELECT chunk_id, source, filename, page, section_path, "
                     f"chunk_text, bm25({self._fts_table()}) AS rank "
                     f"FROM {self._fts_table()} "
-                    f"WHERE {self._fts_table()} MATCH ? "
+                    f"WHERE {self._fts_table()} MATCH ? AND tenant_id = ? AND instance_id = ? "
                     f"ORDER BY rank LIMIT ?",
-                    (normalized, max(1, int(k))),
+                    (normalized, scope["tenant_id"], scope["instance_id"], max(1, int(k))),
                 ).fetchall()
             finally:
                 conn.close()
         except sqlite3.OperationalError as exc:
+            # Another engine sharing the database may have dropped or rebuilt the table: check
+            # it again on the next call (which rebuilds it from the stored chunks) instead of
+            # staying empty until the next write.
+            self._fts_ready = False
             logger.debug(
                 "BM25 FTS not available for collection=%s (query degrades to dense-only): %s",
                 self._collection,
@@ -465,6 +757,15 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
     ) -> dict[str, int]:
         if not documents:
             return {"num_added": 0, "num_skipped": 0}
+        if not self._use_prod:
+            # Create or re-index the keyword table BEFORE any vector commits. A lock timeout
+            # during a one-time re-index then fails the ingest with nothing written, so a retry
+            # is safe; after it, no chunk can end up with a vector but no keyword row.
+            conn = self._fts_connect()
+            try:
+                self._ensure_fts_table(conn)
+            finally:
+                conn.close()
         self._ensure_store()
         texts = [d.page_content for d in documents]
         n = len(texts)
@@ -628,6 +929,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                     "incomplete."
                 )
         source_for_rollback = items[0][2].get("source") if items else None
+        bare: list[bool] = []  # Postgres batches stored before the keyword column existed
 
         async def _add_all() -> int:
             n = 0
@@ -635,7 +937,10 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             for i in range(0, total_items, insert_bs):
                 chunk = items[i : i + insert_bs]
                 try:
-                    await self._store.add_many(chunk)
+                    if self._use_prod:
+                        await self._store.add_many(chunk, columns=self._pg_batch_terms(chunk, bare))
+                    else:
+                        await self._store.add_many(chunk)
                 except Exception:
                     # If we'd already committed earlier batches, clean them
                     # up before re-raising so the next ingest attempt
@@ -709,6 +1014,13 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
 
         t_insert = time.monotonic()
         count = self._run_embedding_coro(_add_all())
+        if bare:
+            # No keyword column yet (a new table, or one from before keyword search): add it and
+            # fill these rows now if the table is free; if it is busy, the next keyword search does.
+            try:
+                self._pg_keyword_run(self._pg_ensure_terms)
+            except Exception as exc:  # noqa: BLE001 — the chunks are stored; only keywords wait
+                logger.info("Keyword column for {} not added yet: {}", self._collection, exc)
         if stage_timings is not None:
             stage_timings["insert_s"] = round(time.monotonic() - t_insert, 3)
 
@@ -730,12 +1042,10 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             )
             for cid, _emb, meta in items
         ]
+        _t_fts = time.monotonic()
+        self._fts_add(_fts_items)
         if stage_timings is not None:
-            _t_fts = time.monotonic()
-            self._fts_add(_fts_items)
             stage_timings["fts_s"] = round(time.monotonic() - _t_fts, 3)
-        else:
-            self._fts_add(_fts_items)
         return {"num_added": count, "num_skipped": 0}
 
     def search(self, query: str, k: int = 10) -> list[tuple[Document, float]]:
@@ -753,26 +1063,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             if len(row) < 4:
                 continue
             _, chunk_text, meta_json, distance = row[0], row[1], row[2], row[3]
-            try:
-                extra = json.loads(meta_json) if meta_json else {}
-            except (json.JSONDecodeError, TypeError):
-                extra = {}
-            page = extra.get("page", -1)
-            if page == -1:
-                page = None
-            metadata: dict[str, Any] = {
-                "source": extra.get("source", ""),
-                "filename": extra.get("filename", ""),
-                "page": page,
-            }
-            # Restore section_path when it was preserved at ingest. Empty
-            # values are omitted to keep result envelopes lean for non-
-            # Docling formats (txt, plain markdown).
-            _sp = extra.get("section_path", "")
-            if _sp:
-                metadata["section_path"] = _sp
-            doc = Document(page_content=str(chunk_text or ""), metadata=metadata)
-            out.append((doc, sim_fn(distance)))
+            out.append((_doc_from_row(chunk_text, meta_json), sim_fn(distance)))
         return out
 
     def delete_by_source(self, source_id: str) -> None:
@@ -860,3 +1151,4 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         self._fts_drop()
         self._store = None
         self._dim = None
+        self._fts_ready = False

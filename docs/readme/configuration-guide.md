@@ -541,6 +541,28 @@ results = await agent.knowledge.search("query", scope="session", thread_id=threa
 await agent.knowledge.ingest("/path/to/file.pdf", scope="agent")
 ```
 
+#### How search finds documents
+
+With the `standard` (default), `balanced` and `max_quality` profiles, every search combines two
+kinds of match and merges the results: **meaning** (embeddings, so
+"time off" finds "vacation policy") and **keywords** (exact words, so `INV-2026-0042`, a
+product name or a rare term finds the document that contains it). Both run on local storage
+(SQLite) and on production storage (Postgres with pgvector), and both match the same words.
+
+Keyword matching works the same way in every language:
+
+- Case, full-width forms and the accents or vowel points people usually leave out do not
+  matter: `cafe` finds "café", `STRASSE` finds "Straße", `שלום` finds "שָׁלוֹם".
+- Words in Hindi, Bengali, Telugu, Tamil and other Indic scripts match as whole words.
+- Chinese, Japanese, Korean and Thai words are found inside sentences without spaces.
+- Identifiers match however they are written: `ABC-123` also finds "abc_123", "ＡＢＣ－１２３"
+  and an "ABC-123." that ends a sentence, but not "ABC-124".
+
+Stemming is not applied, so `invoices` does not match "invoice"; the meaning match usually
+covers it. Existing collections, on either backend, get their keyword index automatically the
+first time they are searched or added to. The `speed` profile uses meaning only (`hybrid_mode = "off"` in
+its profile file under `src/cuga/configurations/knowledge/knowledge_profiles/`).
+
 #### Disabling Knowledge
 
 ```python

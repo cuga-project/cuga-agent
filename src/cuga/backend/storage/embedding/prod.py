@@ -1,6 +1,6 @@
 import hashlib
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from loguru import logger
 
@@ -129,20 +129,27 @@ class ProdEmbeddingStore:
     def _aux_keys(self) -> List[str]:
         return list(self._schema.auxiliary_columns.keys())
 
-    def _upsert_sql(self) -> str:
+    def _upsert_sql(self, extra: Optional[Dict[str, str]] = None) -> str:
         """Build the INSERT ... ON CONFLICT DO UPDATE statement once.
 
         Shared between ``add`` (one row via ``executemany`` of length 1) and
         ``add_many`` so schema/UPSERT order lives in exactly one place.
+        ``extra`` maps more columns, written after the schema's, to the cast their
+        placeholder needs (``""`` for none).
         """
+        extra = extra or {}
         id_col = self._schema.id_column
         meta_keys = self._meta_keys()
         aux_keys = self._aux_keys()
         meta_keys_no_id = [k for k in meta_keys if k != id_col]
         cols = ["embedding", id_col] + meta_keys_no_id + aux_keys
-        ph = _placeholders(len(cols))
+        ph = ", ".join(
+            [_placeholders(len(cols))]
+            + [f"${len(cols) + i + 1}{cast}" for i, cast in enumerate(extra.values())]
+        )
+        cols += list(extra)
         col_list = ", ".join(cols)
-        upsert = ", ".join(f"{c} = EXCLUDED.{c}" for c in ["embedding"] + meta_keys + aux_keys)
+        upsert = ", ".join(f"{c} = EXCLUDED.{c}" for c in ["embedding"] + meta_keys + aux_keys + list(extra))
         scope = self._scope_cols()
         conflict_cols = f"{', '.join(scope + [id_col])}" if scope else id_col
         return (
@@ -167,8 +174,13 @@ class ProdEmbeddingStore:
     async def add_many(
         self,
         items: List[tuple[str, List[float], Dict[str, Any]]],
+        columns: Optional[Callable[[Any], Awaitable[Dict[str, tuple[str, List[Any]]]]]] = None,
     ) -> None:
         """Bulk-upsert items via a single ``executemany`` (issue #183 step 3).
+
+        ``columns(conn)``, when given, runs in the batch's transaction before the rows are
+        written and returns more columns for them, ``{name: (placeholder cast, [value per
+        item])}``. They are written in the same INSERT, and updated with the row on conflict.
 
         One ``pool.acquire`` and one ``conn.transaction`` per batch instead of
         per item, which is the big win on pgvector where each row was
@@ -177,13 +189,15 @@ class ProdEmbeddingStore:
         if not items:
             return
         pool = await self._get_pool()
-        sql = self._upsert_sql()
         rows = [self._row_values(id_, embedding, metadata) for id_, embedding, metadata in items]
         # ``conn.transaction`` so a mid-batch failure rolls back cleanly.
         # The original ``add`` had implicit per-row transactions; the bulk
         # path needs an explicit one to retain the same safety.
         async with pool.acquire() as conn:
             async with conn.transaction():
+                extra = await columns(conn) if columns is not None else {}
+                sql = self._upsert_sql({name: cast for name, (cast, _) in extra.items()})
+                rows = [row + [values[i] for _, values in extra.values()] for i, row in enumerate(rows)]
                 await conn.executemany(sql, rows)
 
     async def search(
