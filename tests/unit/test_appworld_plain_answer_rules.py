@@ -16,17 +16,20 @@ pytestmark = pytest.mark.unit
 
 
 def _system_text() -> str:
+    """Concatenate the prompt's message templates into one string."""
     template = load_appworld_plain_final_answer_prompt()
     return "\n".join(str(getattr(m, "prompt", m).template) for m in template.messages if hasattr(m, "prompt"))
 
 
 def test_yes_no_rule_is_present_and_forbids_a_trailing_period():
+    """`Yes.` is marked wrong by AppWorld, so the carve-out has to be stated."""
     text = _system_text()
     assert "Yes/no answers" in text
     assert "no trailing period" in text
 
 
 def test_candidate_figure_rule_is_present():
+    """Picking the last of several figures is the failure this rule prevents."""
     text = _system_text()
     assert "Choosing between candidate figures" in text
     assert "Do **not** default to the last figure" in text
