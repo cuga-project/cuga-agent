@@ -504,3 +504,40 @@ def test_attribution_framing_is_removed_before_the_nli_check(claim, stripped):
     from cuga.backend.knowledge.citation_check import _ATTRIBUTION
 
     assert _ATTRIBUTION.sub("", claim) == stripped
+
+
+def test_the_llm_checker_answers_with_the_model_this_run_uses(monkeypatch):
+    """Looked up for each check, inside the graph run: the model the server published for this
+    request (configurable["llm"]) wins, then the SDK agent's model=, then the configured model."""
+    from typing import TypedDict
+
+    from langgraph.graph import END, StateGraph
+
+    class _Model:
+        def __init__(self, reply):
+            self.reply = reply
+
+        async def ainvoke(self, prompt):
+            return SimpleNamespace(content=self.reply)
+
+    class _State(TypedDict):
+        reply: str
+
+    async def node(state):
+        return {"reply": await final_answer._citation_check_llm().generate("prompt")}
+
+    graph = StateGraph(_State)
+    graph.add_node("final_answer", node)
+    graph.set_entry_point("final_answer")
+    graph.add_edge("final_answer", END)
+    app = graph.compile()
+
+    def run(config=None):
+        return asyncio.run(app.ainvoke({"reply": ""}, config=config))["reply"]
+
+    monkeypatch.setattr(final_answer, "_sdk_agent_model", None)
+    assert final_answer._citation_check_llm()._model is None  # the configured model, loaded on use
+    final_answer.set_citation_check_model(_Model("sdk agent's model"))
+    assert run() == "sdk agent's model"
+    assert run({"configurable": {"llm": _Model("published model")}}) == "published model"
+    assert run({"configurable": {"llm": _Model("model published later")}}) == "model published later"

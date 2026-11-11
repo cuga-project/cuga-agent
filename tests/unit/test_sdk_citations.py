@@ -110,6 +110,7 @@ def test_invoke_empty_answer_fallback_resolves_markers_and_overrides_stale_sourc
 def test_citation_check_params_reach_the_answer_path(monkeypatch):
     """CugaAgent(citation_check=..., citation_strict=...) override the knowledge settings for
     this agent, and the final answer reads them."""
+    from cuga.backend.cuga_graph.nodes.answer import final_answer
     from cuga.backend.knowledge import sources
     from cuga.sdk import CugaAgent
 
@@ -124,10 +125,12 @@ def test_citation_check_params_reach_the_answer_path(monkeypatch):
         config = agent.knowledge.engine._config
         assert (config.citation_check, config.citation_strict) == ("nli", True)
         assert (sources.effective_citation_check(), sources.effective_citation_strict()) == ("nli", True)
+        assert final_answer._sdk_agent_model is agent._model  # the "llm" checker uses this agent's model
     finally:
         sources.set_agent_citation_check_lookup(None)
         sources.set_agent_citation_strict_lookup(None)
         sources.set_agent_citations_lookup(None)
+        final_answer.set_citation_check_model(None)
 
 
 def test_strict_without_a_checker_is_rejected_when_the_agent_is_built():

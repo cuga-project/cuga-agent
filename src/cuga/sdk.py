@@ -2660,6 +2660,9 @@ class CugaAgent:
             set_agent_citations_lookup(lambda: bool(engine._config.citations_enabled))
             set_agent_citation_check_lookup(lambda: engine._config.citation_check)
             set_agent_citation_strict_lookup(lambda: engine._config.citation_strict)
+            from cuga.backend.cuga_graph.nodes.answer.final_answer import set_citation_check_model
+
+            set_citation_check_model(self._model)
             # Use agent_id from app_state if running in server, else "cuga-default"
             _agent_id = "cuga-default"
             try:

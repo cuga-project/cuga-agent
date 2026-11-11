@@ -47,19 +47,29 @@ class HumanInTheLoopHandler:
         self._action_handlers[action_id] = handler
 
 
-_checker_llm = None
+# The SDK agent's model= for the ``llm`` citation checker, set where the agent's knowledge is
+# wired (one agent per process, like the citation lookups in knowledge.sources). None on the server.
+_sdk_agent_model = None
 # A slow checker (a hung model call, the NLI model's first download) never holds up the answer.
 _CITATION_CHECK_TIMEOUT_S = 30.0
 
 
-def _citation_check_llm():
-    """The agent's model for the ``llm`` citation checker, created once."""
-    global _checker_llm
-    if _checker_llm is None:
-        from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
+def set_citation_check_model(model) -> None:
+    """Have the ``llm`` citation checker use this SDK agent's model."""
+    global _sdk_agent_model
+    _sdk_agent_model = model
 
-        _checker_llm = CugaChatGenerator()
-    return _checker_llm
+
+def _citation_check_llm():
+    """The agent's model for the ``llm`` citation checker, looked up for each check: the model
+    the server runs this request with (``configurable["llm"]``, set once a model is published),
+    else the SDK agent's ``model=``, else the configured agent model (cached by LLMManager)."""
+    from langchain_core.runnables.config import ensure_config
+
+    from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
+
+    model = (ensure_config().get("configurable") or {}).get("llm") or _sdk_agent_model
+    return CugaChatGenerator(model)
 
 
 class FinalAnswerNode(BaseNode):
