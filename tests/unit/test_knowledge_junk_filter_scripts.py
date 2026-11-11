@@ -46,3 +46,12 @@ def test_too_short_means_under_30_columns(text, columns):
     """A wide character counts two columns, every other character one, as len() did before, so
     the rule keeps every chunk it kept before and drops fewer wide-script ones."""
     assert (_classify_junk_chunk(text, "policy.pdf") == "too_short") is (columns < 30)
+
+
+@pytest.mark.parametrize("form", ["NFC", "NFD"])
+def test_a_decomposed_heading_is_measured_like_the_composed_one(form):
+    """NFD splits voiced kana and Hangul syllables into parts; each part would count a column."""
+    import unicodedata
+
+    for heading in ("データバックアップガイド", "백업 정책 안내서"):  # 24 and 15 columns composed
+        assert _classify_junk_chunk(unicodedata.normalize(form, heading), "policy.pdf") == "too_short"

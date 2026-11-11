@@ -351,7 +351,9 @@ def _classify_junk_chunk(text: str, filename: str) -> str | None:
     """
     stripped = text.strip()
     total = len(stripped)
-    if total < 30 and sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in stripped) < 30:
+    # Composed first: a decomposed (NFD) kana or Hangul syllable would count each of its parts.
+    composed = unicodedata.normalize("NFC", stripped)
+    if total < 30 and sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in composed) < 30:
         return "too_short"
 
     # CID-glyph rules run BEFORE the code-file whitelist because no
