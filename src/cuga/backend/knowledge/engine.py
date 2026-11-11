@@ -1807,9 +1807,11 @@ def _take_over_lock(key: str, lock_file: Any) -> bool:
     holder = _LOCK_HOLDERS.get(key)
     if holder is not None:
         owner = holder._owner
-        if owner is None or owner() is not None or getattr(holder, "_active_tasks", None):
-            return False  # still in use
+        busy = getattr(holder, "_active_tasks", None) or getattr(holder, "_reindex_in_progress", None)
+        if owner is None or owner() is not None or busy:
+            return False  # still in use: a live owner, the server's engine, or an ingest or reindex
         logger.info(f"Knowledge data in {key}: its previous agent is gone; shutting down its engine")
+        holder._taken_over = True  # a client kept from that agent now gets an error, not shared writes
         holder.shutdown()
     try:
         acquire_exclusive_nonblocking(lock_file)
@@ -1828,6 +1830,7 @@ class KnowledgeEngine:
         config.validate()
         self._config = config
         self._owner = weakref.ref(owner) if owner is not None else None
+        self._taken_over = False
         # Optional, host-injected chat model for query transformation (multi_query
         # / HyDE). Duck-typed to the query_transform.ChatGenerator Protocol so the
         # knowledge package stays standalone (no host import). None → transforms
@@ -2063,7 +2066,15 @@ class KnowledgeEngine:
         task = asyncio.ensure_future(_maintenance_loop())
         self._background_tasks.append(task)
 
+    def _refuse_if_taken_over(self) -> None:
+        if getattr(self, "_taken_over", False):
+            raise RuntimeError(
+                f"This knowledge engine was shut down: another agent opened {self._config.persist_dir} "
+                "after the agent that owned this engine was dropped. Use the new agent's knowledge."
+            )
+
     async def _ensure_metadata_ready(self) -> None:
+        self._refuse_if_taken_over()  # every operation starts here, before it reads or writes
         if self._metadata_ready:
             return
         async with self._metadata_init_lock:
@@ -4606,6 +4617,8 @@ class KnowledgeEngine:
         Refuses source==target (would delete source's own files). Does not
         re-ingest — call reindex() on target after."""
         import shutil
+
+        self._refuse_if_taken_over()
 
         source_collection = _sanitize_collection(source_collection)
         target_collection = _sanitize_collection(target_collection)

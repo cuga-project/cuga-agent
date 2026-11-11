@@ -102,3 +102,29 @@ def test_another_process_s_lock_is_never_taken_over(kb_dir, monkeypatch):
             KnowledgeEngine(_cfg(kb_dir))
     finally:
         held.close()
+
+
+def test_an_engine_with_a_reindex_pending_is_not_taken_over(kb_dir, no_auto_gc):
+    """reindex() queues its worker before the worker registers an ingest task."""
+    agent = _Agent()
+    old = KnowledgeEngine(_cfg(kb_dir), owner=agent)
+    old._reindex_in_progress.add("kb_agent")
+    del agent
+    with pytest.raises(RuntimeError, match="already open in another knowledge engine"):
+        KnowledgeEngine(_cfg(kb_dir))
+    old._reindex_in_progress.clear()
+    old.shutdown()
+
+
+def test_a_client_kept_after_its_agent_was_dropped_is_refused_after_the_takeover(kb_dir, no_auto_gc):
+    """The kept client must not read or write the directory the new engine now owns."""
+    agent = _Agent()
+    kept = KnowledgeEngine(_cfg(kb_dir), owner=agent)  # what `kb = agent.knowledge` keeps
+    del agent
+    new = KnowledgeEngine(_cfg(kb_dir), owner=_Agent())
+
+    with pytest.raises(RuntimeError, match="was shut down: another agent opened"):
+        asyncio.run(kept.list_documents("kb_agent"))
+    with pytest.raises(RuntimeError, match="was shut down: another agent opened"):
+        asyncio.run(kept.delete_document("kb_agent", "f.txt"))
+    new.shutdown()
