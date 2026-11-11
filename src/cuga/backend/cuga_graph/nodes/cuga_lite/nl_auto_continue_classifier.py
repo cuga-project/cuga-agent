@@ -140,6 +140,33 @@ BLOCKED_CLAIM_CORRECTION = (
     "the observed error instead."
 )
 
+# Unexecuted completion claim: a final answer that reports actions as done
+# ("has been rescheduled", "I sent ...") when no code has executed in the task.
+# Nothing can have been done without a tool call, so the claim is false. Example: a
+# first turn with zero tool calls that answers "The calendar event (ID `c_5f9e...`) was
+# renamed ... A Slack message has been sent", with invented IDs; the interim/final
+# classifier rates such an answer final. Checked on the visible answer only: the
+# reasoning channel states plans ("it will be sent") that are not claims.
+_DONE_VERBS = (
+    r"sent|created|updated|posted|rescheduled|renamed|scheduled|added|deleted|removed|"
+    r"completed|submitted|assigned|moved|closed|emailed|notified|saved|recorded|logged|"
+    r"filed|booked|cancell?ed|changed|applied|processed|uploaded|shared|published|"
+    r"approved|archived|merged|written|marked|tagged|resolved|escalated|replied"
+)
+_DONE_CLAIM_RE = re.compile(
+    rf"\b(?:has|have|had|was|were|is\s+now|are\s+now)\s+(?:been\s+)?(?:successfully\s+)?(?:{_DONE_VERBS})\b"
+    rf"|\bI(?:['’]ve|\s+have)?\s+(?:successfully\s+|already\s+)?(?:{_DONE_VERBS})\b"
+    r"|\bsuccessfully\s+[a-z]+ed\b",
+    re.IGNORECASE,
+)
+
+DONE_CLAIM_CORRECTION = (
+    "Your previous message reported actions as done, but no code or tool call has been "
+    "executed in this task, so nothing has been done yet. Do not report work that has not "
+    "been executed, and do not invent IDs or values. Use the tools in Current Available "
+    "Tools to read the data and do the task now; then report only what the tool results show."
+)
+
 
 @dataclass(frozen=True)
 class BlockedClaimEvidence:
@@ -155,18 +182,25 @@ class BlockedClaimEvidence:
     tools_available: bool
     code_executed: bool
     retry_used: bool
+    done_retry_used: bool = False  # the one-shot unexecuted-claim retry has been spent
 
 
 @dataclass(frozen=True)
 class AutoContinueDecision:
     auto_continue: bool
     blocked_override: bool = False
+    done_claim_override: bool = False
 
 
 def looks_like_unverified_blocker(visible: str, reasoning: str = "") -> bool:
     """True when the turn's text contains an inability/unavailability claim."""
     combined = f"{visible or ''}\n{reasoning or ''}"
     return bool(_BLOCKED_CLAIM_RE.search(combined))
+
+
+def looks_like_unexecuted_done_claim(visible: str) -> bool:
+    """True when the visible answer reports an action as done (sent, created, updated, ...)."""
+    return bool(_DONE_CLAIM_RE.search(visible or ""))
 
 
 def looks_like_planning_text(visible: str) -> bool:
@@ -265,6 +299,17 @@ def _blocked_override_applies(visible: str, reasoning: str, evidence: Optional[B
     return looks_like_unverified_blocker(visible, reasoning)
 
 
+def _done_claim_override_applies(visible: str, evidence: Optional[BlockedClaimEvidence]) -> bool:
+    """The unexecuted-claim override: tools bound, no code executed, retry unspent, a done claim."""
+    if evidence is None:
+        return False
+    if not getattr(settings.advanced_features, "cuga_lite_unexecuted_claim_retry", False):
+        return False
+    if not evidence.tools_available or evidence.code_executed or evidence.done_retry_used:
+        return False
+    return looks_like_unexecuted_done_claim(visible)
+
+
 async def classify_nl_auto_continue_decision(
     llm: BaseChatModel,
     assistant_visible: Any,
@@ -320,13 +365,39 @@ async def classify_nl_auto_continue_decision(
     # If the finalize is an inability claim the harness can positively
     # contradict (tools bound, nothing executed, retry unspent), override once
     # with a corrective continue instead.
+    return claim_override_decision(visible, reasoning, evidence=evidence)
+
+
+def claim_override_decision(
+    assistant_visible: Any,
+    reasoning_excerpt: Optional[Any],
+    *,
+    evidence: Optional[BlockedClaimEvidence] = None,
+) -> AutoContinueDecision:
+    """The claim overrides alone, for a turn that is already final: no LLM call.
+
+    The CodeAct path reaches this after the classifier chose finalize. Function-calling
+    mode has no classifier — a reply without tool calls is final — so it calls this
+    directly. Both paths use the same settings, evidence and one-shot markers, and
+    both are active only when ``cuga_lite_nl_auto_continue`` is on.
+    """
+    if not getattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True):
+        return AutoContinueDecision(auto_continue=False)
+    visible = normalize_assistant_text(assistant_visible)
+    reasoning = normalize_assistant_text(reasoning_excerpt)
     if _blocked_override_applies(visible, reasoning, evidence):
         logger.warning(
             "NL auto-continue: turn-1 inability claim with tools bound and zero executed "
             "calls — overriding finalize with one corrective retry (issue #610)"
         )
         return AutoContinueDecision(auto_continue=True, blocked_override=True)
-    return finalize
+    if _done_claim_override_applies(visible, evidence):
+        logger.warning(
+            "NL auto-continue: final answer reports actions done but no code has executed "
+            "— overriding finalize with one corrective retry (unexecuted claim)"
+        )
+        return AutoContinueDecision(auto_continue=True, done_claim_override=True)
+    return AutoContinueDecision(auto_continue=False)
 
 
 async def classify_nl_auto_continue(

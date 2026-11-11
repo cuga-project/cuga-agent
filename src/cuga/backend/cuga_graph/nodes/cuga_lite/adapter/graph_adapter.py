@@ -58,7 +58,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import _first_us
 from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.tool_names import resolve_tool_names
 from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
     BLOCKED_CLAIM_CORRECTION,
+    DONE_CLAIM_CORRECTION,
+    AutoContinueDecision,
     BlockedClaimEvidence,
+    claim_override_decision,
     classify_nl_auto_continue_decision,
     normalize_assistant_text,
 )
@@ -101,6 +104,19 @@ FC_BUDGET_CALL_REPLY = (
     "Not executed: the tool budget for this turn is spent. Answer from the data already retrieved."
 )
 FC_UNANSWERED_CALL_REPLY = "No result was recorded for this call."
+
+# One-shot markers of the claim retries, kept in the graph metadata.
+BLOCKED_CLAIM_RETRY_KEY = "_blocked_claim_retry"
+DONE_CLAIM_RETRY_KEY = "_done_claim_retry"
+
+
+def _claim_correction(decision: AutoContinueDecision) -> Optional[Tuple[str, str]]:
+    """``(marker, corrective message)`` when a claim override fired, else ``None``."""
+    if decision.blocked_override:
+        return BLOCKED_CLAIM_RETRY_KEY, BLOCKED_CLAIM_CORRECTION
+    if decision.done_claim_override:
+        return DONE_CLAIM_RETRY_KEY, DONE_CLAIM_CORRECTION
+    return None
 
 
 def _message_role(m: Any) -> str:
@@ -469,24 +485,40 @@ class AgentGraphAdapter(CoreGraphAdapter):
         """Bool as in the base contract; a non-empty ``str`` means "continue, and
         use this text as the synthetic user message" (unverified-blocker retry,
         issue #610)."""
-        evidence = BlockedClaimEvidence(
-            tools_available=bool(self._tools_context),
-            code_executed=self._any_execution_ran(state),
-            retry_used=bool(self.get_metadata(state).get("_blocked_claim_retry")),
+        decision = await classify_nl_auto_continue_decision(
+            model, content, reasoning, evidence=self._claim_evidence(state)
         )
-        decision = await classify_nl_auto_continue_decision(model, content, reasoning, evidence=evidence)
-        if decision.blocked_override:
-            # One-shot: record the spent retry so a second refusal finalizes.
+        correction = _claim_correction(decision)
+        if correction is not None:
+            # One-shot: record the spent retry so a second claim finalizes.
             # shared_nodes re-reads metadata after this call, so the marker
             # persists through the auto-continue Command update.
-            self.set_metadata(state, {**self.get_metadata(state), "_blocked_claim_retry": True})
-            return BLOCKED_CLAIM_CORRECTION
+            marker, text = correction
+            self.set_metadata(state, {**self.get_metadata(state), marker: True})
+            return text
         return decision.auto_continue
 
+    def _claim_evidence(self, state: Any) -> BlockedClaimEvidence:
+        """What the harness knows for the claim retries; shared by the CodeAct and FC paths."""
+        meta = self.get_metadata(state)
+        return BlockedClaimEvidence(
+            tools_available=bool(self._tools_context),
+            code_executed=self._any_execution_ran(state),
+            retry_used=bool(meta.get(BLOCKED_CLAIM_RETRY_KEY)),
+            done_retry_used=bool(meta.get(DONE_CLAIM_RETRY_KEY)),
+        )
+
     def _any_execution_ran(self, state: Any) -> bool:
-        """Has any sandbox execution produced feedback this task? Detected via the
-        shared ``EXECUTION_OUTPUT_PREFIX`` emitted by ``execution_output_text``."""
+        """Has any sandbox execution produced feedback in this thread? Detected via the
+        shared ``EXECUTION_OUTPUT_PREFIX`` emitted by ``execution_output_text`` (CodeAct), or a
+        ``ToolMessage`` (function-calling mode, where results come back as tool messages).
+
+        The whole retained thread counts, not only the current turn: a later turn may
+        truthfully report work an earlier turn executed ("I sent it above"), so the claim
+        retries stay off once anything has run."""
         for msg in self.get_messages(state):
+            if isinstance(msg, ToolMessage):
+                return True
             if not isinstance(msg, HumanMessage):
                 continue
             content = getattr(msg, "content", None)
@@ -605,6 +637,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
         - an empty reply gets one corrective turn, like the CodeAct path
         - a fenced code block with no ``tool_calls`` is a mode violation: it is
           never executed; the model gets one corrective turn instead.
+        - a final answer that makes a claim the harness can contradict (tools
+          unavailable, or work reported done, with nothing executed) gets the
+          CodeAct claim retries: one corrective turn each, same settings.
 
         Tool approval is the CodeAct check run on the translated block: the real
         tool names are in its text, so a matching policy interrupts before the
@@ -821,6 +856,28 @@ class AgentGraphAdapter(CoreGraphAdapter):
                     self.metadata_key: {**base_meta, "fc_mode_violations": violations},
                 },
             )
+
+        # Claim retries: a reply without tool calls is final here, so the CodeAct
+        # classifier never runs. Only its claim overrides do — same settings, evidence
+        # and one-shot markers — never the general NL auto-continue.
+        if not budget_exhausted and new_step_count < max_steps:
+            correction = _claim_correction(
+                claim_override_decision(content, reasoning, evidence=self._claim_evidence(state))
+            )
+            if correction is not None:
+                marker, text = correction
+                logger.warning("[fc] unexecuted claim in the final answer — one corrective turn ({})", marker)
+                return Command(
+                    goto="call_model",
+                    update={
+                        self.messages_key: final_messages + [HumanMessage(content=text)],
+                        "script": None,
+                        "final_answer": "",
+                        "execution_complete": False,
+                        "step_count": new_step_count,
+                        self.metadata_key: {**base_meta, marker: True},
+                    },
+                )
 
         final_answer = content
         if not final_answer.strip() and reasoning and not contains_harmony_tokens(reasoning):
