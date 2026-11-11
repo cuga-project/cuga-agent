@@ -13,7 +13,6 @@ import json
 import multiprocessing as mp
 import statistics
 import time
-import uuid
 
 import httpx
 
@@ -41,7 +40,15 @@ async def turn(client: httpx.AsyncClient, url: str, thread_id: str, query: str) 
 async def user(url: str, rounds: int, turns: int, results: list) -> None:
     async with httpx.AsyncClient(timeout=120.0) as client:
         for _ in range(rounds):
-            thread_id = str(uuid.uuid4())
+            # /stream continues only server-issued conversations (#774): create one per flow.
+            try:
+                created = await client.post(f"{url}/api/conversations", json={})
+                created.raise_for_status()
+                thread_id = created.json()["id"]
+            except Exception as exc:  # noqa: BLE001 - classify every failure
+                results.append(("error", False, f"create conversation: {type(exc).__name__}"))
+                results.append(("flow", False, 0.0))
+                continue
             flow_ok = True
             for index, query in enumerate(QUERIES[:turns]):
                 try:

@@ -132,11 +132,10 @@ test("approval responses use the selected agent after switching", async ({ page 
   await stubBackend(page);
   const approvalAgents: string[] = [];
   let savedThread = "";
-  await page.route("**/api/conversation-threads?*", (route) => route.fulfill({
-    contentType: "application/json", body: JSON.stringify({ threads: savedThread ? [{
-      thread_id: savedThread, first_message: "Check weather with approval", latest_version: 1,
-      updated_at: new Date().toISOString(),
-    }] : [] }),
+  await page.route("**/api/conversations?*", (route) => route.fulfill({
+    contentType: "application/json", body: JSON.stringify(savedThread ? [{
+      id: savedThread, title: "Check weather with approval", timestamp: Date.now(), preview: "", status: "active",
+    }] : []),
   }));
   await page.route("**/stream", async (route) => {
     const body = route.request().postDataJSON();
@@ -145,9 +144,10 @@ test("approval responses use the selected agent after switching", async ({ page 
       savedThread = route.request().headers()["x-thread-id"];
       await route.fulfill({ contentType: "text/event-stream", body: "event: Answer\ndata: Approved weather action.\n\n" });
     } else {
+      // Like the server: a new chat sends no ID, so issue one and announce it first (#774).
       await route.fulfill({
         contentType: "text/event-stream",
-        body: `event: SuggestHumanActions\ndata: ${JSON.stringify({
+        body: `event: thread_created\ndata: weather-approval-thread\n\nevent: SuggestHumanActions\ndata: ${JSON.stringify({
           action_id: "weather-approval",
           action_name: "Check weather",
           type: "confirmation",
@@ -163,7 +163,7 @@ test("approval responses use the selected agent after switching", async ({ page 
   await expect(assistantTitle(page)).toHaveText("Weather specialist");
   const composer = page.getByRole("textbox").first();
   await composer.fill("Check weather with approval");
-  const pendingThreads = page.waitForResponse("**/api/conversation-threads?*");
+  const pendingThreads = page.waitForResponse("**/api/conversations?*");
   await composer.press("Enter");
   await pendingThreads;
   await page.getByRole("button", { name: "Approve weather lookup", exact: true }).click();

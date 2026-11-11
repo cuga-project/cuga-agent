@@ -1,5 +1,4 @@
 import unittest
-import uuid
 
 import pytest
 
@@ -10,7 +9,7 @@ class TestCRMHF_Examples(BaseCRMTestServerStream):
     mode = "hf"
 
     async def asyncSetUp(self):
-        self.thread_id = str(uuid.uuid4())
+        self.thread_id = await self.create_conversation()
         print(f"\n=== Test thread ID: {self.thread_id} ===")
 
     @pytest.mark.stability

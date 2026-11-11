@@ -609,7 +609,8 @@ def leg_channel_slash(r: Report):
         req = urllib.request.Request(
             SERVER + "/stream",
             data=json.dumps({"query": utter}).encode(),
-            headers={"Content-Type": "application/json", "X-Thread-ID": "exh:slash:webmain"},
+            # No X-Thread-ID: /stream issues the conversation (#774); invented IDs get a 404.
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=200) as resp:

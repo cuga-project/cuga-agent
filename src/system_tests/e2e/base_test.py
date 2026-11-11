@@ -41,6 +41,18 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
         except json.JSONDecodeError:
             return data_str
 
+    async def create_conversation(self) -> str:
+        """Create a conversation and return its server-issued thread ID.
+
+        ``/stream`` continues only conversations the server issued (#774), so a test that
+        streams on a fixed thread must create it first instead of inventing an ID.
+        """
+        # Read SERVER_URL at call time: the system-test conftest points it at each test's port.
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(f"{SERVER_URL}/api/conversations", json={})
+            response.raise_for_status()
+            return response.json()["id"]
+
     def get_event_at(self, all_data: List[Dict[str, Any]], n: int) -> Tuple[str, str]:
         last_event = all_data[n]
         last_event_key = last_event['event']

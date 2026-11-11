@@ -119,7 +119,7 @@ test.describe("Scroll ownership and viewport containment", { tag: "@e2e" }, () =
     test(`long chat panels and history stay bounded at ${viewport.width}px`, async ({ page }) => {
       await page.setViewportSize(viewport);
       await stub(page);
-      await page.route("**/api/conversation-threads?*", (route) => route.fulfill({ json: { threads: Array.from({ length: 60 }, (_, i) => ({ thread_id: `thread-${i}`, first_message: `Conversation ${i} — ${"Long subject ".repeat(8)}`, updated_at: "2026-10-31T08:00:00Z", latest_version: 1 })) } }));
+      await page.route("**/api/conversations?*", (route) => route.fulfill({ json: Array.from({ length: 60 }, (_, i) => ({ id: `thread-${i}`, title: `Conversation ${i} — ${"Long subject ".repeat(8)}`, timestamp: Date.parse("2026-10-31T08:00:00Z"), preview: "", status: "active" })) }));
       await page.route("**/api/conversation-stream-events/*", (route) => route.fulfill({ json: { events: Array.from({ length: 40 }, (_, i) => [{ event_name: "UserMessage", event_data: `Question ${i}`, sequence: i * 2, timestamp: "2026-10-31T08:00:00Z" }, { event_name: "Answer", event_data: `Answer ${i}\n\n${"Long answer paragraph. ".repeat(30)}`, sequence: i * 2 + 1, timestamp: "2026-10-31T08:00:00Z" }]).flat() } }));
       await page.route("**/api/workspace/tree*", (route) => route.fulfill({ json: { tree: Array.from({ length: 80 }, (_, i) => ({ type: "file", name: `Report-${i}-${"long-name-".repeat(8)}.json`, path: `report-${i}.json` })) } }));
       await page.goto("/chat/weatherbot");

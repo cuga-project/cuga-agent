@@ -36,7 +36,8 @@ import {
   type SessionAttachmentItem,
   type KnowledgeAttachmentSnapshot,
 } from "../knowledge/useSessionKnowledgeAttachments";
-import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './customSendMessage';
+import { customSendMessage as customSendMessageImpl, stopCugaAgent, StreamHttpError } from './customSendMessage';
+import { getCurrentThreadId, getThreadGeneration, keepThread, onThreadIssued, showThread } from './threadState';
 import { customLoadHistory } from './customLoadHistory';
 import { useEventsInbox } from '../events/useEventsInbox';
 import { getResponseUserProfile } from './carbonChatHelpers';
@@ -58,24 +59,6 @@ export function generateUUID(): string {
     const r = (Math.random() * 16) | 0;
     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
   });
-}
-
-let currentThreadId: string | null = null;
-
-function resetThreadId() {
-  currentThreadId = null;
-}
-
-export function getOrCreateThreadId(): string {
-  if (!currentThreadId) {
-    currentThreadId = generateUUID();
-  }
-  return currentThreadId;
-}
-
-// Setter used by customSendMessage on a ``ThreadIdChanged`` SSE event.
-export function setThreadId(newThreadId: string): void {
-  currentThreadId = newThreadId;
 }
 
 const DEFAULT_HOMESCREEN = {
@@ -108,9 +91,12 @@ interface CarbonChatProps {
   onRestart?: () => void;
   sessionDocsVersion?: number;
   onSessionDocsChanged?: () => void;
+  /** Creates the conversation on demand, so a new chat can attach session documents. */
+  resolveThreadId?: () => Promise<string>;
   onOpenKnowledge?: () => void;
   onOpenMemoryUsage?: (entityIds: string[], relationship: "used" | "saved") => void;
   onPreviewKnowledgeAttachment?: (attachment: KnowledgeAttachmentSnapshot) => void;
+  onStreamError?: (status: number, error?: string) => void;
 }
 
 interface ConversationMessage {
@@ -244,19 +230,31 @@ const CarbonChat = ({
   onRestart,
   sessionDocsVersion = 0,
   onSessionDocsChanged,
+  resolveThreadId,
   onOpenKnowledge,
   onOpenMemoryUsage,
   onPreviewKnowledgeAttachment,
+  onStreamError,
 }: CarbonChatProps) => {
   const hs = homescreen ?? DEFAULT_HOMESCREEN;
   const starterLabels = (hs.starters ?? DEFAULT_HOMESCREEN.starters ?? []).filter(Boolean).slice(0, 4);
   const chatInstanceRef = useRef<ChatInstance | null>(null);
   const historyMutationQueueRef = useRef<Promise<void>>(Promise.resolve());
   const historyReplayGenerationRef = useRef(0);
-  const sendContextRef = useRef({ agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange });
+  const sendContextRef = useRef({ agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange, onStreamError });
   useLayoutEffect(() => {
-    sendContextRef.current = { agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange };
-  }, [agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange]);
+    sendContextRef.current = { agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange, onStreamError };
+  }, [agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange, onStreamError]);
+  // Preview chats are never saved, so the server issues no ID: keep one locally until restart.
+  const previewThreadIdRef = useRef<string | null>(null);
+  const shownThreadId = (newPreview = false): string | null => {
+    if (threadId) return threadId;
+    if (!(useDraft && disableHistory)) return null;
+    if (newPreview || !previewThreadIdRef.current) previewThreadIdRef.current = generateUUID();
+    return previewThreadIdRef.current;
+  };
+  const shownThreadIdRef = useRef(shownThreadId);
+  shownThreadIdRef.current = shownThreadId;
   const chatElementRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -301,6 +299,7 @@ const CarbonChat = ({
     sessionDocsVersion,
     onSessionDocsChanged,
     visibleDocumentMode: attachmentScope === "agent" ? "tracked" : "all",
+    resolveThreadId,
   });
   const attachmentsEnabled = knowledgeEnabled !== false && attachmentScope !== "none" && scopeEnabled && attachmentsAvailable;
   const [assistantName, setAssistantName] = useState("CUGA Agent");
@@ -406,10 +405,24 @@ const CarbonChat = ({
     };
   }, []);
 
+  // A new chat learns its server-issued ID at the start of the first answer: tell the parent now,
+  // not at stream end, so an upload or "New conversation" mid-answer sees the real conversation.
+  useEffect(
+    () =>
+      onThreadIssued((issuedId) => {
+        const context = sendContextRef.current;
+        // Same conversation echoed back as a prop: keep the live transcript.
+        if (context.threadId !== issuedId) skipNextHistoryLoadRef.current = issuedId;
+        setTranscriptScope(JSON.stringify([context.agentId, issuedId, context.useDraft]));
+        context.onThreadChange?.(issuedId);
+      }),
+    [],
+  );
+
   // Keep the transport thread ID aligned with the parent-owned draft thread
   // even before the chat instance finishes booting.
   useEffect(() => {
-    currentThreadId = threadId ?? null;
+    keepThread(shownThreadIdRef.current());
   }, [threadId]);
 
   // Shared shadow-DOM walk (same candidate selectors + nested-container
@@ -513,11 +526,12 @@ const CarbonChat = ({
 
   // Fetch debug data from /api/agent/state
   const fetchDebugData = useCallback(async () => {
+    const activeThreadId = getCurrentThreadId();
+    if (!activeThreadId) return;
     setIsLoadingDebug(true);
     setDebugError(null);
     try {
-      const activeThreadId = currentThreadId || getOrCreateThreadId();
-      const response = await api.getAgentState(activeThreadId);
+      const response = await api.getAgentState(activeThreadId, agentId);
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
@@ -531,7 +545,7 @@ const CarbonChat = ({
     } finally {
       setIsLoadingDebug(false);
     }
-  }, []);
+  }, [agentId]);
 
   // Auto-refresh debug data when panel is open
   useEffect(() => {
@@ -798,29 +812,41 @@ const CarbonChat = ({
       instance: ChatInstance
     ) => {
       setTranscriptScope(conversationScope);
-      const sentThreadId = getOrCreateThreadId();
+      const startedAt = getThreadGeneration();
       const attachmentSnapshot = createMessageAttachmentSnapshot();
-      const result = await customSendMessageImpl(
-        request,
-        options,
-        instance,
-        useDraft,
-        disableHistory,
-        undefined,
-        attachmentScope === "session" ? attachmentSnapshot : undefined,
-        agentId,
-      );
-      
-      const context = sendContextRef.current;
-      if (context.agentId === agentId && currentThreadId === sentThreadId) {
-        if (context.threadId !== sentThreadId) skipNextHistoryLoadRef.current = sentThreadId;
-        context.onThreadChange?.(sentThreadId);
-        await refreshMessageAttachmentSnapshots(sentThreadId);
+      try {
+        const result = await customSendMessageImpl(
+          request,
+          options,
+          instance,
+          useDraft,
+          disableHistory,
+          undefined,
+          attachmentScope === "session" ? attachmentSnapshot : undefined,
+          agentId,
+        );
+
+        // A new chat gets its ID from the server during the send; skip if the user moved on.
+        const sentThreadId = getCurrentThreadId();
+        const context = sendContextRef.current;
+        if (sentThreadId && context.agentId === agentId && getThreadGeneration() === startedAt) {
+          // Same conversation echoed back as a prop: keep the live transcript.
+          if (context.threadId !== sentThreadId) skipNextHistoryLoadRef.current = sentThreadId;
+          setTranscriptScope(JSON.stringify([agentId, sentThreadId, useDraft]));
+          context.onThreadChange?.(sentThreadId);
+          await refreshMessageAttachmentSnapshots(sentThreadId);
+        }
+
+        return result;
+      } catch (err) {
+        if (err instanceof StreamHttpError) {
+          onStreamError?.(err.status, err.errorCode);
+        } else {
+          throw err;
+        }
       }
-      
-      return result;
     },
-    [agentId, attachmentScope, conversationScope, createMessageAttachmentSnapshot, disableHistory, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
+    [agentId, attachmentScope, conversationScope, createMessageAttachmentSnapshot, disableHistory, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
   );
 
   const handleChatReady = useCallback((instance: ChatInstance) => {
@@ -844,7 +870,7 @@ const CarbonChat = ({
       type: BusEventType.RESTART_CONVERSATION,
       handler: () => {
         console.log('[CarbonChat] RESTART_CONVERSATION event received');
-        resetThreadId();
+        showThread(shownThreadIdRef.current(true));
         setTranscriptScope(null);
         setHistoryLoading(false);
         sourcesByMessageKey.current.clear();
@@ -856,9 +882,10 @@ const CarbonChat = ({
     instance.on({
       type: BusEventType.STOP_STREAMING,
       handler: () => {
-        const tid = getOrCreateThreadId();
+        const tid = getCurrentThreadId();
+        if (!tid) return;
         console.log('[CarbonChat] STOP_STREAMING event received, calling /stop for thread:', tid);
-        stopCugaAgent(tid);
+        stopCugaAgent(tid, sendContextRef.current.agentId); // registered once: read the current agent
       },
     });
     
@@ -892,10 +919,19 @@ const CarbonChat = ({
           };
           // Carbon installs this listener once; read the current agent after dropdown switches.
           const context = sendContextRef.current;
-          const approvedThreadId = getOrCreateThreadId();
-          if (user_defined.thread_id && user_defined.thread_id !== approvedThreadId) return;
-          await customSendMessageImpl(request, options, instance, context.useDraft, context.disableHistory, actionResponse, undefined, context.agentId);
-          if (sendContextRef.current.agentId === context.agentId && currentThreadId === approvedThreadId) {
+          const approvedThreadId = getCurrentThreadId();
+          if (!approvedThreadId || (user_defined.thread_id && user_defined.thread_id !== approvedThreadId)) return;
+          try {
+            await customSendMessageImpl(request, options, instance, context.useDraft, context.disableHistory, actionResponse, undefined, context.agentId);
+          } catch (err) {
+            // Same handling as a normal send: a busy or missing conversation gets feedback, not silence.
+            if (err instanceof StreamHttpError) {
+              sendContextRef.current.onStreamError?.(err.status, err.errorCode);
+              return;
+            }
+            throw err;
+          }
+          if (sendContextRef.current.agentId === context.agentId && getCurrentThreadId() === approvedThreadId) {
             sendContextRef.current.onThreadChange?.(approvedThreadId);
           }
         }
@@ -913,12 +949,14 @@ const CarbonChat = ({
     const isCurrent = () => !cancelled && generation === historyReplayGenerationRef.current
       && chatInstanceRef.current === instance;
     if (threadId && skipNextHistoryLoadRef.current === threadId) {
-      // Same conversation echoed back after a send — keep citation state.
+      // Same conversation echoed back after a send — keep the transcript and citation state.
       skipNextHistoryLoadRef.current = null;
+      keepThread(threadId);
       setReconciledScope(conversationScope);
       return;
     }
     skipNextHistoryLoadRef.current = null;
+    showThread(shownThreadIdRef.current());
     setHistoryLoading(Boolean(threadId));
     sourcesByMessageKey.current.clear();
     setSourcesPanel(null);
@@ -989,7 +1027,7 @@ const CarbonChat = ({
           {isLoadingDebug && <InlineLoading description="Loading..." />}
           {debugError && <InlineNotification kind="error" title="Error:" subtitle={debugError} lowContrast hideCloseButton />}
           {debugData && <div className="debug-data">
-            <div><p>Thread ID:</p><CodeSnippet type="single">{currentThreadId || 'None'}</CodeSnippet></div>
+            <div><p>Thread ID:</p><CodeSnippet type="single">{getCurrentThreadId() || 'None'}</CodeSnippet></div>
             {lastUpdateTime && <div><p>Last Updated:</p><p>{formatRelativeTime(lastUpdateTime)}</p></div>}
             <div><p>State Data:</p><CodeSnippet type="multi">{JSON.stringify(debugData, null, 2)}</CodeSnippet></div>
           </div>}
@@ -1139,7 +1177,7 @@ const CarbonChat = ({
                 const response = await api.getKnowledgeDocumentFile(
                   scope,
                   source.filename,
-                  currentThreadId ?? undefined,
+                  getCurrentThreadId() ?? undefined,
                 );
                 if (!response.ok) {
                   return false;

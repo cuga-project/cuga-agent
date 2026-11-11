@@ -42,6 +42,7 @@ def mock_event_stream():
         user_id: str = "test_user",
         user_attachments=None,
         resume=None,
+        entry: str = "web",
     ) -> AsyncIterator[bytes]:
         """Simulate CUGA's real SSE wire format (``event: <name>\\ndata: ...``)."""
         # Simulate intermediate progress events (named frames are captured).

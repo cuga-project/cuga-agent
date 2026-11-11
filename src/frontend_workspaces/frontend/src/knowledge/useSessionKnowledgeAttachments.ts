@@ -78,6 +78,8 @@ interface UseSessionKnowledgeAttachmentsOptions {
   sessionDocsVersion?: number;
   onSessionDocsChanged?: () => void;
   visibleDocumentMode?: "all" | "tracked";
+  /** Creates the conversation on demand, so a new chat can attach session documents (#774). */
+  resolveThreadId?: () => Promise<string>;
 }
 
 const MIME_BY_EXTENSION: Record<string, string> = {
@@ -138,6 +140,7 @@ export function useSessionKnowledgeAttachments({
   sessionDocsVersion = 0,
   onSessionDocsChanged,
   visibleDocumentMode = "all",
+  resolveThreadId,
 }: UseSessionKnowledgeAttachmentsOptions) {
   const [documents, setDocuments] = useState<SessionKnowledgeDocument[]>([]);
   const [isLoading, setIsLoading] = useState(enabled);
@@ -151,7 +154,9 @@ export function useSessionKnowledgeAttachments({
   threadIdRef.current = threadId;
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
-  const isAvailable = enabled && (scope === "agent" || Boolean(threadId));
+  const resolveThreadIdRef = useRef(resolveThreadId);
+  resolveThreadIdRef.current = resolveThreadId;
+  const isAvailable = enabled && (scope === "agent" || Boolean(threadId) || Boolean(resolveThreadId));
 
   useEffect(() => {
     setDocuments([]);
@@ -224,8 +229,11 @@ export function useSessionKnowledgeAttachments({
 
   const uploadSingleFile = useCallback(
     async (upload: PendingUpload) => {
-      const tid = threadIdRef.current;
       const currentScope = scopeRef.current;
+      let tid = threadIdRef.current;
+      if (currentScope === "session" && !tid && resolveThreadIdRef.current) {
+        tid = await resolveThreadIdRef.current();
+      }
       if (currentScope === "session" && !tid) {
         throw new Error("Session attachments are unavailable.");
       }

@@ -20,7 +20,7 @@ export async function stub(page: Page) {
     else if (url.pathname === "/api/agent/context") body = { agent_id: id, config_version: 3, knowledge_enabled: true, session_level_knowledge_enabled: true };
     else if (url.pathname === "/api/manage/config") body = { version: 3, config: { agent: agents.find((a) => a.id === id), knowledge: { enabled: true, agent_level_enabled: true, session_level_enabled: true, citations_enabled: true }, supervisor: { subAgents: [{ kind: "internal", ref: "weatherbot" }] } } };
     else if (url.pathname === "/api/tools/list") body = { tools: [{ name: "weather", app: "Weather service", description: "Current weather conditions" }] };
-    else if (url.pathname === "/api/conversation-threads") body = { threads: [{ thread_id: "recent", first_message: "Plan next week's customer visits", latest_version: 1, updated_at: "2026-10-31T08:00:00Z" }] };
+    else if (url.pathname === "/api/conversations") body = [{ id: "recent", title: "Plan next week's customer visits", timestamp: Date.parse("2026-10-31T08:00:00Z"), preview: "", status: "active" }];
     else if (url.pathname.includes("conversation-stream-events")) body = { events: [] };
     else if (url.pathname.includes("conversation-messages")) body = { messages: [] };
     else if (url.pathname === "/api/workspace/tree") body = { tree: [] };

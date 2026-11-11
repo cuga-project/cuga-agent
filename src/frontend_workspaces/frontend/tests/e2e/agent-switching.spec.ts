@@ -31,12 +31,13 @@ async function stubAgents(page: Page, options: {
     else if (url.pathname === "/api/tools/list") body = {
       tools: [{ name: `${id}_tool`, app: `${id}_app`, description: `Tools for ${id}` }],
     };
-    else if (url.pathname === "/api/conversation-threads") body = { threads: ["thread", "other"].map((suffix) => ({
-      thread_id: `${id}-${suffix}`,
-      latest_version: 1,
-      first_message: `${id} recent ${suffix}`,
-      updated_at: "2026-10-22T00:00:00Z",
-    })) };
+    else if (url.pathname === "/api/conversations") body = ["thread", "other"].map((suffix) => ({
+      id: `${id}-${suffix}`,
+      title: `${id} recent ${suffix}`,
+      timestamp: Date.parse("2026-10-22T00:00:00Z"),
+      preview: "",
+      status: "active",
+    }));
     else if (url.pathname.startsWith("/api/conversation-stream-events/")) {
       const thread = url.pathname.split("/").pop()!;
       historyRequests.push({ thread, agent: url.searchParams.get("agent_id") });
@@ -111,9 +112,11 @@ test("new conversations skip knowledge cleanup when knowledge is disabled", asyn
   });
   await page.goto("/chat/weatherbot");
   await expect(page.getByText("Config v2", { exact: true })).toBeVisible();
-  const priorThread = await page.locator("code").first().textContent();
+  // A new chat has no ID until its first send (#774): leave a saved conversation instead.
+  await page.getByRole("button", { name: /weatherbot recent thread/ }).click();
+  await expect(page.locator("code").first()).toHaveText("weatherbot-thread");
   await page.getByRole("button", { name: "New conversation", exact: true }).click();
-  await expect(page.locator("code").first()).not.toHaveText(priorThread!);
+  await expect(page.locator("code")).toHaveCount(0);
   await expect(page.getByText("Draft cleanup incomplete", { exact: true })).toHaveCount(0);
   expect(cleanupRequests).toEqual([]);
 });
@@ -188,11 +191,11 @@ test("a newly answered YKT weather conversation reopens from the recent list", a
   await stubAgents(page);
   let savedThread = "";
   const savedEvents = new Map<string, object[]>();
-  await page.route("**/api/conversation-threads?*", (route) => route.fulfill({
-    contentType: "application/json", body: JSON.stringify({ threads: [
-      ...(savedThread ? [{ thread_id: savedThread, first_message: "YKT weather", latest_version: 1, updated_at: "2026-10-22T00:00:00Z" }] : []),
-      { thread_id: "weatherbot-other", first_message: "Another conversation", latest_version: 1, updated_at: "2026-10-22T00:00:00Z" },
-    ] }),
+  await page.route("**/api/conversations?*", (route) => route.fulfill({
+    contentType: "application/json", body: JSON.stringify([
+      ...(savedThread ? [{ id: savedThread, title: "YKT weather", timestamp: Date.parse("2026-10-22T00:00:00Z"), preview: "", status: "active" }] : []),
+      { id: "weatherbot-other", title: "Another conversation", timestamp: Date.parse("2026-10-22T00:00:00Z"), preview: "", status: "active" },
+    ]),
   }));
   await page.route("**/api/conversation-stream-events/**", (route) => {
     const thread = new URL(route.request().url()).pathname.split("/").pop()!;
@@ -201,12 +204,15 @@ test("a newly answered YKT weather conversation reopens from the recent list", a
     }] : []) }) });
   });
   await page.route("**/stream", async (route) => {
-    savedThread = route.request().headers()["x-thread-id"];
+    // Like the server: a new chat sends no ID, so issue one and announce it first (#774).
+    const issued = route.request().headers()["x-thread-id"] ? "" : "weatherbot-ykt";
+    savedThread = route.request().headers()["x-thread-id"] || issued;
     savedEvents.set(savedThread, [
       { event_name: "UserMessage", event_data: "YKT weather", timestamp: "2026-10-22T00:00:02Z", sequence: 0 },
       { event_name: "Answer", event_data: "YKT weather answer.", timestamp: "2026-10-22T00:00:03Z", sequence: 1 },
     ]);
-    await route.fulfill({ contentType: "text/event-stream", body: "event: Answer\ndata: YKT weather answer.\n\n" });
+    const announce = issued ? `event: thread_created\ndata: ${issued}\n\n` : "";
+    await route.fulfill({ contentType: "text/event-stream", body: `${announce}event: Answer\ndata: YKT weather answer.\n\n` });
   });
   await page.goto("/chat/weatherbot");
   await expect(page.getByTestId("header_name").last()).toHaveText("Weather specialist");
@@ -261,18 +267,17 @@ test("rapid conversation selection during hydration keeps the last selected tran
   const draftDelay = new Promise<void>((resolve) => { releaseDraft = resolve; });
   await page.route("**/api/conversation-stream-events/**", async (route) => {
     const thread = new URL(route.request().url()).pathname.split("/").pop()!;
-    const saved = ["weatherbot-thread", "weatherbot-other"].includes(thread);
-    if (!saved) await draftDelay;
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ events: saved ? [{
+    // A new chat loads no history (#774): hold the first conversation's history instead.
+    if (thread === "weatherbot-thread") await draftDelay;
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ events: [{
       event_name: "Answer", event_data: `Saved answer for ${thread}.`, timestamp: "2026-10-22T00:00:00Z", sequence: 0,
-    }] : [] }) });
+    }] }) });
   });
   try {
-    const initialHistory = page.waitForRequest((request) => new URL(request.url()).pathname.startsWith("/api/conversation-stream-events/")
-      && !new URL(request.url()).pathname.endsWith("/weatherbot-thread"));
     await page.goto("/chat/weatherbot");
-    await initialHistory;
+    const firstHistory = page.waitForRequest("**/conversation-stream-events/weatherbot-thread?*");
     await page.getByRole("button", { name: /weatherbot recent thread/ }).click();
+    await firstHistory;
     await page.getByRole("button", { name: /weatherbot recent other/ }).click();
     await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     releaseDraft();
@@ -294,10 +299,11 @@ test("restarting while saved history is pending keeps the conversation empty", a
   let release!: () => void;
   const delayed = new Promise<void>((resolve) => { release = resolve; });
   await stubAgents(page, { historyDelay: delayed });
-  let sentThread = "";
+  let sentThread: string | undefined = "unset";
   await page.route("**/stream", async (route) => {
     sentThread = route.request().headers()["x-thread-id"];
-    await route.fulfill({ contentType: "text/event-stream", body: "event: Answer\ndata: Fresh conversation answer.\n\n" });
+    // Like the server: a new chat sends no ID, so issue one and announce it first (#774).
+    await route.fulfill({ contentType: "text/event-stream", body: "event: thread_created\ndata: weatherbot-fresh\n\nevent: Answer\ndata: Fresh conversation answer.\n\n" });
   });
   try {
     await page.goto("/chat/weatherbot");
@@ -312,12 +318,12 @@ test("restarting while saved history is pending keeps the conversation empty", a
     await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     await expect(page.getByText("History answer for weatherbot-thread.", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Hello, how can I help you today?" })).toBeVisible();
-    await expect(page.locator("code").first()).not.toHaveText("weatherbot-thread");
-    const newDraft = await page.locator("code").first().textContent();
+    await expect(page.locator("code")).toHaveCount(0); // a new chat has no ID until its first send
     const composer = page.getByRole("region", { name: "Chat", exact: true }).getByRole("textbox");
     await composer.fill("Weather after restart");
     await composer.press("Enter");
     await expect(page.getByText("Fresh conversation answer.", { exact: true })).toBeVisible();
-    expect(sentThread).toBe(newDraft);
+    expect(sentThread).toBeUndefined(); // not the restarted conversation's ID
+    await expect(page.locator("code").first()).toHaveText("weatherbot-fresh");
   } finally { release(); }
 });
