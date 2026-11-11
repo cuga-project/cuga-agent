@@ -142,6 +142,20 @@ def test_strict_without_a_checker_is_rejected_when_the_agent_is_built():
     CugaAgent(citation_check="nli", citation_strict=True)
 
 
+def test_strict_from_the_settings_is_checked_against_the_agent_s_checker(monkeypatch):
+    """Strict mode set in the knowledge settings with the agent's checker turned off would fail
+    later, in agent setup, and leave the agent without knowledge."""
+    from cuga.config import settings
+    from cuga.sdk import CugaAgent
+
+    monkeypatch.setitem(settings.get("knowledge"), "citation_strict", True)
+    monkeypatch.setitem(settings.get("knowledge"), "citation_check", "llm")
+    with pytest.raises(ValueError, match="citation_strict needs a citation check"):
+        CugaAgent(citation_check="off")
+    CugaAgent(citation_check="off", citation_strict=False)
+    CugaAgent()
+
+
 def test_citation_check_param_rejects_unknown_checkers():
     from cuga.sdk import CugaAgent
 
