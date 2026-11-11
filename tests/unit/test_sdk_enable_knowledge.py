@@ -10,7 +10,7 @@ pytestmark = pytest.mark.unit
 
 
 class _FakeEngine:
-    def __init__(self, config, chat_generator=None):
+    def __init__(self, config, chat_generator=None, owner=None):
         self._config = config
 
 

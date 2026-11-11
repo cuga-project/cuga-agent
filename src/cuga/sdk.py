@@ -2665,7 +2665,9 @@ class CugaAgent:
 
             # Inject cuga's LLM for optional query transformation (multi_query / HyDE);
             # lazy + inert unless a profile enables search_query_transform.
-            engine = KnowledgeEngine(config, chat_generator=CugaChatGenerator())
+            # Owned by this agent: once it is collected, a new agent can take its knowledge
+            # directory over even while asyncpg timers still hold this engine (#1138).
+            engine = KnowledgeEngine(config, chat_generator=CugaChatGenerator(), owner=self)
             # Gate citation-marker resolution on this agent's flag (module-global
             # hook — matches the session-override hook's single-process assumption).
             from cuga.backend.knowledge.sources import set_agent_citations_lookup

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import functools
+import gc
 import hashlib
 import ipaddress
 from loguru import logger as loguru_logger
@@ -18,6 +19,7 @@ import socket
 import threading
 import time
 import uuid
+import weakref
 from dataclasses import dataclass, fields as dc_fields
 from pathlib import Path
 from typing import Any, Optional
@@ -1783,13 +1785,49 @@ def _get_embedding_dim(embeddings: Embeddings) -> int:
 
 # --- Engine ---
 
+# The engine in this process that holds each knowledge directory's lock. Weak: it never keeps an
+# engine alive.
+_LOCK_HOLDERS: "weakref.WeakValueDictionary[str, KnowledgeEngine]" = weakref.WeakValueDictionary()
+
+
+def _take_over_lock(key: str, lock_file: Any) -> bool:
+    """Take a knowledge directory's lock from this process's engine for it once nothing uses that
+    engine. Never from another process.
+
+    A dropped CugaAgent is freed only by a garbage collection, because it sits in reference cycles.
+    On Postgres its engine outlives even that, for about five minutes: asyncpg schedules timers that
+    keep a copy of the finished run's context, and through LangGraph's run loop that copy reaches the
+    agent's graph, tools, knowledge client and engine. So: collect once, which frees a dropped agent
+    and, on SQLite, its engine and lock; then shut down an engine whose owner has been collected and
+    that has no ingest in flight.
+    """
+    if key not in _LOCK_HOLDERS:
+        return False  # another process holds it
+    gc.collect()
+    holder = _LOCK_HOLDERS.get(key)
+    if holder is not None:
+        owner = holder._owner
+        if owner is None or owner() is not None or getattr(holder, "_active_tasks", None):
+            return False  # still in use
+        logger.info(f"Knowledge data in {key}: its previous agent is gone; shutting down its engine")
+        holder.shutdown()
+    try:
+        acquire_exclusive_nonblocking(lock_file)
+    except OSError:
+        return False
+    return True
+
 
 class KnowledgeEngine:
     """In-process knowledge engine (chunking, embeddings, pluggable vector backends)."""
 
-    def __init__(self, config: KnowledgeConfig, chat_generator: Any = None):
+    def __init__(self, config: KnowledgeConfig, chat_generator: Any = None, owner: Any = None):
+        """``owner`` is what uses this engine (the SDK passes its CugaAgent), held weakly. Once it
+        has been collected, a new engine for the same directory in this process may take the lock
+        over; an engine without an owner (the server's) is never taken over."""
         config.validate()
         self._config = config
+        self._owner = weakref.ref(owner) if owner is not None else None
         # Optional, host-injected chat model for query transformation (multi_query
         # / HyDE). Duck-typed to the query_transform.ChatGenerator Protocol so the
         # knowledge package stays standalone (no host import). None → transforms
@@ -1805,16 +1843,19 @@ class KnowledgeEngine:
 
         # Single-writer lock (flock / msvcrt — race-free)
         self._lock_file = open(config.persist_dir / ".lock", "w+b")
+        self._lock_key = str(config.persist_dir.resolve())
         try:
             acquire_exclusive_nonblocking(self._lock_file)
         except OSError:
-            self._lock_file.close()
-            raise RuntimeError(
-                f"Knowledge data in {config.persist_dir} is already open in another knowledge engine: "
-                "another server worker, or another CugaAgent in this process that is still in use. "
-                "Run the server with one worker; in the SDK, reuse one agent's knowledge or call "
-                "`await agent.aclose()` on the other agent first."
-            )
+            if not _take_over_lock(self._lock_key, self._lock_file):
+                self._lock_file.close()
+                raise RuntimeError(
+                    f"Knowledge data in {config.persist_dir} is already open in another knowledge engine: "
+                    "another server worker, or another CugaAgent in this process that is still in use. "
+                    "Run the server with one worker; in the SDK, reuse one agent's knowledge or call "
+                    "`await agent.aclose()` on the other agent first."
+                )
+        _LOCK_HOLDERS[self._lock_key] = self
 
         # Default embeddings (lazy — initialized on first use to speed up startup)
         self._default_embeddings = None
@@ -2078,6 +2119,9 @@ class KnowledgeEngine:
             self._lock_file.close()
         except Exception:
             pass
+        key = getattr(self, "_lock_key", None)
+        if key and _LOCK_HOLDERS.get(key) is self:
+            del _LOCK_HOLDERS[key]
         logger.info("Knowledge engine stopped")
 
     # --- Embeddings (lazy init) ---
