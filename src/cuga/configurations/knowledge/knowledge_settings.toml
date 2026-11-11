@@ -95,12 +95,11 @@ vector_insert_batch_size = 200
 pdf_mode = "accurate"
 # Layout-detection backend. Independent of pdf_mode — pdf_mode picks WHICH stages
 # run, this picks WHICH BACKEND the layout stage uses.
-#   "auto"         — Docling default (ONNX engine; CPU on Mac, CUDA on NVIDIA)
-#   "onnx"         — explicit ONNX (same as auto today; pinned)
-#   "transformers" — PyTorch backend; respects use_gpu → MPS (Apple Silicon)
-#                    or CUDA (NVIDIA) via HF device_map. The ONLY path to
-#                    engage Apple GPU for layout. ~500MB more RAM than ONNX
-#                    because the model loads in full PyTorch.
+#   "auto"         — ONNX engine on CPU; PyTorch on an NVIDIA GPU when use_gpu is on
+#   "onnx"         — explicit ONNX (CPU)
+#   "transformers" — PyTorch backend; CUDA (NVIDIA) when use_gpu is on, else CPU.
+#                    Docling runs on CPU on Apple Silicon: its models fail on MPS.
+#                    ~500MB more RAM than ONNX because the model loads in full PyTorch.
 layout_engine = "auto"
 # NOTE: drop_page_chrome is now owned by the active rag_profile TOML
 # (configurations/knowledge/knowledge_profiles/<profile>.toml). Setting

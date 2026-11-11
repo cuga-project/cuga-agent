@@ -319,3 +319,85 @@ def test_dim_probe_failure_does_not_leave_half_initialized(monkeypatch):
     _engine.KnowledgeEngine._ensure_embeddings(fake)
     assert fake._default_embeddings is not None
     assert fake._default_embedding_dim == 384
+
+
+# --- the reranker heals the same way ---------------------------------------
+
+
+@pytest.fixture()
+def fake_cross_encoder(monkeypatch, tmp_path):
+    """Stub fastembed's TextCrossEncoder: fail ``fail_times`` loads on a poisoned entry, then load."""
+    from cuga.backend.knowledge import reranker
+
+    calls: list[str] = []
+    model_dir = tmp_path / "models--BAAI--bge-reranker-base"
+    (model_dir / "snapshots").mkdir(parents=True)
+    state = {
+        "fail_times": 0,
+        "error": RuntimeError(
+            f"[ONNXRuntimeError] : 3 : NO_SUCHFILE : Load model from {model_dir}/snapshots/2cfc/onnx/model.onnx failed"
+        ),
+    }
+
+    class FakeTextCrossEncoder:
+        def __init__(self, model_name, **kwargs):
+            calls.append(model_name)
+            if len(calls) <= state["fail_times"]:
+                raise state["error"]
+
+    mod = types.ModuleType("fastembed.rerank.cross_encoder")
+    mod.TextCrossEncoder = FakeTextCrossEncoder
+    monkeypatch.setitem(sys.modules, "fastembed.rerank.cross_encoder", mod)
+    monkeypatch.setenv("FASTEMBED_CACHE_PATH", str(tmp_path))
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.setattr(reranker, "_ENCODERS", {})
+    monkeypatch.setattr(reranker, "_RETRY_AFTER", {})
+    return reranker, calls, state, model_dir
+
+
+def test_reranker_interrupted_download_is_purged_and_reloaded(fake_cross_encoder):
+    """The regression: a reranker whose download was cut off never loaded again, and search
+    silently ranked without it."""
+    reranker, calls, state, model_dir = fake_cross_encoder
+    state["fail_times"] = 1
+
+    reranker.prewarm("BAAI/bge-reranker-base")
+
+    assert reranker.is_ready("BAAI/bge-reranker-base")
+    assert len(calls) == 2
+    assert not model_dir.exists()
+
+
+def test_reranker_second_failure_surfaces(fake_cross_encoder):
+    reranker, calls, state, _ = fake_cross_encoder
+    state["fail_times"] = 99
+
+    with pytest.raises(reranker.RerankerUnavailableError):
+        reranker.prewarm("BAAI/bge-reranker-base")
+
+    assert len(calls) == 2
+    assert not reranker.is_ready("BAAI/bge-reranker-base")
+
+
+def test_reranker_offline_never_purges(fake_cross_encoder, monkeypatch):
+    reranker, calls, state, model_dir = fake_cross_encoder
+    state["fail_times"] = 99
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+    with pytest.raises(reranker.RerankerUnavailableError):
+        reranker.prewarm("BAAI/bge-reranker-base")
+
+    assert len(calls) == 1
+    assert model_dir.exists()
+
+
+def test_reranker_config_error_is_not_retried(fake_cross_encoder):
+    reranker, calls, state, model_dir = fake_cross_encoder
+    state["fail_times"] = 99
+    state["error"] = ValueError("Model foo is not supported in TextCrossEncoder")
+
+    with pytest.raises(reranker.RerankerUnavailableError):
+        reranker.prewarm("foo")
+
+    assert len(calls) == 1
+    assert model_dir.exists()

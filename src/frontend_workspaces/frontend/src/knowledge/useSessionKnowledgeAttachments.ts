@@ -241,7 +241,14 @@ export function useSessionKnowledgeAttachments({
           ? await uploadKnowledgeDocuments([upload.file], true)
           : await uploadSessionKnowledgeDocuments(tid!, [upload.file], true);
       if (!response.ok) {
-        const detail = await response.text().catch(() => "Upload failed");
+        const body = await response.text().catch(() => "");
+        let detail = body;
+        try {
+          const parsed = JSON.parse(body) as { detail?: unknown };
+          if (typeof parsed.detail === "string") detail = parsed.detail;
+        } catch {
+          // Not JSON: show the text as it came.
+        }
         throw new Error(detail || "Upload failed");
       }
 
