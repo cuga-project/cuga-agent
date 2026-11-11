@@ -197,7 +197,7 @@ function ComposerToolbar({
                       {item.status === "error" && <span className="cuga-composer-chip__status">Upload failed</span>}
                     </Button>
                     {item.kind === "upload" && item.status === "error" && (
-                      <IconButton kind="ghost" size="sm" label={`Retry upload ${item.displayName}`}
+                      <IconButton kind="ghost" size="sm" label={`Retry upload ${item.displayName}. Upload failed: ${item.error || "unknown error"}`}
                         onClick={() => onRetryUpload(item.id)}><Renew /></IconButton>
                     )}
                     <IconButton kind="ghost" size="sm"
