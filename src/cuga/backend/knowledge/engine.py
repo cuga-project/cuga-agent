@@ -1807,9 +1807,13 @@ def _take_over_lock(key: str, lock_file: Any) -> bool:
     holder = _LOCK_HOLDERS.get(key)
     if holder is not None:
         owner = holder._owner
-        busy = getattr(holder, "_active_tasks", None) or getattr(holder, "_reindex_in_progress", None)
+        busy = (
+            getattr(holder, "_active_tasks", None)
+            or getattr(holder, "_reindex_in_progress", None)
+            or getattr(holder, "_writes_in_flight", 0)
+        )
         if owner is None or owner() is not None or busy:
-            return False  # still in use: a live owner, the server's engine, or an ingest or reindex
+            return False  # still in use: a live owner, the server's engine, or a write in flight
         logger.info(f"Knowledge data in {key}: its previous agent is gone; shutting down its engine")
         holder._taken_over = True  # a client kept from that agent now gets an error, not shared writes
         holder.shutdown()
@@ -1818,6 +1822,21 @@ def _take_over_lock(key: str, lock_file: Any) -> bool:
     except OSError:
         return False
     return True
+
+
+def _holds_directory(method):
+    """Count a write call while it runs, so no other engine takes the directory over until it
+    returns (``_take_over_lock``). Reads need no count: they cannot corrupt the directory."""
+
+    @functools.wraps(method)
+    async def call(self, *args, **kwargs):
+        self._writes_in_flight = getattr(self, "_writes_in_flight", 0) + 1
+        try:
+            return await method(self, *args, **kwargs)
+        finally:
+            self._writes_in_flight -= 1
+
+    return call
 
 
 class KnowledgeEngine:
@@ -1831,6 +1850,7 @@ class KnowledgeEngine:
         self._config = config
         self._owner = weakref.ref(owner) if owner is not None else None
         self._taken_over = False
+        self._writes_in_flight = 0
         # Optional, host-injected chat model for query transformation (multi_query
         # / HyDE). Duck-typed to the query_transform.ChatGenerator Protocol so the
         # knowledge package stays standalone (no host import). None → transforms
@@ -2572,6 +2592,7 @@ class KnowledgeEngine:
                 skip_file_copy,
             )
 
+    @_holds_directory
     async def ingest(
         self,
         collection: str,
@@ -3114,6 +3135,7 @@ class KnowledgeEngine:
                 )
             raise
 
+    @_holds_directory
     async def ingest_url(self, collection: str, url: str) -> dict[str, Any]:
         """Ingest a document from URL."""
         self._validate_url(url)
@@ -3224,6 +3246,7 @@ class KnowledgeEngine:
                 raise IngestStillFinishingError(filename, task_id)
         return stopped
 
+    @_holds_directory
     async def delete_document(self, collection: str, filename: str) -> None:
         """Delete a document. Idempotent compensating flow across stores."""
         await self._ensure_metadata_ready()
@@ -4010,6 +4033,7 @@ class KnowledgeEngine:
         await self._ensure_metadata_ready()
         return await self._metadata.get_task(task_id)
 
+    @_holds_directory
     async def cancel_task(self, task_id: str) -> dict[str, Any] | None:
         """Cancel a task and record the OUTCOME, not just the intent.
 
@@ -4567,6 +4591,7 @@ class KnowledgeEngine:
 
     # --- Collection lifecycle ---
 
+    @_holds_directory
     async def drop_collection(self, collection: str) -> None:
         """Drop a collection and all its data."""
         await self._ensure_metadata_ready()
@@ -4588,6 +4613,7 @@ class KnowledgeEngine:
         await self._metadata.delete_collection_metadata(collection)
         logger.info(f"Dropped collection {collection}")
 
+    @_holds_directory
     async def drop_collection_vectors(self, collection: str) -> None:
         """Drop vectors and metadata but preserve source files for re-indexing."""
         await self._ensure_metadata_ready()
@@ -4610,6 +4636,7 @@ class KnowledgeEngine:
         await self._metadata.delete_collection_metadata(collection)
         logger.info(f"Dropped collection vectors {collection} (files preserved)")
 
+    @_holds_directory
     async def copy_source_files(self, source_collection: str, target_collection: str) -> int:
         """Mirror source's files into target. Removes stale files in target
         (files not present in source) BEFORE copying so a prior failed
@@ -4657,6 +4684,7 @@ class KnowledgeEngine:
             logger.info(f"Copied {count} source files from {source_collection} to {target_collection}")
         return count
 
+    @_holds_directory
     async def reindex(self, collection: str) -> dict[str, Any]:
         """Drop collection vectors and re-ingest all files with current settings.
 

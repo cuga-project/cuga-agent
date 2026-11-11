@@ -128,3 +128,31 @@ def test_a_client_kept_after_its_agent_was_dropped_is_refused_after_the_takeover
     with pytest.raises(RuntimeError, match="was shut down: another agent opened"):
         asyncio.run(kept.delete_document("kb_agent", "f.txt"))
     new.shutdown()
+
+
+def test_a_write_in_flight_blocks_the_takeover_until_it_returns(kb_dir, no_auto_gc):
+    """A delete from a kept client that passed the shut-down check and is paused in an await must
+    finish before another engine can take the directory over."""
+    agent = _Agent()
+    old = KnowledgeEngine(_cfg(kb_dir), owner=agent)
+    del agent
+
+    async def scenario():
+        gate = asyncio.Event()
+
+        async def paused(collection, filename):
+            await gate.wait()
+            return False
+
+        old._stop_ingest_for = paused
+        delete = asyncio.create_task(old.delete_document("kb_agent", "f.txt"))
+        await asyncio.sleep(0)  # the delete is now past the check and waiting
+        with pytest.raises(RuntimeError, match="already open in another knowledge engine"):
+            KnowledgeEngine(_cfg(kb_dir))
+        gate.set()
+        await asyncio.gather(delete, return_exceptions=True)
+        return KnowledgeEngine(_cfg(kb_dir), owner=_Agent())
+
+    new = asyncio.run(scenario())
+    assert old._writes_in_flight == 0 and old._lock_file.closed
+    new.shutdown()
