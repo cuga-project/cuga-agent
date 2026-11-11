@@ -100,6 +100,7 @@ cuga_lite_warn_suspect_args = true  # Warn (never coerce) when a CugaLite tool k
 # bind_tools: generic default is none; resolved model ``gpt-oss-20b`` uses model_runtime_profile.py
 # mode: none | find_tools | all | apps | tools | apps_and_tools  (apps_and_tools = union of app tools + listed names)
 cuga_lite_bind_tools_mode = "none"
+cuga_lite_fc_dynamic_tools = false  # function calling: false | true (find_tools + tools found or called so far) | "apps" (find_tools + all tools of each app searched or used); re-read from the history on each model call
 cuga_lite_bind_tools_apps = []  # mode=apps or apps_and_tools
 cuga_lite_bind_tools_tool_names = []  # mode=tools or apps_and_tools (StructuredTool.name)
 cuga_lite_bind_tools_include_find_tools = false  # Also bind find_tools alongside all/apps/tools/apps_and_tools
