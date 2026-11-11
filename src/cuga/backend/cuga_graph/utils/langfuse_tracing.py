@@ -10,6 +10,7 @@ per logical run instead of many sibling root traces.
 from __future__ import annotations
 
 import importlib
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Optional
 
@@ -181,6 +182,24 @@ def sync_langfuse_callbacks_from_config(config: Any = None) -> None:
     else:
         _langfuse_primary_handler.set(None)
     set_langfuse_callbacks(callbacks or None)
+
+
+@contextmanager
+def restore_run_context():
+    """Put back the run-context variables that ``sync_langfuse_callbacks_from_config`` sets.
+
+    The SDK sets them in its caller's context. Left set after the call, they keep that run's
+    config, and everything it holds such as the knowledge engine, alive in the caller.
+    """
+    saved = [
+        (var, var.get())
+        for var in (_langgraph_run_config, _langfuse_callbacks, _langfuse_trace_id, _langfuse_primary_handler)
+    ]
+    try:
+        yield
+    finally:
+        for var, value in saved:
+            var.set(value)
 
 
 def get_langfuse_callbacks() -> list[Any]:
