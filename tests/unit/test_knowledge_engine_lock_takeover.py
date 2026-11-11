@@ -156,3 +156,29 @@ def test_a_write_in_flight_blocks_the_takeover_until_it_returns(kb_dir, no_auto_
     new = asyncio.run(scenario())
     assert old._writes_in_flight == 0 and old._lock_file.closed
     new.shutdown()
+
+
+def test_a_first_use_setting_up_its_metadata_blocks_the_takeover(kb_dir, no_auto_gc):
+    """An engine's first call, even a read, recovers tasks and reconciles deletes before it runs."""
+    agent = _Agent()
+    old = KnowledgeEngine(_cfg(kb_dir), owner=agent)
+    del agent
+
+    async def scenario():
+        gate = asyncio.Event()
+        ensure_ready = old._metadata.ensure_ready
+
+        async def paused():
+            await gate.wait()
+            await ensure_ready()
+
+        old._metadata.ensure_ready = paused
+        listing = asyncio.create_task(old.list_documents("kb_agent"))
+        await asyncio.sleep(0)
+        with pytest.raises(RuntimeError, match="already open in another knowledge engine"):
+            KnowledgeEngine(_cfg(kb_dir))
+        gate.set()
+        await asyncio.gather(listing, return_exceptions=True)
+        return KnowledgeEngine(_cfg(kb_dir), owner=_Agent())
+
+    asyncio.run(scenario()).shutdown()

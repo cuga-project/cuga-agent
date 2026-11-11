@@ -2095,8 +2095,11 @@ class KnowledgeEngine:
 
     async def _ensure_metadata_ready(self) -> None:
         self._refuse_if_taken_over()  # every operation starts here, before it reads or writes
-        if self._metadata_ready:
-            return
+        if not self._metadata_ready:
+            await self._init_metadata()
+
+    @_holds_directory  # first use writes: it recovers stale tasks, reconciles deletes and purges
+    async def _init_metadata(self) -> None:
         async with self._metadata_init_lock:
             if self._metadata_ready:
                 return
