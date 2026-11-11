@@ -151,6 +151,7 @@ def create_call_model_node(
         pi_added = False
         playbook_fired = False
         modified_messages: list = []
+        system_texts_added: set = set()
 
         for i, msg in enumerate(effective_messages):
             is_last = i == len(effective_messages) - 1
@@ -212,8 +213,10 @@ def create_call_model_node(
                 # A caller's instructions, e.g. invoke([SystemMessage(...), HumanMessage(...)]).
                 # Appended to the system prompt, the one place every provider accepts them.
                 modified_messages.append(msg)
-                # Once each: an SDK caller sends it with every turn, and the thread keeps every copy.
-                if msg.text and f"\n\n{msg.text}" not in messages_for_model[0]["content"]:
+                # Once each: an SDK caller sends it with every turn. Only an exact repeat is
+                # skipped; a text found inside the prompt or a longer instruction is still added.
+                if msg.text and msg.text not in system_texts_added:
+                    system_texts_added.add(msg.text)
                     messages_for_model[0]["content"] += f"\n\n{msg.text}"
 
             else:

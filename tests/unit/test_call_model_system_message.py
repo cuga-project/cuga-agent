@@ -44,3 +44,20 @@ async def test_a_system_message_sent_every_turn_is_added_once():
     )
 
     assert captured[0][0]["content"].count(rule) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_system_text_inside_a_longer_one_is_still_added():
+    """Only an exact repeat is skipped, not a text that appears inside an earlier instruction."""
+    captured: list[list[dict]] = []
+    await _run_turn(
+        [
+            SystemMessage(content="Answer in English. Be brief."),
+            SystemMessage(content="Answer in English."),
+            SystemMessage(content="Answer in English."),
+            HumanMessage(content="Quel temps fait-il ?"),
+        ],
+        captured,
+    )
+
+    assert captured[0][0]["content"] == "SYSTEM\n\nAnswer in English. Be brief.\n\nAnswer in English."
