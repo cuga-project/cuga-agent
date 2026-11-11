@@ -28,3 +28,21 @@ def test_short_sentence_is_kept(text):
 @pytest.mark.parametrize("text", ["Figure 3: backup", "第三章 备份策略"], ids=["en-caption", "zh-heading"])
 def test_caption_fragment_is_dropped(text):
     assert _classify_junk_chunk(text, "policy.pdf") == "too_short"
+
+
+@pytest.mark.parametrize(
+    ("text", "columns"),
+    [
+        ("Backups run every night at 2.", 29),
+        ("Backups run every night at 2am", 30),
+        ("备份策略每天执行一次检查结果", 28),  # 14 wide characters
+        ("备份策略每天执行一次检查结果。", 30),  # 15 wide characters
+        ("备份策略每天执行一次检查 2am.", 29),  # 12 wide + 5 narrow
+        ("备份策略每天执行一次检查 2 am.", 30),  # 12 wide + 6 narrow
+    ],
+    ids=["en-29", "en-30", "zh-28", "zh-30", "mixed-29", "mixed-30"],
+)
+def test_too_short_means_under_30_columns(text, columns):
+    """A wide character counts two columns, every other character one, as len() did before, so
+    the rule keeps every chunk it kept before and drops fewer wide-script ones."""
+    assert (_classify_junk_chunk(text, "policy.pdf") == "too_short") is (columns < 30)
