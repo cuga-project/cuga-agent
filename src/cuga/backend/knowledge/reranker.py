@@ -88,6 +88,7 @@ def _build_encoder(model_name: str) -> Any:
     try:
         return load()
     except Exception as e:
+        # Broad on purpose: a corrupt cache raises varied fastembed/onnxruntime types; others re-raise below.
         # An interrupted download leaves the model's cache entry without its weights, and
         # fastembed reuses the entry without checking it, so every later load failed and search
         # quietly ran without its reranker. Repair it as the embedder does: purge, download once.
