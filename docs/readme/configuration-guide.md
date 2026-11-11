@@ -498,8 +498,10 @@ Knowledge is **off by default** (`enabled = false` under `[knowledge]` in
 - **Server:** set `DYNACONF_KNOWLEDGE__ENABLED=true` in the environment before `cuga start`.
 - **SDK:** pass `CugaAgent(enable_knowledge=True)`. It overrides the setting for that agent.
 
-When knowledge is on, the SDK auto-injects knowledge tools and awareness into the agent, so it
-knows what documents are available and how to search them.
+When knowledge is on, the SDK auto-injects knowledge tools and awareness into an agent built
+with `tools=` (or with no tools), so it knows what documents are available and how to search
+them. An agent built with a custom `tool_provider` does not get them automatically: add the
+tools from `agent.knowledge.get_langchain_tools()` to your provider yourself.
 
 #### Programmatic Access
 
