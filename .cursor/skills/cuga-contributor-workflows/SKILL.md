@@ -3,8 +3,8 @@ name: cuga-contributor-workflows
 description: >-
   Run CUGA contributor workflows: Conventional Commits, create pull requests
   against origin with gh and PR templates, ruff check/format via uv, and the
-  required design-impact, area, and readability labels before every push and
-  pull request. Use when the user says commit, create a commit, push, create PR,
+  required design-impact, design-review, area, evaluation, and readability labels
+  before every push and pull request. Use when the user says commit, create a commit, push, create PR,
   pull request, open a PR, labels, ruff check, ruff format, or conventional commits.
 ---
 
@@ -26,8 +26,9 @@ If multiple modes are requested, run them in a sensible order (ruff â†’ commit â
 
 [labels.md](labels.md) is a required step, not an option:
 
-- **Before every push** to a branch that has, or will get, a pull request: check the `design-impact:`, `area:`, and
-  `readability:` labels against the diff and fix them.
+- **Before every push** to a branch that has, or will get, a pull request: check the `design-impact:`,
+  `design-review:`, `area:`, `evaluation:`, and `readability:` labels against the diff and fix them.
+- `design-review: needed` and `evaluation: needed` hold the merge. Tell the user when you set either one.
 - **Before opening a pull request:** choose the labels and pass them to `gh pr create`.
 
 Do not push or open a pull request until this step is done.

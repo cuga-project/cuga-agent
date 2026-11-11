@@ -92,8 +92,9 @@ Only if the tree is clean and both counts are zero, continue.
    - Testing
    - Checklist
 5. **Choose labels (MUST).** Follow [labels.md](labels.md) against `origin/main...HEAD`: exactly one
-   `design-impact:`, one `area:` label per changed area, and exactly one `readability:` (improve the description
-   until `readability: good` is true). Do not create the PR without them.
+   `design-impact:`, exactly one `design-review:`, one `area:` label per changed area, exactly one `evaluation:`,
+   and exactly one `readability:` (improve the description until `readability: good` is true). Do not create the
+   PR without them.
 6. Create (pass title via a variable; pass body via `--body-file` so shell does not interpolate the Markdown; pass
    each label with `--label`):
 
@@ -107,7 +108,9 @@ EOF
 
 gh pr create --repo "$origin_repo" --base main --title "$title" --body-file "$body_file" \
   --label "design-impact: <low|medium|high>" \
+  --label "design-review: <needed|done|not needed>" \
   --label "area: <area>" \
+  --label "evaluation: <needed|done|not needed>" \
   --label "readability: <good|fair|poor>"
 ```
 
