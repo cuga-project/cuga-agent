@@ -501,7 +501,10 @@ Knowledge is **off by default** (`enabled = false` under `[knowledge]` in
 When knowledge is on, the SDK auto-injects knowledge tools and awareness into an agent built
 with `tools=` (or with no tools), so it knows what documents are available and how to search
 them. An agent built with a custom `tool_provider` does not get them automatically: add the
-tools from `agent.knowledge.get_langchain_tools()` to your provider yourself.
+tools from `agent.knowledge.get_langchain_tools()` to your provider yourself. Called without
+arguments, it returns tools for the agent's documents only. For session documents, pass the
+conversation's `thread_id=` and use those tools only in that conversation, since they are bound
+to it.
 
 #### Programmatic Access
 
