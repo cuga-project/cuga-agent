@@ -168,6 +168,11 @@ class InvokeResult(BaseModel):
         default=None,
         description="Per-run token/cost/timing receipt (populated when advanced_features.run_receipt is enabled)",
     )
+    hook_events: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Lifecycle hook events of this invocation (hook, summary, outcome, message, details), "
+        "when CugaAgent(hooks=...) is set",
+    )
 
     def __str__(self) -> str:
         """Return the answer when converting to string for backward compatibility."""
@@ -1992,6 +1997,7 @@ class CugaAgent:
         step_discipline: Optional[str] = None,
         *,
         checkpointer: Optional["BaseCheckpointSaver"] = None,
+        hooks: Optional[List[Any]] = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -2021,6 +2027,10 @@ class CugaAgent:
             step_discipline: `"one_tool_per_step"` lets the model run only one tool per step
                 (in both execution modes); `"off"` (default) allows any number. None = use
                 `advanced_features.cuga_lite_step_discipline`. Overridable per invoke()/stream().
+            hooks: Optional experimental lifecycle hooks (``cuga.backend.hooks.AgentHooks`` instances). They run at
+                session_start, on_user_message, before_llm_call, after_llm_call, after_plan, before_tool_call,
+                after_tool_call, before_reply and on_task_end; see the ``cuga.backend.hooks`` docstring. Events
+                are returned in ``InvokeResult.hook_events``; stream them with ``agent.hooks.add_listener(fn)``.
             final_answer: How the final answer is shaped. A `str` adds guidance for the
                 answer-composing LLM; a callable `(str) -> str` deterministically
                 post-processes the composed answer before delivery (must be pure;
@@ -2068,6 +2078,16 @@ class CugaAgent:
         from cuga.config import settings
 
         self._model = model
+        from cuga.backend.hooks import HookRegistry
+
+        self.hooks = HookRegistry(list(hooks or []))
+        if self.hooks:
+            from cuga.backend.hooks import HooksCallback, wrap_provider_with_hooks, wrap_tools_with_hooks
+
+            tools = wrap_tools_with_hooks(list(tools or []), self.hooks)
+            if tool_provider is not None:  # tools from a custom provider get the same tool-call hooks
+                tool_provider = wrap_provider_with_hooks(tool_provider, self.hooks)
+            callbacks = list(callbacks or []) + [HooksCallback(self.hooks)]
         self._callbacks = callbacks
         self._graph = None
         self._compiled_graph = None
@@ -2260,6 +2280,8 @@ class CugaAgent:
         """
         run_config: dict = dict(config) if config else {}
         run_config["configurable"] = dict(run_config.get("configurable") or {})
+        if getattr(self, "hooks", None):
+            run_config["configurable"]["cuga_hooks"] = self.hooks
         for key, value in (getattr(self, "_feature_overrides", None) or {}).items():
             if value is not None:
                 run_config["configurable"].setdefault(key, value)
@@ -2393,12 +2415,16 @@ class CugaAgent:
                     DirectLangChainToolsProvider,
                 )
 
-                provider_for_knowledge = unwrap_tool_provider(self.tool_provider)
+                from cuga.backend.hooks.registry import unwrap_hooked_provider, wrap_tools_with_hooks
+
+                provider_for_knowledge = unwrap_hooked_provider(unwrap_tool_provider(self.tool_provider))
                 if kb_enabled and isinstance(provider_for_knowledge, DirectLangChainToolsProvider):
                     existing_names = {t.name for t in provider_for_knowledge.tools}
                     knowledge_tools = self.knowledge.get_langchain_tools()
                     new_tools = [t for t in knowledge_tools if t.name not in existing_names]
                     if new_tools:
+                        if self.hooks:  # the same tool-call hooks as the tools given at construction
+                            new_tools = wrap_tools_with_hooks(new_tools, self.hooks)
                         self.tool_provider.add_tools(new_tools)
                         logger.info(f"Auto-injected {len(new_tools)} knowledge tools into SDK agent")
                 # Mark success only after injection completes (or knowledge disabled)
@@ -2772,6 +2798,56 @@ class CugaAgent:
                 raise
             return None
 
+    async def _approval_pending(self, thread_id: Optional[str]) -> bool:
+        """True when the thread's graph stopped for a human-in-the-loop approval (``state.next`` is set)."""
+        if not thread_id:
+            return False
+        try:
+            state = await self.graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return bool(state.next)
+        except Exception as e:
+            logger.debug(f"Could not check interrupt state: {e}")
+            return False
+
+    async def _invoke_with_hooks(self, message: Any, **kwargs: Any) -> "InvokeResult":
+        """Run invoke() inside the session_start, on_user_message, before_reply and on_task_end hooks.
+
+        A before_reply hook can send the agent back to work (at most twice); its message becomes the next
+        user turn in the same thread. A run paused for approval gets no before_reply or on_task_end: they run
+        when ``invoke(None, action_response=...)`` finishes it. Events of this invocation are returned in
+        ``result.hook_events``.
+        """
+        reg = self.hooks
+        thread_id = kwargs.get("thread_id")
+        with reg.run(thread_id):
+            if isinstance(message, str):
+                if not reg.thread_started(thread_id):
+                    reg.session_start(thread_id)
+                guard = reg.on_user_message(message, thread_id)
+                if guard.answer is not None:  # a hook answered (e.g. an intent guard): the agent does not run
+                    reg.on_task_end(guard.answer)
+                    return InvokeResult(
+                        answer=guard.answer, thread_id=thread_id, hook_events=reg.run_events()
+                    )
+            result = await self.invoke(message, **kwargs)
+            kwargs["action_response"] = None  # a send-back is a new user turn, not another resume
+            for attempt in range(3):
+                reg.set_thread(result.thread_id)
+                if not result.error and await self._approval_pending(result.thread_id):
+                    result.hook_events = reg.run_events()  # the task is not over
+                    return result
+                reply = reg.before_reply(result.answer or "")
+                if reply.message and not result.error and attempt < 2:  # sent back to work (at most twice)
+                    kwargs["thread_id"] = result.thread_id
+                    result = await self.invoke(reply.message, **kwargs)
+                    continue
+                if reply.answer is not None:  # e.g. an output formatter added a required note
+                    result.answer = reply.answer
+                break
+            reg.on_task_end(result.answer or "")
+            result.hook_events = reg.run_events()
+            return result
+
     async def invoke(
         self,
         message: Union[str, List[BaseMessage], None] = None,
@@ -2855,6 +2931,19 @@ class CugaAgent:
             result = await agent.invoke(None, thread_id="user-123", action_response=approval)
             ```
         """
+        if self.hooks and not self.hooks.in_run():
+            return await self._invoke_with_hooks(
+                message,
+                thread_id=thread_id,
+                config=config,
+                action_response=action_response,
+                user_context=user_context,
+                track_tool_calls=track_tool_calls,
+                variables=variables,
+                shortlister=shortlister,
+                execution_mode=execution_mode,
+                step_discipline=step_discipline,
+            )
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
@@ -3486,11 +3575,14 @@ class CugaAgent:
             invalidate_toolguard_provider,
         )
         from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+        from cuga.backend.hooks.registry import unwrap_hooked_provider, wrap_tools_with_hooks
 
-        base_provider = unwrap_tool_provider(self.tool_provider)
+        base_provider = unwrap_hooked_provider(unwrap_tool_provider(self.tool_provider))
         if isinstance(base_provider, DirectLangChainToolsProvider) and hasattr(
             self.tool_provider, "add_tool"
         ):
+            if self.hooks:  # the same tool-call hooks as the tools given at construction
+                (tool,) = wrap_tools_with_hooks([tool], self.hooks)
             self.tool_provider.add_tool(tool)
             invalidate_toolguard_provider(self.tool_provider)  # noqa: F821
             # Reset graph so it gets recreated with new tools
