@@ -160,9 +160,9 @@ Your output MUST be one of these two types. **Do not mix them.**
 2.  **CHECK VARIABLES FIRST:** Before calling a tool, check if variables from a previous code execution already contain the data you need.
 3.  **HANDLE PAGINATION COMPLETELY - CRITICAL:** When working with APIs that return paginated data (e.g., lists of accounts, contacts, transactions, providers, claims), you MUST iterate through ALL pages to get complete data. **NEVER assume the first page contains all the data.** This is a common mistake that leads to incomplete results.
    - **ALWAYS check for pagination parameters** in tool documentation: `page`, `page_index`, `offset`, `limit`, `size`, `cursor`, `next_page`, `has_more`
-   - **A full page alone does not prove completeness:** a response with exactly `page_limit` (or `limit`/`size`) items usually means more pages exist — request the next page whenever the task needs the complete listing (a top-N or "find one item" read does not). Explicit signals win over page length: `has_more: false`, an empty `next_cursor` / `next_page: null` mean you are done; `has_more: true` or a non-empty continuation token means more pages exist **even if the page was short**. Without such signals, a page with **fewer** items than `page_limit` (or an empty page) marks the last page.
-   - **ALWAYS loop through pages** until you reach such a last page. Use the documented maximum `page_limit` and never exceed it (the API rejects larger values).
-   - **Example pattern:** Start with page 0 (or no cursor), increment the page / pass the returned cursor until the response signals the end, or — with no signal — a page has fewer than `page_limit` items or is empty
+   - **A full page alone does not prove completeness:** a response with exactly the page size (`limit`, `size` or similar) items usually means more pages exist — request the next page whenever the task needs the complete listing (a top-N or "find one item" read does not). Explicit signals win over page length: `has_more: false`, an empty `next_cursor` / `next_page: null` mean you are done; `has_more: true` or a non-empty continuation token means more pages exist **even if the page was short**. Without such signals, a page with **fewer** items than the page size (or an empty page) marks the last page.
+   - **ALWAYS loop through pages** until you reach such a last page. Use the documented maximum page size and never exceed it (the API rejects larger values).
+   - **Example pattern:** Start with page 0 (or no cursor), increment the page / pass the returned cursor until the response signals the end, or — with no signal — a page has fewer items than the page size or is empty
    - **Common mistake:** Fetching only page 0 — or reading a full page 0 as "everything fits in one page"
    - **Logging:** Do **not** `print()` inside the pagination loop (per-page spam). Summarize after the loop (pages fetched, total items, whether a match was found). See **Intermediate Prints** under Code Execution Requirements.
 
@@ -309,9 +309,9 @@ print(f"Found {len(high_value_accounts)} high-value accounts.")
 ```python
 # Collect all items across all pages
 all_items = []
-page_index = 0
+page = 0
 while True:
-    response = await example_tool(page_index=page_index, size=5)
+    response = await example_tool(page=page, size=5)
     items = response.get("items", [])
     if not items:  # Empty page = no more data
         break
@@ -319,24 +319,24 @@ while True:
     # Check if there are more pages
     if len(items) < 5 or not response.get("has_more", True):
         break
-    page_index += 1
+    page += 1
 # Summary print after the loop — not inside it
-print(f"Found {len(all_items)} total items across {page_index + 1} pages; preview={all_items[:5]}")
+print(f"Found {len(all_items)} total items across {page + 1} pages; preview={all_items[:5]}")
 ```
 
 ❌ **INCORRECT (Printing inside pagination / per-item loops — floods logs):**
 ```python
-page_index = 0
+page = 0
 while True:
-    page = await example_tool(page_index=page_index, size=5)
-    print(page)  # WRONG: repeats every iteration
+    batch = await example_tool(page=page, size=5)
+    print(batch)  # WRONG: repeats every iteration
     ...
 ```
 
 ❌ **INCORRECT (Missing pagination - only gets first page):**
 ```python
 # WRONG: Only gets first page, missing data on later pages
-response = await example_tool(page_index=0, size=5)
+response = await example_tool(page=0, size=5)
 items = response.get("items", [])
 print(items)  # This only shows first 5 items, missing the rest!
 ```
@@ -354,12 +354,12 @@ Waiting for your approval...
 {% endif %}
 
 ✅ **CORRECT (Tight step-by-step reasoning before code — autonomous subtasks still allow this):**
-Need the full list; the API is paginated — loop `page_index` until an empty page, then print total count and a short preview.
+Need the full list; the API is paginated — loop `page` until an empty page, then print total count and a short preview.
 ```python
 all_rows = []
 page = 0
 while True:
-    batch = await example_tool(page_index=page, size=50)
+    batch = await example_tool(page=page, size=50)
     rows = batch.get("items", [])
     if not rows:
         break
