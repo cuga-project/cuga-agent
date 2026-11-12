@@ -15,6 +15,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from tests.fixtures.async_only_saver import AsyncOnlySaver
+
 pytestmark = pytest.mark.unit
 
 RESUME = {
@@ -27,7 +29,9 @@ RESUME = {
 
 
 @pytest.fixture
-async def runtime(monkeypatch):
+async def runtime(monkeypatch, request):
+    # Indirect param: the checkpointer class (MemorySaver by default, AsyncOnlySaver to prove async-only access).
+    saver_cls = getattr(request, "param", MemorySaver)
     from cuga.backend.cuga_graph.state.agent_state import AgentState
     from cuga.backend.server import main, run_routes
 
@@ -80,7 +84,7 @@ async def runtime(monkeypatch):
     builder.add_node("FinalAnswerAgent", node)
     builder.add_edge(START, "FinalAnswerAgent")
     builder.add_edge("FinalAnswerAgent", END)
-    graph = builder.compile(checkpointer=MemorySaver())
+    graph = builder.compile(checkpointer=saver_cls())
     agent = SimpleNamespace(graph=graph, policy_system=None, chat=None)
     db = ConversationHistoryDB()
     monkeypatch.setattr(main, "get_conversation_db", lambda: db)
@@ -202,6 +206,34 @@ async def test_owner_can_resume_scoped_checkpoint(runtime):
     assert runtime.seen and runtime.seen[-1][0:2] == ("user-a", "pause")
     state = await runtime.client.get("/api/agent/state", headers=runtime.headers())
     assert state.json()["state"]["url"] == "1"
+
+
+@pytest.mark.parametrize("runtime", [AsyncOnlySaver], indirect=True)
+async def test_stream_and_state_endpoint_use_async_state_api(runtime):
+    """event_stream's state loads and /api/agent/state work on a saver that rejects sync calls."""
+    for query in ["first", "followup"]:
+        response = await runtime.client.post("/stream", headers=runtime.headers(), json={"query": query})
+        assert response.status_code == 200, response.text
+        assert "Error" not in response.text
+    state = await runtime.client.get("/api/agent/state", headers=runtime.headers())
+    assert state.status_code == 200, state.text
+    assert state.json()["state"]["input"] == "followup"
+    # url "2" means the follow-up turn loaded the first turn's checkpoint instead of
+    # silently falling back to a fresh state.
+    assert state.json()["state"]["url"] == "2"
+
+    # Seed a turn first: AgentLoop needs a prior message to report an interrupt cleanly.
+    paused = runtime.headers(thread="paused")
+    for query in ["first", "pause"]:
+        response = await runtime.client.post("/stream", headers=paused, json={"query": query})
+        assert response.status_code == 200, response.text
+        assert "Error" not in response.text
+    resumed = await runtime.client.post("/stream", headers=paused, json=RESUME)
+    assert resumed.status_code == 200, resumed.text
+    assert "Error" not in resumed.text
+    assert runtime.seen[-1][0:2] == ("user-a", "pause")
+    state = await runtime.client.get("/api/agent/state", headers=paused)
+    assert state.json()["state"]["url"] == "2"
 
 
 @pytest.mark.parametrize("path", ["/stop", "/reset"])
@@ -377,6 +409,7 @@ async def test_protocol_runner_checks_owner_before_reading_pending_action(runtim
 
     await runtime.db.claim_thread("owned", "user-a", "cuga-default")
     graph = Mock()
+    graph.aget_state = AsyncMock()
     stream = Mock()
     runner = SimpleAgentRunner(
         SimpleNamespace(agent=SimpleNamespace(graph=graph), agent_id="cuga-default"),
@@ -386,6 +419,7 @@ async def test_protocol_runner_checks_owner_before_reading_pending_action(runtim
     with patch.object(conversation_history, "get_conversation_db", return_value=runtime.db):
         events = [event async for event in runner.run("attack", context_id="owned")]
     assert events[-1].name == "error"
+    graph.aget_state.assert_not_called()
     graph.get_state.assert_not_called()
     stream.assert_not_called()
 
@@ -514,8 +548,8 @@ async def test_supervisor_sdk_keeps_logical_resources_when_checkpoint_is_scoped(
         "hello", thread_id="logical", checkpoint_thread_id="scoped", user_id="user-a", tenant_id="tenant-a"
     )
     assert first.thread_id == "logical"
-    assert supervisor.graph.get_state({"configurable": {"thread_id": "scoped"}}).next
-    assert not supervisor.graph.get_state({"configurable": {"thread_id": "logical"}}).values
+    assert (await supervisor.graph.aget_state({"configurable": {"thread_id": "scoped"}})).next
+    assert not (await supervisor.graph.aget_state({"configurable": {"thread_id": "logical"}})).values
     resumed = await supervisor.invoke(
         None, thread_id="logical", checkpoint_thread_id="scoped", action_response=ActionResponse(**RESUME)
     )
@@ -751,7 +785,8 @@ async def test_simple_protocol_resumes_canonical_context(runtime, monkeypatch):
 
     await runtime.db.claim_thread("owned", "user-a", "cuga-default")
     graph = Mock()
-    graph.get_state.return_value = SimpleNamespace(
+    graph.aget_state = AsyncMock()
+    graph.aget_state.return_value = SimpleNamespace(
         next=("WaitForResponse",),
         values={"hitl_action": {"action_id": "approve", "type": "confirmation", "description": "Approve?"}},
     )
@@ -772,9 +807,10 @@ async def test_simple_protocol_resumes_canonical_context(runtime, monkeypatch):
     assert captured[0]["thread_id"] == "owned"
     assert captured[0]["resume"].action_id == "approve"
     assert captured[0]["resume"].confirmed
-    graph.get_state.assert_called_once_with(
+    graph.aget_state.assert_awaited_once_with(
         {"configurable": {"thread_id": runtime.main._checkpoint_thread_id("owned", "user-a", "cuga-default")}}
     )
+    graph.get_state.assert_not_called()
 
 
 async def test_run_injected_dependencies_do_not_import_main(runtime, monkeypatch):

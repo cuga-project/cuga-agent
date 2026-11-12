@@ -182,7 +182,7 @@ query_weight = 0.7 # blend of step query vs initial user message when embedding 
 # Embeddings are self-contained by default: always local, never a network call, never billed.
 # Deliberately does NOT inherit [storage.embedding], which may be set to "openai".
 embedding_provider = "local"
-embedding_model = "BAAI/bge-small-en-v1.5"  # same weights knowledge/policy load — one ONNX session
+embedding_model = "BAAI/bge-small-en-v1.5"  # same weights policies load — one ONNX session
 # Per-seam overrides are supported and inherit the values above; add a
 # [shortlister.discovery] (find_tools) or [shortlister.bind_cap] (provider cap)
 # section only when the two seams need different settings.
@@ -251,6 +251,12 @@ postgres_url = ""  # required when mode=prod
 # Skip demo/manager config seed when agent_configs already exist for tenant+instance+agent.
 # Applies when storage.mode matches this value: "prod" | "local" | "any". Default "prod".
 preserve_configs_on_startup = "prod"
+# Execution-state persistence for published agent graphs (issue #774).
+# "durable" = SQLite (local) / Postgres (prod) LangGraph checkpointer; "memory" = in-process MemorySaver (rollback).
+checkpointer = "memory"
+checkpoint_db_path = ""  # local only; default DBS_DIR/checkpoints.db
+checkpoint_pool_min_size = 1  # prod only
+checkpoint_pool_max_size = 10  # prod only
 
 [storage.embedding]
 provider = "local"  # "openai", "local", or "auto" (tries OpenAI, falls back to local)

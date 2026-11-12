@@ -204,8 +204,8 @@ and omit `WXO_API_KEY` — local instances are auto-detected and don't require a
 
 CUGA does not require OpenAI: OpenAI-compatible endpoints work through the standard override, including Chinese providers. Two services are commonly unreachable from mainland China and have workarounds:
 
-- **PyPI is slow:** use a local mirror, for example `pip install cuga -i https://pypi.tuna.tsinghua.edu.cn/simple`. With uv, set `UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple` rather than adding a `uv.toml` to the project root, which would make uv ignore the `[tool.uv]` section of `pyproject.toml`. A changed index re-resolves `uv.lock`; don't commit that change. torch and torchvision still come from the PyTorch CPU index pinned in `pyproject.toml`, not the mirror.
-- **Hugging Face is blocked:** with the default `[storage.embedding] provider = "local"`, policies and knowledge download a small embedding model from Hugging Face on first use. Set `HF_ENDPOINT=https://hf-mirror.com`, or preload the models ahead of time (this also needs `HF_ENDPOINT` set):
+- **PyPI is slow:** use a local mirror, for example `pip install cuga -i https://pypi.tuna.tsinghua.edu.cn/simple`. With uv, set `UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple` rather than adding a `uv.toml` to the project root, which would make uv ignore the `[tool.uv]` section of `pyproject.toml`. A changed index re-resolves `uv.lock`; don't commit that change. torch and torchvision still come from the PyTorch CPU index pinned in `pyproject.toml`, not the mirror. Without Python 3.12, uv downloads it from GitHub, which can be slow; install it yourself first or set `UV_PYTHON_INSTALL_MIRROR`.
+- **Hugging Face is blocked:** with the default `[storage.embedding] provider = "local"`, policies and knowledge download small embedding models from Hugging Face on first use. Set `HF_ENDPOINT=https://hf-mirror.com`, or preload the models ahead of time (this also needs `HF_ENDPOINT` set):
 
   ```bash
   export FASTEMBED_CACHE_PATH="$HOME/.cache/cuga/fastembed"
@@ -368,6 +368,7 @@ if __name__ == "__main__":
 - **Simple API**: `CugaAgent(tools=[...])` → `await agent.invoke(message)`
 - **Streaming**: Monitor execution in real-time with `agent.stream()`
 - **State Isolation**: Per-user sessions with `thread_id`
+- **Durable Conversations**: Continue a `thread_id` after a restart with `checkpointer=` (see [SDK: durable conversations](#sdk-durable-conversations))
 - **LangGraph Integration**: Access underlying graph for advanced use cases
 - **Flexible Tools**: Direct tools or custom tool providers
 - **Policy System**: Comprehensive policy framework with 5 types:
@@ -462,6 +463,25 @@ CUGA includes a built-in knowledge base powered by LangChain and local vector st
 
 When enabled, the agent can search, ingest, and manage documents.
 
+The default embedding model is `intfloat/multilingual-e5-small`, which covers about 100 languages and
+runs locally as an int8 ONNX model. Knowledge bases built with another model keep that model: a
+server keeps the model its saved agent config names, and an SDK knowledge base keeps the model it was
+built with. To move a server agent to another model, change it in the knowledge settings and select
+**Re-index now**. To rebuild an SDK knowledge base, add its documents again in new storage: a new
+`knowledge.persist_dir` and, with `storage.mode = "prod"`, a new database for `storage.postgres_url`
+and for `knowledge.pgvector_connection_string` if you set it. The `storage.postgres_url` database
+also holds other data, such as policies, so move what you still need first. The rebuilt knowledge
+base uses the configured model: the profile's, or `DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL` when that
+is set.
+
+Offline, searching an existing knowledge base needs only the model it was built with, so an
+air-gapped install keeps searching it after an upgrade. Everything else must be in the model cache
+before going offline: the model for new knowledge bases (`multilingual-e5-small` under the
+`standard` and `speed` profiles), Docling's models to parse PDFs, and, under `balanced` or
+`max_quality`, that profile's embedding and reranker models. The preload script in [Using CUGA in
+mainland China](#using-cuga-in-mainland-china) fetches the first two; for the others, start CUGA
+once with that profile while online, which loads them.
+
 **Try the knowledge demo:** same as the main demo but with the knowledge engine on (upload documents and query them):
 
 ```bash
@@ -548,6 +568,40 @@ Provider, model, batch size, and concurrency are all set under
 > Switching provider or model invalidates existing vectors (different
 > dim), so the manage UI surfaces a "Re-index recommended" banner
 > automatically.
+
+### SDK: durable conversations
+
+By default `CugaAgent` keeps conversation state in an in-process `MemorySaver`, so a thread is gone when the process exits. Pass an async LangGraph saver with the keyword-only `checkpointer=` argument, then call the agent again with the same `thread_id`, from the same process or a new one. The thread's messages, variables, and any pending approval are loaded from the saver.
+
+```python
+import asyncio
+
+import aiosqlite
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+from cuga import CugaAgent
+from cuga.backend.storage.checkpoint.serde import build_checkpoint_serde
+
+
+async def main():
+    async with aiosqlite.connect("./agent_state.db") as conn:
+        saver = AsyncSqliteSaver(conn, serde=build_checkpoint_serde())
+        agent = CugaAgent(tools=[...], checkpointer=saver)
+        await agent.invoke("What is the revenue for account acc_01?", thread_id="t-1")
+        # Later, or in another process with the same file:
+        result = await agent.invoke("And how does that compare to last year?", thread_id="t-1")
+        print(result.answer)
+
+
+asyncio.run(main())
+```
+
+- Any `BaseCheckpointSaver` with async methods works, for example `AsyncPostgresSaver` (call `await saver.setup()` once to create its tables). Sync-only savers (`SqliteSaver`, `PostgresSaver`) are rejected with `TypeError` when the graph is compiled.
+- `build_checkpoint_serde()` registers CUGA's state types. Without it LangGraph logs a warning for each one, and blocks them when `LANGGRAPH_STRICT_MSGPACK=true`. Your own pydantic models, dataclasses, and Enums stored in variables come back as plain values unless you add them to the allowlist (`CUGA_ALLOWED_MSGPACK_TYPES`).
+- `CugaSupervisor(checkpointer=...)` works the same way for the supervisor graph. Its internal sub-agents keep their own in-memory savers.
+- **The SDK does not check ownership, expire threads, or validate a paused thread against changed code.** Anyone who can pass a `thread_id` can continue that conversation, so use unguessable IDs and check ownership in your application. Delete a thread with `await saver.adelete_thread(thread_id)`.
+- **Resume an approval** by building the agent with the same tools, policies and saver, and calling `agent.invoke(None, thread_id=thread_id, action_response=...)`. On the compiled graph, use `Command(resume=action_response.model_dump())`; `aupdate_state()` followed by `ainvoke(None)` does not resume the pause.
+- **Use the async state methods.** Async savers refuse synchronous calls on the event loop, so `agent.graph.get_state()` / `update_state()` must become `aget_state()` / `aupdate_state()`.
 
 ---
 
@@ -939,7 +993,7 @@ When an app exposes many tools, CUGA shrinks the set before the model sees it. T
 
 `embedding` compares one vector built from your question against one vector per tool (name + description + parameter names + return field names). It is strong at **recall** but weak at separating near-identical tools such as `get_contacts` (list) and `get_contact` (by id) — so `hybrid` is usually the better choice for discovery, and `embedding` for the provider cap where only "don't drop the needed tool" matters.
 
-Embeddings are local by default (`BAAI/bge-small-en-v1.5` via fastembed) — the same weights knowledge and policy already load, so there is one ONNX session and nothing extra for airgapped preload to fetch. Ranking makes no network call and is not billed. Setting `embedding_provider = "openai"` trades that away for a hosted model. Either way the *agent* still calls an LLM for its own reasoning — only the shortlister's ranking step is affected. The first call while a local model is still downloading is served by `fallback_strategy`, so **a query never waits on a download**.
+Embeddings are local by default (`BAAI/bge-small-en-v1.5` via fastembed) — the same weights policies already load, so there is one ONNX session and nothing extra for airgapped preload to fetch. Ranking makes no network call and is not billed. Setting `embedding_provider = "openai"` trades that away for a hosted model. Either way the *agent* still calls an LLM for its own reasoning — only the shortlister's ranking step is affected. The first call while a local model is still downloading is served by `fallback_strategy`, so **a query never waits on a download**.
 
 In **server mode** the catalogue is embedded at startup and again whenever the tool list changes, so the first `find_tools` after boot uses cosine rather than falling back. Vectors are keyed by content hash, so adding a tool embeds one document rather than the whole catalogue. The SDK stays lazy.
 
@@ -1108,6 +1162,26 @@ Edit `configurations/instructions/instructions.toml`:
 [instructions]
 instruction_set = "default"  # or any instruction set above
 ```
+
+</details>
+
+<details>
+<summary>💾 Conversation checkpointer settings</summary>
+
+## Configuration
+
+These `[storage]` keys in `settings.toml` control how published agent graphs persist execution state between turns. `checkpointer` defaults to `"memory"`, which keeps the current in-process behavior. Set any key with `DYNACONF_STORAGE__<KEY>`, for example `DYNACONF_STORAGE__CHECKPOINTER=durable`.
+
+A pending approval is tied to the published agent configuration that created it. If the agent is published again before the approval arrives, the server rejects that approval; start a new conversation with the updated agent.
+
+| Key | Default | Description |
+|---|---|---|
+| `checkpointer` | `"memory"` | `memory` (in-process, lost on restart) \| `durable` (SQLite when `storage.mode = "local"`, Postgres when `"prod"`) |
+| `checkpoint_db_path` | `""` | Local mode only. SQLite file for checkpoints; empty means `DBS_DIR/checkpoints.db` |
+| `checkpoint_pool_min_size` | `1` | Prod mode only. Minimum Postgres connection pool size |
+| `checkpoint_pool_max_size` | `10` | Prod mode only. Maximum Postgres connection pool size |
+
+In `prod` mode the checkpoint tables are created at startup, so the database user needs DDL rights.
 
 </details>
 

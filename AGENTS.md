@@ -113,6 +113,21 @@ assert _FakeChatWatsonx.last_kwargs["model_id"] == "configured-model-name"
 
 If a test fails with `AttributeError: <module 'cuga.backend.llm.models' ...> does not have the attribute '…'`, update the patch target — do not re-add a module-level import to “make the patch work”.
 
+## HARD RULE: at most 5 open pull requests per author
+
+**No author may have more than 5 open pull requests in this repository at any time. Drafts count. There are no exceptions** — not for urgent fixes, stacked pull requests, small changes, or a user request to "just open one more".
+
+Before you open, reopen, or push a new branch for a pull request:
+
+1. Count the author's open pull requests, drafts included:
+   ```bash
+   gh pr list --author "@me" --state open --json number --jq length
+   ```
+2. If the count is 5 or more, **do not open the pull request**. Stop and tell the user. Do not open it as a draft, under another branch name, or by splitting the work.
+3. Combine related changes into one pull request instead of opening one per fix.
+
+CI enforces this (`.github/workflows/pr-limit.yml`): for each author, the **5 oldest** open pull requests stay open and **every newer one is closed automatically** with a comment. A reopened pull request counts as the newest. To continue, merge or close one of the 5 oldest, then reopen the closed pull request. Bot accounts are exempt.
+
 ## Creating issues and pull requests
 
 When creating a new GitHub issue or pull request, use the AI agent skills documented in [CONTRIBUTING.md](CONTRIBUTING.md#ai-agent-skills) instead of inventing an ad-hoc flow. Prefer:
@@ -122,4 +137,4 @@ When creating a new GitHub issue or pull request, use the AI agent skills docume
 
 These skills are mirrored under `.cursor/skills/`, `.claude/skills/`, and `.bob/skills/` and follow repo conventions (templates, Conventional Commits, DCO signoff expectations, no promotional footers).
 
-**Labels (MUST).** Before every push to a branch with a pull request, before opening a pull request, and when creating an issue, set the `design-impact:`, `area:`, and (pull requests only) `readability:` labels with the rules in `.claude/skills/cuga-contributor-workflows/labels.md` (same file in the `.cursor/` and `.bob/` mirrors). CodeRabbit does not set these labels. When you change `labels.md` or another skill file, update all three mirrors.
+**Labels (MUST).** Before every push to a branch with a pull request, before opening a pull request, and when creating an issue, set the `design-impact:`, `design-review:`, `area:`, and (pull requests only) `evaluation:` and `readability:` labels with the rules in `.claude/skills/cuga-contributor-workflows/labels.md` (same file in the `.cursor/` and `.bob/` mirrors). CodeRabbit does not set these labels. When you change `labels.md` or another skill file, update all three mirrors.

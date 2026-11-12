@@ -328,7 +328,7 @@ async def test_load_policies_from_json_and_match(agent):
                         # Check if graph state indicates interruption
                         is_interrupted = False
                         try:
-                            state = agent.graph.get_state({"configurable": {"thread_id": thread_id}})
+                            state = await agent.graph.aget_state({"configurable": {"thread_id": thread_id}})
                             is_interrupted = state and state.next and len(state.next) > 0
                             if is_interrupted:
                                 logger.info(

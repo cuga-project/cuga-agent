@@ -144,7 +144,14 @@ async def invalidate_agent_graph_cache(
                     if config is None:
                         config, _ = await load_config(None, DEFAULT_AGENT_ID)
                     if config:
-                        await _apply_config_and_rebuild(agent, config, use_draft=use_draft)
+                        # The published default agent keeps the shared saver, so a roster
+                        # change does not drop its conversations (#774).
+                        await _apply_config_and_rebuild(
+                            agent,
+                            config,
+                            use_draft=use_draft,
+                            checkpointer=None if use_draft else getattr(state, "checkpointer", None),
+                        )
                     if generations.get(DEFAULT_AGENT_ID, 0) == generation:
                         break
 

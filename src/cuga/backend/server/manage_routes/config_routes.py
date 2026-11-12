@@ -402,7 +402,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
             await apply_published_config(state, config or {})
 
             try:
-                await rebuild_production_agent(state, config or {})
+                await rebuild_production_agent(state, config or {}, ver)
             except Exception as rebuild_err:
                 logger.error(f"Failed to rebuild production agent graph: {rebuild_err}")
         else:

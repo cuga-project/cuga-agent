@@ -44,7 +44,7 @@ async def test_approval_pause_preserves_prompt_without_duplicating_resume(
                     yield AgentLoopAnswer(end=False, interrupt=True, tools=[])
 
     graph = MagicMock()
-    graph.get_state.return_value = SimpleNamespace(values=checkpoint.model_dump())
+    graph.aget_state = AsyncMock(return_value=SimpleNamespace(values=checkpoint.model_dump()))
     agent = SimpleNamespace(graph=graph, policy_system=None)
     monkeypatch.setattr("cuga.backend.cuga_graph.utils.agent_loop.AgentLoop", ApprovalLoop)
     monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", fake_save)
@@ -106,6 +106,20 @@ def _registry_on(monkeypatch):
         "cuga.backend.server.agent_registry.is_agent_registry_enabled",
         lambda: True,
     )
+
+
+def _patch_agent_loop(monkeypatch, fake_loop) -> None:
+    """Make ``event_stream`` build ``fake_loop`` instead of ``AgentLoop``, for this test only.
+
+    ``event_stream`` imports ``AgentLoop`` and then ``controller`` inside its body. If
+    ``controller`` is first imported while ``agent_loop.AgentLoop`` is patched, its
+    module-level ``from ...agent_loop import AgentLoop`` binds the fake for the rest of
+    the process; monkeypatch only restores ``agent_loop.AgentLoop``. Import
+    ``controller`` first so it always binds the real class.
+    """
+    import cuga.backend.cuga_graph.utils.controller  # noqa: F401
+
+    monkeypatch.setattr("cuga.backend.cuga_graph.utils.agent_loop.AgentLoop", fake_loop)
 
 
 def _request():
@@ -171,7 +185,7 @@ async def test_registered_single_agent_does_not_inherit_global_supervisor(monkey
     monkeypatch.setattr(main_mod.settings.supervisor, "enabled", True)
     config = {"agent": {"name": "Digital Sales Assistant", "kind": "single"}, "tools": tools}
     graph = SimpleNamespace(build_graph=AsyncMock())
-    state = SimpleNamespace(agent=object(), agent_graphs_cache={})
+    state = SimpleNamespace(agent=object(), agent_graphs_cache={}, checkpointer=None)
     with (
         patch.object(main_mod, "app_state", state),
         patch("cuga.backend.server.config_store.load_config", AsyncMock(return_value=(config, 1))),
@@ -233,7 +247,7 @@ async def test_concurrent_first_stream_shares_one_graph():
     builds: list[object] = []
 
     class CountingGraph:
-        async def build_graph(self):
+        async def build_graph(self, **_kwargs):
             builds.append(self)
             await asyncio.sleep(0.05)
 
@@ -244,12 +258,13 @@ async def test_concurrent_first_stream_shares_one_graph():
         agent_graph_build_locks={},
         agent_graph_generations={},
         policy_system=None,
+        checkpointer=None,
     )
     with patch.object(main_mod, "app_state", state):
         with patch(
             "cuga.backend.server.config_store.load_config",
             new_callable=AsyncMock,
-            return_value=({"agent": {"kind": "single"}}, None),
+            return_value=({"agent": {"kind": "single"}}, 4),
         ):
             with patch(
                 "cuga.backend.cuga_graph.graph.DynamicAgentGraph",
@@ -263,6 +278,7 @@ async def test_concurrent_first_stream_shares_one_graph():
     assert first is second
     assert len(builds) == 1
     assert state.agent_graphs_cache[("sales-east", False)] is first
+    assert first._checkpoint_config_version == "4"
 
 
 @pytest.mark.asyncio
@@ -271,7 +287,7 @@ async def test_invalidate_during_build_does_not_cache_stale_graph():
     release = asyncio.Event()
 
     class SlowGraph:
-        async def build_graph(self):
+        async def build_graph(self, **_kwargs):
             started.set()
             await release.wait()
 
@@ -282,6 +298,7 @@ async def test_invalidate_during_build_does_not_cache_stale_graph():
         agent_graph_build_locks={},
         agent_graph_generations={},
         policy_system=None,
+        checkpointer=None,
     )
     request.app.state.app_state = state
 
@@ -333,20 +350,23 @@ async def test_event_stream_persists_under_requested_agent_id(
         async def run_stream(self, **_kwargs):
             from cuga.backend.cuga_graph.utils.agent_loop import AgentLoopAnswer
 
+            assert _kwargs["state"].service_scope["published_config_version"] == "4"
             saved["observed_supervisor_mode"] = _kwargs["state"].supervisor_mode
             yield AgentLoopAnswer(end=True, answer="done", tools=[])
 
     graph = MagicMock()
+    graph.get_state.side_effect = AssertionError("event_stream must read state via aget_state")
     if checkpoint_supervisor_mode is not None:
         from cuga.backend.cuga_graph.state.agent_state import default_state
 
         checkpoint = default_state(page=None, observation=None, goal="previous question")
         checkpoint.supervisor_mode = checkpoint_supervisor_mode
-        graph.get_state.return_value = SimpleNamespace(values=checkpoint.model_dump())
+        graph.aget_state = AsyncMock(return_value=SimpleNamespace(values=checkpoint.model_dump()))
     else:
-        graph.get_state.return_value = SimpleNamespace(values=None)
+        graph.aget_state = AsyncMock(return_value=SimpleNamespace(values=None))
     run_agent = SimpleNamespace(
         graph=graph,
+        _checkpoint_config_version="4",
         policy_system=None,
         enable_todos=None,
         reflection_enabled=None,
@@ -359,11 +379,7 @@ async def test_event_stream_persists_under_requested_agent_id(
     )
 
     monkeypatch.setattr(main_mod.settings.supervisor, "enabled", True)
-
-    monkeypatch.setattr(
-        "cuga.backend.cuga_graph.utils.agent_loop.AgentLoop",
-        _ImmediateLoop,
-    )
+    _patch_agent_loop(monkeypatch, _ImmediateLoop)
     monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", fake_save)
     monkeypatch.setattr(main_mod, "_knowledge_enabled_for_app_state", lambda _state: False)
     monkeypatch.setattr(main_mod, "_rehydrate_citation_ledger", AsyncMock())
@@ -391,6 +407,53 @@ async def test_event_stream_persists_under_requested_agent_id(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("is_resume", [False, True])
+@pytest.mark.parametrize("graph_version", ["3", "4"])
+async def test_stream_rejects_pending_approval_after_published_config_changes(
+    monkeypatch, is_resume, graph_version
+):
+    from cuga.backend.cuga_graph.state.agent_state import default_state
+
+    checkpoint = default_state(page=None, observation=None, goal="")
+    checkpoint.service_scope["published_config_version"] = "3"
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(
+        return_value=SimpleNamespace(values=checkpoint.model_dump(), next=("WaitForResponse",))
+    )
+    run_agent = SimpleNamespace(graph=graph, _checkpoint_config_version=graph_version)
+
+    def unexpected_loop(**_kwargs):
+        raise AssertionError("A stale approval must not invoke the graph")
+
+    _patch_agent_loop(monkeypatch, unexpected_loop)
+    load_config = AsyncMock(return_value=({}, "4"))
+    monkeypatch.setattr("cuga.backend.server.config_store.load_config", load_config)
+    monkeypatch.setattr(main_mod, "_assert_run_thread_access", AsyncMock())
+    monkeypatch.setattr(main_mod.app_state, "stop_events", {})
+    monkeypatch.setattr(main_mod.app_state, "output_format", None)
+
+    chunks = [
+        chunk
+        async for chunk in main_mod.event_stream(
+            "next turn",
+            api_mode=True,
+            resume=SimpleNamespace(model_dump_json=lambda: "{}") if is_resume else None,
+            thread_id="thread-1",
+            agent=run_agent,
+            agent_id="sales-east",
+        )
+    ]
+
+    assert len(chunks) == 1
+    assert "older agent configuration" in chunks[0]
+    graph.aget_state.assert_awaited_once()
+    if graph_version == "3":
+        load_config.assert_awaited_once_with(None, "sales-east")
+    else:
+        load_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("wxo", [False, True])
 @pytest.mark.parametrize("turn_id", ["interrupted-turn", ""])
 async def test_resumed_stream_uses_checkpoint_memory_disclosure(monkeypatch, wxo, turn_id):
@@ -399,10 +462,12 @@ async def test_resumed_stream_uses_checkpoint_memory_disclosure(monkeypatch, wxo
 
     checkpoint = default_state(page=None, observation=None, goal="")
     checkpoint.service_scope["memory_turn_id"] = turn_id
+    checkpoint.service_scope["published_config_version"] = "4"
     checkpoint.thread_id = "thread-1"
     saved: dict = {}
     usage = AsyncMock(return_value={"count": 1, "entity_ids": ["fact-a"]})
     monkeypatch.setattr(memory_store, "get_turn_memory_usage", usage)
+    monkeypatch.setattr("cuga.backend.server.config_store.load_config", AsyncMock(return_value=({}, "4")))
     monkeypatch.setattr(main_mod.settings.evolve, "enabled", True)
     monkeypatch.setattr(main_mod.settings.advanced_features, "wxo_integration", wxo)
 
@@ -424,9 +489,13 @@ async def test_resumed_stream_uses_checkpoint_memory_disclosure(monkeypatch, wxo
             yield AgentLoopAnswer(end=True, answer="done", tools=[])
 
     graph = MagicMock()
-    graph.get_state.return_value = SimpleNamespace(values=checkpoint.model_dump())
+    graph.aget_state = AsyncMock(
+        return_value=SimpleNamespace(values=checkpoint.model_dump(), next=("WaitForResponse",))
+    )
+    graph.get_state.side_effect = AssertionError("event_stream must read state via aget_state")
     run_agent = SimpleNamespace(
         graph=graph,
+        _checkpoint_config_version="4",
         policy_system=None,
         enable_todos=None,
         reflection_enabled=None,
@@ -437,10 +506,7 @@ async def test_resumed_stream_uses_checkpoint_memory_disclosure(monkeypatch, wxo
         chat=None,
     )
 
-    monkeypatch.setattr(
-        "cuga.backend.cuga_graph.utils.agent_loop.AgentLoop",
-        _ImmediateLoop,
-    )
+    _patch_agent_loop(monkeypatch, _ImmediateLoop)
     monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", fake_save)
     monkeypatch.setattr(main_mod, "_knowledge_enabled_for_app_state", lambda _state: False)
     monkeypatch.setattr(main_mod, "_rehydrate_citation_ledger", AsyncMock())
@@ -480,3 +546,115 @@ async def test_resumed_stream_uses_checkpoint_memory_disclosure(monkeypatch, wxo
         assert any("memory_usage" in chunk and "fact-a" in chunk for chunk in chunks)
     else:
         usage.assert_not_awaited()
+
+
+def _cheap_entry_graph(*_args, **_kwargs):
+    """A real, unbuilt CugaEntryGraph with no tools (same recipe as test_entry_graph)."""
+    from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
+
+    tool_provider = MagicMock(spec=ToolProviderInterface)
+    tool_provider.initialize = AsyncMock()
+    tool_provider.get_apps = AsyncMock(return_value=[])
+    return CugaEntryGraph(None, tool_provider=tool_provider, supervisor_enabled=False)
+
+
+async def _resolve_real_graph(request, state, agent_id: str, use_draft: bool):
+    from cuga.backend.llm.models import LLMManager
+
+    config = {"agent": {"kind": "single"}}
+    with (
+        patch.object(main_mod, "app_state", state),
+        patch(
+            "cuga.backend.server.config_store.load_config",
+            new_callable=AsyncMock,
+            return_value=(config, None),
+        ),
+        patch("cuga.backend.server.config_store.load_draft", new_callable=AsyncMock, return_value=config),
+        patch(
+            "cuga.backend.cuga_graph.policy.configurable.create_agent_policy_system",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch("cuga.backend.cuga_graph.graph.DynamicAgentGraph", side_effect=_cheap_entry_graph),
+        patch.object(LLMManager, "get_model", return_value=MagicMock()),
+    ):
+        return await main_mod._resolve_stream_agent(request, agent_id, use_draft)
+
+
+def _shared_saver_state(saver):
+    return SimpleNamespace(
+        agent=object(),
+        agent_graphs_cache={},
+        agent_graph_build_locks={},
+        agent_graph_generations={},
+        policy_system=None,
+        checkpointer=saver,
+    )
+
+
+@pytest.mark.asyncio
+async def test_published_rebuild_after_invalidation_keeps_thread_state():
+    """A publish invalidation rebuilds the graph; the shared saver keeps the thread (#774)."""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from cuga.backend.server.manage_routes.helpers import invalidate_agent_graph_cache
+
+    saver = MemorySaver()
+    state = _shared_saver_state(saver)
+    request = _request()
+    request.app.state.app_state = state
+    cfg = {"configurable": {"thread_id": "published-thread"}}
+
+    first = await _resolve_real_graph(request, state, "sales-east", False)
+    await first.graph.aupdate_state(
+        cfg, {"input": "before publish", "url": "seeded"}, as_node=first.chat.chat_agent.name
+    )
+
+    with patch(
+        "cuga.backend.server.manage_routes.helpers._referrer_ids_for_agent",
+        new_callable=AsyncMock,
+        return_value=[],
+    ):
+        await invalidate_agent_graph_cache(request, "sales-east", draft=False, published=True)
+    assert ("sales-east", False) not in state.agent_graphs_cache
+
+    second = await _resolve_real_graph(request, state, "sales-east", False)
+
+    assert second is not first
+    assert second.graph is not first.graph
+    snapshot = await second.graph.aget_state(cfg)
+    assert snapshot.values["input"] == "before publish"
+    assert snapshot.values["url"] == "seeded"
+
+
+@pytest.mark.asyncio
+async def test_draft_graph_does_not_use_the_shared_saver():
+    """Draft builds keep their own MemorySaver.
+
+    Judged by storage, not identity: a strict-msgpack compile wraps every saver
+    in a ``with_allowlist`` clone, so ``graph.checkpointer is saver`` never holds.
+    """
+    from langgraph.checkpoint.memory import MemorySaver
+
+    saver = MemorySaver()
+    state = _shared_saver_state(saver)
+    request = _request()
+    cfg = {"configurable": {"thread_id": "shared-thread-id"}}
+
+    published = await _resolve_real_graph(request, state, "sales-east", False)
+    await published.graph.aupdate_state(
+        cfg, {"input": "published turn"}, as_node=published.chat.chat_agent.name
+    )
+    assert await saver.aget_tuple(cfg) is not None
+
+    draft = await _resolve_real_graph(request, state, "sales-east", True)
+    assert draft is not published
+
+    # The draft graph cannot see the published thread...
+    assert not (await draft.graph.aget_state(cfg)).values
+    # ...and its own writes never reach the shared saver.
+    draft_cfg = {"configurable": {"thread_id": "draft-only-thread"}}
+    await draft.graph.aupdate_state(draft_cfg, {"input": "draft turn"}, as_node=draft.chat.chat_agent.name)
+    assert (await draft.graph.aget_state(draft_cfg)).values["input"] == "draft turn"
+    assert await saver.aget_tuple(draft_cfg) is None

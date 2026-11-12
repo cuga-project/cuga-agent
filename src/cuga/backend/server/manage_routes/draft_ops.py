@@ -14,15 +14,23 @@ def agent_rebuild_lock(agent: Any) -> asyncio.Lock:
     return lock
 
 
-async def rebuild_agent_from_config(agent: Any, config: dict[str, Any], *, use_draft: bool = False) -> None:
-    """Serialize direct edits with rebuilds triggered by a changed roster member."""
+async def rebuild_agent_from_config(
+    agent: Any, config: dict[str, Any], *, use_draft: bool = False, checkpointer: Any = None
+) -> None:
+    """Serialize direct edits with rebuilds triggered by a changed roster member.
+
+    ``checkpointer`` is the shared saver for published agents; ``None`` (draft
+    agents) gives the rebuilt graph its own fresh ``MemorySaver``.
+    """
     if not agent:
         return
     async with agent_rebuild_lock(agent):
-        await _apply_config_and_rebuild(agent, config, use_draft=use_draft)
+        await _apply_config_and_rebuild(agent, config, use_draft=use_draft, checkpointer=checkpointer)
 
 
-async def _apply_config_and_rebuild(agent: Any, config: dict[str, Any], *, use_draft: bool = False) -> None:
+async def _apply_config_and_rebuild(
+    agent: Any, config: dict[str, Any], *, use_draft: bool = False, checkpointer: Any = None
+) -> None:
     """Apply config while the caller holds agent_rebuild_lock."""
     tp = getattr(agent, "tool_provider", None)
     if tp is not None and hasattr(tp, "reset"):
@@ -55,4 +63,4 @@ async def _apply_config_and_rebuild(agent: Any, config: dict[str, Any], *, use_d
     agent.special_instructions = agent_special_instructions(config)
     for key, value in (await supervisor_graph_overrides(config, use_draft=use_draft)).items():
         setattr(agent, key, value)
-    await agent.build_graph()
+    await agent.build_graph(checkpointer=checkpointer)
