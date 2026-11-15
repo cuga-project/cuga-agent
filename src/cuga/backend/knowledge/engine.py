@@ -564,13 +564,15 @@ def _rrf_fuse(
         _r.lexical_rank = _l
         _r.rrf_score = round(_rrf_score(_d, _l), 6)
 
-    # Deterministic ordering: primary key is fused score (desc); ties
-    # break on (filename, page) so identical queries produce identical
-    # orderings across runs.
+    # Deterministic ordering: primary key is fused score (desc). Equal fused
+    # scores are common: when the two legs swap their top two, both chunks
+    # score 1/(k+1) + 1/(k+2). Break those ties on the dense rank, then on
+    # (filename, page) so identical queries produce identical orderings.
     fused = sorted(
         items.values(),
         key=lambda v: (
             -v[0].rrf_score if v[0].rrf_score is not None else 0.0,
+            v[1] if v[1] is not None else float("inf"),
             v[0].filename,
             v[0].page if v[0].page is not None else -1,
         ),
