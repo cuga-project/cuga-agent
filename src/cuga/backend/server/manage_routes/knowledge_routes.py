@@ -316,7 +316,7 @@ async def get_knowledge_env_presets():
             "id": "fastembed",
             "label": "Fastembed (local, default)",
             "default_provider": "fastembed",
-            "default_model": "BAAI/bge-small-en-v1.5",
+            "default_model": "intfloat/multilingual-e5-small",
         },
         {
             "id": "ollama",
