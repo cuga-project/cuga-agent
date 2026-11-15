@@ -7,6 +7,7 @@ import asyncio
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -74,6 +75,72 @@ def test_slow_keyword_leg_is_left_out_and_finishes_in_background(monkeypatch):
     assert [r.text for r in results] == ["dense hit"]
     # The keyword call was not abandoned: the one-time index rebuild it carries completes.
     assert adapter.keyword_done.wait(timeout=5)
+
+
+class _CountingAdapter(_Adapter):
+    def __init__(self, keyword_seconds: float):
+        super().__init__(keyword_seconds)
+        self.keyword_calls = 0
+        self.finished = 0
+
+    def search_lexical(self, q, k=10):
+        self.keyword_calls += 1
+        try:
+            return super().search_lexical(q, k)
+        finally:
+            self.finished += 1
+
+
+def _wait_until(predicate, timeout=5.0):
+    end = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < end:
+        time.sleep(0.02)
+    return predicate()
+
+
+def test_timed_out_keyword_calls_do_not_hold_up_the_vector_leg(monkeypatch):
+    # Each slow keyword call keeps its thread after its search gives up on it. On a shared
+    # two-thread default executor, two such calls would leave the third search's vector leg
+    # waiting for them.
+    monkeypatch.setattr(engine_mod, "_KEYWORD_LEG_BUDGET_S", 0.1)
+    adapter = _CountingAdapter(keyword_seconds=1.5)
+    eng = _engine(monkeypatch, adapter)
+
+    async def three_searches():
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=2))
+        times = []
+        for _ in range(3):
+            t = time.monotonic()
+            results, _ = await eng.search_with_stats("kb", "invoice INV-7710", limit=5, scope="agent")
+            times.append(time.monotonic() - t)
+            assert [r.text for r in results] == ["dense hit"]
+        return times
+
+    times = asyncio.run(three_searches())
+
+    assert max(times) < 1.0, f"searches took {times}"
+    assert _wait_until(lambda: adapter.finished == 3)
+
+
+def test_keyword_leg_is_skipped_while_every_keyword_thread_is_busy(monkeypatch):
+    monkeypatch.setattr(engine_mod, "_KEYWORD_LEG_BUDGET_S", 0.1)
+    monkeypatch.setattr(engine_mod, "_KEYWORD_POOL", ThreadPoolExecutor(max_workers=1))
+    monkeypatch.setattr(engine_mod, "_KEYWORD_SLOTS", threading.BoundedSemaphore(1))
+    adapter = _CountingAdapter(keyword_seconds=1.0)
+    eng = _engine(monkeypatch, adapter)
+
+    async def search():
+        results, _ = await eng.search_with_stats("kb", "invoice INV-7710", limit=5, scope="agent")
+        return {r.text for r in results}
+
+    assert asyncio.run(search()) == {"dense hit"}  # timed out; the only keyword thread stays busy
+    assert asyncio.run(search()) == {"dense hit"}  # no free keyword thread: skipped, not queued
+    assert adapter.keyword_calls == 1
+
+    assert _wait_until(lambda: adapter.finished == 1)
+    adapter.keyword_seconds = 0.0
+    assert asyncio.run(search()) == {"dense hit", "keyword hit"}  # the thread is free again
+    assert adapter.keyword_calls == 2
 
 
 def test_keyword_leg_within_budget_is_fused(monkeypatch):

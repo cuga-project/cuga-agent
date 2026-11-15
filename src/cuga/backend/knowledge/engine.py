@@ -18,6 +18,7 @@ import socket
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields as dc_fields
 from pathlib import Path
 from typing import Any, Optional
@@ -55,6 +56,14 @@ _REINDEX_WORKER_TIMEOUT_S = 1800  # 30 min; matches the deferred-flip wall-clock
 # first keyword call rebuilds the keyword index (about a minute per 50,000 chunks), which must
 # finish, but must not hold up a search past the agent's tool timeout.
 _KEYWORD_LEG_BUDGET_S = 5.0
+
+# Keyword calls run on their own few threads. A call past its budget keeps its thread until the
+# database returns (Postgres allows 60 s); on the shared default executor such threads would pile
+# up and hold up the vector leg and every other to_thread call. A slot is held until the call
+# returns, and with every slot busy a search skips the keyword leg instead of queueing.
+_KEYWORD_LEG_THREADS = 4
+_KEYWORD_POOL = ThreadPoolExecutor(max_workers=_KEYWORD_LEG_THREADS, thread_name_prefix="cuga-keyword")
+_KEYWORD_SLOTS = threading.BoundedSemaphore(_KEYWORD_LEG_THREADS)
 
 # Strong-ref set for fire-and-forget reindex worker tasks — the event loop keeps
 # only WEAK refs to create_task() results, so a GC mid-run would drop the finally
@@ -3384,9 +3393,23 @@ class KnowledgeEngine:
             return adapter.search_lexical(q, k=k)
 
         async def _lexical_within_budget(k: int, q: str = query):
+            slots, pool = _KEYWORD_SLOTS, _KEYWORD_POOL
+            if not slots.acquire(blocking=False):
+                logger.warning(
+                    f"Keyword search on {collection} skipped: every keyword thread is still busy with "
+                    "a slow call; this search ranked by meaning only."
+                )
+                return []
+
+            def _call():
+                try:
+                    return _do_lexical_search(k, q)
+                finally:
+                    slots.release()
+
             try:
                 return await asyncio.wait_for(
-                    asyncio.to_thread(_do_lexical_search, k, q), _KEYWORD_LEG_BUDGET_S
+                    asyncio.get_running_loop().run_in_executor(pool, _call), _KEYWORD_LEG_BUDGET_S
                 )
             except asyncio.TimeoutError:  # the thread is not stopped; only this search stops waiting
                 logger.warning(
