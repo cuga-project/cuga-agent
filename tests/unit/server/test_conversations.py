@@ -78,6 +78,7 @@ async def server(monkeypatch):
     app.add_api_route("/api/conversations", main.get_conversations, methods=["GET"])
     app.add_api_route("/api/conversations", main.create_conversation, methods=["POST"])
     app.add_api_route("/api/conversations/{conversation_id}", main.delete_conversation, methods=["DELETE"])
+    app.add_api_route("/api/workspace/file", main.get_workspace_file, methods=["GET"])
     user = {"sub": "alice"}
     app.dependency_overrides[main.require_chat_access] = lambda: SimpleNamespace(sub=user["sub"])
 
@@ -400,6 +401,45 @@ async def test_legacy_delete_removes_only_the_callers_own_history(server):
         await server.db.claim_thread("shared", "bob", create=False)
     server.user["sub"] = "carol"
     assert (await server.client.delete("/api/conversations/shared")).status_code == 404
+
+
+async def test_shared_legacy_delete_cannot_authorize_an_overlapping_workspace_read(
+    server, monkeypatch, tmp_path
+):
+    await server.db.save_conversation("cuga-default", "shared", 1, "alice", [])
+    await server.db.save_conversation("cuga-default", "shared", 1, "bob", [])
+    upload = tmp_path / "alice.txt"
+    upload.write_text("Alice's upload")
+    monkeypatch.setattr(server.main, "workspace_tree_is_native_backed", lambda: False)
+    monkeypatch.setattr(server.main, "workspace_tree_is_sandbox_backed", lambda: False)
+    monkeypatch.setattr(server.main, "resolve_host_workspace_path", lambda path, tid: upload)
+    url = "/api/workspace/file?path=uploads/alice.txt&thread_id=shared"
+
+    server.user["sub"] = "bob"
+    assert (await server.client.get(url)).status_code == 404
+
+    store = server.db._get_store()
+    fetchall = store.fetchall
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def pause_before_read(sql, params=()):
+        if "conversation_history" in sql and "stream_events" in sql and not started.is_set():
+            started.set()
+            await release.wait()
+        return await fetchall(sql, params)
+
+    monkeypatch.setattr(store, "fetchall", pause_before_read)
+    read = asyncio.create_task(server.client.get(url))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        server.user["sub"] = "alice"
+        assert (await server.client.delete("/api/conversations/shared")).status_code == 200
+    finally:
+        release.set()
+
+    assert (await read).status_code == 404
+    server.user["sub"] = "bob"
+    assert (await server.client.get(url)).status_code == 404
 
 
 async def test_a_failed_shared_legacy_delete_changes_nothing(server, monkeypatch):

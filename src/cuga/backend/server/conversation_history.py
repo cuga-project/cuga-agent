@@ -149,7 +149,31 @@ class ConversationHistoryDB:
         scope = (_tenant_id(), _instance_id(), thread_id)
         owner_sql = """SELECT user_id, agent_id, status FROM runtime_thread_owners
             WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?"""
-        owner = await store.fetchone(owner_sql, scope)
+        if create:
+            owner = await store.fetchone(owner_sql, scope)
+        else:
+            # The owner row and legacy history must come from one statement snapshot.
+            # A shared legacy deletion retires the ID while removing one user's history;
+            # separate reads could miss the new owner row and authorize from the remainder.
+            rows = await store.fetchall(
+                """WITH owner AS (
+                    SELECT user_id, agent_id, status FROM runtime_thread_owners
+                    WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
+                ), legacy AS (
+                    SELECT user_id, agent_id FROM conversation_history
+                    WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
+                    UNION
+                    SELECT user_id, agent_id FROM stream_events
+                    WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
+                )
+                SELECT user_id, agent_id, status, 1 AS is_owner FROM owner
+                UNION ALL
+                SELECT user_id, agent_id, NULL AS status, 0 AS is_owner FROM legacy
+                WHERE NOT EXISTS (SELECT 1 FROM owner)""",
+                scope + scope + scope,
+            )
+            owner = next((row for row in rows if row["is_owner"]), None)
+            legacy = [row for row in rows if not row["is_owner"]]
         if owner:
             if owner["status"] == "deleted":
                 raise ThreadOwnershipError("Access denied: conversation was deleted")
@@ -159,13 +183,14 @@ class ConversationHistoryDB:
                 raise ThreadOwnershipError("Access denied: thread belongs to another agent")
             if not create or not agent_id or owner["agent_id"]:
                 return owner["agent_id"]
-        legacy = await store.fetchall(
-            """SELECT user_id, agent_id FROM conversation_history
-            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
-            UNION SELECT user_id, agent_id FROM stream_events
-            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?""",
-            scope + scope,
-        )
+        if create:
+            legacy = await store.fetchall(
+                """SELECT user_id, agent_id FROM conversation_history
+                WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
+                UNION SELECT user_id, agent_id FROM stream_events
+                WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?""",
+                scope + scope,
+            )
         if any(row["user_id"] != user_id for row in legacy):
             raise ThreadOwnershipError("Access denied: thread belongs to another user")
         legacy_agents = {row["agent_id"] for row in legacy}
