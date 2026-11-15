@@ -793,6 +793,33 @@ def test_rare_word_outranks_common_words(backend, make_adapter, monkeypatch):
 
 
 @pytest.mark.pgvector
+def test_postgres_ranks_keyword_hits_like_sqlite(make_adapter, monkeypatch):
+    """Both backends rank a natural-language question's keyword hits with FTS5's BM25, so the
+    same chunks come back in the same order: a word in half or more of the chunks adds nothing,
+    a repeated word saturates, and a long chunk is not favoured for its length."""
+    _set_tenant(monkeypatch, "tenant_a")
+    chunks = {
+        "short_rare": "Zambezi river film notes.",
+        "long_rare": "The documentary about the Zambezi follows fishermen, traders and children "
+        "along villages where boats carry maize, timber and news between distant markets.",
+        "repeats": "River river river river river delta flooding season.",
+        "common_long": "The film was shown in the town hall and the film club met every week "
+        "to discuss the film and other films with the director of the club.",
+        "common_short": "The film director spoke.",
+        "unrelated": "Copper prices rose in the second quarter.",
+    }
+    query = "who directed the film about the Zambezi river"
+    orders = {}
+    for backend in ("sqlite", "pgvector"):
+        collection = unique_collection("kwbm25")
+        adapter = make_adapter(backend, collection)
+        sources = {_add(adapter, collection, name, text): name for name, text in chunks.items()}
+        orders[backend] = [sources[doc.metadata["source"]] for doc, _ in adapter.search_lexical(query, k=6)]
+
+    assert orders["pgvector"] == orders["sqlite"]
+
+
+@pytest.mark.pgvector
 def test_postgres_keyword_setup_gives_up_on_a_busy_table(make_adapter, monkeypatch):
     """Adding the keyword column to a table another session has open waits at most a few seconds:
     the keyword leg is empty meanwhile, and the next call, once the table is free, completes it.

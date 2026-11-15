@@ -531,20 +531,22 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         async def _search(conn):
             if not await self._pg_ensure_terms(conn):
                 return []
-            # BM25-style: each query group is weighted by its inverse document frequency in the
-            # caller's scope, times its length-normalised frequency in the chunk (ts_rank_cd,
-            # normalisation 1). Plain ts_rank_cd weighs "the" like a rare identifier, which
-            # buries the right chunk under natural-language queries. The weights are computed
-            # once (MATERIALIZED, one indexed count per group), and candidates come from one
-            # indexed match on the union of the groups.
+            # SQLite FTS5's BM25 (k1 1.2, b 0.75), so both backends rank alike. Each query group
+            # gets FTS5's inverse document frequency in the caller's scope, floored near zero: a
+            # group in half or more of the chunks adds nothing, as "the" should not. Its count in
+            # the chunk (ts_rank_cd with unit weights: 1 per match) saturates, and the chunk's
+            # length (its distinct terms, against the scope's average) normalises it. The weights
+            # are computed once (MATERIALIZED, one indexed count per group), and candidates come
+            # from one indexed match on the union of the groups.
             return await conn.fetch(
                 f"""
                 WITH n AS (
-                    SELECT count(*)::float8 AS n FROM {self._collection}
+                    SELECT count(*)::float8 AS n, greatest(avg(length({_TERMS_COLUMN})), 1)::float8 AS avgdl
+                    FROM {self._collection}
                     WHERE tenant_id = $2 AND instance_id = $3
                 ),
                 w AS MATERIALIZED (
-                    SELECT g.q::tsquery AS q, ln(1 + (n.n - df.df + 0.5) / (df.df + 0.5)) AS idf
+                    SELECT g.q::tsquery AS q, greatest(ln((n.n - df.df + 0.5) / (df.df + 0.5)), 1e-6) AS idf
                     FROM unnest($1::text[]) AS g(q)
                     CROSS JOIN n
                     CROSS JOIN LATERAL (
@@ -553,9 +555,12 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                     ) df
                 )
                 SELECT c.chunk_text, c.meta_json,
-                       (SELECT sum(w.idf * ts_rank_cd(c.{_TERMS_COLUMN}, w.q, 1))
-                        FROM w WHERE c.{_TERMS_COLUMN} @@ w.q) AS rank
-                FROM {self._collection} c
+                       (SELECT sum(w.idf * t.tf * 2.2 / (t.tf + 1.2 * (0.25 + 0.75 * length(c.{_TERMS_COLUMN}) / n.avgdl)))
+                        FROM w CROSS JOIN LATERAL (
+                            SELECT ts_rank_cd('{{1,1,1,1}}'::float4[], c.{_TERMS_COLUMN}, w.q, 0) AS tf
+                        ) t
+                        WHERE c.{_TERMS_COLUMN} @@ w.q) AS rank
+                FROM {self._collection} c CROSS JOIN n
                 WHERE c.tenant_id = $2 AND c.instance_id = $3 AND c.{_TERMS_COLUMN} @@ $5::text::tsquery
                 ORDER BY rank DESC, c.id LIMIT $4  -- a stable order for ties, so results reproduce
                 """,
