@@ -3401,16 +3401,16 @@ class KnowledgeEngine:
                 )
                 return []
 
-            def _call():
-                try:
-                    return _do_lexical_search(k, q)
-                finally:
-                    slots.release()
-
             try:
-                return await asyncio.wait_for(
-                    asyncio.get_running_loop().run_in_executor(pool, _call), _KEYWORD_LEG_BUDGET_S
-                )
+                fut = pool.submit(_do_lexical_search, k, q)
+            except RuntimeError:  # the pool is shut down (interpreter exit)
+                slots.release()
+                return []
+            # Fires once, when the call returns or when it is cancelled before it starts, so a
+            # call cancelled while still queued gives its slot back too.
+            fut.add_done_callback(lambda _f: slots.release())
+            try:
+                return await asyncio.wait_for(asyncio.wrap_future(fut), _KEYWORD_LEG_BUDGET_S)
             except asyncio.TimeoutError:  # the thread is not stopped; only this search stops waiting
                 logger.warning(
                     f"Keyword search on {collection} took over {_KEYWORD_LEG_BUDGET_S:g}s; this search "

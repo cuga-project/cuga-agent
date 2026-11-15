@@ -143,6 +143,27 @@ def test_keyword_leg_is_skipped_while_every_keyword_thread_is_busy(monkeypatch):
     assert adapter.keyword_calls == 2
 
 
+def test_a_keyword_call_cancelled_before_it_starts_frees_its_slot(monkeypatch):
+    # Two slots, one thread: the second call waits in the pool's queue, times out there and is
+    # cancelled without ever running. Its slot must come back all the same.
+    slots = threading.BoundedSemaphore(2)
+    monkeypatch.setattr(engine_mod, "_KEYWORD_LEG_BUDGET_S", 0.1)
+    monkeypatch.setattr(engine_mod, "_KEYWORD_POOL", ThreadPoolExecutor(max_workers=1))
+    monkeypatch.setattr(engine_mod, "_KEYWORD_SLOTS", slots)
+    adapter = _CountingAdapter(keyword_seconds=0.5)
+    eng = _engine(monkeypatch, adapter)
+
+    async def two_searches():
+        for _ in range(2):
+            await eng.search_with_stats("kb", "invoice INV-7710", limit=5, scope="agent")
+
+    asyncio.run(two_searches())
+
+    assert _wait_until(lambda: adapter.finished == 1)
+    assert adapter.keyword_calls == 1  # the queued call was cancelled before it ran
+    assert slots.acquire(blocking=False) and slots.acquire(blocking=False), "a slot leaked"
+
+
 def test_keyword_leg_within_budget_is_fused(monkeypatch):
     adapter = _Adapter(keyword_seconds=0.0)
     eng = _engine(monkeypatch, adapter)
