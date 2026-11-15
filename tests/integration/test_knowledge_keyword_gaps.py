@@ -769,6 +769,29 @@ def test_postgres_backfill_batches_skip_rows_already_filled(make_adapter, monkey
     assert last <= 3 * first, f"the last batch read {last} buffers, the first {first}"
 
 
+@pytest.mark.parametrize("backend", BOTH_BACKENDS)
+def test_rare_word_outranks_common_words(backend, make_adapter, monkeypatch):
+    """In a natural-language question, the chunk with the rare word ranks first, not the chunks
+    that repeat the question's common words."""
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwr")
+    adapter = make_adapter(backend, collection)
+    for i in range(8):
+        _add(
+            adapter,
+            collection,
+            f"common_{i}",
+            "What is the value of the record? The value of the record is in the report.",
+        )
+    target = _add(adapter, collection, "target", "Record ZQX-4471 holds a value.")
+
+    hits = adapter.search_lexical("what is the value of the record ZQX-4471", k=3)
+
+    assert hits and hits[0][0].metadata["source"] == target, (
+        f"{backend}: ranked {[d.metadata['source'] for d, _ in hits]}"
+    )
+
+
 @pytest.mark.pgvector
 def test_postgres_keyword_setup_gives_up_on_a_busy_table(make_adapter, monkeypatch):
     """Adding the keyword column to a table another session has open waits at most a few seconds:
