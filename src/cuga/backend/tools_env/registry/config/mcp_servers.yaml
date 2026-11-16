@@ -66,6 +66,8 @@ services:
 # MCP gateway instance (Streamable HTTP). Paste the instance URL from the workspace instance
 # page; the registry calls <gateway>/mcp/ with a token exchanged from the instance API key at
 # auth.iam_proxy_url, renewed before it expires. Only the tools in `include` are used.
+# The gateway host must be listed in mcp_gateway.allowed_hosts (settings.toml); otherwise
+# the entry is skipped.
 # mcpServers:
 #   team_tools:
 #     url: https://<gateway>/?instance=<instance id>
