@@ -187,6 +187,39 @@ test.describe("MCP Gateway Carbon workflows", { tag: "@e2e" }, () => {
     expect(payloads[0]).not.toHaveProperty("api_key");
   });
 
+  test("a saved environment secret is sent as a reference, never as the key or a new secret", async ({ page }) => {
+    const dialog = await openGateway(page);
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await page.route("**/api/secrets?*", (route) => route.fulfill({ json: { secrets: [{ id: "GATEWAY_KEY", source: "env" }] } }));
+    await page.route("**/api/secrets/config", (route) => route.fulfill({ json: { mode: "local" } }));
+    let secretWrites = 0;
+    await page.route("**/api/secrets", (route) => {
+      if (route.request().method() === "POST") secretWrites++;
+      return route.fulfill({ json: { ref: "db://unexpected" } });
+    });
+    await page.getByRole("button", { name: "MCP Gateway", exact: true }).click();
+    const form = page.getByRole("dialog", { name: "Add MCP Gateway", exact: true });
+    await form.getByLabel("Name", { exact: true }).fill("env_gateway");
+    await form.getByLabel("Gateway instance URL").fill(gatewayUrl);
+    await form.getByLabel("Tool calls run as").selectOption("service");
+    await form.getByRole("checkbox", { name: "Use saved secret", exact: true }).press("Space");
+    await form.getByLabel("Secret", { exact: true }).selectOption("GATEWAY_KEY");
+    const payloads: Record<string, unknown>[] = [];
+    await page.route("**/api/manage/gateway/discover", (route) => {
+      payloads.push(route.request().postDataJSON());
+      return route.fulfill({ json: { servers } });
+    });
+    await clickVisibleAction(form.getByRole("button", { name: "Connect", exact: true }));
+    await form.getByRole("checkbox", { name: /^get_forecast/ }).press("Space");
+    await form.getByRole("button", { name: "Add gateway", exact: true }).click();
+    const tile = page.locator(".tools-config-tile").filter({ hasText: "env_gateway" });
+    await tile.getByRole("button", { name: "Edit", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: /^(Add|Edit) MCP Gateway$/ }).getByLabel("Secret", { exact: true })).toHaveValue("GATEWAY_KEY");
+    expect(payloads[0]).toMatchObject({ api_key_ref: "env://GATEWAY_KEY" });
+    expect(payloads[0]).not.toHaveProperty("api_key");
+    expect(secretWrites).toBe(0);
+  });
+
   test("creating a Vault credential invalidates tools discovered with the previous saved credential", async ({ page }) => {
     const dialog = await openGateway(page);
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
