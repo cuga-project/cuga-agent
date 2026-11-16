@@ -18,6 +18,10 @@ observe, add text to the system prompt, block a code block or a tool call, or se
 Each method may return ``None``, a string (the message), or a ``HookResult`` with a message, an ``answer``
 (on_user_message, before_reply) and details for observers (e.g. which rule decided). ``HookRegistry`` calls all hooks and emits a ``HookEvent`` per hook call;
 add a listener with ``agent.hooks.add_listener(fn)`` to stream events.
+
+``tool_blocked(tool, args, message)`` is not a lifecycle hook: when any hook stops a tool call, every hook is told, to
+observe only, because a ``before_tool_call`` hook cannot see what the other hooks said. ``HookRegistry.FEATURES`` lists
+what the registry offers beyond the nine hooks (``tool_blocked``, ``failure_report``).
 """
 
 from .registry import (
