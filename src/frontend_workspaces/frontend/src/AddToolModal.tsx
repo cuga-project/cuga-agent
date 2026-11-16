@@ -37,7 +37,12 @@ const emptyAuth: ToolAuth = { type: "none" };
 type McpConnectionMode = "url" | "url-http" | "command" | "gateway";
 
 const GATEWAY_AUTH_TYPE: AuthType = "account_iam_apikey";
-const SECRET_REF_PREFIXES = ["db://", "vault://", "aws://"];
+const SECRET_REF_PREFIXES = ["db://", "vault://", "aws://", "env://"];
+
+/** A saved secret selected for a gateway: env secrets are listed by their bare name. */
+function gatewaySecretRef(value: string): string {
+  return SECRET_REF_PREFIXES.some((p) => value.startsWith(p)) ? value : `env://${value}`;
+}
 
 // Pre-configured tool templates
 interface ToolTemplate {
@@ -255,16 +260,18 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly, l
     (gatewayServers ?? []).forEach((sv) => sv.tools.forEach((t) => known.set(t.name, t)));
     return [...gatewaySelected].sort().map((n) => known.get(n)).filter((t): t is GatewayToolDef => !!t);
   })();
-  // A key typed now, else the saved secret ref (also the one stored on the edited entry).
+  // The selected saved secret (by the "Use saved secret" choice, not by the value's form: an env
+  // secret is a bare name), else the ref stored on the edited entry when nothing is entered.
   const gatewayKeyRef = (() => {
     const v = authValue.trim();
-    if (v && SECRET_REF_PREFIXES.some((p) => v.startsWith(p))) return v;
+    if (v && useSavedSecret) return gatewaySecretRef(v);
     const prev = initial?.gateway ? initial.auth?.value ?? "" : "";
     return !v && SECRET_REF_PREFIXES.some((p) => prev.startsWith(p)) ? prev : "";
   })();
+  // A key typed now; it is saved as a new secret before the entry is saved.
   const gatewayPlainKey = (() => {
     const v = authValue.trim();
-    return v && !SECRET_REF_PREFIXES.some((p) => v.startsWith(p)) ? v : "";
+    return v && !useSavedSecret ? v : "";
   })();
 
   const connectGateway = async () => {
@@ -474,7 +481,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId, gatewayOnly, l
           <Select
             id="tool-auth-secret"
             labelText="Secret"
-            value={authValue}
+            value={authValue.startsWith("env://") ? authValue.slice("env://".length) : authValue}
             onChange={(e) => { setAuthValue(e.target.value); }}
           >
             <SelectItem value="" text="Select a secret" />
