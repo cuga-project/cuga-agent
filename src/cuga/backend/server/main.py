@@ -125,26 +125,45 @@ async def _assert_thread_access(
     try:
         return await get_conversation_db().claim_thread(thread_id, user_id, agent_id, create=create)
     except ThreadOwnershipError as exc:
-        raise HTTPException(
-            status_code=403, detail="Access denied: thread belongs to another user or agent"
-        ) from exc
+        # Same response as an unknown thread, so a caller cannot probe which IDs exist (#774).
+        raise HTTPException(status_code=404, detail="Conversation not found") from exc
     except Exception as exc:
         logger.error(f"Thread ownership unavailable: {exc}")
-        raise HTTPException(status_code=503, detail="Thread ownership unavailable") from exc
+        raise _conversation_unavailable() from exc
 
 
-def _checkpoint_thread_id(thread_id: str, user_id: str, agent_id: str) -> str:
+class _LeaseLost(Exception):
+    """A long operation noticed it no longer holds the conversation's lease."""
+
+
+def _conversation_unavailable() -> HTTPException:
+    """A storage failure: retryable, and not a sign that the conversation is gone (#774).
+
+    The response does not depend on the thread ID, so it reveals nothing about which IDs exist.
+    """
+    return HTTPException(
+        status_code=503, detail="Conversation temporarily unavailable", headers={"Retry-After": "2"}
+    )
+
+
+def _checkpoint_thread_id(thread_id: str, user_id: str, agent_id: str, entry: str = "web") -> str:
     from cuga.backend.server.thread_scope import checkpoint_thread_id
 
-    return checkpoint_thread_id(thread_id, user_id, agent_id)
+    return checkpoint_thread_id(thread_id, user_id, agent_id, entry)
 
 
 def _workspace_user_id(current_user: Optional[UserInfo]) -> str:
     return current_user.sub if current_user else DEFAULT_USER_ID
 
 
-async def _assert_run_thread_access(thread_id: str, user_id: str, agent_id: Optional[str] = None) -> None:
-    """Authorize the source thread before loading state or issuing capabilities."""
+async def _assert_run_thread_access(
+    thread_id: str, user_id: str, agent_id: Optional[str] = None, *, create: bool = True
+) -> None:
+    """Authorize the source thread before loading state or issuing capabilities.
+
+    ``create=False`` checks ownership without reserving an unused ID, for chats that are never
+    continued (preview, draft) and for a new chat before its conversation record exists.
+    """
     provider = getattr(app_state, "knowledge_provider", None)
     if user_id and user_id != DEFAULT_USER_ID and provider is not None:
         # Do not reserve runtime ownership for a caller denied by existing
@@ -152,12 +171,12 @@ async def _assert_run_thread_access(thread_id: str, user_id: str, agent_id: Opti
         if not provider.check_session_access(thread_id.strip(), user_id):
             raise HTTPException(status_code=403, detail="access denied to session")
     if agent_id is not None:
-        await _assert_thread_access(thread_id, user_id, agent_id)
+        await _assert_thread_access(thread_id, user_id, agent_id, create=create)
     if not user_id or user_id == DEFAULT_USER_ID:
         return
     thread_id = thread_id.strip()
     if agent_id is None:
-        await _assert_thread_access(thread_id, user_id)
+        await _assert_thread_access(thread_id, user_id, create=create)
     # Disabling knowledge must not release existing ownership: conversation
     # cleanup still reaches its collections and remaining workspace data.
     if provider is not None or _knowledge_enabled_for_app_state(app_state):
@@ -1764,8 +1783,19 @@ async def event_stream(
     user_attachments: Optional[List[Dict[str, Any]]] = None,
     agent_id: Optional[str] = None,
     current_llm: Any = _RUNTIME_LLM_UNSET,
+    entry: str = "web",
+    issued_thread_id: Optional[str] = None,
+    preloaded_snapshot: Any = None,
+    claim_owner: bool = True,
 ):
-    """Handles the main agent event stream. If agent is None, uses app_state.agent (published)."""
+    """Handles the main agent event stream. If agent is None, uses app_state.agent (published).
+
+    ``entry`` names the caller (``web``, ``run``, ``a2a``, ``ext``) and keeps each caller's
+    checkpoints apart. ``issued_thread_id`` is set when ``/stream`` created the conversation, and is
+    sent to the client as the first event. ``preloaded_snapshot`` is the checkpoint ``/stream``
+    already read and validated under the lease; the turn runs on it instead of reading again.
+    ``claim_owner=False`` checks ownership without recording an owner, for preview and draft chats.
+    """
     from cuga.backend.activity_tracker.tracker import ActivityTracker
     from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
     from cuga.backend.cuga_graph.utils.agent_loop import AgentLoop, AgentLoopAnswer, StreamEvent
@@ -1804,18 +1834,22 @@ async def event_stream(
     runtime_agent_id = agent_id or app_state.agent_id
     thread_id = _canonical_thread_id(thread_id or str(uuid.uuid4()))
     try:
-        await _assert_run_thread_access(thread_id, user_id, runtime_agent_id)
+        await _assert_run_thread_access(thread_id, user_id, runtime_agent_id, create=claim_owner)
     except HTTPException as exc:
         if exc.status_code == 403:
-            yield StreamEvent(
-                name="Error", data="Access denied: thread belongs to another user or agent"
-            ).format(app_state.output_format, thread_id=thread_id)
+            message = "Access denied to this conversation"
+        elif exc.status_code == 503:
+            message = "Conversation temporarily unavailable, please retry"
         else:
-            yield StreamEvent(name="Error", data="Thread ownership unavailable").format(
-                app_state.output_format, thread_id=thread_id
-            )
+            message = "Conversation not found"
+        yield StreamEvent(name="Error", data=message).format(app_state.output_format, thread_id=thread_id)
         return
-    checkpoint_thread_id = _checkpoint_thread_id(thread_id, user_id, runtime_agent_id)
+    checkpoint_thread_id = _checkpoint_thread_id(thread_id, user_id, runtime_agent_id, entry)
+    # WXO renders every event as assistant text; its chunks already carry thread_id (#774).
+    if issued_thread_id and app_state.output_format != "wxo":
+        yield StreamEvent(name="thread_created", data=issued_thread_id).format(
+            app_state.output_format, thread_id=issued_thread_id
+        )
     if current_llm is _RUNTIME_LLM_UNSET:
         runtime_llm = (
             app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None)
@@ -1847,9 +1881,11 @@ async def event_stream(
         # Check if we have existing state for this thread_id (for followup questions)
         if thread_id:
             try:
-                snapshot = await run_agent.graph.aget_state(
-                    {"configurable": {"thread_id": checkpoint_thread_id}}
-                )
+                snapshot = preloaded_snapshot
+                if snapshot is None:
+                    snapshot = await run_agent.graph.aget_state(
+                        {"configurable": {"thread_id": checkpoint_thread_id}}
+                    )
                 if await _stale_pending_checkpoint(snapshot):
                     yield StreamEvent(name="Error", data=stale_approval_message).format(
                         app_state.output_format, thread_id=thread_id
@@ -1888,7 +1924,11 @@ async def event_stream(
     else:
         # For resume, fetch state from LangGraph
         if thread_id:
-            snapshot = await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
+            snapshot = preloaded_snapshot
+            if snapshot is None:
+                snapshot = await run_agent.graph.aget_state(
+                    {"configurable": {"thread_id": checkpoint_thread_id}}
+                )
             if await _stale_pending_checkpoint(snapshot):
                 yield StreamEvent(name="Error", data=stale_approval_message).format(
                     app_state.output_format, thread_id=thread_id
@@ -2823,6 +2863,7 @@ async def extension_agent_query(
                 api_mode=settings.advanced_features.mode == "api",
                 resume=query if isinstance(query, ActionResponse) else None,
                 thread_id=request_id,
+                entry="ext",
                 user_id=user_id,
             ):
                 if chunk.strip():
@@ -3026,18 +3067,46 @@ async def stream(
 
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     query = await get_query(request)
-    thread_id = (request.headers.get("X-Thread-ID") or "").strip()
-    if not thread_id:
-        thread_id = str(uuid.uuid4())
-        logger.info(f"No X-Thread-ID header found, generated new thread_id: {thread_id}")
-    else:
-        logger.info(f"Using provided thread_id: {thread_id}")
-
-    thread_id = _canonical_thread_id(thread_id)
     agent_id_header = _runtime_agent_id(request) or "cuga-default"
+    use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
+    disable_history = str(request.headers.get("X-Disable-History", "") or "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    # Draft chats run on the draft graph's own in-memory saver, which a draft save or restart wipes,
+    # so they cannot be continued: like the agent-builder preview, they are never listed and keep
+    # client-generated thread IDs (#774). X-Disable-History still decides whether history is saved.
+    preview = use_draft
+    thread_id = (request.headers.get("X-Thread-ID") or "").strip()
+    issued_thread_id = None
+    # A new web chat gets its conversation record only once the request has passed every check,
+    # so a rejected request leaves no orphan owner row (#774).
+    issue_new = not thread_id and not preview
+    if thread_id:
+        thread_id = _canonical_thread_id(thread_id)
+    else:
+        thread_id = str(uuid.uuid4())
+    if not issue_new and not preview:
+        # Only server-issued conversations can be continued; anything else is not found (#774).
+        await _require_continuable_conversation(thread_id, user_id, agent_id_header)
     # Reject before StreamingResponse sends headers; event_stream also guards
     # other entry points before reading checkpoints, previews or workspace data.
-    await _assert_run_thread_access(thread_id, user_id, agent_id_header)
+    # Preview and draft chats are never continued, so they record no owner.
+    await _assert_run_thread_access(thread_id, user_id, agent_id_header, create=not (preview or issue_new))
+
+    async def issue_conversation() -> None:
+        nonlocal issued_thread_id
+        if not issue_new:
+            return
+        try:
+            await get_conversation_db().create_conversation(thread_id, user_id, agent_id_header)
+        except Exception as exc:
+            logger.error(f"Failed to create conversation: {type(exc).__name__}")
+            raise HTTPException(status_code=500, detail="Failed to start conversation") from exc
+        issued_thread_id = thread_id
+
     user_attachments = await get_attachment_snapshot(request)
 
     # User message will be saved as part of the event stream buffer
@@ -3057,25 +3126,25 @@ async def stream(
     # confirmed act. The cost is that a plain-English standing request runs ONCE as chat; the fix is
     # to type /automate, which is discoverable and never surprises.
     if isinstance(query, str) and events_bridge.forwards_to_events(query, thread_id):
-        _q, _tid = query, thread_id
+        await issue_conversation()
+        _q, _tid, _issued = query, thread_id, issued_thread_id
 
         async def _arming_stream():
             # StreamEvent is imported INSIDE event_stream, so it is not in this scope —
             # referencing it here used to raise NameError and kill the whole arming reply.
             from cuga.backend.cuga_graph.utils.agent_loop import StreamEvent as _SE
 
+            # A new chat that opens with a slash verb must still learn its ID, or the follow-up
+            # "yes" lands on a fresh conversation and the arming dialogue is lost.
+            # WXO renders every event as assistant text; its chunks already carry thread_id.
+            if _issued and app_state.output_format != "wxo":
+                yield _SE(name="thread_created", data=_issued).format(
+                    app_state.output_format, thread_id=_issued
+                )
             reply = await events_bridge.forward_slash_to_events(_q, _tid, request.headers)
             yield _SE(name="Answer", data=reply).format(app_state.output_format, thread_id=_tid)
 
         return StreamingResponse(_arming_stream(), media_type="text/event-stream")
-
-    use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
-    disable_history = str(request.headers.get("X-Disable-History", "") or "").lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
 
     if disable_history:
         logger.info(f"History saving disabled for thread_id: {thread_id}")
@@ -3091,9 +3160,10 @@ async def stream(
     else:
         run_agent = await _resolve_stream_agent(request, agent_id_header, use_draft)
         runtime_llm = None
+    await issue_conversation()
 
-    return StreamingResponse(
-        event_stream(
+    def body(preloaded_snapshot: Any = None):
+        return event_stream(
             query if isinstance(query, str) else None,
             api_mode=settings.advanced_features.mode == "api",
             resume=query if isinstance(query, ActionResponse) else None,
@@ -3104,9 +3174,98 @@ async def stream(
             user_attachments=user_attachments,
             agent_id=agent_id_header,
             current_llm=runtime_llm,
-        ),
+            issued_thread_id=issued_thread_id,
+            preloaded_snapshot=preloaded_snapshot,
+            claim_owner=not preview,
+        )
+
+    graph = getattr(run_agent or app_state.agent, "graph", None)
+    if preview or graph is None:  # without a graph, event_stream reports "Agent not available"
+        return StreamingResponse(body(), media_type="text/event-stream")
+
+    from cuga.backend.server.thread_lease import ThreadBusy, get_thread_lease
+    from cuga.backend.server.turn_prelude import ThreadUnavailable, check_turn_state
+
+    checkpoint_key = _checkpoint_thread_id(thread_id, user_id, agent_id_header)
+    lease = get_thread_lease()
+    try:
+        token = await lease.acquire(checkpoint_key)
+    except ThreadBusy:
+        return JSONResponse(status_code=409, content={"error": "conflict", "retry_after_ms": 2000})
+    try:
+        # Re-read under the lease: the conversation may have been deleted while this request waited.
+        status = await _require_continuable_conversation(thread_id, user_id, agent_id_header)
+        handle = getattr(app_state, "checkpointer_handle", None)
+        snapshot = await check_turn_state(graph, checkpoint_key, status, handle.kind if handle else "memory")
+    except ThreadUnavailable as exc:
+        await lease.release(token)
+        return JSONResponse(status_code=409, content={"error": "unavailable", "reason": exc.reason})
+    except BaseException:
+        await lease.release(token)
+        raise
+    return _LeasedStreamingResponse(
+        _leased_turn(body(snapshot), lease, token, thread_id, user_id, graph, checkpoint_key, status),
+        lease=lease,
+        token=token,
         media_type="text/event-stream",
     )
+
+
+async def _require_continuable_conversation(thread_id: str, user_id: str, agent_id: str) -> str:
+    """Return the conversation's status, or 404 unless the caller owns it and it can continue.
+
+    A storage failure is a retryable 503, so the client does not treat the conversation as gone.
+    """
+    try:
+        status = await get_conversation_db().get_thread_status(thread_id, user_id, agent_id)
+    except Exception as exc:
+        logger.error(f"Conversation lookup failed: {type(exc).__name__}")
+        raise _conversation_unavailable() from exc
+    if status not in ("new", "active"):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return status
+
+
+async def _leased_turn(
+    body, lease, token, thread_id: str, user_id: str, graph, checkpoint_key: str, status: str
+):
+    """Stream one turn while holding the conversation's lease; mark a new one active once state exists."""
+    import anyio
+
+    from cuga.backend.server.thread_lease import keep_lease
+
+    stop_event = app_state.stop_events.setdefault(thread_id, asyncio.Event())
+    async with keep_lease(lease, token, stop_event=stop_event):
+        try:
+            async for chunk in body:
+                yield chunk
+        finally:
+            if status == "new":  # an active conversation needs no re-read after its turn
+                # Shielded: a client disconnect cancels the response, and must not leave a
+                # conversation that has state marked ``new`` (#774).
+                with anyio.CancelScope(shield=True):
+                    try:
+                        snapshot = await graph.aget_state({"configurable": {"thread_id": checkpoint_key}})
+                        if snapshot and (snapshot.values or snapshot.next):
+                            await get_conversation_db().set_thread_status(
+                                thread_id, user_id, "active", only_from="new"
+                            )
+                    except Exception as exc:
+                        logger.error(f"Could not mark conversation active: {type(exc).__name__}")
+
+
+class _LeasedStreamingResponse(StreamingResponse):
+    """Releases the lease even if the response is cancelled before the body starts."""
+
+    def __init__(self, content, *, lease, token, **kwargs):
+        super().__init__(content, **kwargs)
+        self._lease, self._token = lease, token
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await asyncio.shield(self._lease.release(self._token))
 
 
 # ── /run, the roster, and the events bridge ───────────────────────────────────────────────────
@@ -3392,14 +3551,18 @@ async def get_conversations(
     try:
         conversation_db = get_conversation_db()
         threads = await conversation_db.get_all_threads_for_agent(agent_id, user_id)
-        # Map to the format the frontend expects: [{id, title, timestamp, preview}]
+        # History without a continuable owner row predates session continuity (#774): read-only.
+        statuses = await conversation_db.get_thread_statuses(user_id, agent_id)
         conversations = []
         for t in threads:
             first_msg = t.get("first_message", "")
             # Convert ISO timestamp to epoch ms for frontend
             ts = 0
             try:
-                ts = int(datetime.datetime.fromisoformat(t.get("updated_at", "")).timestamp() * 1000)
+                dt = datetime.datetime.fromisoformat(t.get("updated_at", ""))
+                if dt.tzinfo is None:  # history rows store naive UTC (utcnow().isoformat())
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+                ts = int(dt.timestamp() * 1000)
             except Exception:
                 pass
             conversations.append(
@@ -3408,12 +3571,13 @@ async def get_conversations(
                     "title": first_msg if first_msg else "New Chat",
                     "timestamp": ts,
                     "preview": first_msg[:100] if first_msg else "",
+                    "status": statuses.get(t.get("thread_id", ""), "legacy"),
                 }
             )
         return JSONResponse(conversations)
     except Exception as e:
         logger.error(f"Failed to load conversations: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to load conversations: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to load conversations")
 
 
 @app.post("/api/conversations")
@@ -3421,21 +3585,28 @@ async def create_conversation(
     request: Request,
     current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
-    """Endpoint to create a new conversation."""
+    """Create a conversation with a server-issued ID; ``/stream`` continues it by that ID (#774)."""
+    user_id = current_user.sub if current_user else DEFAULT_USER_ID
     try:
         data = await request.json()
-        # TODO: Implement actual conversation storage
-        conversation = {
-            "id": str(uuid.uuid4()),
-            "title": data.get("title", "New Conversation"),
-            "timestamp": data.get("timestamp", int(datetime.datetime.now().timestamp() * 1000)),
-            "preview": data.get("preview", ""),
-        }
-        logger.info(f"Created conversation: {conversation['id']}")
-        return JSONResponse(conversation)
+        agent_id = "cuga-default"
+        if agent_registry.is_agent_registry_enabled():
+            agent_id = str(data.get("agent_id") or "").strip() or _runtime_agent_id(request) or "cuga-default"
+        thread_id = str(uuid.uuid4())
+        await get_conversation_db().create_conversation(thread_id, user_id, agent_id)
+        logger.info(f"Created conversation: {thread_id}")
+        return JSONResponse(
+            {
+                "id": thread_id,
+                "title": data.get("title", "New Conversation"),
+                "timestamp": int(datetime.datetime.now().timestamp() * 1000),
+                "preview": "",
+                "status": "new",
+            }
+        )
     except Exception as e:
-        logger.error(f"Failed to create conversation: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create conversation: {str(e)}")
+        logger.error(f"Failed to create conversation: {type(e).__name__}")
+        raise HTTPException(status_code=500, detail="Failed to create conversation")
 
 
 @app.delete("/api/conversations/{conversation_id}")
@@ -3445,27 +3616,95 @@ async def delete_conversation(
     agent_id: str = "cuga-default",
     current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
-    """Delete a conversation thread and its stream events."""
+    """Delete a conversation: its checkpoint, session knowledge, uploads and history (#774).
+
+    Runs under the conversation's lease, so no turn can write while it deletes. Every step is
+    idempotent: if one fails the response is 500 and the client can retry. The owner row stays,
+    marked ``deleted``, so the ID can never be claimed again.
+    """
+    from cuga.backend.server.thread_lease import ThreadBusy, get_thread_lease, keep_lease
+
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     conversation_id = conversation_id.strip()
-    # A user-scoped DB delete can succeed without matching rows. Authorize
-    # before it triggers unscoped knowledge, ownership and upload cleanup.
-    await _assert_run_thread_access(conversation_id, user_id)
+    conversation_db = get_conversation_db()
     try:
-        conversation_db = get_conversation_db()
-        success = await conversation_db.delete_thread(agent_id, conversation_id, user_id)
+        status = await conversation_db.get_thread_status(conversation_id, user_id, agent_id)
+    except Exception as exc:
+        logger.error(f"Conversation lookup failed: {type(exc).__name__}")
+        raise _conversation_unavailable() from exc
 
-        if success:
-            await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
-            await delete_thread_uploads(conversation_id)
-            await _release_sandbox_thread(conversation_id, agent_id)
-            logger.info(f"Deleted conversation and stream events: {conversation_id}")
+    if status is None:
+        # History with no owner row predates thread ownership.
+        try:
+            latest = await conversation_db.get_latest_version(agent_id, conversation_id, user_id, strict=True)
+        except Exception as exc:
+            logger.error(f"Conversation lookup failed: {type(exc).__name__}")
+            raise _conversation_unavailable() from exc
+        if latest <= 0:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        try:
+            # The caller's history proves ownership: bind it, then clean up like any owned
+            # conversation, so the ID and its uploads cannot pass to another user (#774).
+            await conversation_db.claim_thread(conversation_id, user_id, agent_id)
+        except ThreadOwnershipError:
+            # Another user also has history under this ID. Knowledge and uploads are keyed by
+            # thread ID alone, so remove only the caller's own rows and retire the ID in the same
+            # transaction: no one can then claim it and reach the leftover uploads (#774).
+            try:
+                await conversation_db.delete_thread_and_retire(agent_id, conversation_id, user_id)
+            except Exception as exc:
+                logger.error(f"Failed to delete shared conversation: {type(exc).__name__}")
+                raise _conversation_unavailable() from exc
             return JSONResponse({"status": "success", "message": "Conversation deleted"})
-        else:
-            raise HTTPException(status_code=500, detail="Failed to delete conversation")
+        except Exception as exc:
+            logger.error(f"Conversation claim failed: {type(exc).__name__}")
+            raise _conversation_unavailable() from exc
+    if status == "deleted":
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    checkpoint_key = _checkpoint_thread_id(conversation_id, user_id, agent_id)
+    lease = get_thread_lease()
+    try:
+        token = await lease.acquire(checkpoint_key)
+    except ThreadBusy:
+        return JSONResponse(status_code=409, content={"error": "conflict", "retry_after_ms": 2000})
+    try:
+        # Renewed while cleanup runs, so a slow delete cannot lose the lease to a new turn. If the
+        # lease is lost anyway, stop before the next step: every step is safe to retry.
+        lost = asyncio.Event()
+        async with keep_lease(lease, token, stop_event=lost):
+
+            def still_held() -> None:
+                if lost.is_set():
+                    raise _LeaseLost()
+
+            handle = getattr(request.app.state.app_state, "checkpointer_handle", None)
+            if handle is not None:
+                # /run, A2A and the extension keep their own checkpoints of this conversation (#774).
+                for entry in ("web", "run", "a2a", "ext"):
+                    still_held()
+                    await handle.saver.adelete_thread(
+                        _checkpoint_thread_id(conversation_id, user_id, agent_id, entry)
+                    )
+            still_held()
+            await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
+            still_held()
+            await delete_thread_uploads(conversation_id)
+            still_held()
+            await _release_sandbox_thread(conversation_id, agent_id)
+            still_held()
+            if not await conversation_db.delete_thread(agent_id, conversation_id, user_id):
+                raise RuntimeError("history delete failed")
+            still_held()
+            await conversation_db.set_thread_status(conversation_id, user_id, "deleted")
+    except _LeaseLost as e:
+        logger.error("Lost the conversation lease during delete; stopped before the next step")
+        raise _conversation_unavailable() from e
     except Exception as e:
-        logger.error(f"Failed to delete conversation: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete conversation: {str(e)}")
+        logger.error(f"Failed to delete conversation: {type(e).__name__}")
+        raise HTTPException(status_code=500, detail="Failed to delete conversation") from e
+    logger.info(f"Deleted conversation: {conversation_id}")
+    return JSONResponse({"status": "success", "message": "Conversation deleted"})
 
 
 @app.get("/api/config/memory")
@@ -4671,7 +4910,9 @@ async def upload_workspace_file(
             raise HTTPException(status_code=400, detail="thread_id required for workspace upload")
 
         user_id = _workspace_user_id(current_user)
-        await _assert_thread_access(tid, user_id)
+        # Conversations are created by POST /api/conversations; an upload never reserves an ID.
+        if await _assert_thread_access(tid, user_id, create=False) is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
 
         try:
             sanitize_upload_filename(file.filename or "upload.json")
