@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json as _json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -17,6 +18,59 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
 _BUNDLED_FIND_TOOLS_FEW_SHOT_JSON = (
     Path(__file__).resolve().parent.parent / "prompts" / "find_tools_few_shot_examples.json"
 )
+
+
+# Names list (experiment, ``advanced_features.cuga_lite_find_tools_names_list``): a find_tools result ends with the
+# names of the app's tools that the search did not return, and ``tool_names`` loads any of them by exact name. Text
+# after the marker is a list of names only, so ``found_tool_names`` does not count those tools as found.
+NAMES_LIST_MARKER = "### Other tools in"
+_RESULT_TOOL_HEADER = re.compile(r"^## \d+\. `([^`]+)`", re.M)
+
+
+def names_list_enabled() -> bool:
+    return bool(getattr(settings.advanced_features, "cuga_lite_find_tools_names_list", False))
+
+
+def names_list_section(app_name: str, app_tools: List[StructuredTool], result_text: str) -> str:
+    """The names of ``app_tools`` that ``result_text`` does not describe, with how to load them; '' when none."""
+    shown = set(_RESULT_TOOL_HEADER.findall(result_text or ""))
+    others = [t.name for t in app_tools if t.name not in shown]
+    if not others:
+        return ""
+    return (
+        f"\n{NAMES_LIST_MARKER} `{app_name}` (names only, not loaded)\n\n"
+        + ", ".join(others)
+        + "\n\nYou cannot call these yet. To load any of them, call find_tools with the same app_name and "
+        'tool_names=["<exact name>", ...]; no new search is needed.\n'
+    )
+
+
+def render_tools_by_name(app_name: str, app_tools: List[StructuredTool], tool_names: List[str]) -> str:
+    """The find_tools markdown for the tools named in ``tool_names`` (exact name, with or without the app prefix)."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import ShortlistCandidate, render_tools_markdown
+
+    by_name = {t.name: t for t in app_tools}
+    by_short = {t.name.split("__", 1)[1]: t for t in app_tools if "__" in t.name}
+    picked: List[str] = []
+    unknown: List[str] = []
+    for raw in tool_names:
+        name = str(raw).strip()
+        tool = by_name.get(name) or by_short.get(name)
+        if tool is None:
+            unknown.append(name)
+        elif tool.name not in picked:
+            picked.append(tool.name)
+    notes = (
+        [f"Not a tool of `{app_name}`: {', '.join(unknown)}. Use the exact names from the list."]
+        if unknown
+        else []
+    )
+    return render_tools_markdown(
+        [ShortlistCandidate(name=n, reasoning="Loaded by name.") for n in picked],
+        app_tools,
+        "load by name: " + ", ".join(str(n) for n in tool_names),
+        notes,
+    )
 
 
 def _first_user_message_text(chat_messages: Optional[List[BaseMessage]]) -> Optional[str]:
@@ -80,6 +134,26 @@ async def create_find_tools_tool(
         Returns:
             Relevant matching tools for the query (no fixed count)
         """
+        return await _search(query, app_name)
+
+    async def find_tools_with_names_func(query: str, app_name: str, tool_names: Optional[List[str]] = None):
+        """Search for relevant tools from the connected applications based on a natural language query.
+
+        Args:
+            query: Natural language query describing what tools are needed to accomplish the task can include also which parameters are needed or the output expected
+            app_name: Name of a specific app to filter tools from. Only searches tools from that app.
+            tool_names: Optional. Exact tool names to load, taken from the "Other tools" list at the end of an earlier find_tools result. When given, these tools are returned with their parameters and no search is made.
+
+        Returns:
+            Relevant matching tools for the query (no fixed count), then the names of the other tools of the app
+        """
+        app_tools = list((app_to_tools_map or {}).get(app_name) or [])
+        if tool_names:
+            return render_tools_by_name(app_name, app_tools, list(tool_names))
+        result = await _search(query, app_name)
+        return str(result) + names_list_section(app_name, app_tools, str(result))
+
+    async def _search(query: str, app_name: str):
         if app_to_tools_map and app_name in app_to_tools_map:
             filtered_tools = app_to_tools_map[app_name]
         elif app_to_tools_map is None:
@@ -136,7 +210,7 @@ async def create_find_tools_tool(
             )
 
     return StructuredTool.from_function(
-        func=find_tools_func,
+        func=find_tools_with_names_func if names_list_enabled() and app_to_tools_map else find_tools_func,
         name="find_tools",
         description="Search for relevant tools from a specific connected application based on a natural language query. Use this when you need to discover what tools are available for a specific task within a specific application.",
     )
