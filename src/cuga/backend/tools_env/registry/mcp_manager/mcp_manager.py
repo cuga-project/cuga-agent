@@ -800,7 +800,12 @@ class MCPManager:
                 ]
                 logger.info(f"Using {len(tools)} saved tool definitions for gateway entry {name}")
             else:
-                transport = self._create_transport(name, config)
+                if config.auth and str(config.auth.type).lower() == GATEWAY_AUTH_TYPE:
+                    # The instance API key is a saved secret read synchronously (a database
+                    # secret can wait up to 5 s); keep that off the registry's event loop.
+                    transport = await asyncio.to_thread(self._create_transport, name, config)
+                else:
+                    transport = self._create_transport(name, config)
                 if not transport:
                     self._set_service_status(name, "failed", "Transport creation returned no transport")
                     return False
@@ -1190,9 +1195,11 @@ class MCPManager:
         instance_id = mcp_gateway.user_mode_instance(config)
         if not instance_id:
             return self.mcp_transports[server_name]
-        token = mcp_gateway.CALL_USER_TOKEN.get()
-        if not token:
+        bound = mcp_gateway.CALL_USER_TOKEN.get()
+        if not bound or bound[0] != instance_id:
+            # No token, or a token of another instance: never send it to this server.
             raise Exception(mcp_gateway.user_token_required_body(instance_id)["message"])
+        token = bound[1]
         return StreamableHttpTransport(
             url=config.url,
             headers={"Authorization": f"Bearer {token}"},
