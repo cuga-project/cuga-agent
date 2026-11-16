@@ -116,6 +116,7 @@ async def post_registry_call(
     A GatewayAccessError (no user, no role) becomes the call's error text.
     """
     from cuga.backend.server.auth import gateway_tokens
+    from cuga.backend.tools_env.registry import mcp_gateway
 
     timeout = aiohttp.ClientTimeout(total=timeout_seconds)
     async with session.post(url, json=payload, headers=_CALL_HEADERS, timeout=timeout) as response:
@@ -124,6 +125,8 @@ async def post_registry_call(
         extra = await gateway_tokens.retry_headers(status, text)
     except gateway_tokens.GatewayAccessError as e:
         return 403, str(e)
+    except mcp_gateway.GatewayError as e:  # the IAM cannot be reached or answered badly
+        return 502, str(e)
     if not extra:
         return status, text
     async with session.post(
