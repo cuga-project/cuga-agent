@@ -8,7 +8,7 @@ test("conversation history keeps used and saved memory disclosures distinct", as
     if (path === "/api/auth/config") body = { enabled: false, authorization_enabled: false };
     else if (path === "/api/ui/config") body = { evolve_memory_enabled: true, agent_registry: false };
     else if (path === "/api/commands") body = [];
-    else if (path === "/api/conversation-threads") body = { threads: [{ thread_id: threadId, latest_version: 1, first_message: "Remember the handoff preference", updated_at: "2026-09-30T12:00:00" }] };
+    else if (path === "/api/conversations") body = [{ id: threadId, title: "Remember the handoff preference", timestamp: Date.parse("2026-09-30T12:00:00Z"), preview: "", status: "active" }];
     else if (path.startsWith("/api/conversation-stream-events/")) body = { events: [
       { event_name: "UserMessage", event_data: "Remember the handoff preference", sequence: 0, timestamp: "2026-09-30T12:00:00" },
       { event_name: "Answer", event_data: JSON.stringify({ data: "I will start with customer impact.", memory_usage: { count: 2, entity_ids: ["used-a", "used-b"] }, memory_saved: { count: 1, entity_ids: ["saved-c"] } }), sequence: 1, timestamp: "2026-09-30T12:00:01" },
