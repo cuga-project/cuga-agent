@@ -1,0 +1,49 @@
+# gpt-oss-120b with the provider's default reasoning: no reasoning_effort is sent.
+# Same as settings.openai.gptoss.toml otherwise; use that file to ask for high reasoning.
+#
+# Sampling follows OpenAI's published guidance for gpt-oss: temperature 1.0 and
+# top_p 1.0, to allow diverse reasoning paths. That differs from the other
+# profiles here at 0.1 and is deliberate: lowering it works against how the
+# model was trained.
+#
+# Budgets match settings.openai.toml (16000 / 400).
+#
+# Use with:  AGENT_SETTING_CONFIG="settings.openai.gptoss-default.toml"
+#            OPENAI_BASE_URL=<an OpenAI-compatible endpoint that serves gpt-oss-120b>
+#            MODEL_NAME=<the model name of that endpoint>
+
+[agent.planner.model]
+platform = "openai"
+temperature = 1.0
+top_p = 1.0
+max_tokens = 16000
+
+[agent.chat.model]
+platform = "openai"
+temperature = 1.0
+top_p = 1.0
+max_tokens = 16000
+
+[agent.final_answer.model]
+platform = "openai"
+temperature = 1.0
+top_p = 1.0
+max_tokens = 16000
+
+[agent.code.model]
+platform = "openai"
+temperature = 1.0
+top_p = 1.0
+max_tokens = 16000
+
+[agent.qa.model]
+platform = "openai"
+temperature = 1.0
+top_p = 1.0
+max_tokens = 16000
+
+[agent.action.model]
+platform = "openai"
+temperature = 1.0
+top_p = 1.0
+max_tokens = 400
