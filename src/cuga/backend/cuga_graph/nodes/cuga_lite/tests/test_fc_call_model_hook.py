@@ -202,6 +202,118 @@ async def test_empty_reply_is_retried_once_then_finalized():
     assert cmd2.goto == END, "the marker survives exactly one turn — no retry loop"
 
 
+# ── claim retries: the CodeAct overrides, without the classifier ─────────────
+
+_DONE_CLAIM = "The invoice has been sent to the customer (ID `inv_8812`)."
+_BLOCKED_CLAIM = "I'm unable to access the billing system, so I cannot send the invoice."
+
+
+@pytest.fixture
+def _claim_settings(monkeypatch):
+    """Set the three switches the claim retries read; returns the setter."""
+    from cuga.config import settings
+
+    def _set(*, nl: bool = True, blocked: bool = True, done: bool = True) -> None:
+        af = settings.advanced_features
+        monkeypatch.setattr(af, "cuga_lite_nl_auto_continue", nl, raising=False)
+        monkeypatch.setattr(af, "cuga_lite_blocked_claim_retry", blocked, raising=False)
+        monkeypatch.setattr(af, "cuga_lite_unexecuted_claim_retry", done, raising=False)
+
+    return _set
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text, marker, correction",
+    [
+        (_DONE_CLAIM, ga.DONE_CLAIM_RETRY_KEY, ga.DONE_CLAIM_CORRECTION),
+        (_BLOCKED_CLAIM, ga.BLOCKED_CLAIM_RETRY_KEY, ga.BLOCKED_CLAIM_CORRECTION),
+    ],
+    ids=["done_claim", "blocked_claim"],
+)
+async def test_unexecuted_claim_gets_one_corrective_turn(_claim_settings, text, marker, correction):
+    _claim_settings()
+    model = _Model(AIMessage(content=text))
+    state = _state()
+
+    cmd = await _turn(_adapter(), model, state, FC)
+
+    assert cmd.goto == "call_model" and cmd.update["final_answer"] == ""
+    assert cmd.update["chat_messages"][-1] == HumanMessage(content=correction)
+    assert cmd.update["chat_messages"][-2].content == text, "the claim stays in the transcript"
+    assert cmd.update["cuga_lite_metadata"][marker] is True
+    assert cmd.update["step_count"] == 1, "charged as a step"
+    assert len(model.seen) == 1, "no classifier call: the claim check is deterministic"
+
+    spent = _state(metadata={marker: True})
+    cmd2 = await _turn(_adapter(), _Model(AIMessage(content=text)), spent, FC)
+    assert cmd2.goto == END and cmd2.update["final_answer"] == text, "one retry, then the answer stands"
+
+
+@pytest.mark.asyncio
+async def test_claim_after_an_executed_tool_call_is_the_final_answer(_claim_settings):
+    _claim_settings()
+    history = [
+        HumanMessage(content="send the invoice"),
+        AIMessage(content="", tool_calls=[_CALL]),
+        ToolMessage(content="3", tool_call_id="c1", name="add"),
+    ]
+    cmd = await _turn(_adapter(), _Model(AIMessage(content=_DONE_CLAIM)), _state(history), FC)
+
+    assert cmd.goto == END and cmd.update["final_answer"] == _DONE_CLAIM
+
+
+@pytest.mark.asyncio
+async def test_claim_retry_skipped_on_the_grace_turn_and_the_last_step(_claim_settings):
+    _claim_settings()
+    grace = await _turn(
+        _adapter(), _Model(AIMessage(content=_DONE_CLAIM)), _state(), FC, budget_exhausted=True
+    )
+    last = await _turn(_adapter(), _Model(AIMessage(content=_DONE_CLAIM)), _state(max_steps=1), FC)
+
+    assert grace.goto == END and grace.update["final_answer"] == _DONE_CLAIM
+    assert last.goto == END and last.update["final_answer"] == _DONE_CLAIM
+
+
+@pytest.mark.asyncio
+async def test_nl_answer_that_is_not_a_claim_is_final_with_retries_on(_claim_settings):
+    """FC mode gets the claim checks only, never the general NL auto-continue."""
+    _claim_settings()
+    plan = "Let me check the billing tools next."
+    cmd = await _turn(_adapter(), _Model(AIMessage(content=plan)), _state(), FC)
+
+    assert cmd.goto == END and cmd.update["final_answer"] == plan
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "switches",
+    [
+        {"nl": False},
+        {"blocked": False, "done": False},
+    ],
+    ids=["nl_auto_continue_off", "both_claim_retries_off"],
+)
+@pytest.mark.parametrize("text", [_DONE_CLAIM, _BLOCKED_CLAIM], ids=["done_claim", "blocked_claim"])
+async def test_claim_is_the_final_answer_with_the_settings_off(_claim_settings, switches, text):
+    """Settings off: exactly the old END command, metadata untouched."""
+    _claim_settings(**switches)
+    state = _state()
+    response = AIMessage(content=text)
+
+    cmd = await _turn(_adapter(), _Model(response), state, FC)
+
+    assert cmd.goto == END
+    assert cmd.update == {
+        "chat_messages": state.chat_messages + [response],
+        "script": None,
+        "final_answer": text,
+        "execution_complete": True,
+        "step_count": 1,
+        "cuga_lite_metadata": {},
+    }
+
+
 # ── every issued id is answered before the run can end ───────────────────────
 
 
