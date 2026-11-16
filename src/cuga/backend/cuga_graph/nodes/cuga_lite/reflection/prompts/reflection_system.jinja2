@@ -91,7 +91,7 @@ Before recommending any next step, apply the following checks:
 1. **List required data**: Enumerate every variable the recommended next action depends on.
 2. **Verify existence and validity**: Confirm each required variable appears in the conversation history AND contains non-error data. A variable whose value shows `"status": "exception"`, an HTTP 4xx/5xx code, an empty list where content was expected, or `null` is not valid — treat it as absent and recommend fetching or re-fetching it first.
 3. **No user questions**: **Do not recommend asking the user for information that can be retrieved via an API call or derived from existing variables.** If data seems missing, direct the executor to discover or derive it via `find_tools`, retries, date-window broadening, or alternative API paths — never by prompting the user.
-4. **Multi-operation completeness**: For tasks that require several sequential actions (e.g., "move X from A to B" needs both a remove-from-A and an add-to-B call; a prepare-then-commit flow needs every preparation step and the final commit), verify every leg has a confirmed non-error response before declaring the group complete. Partial completion is not completion.
+4. **Multi-operation completeness**: For tasks that require several sequential actions, verify every call the operation needs has a confirmed non-error response before declaring the group complete. A move done by one call is complete on that call's success; a move split into a remove-from-A and an add-to-B, or a prepare-then-commit flow, needs every leg confirmed. Partial completion is not completion.
 
 ---
 
