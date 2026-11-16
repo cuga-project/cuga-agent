@@ -118,22 +118,27 @@ def load_service_configs(yaml_path: str) -> Dict[str, ServiceConfig]:
                 if data['services'] is not None:
                     for item in data['services']:
                         for service_name, config in item.items():
-                            service_config = _create_service_config(service_name, config)
-                            services[service_name] = service_config
+                            service_config = _create_service_config_or_skip(service_name, config)
+                            if service_config is not None:
+                                services[service_name] = service_config
 
             if 'mcpServers' in data:
                 if data['mcpServers'] is not None:
                     # Standard MCP format
                     mcp_servers = data['mcpServers']
                     for service_name, config in mcp_servers.items():
-                        service_config = _create_service_config(service_name, config, is_mcp_server=True)
-                        services[service_name] = service_config
+                        service_config = _create_service_config_or_skip(
+                            service_name, config, is_mcp_server=True
+                        )
+                        if service_config is not None:
+                            services[service_name] = service_config
         elif isinstance(data, list):
             # Pure legacy format (list at root)
             for item in data:
                 for service_name, config in item.items():
-                    service_config = _create_service_config(service_name, config)
-                    services[service_name] = service_config
+                    service_config = _create_service_config_or_skip(service_name, config)
+                    if service_config is not None:
+                        services[service_name] = service_config
 
         return services
     except Exception as e:
@@ -167,9 +172,14 @@ async def load_service_configs_from_db(agent_id: str = "cuga-default") -> Dict[s
                 continue
 
             # Create ServiceConfig from tool data
-            service_config = _create_service_config(
-                name, tool, is_mcp_server=tool.get("type", "mcp").lower() == "mcp"
+            service_config = _create_service_config_or_skip(
+                name,
+                tool,
+                is_mcp_server=tool.get("type", "mcp").lower() == "mcp",
+                source=f"agent '{agent_id}'",
             )
+            if service_config is None:
+                continue
             if service_config.gateway is not None:
                 # Manage saves the API key as a secret of this agent (draft and published share it).
                 service_config.gateway['secret_agent_id'] = agent_id.removesuffix('--draft')
@@ -182,11 +192,31 @@ async def load_service_configs_from_db(agent_id: str = "cuga-default") -> Dict[s
         return {}
 
 
+class GatewayConfigError(ValueError):
+    """An MCP gateway entry is invalid. Loaders skip only that entry."""
+
+
+def _create_service_config_or_skip(
+    service_name: str, config: dict, is_mcp_server: bool = False, source: str = ""
+) -> Optional[ServiceConfig]:
+    """The service config, or None for an invalid MCP gateway entry (logged).
+
+    One bad gateway entry must not remove the other tools of the agent or stop the registry.
+    """
+    try:
+        return _create_service_config(service_name, config, is_mcp_server=is_mcp_server)
+    except GatewayConfigError as e:
+        where = f" of {source}" if source else ""
+        logger.error(f"Skipping tool '{service_name}'{where}: {e}")
+        return None
+
+
 def _gateway_block(service_name: str, config: dict) -> Optional[Dict[str, Any]]:
     """The normalized gateway block of an MCP gateway instance entry, or None.
 
     The instance URL comes from ``gateway.instance_url`` or, for entries saved by the Manage
-    page, from ``url``. A bad URL is an error: the entry would otherwise connect elsewhere.
+    page, from ``url``. A bad URL, or a host not in ``mcp_gateway.allowed_hosts``, raises
+    GatewayConfigError: the entry would otherwise send tokens elsewhere.
     """
     block = config.get('gateway')
     if not isinstance(block, dict):
@@ -197,7 +227,7 @@ def _gateway_block(service_name: str, config: dict) -> Optional[Dict[str, Any]]:
     try:
         instance = parse_instance_url(instance_url)
     except ValueError as e:
-        raise ValueError(f"MCP gateway entry '{service_name}': {e}") from e
+        raise GatewayConfigError(f"MCP gateway entry '{service_name}': {e}") from e
     normalized = {
         'instance_url': instance.instance_url,
         'instance_id': instance.instance_id,
