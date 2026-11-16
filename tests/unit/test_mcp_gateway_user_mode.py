@@ -64,6 +64,11 @@ class FakeServer:
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
 
+@pytest.fixture(autouse=True)
+def allowed_gateway_hosts(monkeypatch):
+    monkeypatch.setattr(mcp_gateway, "allowed_hosts", lambda: ["gw.example.com", "127.0.0.1"])
+
+
 @pytest.fixture
 def fake(monkeypatch):
     f = FakeServer()
@@ -74,6 +79,7 @@ def fake(monkeypatch):
     )
     monkeypatch.setenv("CUGA_SECRET_KEY", Fernet.generate_key().decode())
     gateway_tokens._cache.clear()
+    gateway_tokens._locks.clear()
     yield f
     f.server.shutdown()
 
@@ -265,7 +271,7 @@ def test_user_mode_call_transport_uses_the_call_token():
     mgr = MCPManager({"team_tools": _config("user")})
     with pytest.raises(Exception, match="runs as the signed-in user"):
         mgr._call_transport("team_tools")
-    reset = mcp_gateway.CALL_USER_TOKEN.set("instance-token-9")
+    reset = mcp_gateway.CALL_USER_TOKEN.set((INSTANCE, "instance-token-9"))
     try:
         transport = mgr._call_transport("team_tools")
     finally:
@@ -364,3 +370,98 @@ async def test_discover_route_in_user_mode_needs_a_sign_in():
     with pytest.raises(HTTPException) as e:
         await discover_gateway(GatewayDiscoverRequest(url=URL, run_as="user"), request=Req(), user=None)
     assert e.value.status_code == 400 and "Sign in" in e.value.detail
+
+
+# --- review fixes ------------------------------------------------------------------------
+
+
+def test_a_token_of_another_instance_is_never_sent_to_this_server():
+    mgr = MCPManager({"team_tools": _config("user")})
+    reset = mcp_gateway.CALL_USER_TOKEN.set(("8a1b2c3d-0000-4b8a-9c61-0e4f2a7b8d93", "token-of-b"))
+    try:
+        with pytest.raises(Exception, match="runs as the signed-in user"):
+            mgr._call_transport("team_tools")
+    finally:
+        mcp_gateway.CALL_USER_TOKEN.reset(reset)
+
+
+def test_an_idp_cookie_over_the_browser_limit_is_not_set(fake):
+    assert gateway_tokens.encode_idp_cookie("x" * 3200, "session-a") is None
+    assert gateway_tokens.encode_idp_cookie("x" * 1500, "session-a")
+
+
+async def test_an_invalid_instance_id_from_the_registry_is_not_exchanged(fake):
+    gateway_tokens.set_provider(gateway_tokens.GatewayTokenProvider("alice", "idp-a"))
+    body = json.dumps({"error": mcp_gateway.ERROR_USER_TOKEN_REQUIRED, "instance_id": "../../other/endpoint"})
+    assert await gateway_tokens.retry_headers(401, body) is None
+    with pytest.raises(gateway_tokens.GatewayAccessError, match="not valid"):
+        await gateway_tokens.GatewayTokenProvider("alice", "idp-a").token("../../other/endpoint")
+    assert fake.exchanges == 0
+
+
+async def test_an_unreachable_iam_is_a_gateway_error(fake, monkeypatch):
+    monkeypatch.setattr(
+        mcp_gateway,
+        "gateway_settings",
+        lambda: {"iam_url": "http://127.0.0.1:1", "iam_verify": True, "gateway_verify": True},
+    )
+    with pytest.raises(mcp_gateway.GatewayError, match="IAM cannot be reached"):
+        await gateway_tokens.GatewayTokenProvider("alice", "idp-a").token(INSTANCE)
+    gateway_tokens.set_provider(gateway_tokens.GatewayTokenProvider("alice", "idp-a"))
+    async with aiohttp.ClientSession() as session:
+        status, text = await post_registry_call(session, f"{fake.url}/functions/call", {"app_name": "x"}, 10)
+    assert status == 502 and "IAM cannot be reached" in text
+
+
+async def test_discover_route_maps_an_unreachable_iam_to_502(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from fastapi import HTTPException
+
+    from cuga.backend.server.manage_routes.gateway_routes import GatewayDiscoverRequest, discover_gateway
+
+    provider = SimpleNamespace(token=AsyncMock(side_effect=mcp_gateway.GatewayError("IAM cannot be reached")))
+    monkeypatch.setattr(gateway_tokens, "provider_from_request", lambda request, user: provider)
+    with pytest.raises(HTTPException) as raised:
+        await discover_gateway(
+            GatewayDiscoverRequest(url=URL, run_as="user"), request=SimpleNamespace(), user=SimpleNamespace()
+        )
+    assert raised.value.status_code == 502
+
+
+async def test_unused_token_locks_are_pruned(fake):
+    stale = ("old-user", "old-credential", INSTANCE)
+    gateway_tokens._locks[stale] = __import__("asyncio").Lock()
+    await gateway_tokens.GatewayTokenProvider("alice", "idp-a").token(INSTANCE)
+    assert stale not in gateway_tokens._locks
+    assert ("alice", gateway_tokens.GatewayTokenProvider("alice", "idp-a")._credential_hash, INSTANCE) in (
+        gateway_tokens._cache
+    )
+
+
+def test_user_and_service_tokens_renew_at_the_same_margin():
+    assert gateway_tokens.RENEW_BEFORE_SECONDS == mcp_gateway.RENEW_BEFORE_SECONDS == 300
+
+
+async def test_the_extension_endpoint_passes_the_users_gateway_tokens(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from cuga.backend.server import main
+
+    seen = {}
+
+    async def fake_event_stream(*args, **kwargs):
+        seen.update(kwargs)
+        yield 'data: {"data": "done"}'
+
+    provider = gateway_tokens.GatewayTokenProvider("alice", "idp-a")
+    monkeypatch.setattr(main, "event_stream", fake_event_stream)
+    monkeypatch.setattr(main, "_assert_thread_access", AsyncMock())
+    monkeypatch.setattr(gateway_tokens, "provider_from_request", lambda request, user: provider)
+    request = SimpleNamespace(json=AsyncMock(return_value={"query": "what time is it?"}))
+    response = await main.extension_agent_query(request, current_user=SimpleNamespace(sub="alice"))
+    async for _ in response.body_iterator:
+        pass
+    assert seen["gateway_tokens"] is provider
