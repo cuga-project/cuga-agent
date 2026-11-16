@@ -84,6 +84,10 @@ class AgentHooks:
     def on_task_end(self, answer: str) -> Any:
         return None
 
+    def tool_blocked(self, tool: str, args: Dict[str, Any], message: str) -> None:
+        """Observe only: a hook stopped this tool call. A hook's own ``before_tool_call`` cannot know what the others said."""
+        return None
+
 
 OUTCOME_WHEN_MESSAGE = {
     "before_llm_call": "inject",
@@ -130,6 +134,10 @@ _RUN: ContextVar[Optional[_Run]] = ContextVar("cuga_hooks_run", default=None)
 
 class HookRegistry:
     """Calls every hook in order and records one HookEvent per hook call."""
+
+    # What this registry offers beyond the nine hooks, for hosts that need to know (a hook that must hear about a call
+    # that another hook stopped, or about a hook that raised).
+    FEATURES = frozenset({"tool_blocked", "failure_report"})
 
     def __init__(self, hooks: Optional[List[AgentHooks]] = None):
         self.hooks: List[AgentHooks] = list(hooks or [])
@@ -247,7 +255,26 @@ class HookRegistry:
         ).message
 
     def before_tool_call(self, tool: str, args: Dict[str, Any]) -> Optional[str]:
-        return self._call("before_tool_call", _fmt_call(tool, args), tool, args).message
+        try:
+            message = self._call("before_tool_call", _fmt_call(tool, args), tool, args).message
+        except HookBlocked as exc:  # a hook raised to block: every hook is told, then the block goes on
+            self._tool_blocked(tool, args, str(exc))
+            raise
+        if message:
+            self._tool_blocked(tool, args, message)
+        return message
+
+    def _tool_blocked(self, tool: str, args: Dict[str, Any], message: str) -> None:
+        """Tell every hook, to observe only, that a call was stopped. A broken observer does not change the block."""
+        for hook in self.hooks:
+            observe = getattr(hook, "tool_blocked", None)
+            if not callable(observe):
+                continue
+            try:
+                observe(tool, args, message)
+            except Exception as exc:
+                logger.warning("hook {}.tool_blocked failed: {}", type(hook).__name__, exc)
+                _report_failure(hook, "tool_blocked", (tool, args, message), exc)
 
     def after_tool_call(self, tool: str, args: Dict[str, Any], result: Any) -> Optional[str]:
         """A message is a note about this call: the tool wrapper attaches it to the result the agent sees. When the
