@@ -120,6 +120,8 @@ test.describe("Carbon design and responsive interactions", { tag: "@e2e" }, () =
       await route.fulfill({ json: { citations_enabled: citationChanges.at(-1) ?? true } });
     });
     await page.goto("/chat/weatherbot");
+    // Per-conversation settings need a conversation: a new chat has no ID yet (#774).
+    await page.getByRole("button", { name: /Plan next week's customer visits/ }).click();
     await page.getByRole("tab", { name: "Knowledge", exact: true }).click();
     const panel = page.locator(".knowledge-panel");
     const toggle = panel.getByRole("switch", { name: "Citations for this chat", exact: true });
@@ -131,7 +133,7 @@ test.describe("Carbon design and responsive interactions", { tag: "@e2e" }, () =
     await expect(panel.getByText("visit-notes.txt", { exact: true })).toBeVisible();
     expect(uploadRequest?.body).toContain('name="scope"');
     expect(uploadRequest?.body).toContain("session");
-    expect(uploadRequest?.thread).toBeTruthy();
+    expect(uploadRequest?.thread).toBe("recent");
     await capture(page, "knowledge");
   });
   test("skip link keeps the current route and reaches visible memory content", async ({ page }) => {
@@ -324,6 +326,8 @@ test.describe("Carbon design and responsive interactions", { tag: "@e2e" }, () =
       await route.fulfill({ status: 503, json: { detail: "Unavailable" } });
     });
     await page.goto("/chat/weatherbot");
+    // Session documents load only for a conversation: a new chat has no ID yet (#774).
+    await page.getByRole("button", { name: /Plan next week's customer visits/ }).click();
     await page.getByRole("tab", { name: "Knowledge", exact: true }).click();
     const loading = page.getByRole("status", { name: "Loading conversation documents…", exact: true });
     await expect(loading).toBeVisible();
@@ -445,7 +449,13 @@ test.describe("Carbon design and responsive interactions", { tag: "@e2e" }, () =
       }
       await route.fulfill({ json: { overrides: { citations_enabled: route.request().headers()["x-thread-id"] !== "recent" } } });
     });
+    // Two saved conversations: a new chat has no ID, so it has no citation setting yet (#774).
+    await page.route("**/api/conversations?*", (route) => route.fulfill({ json: [
+      { id: "earlier", title: "Review the quarterly forecast", timestamp: Date.parse("2026-10-30T08:00:00Z"), preview: "", status: "active" },
+      { id: "recent", title: "Plan next week's customer visits", timestamp: Date.parse("2026-10-31T08:00:00Z"), preview: "", status: "active" },
+    ] }));
     await page.goto("/chat/weatherbot");
+    await page.getByRole("button", { name: /Review the quarterly forecast/ }).click();
     await page.getByRole("tab", { name: "Knowledge", exact: true }).click();
     const toggle = page.getByRole("switch", { name: "Citations for this chat", exact: true });
     await expect(toggle).toBeChecked();

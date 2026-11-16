@@ -17,6 +17,8 @@ CUGA turns business requests into actions across your applications, APIs, and do
 
 [Apache 2.0](LICENSE) · Configurable Generalist Agent · Built with IBM SiL
 
+English · [简体中文](docs/readme/README.zh-CN.md)
+
 ---
 
 ## Quick install
@@ -68,7 +70,7 @@ Configure tools and policies beside a draft chat, then publish a version for use
 
 ### Watch the product tour
 
-https://github.com/user-attachments/assets/cb21fd61-b04b-4188-8f3e-e33197df1b9e
+https://github.com/user-attachments/assets/2c51ab34-cb7a-43f8-aa1d-9a4cf8e27b5c
 
 *Visual tour of the current UI with sample configuration, flows, run history, and memory records. It does not show a live agent run. [Media details](docs/readme/media.md).*
 
@@ -259,7 +261,7 @@ asyncio.run(main())
 
 Configure a model before running the example. Replace the sample tool with your own service integration.
 
-**[CugaAgent SDK](https://docs.cuga.dev/docs/build/cuga-agent/)** · **[CugaSupervisor](https://docs.cuga.dev/docs/build/cuga-supervisor/)** · **[Tool integration examples](docs/examples/cuga_with_runtime_tools/README.md)**
+**[CugaAgent SDK](https://docs.cuga.dev/docs/build/cuga-agent/)** · **[CugaSupervisor](https://docs.cuga.dev/docs/build/cuga-supervisor/)** · **[Tool integration examples](docs/examples/cuga_with_runtime_tools/README.md)** · **[Durable conversations](docs/readme/configuration-guide.md#sdk-durable-conversations)**
 
 ## Explore further
 

@@ -2,10 +2,10 @@
 
 from fastapi import APIRouter, Depends
 
-from cuga.backend.server.auth import require_manage_access
+from cuga.backend.server.auth import require_manage_or_local_access
 
 router = APIRouter(
     prefix="/api/manage",
     tags=["manage"],
-    dependencies=[Depends(require_manage_access)],
+    dependencies=[Depends(require_manage_or_local_access)],
 )

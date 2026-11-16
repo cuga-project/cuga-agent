@@ -148,7 +148,7 @@ async def run_cuga(test_file_path: str, result_file_path: str) -> (List[TestCase
                     eval_mode=False, goal=task.intent, current_datetime=tracker.current_date
                 )
                 # Reset variables after task completion using the current state
-                state = agent_runner.get_current_state()
+                state = await agent_runner.get_current_state()
                 state.variables_manager.reset()
                 results.append(result)
                 parsed_results = parse_test_results([task], [result])

@@ -1,5 +1,6 @@
 """LangGraph configurable integration for policy system."""
 
+import asyncio
 import hashlib
 import os
 import re
@@ -135,6 +136,7 @@ class PolicyConfigurable:
         self.agent = agent
         self.llm = llm
         self.embedding_function = embedding_function
+        self._init_lock = asyncio.Lock()
 
     @classmethod
     def get_instance(cls) -> "PolicyConfigurable":
@@ -189,6 +191,37 @@ class PolicyConfigurable:
             logger.debug("Policy system already initialized")
             return
 
+        # The policy system is shared: two runs starting together must not both
+        # set it up, or the later one replaces the storage and agent of the other.
+        async with self._init_lock:
+            if self._initialized:
+                logger.debug("Policy system already initialized")
+                return
+            await self._initialize(
+                policy_db_path,
+                collection_name,
+                embedding_dim,
+                embedding_provider,
+                embedding_model,
+                embedding_base_url,
+                embedding_api_key,
+            )
+
+    async def ensure_initialized(self) -> None:
+        """Set the policy system up if it is not yet; every policy check goes through here."""
+        if not self._initialized:
+            await self.initialize()
+
+    async def _initialize(
+        self,
+        policy_db_path: Optional[str],
+        collection_name: Optional[str],
+        embedding_dim: Optional[int],
+        embedding_provider: Optional[str],
+        embedding_model: Optional[str],
+        embedding_base_url: Optional[str],
+        embedding_api_key: Optional[str],
+    ):
         try:
             policy_config = getattr(settings, "policy", None)
             final_collection_name = collection_name or get_agent_policy_collection_name()
@@ -290,8 +323,7 @@ class PolicyConfigurable:
         Returns:
             PolicyMatch result
         """
-        if not self._initialized:
-            await self.initialize()
+        await self.ensure_initialized()
 
         return await self.agent.match_policy(context, target=target, policy_types=policy_types)
 
@@ -308,8 +340,7 @@ class PolicyConfigurable:
         Returns:
             List of PolicyMatch results
         """
-        if not self._initialized:
-            await self.initialize()
+        await self.ensure_initialized()
 
         return await self.agent.match_policies_by_type(context, policy_type)
 

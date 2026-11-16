@@ -51,9 +51,12 @@ class _StubGraph:
             self._on_ainvoke()
         return self._result
 
-    def get_state(self, *_args, **_kwargs):
+    async def aget_state(self, *_args, **_kwargs):
         # values=None → invoke() finds no existing state; next=() → not interrupted.
         return SimpleNamespace(values=None, next=())
+
+    def get_state(self, *_args, **_kwargs):
+        raise AssertionError("invoke() must read state via aget_state")
 
 
 def test_invoke_empty_answer_fallback_resolves_markers_and_overrides_stale_sources(monkeypatch):

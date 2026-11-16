@@ -380,7 +380,6 @@ To use an external PostgreSQL instead, leave `POSTGRES_PASSWORD` empty, do not u
 | `AGENT_SETTING_CONFIG` | yes | Settings TOML file (e.g. `settings.groq.toml`) |
 | `DYNACONF_AUTH__ENABLED` | no | Enable OIDC auth (default: `true`) |
 | `DYNACONF_AUTH__REQUIRE_HTTPS` | no | Enforce HTTPS on cookies and routes (default: `false`) |
-| `DYNACONF_AUTH__AUTHORIZATION_ENABLED` | no | Enable role-based authorization (default: `false`) |
 | `DYNACONF_AUTH__ROLE_TOKEN_SOURCE` | no | Token used for role checks: `auto` (default), `id_token`, `access_token`, `iam_proxy` |
 | `OIDC_CLIENT_ID` | no | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | no | OIDC client secret |

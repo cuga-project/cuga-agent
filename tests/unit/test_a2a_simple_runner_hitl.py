@@ -27,13 +27,13 @@ class _Snap:
 
 
 class _Graph:
-    """Returns a queued sequence of snapshots, one per get_state() call."""
+    """Returns a queued sequence of snapshots, one per aget_state() call."""
 
     def __init__(self, snaps):
         self._snaps = snaps
         self.calls = 0
 
-    def get_state(self, _config):
+    async def aget_state(self, _config):
         snap = self._snaps[min(self.calls, len(self._snaps) - 1)]
         self.calls += 1
         return snap
@@ -137,6 +137,41 @@ async def test_plain_answer_no_interrupt():
     assert events[-1].data["text"] == "hello there"
     # Only the entry parked-check reads state; answering needs no further reads.
     assert graph.calls == 1
+
+
+class _FailingGraph(_Graph):
+    """Raises on the given aget_state() call (0 = entry read, 1 = post-stream)."""
+
+    def __init__(self, snaps, fail_on):
+        super().__init__(snaps)
+        self._fail_on = fail_on
+
+    async def aget_state(self, config):
+        if self.calls == self._fail_on:
+            self.calls += 1
+            raise ConnectionError("checkpoint store unavailable")
+        return await super().aget_state(config)
+
+
+@pytest.mark.parametrize("fail_on", [0, 1], ids=["entry_read", "post_stream_read"])
+async def test_checkpoint_read_failure_emits_error_not_success(fail_on):
+    """A failed state read must not look like "no pending approval"."""
+    graph = _FailingGraph([_Snap((), {})], fail_on=fail_on)
+    streamed = []
+
+    async def event_stream(**kwargs):
+        streamed.append(kwargs)
+        yield b"event: tool_call\ndata: preparing\n\n"
+
+    runner = _make_runner(_AppState(graph), event_stream, auto_approve=False)
+    events = [ev async for ev in runner.run("approve", "ctx-fail")]
+
+    assert events[-1].final is True
+    assert events[-1].name == "error"
+    assert not any(ev.name == "final_answer" for ev in events)
+    if fail_on == 0:
+        # The reply is not run as a fresh query when parked-state is unknown.
+        assert streamed == []
 
 
 # -- inbound approval round-trip (auto_approve=False) ----------------------

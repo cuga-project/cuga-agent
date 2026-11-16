@@ -2,6 +2,9 @@
 
 **Conversation history**: {{agent_history}}
 
+{% if latest_output %}**Most recent execution output** (what the last block printed; the proposed code
+was written after reading it): {{latest_output}}{% else %}**Most recent execution output**: none, no block has run yet.{% endif %}
+
 **Variables**: {{variables_snapshot}}
 
 **Proposed code (not executed yet)**:

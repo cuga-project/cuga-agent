@@ -10,9 +10,13 @@ import re
 from collections.abc import Mapping
 from typing import Any, List, Optional
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from loguru import logger
 
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
+    EXECUTION_OUTPUT_PREFIX,
+    REFLECTION_SUMMARY_SEPARATOR,
+)
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.utils.token_counter import TokenCounter, resolve_model_identifier
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
@@ -29,6 +33,9 @@ REFLECTION_OUTPUT_SHARE = 0.40
 REFLECTION_SKILLS_SHARE = 0.15
 VERIFY_CODE_SHARE = 0.25
 VERIFY_VARIABLES_SHARE = 0.35
+# The latest output takes what code and variables leave, minus this share for history
+# (or all of history, if shorter).
+VERIFY_HISTORY_FLOOR_SHARE = 0.20
 _MARKER_ROOM = 120
 
 
@@ -77,6 +84,46 @@ def messages_to_history_text(messages: List[BaseMessage]) -> str:
     """Format chat messages as a plain-text history block."""
     parts = [_message_line(msg) for msg in messages]
     return "\n".join(parts) if parts else "No previous conversation history"
+
+
+def _tool_result_line(msg: ToolMessage) -> str:
+    status = " (error)" if getattr(msg, "status", None) == "error" else ""
+    return f"{msg.name or 'tool'}{status}: {msg.content}"
+
+
+def split_latest_execution_output(
+    messages: List[BaseMessage],
+) -> tuple[List[BaseMessage], str]:
+    """Separate the output of the last executed block from the rest of the history.
+
+    CodeAct feeds a block's output back as a user message that starts with
+    ``EXECUTION_OUTPUT_PREFIX``. Function-calling mode answers each native call with
+    a ``ToolMessage``, so its output is the newest run of ``ToolMessage``s. Any other
+    user message (a new request on a later thread turn, a retry correction) is not
+    output and stays in history. A reflection summary appended to the CodeAct message
+    is model-written, not printed, so it is dropped.
+    """
+    msgs = list(messages)
+    for end in range(len(msgs) - 1, -1, -1):
+        msg = msgs[end]
+        if isinstance(msg, ToolMessage):
+            start = end
+            while start > 0 and isinstance(msgs[start - 1], ToolMessage):
+                start -= 1
+            output = "\n".join(_tool_result_line(m) for m in msgs[start : end + 1])
+            return msgs[:start] + msgs[end + 1 :], output
+        content = getattr(msg, "content", None)
+        if (
+            isinstance(msg, HumanMessage)
+            and isinstance(content, str)
+            and content.startswith(EXECUTION_OUTPUT_PREFIX)
+        ):
+            # Split at the first separator, before stripping newlines (an empty output
+            # would otherwise eat the separator's own), so text the summary repeats
+            # cannot pass as printed output.
+            printed = content[len(EXECUTION_OUTPUT_PREFIX) :].split(REFLECTION_SUMMARY_SEPARATOR, 1)[0]
+            return msgs[:end] + msgs[end + 1 :], printed.lstrip("\n")
+    return msgs, ""
 
 
 def history_text_keep_recent(messages: List[BaseMessage], max_chars: int) -> str:
@@ -265,29 +312,44 @@ def prepare_verify_context(
     proposed_code: str,
     *,
     max_chars: int,
-) -> tuple[str, str, str]:
-    """Fit chat, variables, and proposed code for pre-execute VERIFY into *max_chars*. Never summarize.
+) -> tuple[str, str, str, str]:
+    """Fit history, latest output, variables, and code into *max_chars*. Never summarize.
 
     The code takes at most ``VERIFY_CODE_SHARE`` of the budget and the variables at most
-    ``VERIFY_VARIABLES_SHARE``; history gets the rest and keeps its newest messages.
+    ``VERIFY_VARIABLES_SHARE``. The latest output takes the rest, except
+    ``VERIFY_HISTORY_FLOOR_SHARE`` kept for history, so a short history leaves it nearly
+    the whole remainder. History gets what the output leaves and keeps its newest
+    messages. The latest output is ``""`` when no block has run.
     """
-    messages = list(chat_messages)
+    earlier, latest_output = split_latest_execution_output(list(chat_messages))
     raw_code = proposed_code or ""
     raw_variables = variables_snapshot or "(no variables)"
     code = truncate_head_tail(raw_code, int(max_chars * VERIFY_CODE_SHARE), label="Proposed code")
     variables = truncate_variables_summary(raw_variables, int(max_chars * VERIFY_VARIABLES_SHARE))
-    history = history_text_keep_recent(messages, max(0, max_chars - len(code) - len(variables)))
+    remainder = max(0, max_chars - len(code) - len(variables))
+    raw_history = messages_to_history_text(earlier)
+    history_floor = min(len(raw_history), int(max_chars * VERIFY_HISTORY_FLOOR_SHARE))
+    latest = truncate_head_tail(
+        latest_output, max(0, remainder - history_floor), label="Most recent execution output"
+    )
+    history = history_text_keep_recent(earlier, max(0, remainder - len(latest)))
     _log_input_budget(
         "Pre-execute VERIFY",
         max_chars,
         {
-            "history": len(messages_to_history_text(messages)),
+            "history": len(raw_history),
+            "latest_output": len(latest_output.strip()),
             "variables": len(raw_variables.strip()),
             "code": len(raw_code.strip()),
         },
-        {"history": len(history), "variables": len(variables), "code": len(code)},
+        {
+            "history": len(history),
+            "latest_output": len(latest),
+            "variables": len(variables),
+            "code": len(code),
+        },
     )
-    return history, variables, code
+    return history, latest, variables, code
 
 
 async def prepare_reflection_context(

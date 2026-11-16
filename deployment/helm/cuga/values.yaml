@@ -24,9 +24,13 @@ env:
   AGENT_SETTING_CONFIG: "settings.groq.toml"
   DYNACONF_SERVICE__INSTANCE_ID: ""
   DYNACONF_SERVICE__TENANT_ID: ""
+  # When auth is enabled, role checks are always enforced (there is no separate
+  # authorization switch). The identity provider MUST send a role claim mapping each
+  # user to ServiceOwner or ServiceAdmin (see auth.manage_roles); without that mapping
+  # every logged-in user loses access to admin-only routes (secrets, agent management).
+  # Confirm role-claim mapping is in place before enabling auth on a live install.
   DYNACONF_AUTH__ENABLED: "true"
   DYNACONF_AUTH__REQUIRE_HTTPS: "true"
-  DYNACONF_AUTH__AUTHORIZATION_ENABLED: "false"
   DYNACONF_AUTH__ROLE_TOKEN_SOURCE: "auto"
   DYNACONF_UI__HIDE_CUGA_LOGO: "false"
   DYNACONF_UI__BRAND_NAME: ""

@@ -51,3 +51,13 @@ repos:
         language: system
         pass_filenames: true
         files: ^src/cuga/backend/server/.*\.py$
+
+  # Keep LangGraph state access async so durable checkpointers work (see #774)
+  - repo: local
+    hooks:
+      - id: no-sync-graph-state
+        name: no synchronous LangGraph state calls
+        entry: uv run python scripts/checks/no_sync_graph_state.py
+        language: system
+        pass_filenames: true
+        files: ^src/cuga/.*\.py$

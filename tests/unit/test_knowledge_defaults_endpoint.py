@@ -13,8 +13,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+pytestmark = pytest.mark.unit
 
 
 def _build_app():
@@ -30,7 +33,7 @@ def _build_app():
 
 def test_defaults_endpoint_returns_200_with_defaults_dict():
     app = _build_app()
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     r = client.get("/api/manage/knowledge/defaults")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -42,7 +45,7 @@ def test_defaults_endpoint_matches_KnowledgeConfig_factory_defaults():
     from cuga.backend.knowledge.config import KnowledgeConfig
 
     app = _build_app()
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     body = client.get("/api/manage/knowledge/defaults").json()
     defaults = body["defaults"]
 
@@ -63,7 +66,7 @@ def test_defaults_endpoint_matches_KnowledgeConfig_factory_defaults():
 def test_defaults_endpoint_blanks_secret_fields():
     """Even if someone later flips include_secrets, the endpoint must NOT leak a key."""
     app = _build_app()
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     defaults = client.get("/api/manage/knowledge/defaults").json()["defaults"]
     from cuga.backend.knowledge.config import KnowledgeConfig
 
@@ -74,7 +77,7 @@ def test_defaults_endpoint_blanks_secret_fields():
 def test_defaults_endpoint_excludes_persist_dir():
     """persist_dir is environment-specific and would leak the server's filesystem layout."""
     app = _build_app()
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     defaults = client.get("/api/manage/knowledge/defaults").json()["defaults"]
     assert "persist_dir" not in defaults
 
@@ -82,7 +85,7 @@ def test_defaults_endpoint_excludes_persist_dir():
 def test_defaults_endpoint_excludes_internal_fields():
     """Underscore-prefixed fields are implementation details — strip them."""
     app = _build_app()
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     defaults = client.get("/api/manage/knowledge/defaults").json()["defaults"]
     for k in defaults:
         assert not k.startswith("_"), f"internal field leaked: {k!r}"
@@ -92,7 +95,7 @@ def test_defaults_contain_new_ui_fields():
     """Make sure the new fields surfaced by the UI's reset buttons are present —
     fast feedback if a future refactor drops one accidentally."""
     app = _build_app()
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     defaults = client.get("/api/manage/knowledge/defaults").json()["defaults"]
     for field in (
         "embedding_provider",
@@ -120,7 +123,7 @@ def test_defaults_contain_new_ui_fields():
 def test_defaults_endpoint_idempotent():
     """Calling twice yields identical result — no hidden state, safe to cache client-side."""
     app = _build_app()
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost")
     r1 = client.get("/api/manage/knowledge/defaults").json()["defaults"]
     r2 = client.get("/api/manage/knowledge/defaults").json()["defaults"]
     assert r1 == r2

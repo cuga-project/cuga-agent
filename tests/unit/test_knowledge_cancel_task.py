@@ -80,7 +80,7 @@ def _blocking_parse(started: threading.Event, release: threading.Event):
     of threading Events gives an exact rendezvous with no sleeps.
     """
 
-    def fake_load(path):
+    def fake_load(path, pinned=None):
         started.set()
         assert release.wait(5), "test deadlock: parse never released"
         return [Document(page_content="hi", metadata={"source": FNAME})]
@@ -198,7 +198,7 @@ def _park_at_insert(eng: KnowledgeEngine):
         return {"num_added": 1, "num_skipped": 0}
 
     eng._insert_documents_async = fake_insert
-    eng._load_document = lambda p: [Document(page_content="hi", metadata={"source": FNAME})]
+    eng._load_document = lambda p, pinned=None: [Document(page_content="hi", metadata={"source": FNAME})]
     return entered, gate
 
 
@@ -277,7 +277,7 @@ async def test_cancel_before_running_flip_does_not_resurrect_running():
     """
     eng = _engine()
     await _new_task(eng)
-    eng._load_document = lambda p: [Document(page_content="hi", metadata={"source": FNAME})]
+    eng._load_document = lambda p, pinned=None: [Document(page_content="hi", metadata={"source": FNAME})]
 
     written: list[Any] = []
     real_update = eng._metadata.update_task
@@ -394,7 +394,7 @@ async def test_cancel_before_worker_registers_its_event_is_still_honoured():
         raise AssertionError("cancelled task reached the vector store")
 
     eng._insert_documents_async = _must_not_insert
-    eng._load_document = lambda p: [Document(page_content="hi", metadata={"source": FNAME})]
+    eng._load_document = lambda p, pinned=None: [Document(page_content="hi", metadata={"source": FNAME})]
 
     # Cancel arrives while the row is pending and BEFORE any event registration.
     assert "t1" not in eng._active_tasks

@@ -111,7 +111,10 @@
       ]
     },
     "knowledge": {
-      "enabled": false
+      "enabled": true,
+      "agent_level_enabled": true,
+      "session_level_enabled": true,
+      "citations_enabled": true
     },
     "homescreen": {
       "isOn": true,

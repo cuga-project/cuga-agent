@@ -123,7 +123,8 @@ async def _seed_db(path, monkeypatch):
             (instance, "account-a", instance, "agent", "thread", "user", "now"),
         )
         await store.execute(
-            "INSERT INTO runtime_thread_owners VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO runtime_thread_owners (tenant_id, instance_id, thread_id, user_id, agent_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             ("account-a", instance, "thread", "user", "agent", "now"),
         )
     await store.commit()

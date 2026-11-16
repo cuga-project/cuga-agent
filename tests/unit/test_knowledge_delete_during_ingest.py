@@ -73,7 +73,7 @@ async def _new_task(eng: KnowledgeEngine, task_id: str = "t1") -> None:
 
 
 def _blocking_parse(started: threading.Event, release: threading.Event):
-    def fake_load(path):
+    def fake_load(path, pinned=None):
         started.set()
         assert release.wait(5), "test deadlock: parse never released"
         return [Document(page_content="hi", metadata={"source": FNAME})]
@@ -187,7 +187,7 @@ async def test_delete_refuses_rather_than_lying_when_the_ingest_outlives_the_dea
         return {"num_added": 1, "num_skipped": 0}
 
     eng._insert_documents_async = fake_insert
-    eng._load_document = lambda p: [Document(page_content="hi", metadata={"source": FNAME})]
+    eng._load_document = lambda p, pinned=None: [Document(page_content="hi", metadata={"source": FNAME})]
 
     cancel_event = asyncio.Event()
     eng._active_tasks["t3"] = cancel_event

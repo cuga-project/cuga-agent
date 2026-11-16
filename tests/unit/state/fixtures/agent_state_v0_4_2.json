@@ -1,0 +1,437 @@
+{
+  "api_intent_relevant_apps": [
+    {
+      "description": "CRM",
+      "name": "crm",
+      "type": "api",
+      "url": null
+    }
+  ],
+  "api_intent_relevant_apps_current": [
+    {
+      "description": null,
+      "name": "crm",
+      "type": "api",
+      "url": "http://localhost:8007"
+    }
+  ],
+  "api_last_step": "crm_get_accounts",
+  "api_planner_codeagent_plan": "1. call get_accounts 2. sort by revenue",
+  "api_planner_history": [
+    {
+      "action_taken": "CoderAgent",
+      "agent_output": {
+        "final_output": "ok",
+        "variables_summary": "variable_1: list"
+      },
+      "input_to_agent": {
+        "task": "Fetch accounts"
+      }
+    }
+  ],
+  "api_planner_human_consultations": [
+    {
+      "answer": "EMEA",
+      "question": "Which region?"
+    }
+  ],
+  "api_shortlister_all_filtered_apis": {
+    "crm": [
+      "get_accounts",
+      "get_contacts"
+    ]
+  },
+  "api_shortlister_planner_filtered_apis": "get_accounts",
+  "chat_agent_messages": [
+    {
+      "additional_kwargs": {},
+      "content": "hi",
+      "id": null,
+      "name": null,
+      "response_metadata": {},
+      "type": "human"
+    },
+    {
+      "additional_kwargs": {},
+      "content": "Hello, how can I help?",
+      "id": null,
+      "invalid_tool_calls": [],
+      "name": null,
+      "response_metadata": {},
+      "tool_calls": [],
+      "type": "ai",
+      "usage_metadata": null
+    }
+  ],
+  "chat_messages": [
+    {
+      "additional_kwargs": {},
+      "content": "You are CUGA.",
+      "id": null,
+      "name": null,
+      "response_metadata": {},
+      "type": "system"
+    },
+    {
+      "additional_kwargs": {},
+      "content": "List my top two accounts",
+      "id": "msg-h1",
+      "name": null,
+      "response_metadata": {},
+      "type": "human"
+    },
+    {
+      "additional_kwargs": {},
+      "content": "",
+      "id": "msg-a1",
+      "invalid_tool_calls": [],
+      "name": null,
+      "response_metadata": {},
+      "tool_calls": [
+        {
+          "args": {
+            "limit": 2
+          },
+          "id": "call_1",
+          "name": "crm_get_accounts",
+          "type": "tool_call"
+        }
+      ],
+      "type": "ai",
+      "usage_metadata": null
+    },
+    {
+      "additional_kwargs": {},
+      "artifact": null,
+      "content": "[{\"name\": \"Acme\"}]",
+      "id": null,
+      "name": "crm_get_accounts",
+      "response_metadata": {},
+      "status": "success",
+      "tool_call_id": "call_1",
+      "type": "tool"
+    },
+    {
+      "additional_kwargs": {},
+      "content": "Acme and Globex.",
+      "id": "msg-a2",
+      "invalid_tool_calls": [],
+      "name": null,
+      "response_metadata": {},
+      "tool_calls": [],
+      "type": "ai",
+      "usage_metadata": null
+    }
+  ],
+  "coder_relevant_apis": [
+    {
+      "api_description": "List accounts",
+      "api_name": "get_accounts",
+      "app_name": "crm"
+    }
+  ],
+  "coder_task": "Fetch the two largest accounts",
+  "coder_variables": [
+    "variable_1"
+  ],
+  "cuga_lite_metadata": {
+    "mode": "native_fc",
+    "step_count": 2
+  },
+  "current_app": "crm",
+  "current_app_description": "Customer relationship manager",
+  "current_datetime": "2026-10-20 12:00",
+  "elements": "<button bid=12>Accounts</button>",
+  "elements_as_string": "[12] button 'Accounts'",
+  "env_policy": [
+    {
+      "name": "no_delete",
+      "rule": "never delete records"
+    }
+  ],
+  "feedback": [
+    {
+      "comment": "good",
+      "rating": "up"
+    }
+  ],
+  "final_answer": "Acme and Globex.",
+  "final_answer_finalized": true,
+  "focused_element_bid": "12",
+  "guidance": "Prefer the accounts API",
+  "hitl_action": {
+    "action_id": "approve_plan",
+    "action_name": "Approve plan",
+    "additional_data": {
+      "tool": {
+        "name": "crm_get_accounts"
+      }
+    },
+    "button_text": null,
+    "callback_url": "/functions_call",
+    "color": null,
+    "description": "Approve the delegation plan",
+    "icon": null,
+    "max_length": null,
+    "max_selections": null,
+    "min_length": null,
+    "min_selections": 1,
+    "options": [
+      {
+        "description": "Run the plan",
+        "disabled": false,
+        "label": "Approve",
+        "value": "approve"
+      }
+    ],
+    "placeholder": null,
+    "priority": 1,
+    "required": true,
+    "return_to": "CugaSupervisor",
+    "timeout_seconds": 300,
+    "type": "single_select",
+    "validation_pattern": null
+  },
+  "hitl_response": {
+    "action_id": "approve_plan",
+    "additional_data": {
+      "tool": null
+    },
+    "button_clicked": null,
+    "client_info": null,
+    "confirmed": true,
+    "metadata": {
+      "source": "ui"
+    },
+    "response_time_ms": null,
+    "response_type": "single_select",
+    "selected_options": [
+      {
+        "description": "Run the plan",
+        "disabled": false,
+        "label": "Approve",
+        "value": "approve"
+      }
+    ],
+    "selected_values": [
+      "approve"
+    ],
+    "session_id": "thread-compat-fixture",
+    "submitted_additional_data": null,
+    "text_response": null,
+    "timestamp": "2026-10-20T12:00:00",
+    "user_id": "user-42"
+  },
+  "hybrid_api_answer": "Acme",
+  "hybrid_api_task": "Find the accounts",
+  "hybrid_original_task": "Find the accounts and open the first one",
+  "hybrid_phase": "web",
+  "hybrid_web_task": "Open the first account",
+  "input": "List my top two accounts",
+  "last_planner_answer": "Acme and Globex",
+  "last_question": "Which region?",
+  "last_summarization_metrics": {
+    "tokens_after": 2500,
+    "tokens_before": 9000
+  },
+  "lite_mode": true,
+  "messages": [
+    {
+      "additional_kwargs": {},
+      "content": "Clicked Accounts",
+      "id": "msg-browser-1",
+      "invalid_tool_calls": [],
+      "name": null,
+      "response_metadata": {},
+      "tool_calls": [],
+      "type": "ai",
+      "usage_metadata": null
+    }
+  ],
+  "next_step": "Read the table",
+  "observation": "Table with 2 rows",
+  "pi": "Profile: sales manager",
+  "plan": {
+    "instruction": "Click the Accounts tab",
+    "next_agent": "ActionAgent",
+    "thoughts": [
+      "The accounts page is open",
+      "Read the table"
+    ]
+  },
+  "plan_next_agent": "ActionAgent",
+  "previous_steps": [
+    {
+      "instruction": "Click the Accounts tab",
+      "next_agent": "ActionAgent",
+      "thoughts": [
+        "The accounts page is open",
+        "Read the table"
+      ]
+    }
+  ],
+  "read_page": "Accounts\nAcme\nGlobex",
+  "script": "result = crm_agent('List the top two accounts')",
+  "sender": "ActionAgent",
+  "service_scope": {
+    "instance_id": "instance-1",
+    "tenant_id": "tenant-a"
+  },
+  "shortlister_query": "top accounts",
+  "shortlister_relevant_apps": [
+    "crm"
+  ],
+  "sites": [
+    "http://localhost:8007"
+  ],
+  "sources": [
+    {
+      "id": "s1",
+      "title": "Accounts report",
+      "uri": "kb://accounts.pdf"
+    }
+  ],
+  "stm_all_history": [
+    {
+      "final_answer": "Acme",
+      "steps": [
+        "api call"
+      ],
+      "sub_task": "Find the accounts"
+    }
+  ],
+  "stm_steps_history": [
+    "Clicked Accounts"
+  ],
+  "sub_task": "List the top two accounts",
+  "sub_task_app": "crm",
+  "sub_task_type": "hybrid",
+  "sub_tasks_progress": [
+    "completed",
+    "in-progress"
+  ],
+  "supervisor_chat_messages": [
+    {
+      "additional_kwargs": {},
+      "content": "Delegate the CRM task",
+      "id": null,
+      "name": null,
+      "response_metadata": {},
+      "type": "human"
+    },
+    {
+      "additional_kwargs": {},
+      "content": "",
+      "id": null,
+      "invalid_tool_calls": [],
+      "name": null,
+      "response_metadata": {},
+      "tool_calls": [
+        {
+          "args": {
+            "limit": 2
+          },
+          "id": "call_s1",
+          "name": "crm_get_accounts",
+          "type": "tool_call"
+        }
+      ],
+      "type": "ai",
+      "usage_metadata": null
+    },
+    {
+      "additional_kwargs": {},
+      "artifact": null,
+      "content": "done",
+      "id": null,
+      "name": "crm_get_accounts",
+      "response_metadata": {},
+      "status": "success",
+      "tool_call_id": "call_s1",
+      "type": "tool"
+    }
+  ],
+  "supervisor_metadata": {
+    "delegations": 1,
+    "plan_approved": true
+  },
+  "supervisor_mode": true,
+  "task_analyzer_output": {
+    "attrs": {
+      "needs_web": true
+    },
+    "navigation_paths": {
+      "crm-web": [
+        "/accounts"
+      ]
+    },
+    "paraphrased_intent": "Show the top two accounts",
+    "resolved_intent": "List accounts sorted by revenue"
+  },
+  "task_decomposition": {
+    "task_decomposition": [
+      {
+        "app": "crm",
+        "task": "Find the accounts",
+        "type": "api"
+      },
+      {
+        "app": "crm-web",
+        "task": "Open the first account",
+        "type": "web"
+      }
+    ],
+    "thoughts": "One API step and one web step"
+  },
+  "thread_id": "thread-compat-fixture",
+  "tool_call": {
+    "args": {
+      "limit": 2
+    },
+    "name": "crm_get_accounts"
+  },
+  "tool_calls": [
+    {
+      "arguments": {
+        "limit": 2
+      },
+      "name": "crm_get_accounts",
+      "result": [
+        "Acme",
+        "Globex"
+      ]
+    }
+  ],
+  "tool_calls_used_thread": 3,
+  "update_plan_reason": "The table loaded",
+  "url": "http://localhost:8007/accounts",
+  "user_id": "user-42",
+  "variable_counter_state": 2,
+  "variable_creation_order": [
+    "variable_1",
+    "variable_2"
+  ],
+  "variables_storage": {
+    "variable_1": {
+      "count_items": 2,
+      "created_at": "2026-10-20T12:00:00",
+      "description": "Accounts",
+      "type": "list",
+      "value": [
+        {
+          "name": "Acme"
+        },
+        {
+          "name": "Globex"
+        }
+      ]
+    },
+    "variable_2": {
+      "count_items": 4,
+      "created_at": "2026-10-20T12:00:00",
+      "description": "Top account",
+      "type": "str",
+      "value": "Acme"
+    }
+  }
+}

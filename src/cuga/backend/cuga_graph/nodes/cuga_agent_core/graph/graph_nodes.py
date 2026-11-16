@@ -263,6 +263,8 @@ def append_chat_messages_with_step_limit(
 # the reasoning-only finalize fallback, reflection task extraction) must use
 # this constant so they cannot drift from the producer below.
 EXECUTION_OUTPUT_PREFIX = "Execution output:"
+# Reflection appends its model-written summary to the execution message after this.
+REFLECTION_SUMMARY_SEPARATOR = "\n\n---\n\nSummary:\n"
 
 
 def execution_output_text(output: str) -> str:

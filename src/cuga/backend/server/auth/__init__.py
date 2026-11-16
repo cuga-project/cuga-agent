@@ -4,6 +4,8 @@ from cuga.backend.server.auth.dependencies import (
     require_auth,
     require_manage_access,
     require_chat_access,
+    require_secrets_access,
+    require_manage_or_local_access,
 )
 from cuga.backend.server.auth.jwt_validator import JWTValidator
 from cuga.backend.server.auth.oidc_client import OIDCClient, get_oidc_client
@@ -15,6 +17,8 @@ __all__ = [
     "require_auth",
     "require_manage_access",
     "require_chat_access",
+    "require_secrets_access",
+    "require_manage_or_local_access",
     "JWTValidator",
     "OIDCClient",
     "get_oidc_client",
