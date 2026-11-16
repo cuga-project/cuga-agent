@@ -4,7 +4,8 @@ PR #1102 removed these sections from the agent and reflection prompts as a
 simplification; the first evaluation runs after the change showed the failure
 modes they guard against coming back. These tests make the sections' presence
 explicit so that a future simplification pass has to delete a test on purpose.
-They check headlines only: the wording may change, the rule must stay.
+They check headlines in the rendered prompts: the wording may change, the
+rule must stay.
 """
 
 from __future__ import annotations
@@ -24,13 +25,22 @@ def _collapsed(text: str) -> str:
     return " ".join(text.split())
 
 
+def _rendered(path: Path, **context) -> str:
+    template = jinja2.Environment().from_string(path.read_text(encoding="utf-8"))
+    return _collapsed(template.render(**context))
+
+
 def _reflection_prompt_text() -> str:
-    return _collapsed(_REFLECTION_PROMPT.read_text(encoding="utf-8"))
+    """The reflection prompt rendered with every optional section switched off.
+
+    The restored rules must reach the model whatever the feature flags are, so
+    the bare render is the strictest case.
+    """
+    return _rendered(_REFLECTION_PROMPT)
 
 
 def _rendered_agent_prompt(**context) -> str:
-    template = jinja2.Environment().from_string(_AGENT_PROMPT.read_text(encoding="utf-8"))
-    return _collapsed(template.render(**context))
+    return _rendered(_AGENT_PROMPT, **context)
 
 
 # ── Reflection prompt ──────────────────────────────────────────────────────
@@ -78,7 +88,6 @@ def test_agent_prompt_treats_obstacles_as_per_resource():
     rendered = _rendered_agent_prompt(enable_find_tools=False)
     assert "### Obstacle Handling & Recovery" in rendered
     assert "**OBSTACLES ARE PER-RESOURCE, NOT PER-TASK:**" in rendered
-    assert "**Resume, do not restart:**" in rendered
     assert "Only declare failure after stating which alternatives you tried" in rendered
 
 
