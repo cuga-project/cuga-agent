@@ -7,7 +7,8 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
-from cuga.backend.hooks import HookRegistry, wrap_provider_with_hooks, wrap_tools_with_hooks
+from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
+from cuga.backend.hooks import HookBlocked, HookRegistry, wrap_provider_with_hooks, wrap_tools_with_hooks
 
 pytestmark = pytest.mark.unit
 
@@ -91,8 +92,29 @@ async def test_note_on_a_list_result_goes_to_the_next_model_call():
     [wrapped] = wrap_tools_with_hooks(
         [StructuredTool.from_function(coroutine=rows, name="rows", description="Rows.")], reg
     )
-    assert await wrapped.ainvoke({}) == [1, 2]
-    assert "check the policy" in reg.before_llm_call()
+    with reg.run("t1"):
+        assert await wrapped.ainvoke({}) == [1, 2]
+        assert "check the policy" in reg.before_llm_call("t1")
+
+
+@pytest.mark.asyncio
+async def test_a_carried_note_stays_in_its_run():
+    async def rows():
+        return [1, 2]
+
+    reg = HookRegistry([_Noter()])
+    [wrapped] = wrap_tools_with_hooks(
+        [StructuredTool.from_function(coroutine=rows, name="rows", description="Rows.")], reg
+    )
+    with reg.run("thread-A"):
+        await wrapped.ainvoke({})
+        with reg.run("thread-B"):  # another invocation, e.g. a concurrent stream
+            assert reg.before_llm_call("thread-B") is None
+        assert "check the policy" in reg.before_llm_call("thread-A")
+    await wrapped.ainvoke({})  # outside any run the note has no run to wait in: it is dropped
+    assert reg.before_llm_call("thread-D") is None  # not handed to whichever thread calls the model next
+    with reg.run("thread-C"):
+        assert reg.before_llm_call("thread-C") is None
 
 
 class _NullableArgs(BaseModel):
@@ -114,3 +136,74 @@ async def test_explicit_none_arguments_reach_the_tool():
     assert await tool.ainvoke({"parent": None}) == {"parent": None, "limit": 5}
     assert await tool.coroutine(parent="p", limit=None) == {"parent": "p", "limit": None}
     assert rec.calls == [("list_items", {"limit": 5}), ("list_items", {"parent": "p"})]
+
+
+class _RaiseBlock:
+    def before_tool_call(self, tool, args):
+        raise HookBlocked("RAISED-BLOCK-7f3")
+
+
+@pytest.mark.asyncio
+async def test_a_block_raised_by_a_hook_is_an_event():
+    reg = HookRegistry([_RaiseBlock()])
+    seen = []
+    reg.add_listener(seen.append)
+    (tool,) = wrap_tools_with_hooks([_tool()], reg)
+    with reg.run("t1"):
+        with pytest.raises(HookBlocked, match="RAISED-BLOCK-7f3"):
+            await tool.ainvoke({"user_id": "u1"})
+        events = reg.run_events()
+    assert [(e["hook"], e["outcome"], e["message"]) for e in events] == [
+        ("before_tool_call", "block", "RAISED-BLOCK-7f3")
+    ]
+    assert [(e.hook, e.outcome) for e in seen] == [("before_tool_call", "block")]
+
+
+class _AfterRecorder:
+    def __init__(self):
+        self.results = []
+
+    def after_tool_call(self, tool, args, result):
+        self.results.append(result)
+        return "FAILURE-NOTE-91c"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_tool_call_reaches_after_tool_call():
+    async def broken(user_id: str):
+        raise RuntimeError("backend down")
+
+    rec = _AfterRecorder()
+    reg = HookRegistry([rec])
+    (tool,) = wrap_tools_with_hooks(
+        [StructuredTool.from_function(coroutine=broken, name="broken", description="Broken.")], reg
+    )
+    with reg.run("t1"):
+        with pytest.raises(RuntimeError, match="backend down"):  # the agent still gets the tool error
+            await tool.ainvoke({"user_id": "u1"})
+        assert [e["hook"] for e in reg.run_events()] == ["before_tool_call", "after_tool_call"]
+        assert "FAILURE-NOTE-91c" in reg.before_llm_call("t1")
+    assert len(rec.results) == 1 and isinstance(rec.results[0], RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_the_wrapper_keeps_response_schemas_and_parameter_constraints():
+    def get_user_sync(user_id: str, verbose: bool = False):
+        return {"user_id": user_id}
+
+    get_user_sync._response_schemas = {
+        "success": {"type": "object", "properties": {"id": {"type": "string"}}}
+    }
+    get_user_sync._param_constraints = {"user_id": "MARKER-CONSTRAINT-5d2"}
+    original = StructuredTool.from_function(
+        func=get_user_sync, coroutine=_get_user, name="get_user", description="Get a user.", args_schema=_Args
+    )
+    rec = _Recorder()
+    (tool,) = wrap_tools_with_hooks([original], HookRegistry([rec]))
+    assert tool.func._response_schemas == get_user_sync._response_schemas
+    assert tool.func._param_constraints == get_user_sync._param_constraints
+    assert PromptUtils.get_tool_docs(tool) == PromptUtils.get_tool_docs(original)
+    assert tool.invoke({"user_id": "u2"}) == {"user_id": "u2"}  # a sync call runs the hooks too
+    assert rec.calls == [
+        ("get_user", {"user_id": "u2", "verbose": False})
+    ]  # schema defaults filled, as in ainvoke

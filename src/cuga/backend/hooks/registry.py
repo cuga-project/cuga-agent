@@ -148,12 +148,16 @@ class HookRegistry:
 
     @contextmanager
     def run(self, thread_id: Optional[str]) -> Iterator[None]:
-        """One invoke(): its events, thread id and carried notes stay inside this block (and its asyncio tasks)."""
+        """One invoke() or stream(): its events, thread id and carried notes stay inside this block (and its asyncio
+        tasks)."""
         token = _RUN.set(_Run(self, thread_id))
         try:
             yield
         finally:
-            _RUN.reset(token)
+            try:
+                _RUN.reset(token)
+            except ValueError:  # a stream closed from another context (e.g. by the garbage collector)
+                pass
 
     def in_run(self) -> bool:
         run = _RUN.get()
@@ -178,6 +182,16 @@ class HookRegistry:
     def run_events(self) -> List[Dict[str, Any]]:
         return [e.to_dict() for e in self._run().events]
 
+    def _emit(self, event: HookEvent) -> None:
+        run = self._run()
+        if run is not self._idle:
+            run.events.append(event)
+        for fn in self.listeners:
+            try:
+                fn(event)
+            except Exception as exc:
+                logger.warning("hook listener failed: {}", exc)
+
     def _call(self, name: str, summary: str, *args: Any) -> HookResult:
         messages: List[str] = []
         details: List[Dict[str, Any]] = []
@@ -188,7 +202,10 @@ class HookRegistry:
                 res = _norm(getattr(hook, name)(*call_args))
             except Exception as exc:  # a broken hook must not break the agent
                 if isinstance(exc, HookBlocked) and name == "before_tool_call":
-                    raise  # a before_tool_call hook may also block the call by raising HookBlocked
+                    # a before_tool_call hook may also block the call by raising HookBlocked: the block is an event too
+                    block = "\n\n".join(messages + [str(exc)]) or None
+                    self._emit(HookEvent(name, self._run().thread_id, summary, "block", block, details))
+                    raise
                 logger.warning("hook {}.{} failed: {}", type(hook).__name__, name, exc)
                 _report_failure(hook, name, call_args, exc)
                 continue
@@ -204,15 +221,7 @@ class HookRegistry:
             outcome = "answer" if name == "on_user_message" else "rewrite"
         else:
             outcome = "observe"
-        run = self._run()
-        event = HookEvent(name, run.thread_id, summary, outcome, message, details, answer=answer)
-        if run is not self._idle:
-            run.events.append(event)
-        for fn in self.listeners:
-            try:
-                fn(event)
-            except Exception as exc:
-                logger.warning("hook listener failed: {}", exc)
+        self._emit(HookEvent(name, self._run().thread_id, summary, outcome, message, details, answer=answer))
         return HookResult(message=message, details=details, answer=answer)
 
     # -- the nine hooks ------------------------------------------------------------------------------------------
@@ -241,8 +250,18 @@ class HookRegistry:
         return self._call("before_tool_call", _fmt_call(tool, args), tool, args).message
 
     def after_tool_call(self, tool: str, args: Dict[str, Any], result: Any) -> Optional[str]:
-        """A message is a note about this call: the tool wrapper attaches it to the result the agent sees."""
+        """A message is a note about this call: the tool wrapper attaches it to the result the agent sees. When the
+        tool raised, ``result`` is the exception and the note goes to the next model call."""
         return self._call("after_tool_call", _fmt_call(tool, args), tool, args, result).message
+
+    def carry_note(self, note: str) -> None:
+        """A note for the next model call of this run. Outside invoke() or stream() there is no run to carry it in,
+        so it is dropped (a shared store would hand it to another thread)."""
+        run = self._run()
+        if run is self._idle:
+            logger.warning("hook note dropped (tool called outside invoke() or stream()): {}", note[:200])
+            return
+        run.carried.append(note)
 
     def attach_note(self, result: Any, note: str) -> Any:
         """Put a hook note into the tool result, so it stays in the conversation next to the call it is about.
@@ -253,7 +272,7 @@ class HookRegistry:
         if isinstance(result, dict):
             prev = result.get("hook_note")
             return {**result, "hook_note": f"{prev}\n{note}" if prev else note}
-        self._run().carried.append(note)
+        self.carry_note(note)
         return result
 
     def before_reply(self, answer: str) -> HookResult:
@@ -267,20 +286,25 @@ def _fmt_call(tool: str, args: Dict[str, Any]) -> str:
     return f"{tool}({', '.join(f'{k}={v!r}' for k, v in args.items())})"[:200]
 
 
+# Attributes some providers put on a tool's function; prompt_utils reads them from ``tool.func`` to describe the tool.
+_FUNC_ATTRS = ("_response_schemas", "_param_constraints")
+
+
 def wrap_tools_with_hooks(
     tools: List[BaseTool], registry: HookRegistry, record: bool = False
 ) -> List[BaseTool]:
     """before_tool_call / after_tool_call around each tool. A block raises HookBlocked with the hook's message.
+    A tool that raises still reaches after_tool_call (with the exception as the result), then the error is re-raised.
 
-    ``record``: record each call with ``ToolCallTracker`` (tracked tool calls, Langfuse). For tools of a tool provider:
-    the provider's own recording is bypassed by the wrapper, and the agent records only the tools given as ``tools=``.
+    ``record``: record each call with ``ToolCallTracker`` (tracked tool calls, Langfuse). Only for tools nothing else
+    records: direct LangChain tools of a hooked tool provider (``wrap_provider_with_hooks`` decides).
     """
 
     def wrap(tool: BaseTool) -> BaseTool:
         schema = tool.args_schema
         order = list(getattr(schema, "model_fields", {}) or {}) if isinstance(schema, type) else []
 
-        async def _hooked(*pos: Any, **kwargs: Any) -> Any:
+        def _before(pos: tuple, kwargs: Dict[str, Any]) -> tuple:
             # CodeAct calls the coroutine directly, so positional arguments arrive here; map them to
             # the schema fields in signature order (an unwrapped tool accepts them the same way).
             if len(pos) > len(order):
@@ -294,32 +318,71 @@ def wrap_tools_with_hooks(
             blocked = registry.before_tool_call(tool.name, args)
             if blocked:
                 raise HookBlocked(blocked)
-            if not record:
-                result = await tool.ainvoke(kwargs)
-            else:
-                started, result, error = time.time(), None, None
-                try:
-                    result = await tool.ainvoke(kwargs)
-                except BaseException as exc:
-                    error = "cancelled" if isinstance(exc, asyncio.CancelledError) else str(exc)
-                    raise
-                finally:
-                    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
+            return kwargs, args
 
-                    ToolCallTracker.record_call(
-                        tool_name=tool.name,
-                        arguments=args,
-                        result=result,
-                        app_name=(tool.metadata or {}).get("app_name"),
-                        operation_id=tool.name,
-                        duration_ms=(time.time() - started) * 1000,
-                        error=error,
-                        param_names=order,
-                    )
+        def _record(args: Dict[str, Any], started: float, result: Any, error: Optional[str]) -> None:
+            if not record:
+                return
+            from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
+
+            ToolCallTracker.record_call(
+                tool_name=tool.name,
+                arguments=args,
+                result=result,
+                app_name=(tool.metadata or {}).get("app_name"),
+                operation_id=tool.name,
+                duration_ms=(time.time() - started) * 1000,
+                error=error,
+                param_names=order,
+            )
+
+        def _failed(args: Dict[str, Any], exc: BaseException) -> str:
+            if isinstance(exc, asyncio.CancelledError):
+                return "cancelled"  # a cancelled call is not a tool failure: no after_tool_call
+            if isinstance(exc, Exception):
+                note = registry.after_tool_call(tool.name, args, exc)
+                if note:  # the error reaches the agent unchanged; the note goes to the next model call
+                    registry.carry_note(note)
+            return str(exc)
+
+        def _done(args: Dict[str, Any], result: Any) -> Any:
             note = registry.after_tool_call(tool.name, args, result)
             return registry.attach_note(result, note) if note else result
 
+        async def _hooked(*pos: Any, **kwargs: Any) -> Any:
+            kwargs, args = _before(pos, kwargs)
+            started, result, error = time.time(), None, None
+            try:
+                result = await tool.ainvoke(kwargs)
+            except BaseException as exc:
+                error = _failed(args, exc)
+                raise
+            finally:
+                _record(args, started, result, error)
+            return _done(args, result)
+
+        func = None
+        if getattr(tool, "func", None) is not None:  # keep sync calls possible, and hooked
+
+            def _hooked_sync(*pos: Any, **kwargs: Any) -> Any:
+                kwargs, args = _before(pos, kwargs)
+                started, result, error = time.time(), None, None
+                try:
+                    result = tool.invoke(kwargs)
+                except BaseException as exc:
+                    error = _failed(args, exc)
+                    raise
+                finally:
+                    _record(args, started, result, error)
+                return _done(args, result)
+
+            for attr in _FUNC_ATTRS:  # response schemas and parameter constraints the model is shown
+                if hasattr(tool.func, attr):
+                    setattr(_hooked_sync, attr, getattr(tool.func, attr))
+            func = _hooked_sync
+
         return StructuredTool.from_function(
+            func=func,
             coroutine=_hooked,
             name=tool.name,
             description=tool.description,
@@ -330,10 +393,20 @@ def wrap_tools_with_hooks(
     return [wrap(t) for t in tools]
 
 
+def _records_itself(tool: BaseTool) -> bool:
+    """A ``@tracked_tool`` async function records its own calls (the same test as the prepare node)."""
+    fn = getattr(tool, "coroutine", None) or getattr(tool, "func", None)
+    return bool(getattr(fn, "_cuga_tracked", False)) and asyncio.iscoroutinefunction(fn)
+
+
 def wrap_provider_with_hooks(provider: Any, registry: HookRegistry) -> Any:
     """The same before/after_tool_call wrapping for tools that come from a tool provider
-    (``CugaAgent(tool_provider=...)``), which ``wrap_tools_with_hooks`` on ``tools=`` never sees."""
+    (``CugaAgent(tool_provider=...)``), which ``wrap_tools_with_hooks`` on ``tools=`` never sees.
+
+    Registry and combined provider tools record their own calls. Direct LangChain tools are recorded by the prepare
+    node, which does not see a direct provider behind this wrapper, so their wrapper records them instead."""
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
 
     class HookedToolProvider(ToolProviderInterface):
         _cuga_hooks = True  # a class attribute: an instance attribute lookup would reach the inner provider
@@ -346,13 +419,15 @@ def wrap_provider_with_hooks(provider: Any, registry: HookRegistry) -> Any:
             return getattr(self._inner, name)
 
         def _wrap(self, tools: List[BaseTool]) -> List[BaseTool]:
+            direct = isinstance(base_tool_provider(self._inner), DirectLangChainToolsProvider)
             out = []
             for t in tools:
                 if (t.metadata or {}).get("cuga_hooks"):
                     out.append(t)
                     continue
                 if id(t) not in self._wrapped:
-                    self._wrapped[id(t)] = wrap_tools_with_hooks([t], registry, record=True)[0]
+                    record = direct and not _records_itself(t)
+                    self._wrapped[id(t)] = wrap_tools_with_hooks([t], registry, record=record)[0]
                 out.append(self._wrapped[id(t)])
             return out
 
@@ -375,6 +450,33 @@ def unwrap_hooked_provider(provider: Any) -> Any:
     """The provider inside ``wrap_provider_with_hooks``, for type checks (ToolGuard's ``unwrap_tool_provider``
     stops at the hooks wrapper). Any other provider is returned as is."""
     return provider._inner if getattr(type(provider), "_cuga_hooks", False) else provider
+
+
+def has_hooks_layer(provider: Any) -> bool:
+    """Whether ``wrap_provider_with_hooks`` is one of the layers around the base provider."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import unwrap_tool_provider
+
+    for _ in range(16):
+        if getattr(type(provider), "_cuga_hooks", False):
+            return True
+        inner = unwrap_tool_provider(provider)
+        if inner is provider:
+            return False
+        provider = inner
+    return False
+
+
+def base_tool_provider(provider: Any) -> Any:
+    """The provider under every ToolGuard and hooks layer. A caller's ToolGuard provider ends up as
+    ToolGuard(hooks(ToolGuard(base))), which one unwrap of each kind does not reach."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import unwrap_tool_provider
+
+    for _ in range(16):
+        inner = unwrap_hooked_provider(unwrap_tool_provider(provider))
+        if inner is provider:
+            break
+        provider = inner
+    return provider
 
 
 class HooksCallback(BaseCallbackHandler):
