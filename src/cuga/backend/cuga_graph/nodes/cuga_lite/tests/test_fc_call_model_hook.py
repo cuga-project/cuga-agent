@@ -642,7 +642,7 @@ async def test_bind_advertises_find_tools_when_prepare_enabled_it(monkeypatch):
     """The FC prompt tells the model to call find_tools whenever prepare enabled it, so
     the bind upgrade includes it; the cap merge would strip it otherwise. An explicit
     per-invoke choice wins."""
-    # the static upgrade path; dynamic binding (the default of this branch) is tested in test_fc_dynamic_tools.py
+    # the static upgrade path; dynamic binding (the default) is tested in test_fc_dynamic_tools.py
     monkeypatch.setattr(ga.settings.advanced_features, "cuga_lite_fc_dynamic_tools", False, raising=False)
     captured = []
 
