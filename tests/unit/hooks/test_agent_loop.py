@@ -15,7 +15,7 @@ from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
 
-from cuga.backend.hooks import AgentHooks
+from cuga.backend.hooks import AgentHooks, HookResult
 from cuga.sdk import CugaAgent
 
 pytestmark = pytest.mark.unit
@@ -303,3 +303,47 @@ async def test_a_send_back_after_a_resume_is_a_new_turn():
     assert agent.calls == [(None, "approved"), (SEND_BACK, None)]
     assert hooks.replies == ["answer 1", "answer 2"] and hooks.ended == ["answer 2"]
     assert result.answer == "answer 2"
+
+
+class RewriteHooks(AgentHooks):
+    """Replaces every reply, like a redactor."""
+
+    def before_llm_call(self, thread_id):
+        return MARKER
+
+    def before_reply(self, answer):
+        return HookResult(answer="REDACTED-REPLY-4b8")
+
+
+class FullHistoryModel(ScriptedModel):
+    """Also records every message text of each agent-loop call."""
+
+    history: List[List[str]] = []
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        system = next((m.content for m in messages if isinstance(m, SystemMessage)), "")
+        if MARKER in str(system):
+            self.history.append([str(m.content) for m in messages])
+        return super()._generate(messages, stop, run_manager, **kwargs)
+
+
+async def test_a_rewritten_reply_is_the_saved_answer_for_the_next_turn(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "scripted-run-no-calls")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9/unused")
+    model = FullHistoryModel(script=["ANSWER:ORIGINAL-SECRET-91f", "ANSWER:second"], seen=[], history=[])
+    agent = CugaAgent(
+        tools=[touch], model=model, hooks=[RewriteHooks()], auto_load_policies=False, filesystem_sync=False
+    )
+
+    first = await agent.invoke("First question.")
+    assert first.answer == "REDACTED-REPLY-4b8"
+    saved = (await agent.graph.aget_state({"configurable": {"thread_id": first.thread_id}})).values
+    assert "ORIGINAL-SECRET-91f" not in str(
+        saved
+    )  # final_answer, chat_messages and messages all hold the rewrite
+    assert saved["final_answer"] == "REDACTED-REPLY-4b8"
+
+    await agent.invoke("Repeat your last answer.", thread_id=first.thread_id)
+    turn_two = model.history[-1]
+    assert "REDACTED-REPLY-4b8" in turn_two
+    assert not any("ORIGINAL-SECRET-91f" in text for text in turn_two)
