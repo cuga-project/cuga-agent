@@ -2867,6 +2867,10 @@ async def extension_agent_query(
         return JSONResponse({"type": "agent_error", "message": e.detail}, status_code=e.status_code)
 
     await _assert_thread_access(request_id, user_id, app_state.agent_id)
+    from cuga.backend.server.auth.gateway_tokens import provider_from_request
+
+    # The signed-in user's MCP gateway tokens, as for /stream (None without a session cookie).
+    gateway_tokens = provider_from_request(request, current_user)
 
     async def event_gen():
         # Initial processing message
@@ -2888,6 +2892,7 @@ async def extension_agent_query(
                 thread_id=request_id,
                 entry="ext",
                 user_id=user_id,
+                gateway_tokens=gateway_tokens,
             ):
                 if chunk.strip():
                     # Remove 'data: ' prefix if present
