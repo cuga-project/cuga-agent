@@ -163,3 +163,80 @@ async def test_hook_blocked_raised_by_a_before_tool_call_hook_still_blocks():
     with pytest.raises(HookBlocked, match="raised block"):
         await wrapped.ainvoke({"to": "ok@x.com"})
     assert calls == []
+
+
+class Observer(AgentHooks):
+    def __init__(self):
+        self.told = []
+
+    def tool_blocked(self, tool, args, message):
+        self.told.append((tool, args, message))
+
+
+class BrokenObserver(AgentHooks):
+    def tool_blocked(self, tool, args, message):
+        raise RuntimeError("bug in an observer")
+
+
+class RaisesBlocked(AgentHooks):
+    def before_tool_call(self, tool, args):
+        raise HookBlocked("stopped by raising")
+
+
+class Reports(AgentHooks):
+    def __init__(self):
+        self.failures = []
+
+    def tool_blocked(self, tool, args, message):
+        raise RuntimeError("bug in an observer")
+
+    def _report_failure(self, name, args, exc):
+        self.failures.append((name, str(exc)))
+
+
+def test_every_hook_hears_that_another_hook_stopped_a_call():
+    observer = Observer()
+    registry = HookRegistry([Block(), observer])
+    assert registry.before_tool_call("send", {"to": "blocked@x.com"}) == "not allowed"
+    assert observer.told == [("send", {"to": "blocked@x.com"}, "not allowed")]
+
+
+def test_no_hook_is_told_when_no_hook_stops_the_call():
+    observer = Observer()
+    registry = HookRegistry([Block(), observer])
+    assert registry.before_tool_call("send", {"to": "ok@x.com"}) is None
+    assert observer.told == []
+
+
+def test_a_block_by_raising_is_told_to_the_hooks_and_still_raises():
+    observer = Observer()
+    registry = HookRegistry([RaisesBlocked(), observer])
+    with pytest.raises(HookBlocked, match="stopped by raising"):
+        registry.before_tool_call("send", {"to": "a@x.com"})
+    assert observer.told == [("send", {"to": "a@x.com"}, "stopped by raising")]
+
+
+def test_a_broken_observer_does_not_change_the_block_or_the_other_observers():
+    observer = Observer()
+    registry = HookRegistry([Block(), BrokenObserver(), observer])
+    assert registry.before_tool_call("send", {"to": "blocked@x.com"}) == "not allowed"
+    assert len(observer.told) == 1
+
+
+def test_a_failing_observer_is_reported_to_the_hook_that_failed():
+    hook = Reports()
+    registry = HookRegistry([Block(), hook])
+    registry.before_tool_call("send", {"to": "blocked@x.com"})
+    assert hook.failures == [("tool_blocked", "bug in an observer")]
+
+
+def test_a_hook_that_is_not_an_agenthooks_object_and_has_no_tool_blocked_is_skipped():
+    class Plain:
+        def before_tool_call(self, tool, args):
+            return "no"
+
+    assert HookRegistry([Plain()]).before_tool_call("send", {}) == "no"
+
+
+def test_the_registry_lists_what_it_offers_beyond_the_nine_hooks():
+    assert HookRegistry.FEATURES == frozenset({"tool_blocked", "failure_report"})
