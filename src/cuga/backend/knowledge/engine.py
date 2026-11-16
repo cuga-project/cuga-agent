@@ -1577,14 +1577,24 @@ def _recommended_chunk_tokens(safe_max: int) -> int:
 
 @functools.lru_cache(maxsize=1)
 def _fastembed_docling_tokenizer_cls():
-    """HybridChunker tokenizer using fastembed's Rust tokenizer (avoids HF MiniLM download)."""
+    """HybridChunker tokenizer using fastembed's Rust tokenizer (avoids HF MiniLM download).
+
+    fastembed loads that tokenizer with truncation at the model's limit, so a count made with it
+    never exceeds 512 and every chunk looks like it fits (#1166). The chunker counts with a copy
+    without truncation or padding, and counts the prefix the embedder adds to each passage
+    (E5's ``passage: ``). The embedder keeps its own truncating tokenizer for the ONNX model."""
+    import copy
+
     from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
+    from pydantic import PrivateAttr
 
     class _FastEmbedDoclingTokenizer(BaseTokenizer):
         model_config = ConfigDict(arbitrary_types_allowed=True)
 
         text_embedding: Any
         max_tokens: int
+        passage_prefix: str = ""
+        _counter: Any = PrivateAttr(default=None)
 
         def _rust_tokenizer(self):
             inner = self.text_embedding.model
@@ -1592,15 +1602,23 @@ def _fastembed_docling_tokenizer_cls():
                 inner.load_onnx_model()
             return inner.tokenizer
 
+        def _untruncated(self):
+            if self._counter is None:
+                counter = copy.deepcopy(self._rust_tokenizer())
+                counter.no_truncation()
+                counter.no_padding()
+                self._counter = counter
+            return self._counter
+
         def count_tokens(self, text: str) -> int:
-            enc = self._rust_tokenizer().encode(text)
-            return int(sum(enc.attention_mask))
+            return len(self._untruncated().encode(self.passage_prefix + text).ids)
 
         def get_max_tokens(self) -> int:
             return self.max_tokens
 
         def get_tokenizer(self) -> Any:
-            return self._rust_tokenizer()
+            # HybridChunker gives this to semchunk to split long text: it must count in full too.
+            return self._untruncated()
 
     return _FastEmbedDoclingTokenizer
 
@@ -4987,7 +5005,12 @@ class KnowledgeEngine:
             model_str = self._config.embedding_model or "default"
 
             if tok_info.kind == "fastembed":
-                tok = _fastembed_docling_tokenizer_cls()(text_embedding=tok_info.encoder, max_tokens=cap)
+                embedder = pinned[1] if pinned else self._default_embeddings
+                tok = _fastembed_docling_tokenizer_cls()(
+                    text_embedding=tok_info.encoder,
+                    max_tokens=cap,
+                    passage_prefix=getattr(embedder, "_passage_prefix", ""),
+                )
                 logger.debug(
                     f"HybridChunker tokenizer: fastembed ONNX (model={tok_info.name!r}, "
                     f"chunk_token_limit={cap}, model_seq_limit={tok_info.safe_max_tokens})"
@@ -5479,9 +5502,11 @@ class KnowledgeEngine:
         # item, or a docling-core regression). This converts a SILENT
         # embedder-side truncation — degraded retrieval, near-impossible to
         # debug — into a clean token-aware re-split plus one visible WARNING.
-        # Only ``hf``/``tiktoken`` have a cheap exact local counter; fastembed
-        # is docling-bounded (<=512 always) and the char-based ``approximate``
-        # path has no exact counter here, so both fall to the coarse net below.
+        # Only ``hf``/``tiktoken`` are checked here. fastembed chunks are bounded
+        # by HybridChunker, which counts them in full with the embedder's own
+        # tokenizer and passage prefix (``_fastembed_docling_tokenizer_cls``,
+        # #1166); the char-based ``approximate`` path has no exact counter here.
+        # Both fall to the coarse net below.
         if docs:
             tok_info = self.get_chunking_tokenizer(pinned)
             if tok_info.kind in ("hf", "tiktoken"):
