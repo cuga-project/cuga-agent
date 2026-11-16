@@ -20,6 +20,13 @@ from cuga.backend.tools_env.registry.mcp_manager.adapter import apply_authentica
 pytestmark = pytest.mark.unit
 
 INSTANCE = "7f3c9a10-5d2e-4b8a-9c61-0e4f2a7b8d93"
+_settings_allowed_hosts = mcp_gateway.allowed_hosts
+
+
+@pytest.fixture(autouse=True)
+def allowed_gateway_hosts(monkeypatch):
+    """The hosts these tests use; an empty mcp_gateway.allowed_hosts allows no gateway."""
+    monkeypatch.setattr(mcp_gateway, "allowed_hosts", lambda: ["gw.example.com", "127.0.0.1"])
 
 
 def _jwt(exp: float, n: int) -> str:
@@ -40,6 +47,7 @@ class FakePlatform:
         self.reject_first_tool_call = False
         self.tools_calls: list[str] = []
         self.iam_status = 200
+        self.tools_raw_body: str | None = None
         platform = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -74,6 +82,13 @@ class FakePlatform:
                     platform.accepted.discard(token)
                 if token not in platform.accepted:
                     return self._send(401, {"detail": "Invalid token"})
+                if platform.tools_raw_body is not None:
+                    data = platform.tools_raw_body.encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    return self.wfile.write(data)
                 return self._send(
                     200,
                     [
@@ -124,6 +139,8 @@ def test_parse_instance_url():
         "https://gw.example.com/?instance=",
         "https://gw.example.com/?instance=../admin",
         "https://gw.example.com/?instance=a%20b",
+        "http://gw.example.com/?instance=abc",
+        "https://gw.example.com:notaport/?instance=abc",
     ],
 )
 def test_parse_instance_url_rejects(url):
@@ -410,3 +427,227 @@ def test_gateway_skip_verify_still_wins(monkeypatch):
     monkeypatch.setattr(settings.auth, "iam_proxy_ca_bundle", "/etc/platform.pem", raising=False)
 
     assert mcp_gateway.gateway_settings()["gateway_verify"] is False
+
+
+# --- review fixes: allowed hosts, loaders, discovery errors, registry routing -------------
+
+
+@pytest.mark.parametrize(
+    "url,allowed",
+    [
+        (f"https://gw.example.com/?instance={INSTANCE}", ["gw.example.com"]),
+        (f"https://GW.example.com./?instance={INSTANCE}", ["gw.example.com"]),
+        (f"https://mcp-gw.apps.example.com/?instance={INSTANCE}", ["*.apps.example.com"]),
+        (f"https://gw.example.com:8443/?instance={INSTANCE}", ["gw.example.com:8443"]),
+        (f"https://gw.example.com/?instance={INSTANCE}", ["gw.example.com:443"]),
+        (f"http://127.0.0.1:9000/?instance={INSTANCE}", ["127.0.0.1"]),
+    ],
+)
+def test_allowed_gateway_hosts(monkeypatch, url, allowed):
+    monkeypatch.setattr(mcp_gateway, "allowed_hosts", lambda: allowed)
+    assert mcp_gateway.parse_instance_url(url).instance_id == INSTANCE
+
+
+@pytest.mark.parametrize(
+    "url,allowed",
+    [
+        (f"https://attacker.example/?instance={INSTANCE}", ["gw.example.com"]),
+        (f"https://gw.example.com.attacker.example/?instance={INSTANCE}", ["gw.example.com"]),
+        (f"https://apps.example.com/?instance={INSTANCE}", ["*.apps.example.com"]),
+        (f"https://gw.example.com:8443/?instance={INSTANCE}", ["gw.example.com:443"]),
+        (f"https://gw.example.com@attacker.example/?instance={INSTANCE}", ["gw.example.com"]),
+        (f"https://gw.example.com/?instance={INSTANCE}", []),
+    ],
+)
+def test_gateway_hosts_not_allowed(monkeypatch, url, allowed):
+    monkeypatch.setattr(mcp_gateway, "allowed_hosts", lambda: allowed)
+    with pytest.raises(mcp_gateway.GatewayHostNotAllowed):
+        mcp_gateway.parse_instance_url(url)
+
+
+def test_allowed_hosts_come_from_settings(monkeypatch):
+    from cuga.config import settings
+
+    monkeypatch.setattr(
+        settings.mcp_gateway, "allowed_hosts", " GW.example.com , *.apps.example.com ", raising=False
+    )
+    assert _settings_allowed_hosts() == ["gw.example.com", "*.apps.example.com"]
+    monkeypatch.setattr(settings.mcp_gateway, "allowed_hosts", ["gw.example.com"], raising=False)
+    assert _settings_allowed_hosts() == ["gw.example.com"]
+    monkeypatch.setattr(settings.mcp_gateway, "allowed_hosts", [], raising=False)
+    assert _settings_allowed_hosts() == []
+
+
+def test_parse_instance_url_keeps_a_path_prefix_and_drops_user_info():
+    inst = mcp_gateway.parse_instance_url(f"https://admin@gw.example.com/context-forge/?instance={INSTANCE}")
+    assert inst.base_url == "https://gw.example.com/context-forge"
+    assert inst.mcp_url == "https://gw.example.com/context-forge/mcp/"
+
+
+def _plain_mcp_entry(name="other"):
+    return {"name": name, "type": "mcp", "url": "https://tools.example.com/sse", "transport": "sse"}
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        _manage_entry(url="https://gw.example.com/", gateway={"run_as": "service"}),
+        _manage_entry(
+            url=f"https://attacker.example/?instance={INSTANCE}",
+            gateway={"instance_url": f"https://attacker.example/?instance={INSTANCE}", "run_as": "service"},
+        ),
+    ],
+)
+async def test_a_bad_gateway_entry_skips_only_itself_in_the_database_loader(monkeypatch, bad):
+    from unittest.mock import AsyncMock
+
+    from cuga.backend.server import managed_mcp
+    from cuga.backend.tools_env.registry.config.config_loader import load_service_configs_from_db
+
+    good_gateway = _manage_entry(name="good_gw")
+    monkeypatch.setattr(
+        managed_mcp,
+        "get_tools_from_agent_config",
+        AsyncMock(return_value=[_plain_mcp_entry(), bad, good_gateway]),
+    )
+    services = await load_service_configs_from_db("agent-a")
+    assert set(services) == {"other", "good_gw"}
+
+
+def test_a_bad_gateway_entry_skips_only_itself_in_yaml(tmp_path):
+    from cuga.backend.tools_env.registry.config.config_loader import load_service_configs
+
+    path = tmp_path / "mcp_servers.yaml"
+    path.write_text(
+        "mcpServers:\n"
+        "  other:\n"
+        "    url: https://tools.example.com/sse\n"
+        "    transport: sse\n"
+        "  broken_gw:\n"
+        "    url: https://gw.example.com/\n"
+        "    gateway:\n"
+        "      run_as: service\n"
+        "    auth:\n"
+        "      type: account_iam_apikey\n"
+        "      value: db://k\n"
+    )
+    assert set(load_service_configs(str(path))) == {"other"}
+
+
+async def test_discover_route_checks_the_host_before_using_a_key_or_token(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from fastapi import HTTPException
+
+    import cuga.backend.secrets as secrets
+    from cuga.backend.server.auth import gateway_tokens
+    from cuga.backend.server.manage_routes.gateway_routes import GatewayDiscoverRequest, discover_gateway
+
+    def no_secret(*a, **k):
+        raise AssertionError("the secret must not be read for a host that is not allowed")
+
+    provider = SimpleNamespace(token=AsyncMock(return_value="instance-token"))
+    monkeypatch.setattr(secrets, "resolve_secret", no_secret)
+    monkeypatch.setattr(gateway_tokens, "provider_from_request", lambda request, user: provider)
+    monkeypatch.setattr(mcp_gateway, "discover", AsyncMock(side_effect=AssertionError("no discovery")))
+    url = f"https://attacker.example/?instance={INSTANCE}"
+    for body in (
+        GatewayDiscoverRequest(url=url, api_key_ref="db://other-agents-key", agent_id="other"),
+        GatewayDiscoverRequest(url=url, run_as="user"),
+    ):
+        with pytest.raises(HTTPException) as raised:
+            await discover_gateway(body, request=SimpleNamespace(), user=SimpleNamespace())
+        assert raised.value.status_code == 400
+        assert "allowed_hosts" in raised.value.detail
+    provider.token.assert_not_awaited()
+
+
+async def test_discover_route_reads_the_secret_off_the_event_loop(monkeypatch):
+    import threading
+    from unittest.mock import AsyncMock
+
+    import cuga.backend.secrets as secrets
+    from cuga.backend.server.manage_routes.gateway_routes import GatewayDiscoverRequest, discover_gateway
+
+    threads = []
+
+    def resolve(ref, agent_id=None):
+        threads.append(threading.get_ident())
+        return "fake-apikey"
+
+    monkeypatch.setattr(secrets, "resolve_secret", resolve)
+    monkeypatch.setattr(mcp_gateway, "discover", AsyncMock(return_value={"servers": []}))
+    body = GatewayDiscoverRequest(
+        url=f"https://gw.example.com/?instance={INSTANCE}", api_key_ref="env://GATEWAY_KEY"
+    )
+    assert await discover_gateway(body) == {"servers": []}
+    assert threads and threads[0] != threading.get_ident()
+
+
+async def test_discover_reports_a_non_json_answer_as_a_gateway_error(platform):
+    platform.tools_raw_body = "<html>Sign in</html>"
+    with pytest.raises(mcp_gateway.GatewayError, match="did not answer with JSON"):
+        await mcp_gateway.discover(f"{platform.url}/?instance={INSTANCE}", "fake-apikey")
+
+
+async def test_discover_reports_an_unreachable_iam(platform, monkeypatch):
+    monkeypatch.setattr(
+        mcp_gateway,
+        "gateway_settings",
+        lambda: {"iam_url": "http://127.0.0.1:1", "iam_verify": True, "gateway_verify": True},
+    )
+    with pytest.raises(mcp_gateway.GatewayError, match="IAM cannot be reached"):
+        await mcp_gateway.discover(f"{platform.url}/?instance={INSTANCE}", "fake-apikey")
+
+
+INSTANCE_B = "8a1b2c3d-0000-4b8a-9c61-0e4f2a7b8d93"
+
+
+def _user_entry(name, instance, host="gw.example.com"):
+    url = f"https://{host}/?instance={instance}"
+    return _create_service_config(name, {"url": url, "gateway": {"run_as": "user"}}, is_mcp_server=True)
+
+
+async def test_the_registry_asks_for_the_token_of_the_server_that_serves_the_tool(monkeypatch):
+    """app_name names A, but the tool is B's: the 401 must name B, and no call is made."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from cuga.backend.tools_env.registry.registry import api_registry_server as server
+    from cuga.backend.tools_env.registry.registry.api_registry_server import (
+        FunctionCallRequest,
+        call_mcp_function,
+    )
+
+    mgr = SimpleNamespace(
+        schema_urls={"team_a": _user_entry("team_a", INSTANCE), "team_b": _user_entry("team_b", INSTANCE_B)},
+        server_by_tool={"team_a_get_time": "team_a", "team_b_get_time": "team_b"},
+        auth_config={},
+    )
+    reg = SimpleNamespace(show_apis_for_app=AsyncMock(return_value={}), call_function=AsyncMock())
+    monkeypatch.setattr(server, "mcp_manager", mgr, raising=False)
+    monkeypatch.setattr(server, "registry", reg, raising=False)
+    monkeypatch.setattr(server, "database_mode", False)
+
+    response = await call_mcp_function(
+        FunctionCallRequest(app_name="team_a", function_name="team_b_get_time", args={}),
+        http_request=SimpleNamespace(headers={}),
+    )
+    assert response.status_code == 401
+    assert json.loads(response.body)["instance_id"] == INSTANCE_B
+    reg.call_function.assert_not_awaited()
+
+
+def test_serving_server_config():
+    from types import SimpleNamespace
+
+    from cuga.backend.tools_env.registry.registry.api_registry_server import _serving_server_config
+
+    b = _user_entry("team_b", INSTANCE_B)
+    mgr = SimpleNamespace(
+        schema_urls={"team_b": b}, server_by_tool={"team_b_x": "team_b", "local_x": object()}
+    )
+    assert _serving_server_config(mgr, "team_b_x") is b
+    assert _serving_server_config(mgr, "local_x") is None
+    assert _serving_server_config(mgr, "missing") is None
