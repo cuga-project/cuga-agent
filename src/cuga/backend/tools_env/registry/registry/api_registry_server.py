@@ -323,6 +323,14 @@ async def onboard_function(request: FunctionCallOnboardRequest):
     return {"status": f"Loaded successfully {len(request.schemas)} tools"}
 
 
+def _serving_server_config(mcp_mgr: Any, function_name: str) -> Any:
+    """The service config of the external MCP server that serves ``function_name``, or None."""
+    server = (getattr(mcp_mgr, "server_by_tool", None) or {}).get(function_name)
+    if not isinstance(server, str):  # not found, or a local FastMCP server (never a gateway)
+        return None
+    return (getattr(mcp_mgr, "schema_urls", None) or {}).get(server)
+
+
 # --- ENDPOINT for Calling Functions ---
 @app.post("/functions/call", tags=["Functions"])
 async def call_mcp_function(
@@ -397,8 +405,10 @@ async def call_mcp_function(
             run_credentials["knowledge_run_token"] = request.knowledge_run_token
         # MCP gateway servers whose calls run as the signed-in user need the user's instance
         # token; without it the agent gets a 401 naming the instance and retries with one.
+        # The server is the one that serves function_name (MCPManager.call_tool routes by the
+        # tool name, not by app_name), so a token is only ever asked for, and sent to, that server.
         gateway_instance = mcp_gateway.user_mode_instance(
-            (getattr(mcp_mgr, "schema_urls", None) or {}).get(request.app_name)
+            _serving_server_config(mcp_mgr, request.function_name)
         )
         user_token = (
             http_request.headers.get(mcp_gateway.USER_TOKEN_HEADER)
@@ -409,7 +419,7 @@ async def call_mcp_function(
             return JSONResponse(
                 status_code=401, content=mcp_gateway.user_token_required_body(gateway_instance)
             )
-        token_reset = mcp_gateway.CALL_USER_TOKEN.set(user_token)
+        token_reset = mcp_gateway.CALL_USER_TOKEN.set((gateway_instance, user_token) if user_token else None)
         try:
             result: TextContent = await reg.call_function(
                 app_name=request.app_name,
