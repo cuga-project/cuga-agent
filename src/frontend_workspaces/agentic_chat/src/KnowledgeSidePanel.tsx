@@ -16,8 +16,10 @@ interface KnowledgeDoc {
 interface KnowledgeSidePanelProps {
   isOpen: boolean;
   onToggle: () => void;
-  threadId: string;
+  threadId: string | null;
   sessionDocsVersion: number;
+  /** Creates the conversation on demand, so a new chat can upload session documents. */
+  resolveThreadId?: () => Promise<string>;
   onSessionDocsChanged: () => void;
   // Agent-level docs: prop is OPTIONAL. The original design wanted a
   // shared App-level ``useAgentKnowledgeDocs`` hook so the badge count
@@ -57,6 +59,7 @@ export function KnowledgeSidePanel({
   threadId,
   sessionDocsVersion,
   onSessionDocsChanged,
+  resolveThreadId,
   agentDocs: agentDocsProp,
   onDocCountChanged,
   inline = false,
@@ -110,8 +113,10 @@ export function KnowledgeSidePanel({
   }, [agentDocsProp, agentScopeEnabled, isOpen, sessionDocsVersion]);
 
   const agentDocs: KnowledgeDoc[] = agentDocsProp ?? localAgentDocs;
-  const effectiveThreadId = sessionScopeEnabled ? threadId : "";
+  const effectiveThreadId = sessionScopeEnabled ? threadId ?? "" : "";
   const conversationReady = sessionScopeEnabled && Boolean(effectiveThreadId);
+  // A new chat has no ID yet; uploading creates the conversation.
+  const uploadReady = conversationReady || (sessionScopeEnabled && Boolean(resolveThreadId));
   const disabledAgentLabel = agentLabel || "this agent";
 
   // Per-session citations override. ``null`` = no override stored, follow
@@ -152,7 +157,7 @@ export function KnowledgeSidePanel({
     const prev = sessionCitations;
     setSessionCitations(next); // optimistic
     try {
-      await api.patchSessionKnowledgeSettings(threadId, { citations_enabled: next });
+      await api.patchSessionKnowledgeSettings(effectiveThreadId, { citations_enabled: next });
     } catch (err) {
       console.error("Failed to update session citations setting:", err);
       if (request === citationsRequestRef.current) setSessionCitations(prev); // revert only in the same conversation
@@ -172,6 +177,7 @@ export function KnowledgeSidePanel({
     enabled: sessionScopeEnabled,
     sessionDocsVersion,
     onSessionDocsChanged,
+    resolveThreadId,
   });
 
   // Notify the parent of total doc count changes so the section badge
@@ -194,7 +200,7 @@ export function KnowledgeSidePanel({
   };
 
   const handleUpload = async (files: File[]) => {
-    if (!effectiveThreadId || files.length === 0) return;
+    if (!uploadReady || files.length === 0) return;
     try {
       await uploadFiles(files);
     } catch (err) {
@@ -301,8 +307,8 @@ export function KnowledgeSidePanel({
             )}
 
             <FileUploaderDropContainer
-              labelText={conversationReady ? "Drag and drop files here or click to upload" : "Session files are temporarily unavailable"}
-              multiple disabled={uploading || !conversationReady}
+              labelText={uploadReady ? "Drag and drop files here or click to upload" : "Session files are temporarily unavailable"}
+              multiple disabled={uploading || !uploadReady}
               onAddFiles={(_event, { addedFiles }) => { void handleUpload(addedFiles); }}
             />
             {uploading && <InlineLoading description="Uploading..." />}
