@@ -39,13 +39,13 @@ Use auto_continue false when the combined picture is an appropriate completed tu
 Examples (visible content → decision):
 - "We need to search student_loan app." → {"auto_continue": true} — interim plan; the work it announces has not happened.
 - "Let me perform the second phase." → {"auto_continue": true} — interim status before more execution.
-- "The export is complete: 12 saved tracks, 6 saved albums, and 6 ordered playlists. I’ll mark that phase complete and proceed to account setup discovery." → {"auto_continue": true} — sub-phase done, but the agent announces the next phase it will run itself.
-- "I’ll inspect the work directory and search Jonathan’s inbox across all result pages for schedule-related threads, using the supplied current date as the search boundary. The directory listing and email-thread search are independent, so I’ll retrieve both and retain every matching thread page for detailed inspection." → {"auto_continue": true} — pure forward plan; no code yet.
-- "I’ll inspect the work directory and search Jonathan’s inbox across all result pages for schedule-related threads… I’m unable to continue because the connected application tool functions are not available in the current execution environment." → {"auto_continue": false} — plan is overridden by a hard stop / tools unavailable.
+- "The import is complete: 40 invoices and 6 vendors loaded. I’ll mark that phase complete and proceed to payment setup discovery." → {"auto_continue": true} — sub-phase done, but the agent announces the next phase it will run itself.
+- "I’ll list the shared drive folder and search the support mailbox across all result pages for outage-related threads, using the supplied current date as the search boundary. The folder listing and mailbox search are independent, so I’ll retrieve both and retain every matching thread page for detailed inspection." → {"auto_continue": true} — pure forward plan; no code yet.
+- "I’ll list the shared drive folder and search the support mailbox across all result pages for outage-related threads… I’m unable to continue because the connected application tool functions are not available in the current execution environment." → {"auto_continue": false} — plan is overridden by a hard stop / tools unavailable.
 - "Ok I will fetch the information, but first I require your ID" → {"auto_continue": false} — blocked on user input despite the announced plan.
 - "I could not find any matching loans." → {"auto_continue": false} — a result, not a plan.
 - "Which account should I use?" → {"auto_continue": false} — clarifying question.
-- "Done. All 15 artists are followed on Spotify." → {"auto_continue": false} — completed result with no next agent phase."""
+- "Done. All 15 tickets are assigned to the on-call engineer." → {"auto_continue": false} — completed result with no next agent phase."""
 
 _VISIBLE_MAX = 12000
 _REASONING_MAX = 8000

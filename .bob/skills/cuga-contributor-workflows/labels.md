@@ -13,7 +13,11 @@ Assess the work before choosing labels. Labels summarize this assessment; they d
    definition. Do not repeat the same explanation under several areas; group related areas when useful.
 4. Choose one overall `design-impact:` label using the criteria below. Explain which criterion applies in one short
    sentence. This is design significance, not a claim that every affected area has a major change.
-5. Update the PR or issue description with the assessment before creating it or applying labels. Preserve the
+5. Choose one `design-review:` label from the design path below. It states whether a brainstorm or design review is
+   required before merge, so readers do not have to work it out from the other labels.
+6. For a PR, choose one `evaluation:` label: does the change need a benchmark run before merge because agent
+   accuracy can go up or down?
+7. Update the PR or issue description with the assessment before creating it or applying labels. Preserve the
    existing template sections, requirements, links, and useful context; update an existing assessment rather than
    appending duplicates. For an existing PR, refresh it before each push when scope or impact changes. For an
    existing issue, refresh it when updating its scope or labels.
@@ -31,7 +35,15 @@ For an **issue**, use `Proposed change and expected impact` instead:
 |---|---|---|
 | <affected area or related areas> | <requested behavior> | <expected consequence; note uncertainty> |
 
-Keep small changes to one short row. Below either table, add `Design impact: <low|medium|high> — <reason>`.
+Keep small changes to one short row. Below either table, add one line per label group:
+
+```text
+Design impact: <low|medium|high> — <reason>
+Design review: <needed|done|not needed> — <design path cell, or link to the recorded decision>
+Evaluation: <needed|done|not needed> — <trigger that applies, or link to the results comment>
+```
+
+Issues get the first two lines; `Evaluation:` is for PRs only.
 Do not invent affected areas, implementation details, or validation results to fill the table. If description edits
 are unavailable, provide the proposed text to the user and state that it was not saved.
 
@@ -44,29 +56,95 @@ are unavailable, provide the proposed text to the user and state that it was not
 - when **creating an issue** or updating its scope or labels.
 
 These labels are set by contributors and their agents, not by CodeRabbit. The development guidelines use
-`design-impact:` and `area:` to choose the design path, and `design-impact:` to choose the PR review format.
+`design-impact:` and `area:` to choose the design path, `design-review:` to record its result, and `design-impact:`
+to choose the PR review format. **`design-review: needed` and `evaluation: needed` hold the merge.**
 
 ## Rules
 
 1. Use only labels that exist (`gh label list --repo "$origin_repo"`). Never invent labels.
 2. Exactly one `design-impact:` label on every pull request and issue.
-3. One `area:` label for every area the work changes. A pull request that changes non-test code gets at least one.
-4. Exactly one `readability:` label on every pull request. Issues do not get one.
-5. Judge a pull request by its diff against `main`. Judge an issue by the work it asks for.
-6. Mentions in tests, mocks, fixtures, comments, docstrings, or generated files do not count toward an area.
-7. Before each push, check all three groups again: the diff may have changed. Remove labels that no longer apply.
-8. If you cannot set labels (for example, a pull request from a fork), list the chosen labels in the body under
+3. Exactly one `design-review:` label on every pull request and issue.
+4. One `area:` label for every area the work changes. A pull request that changes non-test code gets at least one.
+5. Exactly one `evaluation:` label and exactly one `readability:` label on every pull request. Issues get neither.
+6. Judge a pull request by its diff against `main`, not by the increment over the PR it is stacked on. Judge an
+   issue by the work it asks for.
+7. Mentions in tests, mocks, fixtures, comments, docstrings, or generated files do not count toward an area.
+8. Before each push, check all five groups again: the diff may have changed. Remove labels that no longer apply.
+9. If you cannot set labels (for example, a pull request from a fork), list the chosen labels in the body under
    `Suggested labels:` and tell the user.
 
 ## Design impact (exactly one)
 
-Ask whether the work needs a design decision, not how big the diff is.
+Ask whether the work needs a design decision, not how big the diff is. When any high criterion applies, the label is
+high, even when a low example also fits (for example, a bug fix in a prompt or in the agent loop).
 
 | Label | When |
 |---|---|
-| `design-impact: low` | No design decision needed. **All** of: follows an existing pattern (no new abstraction, extension point, or subsystem); no change to a public contract (API/SDK schemas, config keys, CLI commands, event or streaming protocols, stored data schemas); no new dependency, external service, or storage backend; one concern, easy to revert. Examples: a bug fix that restores documented behavior, a new tool or model provider added through the existing interface, a mechanical rename. A large diff can still be low. |
+| `design-impact: low` | No design decision needed. **All** of: follows an existing pattern (no new abstraction, extension point, or subsystem); no change to a public contract (API/SDK schemas, config keys, CLI commands, event or streaming protocols, stored data schemas); no change to what the model is told or to the agent loop; no new dependency, external service, or storage backend; one concern, easy to revert. Examples: a bug fix that restores documented behavior, a new tool or model provider added through the existing interface, a mechanical rename. A large diff can still be low. |
 | `design-impact: medium` | Real logic, but bounded: new behavior in one or two areas, no new public contract, and no new pattern that other features will reuse. Use medium when any low criterion fails and no high criterion applies, or when an issue is too vague to judge. |
-| `design-impact: high` | Needs a design decision. **Any** of: a new or changed public contract, a breaking change, or a data migration; a new subsystem, abstraction, or pattern that other features will reuse; changes to the agent loop, multi-agent orchestration, events, function calling, or sub-agent spawning; security, auth, sandboxing, or policy enforcement behavior; hard to reverse once released. A small diff can still be high. |
+| `design-impact: high` | Needs a design decision. **Any** of: a new or changed public contract, a breaking change, or a data migration (a new optional SDK parameter, API field, config key, or CLI command counts, even when it is additive and off by default: once released, it must stay supported); a new subsystem, abstraction, or pattern that other features will reuse; changes to the agent loop (planning, how model replies are parsed or executed, reflection, VERIFY, retries, finalization), multi-agent orchestration, events, function calling, or sub-agent spawning; **any change to what the model is told**: runtime prompt text, agent instructions, few-shot examples, model output requirements, descriptions of the agent's built-in tools, or runtime skills (`area: prompts`), including wording edits, removals, and restores; security, auth, sandboxing, or policy enforcement behavior; hard to reverse once released. A small diff can still be high. |
+
+Why prompt changes are high: #1102 shortened the agent, reflection, and answer prompts, was labeled low, and merged
+without a benchmark run. It removed rules that AppWorld tasks depended on (#1108, #1110), and two follow-up PRs
+(#1111, #1112) restore them.
+
+## Design review (exactly one)
+
+This label is the result of the design path. It answers one question: must a brainstorm or design review happen
+before this work merges?
+
+| Label | When |
+|---|---|
+| `design-review: needed` | The design path table says brainstorm, or the PR review's last gate says yes, and no decision is recorded on the issue yet. Holds the merge. |
+| `design-review: done` | The brainstorm, design review, or board decision is recorded as a comment on the linked issue. Link that comment in the description. Never set `done` without the link. |
+| `design-review: not needed` | The design path table says skip design, and the last gate has not said yes. |
+
+Design path. Non-major areas are `docs`, `llm-integrations`, and `cli`; every other `area:` label is major.
+
+| Design impact | No major area | One major area | 2+ major areas |
+|---|---|---|---|
+| low | not needed | not needed | not needed |
+| medium | not needed | needed (brainstorm on the issue, async) | needed (brainstorm meeting) |
+| high | needed (brainstorm meeting) | needed (brainstorm meeting) | needed (brainstorm meeting) |
+
+A PR takes the issue's `design-review:` label; with no linked issue, choose it from the table. Change it to `needed`
+when the PR has a major area or a higher design impact than the issue, or deviates from the recorded decision.
+
+## Evaluation (pull requests only, exactly one)
+
+Ask whether the change can make the agent pass more or fewer benchmark tasks. Unit tests do not answer this: #1102
+passed 2899 unit tests.
+
+| Label | When |
+|---|---|
+| `evaluation: needed` | Any trigger below applies. Holds the merge until benchmark results are posted on the PR and accepted. |
+| `evaluation: done` | A results comment compares the PR with `main`, a reviewer accepted it, and no trigger file changed after the evaluated commit. Link the comment in the description. |
+| `evaluation: not needed` | No trigger applies. |
+
+Triggers (any one is enough):
+
+- **What the model is told:** any `area: prompts` change (runtime prompts, agent instructions, few-shot examples,
+  model output requirements, built-in tool descriptions, runtime skills).
+- **Agent loop:** planning, code generation and extraction, reply parsing, reflection, VERIFY, retries,
+  auto-continue, step or tool-call caps, finalization, and final answer formatting.
+- **Tool selection:** shortlisting, `find_tools`, tool binding modes, and how tool schemas are shown to the model.
+- **Context:** conversation history, memory, summarization, truncation, and context window sizing.
+- **Model defaults:** default model, model profiles, reasoning effort, temperature, and other inference settings.
+- **Retrieval quality:** embedding models, chunking, ranking, rerankers, and keyword scoring (`area: knowledge`).
+
+How to run it:
+
+1. Ask a person listed in `.github/workflows/run-pr-eval.yml` to comment on the PR, for example
+   `/run-pr-eval sha=<40-character PR head SHA> agent=cuga benchmark=appworld eval_key=test_med`. The workflow
+   supports `benchmark=appworld` and `benchmark=m3`. Other candidate benchmarks in `cuga-eval` (for example `tau2`,
+   `automationbench`, `enterpriseops_gym`) run outside the workflow; name the one you used.
+2. Compare with `main` on the same day, with the same model, settings, and task set. Report the pass rate on each
+   side and the tasks that each side passes and the other fails. #800 and #1003 show this format.
+3. If a trigger file changes after the run, set the label back to `needed` and run again. Changes to tests or docs
+   alone do not need a new run.
+4. If the PR loses tasks, fix it, or record the accepted trade-off in the PR and get a maintainer's approval.
+5. When no benchmark covers the change (for example, retrieval quality), say so in the PR and ask a maintainer which
+   check replaces it. The label stays `needed` until the maintainer answers.
 
 ## Areas (one label per changed area)
 
@@ -119,7 +197,7 @@ git diff origin/main...HEAD          # read the changes; tests, mocks, and comme
 ```
 
 1. Complete the assessment above, infer the labels, and prepare or update the PR description with the table and
-   design-impact reason. Then choose `readability:` based on the resulting description.
+   the three label lines. Then choose `readability:` based on the resulting description.
 2. **Opening a pull request:** pass every chosen label to `gh pr create` with `--label` (see [create-pr.md](create-pr.md)).
 3. **Pushing:** find the open pull request for the branch. If there is none yet, keep the chosen labels and pass
    them when you open the pull request (step 2); there is nothing to update. If there is one, compare with its
@@ -130,7 +208,7 @@ git diff origin/main...HEAD          # read the changes; tests, mocks, and comme
    pr="$(gh pr list --repo "$origin_repo" --head "$branch" --state open --json number -q '.[0].number')"
    [ -z "$pr" ] && echo "No open pull request for $branch yet; pass the labels to gh pr create."
    gh pr view "$pr" --repo "$origin_repo" --json labels \
-     --jq '[.labels[].name | select(test("^(design-impact|area|readability): "))]'
+     --jq '[.labels[].name | select(test("^(design-impact|design-review|area|evaluation|readability): "))]'
    gh pr edit "$pr" --repo "$origin_repo" --add-label "<label to add>" --remove-label "<label to remove>"
    ```
 
@@ -139,8 +217,8 @@ git diff origin/main...HEAD          # read the changes; tests, mocks, and comme
 
 ### Issue: when creating it or updating its scope or labels
 
-1. Complete the assessment above, infer one `design-impact:` label and the `area:` labels, and prepare or update
-   the issue description with the proposed-change table and design-impact reason. Add the type labels that the
+1. Complete the assessment above, infer one `design-impact:` label, one `design-review:` label, and the `area:`
+   labels, and prepare or update the issue description with the proposed-change table and the two label lines. Add the type labels that the
    issue skill requires (`bug`, `enhancement`, `needs-triage`, `type: epic`).
 2. On creation, pass them with `--label` on `gh issue create`, or as `labels[]` in the REST call. For an existing
    issue, read its current body first, preserve useful context, and apply the updated body and labels with

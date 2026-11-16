@@ -19,6 +19,7 @@ RUN microdnf install -y mesa-libGL libxcb glib2 libXext libSM libXrender && micr
 COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 COPY src/ ./src/
 COPY docs/ ./docs/
+COPY deployment/evolve-image-spacy-model.txt ./deployment/
 
 # Include observability, Evolve and READI with its pinned spaCy model.
 # READI declares Stanza unconditionally, but our spaCy extractor does not use it.
@@ -29,6 +30,9 @@ RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + \
         --no-install-package stanza \
         --no-install-package udtools \
         --no-install-package udapi
+
+# READI's spaCy model stays out of uv.lock; deployment/evolve-image-spacy-model.txt says why.
+RUN uv pip install --no-config --no-deps --require-hashes -r deployment/evolve-image-spacy-model.txt
 
 # Slim down torch: remove test suite and C++ headers (not needed at runtime) ~143MB
 # NOTE: torch/bin must be kept — contains torch_shm_manager required at import time

@@ -9,7 +9,7 @@ for (const count of [0, 3, 12]) {
       if (path === "/api/auth/config") body = { enabled: false, authorization_enabled: false };
       else if (path === "/api/ui/config") body = { evolve_memory_enabled: true, agent_registry: false };
       else if (path === "/api/commands") body = [];
-      else if (path === "/api/conversation-threads") body = { threads: [] };
+      else if (path === "/api/conversations") body = [];
       else if (path.endsWith("/settings")) body = { instance_enabled: true, user_enabled: true, effective_enabled: true, episodic_enabled: true };
       else if (path.endsWith("/retention/candidates")) body = { items: candidates };
       else if (/\/manage\/memory\/entities\/\d+$/.test(path)) {
