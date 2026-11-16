@@ -70,6 +70,7 @@ Tool Approval Example (with HITL):
 
 from typing import Callable, List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
 import asyncio
+import json
 import sys
 import time
 import uuid
@@ -167,6 +168,11 @@ class InvokeResult(BaseModel):
     receipt: Optional[RunReceipt] = Field(
         default=None,
         description="Per-run token/cost/timing receipt (populated when advanced_features.run_receipt is enabled)",
+    )
+    hook_events: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Lifecycle hook events of this invocation (hook, summary, outcome, message, details), "
+        "when CugaAgent(hooks=...) is set",
     )
 
     def __str__(self) -> str:
@@ -1992,6 +1998,7 @@ class CugaAgent:
         step_discipline: Optional[str] = None,
         *,
         checkpointer: Optional["BaseCheckpointSaver"] = None,
+        hooks: Optional[List[Any]] = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -2021,6 +2028,12 @@ class CugaAgent:
             step_discipline: `"one_tool_per_step"` lets the model run only one tool per step
                 (in both execution modes); `"off"` (default) allows any number. None = use
                 `advanced_features.cuga_lite_step_discipline`. Overridable per invoke()/stream().
+            hooks: Optional experimental lifecycle hooks (``cuga.backend.hooks.AgentHooks`` instances). They run at
+                session_start, on_user_message, before_llm_call, after_llm_call, after_plan, before_tool_call,
+                after_tool_call, before_reply and on_task_end; see the ``cuga.backend.hooks`` docstring. Events
+                are returned in ``InvokeResult.hook_events``; stream them with ``agent.hooks.add_listener(fn)``.
+                ``stream()`` runs only the model, plan and tool hooks: session_start, on_user_message,
+                before_reply and on_task_end run in ``invoke()`` only.
             final_answer: How the final answer is shaped. A `str` adds guidance for the
                 answer-composing LLM; a callable `(str) -> str` deterministically
                 post-processes the composed answer before delivery (must be pure;
@@ -2068,6 +2081,16 @@ class CugaAgent:
         from cuga.config import settings
 
         self._model = model
+        from cuga.backend.hooks import HookRegistry
+
+        self.hooks = HookRegistry(list(hooks or []))
+        if self.hooks:
+            from cuga.backend.hooks import HooksCallback, wrap_provider_with_hooks, wrap_tools_with_hooks
+
+            tools = wrap_tools_with_hooks(list(tools or []), self.hooks)
+            if tool_provider is not None:  # tools from a custom provider get the same tool-call hooks
+                tool_provider = wrap_provider_with_hooks(tool_provider, self.hooks)
+            callbacks = list(callbacks or []) + [HooksCallback(self.hooks)]
         self._callbacks = callbacks
         self._graph = None
         self._compiled_graph = None
@@ -2260,6 +2283,8 @@ class CugaAgent:
         """
         run_config: dict = dict(config) if config else {}
         run_config["configurable"] = dict(run_config.get("configurable") or {})
+        if getattr(self, "hooks", None):
+            run_config["configurable"]["cuga_hooks"] = self.hooks
         for key, value in (getattr(self, "_feature_overrides", None) or {}).items():
             if value is not None:
                 run_config["configurable"].setdefault(key, value)
@@ -2388,17 +2413,27 @@ class CugaAgent:
                     kb_config = KnowledgeConfig.from_settings(settings)
                     kb_enabled = kb_config.enabled
 
-                from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import unwrap_tool_provider
                 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import (
                     DirectLangChainToolsProvider,
                 )
 
-                provider_for_knowledge = unwrap_tool_provider(self.tool_provider)
+                from cuga.backend.hooks.registry import (
+                    base_tool_provider,
+                    has_hooks_layer,
+                    wrap_tools_with_hooks,
+                )
+
+                provider_for_knowledge = base_tool_provider(self.tool_provider)
                 if kb_enabled and isinstance(provider_for_knowledge, DirectLangChainToolsProvider):
                     existing_names = {t.name for t in provider_for_knowledge.tools}
                     knowledge_tools = self.knowledge.get_langchain_tools()
                     new_tools = [t for t in knowledge_tools if t.name not in existing_names]
                     if new_tools:
+                        if self.hooks:  # the same tool-call hooks as the tools given at construction
+                            # behind a hooks layer the prepare node does not record direct tools: the wrapper does
+                            new_tools = wrap_tools_with_hooks(
+                                new_tools, self.hooks, record=has_hooks_layer(self.tool_provider)
+                            )
                         self.tool_provider.add_tools(new_tools)
                         logger.info(f"Auto-injected {len(new_tools)} knowledge tools into SDK agent")
                 # Mark success only after injection completes (or knowledge disabled)
@@ -2772,6 +2807,108 @@ class CugaAgent:
                 raise
             return None
 
+    async def _approval_pending(self, thread_id: Optional[str]) -> bool:
+        """True when the thread's graph stopped for a human-in-the-loop approval (``state.next`` is set)."""
+        if not thread_id:
+            return False
+        try:
+            state = await self.graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return bool(state.next)
+        except Exception as e:
+            logger.debug(f"Could not check interrupt state: {e}")
+            return False
+
+    async def _save_rewritten_answer(self, thread_id: Optional[str], shown: Optional[str], new: str) -> None:
+        """A before_reply rewrite becomes the thread's saved answer, so the next turn continues from the reply the
+        caller got. The answer is saved in three places: ``final_answer``, the last agent message of
+        ``chat_messages`` and the final-answer node's message in ``messages``."""
+        if not thread_id:
+            return
+        config = {"configurable": {"thread_id": thread_id}}
+        try:
+            values = (await self.graph.aget_state(config)).values or {}
+        except Exception as exc:
+            logger.warning("hooks: rewritten answer not saved for thread {}: {}", thread_id, exc)
+            return
+        saved = values.get("final_answer")
+        old = {a for a in (saved, shown) if a}
+        update: Dict[str, Any] = {"final_answer": new}
+
+        def _content(m: Any) -> Any:
+            return m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+
+        def _with(m: Any, content: str) -> Any:
+            return (
+                {**m, "content": content}
+                if isinstance(m, dict)
+                else m.model_copy(update={"content": content})
+            )
+
+        def _is_ai(m: Any) -> bool:
+            return (m.get("type") if isinstance(m, dict) else getattr(m, "type", None)) == "ai"
+
+        chat = list(values.get("chat_messages") or [])
+        for i in range(len(chat) - 1, -1, -1):
+            if _is_ai(chat[i]) and _content(chat[i]) in old:
+                chat[i] = _with(chat[i], new)
+                update["chat_messages"] = chat
+                break
+        node_messages = list(values.get("messages") or [])
+        for i in range(len(node_messages) - 1, -1, -1):
+            content = _content(node_messages[i])
+            try:
+                payload = json.loads(content) if isinstance(content, str) else None
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict) and payload.get("final_answer") in old:
+                node_messages[i] = _with(node_messages[i], json.dumps({**payload, "final_answer": new}))
+                update["messages"] = node_messages
+                break
+        try:
+            await self.graph.aupdate_state(config, update)
+        except Exception as exc:
+            logger.warning("hooks: rewritten answer not saved for thread {}: {}", thread_id, exc)
+
+    async def _invoke_with_hooks(self, message: Any, **kwargs: Any) -> "InvokeResult":
+        """Run invoke() inside the session_start, on_user_message, before_reply and on_task_end hooks.
+
+        A before_reply hook can send the agent back to work (at most twice); its message becomes the next
+        user turn in the same thread. A run paused for approval gets no before_reply or on_task_end: they run
+        when ``invoke(None, action_response=...)`` finishes it. Events of this invocation are returned in
+        ``result.hook_events``.
+        """
+        reg = self.hooks
+        thread_id = kwargs.get("thread_id")
+        with reg.run(thread_id):
+            if isinstance(message, str):
+                if not reg.thread_started(thread_id):
+                    reg.session_start(thread_id)
+                guard = reg.on_user_message(message, thread_id)
+                if guard.answer is not None:  # a hook answered (e.g. an intent guard): the agent does not run
+                    reg.on_task_end(guard.answer)
+                    return InvokeResult(
+                        answer=guard.answer, thread_id=thread_id, hook_events=reg.run_events()
+                    )
+            result = await self.invoke(message, **kwargs)
+            kwargs["action_response"] = None  # a send-back is a new user turn, not another resume
+            for attempt in range(3):
+                reg.set_thread(result.thread_id)
+                if not result.error and await self._approval_pending(result.thread_id):
+                    result.hook_events = reg.run_events()  # the task is not over
+                    return result
+                reply = reg.before_reply(result.answer or "")
+                if reply.message and not result.error and attempt < 2:  # sent back to work (at most twice)
+                    kwargs["thread_id"] = result.thread_id
+                    result = await self.invoke(reply.message, **kwargs)
+                    continue
+                if reply.answer is not None:  # e.g. an output formatter added a required note
+                    await self._save_rewritten_answer(result.thread_id, result.answer, reply.answer)
+                    result.answer = reply.answer
+                break
+            reg.on_task_end(result.answer or "")
+            result.hook_events = reg.run_events()
+            return result
+
     async def invoke(
         self,
         message: Union[str, List[BaseMessage], None] = None,
@@ -2855,6 +2992,19 @@ class CugaAgent:
             result = await agent.invoke(None, thread_id="user-123", action_response=approval)
             ```
         """
+        if self.hooks and not self.hooks.in_run():
+            return await self._invoke_with_hooks(
+                message,
+                thread_id=thread_id,
+                config=config,
+                action_response=action_response,
+                user_context=user_context,
+                track_tool_calls=track_tool_calls,
+                variables=variables,
+                shortlister=shortlister,
+                execution_mode=execution_mode,
+                step_discipline=step_discipline,
+            )
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
@@ -3321,6 +3471,9 @@ class CugaAgent:
         allowing you to monitor progress in real-time.
         Can also resume execution after a human-in-the-loop interaction.
 
+        With ``CugaAgent(hooks=...)``, only the model, plan and tool hooks run here; session_start,
+        on_user_message, before_reply and on_task_end run in ``invoke()`` only.
+
         Args:
             message: User message (string), list of messages, or None to resume execution
             thread_id: Thread ID (required for resume, auto-generated for new conversations)
@@ -3400,13 +3553,14 @@ class CugaAgent:
             if action_response:
                 logger.info(f"Streaming resume after HITL response (action_id: {action_response.action_id})")
 
-            async for state in self.graph.astream(
-                resume_input,
-                config=run_config,
-                stream_mode="updates",
-                subgraphs=True,
-            ):
-                yield state
+            with self._hooks_scope(thread_id):
+                async for state in self.graph.astream(
+                    resume_input,
+                    config=run_config,
+                    stream_mode="updates",
+                    subgraphs=True,
+                ):
+                    yield state
             return
 
         # Normal streaming case
@@ -3449,13 +3603,23 @@ class CugaAgent:
 
         # Stream the graph with subgraph updates enabled
         logger.debug(f"Streaming agent with {len(messages)} messages")
-        async for state in self.graph.astream(
-            initial_state,
-            config=run_config,
-            stream_mode="updates",  # Stream node updates (including subgraph internals)
-            subgraphs=True,  # Include subgraph updates
-        ):
-            yield state
+        with self._hooks_scope(thread_id):
+            async for state in self.graph.astream(
+                initial_state,
+                config=run_config,
+                stream_mode="updates",  # Stream node updates (including subgraph internals)
+                subgraphs=True,  # Include subgraph updates
+            ):
+                yield state
+
+    def _hooks_scope(self, thread_id: Optional[str]):
+        """Hook state of one stream(), as invoke() has: tool notes carried to the next model call stay in this
+        stream (a stream outside any run would share them with every other thread)."""
+        if getattr(self, "hooks", None) and not self.hooks.in_run():
+            return self.hooks.run(thread_id)
+        from contextlib import nullcontext
+
+        return nullcontext()
 
     def add_tool(self, tool: BaseTool):
         """
@@ -3481,16 +3645,18 @@ class CugaAgent:
             result = await agent.invoke("Use new_tool with 5")
             ```
         """
-        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
-            unwrap_tool_provider,
-            invalidate_toolguard_provider,
-        )
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import invalidate_toolguard_provider
         from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+        from cuga.backend.hooks.registry import base_tool_provider, has_hooks_layer, wrap_tools_with_hooks
 
-        base_provider = unwrap_tool_provider(self.tool_provider)
+        base_provider = base_tool_provider(self.tool_provider)
         if isinstance(base_provider, DirectLangChainToolsProvider) and hasattr(
             self.tool_provider, "add_tool"
         ):
+            if self.hooks:  # the same tool-call hooks as the tools given at construction
+                (tool,) = wrap_tools_with_hooks(
+                    [tool], self.hooks, record=has_hooks_layer(self.tool_provider)
+                )
             self.tool_provider.add_tool(tool)
             invalidate_toolguard_provider(self.tool_provider)  # noqa: F821
             # Reset graph so it gets recreated with new tools
