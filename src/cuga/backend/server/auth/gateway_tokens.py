@@ -25,7 +25,10 @@ from cuga.backend.tools_env.registry import mcp_gateway
 IDP_COOKIE_NAME = "cuga_idp"
 # Instance token lifetime asked from the IAM; a removed role stops working within about this.
 TOKEN_LIFETIME_SECONDS = 900
-RENEW_BEFORE_SECONDS = 60
+# One renewal margin for service ID and user tokens.
+RENEW_BEFORE_SECONDS = mcp_gateway.RENEW_BEFORE_SECONDS
+# Browsers drop a cookie whose name and value exceed 4096 bytes, without an error.
+MAX_COOKIE_BYTES = 4000
 
 
 class GatewayAccessError(Exception):
@@ -54,7 +57,15 @@ def encode_idp_cookie(idp_token: str, session_token: str) -> Optional[str]:
     f = _fernet()
     if f is None or not idp_token or not session_token:
         return None
-    return f.encrypt(json.dumps({"s": _session_binding(session_token), "t": idp_token}).encode()).decode()
+    value = f.encrypt(json.dumps({"s": _session_binding(session_token), "t": idp_token}).encode()).decode()
+    if len(IDP_COOKIE_NAME) + 1 + len(value) > MAX_COOKIE_BYTES:
+        logger.warning(
+            "gateway tokens: the IdP access token is too large to keep in a cookie ({} bytes); "
+            "MCP gateway tools in signed-in user mode will not work for this session",
+            len(value),
+        )
+        return None
+    return value
 
 
 def decode_idp_cookie(
@@ -100,21 +111,34 @@ def _access_error(status: int, body: str, instance_id: str) -> GatewayAccessErro
 
 
 async def _exchange(idp_token: str, instance_id: str) -> tuple[str, float]:
+    if not mcp_gateway.valid_instance_id(instance_id):
+        # The ID goes into the IAM URL path with the user's IdP token: never an arbitrary path.
+        raise GatewayAccessError("The gateway instance ID is not valid.")
     s = mcp_gateway.gateway_settings()
     if not s["iam_url"]:
         raise GatewayAccessError("auth.iam_proxy_url is not set, so gateway tools cannot run as the user.")
     url = f"{s['iam_url']}/api/2.0/services/{instance_id}/token"
-    async with httpx.AsyncClient(verify=s["iam_verify"], timeout=15.0) as client:
-        resp = await client.post(
-            url,
-            params={"tokenExpiration": TOKEN_LIFETIME_SECONDS},
-            headers={"Authorization": f"Bearer {idp_token}"},
-            json={"jwt": idp_token},
-        )
+    try:
+        async with httpx.AsyncClient(verify=s["iam_verify"], timeout=15.0) as client:
+            resp = await client.post(
+                url,
+                params={"tokenExpiration": TOKEN_LIFETIME_SECONDS},
+                headers={"Authorization": f"Bearer {idp_token}"},
+                json={"jwt": idp_token},
+            )
+    except httpx.HTTPError as e:
+        raise mcp_gateway.GatewayError(
+            f"The platform IAM cannot be reached for the gateway token: {type(e).__name__}"
+        ) from e
     if resp.status_code != 200:
         raise _access_error(resp.status_code, resp.text[:500], instance_id)
-    body = resp.json()
-    token = body.get("token") or body.get("access_token") or ""
+    try:
+        body = resp.json()
+    except ValueError as e:
+        raise mcp_gateway.GatewayError(
+            "The platform IAM did not answer with JSON for the gateway token."
+        ) from e
+    token = (body.get("token") or body.get("access_token") or "") if isinstance(body, dict) else ""
     if not token:
         raise GatewayAccessError("The platform IAM answered without a gateway token.")
     exp = mcp_gateway._token_exp(token) or (time.time() + TOKEN_LIFETIME_SECONDS)
@@ -144,6 +168,10 @@ class GatewayTokenProvider:
             for k in [k for k, (_, e) in _cache.items() if e <= now]:
                 _cache.pop(k, None)
             _cache[key] = (token, exp)
+            # Locks of keys without a cached token (expired, or a failed exchange) are not needed;
+            # a held or awaited lock is locked and stays.
+            for k in [k for k, held in _locks.items() if k not in _cache and not held.locked()]:
+                _locks.pop(k, None)
             return token
 
 
@@ -195,6 +223,9 @@ async def retry_headers(status: int, body_text: str) -> Optional[dict[str, str]]
     if not isinstance(body, dict) or body.get("error") != mcp_gateway.ERROR_USER_TOKEN_REQUIRED:
         return None
     instance_id = str(body.get("instance_id") or "")
+    if not mcp_gateway.valid_instance_id(instance_id):
+        logger.warning("gateway tokens: the registry named an invalid instance ID; the call is not retried")
+        return None
     provider = _provider.get()
     if provider is None:
         raise GatewayAccessError(
