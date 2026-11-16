@@ -751,6 +751,14 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             lc_bind_tools_meta["_lc_bind_tools_executable_names"] = [
                 n for n in dict.fromkeys(_candidates) if n and n in adapter._tools_context
             ]
+            # Tool -> app from the provider's own grouping, for dynamic binding by app
+            # (tool names from SDK/LangChain providers carry no ``app__`` prefix).
+            lc_bind_tools_meta["_lc_bind_tools_app_of"] = {
+                getattr(t, "name", None): app
+                for app, app_tools in app_to_tools_map.items()
+                for t in (app_tools or [])
+                if getattr(t, "name", None)
+            }
 
         # Use tools_for_execution, not tools_for_prompt: when find_tools shortlisting
         # is active (the common case once an app has more than a handful of tools),
