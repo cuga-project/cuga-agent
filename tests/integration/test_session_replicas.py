@@ -302,3 +302,62 @@ async def test_stop_sent_to_another_replica_stops_the_running_turn(app_replicas)
     after = await other.send(thread_id, "after the stop")
     assert after.status_code == 200, after.text
     assert "Error" not in event_names(after)
+
+
+@pytest.mark.parametrize("upgrade", [False, True], ids=["new-schema", "upgrade-real-columns"])
+async def test_postgres_lease_timestamp_upgrade_and_short_ttl(dsn, monkeypatch, upgrade):
+    """New and upgraded tables retain sub-second expiry and existing lease rows."""
+    import time
+    import uuid
+
+    import asyncpg
+
+    from cuga.backend.server import thread_lease
+    from cuga.backend.server.thread_lease import ThreadBusy
+
+    admin = await asyncpg.connect(dsn)
+    schema = "lease_precision_" + uuid.uuid4().hex
+    store = ProdRelationalStore(dsn, "conversation")
+    try:
+        await admin.execute(f'CREATE SCHEMA "{schema}"')
+        store._pool = await asyncpg.create_pool(
+            dsn, min_size=1, max_size=2, server_settings={"search_path": schema}
+        )
+        if upgrade:
+            await store.execute("""
+                CREATE TABLE thread_leases (
+                    thread_id TEXT PRIMARY KEY, holder_id TEXT NOT NULL,
+                    expires_at REAL NOT NULL, stop_requested INTEGER NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL
+                )
+            """)
+            await store.execute("INSERT INTO thread_leases VALUES ('existing', 'holder', 0, 1, 0)")
+        monkeypatch.setattr(ThreadLease, "_get_store", lambda self: store)
+        first, second = ThreadLease(), ThreadLease()
+        # A fixed modern epoch makes float4 rounding fail deterministically.
+        # Advance only the lease clock instead of sleeping during the expiry test.
+        now = 1_790_000_001.125
+        monkeypatch.setattr(thread_lease, "time", SimpleNamespace(time=lambda: now, monotonic=time.monotonic))
+        token = await first.acquire("short", ttl_seconds=0.25)
+        row = await store.fetchone("""
+            SELECT expires_at, updated_at, pg_typeof(expires_at)::text AS expiry_type,
+                   pg_typeof(updated_at)::text AS update_type
+            FROM thread_leases WHERE thread_id = 'short'
+        """)
+        assert row["expiry_type"] == row["update_type"] == "double precision"
+        assert row["expires_at"] == now + 0.25
+        assert row["updated_at"] == now
+        if upgrade:
+            existing = await store.fetchone("SELECT * FROM thread_leases WHERE thread_id = 'existing'")
+            assert existing["holder_id"] == "holder" and existing["stop_requested"] == 1
+        with pytest.raises(ThreadBusy):
+            await second.acquire("short", ttl_seconds=0.25)
+        now += 0.5
+        replacement = await second.acquire("short", ttl_seconds=0.25)
+        assert replacement.holder_id != token.holder_id
+        assert not await first.renew(token)
+        assert await second.renew(replacement)
+    finally:
+        await store.close()
+        await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await admin.close()
