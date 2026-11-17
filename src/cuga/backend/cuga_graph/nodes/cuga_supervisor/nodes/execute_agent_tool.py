@@ -81,6 +81,7 @@ def _extract_pending_delegations(script: Optional[str], known_agents: Iterable[s
 
 def _delegation_state_update(state: CugaSupervisorState) -> dict:
     return {
+        "service_scope": dict(state.service_scope or {}),
         "selected_agents": list(state.selected_agents),
         "agent_results": dict(state.agent_results),
         "agent_variables": dict(state.agent_variables),
@@ -147,6 +148,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
             update={
                 adapter.messages_key: updated_messages,
                 "final_answer": hitl_action.description,
+                "script": state.script,
                 adapter.metadata_key: approval_metadata,
                 "hitl_action": hitl_action,
                 "sender": adapter.sender_name,

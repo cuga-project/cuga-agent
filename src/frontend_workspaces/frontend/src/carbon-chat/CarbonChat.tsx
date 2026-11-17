@@ -36,7 +36,7 @@ import {
   type SessionAttachmentItem,
   type KnowledgeAttachmentSnapshot,
 } from "../knowledge/useSessionKnowledgeAttachments";
-import { customSendMessage as customSendMessageImpl, stopCugaAgent, StreamHttpError } from './customSendMessage';
+import { customSendMessage as customSendMessageImpl, stopCugaAgent, StreamHttpError, type ConfigNotice } from './customSendMessage';
 import { getCurrentThreadId, getThreadGeneration, keepThread, onThreadIssued, showThread } from './threadState';
 import { customLoadHistory } from './customLoadHistory';
 import { useEventsInbox } from '../events/useEventsInbox';
@@ -97,6 +97,8 @@ interface CarbonChatProps {
   onOpenMemoryUsage?: (entityIds: string[], relationship: "used" | "saved") => void;
   onPreviewKnowledgeAttachment?: (attachment: KnowledgeAttachmentSnapshot) => void;
   onStreamError?: (status: number, error?: string) => void;
+  /** Called with a notice when the agent configuration changed, and with null when a new send starts. */
+  onConfigNotice?: (notice: ConfigNotice | null) => void;
 }
 
 interface ConversationMessage {
@@ -235,16 +237,17 @@ const CarbonChat = ({
   onOpenMemoryUsage,
   onPreviewKnowledgeAttachment,
   onStreamError,
+  onConfigNotice,
 }: CarbonChatProps) => {
   const hs = homescreen ?? DEFAULT_HOMESCREEN;
   const starterLabels = (hs.starters ?? DEFAULT_HOMESCREEN.starters ?? []).filter(Boolean).slice(0, 4);
   const chatInstanceRef = useRef<ChatInstance | null>(null);
   const historyMutationQueueRef = useRef<Promise<void>>(Promise.resolve());
   const historyReplayGenerationRef = useRef(0);
-  const sendContextRef = useRef({ agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange, onStreamError });
+  const sendContextRef = useRef({ agentId, threadId, useDraft, disableHistory, onConfigNotice, onRestart, onThreadChange, onStreamError });
   useLayoutEffect(() => {
-    sendContextRef.current = { agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange, onStreamError };
-  }, [agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange, onStreamError]);
+    sendContextRef.current = { agentId, threadId, useDraft, disableHistory, onConfigNotice, onRestart, onThreadChange, onStreamError };
+  }, [agentId, threadId, useDraft, disableHistory, onConfigNotice, onRestart, onThreadChange, onStreamError]);
   // Preview chats are never saved, so the server issues no ID: keep one locally until restart.
   const previewThreadIdRef = useRef<string | null>(null);
   const shownThreadId = (newPreview = false): string | null => {
@@ -814,6 +817,7 @@ const CarbonChat = ({
       setTranscriptScope(conversationScope);
       const startedAt = getThreadGeneration();
       const attachmentSnapshot = createMessageAttachmentSnapshot();
+      onConfigNotice?.(null);
       try {
         const result = await customSendMessageImpl(
           request,
@@ -824,6 +828,7 @@ const CarbonChat = ({
           undefined,
           attachmentScope === "session" ? attachmentSnapshot : undefined,
           agentId,
+          onConfigNotice,
         );
 
         // A new chat gets its ID from the server during the send; skip if the user moved on.
@@ -846,7 +851,7 @@ const CarbonChat = ({
         }
       }
     },
-    [agentId, attachmentScope, conversationScope, createMessageAttachmentSnapshot, disableHistory, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
+    [agentId, attachmentScope, conversationScope, createMessageAttachmentSnapshot, disableHistory, onConfigNotice, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
   );
 
   const handleChatReady = useCallback((instance: ChatInstance) => {
@@ -921,10 +926,10 @@ const CarbonChat = ({
           const context = sendContextRef.current;
           const approvedThreadId = getCurrentThreadId();
           if (!approvedThreadId || (user_defined.thread_id && user_defined.thread_id !== approvedThreadId)) return;
+          context.onConfigNotice?.(null);
           try {
-            await customSendMessageImpl(request, options, instance, context.useDraft, context.disableHistory, actionResponse, undefined, context.agentId);
+            await customSendMessageImpl(request, options, instance, context.useDraft, context.disableHistory, actionResponse, undefined, context.agentId, context.onConfigNotice);
           } catch (err) {
-            // Same handling as a normal send: a busy or missing conversation gets feedback, not silence.
             if (err instanceof StreamHttpError) {
               sendContextRef.current.onStreamError?.(err.status, err.errorCode);
               return;
