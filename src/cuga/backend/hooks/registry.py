@@ -7,7 +7,7 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Union
+from typing import Any, AsyncGenerator, AsyncIterator, Callable, Dict, Iterator, List, Optional, Set, Union
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.tools import BaseTool, StructuredTool
@@ -120,8 +120,8 @@ def _report_failure(hook: Any, name: str, args: tuple, exc: Exception) -> None:
 
 @dataclass
 class _Run:
-    """The hook state of one invoke(). It lives in a context variable, so concurrent invocations of one agent
-    each have their own, and it is dropped when the invocation ends."""
+    """The hook state of one invoke() or stream(). It lives in a context variable, so concurrent invocations of one
+    agent each have their own, and it is dropped when the invocation ends."""
 
     registry: "HookRegistry"
     thread_id: Optional[str]
@@ -156,16 +156,35 @@ class HookRegistry:
 
     @contextmanager
     def run(self, thread_id: Optional[str]) -> Iterator[None]:
-        """One invoke() or stream(): its events, thread id and carried notes stay inside this block (and its asyncio
-        tasks)."""
+        """One invoke(): its events, thread id and carried notes stay inside this block (and its asyncio tasks).
+        Not for a block that spans a ``yield``: a stream uses ``run_stream``."""
         token = _RUN.set(_Run(self, thread_id))
         try:
             yield
         finally:
-            try:
-                _RUN.reset(token)
-            except ValueError:  # a stream closed from another context (e.g. by the garbage collector)
-                pass
+            _RUN.reset(token)
+
+    async def run_stream(
+        self, updates: AsyncGenerator[Any, None], thread_id: Optional[str]
+    ) -> AsyncIterator[Any]:
+        """One stream(): ``updates`` is read inside a run of its own, as ``run()`` gives invoke() one.
+
+        An async generator runs in the context of the code that reads it, so the run is set only while the next
+        update is computed and is reset before the update is yielded. The reading code is never inside the run,
+        even when it stops reading early."""
+        run = _Run(self, thread_id)
+        try:
+            while True:
+                token = _RUN.set(run)
+                try:
+                    update = await updates.__anext__()
+                except StopAsyncIteration:
+                    return
+                finally:
+                    _RUN.reset(token)
+                yield update
+        finally:
+            await updates.aclose()
 
     def in_run(self) -> bool:
         run = _RUN.get()
@@ -313,8 +332,29 @@ def _fmt_call(tool: str, args: Dict[str, Any]) -> str:
     return f"{tool}({', '.join(f'{k}={v!r}' for k, v in args.items())})"[:200]
 
 
-# Attributes some providers put on a tool's function; prompt_utils reads them from ``tool.func`` to describe the tool.
-_FUNC_ATTRS = ("_response_schemas", "_param_constraints")
+def _copy_tool_metadata(source: BaseTool, wrapped: BaseTool) -> None:
+    """Keep the attributes providers put on a tool, its function or its coroutine (app name, operation id, response
+    schemas, parameter constraints): tracking, the shortlister, ToolGuard and the tool docs read them. The list is
+    ToolGuard's, so both wrappers keep the same metadata."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import _METADATA_ATTRS
+
+    holders = [
+        h
+        for h in (getattr(source, "func", None), getattr(source, "coroutine", None), source)
+        if h is not None
+    ]
+    for attr in _METADATA_ATTRS:
+        holder = next((h for h in holders if hasattr(h, attr)), None)
+        if holder is None:
+            continue
+        value = getattr(holder, attr)
+        for target in (wrapped.func, wrapped.coroutine, wrapped):
+            if target is None:
+                continue
+            try:
+                setattr(target, attr, value)
+            except Exception:
+                logger.debug("hooks: could not copy {} to {}", attr, type(target).__name__)
 
 
 def wrap_tools_with_hooks(
@@ -403,12 +443,9 @@ def wrap_tools_with_hooks(
                     _record(args, started, result, error)
                 return _done(args, result)
 
-            for attr in _FUNC_ATTRS:  # response schemas and parameter constraints the model is shown
-                if hasattr(tool.func, attr):
-                    setattr(_hooked_sync, attr, getattr(tool.func, attr))
             func = _hooked_sync
 
-        return StructuredTool.from_function(
+        wrapped = StructuredTool.from_function(
             func=func,
             coroutine=_hooked,
             name=tool.name,
@@ -416,6 +453,8 @@ def wrap_tools_with_hooks(
             args_schema=tool.args_schema,
             metadata={**(tool.metadata or {}), "cuga_hooks": True},
         )
+        _copy_tool_metadata(tool, wrapped)
+        return wrapped
 
     return [wrap(t) for t in tools]
 
@@ -426,14 +465,27 @@ def _records_itself(tool: BaseTool) -> bool:
     return bool(getattr(fn, "_cuga_tracked", False)) and asyncio.iscoroutinefunction(fn)
 
 
+def hook_wrapper_records(provider: Any, tool: BaseTool) -> bool:
+    """Whether the hooks wrapper of ``tool``, a tool of ``provider``, records its calls with ``ToolCallTracker``.
+    The provider wrapper, ``add_tool()`` and knowledge injection all ask this.
+
+    The prepare node records the tools of a direct LangChain provider that it reaches through ToolGuard layers. A
+    hooks layer hides that provider from it, so behind one the wrapper records them instead, except a tool that
+    records itself. Registry and combined provider tools always record themselves."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+
+    return (
+        has_hooks_layer(provider)
+        and isinstance(base_tool_provider(provider), DirectLangChainToolsProvider)
+        and not _records_itself(tool)
+    )
+
+
 def wrap_provider_with_hooks(provider: Any, registry: HookRegistry) -> Any:
     """The same before/after_tool_call wrapping for tools that come from a tool provider
     (``CugaAgent(tool_provider=...)``), which ``wrap_tools_with_hooks`` on ``tools=`` never sees.
-
-    Registry and combined provider tools record their own calls. Direct LangChain tools are recorded by the prepare
-    node, which does not see a direct provider behind this wrapper, so their wrapper records them instead."""
+    ``hook_wrapper_records`` decides which wrapped tools record their calls."""
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
-    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
 
     class HookedToolProvider(ToolProviderInterface):
         _cuga_hooks = True  # a class attribute: an instance attribute lookup would reach the inner provider
@@ -446,14 +498,13 @@ def wrap_provider_with_hooks(provider: Any, registry: HookRegistry) -> Any:
             return getattr(self._inner, name)
 
         def _wrap(self, tools: List[BaseTool]) -> List[BaseTool]:
-            direct = isinstance(base_tool_provider(self._inner), DirectLangChainToolsProvider)
             out = []
             for t in tools:
                 if (t.metadata or {}).get("cuga_hooks"):
                     out.append(t)
                     continue
                 if id(t) not in self._wrapped:
-                    record = direct and not _records_itself(t)
+                    record = hook_wrapper_records(self, t)
                     self._wrapped[id(t)] = wrap_tools_with_hooks([t], registry, record=record)[0]
                 out.append(self._wrapped[id(t)])
             return out

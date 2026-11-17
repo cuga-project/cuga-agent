@@ -117,6 +117,32 @@ async def test_a_carried_note_stays_in_its_run():
         assert reg.before_llm_call("thread-C") is None
 
 
+@pytest.mark.asyncio
+async def test_a_stream_keeps_its_run_across_steps_and_the_reader_is_never_inside_it():
+    reg = HookRegistry([_Noter()])
+    seen = []
+
+    async def updates():
+        seen.append((reg.in_run(), reg.thread_id))
+        reg.carry_note("STREAM-NOTE-2e6")
+        yield "step 1"
+        seen.append((reg.in_run(), reg.thread_id))
+        yield reg.before_llm_call("s-1")  # the note of step 1 is in the same run
+        yield "step 3"
+
+    stream = reg.run_stream(updates(), "s-1")
+    got = []
+    async for update in stream:
+        assert not reg.in_run()  # the code that reads the stream is not inside its run
+        got.append(update)
+        if len(got) == 2:
+            break  # stop reading early
+    await stream.aclose()
+    assert got == ["step 1", "STREAM-NOTE-2e6"]
+    assert seen == [(True, "s-1"), (True, "s-1")]
+    assert not reg.in_run() and reg.before_llm_call() is None  # nothing left behind for the reader
+
+
 class _NullableArgs(BaseModel):
     parent: Optional[str] = Field(...)
     limit: Optional[int] = Field(5)
@@ -207,3 +233,26 @@ async def test_the_wrapper_keeps_response_schemas_and_parameter_constraints():
     assert rec.calls == [
         ("get_user", {"user_id": "u2", "verbose": False})
     ]  # schema defaults filled, as in ainvoke
+
+
+def test_the_wrapper_keeps_the_app_name_and_operation_id_of_a_registry_tool():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import create_tool_from_api_dict
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import _METADATA_ATTRS
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.doc import app_name_for_tool
+
+    original = create_tool_from_api_dict(
+        "crm_get_account",
+        {
+            "description": "Get an account.",
+            "parameters": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
+            "operation_id": "getAccount",
+        },
+        app_name="crm",
+    )
+    (tool,) = wrap_tools_with_hooks([original], HookRegistry([_Recorder()]))
+    # ToolGuard, tracking and the shortlister read any of these
+    for target in (tool, tool.func, tool.coroutine):
+        assert target._operation_id == "getAccount" and target._app_name == "crm"
+    for attr in _METADATA_ATTRS:  # the same list ToolGuard keeps
+        assert getattr(tool.func, attr) == getattr(original.func, attr)
+    assert app_name_for_tool(tool) == "crm"
