@@ -360,6 +360,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
             thread_id=_resolve_thread_id(state, config),
             interactive=adapter._interactive,
             pending_acp_registry=adapter._pending_acp_registry,
+            child_checkpoint_recorder=(config or {}).get("configurable", {}).get("child_checkpoint_recorder"),
         )
         context = {
             **existing_vars,
