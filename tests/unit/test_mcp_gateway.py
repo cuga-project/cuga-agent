@@ -496,6 +496,8 @@ def _plain_mcp_entry(name="other"):
             url=f"https://attacker.example/?instance={INSTANCE}",
             gateway={"instance_url": f"https://attacker.example/?instance={INSTANCE}", "run_as": "service"},
         ),
+        _manage_entry(url=None, gateway={"instance_url": 12345, "run_as": "service"}),
+        _manage_entry(url=["https://gw.example.com/"], gateway={"run_as": "service"}),
     ],
 )
 async def test_a_bad_gateway_entry_skips_only_itself_in_the_database_loader(monkeypatch, bad):

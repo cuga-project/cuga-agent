@@ -224,6 +224,9 @@ def _gateway_block(service_name: str, config: dict) -> Optional[Dict[str, Any]]:
     from cuga.backend.tools_env.registry.mcp_gateway import RUN_AS_SERVICE, RUN_AS_USER, parse_instance_url
 
     instance_url = block.get('instance_url') or config.get('url') or ''
+    if not isinstance(instance_url, str):
+        # A number or a list from a hand-edited YAML or an API save: skip this entry only.
+        raise GatewayConfigError(f"MCP gateway entry '{service_name}': the instance URL is not a string")
     try:
         instance = parse_instance_url(instance_url)
     except ValueError as e:
