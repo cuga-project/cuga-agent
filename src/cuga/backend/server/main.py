@@ -268,21 +268,19 @@ async def _delete_child_checkpoints(
 ) -> None:
     """Delete the conversation-scoped supervisor child checkpoints of one conversation.
 
-    Delegation records each child's checkpoint ID in the parent's ``service_scope``, so a child
-    that was later removed from the roster or switched to call scope is still found. Called before
-    the parent checkpoint is deleted; failures propagate so the parent stays retriable.
+    Read both legacy IDs in ``service_scope`` and the durable registry in the parent's
+    reserved namespace. The latter survives stops and errors before a node returns its
+    state update. Called before parent deletion; read/delete failures remain retriable.
     """
-    last = await saver.aget_tuple(
-        {"configurable": {"thread_id": _checkpoint_thread_id(conversation_id, user_id, agent_id)}}
-    )
-    if last is None:
-        return
-    scope = ((last.checkpoint or {}).get("channel_values") or {}).get("service_scope")
-    if not isinstance(scope, dict):
-        return
-    for child_key in scope.get("child_checkpoint_ids") or []:
-        if isinstance(child_key, str) and child_key:
-            await saver.adelete_thread(child_key)
+    from cuga.backend.storage.checkpoint.children import recorded_child_ids
+
+    parent_key = _checkpoint_thread_id(conversation_id, user_id, agent_id)
+    last = await saver.aget_tuple({"configurable": {"thread_id": parent_key}})
+    scope = ((last.checkpoint or {}).get("channel_values") or {}).get("service_scope") if last else None
+    children = list(scope.get("child_checkpoint_ids") or []) if isinstance(scope, dict) else []
+    children.extend(await recorded_child_ids(saver, parent_key))
+    for child_key in dict.fromkeys(child for child in children if isinstance(child, str) and child):
+        await saver.adelete_thread(child_key)
 
 
 def _knowledge_config(app_state: "AppState" | None):
@@ -791,7 +789,9 @@ async def _build_published_default_agent(
         enable_filesystem_tools=overrides.get("enable_filesystem_tools"),
         special_instructions=agent_registry.agent_special_instructions(startup_config or {}),
         supervisor_id=state.agent_id,
-        **await agent_registry.supervisor_graph_overrides(startup_config or {}),
+        **await agent_registry.supervisor_graph_overrides(
+            startup_config or {}, checkpointer=state.checkpointer
+        ),
     )
     await agent.build_graph(checkpointer=state.checkpointer)
     agent._checkpoint_config_version = str(startup_version or 0)
@@ -2335,6 +2335,14 @@ async def event_stream(
 
     _upload_ctx = format_upload_context(thread_id) if thread_id else None
 
+    from cuga.backend.storage.checkpoint.children import ChildCheckpointRecorder
+
+    handle = getattr(app_state, "checkpointer_handle", None)
+    child_recorder = (
+        ChildCheckpointRecorder(handle.saver, checkpoint_thread_id)
+        if handle is not None and entry == "web" and claim_owner
+        else None
+    )
     agent_loop_obj = AgentLoop(
         graph=run_agent.graph,
         langfuse_handler=langfuse_handler,
@@ -2353,6 +2361,7 @@ async def event_stream(
         knowledge_user_id=_knowledge_user_id,
         upload_context=_upload_ctx,
         special_instructions=getattr(run_agent, "special_instructions", None),
+        child_checkpoint_recorder=child_recorder,
     )
     logger.debug(f"Resume: {resume.model_dump_json() if resume else ''}")
 
