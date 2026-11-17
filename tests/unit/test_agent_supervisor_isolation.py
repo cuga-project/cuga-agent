@@ -44,12 +44,15 @@ async def test_stored_supervisor_uses_only_its_own_members(monkeypatch, use_draf
         "supervisor": {"subAgents": members, "planApproval": True},
     }
 
-    overrides = await agent_registry.supervisor_graph_overrides(config, use_draft=use_draft)
+    saver = object()
+    overrides = await agent_registry.supervisor_graph_overrides(
+        config, use_draft=use_draft, checkpointer=saver
+    )
 
     assert overrides["supervisor_enabled"] is True
     assert overrides["supervisor_agents"] is built
     assert overrides["supervisor_plan_approval"] is True
-    builder.assert_awaited_once_with(members, use_draft=use_draft)
+    builder.assert_awaited_once_with(members, use_draft=use_draft, checkpointer=None if use_draft else saver)
 
 
 @pytest.mark.asyncio
