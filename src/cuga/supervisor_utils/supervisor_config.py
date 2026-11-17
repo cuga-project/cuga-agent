@@ -67,7 +67,7 @@ async def build_agents_from_list(
         MEMORY_SCOPE_CONVERSATION,
         AgentMap,
         attach_agent_memory_scopes,
-        normalize_memory_scope,
+        resolve_memory_scope,
     )
 
     agents = AgentMap()
@@ -184,12 +184,7 @@ async def build_agents_from_list(
 
             # Conversation-scoped sub-agents share the parent's saver so their memory survives a
             # restart. Call-scoped ones keep nothing between calls and stay on their own MemorySaver.
-            from cuga.config import settings
-
-            scope = agent_config.get("memory_scope")
-            if scope is None:
-                scope = getattr(getattr(settings, "supervisor", None), "sub_agent_memory_scope", None)
-            shared = normalize_memory_scope(scope) == MEMORY_SCOPE_CONVERSATION
+            shared = resolve_memory_scope(agent_config) == MEMORY_SCOPE_CONVERSATION
             agent = CugaAgent(
                 tools=tools,
                 tool_provider=tool_provider,
