@@ -325,18 +325,42 @@ class ConversationHistoryDB:
         except Exception as exc:
             logger.error(f"mark_last_turn_at failed: {type(exc).__name__}")
 
-    async def get_idle_before(self, cutoff_iso: str, limit: int = 200) -> List[Dict[str, Any]]:
-        """Conversations in status ``new`` or ``active`` whose last activity predates ``cutoff_iso``.
+    async def get_idle_before(
+        self, cutoff_iso: str, limit: int = 200, *, after: Optional[tuple[str, str]] = None
+    ) -> List[Dict[str, Any]]:
+        """Page idle, continuable conversations by activity time and unique thread ID.
 
+        A cursor advances past selected rows even when cleanup fails or they are busy.
         Activity time is ``last_turn_at`` when set, else ``created_at``.
         """
         await self._ensure_schema()
-        return await self._get_store().fetchall(
-            """SELECT thread_id, user_id, agent_id FROM runtime_thread_owners
+        activity = "COALESCE(NULLIF(last_turn_at, ''), created_at)"
+        sql = f"""SELECT thread_id, user_id, agent_id, {activity} AS last_activity
+            FROM runtime_thread_owners
             WHERE tenant_id = ? AND instance_id = ? AND status IN ('new', 'active')
-            AND COALESCE(NULLIF(last_turn_at, ''), created_at) < ?
-            LIMIT ?""",
-            (_tenant_id(), _instance_id(), cutoff_iso, limit),
+            AND {activity} < ?"""
+        params: tuple = (_tenant_id(), _instance_id(), cutoff_iso)
+        if after is not None:
+            sql += f" AND ({activity}, thread_id) > (?, ?)"
+            params += after
+        sql += f" ORDER BY {activity}, thread_id LIMIT ?"
+        return await self._get_store().fetchall(sql, params + (limit,))
+
+    async def get_idle_thread_before(
+        self, thread_id: str, user_id: str, agent_id: str, cutoff_iso: str
+    ) -> Optional[Dict[str, Any]]:
+        """Recheck retention eligibility after acquiring the conversation lease.
+
+        Storage errors propagate so the sweep never treats an unreadable row as
+        permission to delete its checkpoint.
+        """
+        await self._ensure_schema()
+        return await self._get_store().fetchone(
+            """SELECT status FROM runtime_thread_owners
+            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
+            AND user_id = ? AND agent_id = ? AND status IN ('new', 'active')
+            AND COALESCE(NULLIF(last_turn_at, ''), created_at) < ?""",
+            (_tenant_id(), _instance_id(), thread_id, user_id, agent_id, cutoff_iso),
         )
 
     async def get_thread_statuses(self, user_id: str, agent_id: str) -> Dict[str, str]:
