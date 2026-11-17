@@ -196,7 +196,8 @@ async def keep_lease(
             if requested:
                 logger.info("stop requested by another replica; stopping the turn")
                 stop_event.set()
-                return
+                # The durable flag belongs to this lease until the turn ends. Keep
+                # observing it even if a consumer clears its local cancellation event.
 
     tasks = [asyncio.create_task(_renew_loop())]
     if stop_event is not None:
