@@ -1904,6 +1904,7 @@ async def event_stream(
     issued_thread_id: Optional[str] = None,
     preloaded_snapshot: Any = None,
     claim_owner: bool = True,
+    reset_stop_event: bool = True,
 ):
     """Handles the main agent event stream. If agent is None, uses app_state.agent (published).
 
@@ -2055,8 +2056,8 @@ async def event_stream(
     if thread_id:
         if thread_id not in app_state.stop_events:
             app_state.stop_events[thread_id] = asyncio.Event()
-        else:
-            # Reset the event for a new stream
+        elif reset_stop_event:
+            # Leased streams reset before the poller starts; do not erase its signal here.
             app_state.stop_events[thread_id].clear()
 
     # Create a local state object - retrieve from LangGraph if resuming or if thread_id exists, otherwise create new
@@ -3370,7 +3371,7 @@ async def stream(
         runtime_llm = None
     await issue_conversation()
 
-    def body(preloaded_snapshot: Any = None):
+    def body(preloaded_snapshot: Any = None, *, leased: bool = False):
         return event_stream(
             query if isinstance(query, str) else None,
             api_mode=settings.advanced_features.mode == "api",
@@ -3385,6 +3386,7 @@ async def stream(
             issued_thread_id=issued_thread_id,
             preloaded_snapshot=preloaded_snapshot,
             claim_owner=not preview,
+            reset_stop_event=not leased,
         )
 
     graph = getattr(run_agent or app_state.agent, "graph", None)
@@ -3412,7 +3414,9 @@ async def stream(
         await lease.release(token)
         raise
     return _LeasedStreamingResponse(
-        _leased_turn(body(snapshot), lease, token, thread_id, user_id, graph, checkpoint_key, status),
+        _leased_turn(
+            body(snapshot, leased=True), lease, token, thread_id, user_id, graph, checkpoint_key, status
+        ),
         lease=lease,
         token=token,
         media_type="text/event-stream",
@@ -3443,6 +3447,7 @@ async def _leased_turn(
     from cuga.backend.server.thread_lease import keep_lease
 
     stop_event = app_state.stop_events.setdefault(thread_id, asyncio.Event())
+    stop_event.clear()
     async with keep_lease(lease, token, stop_event=stop_event):
         try:
             async for chunk in body:
