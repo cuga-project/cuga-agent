@@ -3051,8 +3051,8 @@ class CugaAgent:
             if state_snapshot and state_snapshot.values:
                 existing_state = AgentState(**state_snapshot.values)
                 logger.debug(f"Found existing state for thread_id: {thread_id}")
-        except Exception as e:
-            logger.debug(f"No existing state found for thread_id {thread_id}: {e}")
+        except Exception as exc:
+            raise RuntimeError("Could not read conversation state. Please retry.") from exc
 
         # Build state: use existing state if available, otherwise create new
         if existing_state:
