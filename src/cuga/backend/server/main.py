@@ -879,6 +879,23 @@ async def _replace_default_runtime(state: Any, config: dict, version: Any, *, re
         return graph
 
 
+async def _initialize_conversation_storage() -> None:
+    """Schema errors must fail deployment, before any request or background work."""
+    from cuga.backend.server.thread_lease import get_thread_lease
+
+    try:
+        await get_conversation_db().initialize_schema()
+        await get_thread_lease().initialize_schema()
+    except BaseException:
+        from cuga.backend.storage.facade import get_storage
+
+        try:
+            await asyncio.shield(get_storage().close_relational_stores())
+        except Exception as exc:
+            logger.error("Could not close relational stores after schema failure: {}", type(exc).__name__)
+        raise
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown.
@@ -891,6 +908,7 @@ async def lifespan(app: FastAPI):
     """
     await _open_checkpointer()
     try:
+        await _initialize_conversation_storage()
         async with _app_lifespan(app):
             yield
     finally:
