@@ -22,14 +22,14 @@ pytestmark = pytest.mark.unit
 # The function-local ``from cuga.backend.storage.checkpoint import create_checkpointer``
 # in ``main._open_checkpointer`` reads the package attribute at call time.
 FACTORY = "cuga.backend.storage.checkpoint.create_checkpointer"
-SECRET = "s3cr3t-pw"
+SECRET = "s3cr3t-pw"  # pragma: allowlist secret
 
 
 def _storage(checkpointer: str = "memory", mode: str = "local") -> SimpleNamespace:
     return SimpleNamespace(
         checkpointer=checkpointer,
         mode=mode,
-        postgres_url=f"postgresql://user:{SECRET}@127.0.0.1:1/cuga",
+        postgres_url=f"postgresql://user:{SECRET}@127.0.0.1:1/cuga",  # pragma: allowlist secret
     )
 
 
@@ -77,6 +77,7 @@ async def test_handle_opened_before_startup_and_closed_once_after_shutdown():
     factory = AsyncMock(return_value=handle)
 
     with (
+        patch.object(main, "_initialize_conversation_storage", AsyncMock()),
         patch(FACTORY, factory),
         patch.object(main, "settings", SimpleNamespace(storage=_storage("durable", "prod"))),
         patch.object(main, "_app_lifespan", _stub_app_lifespan(events)),
@@ -95,9 +96,14 @@ async def test_handle_opened_before_startup_and_closed_once_after_shutdown():
 
 async def test_durable_creation_failure_fails_startup_without_leaking_url(log_lines):
     events: list[str] = []
-    factory = AsyncMock(side_effect=OSError(f"connect to postgresql://user:{SECRET}@127.0.0.1:1 failed"))
+    factory = AsyncMock(
+        side_effect=OSError(
+            f"connect to postgresql://user:{SECRET}@127.0.0.1:1 failed"  # pragma: allowlist secret
+        )
+    )
 
     with (
+        patch.object(main, "_initialize_conversation_storage", AsyncMock()),
         patch(FACTORY, factory),
         patch.object(main, "settings", SimpleNamespace(storage=_storage("durable", "prod"))),
         patch.object(main, "_app_lifespan", _stub_app_lifespan(events)),
@@ -120,6 +126,7 @@ async def test_later_startup_failure_still_closes_handle():
     handle = _fake_handle(events)
 
     with (
+        patch.object(main, "_initialize_conversation_storage", AsyncMock()),
         patch(FACTORY, AsyncMock(return_value=handle)),
         patch.object(main, "settings", SimpleNamespace(storage=_storage("durable", "local"))),
         patch.object(main, "_app_lifespan", _stub_app_lifespan(events, fail_startup=True)),
