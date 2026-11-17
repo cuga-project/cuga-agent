@@ -602,3 +602,38 @@ async def test_rebuild_after_publish_keeps_the_conversation_and_emits_config_cha
 
     third = await server.send(thread_id, "third")  # the checkpoint now carries the new fingerprint
     assert "config_changed" not in _event_names(third)
+
+
+async def test_remote_stop_before_stream_start_is_preserved_and_next_turn_runs(server, monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from cuga.backend.server import thread_lease
+
+    monkeypatch.setattr(thread_lease, "_STOP_POLL_SECONDS", 0.001)
+    thread_id = await server.create()
+    stale_event = asyncio.Event()
+    stale_event.set()
+    server.state.stop_events[thread_id] = stale_event
+    real_keep_lease = thread_lease.keep_lease
+    replica_b = thread_lease.ThreadLease()
+
+    @asynccontextmanager
+    async def stop_before_stream(lease, token, stop_event):
+        # The prior turn's signal must be cleared before the poller starts.
+        assert not stop_event.is_set()
+        async with real_keep_lease(lease, token, stop_event=stop_event):
+            await replica_b.request_stop(token.thread_id)
+            await asyncio.wait_for(stop_event.wait(), timeout=5)
+            yield token
+
+    monkeypatch.setattr(thread_lease, "keep_lease", stop_before_stream)
+    response = await server.send(thread_id)
+    assert response.status_code == 200
+    assert "Stopped" in response.text
+    assert server.turns == []
+
+    # Acquiring the next lease clears the durable flag; its local event is reset too.
+    monkeypatch.setattr(thread_lease, "keep_lease", real_keep_lease)
+    response = await server.send(thread_id, "next turn")
+    assert response.status_code == 200
+    assert server.turns == ["next turn"]
