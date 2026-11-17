@@ -145,14 +145,41 @@ async def _until(predicate):
 # --- supervisor child threads on the shared saver -------------------------------------------
 
 
-@pytest.mark.parametrize("scope, shared", [("conversation", True), ("call", False)])
-async def test_only_conversation_scoped_subagents_get_the_shared_saver(scope, shared):
+@pytest.mark.parametrize(
+    "global_scope, config, shared",
+    [
+        ("conversation", {"memory_scope": "conversation"}, True),
+        ("conversation", {"memory_scope": "call"}, False),
+        ("conversation", {"feature_overrides": {"sub_agent_memory_scope": "call"}}, False),
+        ("call", {"feature_overrides": {"sub_agent_memory_scope": "conversation"}}, True),
+        (
+            "call",
+            {"memory_scope": "conversation", "feature_overrides": {"sub_agent_memory_scope": "call"}},
+            True,
+        ),
+    ],
+)
+async def test_only_conversation_scoped_subagents_get_the_shared_saver(
+    monkeypatch, global_scope, config, shared
+):
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.supervisor, "sub_agent_memory_scope", global_scope)
     sentinel = object()
     captured_kwargs: list[dict] = []
 
     class FakeCugaAgent:
-        def __init__(self, **kwargs):
-            captured_kwargs.append(dict(kwargs))
+        def __init__(
+            self,
+            tools=None,
+            tool_provider=None,
+            policy_system=None,
+            special_instructions=None,
+            model=None,
+            auto_load_policies=None,
+            checkpointer=None,
+        ):
+            captured_kwargs.append({"checkpointer": checkpointer})
             self._feature_overrides = {}
             self._memory_scope = None
 
@@ -160,7 +187,7 @@ async def test_only_conversation_scoped_subagents_get_the_shared_saver(scope, sh
         from cuga.supervisor_utils.supervisor_config import build_agents_from_list
 
         await build_agents_from_list(
-            [{"name": "agent1", "memory_scope": scope, "tools": [], "apps": [], "mcp_servers": []}],
+            [{"name": "agent1", "tools": [], "apps": [], "mcp_servers": [], **config}],
             checkpointer=sentinel,
         )
 
