@@ -3901,6 +3901,18 @@ async def get_conversations(
         raise HTTPException(status_code=500, detail="Failed to load conversations")
 
 
+@app.get("/api/conversations/{conversation_id}")
+async def validate_conversation(
+    conversation_id: str,
+    agent_id: str = "cuga-default",
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
+):
+    """Validate a restored draft, including an empty conversation with uploads but no history."""
+    user_id = current_user.sub if current_user else DEFAULT_USER_ID
+    status = await _require_continuable_conversation(conversation_id, user_id, agent_id)
+    return JSONResponse({"id": conversation_id, "status": status})
+
+
 @app.post("/api/conversations")
 async def create_conversation(
     request: Request,
