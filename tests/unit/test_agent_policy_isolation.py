@@ -447,6 +447,7 @@ async def test_resolve_stream_agent_creates_isolated_policy_system():
         agent_graph_build_locks={},
         agent_graph_generations={},
         policy_system=None,
+        checkpointer=None,
     )
 
     agent_config = {

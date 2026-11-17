@@ -23,8 +23,11 @@ class _FakeAgent:
         self.invoke_started = asyncio.Event()
         self.invoke_release = asyncio.Event()
         self.block_invoke = False
-        self.graph = SimpleNamespace(get_state=lambda _config: type(self).snapshot)
+        self.graph = SimpleNamespace(aget_state=self._aget_state)
         type(self).instances.append(self)
+
+    async def _aget_state(self, _config: dict[str, Any]) -> Any:
+        return type(self).snapshot
 
     async def initialize(self) -> None:
         self.initialize_calls += 1
@@ -208,9 +211,10 @@ async def test_runner_fails_closed_when_state_inspection_raises(monkeypatch: pyt
     class _BrokenAgent(_FakeAgent):
         def __init__(self) -> None:
             super().__init__()
-            self.graph = SimpleNamespace(
-                get_state=lambda _config: (_ for _ in ()).throw(RuntimeError("secret"))
-            )
+            self.graph = SimpleNamespace(aget_state=self._raise)
+
+        async def _raise(self, _config: dict[str, Any]) -> Any:
+            raise RuntimeError("secret")
 
     monkeypatch.setattr(cuga.sdk, "CugaAgent", _BrokenAgent)
     events = [event async for event in StdioCugaRunner().run("do it", context_id="ctx")]

@@ -254,12 +254,16 @@ def collect_file_evidence(report, root):
     return records
 
 
-def profile_arguments(profile, root=Path(".")):
+def dockerfile_commands(profile, root):
     dockerfile = root / ("Dockerfile.ubi" if profile == "full" else "Dockerfile.ubi.slim")
     text = "\n".join(
         line for line in dockerfile.read_text().splitlines() if not line.lstrip().startswith("#")
     )
-    text = text.replace("\\\n", " ")
+    return dockerfile, text.replace("\\\n", " ")
+
+
+def profile_arguments(profile, root=Path(".")):
+    dockerfile, text = dockerfile_commands(profile, root)
     matches = re.findall(r"\buv sync\s+([^\n]+)", text)
     if len(matches) != 1:
         raise ValueError(f"Expected exactly one uv sync in {dockerfile}")
@@ -269,12 +273,25 @@ def profile_arguments(profile, root=Path(".")):
     return args
 
 
+def profile_pip_installs(profile, root=Path(".")):
+    """The image's ``uv pip install`` commands: what it adds on top of the frozen ``uv sync``."""
+    _, text = dockerfile_commands(profile, root)
+    installs = [shlex.split(match) for match in re.findall(r"\buv pip install\s+([^\n]+)", text)]
+    for args in installs:
+        if any(re.search(r"[;&|`$<>]", arg) for arg in args) or "--require-hashes" not in args:
+            raise ValueError("Image uv pip install must contain only hash-pinned uv arguments")
+    return installs
+
+
 def sync_profile(profile, environment):
     subprocess.run(
         ["uv", "sync", *profile_arguments(profile)],
         check=True,
         env={**os.environ, "UV_PROJECT_ENVIRONMENT": str(environment.resolve())},
     )
+    for args in profile_pip_installs(profile):
+        python = environment.resolve() / "bin" / "python"
+        subprocess.run(["uv", "pip", "install", "--python", str(python), *args], check=True)
 
 
 def verify_archives(directory, root):

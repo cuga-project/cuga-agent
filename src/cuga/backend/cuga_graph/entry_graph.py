@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.constants import END, START
@@ -33,6 +33,9 @@ from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
 from cuga.backend.llm.models import LLMManager, create_llm_from_config
 from cuga.config import settings
+
+if TYPE_CHECKING:
+    from langgraph.checkpoint.base import BaseCheckpointSaver
 
 
 class CugaEntryGraph:
@@ -104,13 +107,13 @@ class CugaEntryGraph:
     def _should_inject_demo_supervisor_agents(self, resolved_agents: dict) -> bool:
         return not resolved_agents and getattr(self, "supervisor_agents", None) is None
 
-    async def build_graph(self):
+    async def build_graph(self, checkpointer: Optional["BaseCheckpointSaver"] = None):
         graph = StateGraph(AgentState)
         await self.add_nodes(graph)
         self.add_edges(graph)
 
         self.graph = graph.compile(
-            checkpointer=MemorySaver(),
+            checkpointer=checkpointer if checkpointer is not None else MemorySaver(),
             interrupt_after=[
                 self.browser_action.action_agent.name,
                 self.interrupt_tool_node.name,

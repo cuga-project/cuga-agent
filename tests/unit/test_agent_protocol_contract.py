@@ -184,7 +184,7 @@ class _Graph:
         self._snaps = snaps
         self.calls = 0
 
-    def get_state(self, _config):
+    async def aget_state(self, _config):
         snap = self._snaps[min(self.calls, len(self._snaps) - 1)]
         self.calls += 1
         return snap
@@ -608,8 +608,8 @@ async def test_supervisor_runner_is_lazy_forwards_context_and_uses_configured_ca
     from cuga.backend.server.thread_scope import checkpoint_thread_id
 
     assert invoke_calls == [
-        ("one", "ctx-1", checkpoint_thread_id("ctx-1", "agent_protocol_user", "cuga-default")),
-        ("two", "ctx-2", checkpoint_thread_id("ctx-2", "agent_protocol_user", "cuga-default")),
+        ("one", "ctx-1", checkpoint_thread_id("ctx-1", "agent_protocol_user", "cuga-default", "a2a")),
+        ("two", "ctx-2", checkpoint_thread_id("ctx-2", "agent_protocol_user", "cuga-default", "a2a")),
     ]
     assert [first[-1].data, second[-1].data] == [{"text": "answer"}, {"text": "answer"}]
 

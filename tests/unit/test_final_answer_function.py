@@ -381,8 +381,11 @@ def test_invoke_turn2_resets_flag_and_recovers_transcript(monkeypatch):
     captured = {}
 
     class _CheckpointedGraph:
-        def get_state(self, *_a, **_k):
+        async def aget_state(self, *_a, **_k):
             return SimpleNamespace(values=turn1.model_dump(), next=())
+
+        def get_state(self, *_a, **_k):
+            raise AssertionError("invoke() must read state via aget_state")
 
         async def ainvoke(self, input_state, *_a, **_k):
             captured["input"] = input_state
@@ -403,6 +406,9 @@ def test_invoke_turn2_resets_flag_and_recovers_transcript(monkeypatch):
 
     sent = captured["input"]
     sent_flag = sent["final_answer_finalized"] if isinstance(sent, dict) else sent.final_answer_finalized
+    sent_messages = sent["chat_messages"] if isinstance(sent, dict) else sent.chat_messages
+    # Turn 1's checkpoint was actually loaded (else the flag check is vacuous).
+    assert [m.content for m in sent_messages][:2] == ["q1", "turn-1 answer"]
     assert sent_flag is False, "turn-2 input state must reset the checkpointed flag"
     # Recovery ran (not skipped by turn-1's leaked flag) and the formatter
     # shaped the recovered transcript text.
@@ -432,8 +438,11 @@ class _CannedGraph:
     async def ainvoke(self, *_a, **_k):
         return self._result
 
-    def get_state(self, *_a, **_k):
+    async def aget_state(self, *_a, **_k):
         return SimpleNamespace(values=self._checkpoint, next=self._next)
+
+    def get_state(self, *_a, **_k):
+        raise AssertionError("invoke() must read state via aget_state")
 
 
 def _graph_result(**overrides) -> dict:

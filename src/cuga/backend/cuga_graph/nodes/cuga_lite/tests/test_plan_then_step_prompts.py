@@ -76,7 +76,7 @@ def test_executor_contract_and_examples_follow_the_flag(enabled, autonomous):
             continue
         tree = _assert_plan_then_code(example)
         code = ast.unparse(tree)
-        if "page_index" in code or "skip=" in code:
+        if "page=" in code or "page_index" in code or "skip=" in code:
             assert any(isinstance(node, (ast.For, ast.While)) for node in ast.walk(tree)), example
         checked += 1
     assert checked >= 6
@@ -95,7 +95,7 @@ def test_resolver_defaults_on_and_honours_overrides():
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_reflection_contract_and_next_examples_follow_the_flag(enabled):
+def test_reflection_contract_follows_the_flag(enabled):
     template = load_one_prompt(
         str(_ROOT / "reflection/prompts/reflection_system.jinja2"), relative_to_caller=False
     )
@@ -104,18 +104,12 @@ def test_reflection_contract_and_next_examples_follow_the_flag(enabled):
     assert ("One to three sentences" in text) is not enabled
     assert "NEXT: task complete." in text
     assert "never re-issue a rejected action" not in text
-    examples = text.split("### Examples", 1)[1]
-    next_lines = re.findall(r"^NEXT: (.+)$", examples, re.MULTILINE)
-    assert len(next_lines) == 3
+    # Main removed the worked examples (#1102, kept out by #1173) in both flag states.
+    assert "### Examples" not in text
     if enabled:
-        assert all(not re.search(r"\b(then|next|finally)\b|;", line) for line in next_lines)
-        assert "each product_id" in next_lines[2], "one step may cover every item with one tool"
-        assert "7826309761" in next_lines[1], "corrected arguments remain a valid retry"
         assert "unless the relevant state has changed" in text
         assert "at most\none retry" in text
         assert "do not repeat writes\nwhose outcome is unknown" in text
-    else:
-        assert "then" in next_lines[0] and "; if" in next_lines[1] and "then" in next_lines[2]
 
 
 def test_plan_then_step_few_shots_follow_the_prompt():
