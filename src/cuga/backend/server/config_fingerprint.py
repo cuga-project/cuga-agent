@@ -7,7 +7,7 @@ that PR 1 stamped into every checkpoint.
 Hash stability rules:
 - ``sort_keys=True``, compact separators (no spaces)
 - Secret *values* are dropped (they must not leak into checkpoints)
-- Volatile keys (``updated_at``, ``published_at``, ``version``) are dropped
+- Metadata is dropped only at known configuration paths
 - The hash is truncated to 12 hex chars for event payloads (never the full hash)
 """
 
@@ -20,53 +20,43 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Mapping, Optional
 
-# Keys whose values change without a meaningful config change. ``knowledge_state`` is
-# export/import metadata that publish snapshots into the stored config but strips before
-# it applies the config at runtime, so the stored and the applied config must hash alike.
-_VOLATILE_KEYS = frozenset({"updated_at", "published_at", "version", "created_at", "knowledge_state"})
-
-# Keys whose *plaintext* values are secrets and must not reach the hash digest.
-# A value in this set is dropped unless it looks like a reference (``vault://``,
-# ``env://``, ``secret://`` …) — references *are* meaningful config and must be hashed
-# so that rotating the reference (e.g. pointing ``api_key`` at a different Vault path)
-# invalidates pending approvals.  ``embedding_api_key`` is blanked in the stored
-# published snapshot but present in the config applied at publish time.
-_SECRET_VALUE_KEYS = frozenset({"api_key", "token", "password", "secret", "key_env_var", "embedding_api_key"})
-
-# URI schemes that indicate a secret *reference* rather than a bare credential.
-# Matching is prefix-based and case-insensitive. ``vault://``, ``db://``, ``aws://`` and
-# ``env://`` are the schemes the secret resolver and the Manage redactor
-# (``manage_routes.helpers.is_secret_ref``) recognise; keep them in sync.
-_REFERENCE_PREFIXES = ("vault://", "db://", "aws://", "env://", "secret://", "arn:", "sm://")
+# Metadata is excluded only at its known location, never by key name at every depth.
+_ROOT_METADATA_KEYS = frozenset({"updated_at", "published_at", "version", "created_at", "knowledge_state"})
+_KNOWLEDGE_METADATA_KEYS = frozenset({"_vector_config_hash", "_adaptation_hash", "_glossary_hash"})
 
 
-def _is_reference(value: Any) -> bool:
-    """Return True when *value* looks like an opaque secret reference, not a bare credential."""
-    if not isinstance(value, str):
-        return False
-    lower = value.lower()
-    return any(lower.startswith(p) for p in _REFERENCE_PREFIXES)
+def normalized_config_view(config: dict) -> dict:
+    """Return the common fingerprint input for stored and applied configurations.
 
-
-def _scrub(obj: Any) -> Any:
-    """Return a copy of *obj* with volatile keys and bare secret values removed.
-
-    Secret-named keys whose value is a reference URI are preserved so that changing
-    which secret is referenced is reflected in the hash.
+    Knowledge credentials are blanked in published snapshots, including references,
+    so they cannot participate in comparisons with the applied configuration.
+    Other secret references remain meaningful configuration. Real knowledge settings
+    (model, chunks, adaptation text) remain in the fingerprint.
     """
-    if isinstance(obj, dict):
-        result = {}
-        for k, v in obj.items():
-            if k in _VOLATILE_KEYS:
-                continue
-            if k in _SECRET_VALUE_KEYS and not _is_reference(v):
-                # Bare credential (or empty) — drop entirely so it never leaks.
-                continue
-            result[k] = _scrub(v)
-        return result
-    if isinstance(obj, list):
-        return [_scrub(item) for item in obj]
-    return obj
+    from cuga.backend.server.manage_routes.helpers import is_secret_field_name, is_secret_ref
+
+    def normalize(obj: Any, path: tuple[str, ...]) -> Any:
+        if isinstance(obj, dict):
+            result = {}
+            for key, value in obj.items():
+                if not path and key in _ROOT_METADATA_KEYS:
+                    continue
+                if path == ("knowledge",) and (key in _KNOWLEDGE_METADATA_KEYS or key == "embedding_api_key"):
+                    continue
+                # Match the metadata attached to tool declarations, while retaining
+                # arbitrary user fields inside tool env/config dictionaries.
+                if path == ("tools", "[]") and key in {"created_at", "updated_at"}:
+                    continue
+                if is_secret_field_name(key) and not isinstance(value, (dict, list)):
+                    if not is_secret_ref(value):
+                        continue
+                result[key] = normalize(value, (*path, key))
+            return result
+        if isinstance(obj, list):
+            return [normalize(item, (*path, "[]")) for item in obj]
+        return obj
+
+    return normalize(config, ())
 
 
 def agent_config_hash(config: dict) -> str:
@@ -74,7 +64,7 @@ def agent_config_hash(config: dict) -> str:
 
     Returns the full 64-char hex digest.
     """
-    scrubbed = _scrub(config)
+    scrubbed = normalized_config_view(config)
     canonical = json.dumps(scrubbed, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
