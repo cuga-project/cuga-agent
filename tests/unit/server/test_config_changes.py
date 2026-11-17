@@ -254,6 +254,7 @@ async def _run_event_stream(
     refreshed_agent=None,
     stored_version: str = "4",
     graph_seen: Optional[list] = None,
+    referenced_configs: Optional[dict] = None,
 ):
     from cuga.backend.cuga_graph.utils.agent_loop import AgentLoopAnswer
 
@@ -275,12 +276,20 @@ async def _run_event_stream(
 
     import cuga.backend.cuga_graph.utils.controller  # noqa: F401
 
+    async def load_published_config(version, agent_id):
+        if store_error:
+            raise store_error
+        if agent_id == "sales-east":
+            return stored_config if stored_config is not None else {}, stored_version
+        child = (referenced_configs or {}).get(agent_id)
+        if isinstance(child, Exception):
+            raise child
+        return child, stored_version
+
     # The published config the turn lease re-reads: same version, same content as the graph's.
     monkeypatch.setattr(
         "cuga.backend.server.config_store.load_config",
-        AsyncMock(side_effect=store_error)
-        if store_error
-        else AsyncMock(return_value=(stored_config if stored_config is not None else {}, stored_version)),
+        AsyncMock(side_effect=load_published_config),
     )
     if stored_config is not None:
         replacement = refreshed_agent or _event_stream_agent(
@@ -564,4 +573,82 @@ async def test_reindex_bookkeeping_does_not_emit_notice_or_rebuild(monkeypatch):
         monkeypatch, _event_stream_agent(graph, fingerprint), saved={}, stored_config=after
     )
     assert not any('config_changed' in chunk or 'pending_cancelled' in chunk for chunk in chunks)
+    main_mod._refresh_published_graph.assert_not_awaited()
+
+
+async def test_supervisor_fingerprint_tracks_child_content_not_publish_metadata(monkeypatch):
+    from cuga.backend.server.config_fingerprint import compute_published_fingerprint
+
+    supervisor = {
+        "agent": {"kind": "supervisor"},
+        "supervisor": {
+            "subAgents": [{"kind": "internal", "ref": "child"}, {"kind": "internal", "ref": "child"}]
+        },
+    }
+    child = {"special_instructions": "old", "version": 1}
+    loader = AsyncMock(side_effect=lambda version, agent_id: (dict(child), child["version"]))
+    monkeypatch.setattr("cuga.backend.server.config_store.load_config", loader)
+    before = await compute_published_fingerprint(supervisor)
+    assert loader.await_count == 1  # duplicate roster references need one read
+    child["version"] = 2
+    assert await compute_published_fingerprint(supervisor) == before
+    child["special_instructions"] = "new"
+    after = await compute_published_fingerprint(supervisor)
+    assert classify_config_change(_scope(before), after, True) is ConfigDecision.CANCEL_PENDING
+
+
+@pytest.mark.parametrize("pending", [False, True], ids=["completed", "approval"])
+async def test_remote_child_publish_invalidates_cached_supervisor(monkeypatch, pending):
+    from cuga.backend.server.config_fingerprint import compute_published_fingerprint
+
+    supervisor = {
+        "agent": {"kind": "supervisor"},
+        "supervisor": {"subAgents": [{"kind": "internal", "ref": "child"}]},
+    }
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.load_config",
+        AsyncMock(return_value=({"special_instructions": "old"}, 1)),
+    )
+    before = await compute_published_fingerprint(supervisor)
+    snapshot = _completed_checkpoint(before)
+    if pending:
+        snapshot.next = ("WaitForResponse",)
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(return_value=snapshot)
+    graph.aupdate_state = AsyncMock()
+    cancelled = AsyncMock(return_value=True)
+    monkeypatch.setattr(main_mod, "_cancel_pending_interrupt", cancelled)
+    chunks = await _run_event_stream(
+        monkeypatch,
+        _event_stream_agent(graph, before),
+        saved={},
+        stored_config=supervisor,
+        referenced_configs={"child": {"special_instructions": "new"}},
+    )
+    assert any(("pending_cancelled" if pending else "config_changed") in chunk for chunk in chunks)
+    main_mod._refresh_published_graph.assert_awaited_once()
+    assert cancelled.await_count == int(pending)
+
+
+@pytest.mark.parametrize("missing", [True, False], ids=["deleted-child", "unreadable-child"])
+async def test_unavailable_child_preserves_pending_approval(monkeypatch, missing):
+    graph = MagicMock()
+    snapshot = _completed_checkpoint(OLD)
+    snapshot.next = ("WaitForResponse",)
+    graph.aget_state = AsyncMock(return_value=snapshot)
+    cancelled = AsyncMock()
+    monkeypatch.setattr(main_mod, "_cancel_pending_interrupt", cancelled)
+    supervisor = {
+        "agent": {"kind": "supervisor"},
+        "supervisor": {"subAgents": [{"kind": "internal", "ref": "child"}]},
+    }
+    chunks = await _run_event_stream(
+        monkeypatch,
+        _event_stream_agent(graph, OLD),
+        saved={},
+        stored_config=supervisor,
+        referenced_configs={} if missing else {"child": RuntimeError("storage unavailable")},
+    )
+    assert any("Could not verify referenced sub-agent" in chunk for chunk in chunks)
+    cancelled.assert_not_awaited()
     main_mod._refresh_published_graph.assert_not_awaited()
