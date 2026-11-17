@@ -255,6 +255,7 @@ async def _run_event_stream(
     stored_version: str = "4",
     graph_seen: Optional[list] = None,
     referenced_configs: Optional[dict] = None,
+    resume: bool = False,
 ):
     from cuga.backend.cuga_graph.utils.agent_loop import AgentLoopAnswer
 
@@ -317,6 +318,7 @@ async def _run_event_stream(
             agent_id="sales-east",
             current_llm=None,
             issued_thread_id="thread-1",
+            resume=SimpleNamespace() if resume else None,
         )
     ]
 
@@ -476,7 +478,8 @@ async def test_changed_published_config_rebuilds_the_graph_and_is_announced(monk
     main_mod._refresh_published_graph.assert_awaited_once()
 
 
-async def test_unreadable_published_config_cancels_a_pending_approval(monkeypatch):
+@pytest.mark.parametrize("resume", [False, True], ids=["new-message", "approval-response"])
+async def test_unreadable_published_config_preserves_pending_approval(monkeypatch, resume):
     from cuga.backend.cuga_graph.state.agent_state import default_state
 
     state = default_state(page=None, observation=None, goal="")
@@ -493,11 +496,18 @@ async def test_unreadable_published_config_cancels_a_pending_approval(monkeypatc
     graph.aupdate_state = AsyncMock(side_effect=aupdate_state)
 
     chunks = await _run_event_stream(
-        monkeypatch, _event_stream_agent(graph, OLD), saved={}, store_error=RuntimeError("store down")
+        monkeypatch,
+        _event_stream_agent(graph, OLD),
+        saved=(saved := {}),
+        store_error=RuntimeError("store down"),
+        resume=resume,
     )
 
-    assert any(chunk.startswith("event: pending_cancelled") for chunk in chunks)
-    assert pending["next"] == ()
+    assert any("Could not verify the published configuration" in chunk for chunk in chunks)
+    assert not any("pending_cancelled" in chunk for chunk in chunks)
+    assert pending["next"] == ("WaitForResponse",)
+    graph.aupdate_state.assert_not_awaited()
+    assert saved == {}
 
 
 @pytest.mark.parametrize(
@@ -652,3 +662,40 @@ async def test_unavailable_child_preserves_pending_approval(monkeypatch, missing
     assert any("Could not verify referenced sub-agent" in chunk for chunk in chunks)
     cancelled.assert_not_awaited()
     main_mod._refresh_published_graph.assert_not_awaited()
+
+
+@pytest.mark.parametrize("resume", [False, True], ids=["follow-up", "approval-response"])
+async def test_checkpoint_read_failure_does_not_start_empty_turn(monkeypatch, resume):
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(side_effect=RuntimeError("temporary database timeout"))
+    graph.aupdate_state = AsyncMock()
+    seen = []
+    chunks = await _run_event_stream(
+        monkeypatch,
+        _event_stream_agent(graph, OLD),
+        saved=(saved := {}),
+        graph_seen=seen,
+        resume=resume,
+    )
+    assert any("Could not read conversation state" in chunk for chunk in chunks)
+    assert saved == {}
+    assert seen == []
+    graph.aupdate_state.assert_not_awaited()
+
+
+async def test_failed_read_after_legitimate_cancellation_does_not_overwrite_memory(monkeypatch):
+    snapshot = _completed_checkpoint(OLD)
+    snapshot.next = ("WaitForResponse",)
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(side_effect=[snapshot, RuntimeError("temporary database timeout")])
+    monkeypatch.setattr(main_mod, "_cancel_pending_interrupt", AsyncMock(return_value=True))
+    seen = []
+    chunks = await _run_event_stream(
+        monkeypatch,
+        _event_stream_agent(graph, NEW),
+        saved=(saved := {}),
+        graph_seen=seen,
+    )
+    assert any("Could not read conversation state" in chunk for chunk in chunks)
+    assert saved == {}
+    assert seen == []
