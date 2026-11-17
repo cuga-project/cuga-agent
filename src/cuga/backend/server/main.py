@@ -833,6 +833,9 @@ async def _replace_default_runtime(state: Any, config: dict, version: Any, *, re
             current, "_checkpoint_config_version", None
         ) == str(version or 0):
             return current
+        from cuga.backend.server.manage_routes.apply import reload_manager_registry
+
+        await reload_manager_registry()
         prepared = await prepare_runtime(state, config)
         try:
             graph = await _build_published_default_agent(
