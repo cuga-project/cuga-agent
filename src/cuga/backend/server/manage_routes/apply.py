@@ -183,12 +183,13 @@ async def rebuild_production_agent(app_state: Any, config: dict[str, Any], confi
         logger.warning("No production agent found in state, skipping rebuild")
         return
     async with agent_rebuild_lock(prod_agent):
+        from cuga.backend.server.config_fingerprint import compute_published_fingerprint
+
+        fingerprint = await compute_published_fingerprint(config)
         # Keep the shared saver so publishing does not drop conversations.
         await _apply_config_and_rebuild(
             prod_agent, config, checkpointer=getattr(app_state, "checkpointer", None)
         )
         prod_agent._checkpoint_config_version = str(config_version or 0)
-        from cuga.backend.server.config_fingerprint import compute_fingerprint
-
-        prod_agent._config_fingerprint = compute_fingerprint(config)
+        prod_agent._config_fingerprint = fingerprint
     logger.info("Production agent graph rebuilt successfully")
