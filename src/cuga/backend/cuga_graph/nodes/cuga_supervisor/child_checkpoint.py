@@ -123,10 +123,18 @@ def resolve_memory_scope(
     if agent_name and agent_name in scopes:
         return normalize_memory_scope(scopes[agent_name])
     for attr in ("_memory_scope", "memory_scope"):
-        raw = getattr(agent_or_config, attr, None)
+        raw = (
+            agent_or_config.get(attr)
+            if isinstance(agent_or_config, dict)
+            else getattr(agent_or_config, attr, None)
+        )
         if raw:
             return normalize_memory_scope(raw)
-    overrides = getattr(agent_or_config, "_feature_overrides", None) or {}
+    overrides = (
+        agent_or_config.get("feature_overrides")
+        if isinstance(agent_or_config, dict)
+        else getattr(agent_or_config, "_feature_overrides", None)
+    ) or {}
     if isinstance(overrides, dict) and overrides.get("sub_agent_memory_scope"):
         return normalize_memory_scope(overrides["sub_agent_memory_scope"])
     return normalize_memory_scope(getattr(settings.supervisor, "sub_agent_memory_scope", None))
