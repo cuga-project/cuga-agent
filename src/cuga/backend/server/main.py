@@ -763,6 +763,9 @@ async def _build_published_default_agent(
     from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph as DynamicAgentGraph
     from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
 
+    from cuga.backend.server.config_fingerprint import compute_published_fingerprint
+
+    fingerprint = await compute_published_fingerprint(startup_config) if startup_config is not None else None
     overrides = _extract_agent_feature_overrides(startup_config or {})
     agent = DynamicAgentGraph(
         None,
@@ -782,9 +785,7 @@ async def _build_published_default_agent(
     await agent.build_graph(checkpointer=app_state.checkpointer)
     agent._checkpoint_config_version = str(startup_version or 0)
     if startup_config is not None:
-        from cuga.backend.server.config_fingerprint import compute_fingerprint
-
-        agent._config_fingerprint = compute_fingerprint(startup_config)
+        agent._config_fingerprint = fingerprint
     return agent
 
 
@@ -1921,7 +1922,8 @@ async def event_stream(
     from cuga.backend.server.config_fingerprint import (
         ConfigDecision,
         classify_config_change,
-        compute_fingerprint,
+        compute_published_fingerprint,
+        ReferencedConfigUnavailable,
     )
 
     checkpoint_config_key = "published_config_version"
@@ -1956,7 +1958,13 @@ async def event_stream(
 
                 stored_config, stored_version = await load_config(None, runtime_agent_id)
                 if stored_config:
-                    stored_fingerprint = compute_fingerprint(stored_config)
+                    stored_fingerprint = await compute_published_fingerprint(stored_config)
+            except ReferencedConfigUnavailable:
+                return (
+                    snapshot,
+                    [_notice("Error", "Could not verify referenced sub-agent configuration.")],
+                    True,
+                )
             except Exception as exc:
                 logger.warning("Could not verify the published configuration: {}", type(exc).__name__)
                 store_unverified = True
@@ -3153,6 +3161,9 @@ async def _resolve_stream_agent(
 
             from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
 
+            from cuga.backend.server.config_fingerprint import compute_published_fingerprint
+
+            fingerprint = await compute_published_fingerprint(config) if not use_draft else None
             agent_meta = config.get("agent") or {}
             kind = agent_meta.get("kind") or "single"
 
@@ -3232,9 +3243,7 @@ async def _resolve_stream_agent(
             else:
                 await graph.build_graph(checkpointer=app_state.checkpointer)
                 graph._checkpoint_config_version = str(config_version or 0)
-                from cuga.backend.server.config_fingerprint import compute_fingerprint
-
-                graph._config_fingerprint = compute_fingerprint(config)
+                graph._config_fingerprint = fingerprint
             # Another request may have finished first, or a draft-save/publish may have
             # invalidated this key while we were building. The cache only dedupes builds:
             # published state lives in the shared saver, not in the graph instance, so a
