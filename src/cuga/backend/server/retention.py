@@ -11,18 +11,25 @@ and ``storage.checkpoint_retention_days > 0``.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Callable
 
 from loguru import logger
 
 from cuga.backend.server.conversation_history import get_conversation_db
-from cuga.backend.server.thread_lease import ThreadBusy, get_thread_lease
+from cuga.backend.server.thread_lease import ThreadBusy, get_thread_lease, keep_lease
 
 if TYPE_CHECKING:
     from cuga.backend.storage.checkpoint import CheckpointerHandle
 
 _BATCH_SIZE = 200
+
+
+@dataclass(frozen=True)
+class PruneBatchResult:
+    pruned: int
+    next_cursor: tuple[str, str] | None
 
 
 async def _prune_batch(
@@ -32,8 +39,9 @@ async def _prune_batch(
     lease,
     checkpoint_thread_id_fn: Callable[[str, str, str], str],
     cutoff_iso: str,
-) -> int:
-    """Prune one batch of idle conversations. Returns the number actually pruned.
+    after: tuple[str, str] | None = None,
+) -> PruneBatchResult:
+    """Prune one page and advance past every selected row, including failures.
 
     A conversation whose lease is held (a turn is running) or whose prune fails is left
     ``new``/``active`` and is retried by the next sweep.  Conversation-scoped supervisor
@@ -41,7 +49,7 @@ async def _prune_batch(
     """
     from cuga.backend.server.main import _delete_child_checkpoints
 
-    rows = await conversation_db.get_idle_before(cutoff_iso, limit=_BATCH_SIZE)
+    rows = await conversation_db.get_idle_before(cutoff_iso, limit=_BATCH_SIZE, after=after)
 
     pruned = 0
     for row in rows:
@@ -55,22 +63,38 @@ async def _prune_batch(
             logger.debug("retention: thread busy, skipping {}", key[:16])
             continue
         try:
-            # Children first; a failure leaves the conversation un-pruned for the next sweep.
-            await _delete_child_checkpoints(
-                saver=saver,
-                agent_id=agent_id,
-                conversation_id=thread_id,
-                user_id=user_id,
-            )
-            await saver.adelete_thread(key)
-            await conversation_db.set_thread_status(thread_id, user_id, "legacy")
-            pruned += 1
+            lost = asyncio.Event()
+            async with keep_lease(lease, token, stop_event=lost):
+                eligible = await conversation_db.get_idle_thread_before(
+                    thread_id, user_id, agent_id, cutoff_iso
+                )
+                if eligible is None:
+                    continue
+
+                def still_held() -> None:
+                    if lost.is_set():
+                        raise RuntimeError("Retention lease lost; retry on next sweep")
+
+                still_held()
+                # Children first; failure leaves the parent and registry retriable.
+                await _delete_child_checkpoints(
+                    saver=saver,
+                    agent_id=agent_id,
+                    conversation_id=thread_id,
+                    user_id=user_id,
+                )
+                still_held()
+                await saver.adelete_thread(key)
+                still_held()
+                await conversation_db.set_thread_status(
+                    thread_id, user_id, "legacy", only_from=eligible["status"]
+                )
+                pruned += 1
         except Exception as exc:
             logger.warning("retention: failed to prune thread {}: {}", key[:16], type(exc).__name__)
-        finally:
-            await lease.release(token)
 
-    return pruned
+    cursor = (rows[-1]["last_activity"], rows[-1]["thread_id"]) if rows else None
+    return PruneBatchResult(pruned=pruned, next_cursor=cursor)
 
 
 async def run_retention_loop(
@@ -95,17 +119,20 @@ async def run_retention_loop(
         cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
         try:
             total = 0
+            after = None
             while True:
-                pruned = await _prune_batch(
+                batch = await _prune_batch(
                     saver=saver,
                     conversation_db=conversation_db,
                     lease=lease,
                     checkpoint_thread_id_fn=checkpoint_thread_id_fn,
                     cutoff_iso=cutoff_iso,
+                    after=after,
                 )
-                total += pruned
-                if pruned < _BATCH_SIZE:
+                total += batch.pruned
+                if batch.next_cursor is None:
                     break
+                after = batch.next_cursor
             if total:
                 logger.info("retention: pruned {} conversation(s)", total)
         except Exception as exc:
