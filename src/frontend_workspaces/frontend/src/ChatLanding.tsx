@@ -1217,12 +1217,14 @@ export function ChatLanding() {
   }, [draftConversation, draftThread.agentId, draftThread.hasSentFirstMessage, draftThread.threadId, effectiveChatAgentId, selectedThreadId]);
 
   // Both uploads and sending wait for the same in-flight creation/validation.
-  const conversationIdForUpload = useCallback(async (beforePublish?: (id: string) => void): Promise<string> => {
-    if (selectedThreadId) {
-      beforePublish?.(selectedThreadId);
-      return selectedThreadId;
-    }
-    return draftConversation().resolve(beforePublish);
+  const conversationIdForUpload = useCallback(async (): Promise<string> => {
+    if (selectedThreadId) return selectedThreadId;
+    return draftConversation().resolve();
+  }, [selectedThreadId, draftConversation]);
+
+  const conversationIdBeforeSend = useCallback(async (beforePublish?: (id: string) => void): Promise<string | null> => {
+    if (selectedThreadId) return selectedThreadId;
+    return draftConversation().prepareSend(beforePublish);
   }, [selectedThreadId, draftConversation]);
 
   const handleWorkspaceUpload = useCallback(
@@ -1585,6 +1587,7 @@ export function ChatLanding() {
             sessionDocsVersion={sessionDocsVersion}
             onSessionDocsChanged={handleSessionDocsChanged}
             resolveThreadId={conversationIdForUpload}
+            prepareThreadId={conversationIdBeforeSend}
             onOpenKnowledge={handleToggleKnowledge}
             onOpenMemoryUsage={memoryEnabled ? (entityIds, relationship) => {
               setFocusedMemoryRelationship(relationship);
