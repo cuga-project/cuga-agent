@@ -148,6 +148,8 @@ def create_agent_delegation_func(
             if exec_ctx is not None and exec_ctx.state is not None:
                 scope = resolve_memory_scope(agent_or_config, adapter=adapter, agent_name=agent_name)
                 if scope != MEMORY_SCOPE_CALL:
+                    if exec_ctx.child_checkpoint_recorder is not None:
+                        await exec_ctx.child_checkpoint_recorder(child_thread_id)
                     _record_child_checkpoint_id(exec_ctx.state, child_thread_id)
             # A child tool-approval pause is not surfaced to the parent: invoke() returns the
             # pause notice as the answer and the child stays parked in its own saver (#774).
