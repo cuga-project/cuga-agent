@@ -17,6 +17,7 @@ import shutil
 import socket
 import threading
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, fields as dc_fields
 from pathlib import Path
@@ -323,7 +324,9 @@ def _classify_junk_chunk(text: str, filename: str) -> str | None:
 
     Rules — kept few and explicable so an SRE reading a log line can
     instantly diagnose a false positive:
-      - ``"too_short"`` : ``len(text.strip()) < 30`` — orphan caption fragments.
+      - ``"too_short"`` : under 30 columns of display width — orphan caption
+        fragments. Chinese, Japanese and Korean characters count as two columns
+        (East Asian Wide), so a 16-character Chinese sentence is not dropped.
       - ``"cid_glyph_run"``: a consecutive run of ≥3 CID-shape tokens.
         Catches mixed-content chunks where a glyph fragment is intermixed
         with prose (the ratio rule below misses these because the prose
@@ -348,7 +351,9 @@ def _classify_junk_chunk(text: str, filename: str) -> str | None:
     """
     stripped = text.strip()
     total = len(stripped)
-    if total < 30:
+    # Composed first: a decomposed (NFD) kana or Hangul syllable would count each of its parts.
+    composed = unicodedata.normalize("NFC", stripped)
+    if total < 30 and sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in composed) < 30:
         return "too_short"
 
     # CID-glyph rules run BEFORE the code-file whitelist because no
