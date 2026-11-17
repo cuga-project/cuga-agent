@@ -93,6 +93,7 @@ from cuga.backend.server.tool_guard_generation import (
     generate_tool_guards_for_policy,
 )
 from cuga.backend.server.conversation_history import ThreadOwnershipError, get_conversation_db
+from cuga.backend.server.runtime_refresh import runtime_stream
 
 # Default user ID for conversation history
 DEFAULT_USER_ID = "default_user"
@@ -754,6 +755,7 @@ async def _build_published_default_agent(
     startup_llm_cfg: Optional[Dict[str, Any]],
     startup_version: Optional[int] = None,
     langfuse_handler: Any = None,
+    runtime_state: Any = None,
 ) -> "DynamicAgentGraph":
     """Build the published cuga-default graph at startup (``app_state.agent``).
 
@@ -766,11 +768,20 @@ async def _build_published_default_agent(
     from cuga.backend.server.config_fingerprint import compute_published_fingerprint
 
     fingerprint = await compute_published_fingerprint(startup_config) if startup_config is not None else None
+    from cuga.backend.server.runtime_refresh import prepare_runtime
+
+    state = runtime_state
+    if state is None:
+        state = await prepare_runtime(app_state, startup_config or {})
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
+
+    if isinstance(tool_provider, CombinedToolProvider):
+        tool_provider.get_include_by_app = lambda: (state.tools_include_by_app, startup_version or 0)
     overrides = _extract_agent_feature_overrides(startup_config or {})
     agent = DynamicAgentGraph(
         None,
         langfuse_handler=langfuse_handler,
-        policy_system=app_state.policy_system,
+        policy_system=state.policy_system,
         tool_provider=tool_provider,
         llm_config=startup_llm_cfg or None,
         enable_todos=overrides.get("enable_todos"),
@@ -779,47 +790,93 @@ async def _build_published_default_agent(
         cuga_lite_max_steps=overrides.get("cuga_lite_max_steps"),
         enable_filesystem_tools=overrides.get("enable_filesystem_tools"),
         special_instructions=agent_registry.agent_special_instructions(startup_config or {}),
-        supervisor_id=app_state.agent_id,
+        supervisor_id=state.agent_id,
         **await agent_registry.supervisor_graph_overrides(startup_config or {}),
     )
-    await agent.build_graph(checkpointer=app_state.checkpointer)
+    await agent.build_graph(checkpointer=state.checkpointer)
     agent._checkpoint_config_version = str(startup_version or 0)
     if startup_config is not None:
         agent._config_fingerprint = fingerprint
+    agent._runtime_policy_snapshot = state.runtime_policy_snapshot
+    agent._runtime_llm = state.current_llm
+    agent._runtime_config = startup_config or {}
     return agent
 
 
 async def _refresh_published_graph(agent_id: str, config: Dict[str, Any], version: int | None) -> Any:
-    """Build a graph for the current published config on the shared saver."""
+    """Build a complete replacement under a stable lock, then install it."""
     if agent_id != app_state.agent_id:
         app_state.agent_graphs_cache.pop((agent_id, False), None)
         return await _resolve_stream_agent(None, agent_id, False)
+    return await _replace_default_runtime(app_state, config, version, reread=True)
 
+
+async def _replace_default_runtime(state: Any, config: dict, version: Any, *, reread: bool = False) -> Any:
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
-    from cuga.backend.server.manage_routes import _apply_published_config
+    from cuga.backend.server.config_fingerprint import compute_published_fingerprint
+    from cuga.backend.server.runtime_refresh import prepare_runtime, close_retired_runtime
 
-    await _apply_published_config(app_state, config)
-    app_state.config_version = version
+    lock = getattr(state, "published_runtime_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        state.published_runtime_lock = lock
+    async with lock:
+        if reread:
+            from cuga.backend.server.config_store import load_config
 
-    def _get_include_by_app():
-        return (
-            getattr(app_state, "tools_include_by_app", None),
-            getattr(app_state, "tools_include_version", 0),
-        )
+            config, version = await load_config(None, state.agent_id)
+            if not config:
+                raise ValueError("Published configuration unavailable")
+        fingerprint = await compute_published_fingerprint(config)
+        current = state.agent
+        if getattr(current, "_config_fingerprint", None) == fingerprint and getattr(
+            current, "_checkpoint_config_version", None
+        ) == str(version or 0):
+            return current
+        prepared = await prepare_runtime(state, config)
+        try:
+            graph = await _build_published_default_agent(
+                tool_provider=CombinedToolProvider(
+                    get_include_by_app=lambda: (prepared.tools_include_by_app, version or 0),
+                    agent_id=prepared.agent_id,
+                    app_names=agent_registry.configured_tool_apps(config),
+                ),
+                startup_config=config,
+                startup_llm_cfg=config.get("llm") or {},
+                startup_version=version,
+                langfuse_handler=getattr(current, "langfuse_handler", None),
+                runtime_state=prepared,
+            )
+        except BaseException:
+            if prepared.runtime_policy_snapshot is not None:
+                await prepared.runtime_policy_snapshot.disconnect()
+            raise
+        if config.get("policies") is not None and getattr(state, "policy_system", None) is not None:
+            from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+            from cuga.backend.server.manage_routes.helpers import policies_list_from_config
 
-    graph = await _build_published_default_agent(
-        tool_provider=CombinedToolProvider(
-            get_include_by_app=_get_include_by_app,
-            agent_id=agent_id,
-            app_names=agent_registry.configured_tool_apps(config),
-        ),
-        startup_config=config,
-        startup_llm_cfg=config.get("llm") or {},
-        startup_version=version,
-        langfuse_handler=getattr(app_state.agent, "langfuse_handler", None),
-    )
-    app_state.agent = graph
-    return graph
+            try:
+                result = await apply_policies_data_to_storage(
+                    state.policy_system.storage,
+                    policies_list_from_config(config["policies"]),
+                    clear_existing=True,
+                    filesystem_sync=getattr(state, "policy_filesystem_sync", None),
+                )
+                if result["errors"]:
+                    raise ValueError("Could not persist all published policies")
+            except BaseException:
+                graph._runtime_retired = True
+                await close_retired_runtime(graph)
+                raise
+        # No await between assignments: requests observe a complete old or new runtime.
+        state.current_llm = prepared.current_llm
+        state.tools_include_by_app = prepared.tools_include_by_app
+        state.config_version = version
+        state.tools_include_version = int(version or 0)
+        state.agent = graph
+        current._runtime_retired = True
+        await close_retired_runtime(current)
+        return graph
 
 
 @asynccontextmanager
@@ -1471,6 +1528,9 @@ async def _app_lifespan(app: FastAPI):
     except Exception:
         logger.exception("close_graph_owners failed during shutdown (non-fatal)")
     app_state.agent_graphs_cache.clear()
+    snapshot = getattr(app_state.agent, "_runtime_policy_snapshot", None)
+    if snapshot is not None:
+        await snapshot.disconnect()
 
     for task in app_state.background_tasks:
         task.cancel()
@@ -1889,6 +1949,7 @@ async def _cancel_pending_interrupt(graph: Any, checkpoint_key: str) -> bool:
         return False
 
 
+@runtime_stream
 async def event_stream(
     query: str,
     api_mode=False,
@@ -1947,6 +2008,8 @@ async def event_stream(
         notices, not conversation content: they never enter the stream-event buffer.
         """
         nonlocal run_agent, runtime_llm
+        from cuga.backend.server.runtime_refresh import retain_runtime
+
         expected_version = getattr(run_agent, "_checkpoint_config_version", None)
         pending = bool(getattr(snapshot, "next", None))
         store_unverified = False
@@ -2001,8 +2064,9 @@ async def event_stream(
         if graph_stale and stored_config:
             try:
                 run_agent = await _refresh_published_graph(runtime_agent_id, stored_config, stored_version)
+                retain_runtime(run_agent)
                 if runtime_agent_id == app_state.agent_id and agent is None:
-                    runtime_llm = app_state.current_llm
+                    runtime_llm = getattr(run_agent, "_runtime_llm", app_state.current_llm)
                 snapshot = await run_agent.graph.aget_state(
                     {"configurable": {"thread_id": checkpoint_thread_id}}
                 )
@@ -2024,6 +2088,9 @@ async def event_stream(
 
     memory_turn_id = str(uuid.uuid4()) if not resume else ""
     run_agent = agent if agent is not None else app_state.agent
+    from cuga.backend.server.runtime_refresh import retain_runtime
+
+    retain_runtime(run_agent)
     runtime_agent_id = agent_id or app_state.agent_id
     thread_id = _canonical_thread_id(thread_id or str(uuid.uuid4()))
     try:
@@ -2049,6 +2116,8 @@ async def event_stream(
         )
     else:
         runtime_llm = current_llm
+    if run_agent is not None and hasattr(run_agent, "_runtime_llm"):
+        runtime_llm = run_agent._runtime_llm
     if not run_agent or not run_agent.graph:
         yield StreamEvent(name="Error", data="Agent not available.").format()
         return
@@ -4258,6 +4327,29 @@ async def save_policies_config(
             )
             await storage.disconnect()
             logger.info("Storage disconnected")
+
+        if (
+            not use_draft
+            and is_default
+            and getattr(app_state.agent, "_runtime_policy_snapshot", None) is not None
+        ):
+            # Direct policy saves must reach future turns too. Persist the changed
+            # config so every replica detects it, then install a fresh runtime.
+            from copy import deepcopy
+            from cuga.backend.server.config_store import (
+                load_config,
+                save_config,
+                update_published_config_at_version,
+            )
+
+            config, version = await load_config(None, app_state.agent_id)
+            config = config or deepcopy(app_state.agent._runtime_config)
+            config["policies"] = data
+            if version is None:
+                version = await save_config(config, app_state.agent_id)
+            elif not await update_published_config_at_version(config, app_state.agent_id, version):
+                raise RuntimeError("Published configuration changed during policy save; retry")
+            await _replace_default_runtime(app_state, config, version, reread=True)
 
         logger.info(f"Policies configuration saved: {len(policies)} policies")
         return JSONResponse({"status": "success", "message": f"Saved {len(policies)} policies successfully"})
