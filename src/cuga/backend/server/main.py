@@ -2012,7 +2012,6 @@ async def event_stream(
 
         expected_version = getattr(run_agent, "_checkpoint_config_version", None)
         pending = bool(getattr(snapshot, "next", None))
-        store_unverified = False
         stored_config = None
         stored_version = None
         stored_fingerprint = None
@@ -2031,7 +2030,7 @@ async def event_stream(
                 )
             except Exception as exc:
                 logger.warning("Could not verify the published configuration: {}", type(exc).__name__)
-                store_unverified = True
+                return snapshot, [_notice("Error", "Could not verify the published configuration.")], True
         fingerprint = getattr(run_agent, "_config_fingerprint", None)
         version_moved = stored_version is not None and str(stored_version or 0) != expected_version
         content_moved = (
@@ -2044,7 +2043,7 @@ async def event_stream(
         scope = values.get("service_scope")
         scope = scope if isinstance(scope, dict) else {}
         decision = classify_config_change(scope, stored_fingerprint or fingerprint, pending, expected_version)
-        if decision is ConfigDecision.NONE and pending and (version_moved or store_unverified):
+        if decision is ConfigDecision.NONE and pending and version_moved:
             decision = ConfigDecision.CANCEL_PENDING
 
         notices = []
@@ -2054,7 +2053,7 @@ async def event_stream(
             notices.append(_notice("pending_cancelled", json.dumps({"reason": "config_changed"})))
             if is_resume:
                 return snapshot, [*notices, _notice("Answer", config_changed_message)], True
-        if store_unverified or (graph_stale and not stored_config):
+        if graph_stale and not stored_config:
             return (
                 snapshot,
                 [*notices, _notice("Error", "Could not verify the published configuration.")],
@@ -2154,7 +2153,6 @@ async def event_stream(
                     for notice in config_notices:
                         yield notice
                     return
-                    return
                 latest_state_values = snapshot.values
                 if latest_state_values:
                     # Load existing state for followup questions
@@ -2172,13 +2170,10 @@ async def event_stream(
                     local_state.thread_id = thread_id
                     local_tracker.intent = query
                     logger.info(f"Created new state for thread_id: {thread_id}")
-            except Exception as e:
-                # If state retrieval fails, create new state
-                logger.warning(f"Failed to retrieve state for thread_id {thread_id}, creating new state: {e}")
-                local_state = default_state(page=None, observation=None, goal="")
-                local_state.input = query
-                local_state.thread_id = thread_id
-                local_tracker.intent = query
+            except Exception as exc:
+                logger.warning("Could not load conversation state: {}", type(exc).__name__)
+                yield _notice("Error", "Could not read conversation state. Please retry.")
+                return
         else:
             # No thread_id, create new state
             local_state = default_state(page=None, observation=None, goal="")
@@ -2186,23 +2181,27 @@ async def event_stream(
             local_state.thread_id = thread_id
             local_tracker.intent = query
     else:
-        # For resume, fetch state from LangGraph
+        # Resume must preserve the saved approval if its state cannot be read.
         if thread_id:
-            snapshot = preloaded_snapshot
-            if snapshot is None:
-                snapshot = await run_agent.graph.aget_state(
-                    {"configurable": {"thread_id": checkpoint_thread_id}}
-                )
-            snapshot, config_notices, finished = await _reconcile_config(snapshot, True)
-            if finished:
-                for notice in config_notices:
-                    yield notice
+            try:
+                snapshot = preloaded_snapshot
+                if snapshot is None:
+                    snapshot = await run_agent.graph.aget_state(
+                        {"configurable": {"thread_id": checkpoint_thread_id}}
+                    )
+                snapshot, config_notices, finished = await _reconcile_config(snapshot, True)
+                if finished:
+                    for notice in config_notices:
+                        yield notice
+                    return
+                latest_state_values = snapshot.values
+                if latest_state_values:
+                    local_state = AgentState(**latest_state_values)
+                    local_state.thread_id = thread_id
+            except Exception as exc:
+                logger.warning("Could not load approval state: {}", type(exc).__name__)
+                yield _notice("Error", "Could not read conversation state. Please retry.")
                 return
-                return
-            latest_state_values = snapshot.values
-            if latest_state_values:
-                local_state = AgentState(**latest_state_values)
-                local_state.thread_id = thread_id
 
     for notice in config_notices:
         yield notice
