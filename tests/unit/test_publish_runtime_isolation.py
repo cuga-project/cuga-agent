@@ -161,19 +161,12 @@ def test_publishing_default_agent_still_applies_to_singleton(monkeypatch):
     state = _default_runtime()
     applied = {}
 
-    async def _capture_apply(app_state, config):
-        applied["config"] = config
-        app_state.current_llm = "updated-llm"
-        app_state.tools_include_by_app = {"updated": ["x"]}
-
     async def _capture_rebuild(app_state, config, config_version):
+        applied["config"] = config
         applied["rebuilt"] = True
+        app_state.current_llm = "updated-llm"
         app_state.agent.special_instructions = config.get("special_instructions")
 
-    monkeypatch.setattr(
-        "cuga.backend.server.manage_routes.config_routes.apply_published_config",
-        _capture_apply,
-    )
     monkeypatch.setattr(
         "cuga.backend.server.manage_routes.config_routes.rebuild_production_agent",
         _capture_rebuild,
@@ -243,6 +236,7 @@ async def test_default_publish_rebuild_keeps_conversations_on_shared_saver():
 
     await _rebuild(state, 2)
 
-    assert agent.graph is not old_graph
-    assert agent._checkpoint_config_version == "2"
-    assert (await agent.graph.aget_state(cfg)).values["input"] == "before publish"
+    assert state.agent is not agent
+    assert agent.graph is old_graph
+    assert state.agent._checkpoint_config_version == "2"
+    assert (await state.agent.graph.aget_state(cfg)).values["input"] == "before publish"
