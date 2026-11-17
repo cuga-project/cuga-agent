@@ -361,3 +361,19 @@ async def test_postgres_lease_timestamp_upgrade_and_short_ttl(dsn, monkeypatch, 
         await store.close()
         await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await admin.close()
+
+
+async def test_child_registry_uses_shared_postgres_parent_namespace(app_replicas):
+    from cuga.backend.server.main import _checkpoint_thread_id
+    from cuga.backend.storage.checkpoint.children import ChildCheckpointRecorder, recorded_child_ids
+
+    replica = await app_replicas()
+    thread_id = await replica.create()
+    parent = _checkpoint_thread_id(thread_id, USER_ID, AGENT_ID)
+    recorder = ChildCheckpointRecorder(replica.handle.saver, parent)
+    children = [f"sup_child_{thread_id}_one", f"sup_child_{thread_id}_two"]
+    for child in children:
+        await recorder(child)
+    assert await recorded_child_ids(replica.handle.saver, parent) == children
+    await replica.handle.saver.adelete_thread(parent)
+    assert await recorded_child_ids(replica.handle.saver, parent) == []
