@@ -489,3 +489,79 @@ async def test_unreadable_published_config_cancels_a_pending_approval(monkeypatc
 
     assert any(chunk.startswith("event: pending_cancelled") for chunk in chunks)
     assert pending["next"] == ()
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["_vector_config_hash", "_adaptation_hash", "_glossary_hash"],
+)
+def test_knowledge_bookkeeping_does_not_invalidate_pending_approval(field):
+    before = {"knowledge": {"embedding_model": "model-a", field: "old"}}
+    after = {"knowledge": {"embedding_model": "model-a", field: "new"}}
+    fingerprint = compute_fingerprint(before)
+    assert (
+        classify_config_change(_scope(fingerprint), compute_fingerprint(after), True) is ConfigDecision.NONE
+    )
+    after["knowledge"]["embedding_model"] = "model-b"
+    assert agent_config_hash(before) != agent_config_hash(after)
+
+
+@pytest.mark.parametrize("field", ["version", "updated_at", "created_at", "knowledge_state"])
+def test_tool_environment_metadata_names_are_behavior_fields(field):
+    before = {"tools": [{"env": {field: "old"}}]}
+    after = {"tools": [{"env": {field: "new"}}]}
+    assert agent_config_hash(before) != agent_config_hash(after)
+
+
+@pytest.mark.parametrize(
+    "field", ["GITHUB_TOKEN", "client_secret", "openai_api_key", "aws_secret_access_key"]
+)
+def test_secret_field_names_use_manage_redaction_rules(field):
+    assert agent_config_hash({"tools": [{"env": {field: "test-value"}}]}) == agent_config_hash(
+        {"tools": [{"env": {}}]}
+    )
+
+
+def test_published_knowledge_reference_matches_applied_config_without_mutating_it():
+    from copy import deepcopy
+
+    applied = {"knowledge": {"embedding_api_key": "vault://example/key", "enabled": True}}
+    original = deepcopy(applied)
+    stored = {"knowledge": {"embedding_api_key": "", "enabled": True}, "knowledge_state": {}}
+    assert agent_config_hash(applied) == agent_config_hash(stored)
+    assert applied == original
+
+
+async def test_successful_reindex_persistence_does_not_invalidate_pending_approval(monkeypatch):
+    from copy import deepcopy
+
+    from cuga.backend.server.manage_routes.knowledge_reindex import persist_active_vector_config
+
+    knowledge = {"embedding_model": "model-a", "chunk_size": 100, "_vector_config_hash": "old"}
+    published = {"knowledge": knowledge}
+    before = compute_fingerprint(published)
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.load_config", AsyncMock(return_value=(deepcopy(published), 4))
+    )
+    monkeypatch.setattr("cuga.backend.server.config_store.load_draft", AsyncMock(return_value={}))
+    monkeypatch.setattr("cuga.backend.server.config_store.save_draft", AsyncMock())
+    updated = AsyncMock()
+    monkeypatch.setattr("cuga.backend.server.config_store.update_published_config_at_version", updated)
+    engine = SimpleNamespace(_config=SimpleNamespace(embedding_model="model-a", chunk_size=100))
+    await persist_active_vector_config("sales-east", engine, "new")
+    after = updated.call_args.args[0]
+    assert after["knowledge"]["_vector_config_hash"] == "new"
+    assert classify_config_change(_scope(before), compute_fingerprint(after), True) is ConfigDecision.NONE
+
+
+async def test_reindex_bookkeeping_does_not_emit_notice_or_rebuild(monkeypatch):
+    before = {"knowledge": {"embedding_model": "model-a", "_vector_config_hash": "old"}}
+    after = {"knowledge": {"embedding_model": "model-a", "_vector_config_hash": "new"}}
+    fingerprint = compute_fingerprint(before)
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(return_value=_completed_checkpoint(fingerprint))
+    chunks = await _run_event_stream(
+        monkeypatch, _event_stream_agent(graph, fingerprint), saved={}, stored_config=after
+    )
+    assert not any('config_changed' in chunk or 'pending_cancelled' in chunk for chunk in chunks)
+    main_mod._refresh_published_graph.assert_not_awaited()
