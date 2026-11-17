@@ -134,36 +134,54 @@ async def test_rebuild_applies_new_instructions_before_build(monkeypatch, use_dr
 
 @pytest.mark.asyncio
 async def test_direct_edit_waits_for_member_triggered_rebuild(monkeypatch):
+    from cuga.backend.server import main, runtime_refresh
     from cuga.backend.server.manage_routes import helpers
+    from cuga.backend.server.manage_routes.apply import rebuild_production_agent
 
-    monkeypatch.setattr(agent_registry, "is_agent_registry_enabled", lambda: True)
     started, release = asyncio.Event(), asyncio.Event()
-    seen = []
-    graph = SimpleNamespace()
-
-    async def build(checkpointer=None):
-        seen.append(graph.special_instructions)
-        if len(seen) == 1:
-            started.set()
-            await release.wait()
-
-    graph.build_graph = build
-    state = SimpleNamespace(agent=graph, agent_graphs_cache={}, agent_graph_generations={}, checkpointer=None)
+    old = SimpleNamespace(aclose=AsyncMock())
+    state = SimpleNamespace(
+        agent=old,
+        agent_id="cuga-default",
+        agent_graphs_cache={},
+        agent_graph_generations={},
+        checkpointer=None,
+    )
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(app_state=state)))
+    seen = []
     monkeypatch.setattr(helpers, "_referrer_ids_for_agent", AsyncMock(return_value=["cuga-default"]))
     monkeypatch.setattr(
         "cuga.backend.server.config_store.load_config",
         AsyncMock(return_value=({"special_instructions": "old"}, 1)),
     )
+    monkeypatch.setattr(
+        runtime_refresh,
+        "prepare_runtime",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                agent_id="cuga-default",
+                tools_include_by_app=None,
+                current_llm=None,
+                runtime_policy_snapshot=None,
+            )
+        ),
+    )
+
+    async def build(**kwargs):
+        seen.append(kwargs["startup_config"]["special_instructions"])
+        if len(seen) == 1:
+            started.set()
+            await release.wait()
+        return SimpleNamespace(aclose=AsyncMock())
+
+    monkeypatch.setattr(main, "_build_published_default_agent", build)
     refresh = asyncio.create_task(
         helpers.invalidate_agent_graph_cache(request, "weatherbot", draft=False, published=True)
     )
-    await started.wait()
-    publish = asyncio.create_task(rebuild_agent_from_config(graph, {"special_instructions": "published"}))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    publish = asyncio.create_task(rebuild_production_agent(state, {"special_instructions": "published"}, 2))
     await asyncio.sleep(0)
     assert seen == ["old"]
     release.set()
     await asyncio.gather(refresh, publish)
-
     assert seen == ["old", "published"]
-    assert graph.special_instructions == "published"
