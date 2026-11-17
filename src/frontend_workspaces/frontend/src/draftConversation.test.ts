@@ -34,7 +34,7 @@ describe("draft conversation continuity", () => {
     const create = vi.fn(() => creation.promise);
     const draft = createDraftConversation(null, vi.fn(), create, (id) => order.push(`publish:${id}`));
     const upload = draft.resolve();
-    const send = draft.resolve((id) => order.push(`send:${id}`));
+    const send = draft.prepareSend((id) => order.push(`send:${id}`));
     await Promise.resolve();
     expect(order).toEqual([]);
     creation.resolve("server-id");
@@ -49,14 +49,14 @@ describe("draft conversation continuity", () => {
     const create = vi.fn();
     const draft = createDraftConversation("saved", validate, create, vi.fn());
     const restoring = draft.validate();
-    const sending = draft.resolve();
+    const sending = draft.prepareSend();
     check.resolve(true);
     expect(await Promise.all([restoring, sending])).toEqual(["saved", "saved"]);
     expect(validate).toHaveBeenCalledTimes(1);
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("retries a failed creation without reserving a second ID concurrently", async () => {
+  it("retries a failed upload conversation creation", async () => {
     const create = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue("retry-id");
     const draft = createDraftConversation(null, vi.fn(), create, vi.fn());
     await expect(draft.resolve()).rejects.toThrow("offline");
@@ -83,20 +83,12 @@ describe("draft conversation continuity", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("an older draft failure cannot clear a new draft's pending creation", async () => {
-    const oldCreation = deferred<string>();
-    const newCreation = deferred<string>();
-    const oldDraft = createDraftConversation(null, vi.fn(), () => oldCreation.promise, vi.fn());
-    const create = vi.fn(() => newCreation.promise);
-    const newDraft = createDraftConversation(null, vi.fn(), create, vi.fn());
-    const oldUpload = oldDraft.resolve();
-    const oldFailure = expect(oldUpload).rejects.toThrow("old failure");
-    const newUpload = newDraft.resolve();
-    oldCreation.reject(new Error("old failure"));
-    await oldFailure;
-    const newSend = newDraft.resolve();
-    newCreation.resolve("new-id");
-    expect(await Promise.all([newUpload, newSend])).toEqual(["new-id", "new-id"]);
-    expect(create).toHaveBeenCalledTimes(1);
+  it("leaves a fresh first send to /stream without a separate creation request", async () => {
+    const create = vi.fn();
+    const publish = vi.fn();
+    const draft = createDraftConversation(null, vi.fn(), create, publish);
+    expect(await draft.prepareSend()).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
   });
 });
