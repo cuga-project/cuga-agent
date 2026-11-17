@@ -136,6 +136,13 @@ async def invalidate_agent_graph_cache(
             agent = getattr(runtime, "agent", None)
             if not enabled or agent is None:
                 continue
+            if not use_draft:
+                from cuga.backend.server.manage_routes.apply import rebuild_production_agent
+
+                config, version = await load_config(None, DEFAULT_AGENT_ID)
+                if config:
+                    await rebuild_production_agent(runtime, config, version)
+                continue
             async with agent_rebuild_lock(agent):
                 while True:
                     generations = getattr(state, "agent_graph_generations", {})
