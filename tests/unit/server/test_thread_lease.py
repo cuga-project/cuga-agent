@@ -95,6 +95,9 @@ async def test_cross_replica_stop_sets_the_holders_stop_event(lease, monkeypatch
         assert not stop.is_set()
         await replica_b.request_stop("t1")
         await asyncio.wait_for(stop.wait(), timeout=5.0)
+        stop.clear()
+        # A cleared local event must not lose the durable stop for this turn.
+        await asyncio.wait_for(stop.wait(), timeout=5.0)
 
 
 async def test_acquire_clears_the_stop_flag(lease):
