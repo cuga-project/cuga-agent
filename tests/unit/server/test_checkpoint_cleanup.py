@@ -60,13 +60,14 @@ async def _seed(db: ConversationHistoryDB, thread_id: str, *, status: str, creat
 
 
 async def _sweep(db, lease, saver, cutoff_days: float = 90) -> int:
-    return await retention._prune_batch(
+    result = await retention._prune_batch(
         saver=saver,
         conversation_db=db,
         lease=lease,
         checkpoint_thread_id_fn=_key,
         cutoff_iso=_iso(cutoff_days),
     )
+    return result.pruned
 
 
 async def test_idle_conversation_loses_its_checkpoint_and_becomes_legacy(db, lease, saver):
@@ -118,7 +119,7 @@ async def test_loop_sweeps_each_interval_and_survives_a_failing_sweep(monkeypatc
         sweeps.append(kwargs["cutoff_iso"])
         if len(sweeps) == 1:
             raise RuntimeError("transient")
-        return 0
+        return retention.PruneBatchResult(pruned=0, next_cursor=None)
 
     monkeypatch.setattr(retention, "_prune_batch", prune_batch)
     task = asyncio.create_task(
@@ -276,3 +277,151 @@ async def test_child_cleanup_aborts_when_parent_checkpoint_read_fails():
             user_id="u",
         )
     saver.adelete_thread.assert_not_awaited()
+
+
+@pytest.mark.parametrize("change", ["recent-turn", "deleted"])
+async def test_retention_rechecks_eligibility_after_selection(db, lease, saver, monkeypatch, change):
+    await _seed(db, "stale-selection", status="active", created_days_ago=120)
+    acquire = lease.acquire
+
+    async def changed_before_acquire(thread_id, ttl_seconds=None):
+        if change == "recent-turn":
+            await db.mark_last_turn_at("stale-selection", USER)
+        else:
+            await db.set_thread_status("stale-selection", USER, "deleted")
+        return await acquire(thread_id, ttl_seconds=ttl_seconds)
+
+    monkeypatch.setattr(lease, "acquire", changed_before_acquire)
+    assert await _sweep(db, lease, saver) == 0
+    saver.adelete_thread.assert_not_awaited()
+    assert await db.get_thread_status("stale-selection", USER, AGENT) == (
+        "active" if change == "recent-turn" else "deleted"
+    )
+
+
+async def test_retention_read_error_does_not_delete_and_releases_lease(db, lease, saver, monkeypatch):
+    await _seed(db, "unreadable", status="active", created_days_ago=120)
+    monkeypatch.setattr(db, "get_idle_thread_before", AsyncMock(side_effect=RuntimeError("store down")))
+    assert await _sweep(db, lease, saver) == 0
+    saver.adelete_thread.assert_not_awaited()
+    await lease.release(await lease.acquire(_key("unreadable", USER, AGENT)))
+
+
+async def test_retention_never_moves_deleted_status_back_to_legacy(db, lease, saver):
+    await _seed(db, "old", status="active", created_days_ago=120)
+
+    async def concurrent_status_change(thread_id):
+        await db.set_thread_status("old", USER, "deleted")
+
+    saver.adelete_thread.side_effect = concurrent_status_change
+    await _sweep(db, lease, saver)
+    assert await db.get_thread_status("old", USER, AGENT) == "deleted"
+
+
+async def test_idle_paging_uses_unique_thread_id_for_tied_activity(db):
+    for thread_id in ["c", "a", "b"]:
+        await _seed(db, thread_id, status="active", created_days_ago=120)
+    store = db._get_store()
+    await store.execute(
+        "UPDATE runtime_thread_owners SET created_at = ? WHERE tenant_id = ? AND instance_id = ?",
+        (_iso(120), _tenant_id(), _instance_id()),
+    )
+    await store.commit()
+    first = await db.get_idle_before(_iso(90), limit=2)
+    assert [row["thread_id"] for row in first] == ["a", "b"]
+    after = (first[-1]["last_activity"], first[-1]["thread_id"])
+    second = await db.get_idle_before(_iso(90), limit=2, after=after)
+    assert [row["thread_id"] for row in second] == ["c"]
+
+
+async def test_busy_and_failing_first_page_do_not_starve_later_candidates(db, lease, saver, monkeypatch):
+    for thread_id, age in [("busy", 160), ("failure", 150), ("later", 140), ("tail", 130)]:
+        await _seed(db, thread_id, status="active", created_days_ago=age)
+    token = await lease.acquire(_key("busy", USER, AGENT))
+
+    async def delete(thread_id):
+        if thread_id == _key("failure", USER, AGENT):
+            raise RuntimeError("checkpoint unavailable")
+
+    saver.adelete_thread.side_effect = delete
+    monkeypatch.setattr(retention, "_BATCH_SIZE", 2)
+    monkeypatch.setattr(retention, "get_conversation_db", lambda: db)
+    monkeypatch.setattr(retention, "get_thread_lease", lambda: lease)
+    task = asyncio.create_task(
+        retention.run_retention_loop(
+            handle=MagicMock(saver=saver),
+            checkpoint_thread_id_fn=_key,
+            interval_seconds=0.01,
+            retention_days=90,
+        )
+    )
+
+    async def tail_expired():
+        while await db.get_thread_status("tail", USER, AGENT) != "legacy":
+            await asyncio.sleep(0.01)
+
+    try:
+        await asyncio.wait_for(tail_expired(), timeout=5)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await lease.release(token)
+    assert await db.get_thread_status("later", USER, AGENT) == "legacy"
+    assert await db.get_thread_status("failure", USER, AGENT) == "active"
+    assert await db.get_thread_status("busy", USER, AGENT) == "active"
+
+
+async def test_retention_renews_lease_during_slow_cleanup(db, lease, saver, monkeypatch):
+    from cuga.config import settings
+    from cuga.backend.server.thread_lease import ThreadBusy
+
+    monkeypatch.setattr(settings.storage, "thread_lease_ttl_seconds", 0.06)
+    monkeypatch.setattr(settings.storage, "thread_lease_renew_seconds", 0.01)
+    await _seed(db, "slow", status="active", created_days_ago=120)
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def delete(thread_id):
+        started.set()
+        await finish.wait()
+
+    saver.adelete_thread.side_effect = delete
+    task = asyncio.create_task(_sweep(db, lease, saver))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        await asyncio.sleep(0.12)  # longer than the original TTL
+        with pytest.raises(ThreadBusy):
+            await ThreadLease().acquire(_key("slow", USER, AGENT))
+    finally:
+        finish.set()
+        await task
+    assert await db.get_thread_status("slow", USER, AGENT) == "legacy"
+
+
+async def test_retention_stops_before_parent_delete_when_lease_is_lost(db, lease, saver, monkeypatch):
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.storage, "thread_lease_renew_seconds", 0.01)
+    await _seed(db, "lost", status="active", created_days_ago=120)
+    noticed = asyncio.Event()
+    renew = lease.renew
+
+    async def observe_renewal(token, ttl_seconds=None):
+        held = await renew(token, ttl_seconds=ttl_seconds)
+        if not held:
+            noticed.set()
+        return held
+
+    async def child_cleanup(*, saver, agent_id, conversation_id, user_id):
+        store = lease._get_store()
+        await store.execute(
+            "UPDATE thread_leases SET holder_id = 'replacement' WHERE thread_id = ?",
+            (_key("lost", USER, AGENT),),
+        )
+        await store.commit()
+        await asyncio.wait_for(noticed.wait(), timeout=5)
+
+    monkeypatch.setattr(lease, "renew", observe_renewal)
+    monkeypatch.setattr("cuga.backend.server.main._delete_child_checkpoints", child_cleanup)
+    assert await _sweep(db, lease, saver) == 0
+    saver.adelete_thread.assert_not_awaited()
+    assert await db.get_thread_status("lost", USER, AGENT) == "active"
