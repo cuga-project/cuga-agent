@@ -92,7 +92,8 @@ interface CarbonChatProps {
   sessionDocsVersion?: number;
   onSessionDocsChanged?: () => void;
   /** Creates the conversation on demand, so a new chat can attach session documents. */
-  resolveThreadId?: (beforePublish?: (id: string) => void) => Promise<string>;
+  resolveThreadId?: () => Promise<string>;
+  prepareThreadId?: (beforePublish?: (id: string) => void) => Promise<string | null>;
   onOpenKnowledge?: () => void;
   onOpenMemoryUsage?: (entityIds: string[], relationship: "used" | "saved") => void;
   onPreviewKnowledgeAttachment?: (attachment: KnowledgeAttachmentSnapshot) => void;
@@ -233,6 +234,7 @@ const CarbonChat = ({
   sessionDocsVersion = 0,
   onSessionDocsChanged,
   resolveThreadId,
+  prepareThreadId,
   onOpenKnowledge,
   onOpenMemoryUsage,
   onPreviewKnowledgeAttachment,
@@ -819,8 +821,8 @@ const CarbonChat = ({
       const attachmentSnapshot = createMessageAttachmentSnapshot();
       onConfigNotice?.(null);
       try {
-        if (resolveThreadId && !useDraft && !disableHistory) {
-          const resolvedId = await resolveThreadId((id) => {
+        if (prepareThreadId && !useDraft && !disableHistory) {
+          const resolvedId = await prepareThreadId((id) => {
             if (getThreadGeneration() !== startedAt || sendContextRef.current.agentId !== agentId) return;
             if (sendContextRef.current.threadId !== id) skipNextHistoryLoadRef.current = id;
             keepThread(id);
@@ -863,7 +865,7 @@ const CarbonChat = ({
         }
       }
     },
-    [agentId, attachmentScope, conversationScope, createMessageAttachmentSnapshot, disableHistory, onConfigNotice, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, resolveThreadId, useDraft]
+    [agentId, attachmentScope, conversationScope, createMessageAttachmentSnapshot, disableHistory, onConfigNotice, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, prepareThreadId, useDraft]
   );
 
   const handleChatReady = useCallback((instance: ChatInstance) => {
