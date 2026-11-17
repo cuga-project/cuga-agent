@@ -911,11 +911,18 @@ async def test_restored_draft_validation_is_scoped_and_continuable(runtime, stat
         await runtime.db.set_thread_status("owned", "user-a", status)
     response = await runtime.client.get("/api/conversations/owned", headers=runtime.headers())
     assert response.status_code == (200 if status in ("new", "active") else 404)
-    for query, user in [("", "user-b"), ("?agent_id=other-agent", "user-a")]:
-        response = await runtime.client.get(
-            f"/api/conversations/owned{query}", headers=runtime.headers(user=user)
-        )
-        assert response.status_code == 404
+
+
+@pytest.mark.parametrize("query,user", [("", "user-b"), ("?agent_id=other-agent", "user-a")])
+async def test_restored_draft_validation_rejects_foreign_owner_or_agent(runtime, query, user):
+    runtime.app.add_api_route(
+        "/api/conversations/{conversation_id}", runtime.main.validate_conversation, methods=["GET"]
+    )
+    await runtime.conversation()
+    response = await runtime.client.get(
+        f"/api/conversations/owned{query}", headers=runtime.headers(user=user)
+    )
+    assert response.status_code == 404
 
 
 async def test_restored_draft_validation_storage_failure_is_retryable(runtime, monkeypatch):
