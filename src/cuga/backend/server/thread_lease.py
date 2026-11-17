@@ -59,6 +59,10 @@ class ThreadLease:
     def _get_store(self):
         return get_storage().get_relational_store("conversation")
 
+    async def initialize_schema(self) -> None:
+        """Prepare the lease table and timestamp migration during server startup."""
+        await self._store()
+
     async def _store(self):
         store = self._get_store()
         if self._schema_store is not store:
