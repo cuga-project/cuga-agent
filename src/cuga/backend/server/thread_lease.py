@@ -66,11 +66,32 @@ class ThreadLease:
                 CREATE TABLE IF NOT EXISTS thread_leases (
                     thread_id      TEXT PRIMARY KEY,
                     holder_id      TEXT NOT NULL,
-                    expires_at     REAL NOT NULL,
+                    expires_at     DOUBLE PRECISION NOT NULL,
                     stop_requested INTEGER NOT NULL DEFAULT 0,
-                    updated_at     REAL NOT NULL
+                    updated_at     DOUBLE PRECISION NOT NULL
                 )
             """)
+            from cuga.backend.storage.relational.prod import ProdRelationalStore
+
+            if isinstance(store, ProdRelationalStore):
+                # CREATE IF NOT EXISTS does not upgrade tables made by older releases.
+                # Widen both float4 columns without dropping held leases. SQLite REAL
+                # already has double precision and needs no migration.
+                await store.execute("""
+                    DO $$
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM pg_attribute
+                            WHERE attrelid = 'thread_leases'::regclass
+                              AND attname IN ('expires_at', 'updated_at')
+                              AND atttypid = 'real'::regtype
+                        ) THEN
+                            ALTER TABLE thread_leases
+                                ALTER COLUMN expires_at TYPE DOUBLE PRECISION,
+                                ALTER COLUMN updated_at TYPE DOUBLE PRECISION;
+                        END IF;
+                    END $$
+                """)
             await store.commit()
             self._schema_store = store
         return store
