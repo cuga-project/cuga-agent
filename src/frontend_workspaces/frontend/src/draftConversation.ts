@@ -43,5 +43,13 @@ export function createDraftConversation(
     }
     return pending;
   };
-  return { validate, resolve };
+  const prepareSend = async (beforePublish?: (id: string) => void): Promise<string | null> => {
+    if (pending) return resolve(beforePublish);
+    const existing = await validate();
+    // An upload can start while restored ownership is being checked.
+    if (pending) return resolve(beforePublish);
+    if (existing) beforePublish?.(existing);
+    return existing;
+  };
+  return { validate, resolve, prepareSend };
 }
