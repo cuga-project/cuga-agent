@@ -10,8 +10,6 @@ from cuga.backend.server.manage_routes.helpers import policies_list_from_config
 
 
 async def apply_published_config(app_state: Any, config: dict[str, Any]) -> None:
-    from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
-
     tools_list = (config or {}).get("tools") or []
     app_state.tools_include_by_app = {
         t["name"]: t["include"]
@@ -93,6 +91,13 @@ async def apply_published_config(app_state: Any, config: dict[str, Any]) -> None
             logger.info(f"Applied {len(policies_list)} policies from saved config")
         except Exception as policy_err:
             logger.warning(f"Failed to apply policies from config: {policy_err}")
+    await reload_manager_registry()
+
+
+async def reload_manager_registry() -> None:
+    """Refresh manager tool connections before a replacement graph reads them."""
+    from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
+
     if os.getenv("CUGA_MANAGER_MODE", "").lower() in ("true", "1", "yes", "on"):
         try:
             registry_url = get_registry_base_url()
