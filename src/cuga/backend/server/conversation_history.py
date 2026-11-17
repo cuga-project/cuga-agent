@@ -71,6 +71,10 @@ class ConversationHistoryDB:
     def _get_store(self):
         return get_storage().get_relational_store("conversation")
 
+    async def initialize_schema(self) -> None:
+        """Prepare conversation tables and migrations before requests are accepted."""
+        await self._ensure_schema()
+
     async def _ensure_schema(self):
         store = self._get_store()
         if self._schema_ensured and self._schema_store is store:
