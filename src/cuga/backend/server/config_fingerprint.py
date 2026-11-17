@@ -103,6 +103,47 @@ def compute_fingerprint(config: dict) -> ConfigFingerprint:
     )
 
 
+class ReferencedConfigUnavailable(RuntimeError):
+    """A supervisor's effective published configuration cannot be verified."""
+
+
+async def compute_published_fingerprint(config: dict) -> ConfigFingerprint:
+    """Include published internal children in a supervisor's effective configuration.
+
+    Capture this before building the graph. A publish during construction then
+    remains detectable on the next request instead of stamping an older graph
+    with a newer child's fingerprint. External agents are described by the roster
+    itself; their remotely managed configuration is outside this contract.
+    """
+    fingerprint = compute_fingerprint(config)
+    if (config.get("agent") or {}).get("kind") != "supervisor":
+        return fingerprint
+
+    from cuga.backend.server.config_store import load_config
+
+    refs = sorted(
+        {
+            entry["ref"]
+            for entry in (config.get("supervisor") or {}).get("subAgents") or []
+            if entry.get("kind") == "internal" and entry.get("ref")
+        }
+    )
+    if not refs:
+        return fingerprint
+    children = {}
+    for ref in refs:
+        try:
+            child, _ = await load_config(None, ref)
+            if not child:
+                raise ReferencedConfigUnavailable("Referenced sub-agent has no published configuration")
+            children[ref] = agent_config_hash(child)
+        except Exception as exc:
+            raise ReferencedConfigUnavailable("Could not verify referenced sub-agent configuration") from exc
+    effective = {"supervisor": fingerprint.agent_hash, "children": children}
+    digest = hashlib.sha256(json.dumps(effective, sort_keys=True).encode("utf-8")).hexdigest()
+    return ConfigFingerprint(agent_hash=digest, runtime_ver=fingerprint.runtime_ver)
+
+
 class ConfigDecision(enum.Enum):
     """What a stream request must do about a checkpoint written under another configuration."""
 
