@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -29,17 +29,34 @@ _THREADS = 8
 _SEARCHES_PER_THREAD = 5
 
 
-def _run_together(fn, n: int) -> list:
-    """Start ``fn`` in ``n`` threads at the same moment; return results or raise the first error."""
+def _run_together(fn, n: int, timeout: float = 120) -> list:
+    """Start ``fn`` in ``n`` threads at the same moment; return results or raise the first error.
+
+    The threads are daemons with a deadline, so a call that hangs fails the test instead of
+    hanging it.
+    """
     start = threading.Barrier(n)
+    results: list = [None] * n
+    errors: list = []
 
-    def worker():
-        start.wait(timeout=10)
-        return fn()
+    def worker(i):
+        try:
+            start.wait(timeout=10)
+            results[i] = fn()
+        except BaseException as exc:  # noqa: BLE001 - re-raised below
+            errors.append(exc)
 
-    with ThreadPoolExecutor(n) as pool:
-        futures = [pool.submit(worker) for _ in range(n)]
-        return [f.result(timeout=120) for f in futures]
+    threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(n)]
+    for t in threads:
+        t.start()
+    deadline = time.monotonic() + timeout
+    for t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+    if any(t.is_alive() for t in threads):
+        pytest.fail(f"calls still running after {timeout} s")
+    if errors:
+        raise errors[0]
+    return results
 
 
 async def _table_exists(dsn: str, table: str) -> bool:
@@ -71,10 +88,13 @@ def test_searches_while_a_file_is_added(clean_tenant, monkeypatch):
     adapter = _build_adapter(dsn, clean_tenant, monkeypatch, f"kb_conc_{uuid.uuid4().hex[:12]}")
     adapter.add_documents(_docs(4, "/tmp/first.pdf"))
     try:
-        adding = threading.Thread(target=adapter.add_documents, args=(_docs(40, "/tmp/second.pdf"),))
+        adding = threading.Thread(
+            target=adapter.add_documents, args=(_docs(40, "/tmp/second.pdf"),), daemon=True
+        )
         adding.start()
         results = _run_together(lambda: [len(adapter.search("chunk", k=2)) for _ in range(3)], 4)
         adding.join(timeout=120)
+        assert not adding.is_alive(), "adding the file did not finish in 120 s"
         assert results == [[2] * 3] * 4
         assert len(adapter.search("chunk", k=100)) == 44
     finally:
@@ -110,3 +130,14 @@ def test_collection_that_is_not_a_postgres_identifier(collection, clean_tenant, 
     finally:
         adapter.drop()
         other.drop()
+
+
+def test_first_calls_on_a_new_collection_at_the_same_time(clean_tenant, monkeypatch):
+    """Every call creates the table if it is missing, so the first calls race to create it."""
+    dsn = _dsn()
+    asyncio.run(_setup_extension(dsn))
+    adapter = _build_adapter(dsn, clean_tenant, monkeypatch, f"kb_conc_{uuid.uuid4().hex[:12]}")
+    try:
+        assert _run_together(lambda: adapter.search("chunk", k=2), _THREADS) == [[]] * _THREADS
+    finally:
+        adapter.drop()
