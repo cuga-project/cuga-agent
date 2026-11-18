@@ -319,7 +319,8 @@ export async function customSendMessage(
 
       // Notices are shown by the host outside the transcript, so they add no message.
       if (event.name === "config_changed" || event.name === "pending_cancelled") {
-        onConfigNotice?.(event.name);
+        // A notice belongs to this turn's conversation, not one the user switched to since.
+        if (getThreadGeneration() === generation) onConfigNotice?.(event.name);
         continue;
       }
 

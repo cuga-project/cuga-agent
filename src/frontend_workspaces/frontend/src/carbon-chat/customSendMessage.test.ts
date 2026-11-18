@@ -110,6 +110,27 @@ describe("customSendMessage config notices", () => {
     expect(shellChunks).toHaveLength(0);
   });
 
+  it("drops a notice that arrives after the user switched conversations", async () => {
+    const onConfigNotice = vi.fn();
+    vi.mocked(api.postStream).mockImplementation(async () => {
+      showThread("thread-2"); // the user opens another conversation before the first event
+      return sseResponse([["pending_cancelled", JSON.stringify({ reason: "config_changed" })]]);
+    });
+    await customSendMessage(
+      { input: { text: "hello" } } as any,
+      { signal: new AbortController().signal } as any,
+      makeInstance() as any,
+      false,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      onConfigNotice,
+    );
+
+    expect(onConfigNotice).not.toHaveBeenCalled();
+  });
+
   it("ignores notices when no callback is given", async () => {
     vi.mocked(api.postStream).mockResolvedValue(sseResponse([["config_changed", "{}"]]));
     const instance = makeInstance();

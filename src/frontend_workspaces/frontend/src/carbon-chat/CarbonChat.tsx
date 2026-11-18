@@ -38,6 +38,9 @@ import {
 } from "../knowledge/useSessionKnowledgeAttachments";
 import { customSendMessage as customSendMessageImpl, stopCugaAgent, StreamHttpError, type ConfigNotice } from './customSendMessage';
 import { getCurrentThreadId, getThreadGeneration, keepThread, onThreadIssued, showThread } from './threadState';
+
+/** Marks a send that replaced a rejected restored draft ID; never a real conversation ID. */
+const REJECTED_DRAFT_ID = "\u0000rejected-draft";
 import { customLoadHistory } from './customLoadHistory';
 import { useEventsInbox } from '../events/useEventsInbox';
 import { getResponseUserProfile } from './carbonChatHelpers';
@@ -828,6 +831,14 @@ const CarbonChat = ({
             keepThread(id);
             setTranscriptScope(JSON.stringify([agentId, id, useDraft]));
           });
+          if (resolvedId === null && getCurrentThreadId() !== null && getThreadGeneration() === startedAt
+            && sendContextRef.current.agentId === agentId) {
+            // The restored draft ID was rejected: this send starts the conversation and /stream
+            // issues its ID. Keep the transcript when the parent clears the rejected ID.
+            skipNextHistoryLoadRef.current = REJECTED_DRAFT_ID;
+            keepThread(null);
+            setTranscriptScope(JSON.stringify([agentId, null, useDraft]));
+          }
           if (getThreadGeneration() !== startedAt || getCurrentThreadId() !== resolvedId
             || sendContextRef.current.agentId !== agentId) {
             throw new DOMException("Conversation changed before sending", "AbortError");
@@ -967,6 +978,13 @@ const CarbonChat = ({
     const generation = historyReplayGenerationRef.current;
     const isCurrent = () => !cancelled && generation === historyReplayGenerationRef.current
       && chatInstanceRef.current === instance;
+    if (!threadId && skipNextHistoryLoadRef.current === REJECTED_DRAFT_ID) {
+      // The parent cleared a rejected restored ID while its replacement send is running.
+      skipNextHistoryLoadRef.current = null;
+      keepThread(null);
+      setReconciledScope(conversationScope);
+      return;
+    }
     if (threadId && skipNextHistoryLoadRef.current === threadId) {
       // Same conversation echoed back after a send — keep the transcript and citation state.
       skipNextHistoryLoadRef.current = null;

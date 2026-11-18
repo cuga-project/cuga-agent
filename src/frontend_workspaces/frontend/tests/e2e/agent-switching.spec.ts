@@ -389,3 +389,46 @@ test("an old draft creation failure cannot detach the current upload from its fi
     releaseCurrent();
   }
 });
+
+
+test("a first send during rejected draft validation starts a fresh conversation", async ({ page }) => {
+  await stubAgents(page);
+  await page.addInitScript(() => {
+    window.sessionStorage.setItem("cuga-demo-draft-thread:weatherbot", JSON.stringify({
+      threadId: "expired-draft",
+      serverIssued: true,
+      hasSentFirstMessage: false,
+      updatedAt: new Date().toISOString(),
+      agentId: "weatherbot",
+    }));
+  });
+  let releaseValidation!: () => void;
+  const validation = new Promise<void>((resolve) => { releaseValidation = resolve; });
+  let validations = 0;
+  await page.route("**/api/conversations/expired-draft?*", async (route) => {
+    validations += 1;
+    await validation;
+    await route.fulfill({ status: 404, json: { detail: "Conversation not found" } });
+  });
+  const sentThreads: Array<string | undefined> = [];
+  await page.route("**/stream", async (route) => {
+    sentThreads.push(route.request().headers()["x-thread-id"]);
+    await route.fulfill({
+      contentType: "text/event-stream",
+      body: "event: thread_created\ndata: fresh-thread\n\nevent: Answer\ndata: Fresh draft answer.\n\n",
+    });
+  });
+  try {
+    await page.goto("/chat/weatherbot");
+    await expect(page.getByTestId("header_name").last()).toHaveText("Weather specialist");
+    await expect.poll(() => validations).toBe(1);
+    const composer = page.getByRole("region", { name: "Chat", exact: true }).getByRole("textbox");
+    await composer.fill("Weather after a restart");
+    await composer.press("Enter");
+    await expect(page.getByText("Weather after a restart", { exact: true }).first()).toBeVisible();
+    releaseValidation();
+    await expect(page.getByText("Fresh draft answer.", { exact: true })).toBeVisible();
+    expect(sentThreads).toEqual([undefined]); // /stream issues the replacement ID
+    await expect(page.getByText("Weather after a restart", { exact: true }).first()).toBeVisible();
+  } finally { releaseValidation(); }
+});
