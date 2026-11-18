@@ -1,10 +1,19 @@
 # Fix PR Reviews with Bob
 #
-# Opt-in: PR must be labeled `fix-with-bob` and the review body must
-# contain `@cuga-bob`.
+# Starts Bob again on a PR when a reviewer gives feedback. Bob receives the
+# review summary, the inline comments of that review, and the PR description.
 #
-# Authorization: actors in vars.BOB_ALLOWED_ACTORS (default:
-# sami-marreed,offerakrabi). Unauthorized labels are removed.
+# Opt-in: the PR must be labeled `fix-with-bob`. PRs that Bob opens from an
+# issue get the label automatically. Bob then runs when a review is submitted
+# with either:
+# - "Request changes", or
+# - "Comment" and a body that contains `@cuga-bob`.
+#
+# Authorization:
+# - Review: the reviewer needs the maintain or admin role on this repository
+#   (collaborator permission API). Reviews from anyone else are ignored.
+# - Label: actors in vars.BOB_ALLOWED_ACTORS (default:
+#   sami-marreed,offerakrabi) and cuga-bob itself. Other labels are removed.
 #
 # Runs on pull_request_review (not workflow_run) so CodeQL does not treat
 # PR-head checkout as a privileged untrusted-checkout critical. Same-repo
@@ -16,6 +25,8 @@
 #   inside run: scripts).
 # - Install deps from the trusted default branch, then switch to the PR
 #   head for editing (no uv sync / install hooks from the PR tree).
+# - Runs for one PR are queued, and each run starts from the current tip of
+#   the PR branch, so a second review does not overwrite Bob's last push.
 # - Checkout uses persist-credentials: false; the push token is applied
 #   only in the commit/push step.
 #
@@ -29,6 +40,10 @@
 #   WATSONX_PROJECT_ID
 #   WATSONX_URL
 #   AGENT_SETTING_CONFIG
+#
+# Optional vars:
+#   BOB_ALLOWED_ACTORS — who may apply the label, e.g. "sami-marreed,offerakrabi"
+#   BOB_SHELL_VERSION  — Bob Shell version to install (default: 2.1.0)
 
 name: Fix PR Reviews with Bob
 
@@ -49,7 +64,8 @@ jobs:
   reject-unauthorized-label:
     if: |
       github.event_name == 'pull_request' &&
-      github.event.label.name == 'fix-with-bob'
+      github.event.label.name == 'fix-with-bob' &&
+      github.actor != 'cuga-bob'
     runs-on: ubuntu-latest
     steps:
       - name: Check actor allowlist
@@ -89,10 +105,15 @@ jobs:
   fix-pr-reviews-with-bob:
     if: |
       github.event_name == 'pull_request_review' &&
-      (github.event.review.state == 'commented' || github.event.review.state == 'changes_requested') &&
       contains(github.event.pull_request.labels.*.name, 'fix-with-bob') &&
-      contains(github.event.review.body, '@cuga-bob')
+      (
+        github.event.review.state == 'changes_requested' ||
+        (github.event.review.state == 'commented' && contains(github.event.review.body, '@cuga-bob'))
+      )
     runs-on: ubuntu-latest
+    concurrency:
+      group: bob-pr-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     env:
       BOB_TOKEN: ${{ secrets.BOB_GITHUB_TOKEN || github.token }}
       AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
@@ -104,34 +125,30 @@ jobs:
       OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
     steps:
-      - name: Authorize actor and resolve PR head
+      - name: Authorize reviewer and resolve PR head
         id: prep
         env:
-          ACTOR: ${{ github.actor }}
-          BOB_ALLOWED_ACTORS: ${{ vars.BOB_ALLOWED_ACTORS || 'sami-marreed,offerakrabi' }}
+          GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           BASE_REPO: ${{ github.repository }}
           REVIEW_ID: ${{ github.event.review.id }}
           REVIEWER: ${{ github.event.review.user.login }}
         run: |
-          ALLOWED=false
-          IFS=',' read -ra ACTORS <<< "${BOB_ALLOWED_ACTORS}"
-          for allowed in "${ACTORS[@]}"; do
-            allowed_trimmed="$(echo "${allowed}" | xargs)"
-            if [ "${ACTOR}" = "${allowed_trimmed}" ]; then
-              ALLOWED=true
-              break
-            fi
-          done
-          if [ "${ALLOWED}" != "true" ]; then
-            echo "Skipping: @${ACTOR} is not in BOB_ALLOWED_ACTORS"
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          # Only a reviewer with the maintain or admin role may start Bob.
+          ROLE="$(gh api "repos/${BASE_REPO}/collaborators/${REVIEWER}/permission" --jq '.role_name' 2>/dev/null || true)"
+          case "${ROLE}" in
+            admin|maintain)
+              echo "Reviewer @${REVIEWER} has the ${ROLE} role."
+              ;;
+            *)
+              echo "Skipping: reviewer @${REVIEWER} has role '${ROLE:-none}'; maintain or admin is required."
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
 
           if [ "${HEAD_REPO}" != "${BASE_REPO}" ]; then
             echo "Skipping fork PR head ${HEAD_REPO}; cuga-bob can only push to ${BASE_REPO}"
@@ -148,7 +165,6 @@ jobs:
             printf '%s\n' "${PR_TITLE}"
             echo "TITLE_EOF"
             echo "head_ref=${HEAD_REF}"
-            echo "head_sha=${HEAD_SHA}"
             echo "head_repo=${HEAD_REPO}"
             echo "review_id=${REVIEW_ID}"
             echo "reviewer=${REVIEWER}"
@@ -173,6 +189,8 @@ jobs:
         if: steps.prep.outputs.should_run == 'true'
         uses: actions/checkout@v5
         with:
+          # Without ref, a pull_request_review run checks out the PR merge commit.
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -201,13 +219,14 @@ jobs:
         if: steps.prep.outputs.should_run == 'true'
         env:
           HEAD_REF: ${{ steps.prep.outputs.head_ref }}
-          HEAD_SHA: ${{ steps.prep.outputs.head_sha }}
           HEAD_REPO: ${{ steps.prep.outputs.head_repo }}
           BOB_TOKEN: ${{ env.BOB_TOKEN }}
         run: |
           AUTHED_URL="https://x-access-token:${BOB_TOKEN}@github.com/${HEAD_REPO}.git"
           git remote set-url origin "${AUTHED_URL}"
-          git fetch --no-tags origin "${HEAD_SHA}"
+          # Current tip, not the SHA in the event: an earlier queued run may
+          # have pushed to this branch already.
+          git fetch --no-tags origin "refs/heads/${HEAD_REF}"
           git checkout --force -B "${HEAD_REF}" FETCH_HEAD
           # Drop credentials before untrusted tooling (Bob) runs.
           git remote set-url origin "https://github.com/${HEAD_REPO}.git"
@@ -220,8 +239,12 @@ jobs:
 
       - name: Install Bob Shell
         if: steps.prep.outputs.should_run == 'true'
+        env:
+          BOB_SHELL_VERSION: ${{ vars.BOB_SHELL_VERSION || '2.1.0' }}
         run: |
-          curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash -s -- --package-manager npm
+          # Pinned: a new Bob Shell release must not change this workflow's behavior.
+          curl -fsSL https://bob.ibm.com/download/bobshell.sh \
+            | bash -s -- --package-manager npm --version "${BOB_SHELL_VERSION}"
           command -v bob
           bob --version
 
@@ -276,6 +299,13 @@ jobs:
 
           cat "${PROMPT_DIR}/review_comments.txt"
 
+          # Bob starts without memory of earlier runs; the PR description says what the PR is for.
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
+            --jq '.body // ""' > "${PROMPT_DIR}/pr_body.md"
+
       - name: Configure Git
         if: steps.prep.outputs.should_run == 'true'
         run: |
@@ -314,6 +344,9 @@ jobs:
               echo "Repository: ${REPOSITORY}"
               echo "Reviewer: ${REVIEWER}"
               echo
+              echo "PR Description:"
+              cat "${PROMPT_DIR}/pr_body.md"
+              echo
               echo "Review Comments:"
               cat "${PROMPT_DIR}/review_comments.txt"
               echo
@@ -329,7 +362,11 @@ jobs:
               echo "Be thorough. If a comment is unclear, use best judgment from context."
             } > "${PROMPT_FILE}"
 
-            bob --accept-license --yolo -p "$(cat "${PROMPT_FILE}")"
+            # Bob Shell 2.x reads stdin until it closes before it starts. This
+            # action leaves stdin open, so without a redirect Bob waits forever
+            # with no output. The prompt file goes in on stdin: Bob appends it
+            # to -p. --yolo is gone: headless runs approve tools by default.
+            bob --accept-license -p "Complete the task described below." < "${PROMPT_FILE}"
 
       - name: Check for Changes
         if: steps.prep.outputs.should_run == 'true'
