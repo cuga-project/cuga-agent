@@ -130,6 +130,14 @@ class ConversationHistoryDB:
         except Exception as exc:
             if "duplicate column" not in str(exc).lower() and "already exists" not in str(exc).lower():
                 raise
+        else:
+            # Existing rows have no recorded activity. Start their retention window at the
+            # upgrade so an old but recently used conversation is not pruned by the first
+            # sweep. Runs only when the column is added, so later startups never extend it.
+            await store.execute(
+                "UPDATE runtime_thread_owners SET last_turn_at = ? WHERE last_turn_at = ''",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
         for idx_sql in [
             "CREATE INDEX IF NOT EXISTS idx_thread_id ON conversation_history(thread_id)",
             "CREATE INDEX IF NOT EXISTS idx_user_id ON conversation_history(user_id)",

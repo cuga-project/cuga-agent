@@ -466,7 +466,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                     updated_messages,
                     limit_error_message,
                     state.step_count,
-                    additional_updates=_budget_updates(),
+                    additional_updates={**_budget_updates(), **_delegation_state_update(state)},
                 )
 
             return {

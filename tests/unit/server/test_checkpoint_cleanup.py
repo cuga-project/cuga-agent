@@ -547,3 +547,22 @@ def test_trusted_recorder_is_forwarded_to_graph_runtime_config():
     config = graph.astream.call_args.kwargs["config"]["configurable"]
     assert config["child_checkpoint_recorder"] is recorder
     assert config["thread_id"] == "trusted-parent-key"
+
+
+async def test_upgrade_starts_existing_conversations_retention_window_at_migration(db, lease, saver):
+    """Rows from before ``last_turn_at`` existed must not be pruned on the first sweep after upgrade."""
+    await _seed(db, "used-before-upgrade", status="active", created_days_ago=400)
+    store = db._get_store()
+    await store.execute("ALTER TABLE runtime_thread_owners DROP COLUMN last_turn_at")
+    await store.commit()
+    db._schema_ensured = False
+
+    await db._ensure_schema()
+
+    assert await _sweep(db, lease, saver) == 0
+    saver.adelete_thread.assert_not_awaited()
+    # Later startups do not extend the window of a conversation that stays idle.
+    await _seed(db, "created-after-upgrade", status="active", created_days_ago=400)
+    db._schema_ensured = False
+    await db._ensure_schema()
+    assert await _sweep(db, lease, saver) == 1
