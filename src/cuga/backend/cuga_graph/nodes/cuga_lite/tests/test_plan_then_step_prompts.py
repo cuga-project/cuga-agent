@@ -59,6 +59,10 @@ def test_executor_contract_and_examples_follow_the_flag(enabled, autonomous):
     assert ("Code alone is still fine" in text) is not enabled
     assert ("long plan instead of tight reasoning" in text) is not enabled
     assert ("put a short chain-of-thought **above** the fence" in text) is not enabled
+    # The pre-code note bullet renders only with the flag off; nothing may point at it when on.
+    assert ("pre-code" in text) is not enabled
+    assert ("prompts instead of a numbered plan" in text) is enabled
+    assert ("prompts instead of reasoning" in text) is not enabled
     # Pagination loops stay valid: capping tool calls per block belongs to step discipline.
     assert "ALWAYS loop through pages" in text
     assert "at most one tool call" not in text.lower()
