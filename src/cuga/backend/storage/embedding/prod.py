@@ -90,6 +90,8 @@ class ProdEmbeddingStore:
             async with pool.acquire() as conn:
                 try:
                     await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                except asyncpg.exceptions.UniqueViolationError:
+                    pass  # another session created it at the same moment
                 except asyncpg.exceptions.InsufficientPrivilegeError:
                     logger.warning(
                         "Permission denied for CREATE EXTENSION vector; assuming it was pre-installed by "
@@ -131,13 +133,25 @@ class ProdEmbeddingStore:
             parts.append(f"{k} {_pg_type(v)}")
         parts.append(f"PRIMARY KEY {pk}")
         create_sql = f"CREATE TABLE IF NOT EXISTS {self._collection_name} ({', '.join(parts)})"
+        index_name = _embedding_index_name(self._collection_name)
         async with pool.acquire() as conn:
-            await conn.execute(create_sql)
-            index_name = _embedding_index_name(self._collection_name)
-            await conn.execute(
-                f"CREATE INDEX IF NOT EXISTS {index_name} "
-                f"ON {self._collection_name} USING hnsw (embedding vector_cosine_ops)"
-            )
+            # Most calls find both in place and skip the DDL, which would otherwise wait for
+            # any insert in progress on the table.
+            exists_sql = "SELECT to_regclass($1) IS NOT NULL AND to_regclass($2) IS NOT NULL"
+            if await conn.fetchval(exists_sql, self._collection_name, index_name):
+                return
+            # Calls on other event loops, or in other processes, can create the same new table at
+            # the same moment, and then all but one fail with a unique violation in the catalog.
+            # The lock makes them wait for the first to commit; their IF NOT EXISTS then skips.
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", self._collection_name
+                )
+                await conn.execute(create_sql)
+                await conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS {index_name} "
+                    f"ON {self._collection_name} USING hnsw (embedding vector_cosine_ops)"
+                )
 
     def _meta_keys(self) -> List[str]:
         return list(self._schema.metadata_columns.keys())
