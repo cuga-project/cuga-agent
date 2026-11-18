@@ -287,7 +287,7 @@ async def test_startup_upgrades_existing_conversation_schema_and_preserves_rows(
         row = await store.fetchone("SELECT * FROM runtime_thread_owners WHERE thread_id = 'old'")
         assert row["user_id"] == "user"
         assert row["status"] == "legacy"
-        assert row["last_turn_at"] == ""
+        assert row["last_turn_at"] != ""  # retention for existing rows starts at the upgrade
         columns = await store.fetchall("PRAGMA table_info(thread_leases)")
         assert {column["name"] for column in columns} >= {"holder_id", "expires_at", "stop_requested"}
     finally:
