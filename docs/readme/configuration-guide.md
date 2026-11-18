@@ -1119,7 +1119,7 @@ By default CUGA Lite works in **CodeAct**: the model writes a Python block and t
 | `cuga_lite_plan_then_step` | `true` | CodeAct prompts: numbered plan, code for step 1 only, one next action in reflection |
 | `cuga_lite_fc_prompt_fragments` | `[]` | Opt-in prompt lines for function-calling mode. `evidence_first`: call a tool before answering, never answer from prior knowledge |
 
-Precedence, highest first: raw keys in `configurable` → per-invoke `invoke(..., execution_mode=..., step_discipline=...)` → constructor `CugaAgent(execution_mode=..., step_discipline=...)` → per-model runtime profile → `[advanced_features]` in `settings.toml` (also where `DYNACONF_ADVANCED_FEATURES__CUGA_LITE_EXECUTION_MODE` lands). An unknown value falls back to the default with a warning.
+Precedence, highest first: raw keys in `configurable` → per-invoke `invoke(..., execution_mode=..., step_discipline=...)` → constructor `CugaAgent(execution_mode=..., step_discipline=...)` → per-model runtime profile → `[advanced_features]` in `settings.toml` (also where `DYNACONF_ADVANCED_FEATURES__CUGA_LITE_EXECUTION_MODE` lands). Only `execution_mode` and `step_discipline` have `invoke` and `CugaAgent` keyword arguments; set `cuga_lite_plan_then_step` and `cuga_lite_fc_prompt_fragments` with the raw `configurable` key (for example `agent.invoke("...", config={"configurable": {"cuga_lite_plan_then_step": False}})`) or in `settings.toml`. An unknown value falls back to the default with a warning.
 
 ```python
 agent = CugaAgent(tools=[...], execution_mode="function_calling", step_discipline="one_tool_per_step")
