@@ -1182,7 +1182,7 @@ A pending approval is tied to the agent configuration and CUGA version that crea
 | `checkpoint_pool_max_size` | `10` | Prod mode only. Maximum Postgres connection pool size |
 | `thread_lease_ttl_seconds` | `60` | How long a conversation's turn lease lasts without renewal |
 | `thread_lease_renew_seconds` | `20` | How often a running turn renews its lease |
-| `checkpoint_retention_days` | `90` | Prod mode only. Conversations with no completed turn for this many days lose their checkpoint and become read-only. `0` turns the sweep off |
+| `checkpoint_retention_days` | `90` | Prod mode only. Conversations with no completed turn for this many days lose their checkpoint and become read-only. The sweep removes the web conversation's checkpoint and its recorded sub-agent checkpoints; session knowledge, workspace files and `/run` or extension checkpoints stay until the conversation is deleted. `0` turns the sweep off |
 | `checkpoint_prune_interval_minutes` | `60` | Prod mode only. How often the retention sweep runs |
 
 **Database rights.** In `prod` mode CUGA creates and alters its tables at startup, so the database user needs DDL rights (`CREATE TABLE`, `CREATE INDEX`, `ALTER TABLE`). Conversation and lease schemas are initialized explicitly before requests or background work start, in both memory and durable checkpoint modes. If either schema cannot be prepared, startup fails; schema errors are not deferred to the first user request. Existing PostgreSQL lease timestamp columns are widened to `DOUBLE PRECISION` during this initialization.
