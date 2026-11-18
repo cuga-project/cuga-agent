@@ -11,6 +11,7 @@ from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.tools import StructuredTool
 from loguru import logger
+from pydantic import BaseModel, create_model
 
 from cuga.config import settings
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
@@ -84,6 +85,19 @@ def _first_user_message_text(chat_messages: Optional[List[BaseMessage]]) -> Opti
     return None
 
 
+def _find_tools_with_names_args_schema(doc: Optional[str]) -> type[BaseModel]:
+    """The inferred find_tools schema, except that ``query`` is optional: a call that loads tools by
+    ``tool_names`` needs no search, and the names-list text tells the model to pass only ``app_name``
+    and ``tool_names``. ``app_name`` stays required. Title and description match the inferred schema."""
+    return create_model(
+        "find_tools",
+        __doc__=doc,
+        query=(str, ""),
+        app_name=(str, ...),
+        tool_names=(Optional[List[str]], None),
+    )
+
+
 def _compose_find_tools_shortlister_query(query: str, initial_user_message: Optional[str]) -> str:
     q = query.strip()
     init = (initial_user_message or "").strip()
@@ -136,11 +150,15 @@ async def create_find_tools_tool(
         """
         return await _search(query, app_name)
 
-    async def find_tools_with_names_func(query: str, app_name: str, tool_names: Optional[List[str]] = None):
+    # Defaults keep positional CodeAct calls (find_tools("<query>", "<app_name>")) working; the
+    # args schema below keeps app_name required for validation and the model-facing schema.
+    async def find_tools_with_names_func(
+        query: str = "", app_name: str = "", tool_names: Optional[List[str]] = None
+    ):
         """Search for relevant tools from the connected applications based on a natural language query.
 
         Args:
-            query: Natural language query describing what tools are needed to accomplish the task can include also which parameters are needed or the output expected
+            query: Natural language query describing what tools are needed to accomplish the task can include also which parameters are needed or the output expected. Not needed when tool_names is given.
             app_name: Name of a specific app to filter tools from. Only searches tools from that app.
             tool_names: Optional. Exact tool names to load, taken from the "Other tools" list at the end of an earlier find_tools result. When given, these tools are returned with their parameters and no search is made.
 
@@ -209,10 +227,14 @@ async def create_find_tools_tool(
                 "Please retry with a different query."
             )
 
+    with_names = bool(names_list_enabled() and app_to_tools_map)
     return StructuredTool.from_function(
-        func=find_tools_with_names_func if names_list_enabled() and app_to_tools_map else find_tools_func,
+        func=find_tools_with_names_func if with_names else find_tools_func,
         name="find_tools",
         description="Search for relevant tools from a specific connected application based on a natural language query. Use this when you need to discover what tools are available for a specific task within a specific application.",
+        args_schema=_find_tools_with_names_args_schema(find_tools_with_names_func.__doc__)
+        if with_names
+        else None,
     )
 
 

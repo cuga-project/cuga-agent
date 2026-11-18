@@ -126,3 +126,16 @@ async def test_setting_on_a_search_ends_with_the_names_list_and_tool_names_loads
         )
         assert search.await_count == 1  # no new search
         assert "`google_mail__delete_email`" in loaded
+
+
+@pytest.mark.asyncio
+async def test_tool_names_loads_without_a_query_as_the_names_list_text_says(monkeypatch):
+    """The names-list text tells the model to call find_tools with app_name and tool_names only."""
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_find_tools_names_list", True, raising=False)
+    tool = await _make_tool()
+    assert "query" not in (tool.args_schema.model_json_schema().get("required") or [])
+    search = AsyncMock(return_value=_result("send", "google_mail__send_email"))
+    with patch.object(ft.PromptUtils, "find_tools", search):
+        loaded = await _call(tool, {"app_name": "google_mail", "tool_names": ["google_mail__list_emails"]})
+    assert search.await_count == 0
+    assert "`google_mail__list_emails`" in loaded
