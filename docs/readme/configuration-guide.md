@@ -459,7 +459,7 @@ redaction mechanism.
 
 ### Knowledge Base
 
-CUGA includes a built-in knowledge base powered by LangChain and local vector stores. **Docling** is integrated for document ingestion: it parses and normalizes PDFs, Office files, HTML, Markdown, images, and other supported types before chunking and embedding, so the pipeline stays self-contained with no external document services.
+CUGA includes a built-in knowledge base powered by LangChain and local vector stores. **Docling** is integrated for document ingestion: it parses and normalizes PDFs, Office files, HTML, Markdown, images, and other supported types before chunking and embedding. By default it runs inside CUGA, so the pipeline needs no external document services; it can also run as a separate service (see [Where documents are parsed](#where-documents-are-parsed)).
 
 When enabled, the agent can search, ingest, and manage documents.
 
@@ -550,6 +550,51 @@ agent = CugaAgent(tools=[my_tools], enable_knowledge=False)
 #### Supported Document Types
 
 PDF, DOCX, XLSX, PPTX, HTML, Markdown, images, and more (via Docling).
+
+#### Where documents are parsed
+
+By default Docling parses each file inside the CUGA server. Two settings move parsing out,
+for example to keep Docling's models and memory peaks out of the agent pod, or to use the
+slim image:
+
+```toml
+[knowledge.docling]
+url = "http://docling-serve:5001"   # a docling-serve service, or any service with its v1 async convert API
+api_key = ""                        # sent as X-Api-Key; prefer DYNACONF_KNOWLEDGE__DOCLING__API_KEY
+timeout_s = 900                     # longest wait for one file, queue included
+processor = ""                      # "package.module:function", wins over url
+```
+
+From the SDK, pass a function instead:
+
+```python
+from pathlib import Path
+from docling_core.types.doc import DoclingDocument
+
+def parse(path: Path) -> DoclingDocument:
+    ...  # any parser, as long as it returns a DoclingDocument
+
+agent = CugaAgent(enable_knowledge=True, document_processor=parse)
+```
+
+CUGA still chunks the returned document, so chunks, page numbers and citations are the same
+whichever backend parsed the file. A function runs in up to `CUGA_MAX_INGEST_WORKERS`
+threads at once, so it must be thread-safe; with a service, the same setting is how many
+files CUGA sends at once.
+
+`pdf_mode` keeps its meaning with a service (as locally, it applies to PDFs only; other
+formats, such as scanned images, keep the service's defaults):
+
+| `pdf_mode` | Sent to the service |
+|---|---|
+| `fast` | `do_ocr=false`, `do_table_structure=false` |
+| `balanced` | `do_ocr=false` |
+| `accurate` | `do_ocr=true`, `force_ocr=true` (the service's own OCR engine and languages) |
+
+`layout_engine` and `use_gpu` apply only to local parsing. These four settings are read at
+startup from `src/cuga/configurations/knowledge/knowledge_settings.toml` or `DYNACONF_KNOWLEDGE__DOCLING__URL`, `__API_KEY`,
+`__TIMEOUT_S` and `__PROCESSOR`; the UI and the settings API can neither read nor change
+them. If the service is down or rejects the key, the upload fails with a message that says so.
 
 #### Embedding providers + tuning
 
