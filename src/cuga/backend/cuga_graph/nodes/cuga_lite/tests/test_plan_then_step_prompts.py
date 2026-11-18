@@ -24,6 +24,8 @@ pytestmark = pytest.mark.unit
 
 _ROOT = Path(__file__).resolve().parents[1]
 _FENCE = "```"
+# How an example's plan or heading says it reads a whole paginated listing.
+_PAGED = re.compile(r"every page|all pages|paginated", re.IGNORECASE)
 
 
 def _executor_prompt(**kwargs):
@@ -42,6 +44,13 @@ def _assert_plan_then_code(content: str) -> ast.Module:
     assert isinstance(last, ast.Expr) and isinstance(last.value, ast.Call), content
     assert last.value.func.id == "print", content
     return tree
+
+
+def _assert_fetch_loop(example: str) -> None:
+    """The example's code awaits a tool inside a for/while loop, so it reads every page, not one."""
+    code = example.split(_FENCE, 2)[1].removeprefix("python\n")
+    loops = [node for node in ast.walk(ast.parse(code)) if isinstance(node, (ast.For, ast.While))]
+    assert any(isinstance(node, ast.Await) for loop in loops for node in ast.walk(loop)), example
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -66,24 +75,25 @@ def test_executor_contract_and_examples_follow_the_flag(enabled, autonomous):
     # Pagination loops stay valid: capping tool calls per block belongs to step discipline.
     assert "ALWAYS loop through pages" in text
     assert "at most one tool call" not in text.lower()
+    examples = text.split("## Example: Correct vs. Incorrect Output", 1)[1]
+    examples = examples.split("# Current Available Tools", 1)[0]
+    correct = [e for e in re.split(r"(?=✅|❌)", examples) if e.startswith("✅") and _FENCE + "python" in e]
+    # Keyed on the heading and the plan wording, not on tool or parameter names.
+    pagination = [e for e in correct if e.startswith("✅ **CORRECT (Handling pagination")]
+    assert len(pagination) == 1, "the Handling pagination example must be a code example"
+    paged = [e for e in correct if e in pagination or _PAGED.search(e.split(_FENCE, 1)[0])]
+    assert len(paged) >= 2, "the pagination and autonomous examples both read every page"
+    for example in paged:
+        _assert_fetch_loop(example)
     if not enabled:
         return
     assert "Only return to the user with a final answer when the entire task is complete" not in text
     assert "your response **MUST** be a Python Code Block" not in text
     if autonomous:
         assert "verifying that no available alternative can resolve a failure or blocker" in text
-    examples = text.split("## Example: Correct vs. Incorrect Output", 1)[1]
-    examples = examples.split("# Current Available Tools", 1)[0]
-    checked = 0
-    for example in re.split(r"(?=✅|❌)", examples):
-        if not example.startswith("✅") or _FENCE + "python" not in example:
-            continue
-        tree = _assert_plan_then_code(example)
-        code = ast.unparse(tree)
-        if "page=" in code or "page_index" in code or "skip=" in code:
-            assert any(isinstance(node, (ast.For, ast.While)) for node in ast.walk(tree)), example
-        checked += 1
-    assert checked >= 6
+    for example in correct:
+        _assert_plan_then_code(example)
+    assert len(correct) >= 6
 
 
 @pytest.mark.parametrize("setting", [False, True])
@@ -129,8 +139,14 @@ def test_plan_then_step_few_shots_follow_the_prompt():
     assert [turn["role"] for turn in rewritten] == ["user", "assistant"] * (len(rewritten) // 2)
     code_turns = [t["content"] for t in rewritten if t["role"] == "assistant" and _FENCE in t["content"]]
     assert len(code_turns) == len(rewritten) // 2 - 1, "every assistant turn but the answer runs code"
+    paged = 0
     for content in code_turns:
         _assert_plan_then_code(content)
+        # Each block implements step 1; a step that reads a paginated listing must loop.
+        if _PAGED.search(re.search(r"^1\. .+", content, re.MULTILINE).group(0)):
+            _assert_fetch_loop(content)
+            paged += 1
+    assert paged >= 2, "the candidates and departments steps read every page"
     assert all("all in one block" not in t["content"] for t in rewritten)
     assert any("all in one block" in t["content"] for t in original)
 
