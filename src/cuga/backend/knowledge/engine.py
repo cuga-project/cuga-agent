@@ -21,7 +21,7 @@ import unicodedata
 import uuid
 from dataclasses import dataclass, fields as dc_fields
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urljoin, urlparse
 
 from pydantic import ConfigDict
@@ -37,6 +37,7 @@ from cuga.backend.knowledge.config import (
     client_glossary_hash as _client_glossary_hash,
     knowledge_vector_backend_for_settings,
 )
+from cuga.backend.knowledge.docling_remote import DoclingServeClient, DoclingServiceError, load_processor
 from cuga.backend.knowledge.interprocess_lock import acquire_exclusive_nonblocking, release_exclusive
 from cuga.backend.knowledge.metadata import create_knowledge_metadata
 from cuga.backend.storage.facade import get_storage_connection_params
@@ -175,6 +176,15 @@ def _docling_not_installed_error(file_path: Path) -> ImportError:
     )
 
 
+def _docling_backend_settings() -> Any:
+    """``[knowledge.docling]`` from settings.toml / env. The document service and processor
+    are operator settings: read once at engine start, never part of the config that the
+    settings API reads, writes or publishes."""
+    from cuga.config import settings
+
+    return settings.get("knowledge", {}).get("docling", {}) or {}
+
+
 def _translate_document_load_error(file_path: Path, exc: BaseException) -> Exception:
     """Map low-level parser errors to actionable ingestion failures."""
     if file_path.suffix.lower() == ".pdf":
@@ -184,8 +194,8 @@ def _translate_document_load_error(file_path: Path, exc: BaseException) -> Excep
                 f"PDF is password-protected and cannot be indexed without a password: {file_path.name}"
             )
         # Tesseract traineddata not installed — surfaces during OCR. Tell the user
-        # which pack is missing and how to install it.
-        if "traineddata" in lowered or "tessdata" in lowered:
+        # which pack is missing and how to install it (not when OCR ran in a service).
+        if ("traineddata" in lowered or "tessdata" in lowered) and not isinstance(exc, DoclingServiceError):
             return ValueError(
                 f"Tesseract is missing a language pack required to OCR {file_path.name}.\n"
                 "Install the matching pack:\n"
@@ -1792,7 +1802,12 @@ def _get_embedding_dim(embeddings: Embeddings) -> int:
 class KnowledgeEngine:
     """In-process knowledge engine (chunking, embeddings, pluggable vector backends)."""
 
-    def __init__(self, config: KnowledgeConfig, chat_generator: Any = None):
+    def __init__(
+        self,
+        config: KnowledgeConfig,
+        chat_generator: Any = None,
+        document_processor: Callable[[Path], Any] | None = None,
+    ):
         config.validate()
         self._config = config
         # Optional, host-injected chat model for query transformation (multi_query
@@ -1800,6 +1815,32 @@ class KnowledgeEngine:
         # knowledge package stays standalone (no host import). None → transforms
         # are inert and search runs on the plain query.
         self._chat_generator = chat_generator
+        # Where documents are parsed: a processor the host passes (SDK), else
+        # knowledge.docling.processor, else the service at knowledge.docling.url, else
+        # Docling in this process. Resolved before the lock so a bad setting holds nothing.
+        docling = _docling_backend_settings()
+        processor_spec = str(docling.get("processor") or "")
+        service_url = str(docling.get("url") or "")
+        self._document_processor = document_processor or (
+            load_processor(processor_spec) if processor_spec else None
+        )
+        self._docling_service = None
+        if self._document_processor is None and service_url:
+            self._docling_service = DoclingServeClient(
+                service_url,
+                api_key=str(docling.get("api_key") or ""),
+                timeout_s=float(docling.get("timeout_s") or 900),
+            )
+        self._parse_backend = (
+            "custom" if self._document_processor else "service" if self._docling_service else "local"
+        )
+        if self._parse_backend == "custom" and service_url:
+            logger.warning("A document processor is set, so knowledge.docling.url is ignored")
+        if self._docling_service is not None:
+            logger.info(
+                f"Documents are parsed by the service at {self._docling_service.name} "
+                f"(api_key={'set' if docling.get('api_key') else 'unset'})"
+            )
         self._files_dir = config.persist_dir / "files"
         _smode, _, _pghost = get_storage_connection_params()
         self._metadata = create_knowledge_metadata(config.persist_dir, mode=_smode, postgres_url=_pghost)
@@ -2078,6 +2119,8 @@ class KnowledgeEngine:
             self._lock_file.close()
         except Exception:
             pass
+        if self._docling_service is not None:
+            self._docling_service.close()
         logger.info("Knowledge engine stopped")
 
     # --- Embeddings (lazy init) ---
@@ -2149,27 +2192,35 @@ class KnowledgeEngine:
         docling_loaded = False
         docling_error: str | None = None
         try:
-            # Step A: build the converter (cheap — just registers options).
-            converter = await asyncio.to_thread(self._get_docling_converter)
-            # Step B: FORCE the pipeline + models to load right now. Without
-            # this, Docling lazy-loads the layout-model weights (~22s) on the
-            # first convert() call, defeating the whole point of prewarm.
-            try:
-                from docling.datamodel.base_models import InputFormat
+            if self._parse_backend != "local":
+                # Parsing runs elsewhere: load no Docling models here. A service has to answer.
+                if self._docling_service is not None:
+                    await asyncio.to_thread(self._docling_service.health)
+            else:
+                # Step A: build the converter (cheap — just registers options).
+                converter = await asyncio.to_thread(self._get_docling_converter)
+                # Step B: FORCE the pipeline + models to load right now. Without
+                # this, Docling lazy-loads the layout-model weights (~22s) on the
+                # first convert() call, defeating the whole point of prewarm.
+                try:
+                    from docling.datamodel.base_models import InputFormat
 
-                await asyncio.to_thread(converter.initialize_pipeline, InputFormat.PDF)
-            except Exception as init_err:  # pragma: no cover - defensive
-                logger.warning(
-                    "Docling pipeline init during prewarm raised; weights will "
-                    "still lazy-load on first ingest: {}",
-                    init_err,
-                )
+                    await asyncio.to_thread(converter.initialize_pipeline, InputFormat.PDF)
+                except Exception as init_err:  # pragma: no cover - defensive
+                    logger.warning(
+                        "Docling pipeline init during prewarm raised; weights will "
+                        "still lazy-load on first ingest: {}",
+                        init_err,
+                    )
             docling_loaded = True
         except Exception as e:  # pragma: no cover - environmental
             docling_error = str(e)
-            logger.warning("Docling prewarm failed (will lazy-load on first ingest): {}", e)
+            if self._docling_service is not None:
+                logger.warning("Document service check failed; uploads fail until it answers: {}", e)
+            else:
+                logger.warning("Docling prewarm failed (will lazy-load on first ingest): {}", e)
         docling_dt = _time.monotonic() - docling_t0
-        if docling_loaded:
+        if docling_loaded and self._parse_backend == "local":
             logger.info(
                 "Knowledge prewarm complete: embeddings + Docling (mode={!r}) loaded in {:.2f}s",
                 self._config.docling_pdf_mode,
@@ -2605,8 +2656,10 @@ class KnowledgeEngine:
             # run past a pinned model's token limit, and the text past it is never embedded.
             pinned = await self._pinned_model(collection)
             t_parse = time.monotonic()
-            docs = await asyncio.to_thread(self._load_document, file_path, pinned)
+            docs = await asyncio.to_thread(self._load_document, file_path, pinned, stage_timings)
             stage_timings["parse_s"] = round(time.monotonic() - t_parse, 3)
+            if "convert_s" in stage_timings:  # the rest of parse: tokenizer, chunking, re-split
+                stage_timings["chunk_s"] = round(stage_timings["parse_s"] - stage_timings["convert_s"], 3)
             if not docs:
                 raise ValueError(f"No content extracted from {filename}")
             _check_supersede()
@@ -2893,22 +2946,28 @@ class KnowledgeEngine:
             #     or "N/A — cloud" for openai/openrouter/ollama.
             # We surface both so a single timing line is enough to diagnose.
             _device_label, _ = _detect_accelerator(self._config.use_gpu)
-            _eff_layout_engine, _layout_device = self._resolve_layout(
-                self._config.docling_layout_engine or "auto", _device_label
+            _eff_layout_engine, _layout_device = (
+                self._resolve_layout(self._config.docling_layout_engine or "auto", _device_label)
+                if self._parse_backend == "local"
+                else ("n/a", "n/a")
             )
             _accel = self.accelerator_status()
             _embed_device = _accel.get("device_label", "?")
             if _accel.get("fallback_to_cpu"):
                 _embed_device += " (⚠ GPU requested but CPU loaded)"
             logger.info(
-                "Ingest timings ({filename}): total={total}s | parse={parse}s "
-                "(docling: pdf_mode={pdf_mode}, layout={layout_engine}/{layout_device}) | "
+                "Ingest timings ({filename}): total={total}s | parse={parse}s = convert={convert}s "
+                "+ chunk={chunk}s (docling: {backend}, pdf_mode={pdf_mode}, "
+                "layout={layout_engine}/{layout_device}) | "
                 "embed={embed}s + insert={insert}s = insert_total={insert_total}s "
                 "(provider={provider}, model={model}, embed_device={embed_device}) | "
                 "finalize={finalize}s | chunks={chunks}",
                 filename=filename,
                 total=stage_timings.get("total_s", "?"),
                 parse=stage_timings.get("parse_s", "?"),
+                convert=stage_timings.get("convert_s", "?"),
+                chunk=stage_timings.get("chunk_s", "?"),
+                backend=self._parse_backend,
                 pdf_mode=self._config.docling_pdf_mode,
                 layout_engine=_eff_layout_engine,
                 layout_device=_layout_device,
@@ -5374,11 +5433,64 @@ class KnowledgeEngine:
         chunks = splitter.split_text(text)
         return [Document(page_content=chunk, metadata={"page": i + 1}) for i, chunk in enumerate(chunks)]
 
+    def _require_docling_stack(self) -> None:
+        """Import what parsing here needs, so a missing package reads as "not installed",
+        while an ImportError raised later, inside a parse, propagates as it is."""
+        import docling_core.transforms.chunker  # noqa: F401 — chunking always runs in CUGA
+
+        if self._parse_backend == "local":
+            import docling.document_converter  # noqa: F401
+
+    def _convert_document(self, file_path: Path) -> Any:
+        """Parse ``file_path`` into a DoclingDocument with the configured backend."""
+        if self._document_processor is not None:
+            from docling_core.types.doc import DoclingDocument
+
+            doc = self._document_processor(file_path)
+            if not isinstance(doc, DoclingDocument):
+                raise TypeError(
+                    f"The document processor returned {type(doc).__name__}, not a DoclingDocument"
+                )
+            return doc
+        if self._docling_service is not None:
+            return self._docling_service.convert(file_path, self._config.docling_pdf_mode)
+        return self._get_docling_converter().convert(source=str(file_path)).document
+
+    def _docling_chunks(
+        self,
+        file_path: Path,
+        chunk_size: int,
+        pinned: "tuple[KnowledgeConfig, Embeddings] | None",
+        stage_timings: dict[str, Any] | None,
+    ) -> list[Document]:
+        """Convert with the configured backend, then chunk here. The same loop runs for every
+        backend, so chunks, pages and headings never depend on where parsing ran. Builds the
+        Documents langchain_docling's DoclingLoader built (DOC_CHUNKS export)."""
+        from docling_core.transforms.chunker import HybridChunker
+
+        chunker = self._build_docling_chunker(chunk_size, pinned) or HybridChunker()
+        t_convert = time.monotonic()
+        dl_doc = self._convert_document(file_path)
+        if stage_timings is not None:
+            stage_timings["convert_s"] = round(time.monotonic() - t_convert, 3)
+        source = str(file_path)
+        return [
+            Document(
+                page_content=chunker.contextualize(chunk=chunk),
+                metadata={"source": source, "dl_meta": chunk.meta.export_json_dict()},
+            )
+            for chunk in chunker.chunk(dl_doc)
+        ]
+
     def _load_document(
-        self, file_path: Path, pinned: "tuple[KnowledgeConfig, Embeddings] | None" = None
+        self,
+        file_path: Path,
+        pinned: "tuple[KnowledgeConfig, Embeddings] | None" = None,
+        stage_timings: dict[str, Any] | None = None,
     ) -> list[Document]:
         """Load a document using Docling for supported formats, fallback for plain text, chunked
-        for the default model or for ``pinned``, a collection's own model (see ``_pinned_model``)."""
+        for the default model or for ``pinned``, a collection's own model (see ``_pinned_model``).
+        Records ``convert_s`` in ``stage_timings`` when Docling parses the file."""
         suffix = file_path.suffix.lower()
         logger.info(
             f"Loading document: {file_path.name} (suffix={suffix}, size={file_path.stat().st_size} bytes)"
@@ -5388,8 +5500,7 @@ class KnowledgeEngine:
 
         if suffix in self._DOCLING_FORMATS:
             try:
-                from langchain_docling import DoclingLoader
-                from langchain_docling.loader import ExportType
+                self._require_docling_stack()
             except ImportError as e:
                 if suffix == ".md":
                     # Markdown is already plain text. Only fall back when
@@ -5399,16 +5510,7 @@ class KnowledgeEngine:
                     raise _docling_not_installed_error(file_path) from e
             else:
                 try:
-                    chunker = self._build_docling_chunker(chunk_size, pinned)
-                    loader_kwargs: dict = {
-                        "file_path": str(file_path),
-                        "export_type": ExportType.DOC_CHUNKS,
-                        "converter": self._get_docling_converter(),
-                    }
-                    if chunker is not None:
-                        loader_kwargs["chunker"] = chunker
-                    loader = DoclingLoader(**loader_kwargs)
-                    docs = loader.load()
+                    docs = self._docling_chunks(file_path, chunk_size, pinned, stage_timings)
                 except Exception as e:
                     translated = _translate_document_load_error(file_path, e)
                     logger.error(
@@ -5431,25 +5533,16 @@ class KnowledgeEngine:
             docs = self._load_plain_text(file_path, chunk_size, chunk_overlap, pinned)
         else:
             try:
-                from langchain_docling import DoclingLoader
-                from langchain_docling.loader import ExportType
+                self._require_docling_stack()
             except ImportError as e:
                 raise _docling_not_installed_error(file_path) from e
 
             try:
-                chunker = self._build_docling_chunker(chunk_size, pinned)
-                loader_kwargs = {
-                    "file_path": str(file_path),
-                    "export_type": ExportType.DOC_CHUNKS,
-                    "converter": self._get_docling_converter(),
-                }
-                if chunker is not None:
-                    loader_kwargs["chunker"] = chunker
-                loader = DoclingLoader(**loader_kwargs)
-                docs = loader.load()
-            except ImportError:
-                raise
-            except Exception:
+                docs = self._docling_chunks(file_path, chunk_size, pinned, stage_timings)
+            except Exception as e:
+                # A service or processor names its own reason; only local Docling's is replaced.
+                if isinstance(e, ImportError) or self._parse_backend != "local":
+                    raise
                 raise ValueError(f"Unsupported file format: {suffix}")
 
         logger.info(f"Loaded {len(docs)} raw chunks from {file_path.name}")
