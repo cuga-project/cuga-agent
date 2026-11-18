@@ -25,6 +25,23 @@ _ROOT_METADATA_KEYS = frozenset({"updated_at", "published_at", "version", "creat
 _KNOWLEDGE_METADATA_KEYS = frozenset({"_vector_config_hash", "_adaptation_hash", "_glossary_hash"})
 
 
+def _is_credential_key(key: str) -> bool:
+    """Whether *key* names a credential value that must stay out of the fingerprint.
+
+    ``is_secret_field_name`` matches substrings, which also hits behavior-bearing
+    settings such as ``max_tokens`` or ``tokenEnvVar``. Those must stay in the
+    fingerprint, so only names shaped like a credential are excluded here.
+    """
+    from cuga.backend.server.manage_routes.helpers import is_secret_field_name
+
+    if not is_secret_field_name(key):
+        return False
+    compact = "".join(ch for ch in key.lower() if ch.isalnum())
+    if compact.endswith(("envvar", "env")):
+        return False
+    return "password" in compact or "secret" in compact or compact.endswith(("key", "token"))
+
+
 def normalized_config_view(config: dict) -> dict:
     """Return the common fingerprint input for stored and applied configurations.
 
@@ -33,7 +50,7 @@ def normalized_config_view(config: dict) -> dict:
     Other secret references remain meaningful configuration. Real knowledge settings
     (model, chunks, adaptation text) remain in the fingerprint.
     """
-    from cuga.backend.server.manage_routes.helpers import is_secret_field_name, is_secret_ref
+    from cuga.backend.server.manage_routes.helpers import is_secret_ref
 
     def normalize(obj: Any, path: tuple[str, ...]) -> Any:
         if isinstance(obj, dict):
@@ -47,7 +64,7 @@ def normalized_config_view(config: dict) -> dict:
                 # arbitrary user fields inside tool env/config dictionaries.
                 if path == ("tools", "[]") and key in {"created_at", "updated_at"}:
                     continue
-                if is_secret_field_name(key) and not isinstance(value, (dict, list)):
+                if _is_credential_key(key) and not isinstance(value, (dict, list)):
                     if not is_secret_ref(value):
                         continue
                 result[key] = normalize(value, (*path, key))
@@ -130,15 +147,16 @@ async def compute_published_fingerprint(config: dict) -> ConfigFingerprint:
     )
     if not refs:
         return fingerprint
-    children = {}
+    children: dict[str, Optional[str]] = {}
     for ref in refs:
         try:
             child, _ = await load_config(None, ref)
-            if not child:
-                raise ReferencedConfigUnavailable("Referenced sub-agent has no published configuration")
-            children[ref] = agent_config_hash(child)
         except Exception as exc:
             raise ReferencedConfigUnavailable("Could not verify referenced sub-agent configuration") from exc
+        # The graph builder skips a ref without a published config (deleted agent,
+        # draft-only agent). Hash it as absent so the fingerprint describes the
+        # graph that actually runs; publishing that agent later changes the value.
+        children[ref] = agent_config_hash(child) if child else None
     effective = {"supervisor": fingerprint.agent_hash, "children": children}
     digest = hashlib.sha256(json.dumps(effective, sort_keys=True).encode("utf-8")).hexdigest()
     return ConfigFingerprint(agent_hash=digest, runtime_ver=fingerprint.runtime_ver)

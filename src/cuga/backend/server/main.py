@@ -2063,9 +2063,11 @@ async def event_stream(
         values = getattr(snapshot, "values", None) or {}
         scope = values.get("service_scope")
         scope = scope if isinstance(scope, dict) else {}
-        decision = classify_config_change(scope, stored_fingerprint or fingerprint, pending, expected_version)
-        if decision is ConfigDecision.NONE and pending and version_moved:
-            decision = ConfigDecision.CANCEL_PENDING
+        # The fingerprint decides. Only a checkpoint without one falls back to the
+        # version, and then to the stored (latest) version, so a no-op republish
+        # gives the same decision on every replica.
+        current_version = str(stored_version or 0) if stored_version is not None else expected_version
+        decision = classify_config_change(scope, stored_fingerprint or fingerprint, pending, current_version)
 
         notices = []
         if decision is ConfigDecision.CANCEL_PENDING:

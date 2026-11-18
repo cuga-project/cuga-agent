@@ -1172,7 +1172,7 @@ instruction_set = "default"  # or any instruction set above
 
 These `[storage]` keys in `settings.toml` control how published agent graphs persist execution state between turns. `checkpointer` defaults to `"memory"`, which keeps the current in-process behavior. Set any key with `DYNACONF_STORAGE__<KEY>`, for example `DYNACONF_STORAGE__CHECKPOINTER=durable`.
 
-A pending approval is tied to the agent configuration and CUGA version that created it. If the agent is published again, or CUGA is upgraded, before the approval arrives, the pending approval is cancelled and the client receives a `pending_cancelled` event; the conversation itself continues. When a publish changes the agent, the next turn of a completed conversation starts with a `config_changed` event.
+A pending approval is tied to the agent configuration and CUGA version that created it. If a publish changes the agent's effective configuration (including the published configuration of a sub-agent that a supervisor references), or CUGA is upgraded, before the approval arrives, the pending approval is cancelled and the client receives a `pending_cancelled` event; the conversation itself continues. Publishing again without changes does not cancel it. When a publish changes the agent, the next turn of a completed conversation starts with a `config_changed` event.
 
 | Key | Default | Description |
 |---|---|---|

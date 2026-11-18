@@ -173,6 +173,33 @@ async def test_startup_published_agent_writes_to_the_shared_saver(monkeypatch):
     assert stored.checkpoint["channel_values"]["input"] == "published turn"
 
 
+async def test_startup_supervisor_with_a_missing_sub_agent_still_builds(monkeypatch):
+    """A roster ref to a deleted or draft-only agent is skipped, as before durable fingerprints."""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
+    from cuga.backend.llm.models import LLMManager
+
+    main.app_state.checkpointer_handle = CheckpointerHandle(saver=MemorySaver(), kind="memory")
+    monkeypatch.setattr(main.app_state, "policy_system", None)
+    monkeypatch.setattr("cuga.backend.server.config_store.load_config", AsyncMock(return_value=(None, None)))
+    tool_provider = MagicMock(spec=ToolProviderInterface)
+    tool_provider.initialize = AsyncMock()
+    tool_provider.get_apps = AsyncMock(return_value=[])
+    supervisor = {
+        "agent": {"kind": "supervisor"},
+        "supervisor": {"subAgents": [{"kind": "internal", "ref": "deleted-agent"}]},
+    }
+
+    with patch.object(LLMManager, "get_model", return_value=MagicMock()):
+        agent = await main._build_published_default_agent(
+            tool_provider=tool_provider, startup_config=supervisor, startup_llm_cfg={}, startup_version=2
+        )
+
+    assert agent._checkpoint_config_version == "2"
+    assert agent._config_fingerprint is not None
+
+
 @pytest.mark.parametrize("failure", [None, "conversation", "lease"])
 @pytest.mark.parametrize("mode", ["memory", "durable"])
 async def test_schemas_gate_startup_and_failure_closes_connections(monkeypatch, failure, mode):

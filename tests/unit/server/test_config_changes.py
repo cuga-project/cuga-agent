@@ -541,6 +541,24 @@ def test_secret_field_names_use_manage_redaction_rules(field):
     )
 
 
+@pytest.mark.parametrize(
+    "path, before, after",
+    [
+        (("llm", "max_tokens"), 1000, 2000),
+        (("tools", "auth", "tokenEnvVar"), "A2A_TOKEN", "OTHER_TOKEN"),
+    ],
+    ids=["max_tokens", "tokenEnvVar"],
+)
+def test_settings_named_like_secrets_stay_in_the_fingerprint(path, before, after):
+    def build(value):
+        section, *rest = path
+        if section == "tools":
+            return {"tools": [{"name": "a2a", rest[0]: {rest[1]: value}}]}
+        return {section: {rest[0]: value}}
+
+    assert agent_config_hash(build(before)) != agent_config_hash(build(after))
+
+
 def test_published_knowledge_reference_matches_applied_config_without_mutating_it():
     from copy import deepcopy
 
@@ -640,8 +658,7 @@ async def test_remote_child_publish_invalidates_cached_supervisor(monkeypatch, p
     assert cancelled.await_count == int(pending)
 
 
-@pytest.mark.parametrize("missing", [True, False], ids=["deleted-child", "unreadable-child"])
-async def test_unavailable_child_preserves_pending_approval(monkeypatch, missing):
+async def test_unreadable_child_preserves_pending_approval(monkeypatch):
     graph = MagicMock()
     snapshot = _completed_checkpoint(OLD)
     snapshot.next = ("WaitForResponse",)
@@ -657,11 +674,71 @@ async def test_unavailable_child_preserves_pending_approval(monkeypatch, missing
         _event_stream_agent(graph, OLD),
         saved={},
         stored_config=supervisor,
-        referenced_configs={} if missing else {"child": RuntimeError("storage unavailable")},
+        referenced_configs={"child": RuntimeError("storage unavailable")},
     )
     assert any("Could not verify referenced sub-agent" in chunk for chunk in chunks)
     cancelled.assert_not_awaited()
     main_mod._refresh_published_graph.assert_not_awaited()
+
+
+async def test_missing_child_matches_the_graph_that_skips_it(monkeypatch):
+    """A deleted or draft-only child is skipped by the builder, so it must not block the supervisor."""
+    from cuga.backend.server.config_fingerprint import compute_published_fingerprint
+
+    supervisor = {
+        "agent": {"kind": "supervisor"},
+        "supervisor": {"subAgents": [{"kind": "internal", "ref": "gone"}]},
+    }
+    monkeypatch.setattr("cuga.backend.server.config_store.load_config", AsyncMock(return_value=(None, None)))
+    without_child = await compute_published_fingerprint(supervisor)
+    monkeypatch.setattr(
+        "cuga.backend.server.config_store.load_config", AsyncMock(return_value=({"tools": []}, "1"))
+    )
+    assert (await compute_published_fingerprint(supervisor)) != without_child
+
+    snapshot = _completed_checkpoint(without_child)
+    snapshot.next = ("WaitForResponse",)
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(return_value=snapshot)
+    cancelled = AsyncMock()
+    monkeypatch.setattr(main_mod, "_cancel_pending_interrupt", cancelled)
+    chunks = await _run_event_stream(
+        monkeypatch,
+        _event_stream_agent(graph, without_child),
+        saved={},
+        stored_config=supervisor,
+        referenced_configs={},
+    )
+    assert not any("Could not verify" in chunk or "pending_cancelled" in chunk for chunk in chunks)
+    cancelled.assert_not_awaited()
+    main_mod._refresh_published_graph.assert_not_awaited()
+
+
+async def test_unchanged_republish_on_another_replica_resumes_the_approval(monkeypatch):
+    """Stored version 5, graph version 4, same content: the approval resumes on every replica."""
+    config = {"tools": [{"name": "search"}]}
+    fingerprint = compute_fingerprint(config)
+    snapshot = _completed_checkpoint(fingerprint)
+    snapshot.next = ("WaitForResponse",)
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(return_value=snapshot)
+    rebuilt_graph = MagicMock()
+    rebuilt_graph.aget_state = AsyncMock(return_value=snapshot)
+    rebuilt = _event_stream_agent(rebuilt_graph, fingerprint)
+    rebuilt._checkpoint_config_version = "5"
+    cancelled = AsyncMock()
+    monkeypatch.setattr(main_mod, "_cancel_pending_interrupt", cancelled)
+    chunks = await _run_event_stream(
+        monkeypatch,
+        _event_stream_agent(graph, fingerprint),
+        saved={},
+        stored_config=config,
+        stored_version="5",
+        refreshed_agent=rebuilt,
+    )
+    assert not any("pending_cancelled" in chunk or "config_changed" in chunk for chunk in chunks)
+    cancelled.assert_not_awaited()
+    main_mod._refresh_published_graph.assert_awaited_once()
 
 
 @pytest.mark.parametrize("resume", [False, True], ids=["follow-up", "approval-response"])
