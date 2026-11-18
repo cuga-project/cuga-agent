@@ -12,6 +12,16 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     ToolProviderInterface,
 )
 
+pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _evolve_operator_enabled(monkeypatch):
+    """Evolve ships disabled by default; these tests exercise the enabled path."""
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.evolve, "enabled", True)
+
 
 class _EmptyToolProvider(ToolProviderInterface):
     async def initialize(self):

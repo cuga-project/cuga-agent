@@ -12,6 +12,14 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
+def _evolve_operator_enabled(monkeypatch):
+    """Evolve ships disabled by default; these tests exercise the enabled path."""
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.evolve, "enabled", True)
+
+
+@pytest.fixture(autouse=True)
 def auth_overrides():
     app.dependency_overrides[require_chat_access] = lambda: UserInfo(sub="user-1")
     app.dependency_overrides[require_manage_access] = lambda: UserInfo(sub="admin-1", roles=["ServiceAdmin"])

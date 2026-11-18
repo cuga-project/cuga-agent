@@ -12,6 +12,14 @@ from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _evolve_operator_enabled(monkeypatch):
+    """Evolve ships disabled by default; these tests exercise the enabled path."""
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.evolve, "enabled", True)
+
+
 @pytest.mark.asyncio
 async def test_callback_node_does_not_require_agent_state_error_field():
     state = AgentState(

@@ -1,6 +1,7 @@
 import json
 import os
-from typing import List, Optional
+import time
+from typing import Dict, List, Optional
 
 import aiohttp
 
@@ -10,6 +11,24 @@ from loguru import logger
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 
 tracker = ActivityTracker()
+
+# Registry discovery targets a local service, so a short connect timeout is enough to
+# detect that it is down without stalling a turn for the aiohttp default (5 minutes).
+REGISTRY_CONNECT_TIMEOUT_SECONDS = 3.0
+REGISTRY_REQUEST_TIMEOUT_SECONDS = 10.0
+# After a failed discovery, skip probing the registry for this long and serve the last
+# successful app list (or external apps) instead.
+REGISTRY_FAILURE_COOLDOWN_SECONDS = 30.0
+
+_last_registry_apps: Dict[str, List[AppDefinition]] = {}
+_registry_failed_at: Dict[str, float] = {}
+
+
+def registry_client_timeout() -> aiohttp.ClientTimeout:
+    """Return the timeout used for registry discovery requests."""
+    return aiohttp.ClientTimeout(
+        total=REGISTRY_REQUEST_TIMEOUT_SECONDS, connect=REGISTRY_CONNECT_TIMEOUT_SECONDS
+    )
 
 
 def get_agent_id() -> Optional[str]:
@@ -81,7 +100,7 @@ async def get_apis(app_name: str, agent_id: Optional[str] = None):
     headers = {'accept': 'application/json'}
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=registry_client_timeout()) as session:
             async with session.get(url, headers=headers) as response:
                 # Check if the request was successful
                 if response.status != 200:
@@ -133,8 +152,19 @@ async def get_apps(agent_id: Optional[str] = None) -> List[AppDefinition]:
         logger.debug("Registry is not enabled, using external apps")
         return external_apps
     logger.debug(f"External apps are {external_apps}")
+
+    failed_at = _registry_failed_at.get(url)
+    if failed_at is not None and time.monotonic() - failed_at < REGISTRY_FAILURE_COOLDOWN_SECONDS:
+        logger.debug("Registry discovery recently failed, skipping probe during cooldown")
+        last_apps = _last_registry_apps.get(url)
+        if last_apps is not None:
+            return list(last_apps) + list(external_apps)
+        if len(external_apps) > 0:
+            return external_apps
+        raise ConnectionError("Registry is unavailable (discovery failed recently)")
+
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=registry_client_timeout()) as session:
             async with session.get(url, headers=headers) as response:
                 logger.debug("Recieved responses")
                 # Check if the request was successful
@@ -144,12 +174,16 @@ async def get_apps(agent_id: Optional[str] = None) -> List[AppDefinition]:
 
                 # Parse JSON response
                 json_data = await response.json()
-                result = [AppDefinition(**p) for p in json_data]
-                for e in external_apps:
-                    result.append(e)
-
-                return result
+                registry_apps = [AppDefinition(**p) for p in json_data]
+                _last_registry_apps[url] = registry_apps
+                _registry_failed_at.pop(url, None)
+                return list(registry_apps) + list(external_apps)
     except Exception as e:
+        _registry_failed_at[url] = time.monotonic()
+        last_apps = _last_registry_apps.get(url)
+        if last_apps is not None:
+            logger.warning("registry is not reachable, using last known apps")
+            return list(last_apps) + list(external_apps)
         if len(external_apps) > 0:
             logger.warning("registry is not running, using external apps")
             return external_apps
