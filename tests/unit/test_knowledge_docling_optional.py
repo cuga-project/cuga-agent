@@ -1,10 +1,11 @@
 """Graceful degradation when docling isn't installed (the slim Docker image).
 
 ``_load_document`` handles missing Docling at the lazy imports in both
-Docling loading paths. These tests simulate that by blocking the
-``langchain_docling`` import (docling itself stays installed in this dev
-venv; blocking the import is the actual failure mode in the slim image,
-which never installs the package at all).
+Docling loading paths. These tests simulate that by blocking the ``docling``
+import (it stays installed in this dev venv; blocking the import is the actual
+failure mode in the slim image, which never installs the package at all).
+docling-core is not blocked: chunking always runs in CUGA, and with a document
+processor or service set, a slim image parses through it.
 
 Coverage:
   - ``.md`` degrades to the plain-text splitter instead of raising —
@@ -27,9 +28,12 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from docling_core.types.doc import DoclingDocument
 
 from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge.engine import KnowledgeEngine
@@ -37,7 +41,7 @@ from cuga.backend.knowledge.engine import KnowledgeEngine
 pytestmark = pytest.mark.unit
 
 
-def _make_engine() -> KnowledgeEngine:
+def _make_engine(document_processor=None) -> KnowledgeEngine:
     # provider="openai" routes chunking to tiktoken (cl100k_base) instead of
     # fastembed's real ONNX tokenizer — fast and deterministic, same pattern
     # as test_knowledge_text_splitter_tiktoken_canary.py.
@@ -48,19 +52,25 @@ def _make_engine() -> KnowledgeEngine:
         embedding_provider="openai",
         embedding_model="text-embedding-3-small",
     )
-    return KnowledgeEngine(cfg)
+    return KnowledgeEngine(cfg, document_processor=document_processor)
 
 
-class _BlockLangchainDocling:
-    """Context manager that makes ``import langchain_docling`` (and
-    submodules) raise ImportError, leaving every other import untouched."""
+def _fake_converter(doc: DoclingDocument | None = None) -> MagicMock:
+    converter = MagicMock()
+    converter.convert.return_value = SimpleNamespace(document=doc or DoclingDocument(name="doc"))
+    return converter
+
+
+class _BlockDocling:
+    """Context manager that makes ``import docling`` (and submodules) raise
+    ImportError, leaving every other import (docling_core included) untouched."""
 
     def __enter__(self):
         self._real_import = __import__
 
         def _blocked(name, *args, **kwargs):
-            if name == "langchain_docling" or name.startswith("langchain_docling."):
-                raise ImportError("langchain_docling not installed (simulated)")
+            if name == "docling" or name.startswith("docling."):
+                raise ImportError("docling not installed (simulated)")
             return self._real_import(name, *args, **kwargs)
 
         import builtins
@@ -80,7 +90,7 @@ def test_markdown_falls_back_to_plain_text_without_docling(tmp_path):
     md_path = tmp_path / "note.md"
     md_path.write_text("# Title\n\nSome **markdown** content for the slim image.\n")
 
-    with _BlockLangchainDocling():
+    with _BlockDocling():
         docs = eng._load_document(md_path)
 
     assert len(docs) >= 1
@@ -96,7 +106,7 @@ def test_pdf_raises_clear_error_without_docling(tmp_path):
     pdf_path = tmp_path / "report.pdf"
     pdf_path.write_bytes(b"%PDF-1.4 fake content for the test\n")
 
-    with _BlockLangchainDocling():
+    with _BlockDocling():
         with pytest.raises(ImportError) as exc_info:
             eng._load_document(pdf_path)
 
@@ -119,7 +129,7 @@ def test_unrecognized_extension_raises_clear_error_not_unsupported_format(tmp_pa
     odd_path = tmp_path / "data.xyz123"
     odd_path.write_bytes(b"some bytes of an unrecognized format\n")
 
-    with _BlockLangchainDocling():
+    with _BlockDocling():
         with pytest.raises(ImportError) as exc_info:
             eng._load_document(odd_path)
 
@@ -131,22 +141,39 @@ def test_unrecognized_extension_raises_clear_error_not_unsupported_format(tmp_pa
 def test_markdown_still_uses_docling_when_available(tmp_path):
     """Regression guard: the plain-text fallback must only trigger on
     ImportError, not unconditionally — with docling available (the full
-    image, and this dev venv), .md keeps going through DoclingLoader."""
+    image, and this dev venv), .md keeps going through the Docling converter."""
     eng = _make_engine()
     md_path = tmp_path / "note.md"
     md_path.write_text("# Title\n\nSome content.\n")
 
-    mock_instance = MagicMock()
-    mock_instance.load.return_value = [MagicMock(page_content="mocked", metadata={})]
-    with patch("langchain_docling.DoclingLoader", return_value=mock_instance) as mock_loader_cls:
+    converter = _fake_converter()
+    with patch.object(eng, "_get_docling_converter", return_value=converter):
         eng._load_document(md_path)
 
-    mock_loader_cls.assert_called_once()
-    mock_instance.load.assert_called_once()
+    converter.convert.assert_called_once_with(source=str(md_path))
+
+
+def test_pdf_parses_through_a_processor_without_docling(tmp_path):
+    """The slim image with a document processor (or service): Docling is not
+    installed, docling-core is, and a .pdf is parsed by the processor and
+    chunked in CUGA."""
+    doc = DoclingDocument(name="report")
+    doc.add_text(label="text", text="Revenue grew 12% in the third quarter.")
+    eng = _make_engine(document_processor=lambda path: doc)
+    pdf_path = tmp_path / "report.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake content for the test\n")
+    timings: dict = {}
+
+    with _BlockDocling():
+        docs = eng._load_document(pdf_path, stage_timings=timings)
+
+    assert [d.page_content for d in docs] == ["Revenue grew 12% in the third quarter."]
+    assert docs[0].metadata["source"] == str(pdf_path)
+    assert "convert_s" in timings
 
 
 @pytest.mark.parametrize("suffix", [".md", ".pdf", ".xyz123"])
-@pytest.mark.parametrize("stage", ["chunker", "converter", "loader_init", "loader_load"])
+@pytest.mark.parametrize("stage", ["chunker", "converter", "convert", "chunk"])
 @pytest.mark.parametrize("error_type", [ImportError, ModuleNotFoundError])
 def test_docling_runtime_import_errors_are_preserved(tmp_path, suffix, stage, error_type):
     """Runtime import failures must not become missing-stack errors or Markdown fallback."""
@@ -154,18 +181,19 @@ def test_docling_runtime_import_errors_are_preserved(tmp_path, suffix, stage, er
     file_path = tmp_path / f"document{suffix}"
     file_path.write_text("Document content")
     error = error_type("parser runtime dependency failed")
+    chunker_instance = MagicMock()
+    converter_instance = _fake_converter()
 
     with (
-        patch("langchain_docling.DoclingLoader") as loader_cls,
-        patch.object(eng, "_build_docling_chunker", return_value=None) as chunker,
-        patch.object(eng, "_get_docling_converter", return_value=object()) as converter,
+        patch.object(eng, "_build_docling_chunker", return_value=chunker_instance) as chunker,
+        patch.object(eng, "_get_docling_converter", return_value=converter_instance) as converter,
         patch.object(eng, "_load_plain_text") as plain_text,
     ):
         failing_call = {
             "chunker": chunker,
             "converter": converter,
-            "loader_init": loader_cls,
-            "loader_load": loader_cls.return_value.load,
+            "convert": converter_instance.convert,
+            "chunk": chunker_instance.chunk,
         }[stage]
         failing_call.side_effect = error
 
@@ -181,12 +209,12 @@ def test_unrecognized_extension_keeps_unsupported_format_error(tmp_path):
     eng = _make_engine()
     file_path = tmp_path / "document.xyz123"
     file_path.write_text("Document content")
+    converter = _fake_converter()
+    converter.convert.side_effect = ValueError("parser rejected format")
 
     with (
-        patch("langchain_docling.DoclingLoader") as loader_cls,
-        patch.object(eng, "_build_docling_chunker", return_value=None),
-        patch.object(eng, "_get_docling_converter", return_value=object()),
+        patch.object(eng, "_build_docling_chunker", return_value=MagicMock()),
+        patch.object(eng, "_get_docling_converter", return_value=converter),
     ):
-        loader_cls.return_value.load.side_effect = ValueError("parser rejected format")
         with pytest.raises(ValueError, match="Unsupported file format: .xyz123"):
             eng._load_document(file_path)
