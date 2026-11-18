@@ -1,5 +1,8 @@
+import asyncio
 import hashlib
 import re
+import threading
+import weakref
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -46,17 +49,28 @@ class ProdEmbeddingStore:
         self._postgres_url = postgres_url
         self._collection_name = collection_name
         self._schema = schema
-        self._pool: Any = None
+        # An asyncpg pool works only on the event loop that created it, and callers such as the
+        # knowledge adapter run each call on its own short-lived loop. So each loop gets its own
+        # pool, and closing one loop's pool leaves the pools other loops are still using alone.
+        self._pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any]" = weakref.WeakKeyDictionary()
+        self._pools_guard = threading.Lock()
         self._pool_lock = PerLoopLock()
 
     async def _get_pool(self):
-        if self._pool is None:
-            # One caller creates and prepares the pool; concurrent first callers wait for it
-            # instead of creating their own pools or using one before the table exists.
+        loop = asyncio.get_running_loop()
+        with self._pools_guard:
+            pool = self._pools.get(loop)
+        if pool is None:
+            # One caller creates and prepares the loop's pool; concurrent first callers on the
+            # same loop wait for it instead of creating their own or using it before the table exists.
             async with self._pool_lock.get():
-                if self._pool is None:
-                    self._pool = await self._create_pool()
-        return self._pool
+                with self._pools_guard:
+                    pool = self._pools.get(loop)
+                if pool is None:
+                    pool = await self._create_pool()
+                    with self._pools_guard:
+                        self._pools[loop] = pool
+        return pool
 
     async def _create_pool(self) -> Any:
         import asyncpg
@@ -90,17 +104,19 @@ class ProdEmbeddingStore:
         return pool
 
     async def close_pool(self) -> None:
-        """Release the pool (required when the surrounding event loop is discarded, e.g. after ``asyncio.run``)."""
-        if self._pool is not None:
-            await self._pool.close()
-            self._pool = None
+        """Close the running event loop's pool (required before that loop is discarded, e.g. at the end of
+        ``asyncio.run``). Pools that other loops are using stay open."""
+        with self._pools_guard:
+            pool = self._pools.pop(asyncio.get_running_loop(), None)
+        if pool is not None:
+            await pool.close()
 
     def _scope_cols(self) -> List[str]:
         meta = self._schema.metadata_columns
         return [c for c in SCOPE_COLS if c in meta]
 
     async def _ensure_table(self, pool: Any = None) -> None:
-        pool = pool or self._pool
+        pool = pool if pool is not None else await self._get_pool()
         id_col = self._schema.id_column
         meta = self._schema.metadata_columns
         aux = self._schema.auxiliary_columns
