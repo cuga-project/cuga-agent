@@ -84,6 +84,9 @@ from cuga.backend.observability.openlit_init import init_openlit, set_session_at
 from cuga.config import settings
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
+    from docling_core.types.doc import DoclingDocument
     from langgraph.checkpoint.base import BaseCheckpointSaver
 
     from cuga.backend.cuga_graph.nodes.answer.answer_function import FinalAnswerConfig
@@ -2004,6 +2007,7 @@ class CugaAgent:
         *,
         checkpointer: Optional["BaseCheckpointSaver"] = None,
         hooks: Optional[List[Any]] = None,
+        document_processor: "Optional[Callable[[Path], DoclingDocument]]" = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -2049,6 +2053,10 @@ class CugaAgent:
             checkpointer: Keyword-only LangGraph saver for the compiled graph. None = a fresh
                 `MemorySaver` (unchanged behavior). Must be async-capable; a sync-only saver
                 (e.g. `SqliteSaver`) raises `TypeError` on first compile.
+            document_processor: Keyword-only function that parses one knowledge file into a
+                Docling `DoclingDocument`; CUGA chunks and cites its output as usual. None = the
+                `[knowledge.docling]` settings (a docling-serve `url`, a `processor`, or local
+                Docling). Runs in up to `max_ingest_workers` threads at once: make it thread-safe.
 
         Example with tool approval policy:
             ```python
@@ -2100,6 +2108,7 @@ class CugaAgent:
         self._graph = None
         self._compiled_graph = None
         self._checkpointer = checkpointer
+        self._document_processor = document_processor
         self._policy_system = policy_system
         self._special_instructions = special_instructions
 
@@ -2663,7 +2672,9 @@ class CugaAgent:
 
             # Inject cuga's LLM for optional query transformation (multi_query / HyDE);
             # lazy + inert unless a profile enables search_query_transform.
-            engine = KnowledgeEngine(config, chat_generator=CugaChatGenerator())
+            engine = KnowledgeEngine(
+                config, chat_generator=CugaChatGenerator(), document_processor=self._document_processor
+            )
             # Gate citation-marker resolution on this agent's flag (module-global
             # hook — matches the session-override hook's single-process assumption).
             from cuga.backend.knowledge.sources import set_agent_citations_lookup
