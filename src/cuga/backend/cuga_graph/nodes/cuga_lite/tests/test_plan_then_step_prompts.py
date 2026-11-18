@@ -86,9 +86,13 @@ def test_executor_contract_and_examples_follow_the_flag(enabled, autonomous):
     assert checked >= 6
 
 
-def test_direct_executor_renderer_defaults_to_plan_then_step():
-    assert _executor_prompt() == _executor_prompt(plan_then_step=True)
-    assert _executor_prompt() != _executor_prompt(plan_then_step=False)
+@pytest.mark.parametrize("setting", [False, True])
+def test_direct_executor_renderer_follows_the_setting(monkeypatch, setting):
+    from cuga.config import settings
+
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_plan_then_step", setting)
+    assert _executor_prompt() == _executor_prompt(plan_then_step=setting)
+    assert _executor_prompt() != _executor_prompt(plan_then_step=not setting)
 
 
 def test_resolver_defaults_on_and_honours_overrides():
