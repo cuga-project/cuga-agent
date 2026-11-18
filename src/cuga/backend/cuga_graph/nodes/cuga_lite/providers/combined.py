@@ -21,7 +21,12 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import (
     create_tool_from_api_dict,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import resolve_tool_call_args
-from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apps, get_registry_base_url
+from cuga.backend.tools_env.registry.utils.api_utils import (
+    get_agent_id,
+    get_apps,
+    get_registry_base_url,
+    get_registry_client_timeout,
+)
 from cuga.backend.tools_env.registry.utils.schema_utils import python_type_for_schema
 from cuga.config import settings
 
@@ -414,7 +419,7 @@ class CombinedToolProvider(ToolProviderInterface):
 
                 headers = {"accept": "application/json"}
 
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(timeout=get_registry_client_timeout()) as session:
                     async with session.get(url, headers=headers) as response:
                         if response.status == 200:
                             api_dicts = await response.json()

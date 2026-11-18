@@ -378,7 +378,7 @@ litellm_local_model_cost_map = true
 # See deployment/docker-compose/openlit/ for a local testing stack (OTel Collector + Tempo + Prometheus + Grafana)
 
 [evolve]
-enabled = true             # Master toggle for Evolve integration
+enabled = false            # Master toggle for Evolve integration (opt-in)
 url = "http://127.0.0.1:8201/sse"  # Evolve MCP server SSE endpoint
 mode = "auto"               # "auto" = registry first, then direct SSE fallback; "registry" = registry only; "direct" = direct SSE only
 app_name = "evolve"         # MCP app/server name to use when Evolve is managed by the CUGA registry
