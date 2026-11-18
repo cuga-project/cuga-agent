@@ -61,6 +61,8 @@ def allowed_hosts() -> list[str]:
     """``mcp_gateway.allowed_hosts``: host names, ``host:port``, or ``*.domain`` for its subdomains.
 
     Empty (the default) allows no gateway: tokens are sent only to hosts the operator listed.
+    Prefer exact hosts. ``*.domain`` sends tokens to any subdomain, so use it only for a domain
+    where the operator controls every subdomain, not a shared cluster route domain.
     A comma-separated string is accepted too (for an environment variable).
     """
     from cuga.config import settings

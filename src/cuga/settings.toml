@@ -324,7 +324,9 @@ role_token_source = "auto"  # auto | id_token | access_token | iam_proxy
 # TLS to MCP gateway instances (the IAM exchange uses auth.iam_proxy_* instead).
 skip_verify = false  # dev only; env DYNACONF_MCP_GATEWAY__SKIP_VERIFY=true
 ca_bundle = ""  # PEM bundle path for the gateway route CA; empty: auth.iam_proxy_ca_bundle, then SSL_CERT_FILE / REQUESTS_CA_BUNDLE
-# Gateway hosts CUGA may send tokens to: "gw.example.com", "gw.example.com:8443" or "*.apps.example.com".
+# Gateway hosts CUGA may send tokens to: "gw.example.com" or "gw.example.com:8443". Prefer exact hosts.
+# "*.domain" allows every subdomain; use it only for a domain where you control every subdomain. On a shared
+# cluster domain (for example *.apps.<cluster>), any tenant that creates a route there would receive tokens.
 # Empty allows no gateway. Env: DYNACONF_MCP_GATEWAY__ALLOWED_HOSTS='["gw.example.com"]' (or comma-separated).
 allowed_hosts = []
 
