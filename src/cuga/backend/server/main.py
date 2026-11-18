@@ -811,7 +811,9 @@ async def _refresh_published_graph(agent_id: str, config: Dict[str, Any], versio
     return await _replace_default_runtime(app_state, config, version, reread=True)
 
 
-async def _replace_default_runtime(state: Any, config: dict, version: Any, *, reread: bool = False) -> Any:
+async def _replace_default_runtime(
+    state: Any, config: dict, version: Any, *, reread: bool = False, force: bool = False
+) -> Any:
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
     from cuga.backend.server.config_fingerprint import compute_published_fingerprint
     from cuga.backend.server.runtime_refresh import prepare_runtime, close_retired_runtime
@@ -824,14 +826,18 @@ async def _replace_default_runtime(state: Any, config: dict, version: Any, *, re
         if reread:
             from cuga.backend.server.config_store import load_config
 
-            config, version = await load_config(None, state.agent_id)
+            config, version = await load_config(None, getattr(state, "agent_id", "cuga-default"))
             if not config:
                 raise ValueError("Published configuration unavailable")
         fingerprint = await compute_published_fingerprint(config)
         current = state.agent
-        if getattr(current, "_config_fingerprint", None) == fingerprint and getattr(
-            current, "_checkpoint_config_version", None
-        ) == str(version or 0):
+        # ``force`` rebuilds an unchanged configuration, for policy changes made
+        # outside the published config (for example a generated tool guard).
+        if (
+            not force
+            and getattr(current, "_config_fingerprint", None) == fingerprint
+            and getattr(current, "_checkpoint_config_version", None) == str(version or 0)
+        ):
             return current
         from cuga.backend.server.manage_routes.apply import reload_manager_registry
 
@@ -4130,6 +4136,35 @@ _TOOL_GUARD_SYNC_ERROR_MESSAGES = {
 }
 
 
+_TOOL_GUARD_INACTIVE_MESSAGE = (
+    "The tool guard is saved but the running agent does not enforce it yet. Publish the agent to apply it."
+)
+
+
+async def _activate_generated_guard(policy_id: str) -> bool:
+    """Rebuild the published default runtime so it enforces a newly generated guard.
+
+    The default runtime enforces a private policy snapshot, so a guard written to the
+    shared policy store applies only after a replacement. Returns whether the running
+    runtime now carries the guard; a failed sync can leave it out of the snapshot.
+    """
+    if getattr(app_state, "agent", None) is None:
+        return False
+    try:
+        runtime = await _replace_default_runtime(app_state, {}, None, reread=True, force=True)
+        snapshot = getattr(runtime, "_runtime_policy_snapshot", None)
+        if snapshot is None:
+            # No private snapshot: the runtime reads the shared store directly.
+            return True
+        policy = await snapshot.get_policy(policy_id)
+        return bool(policy is not None and getattr(policy, "tool_guards", None))
+    except Exception as exc:
+        logger.warning(
+            "Could not apply the generated tool guard to the running agent: {}", type(exc).__name__
+        )
+        return False
+
+
 async def _sync_policy_to_config_store(
     *,
     policy_id: str,
@@ -4516,6 +4551,11 @@ async def generate_tool_guard_for_policy(
             logger.warning("Failed to sync policy to config_store: %s", sync_exc)
             result["config_synced"] = False
             result["sync_error"] = _TOOL_GUARD_SYNC_ERROR_MESSAGES["unexpected"]
+
+        if not use_draft and updated_policy is not None:
+            result["guard_active"] = await _activate_generated_guard(policy_id)
+            if not result["guard_active"]:
+                result["guard_warning"] = _TOOL_GUARD_INACTIVE_MESSAGE
 
         return JSONResponse(result, status_code=200)
     except ValueError as exc:

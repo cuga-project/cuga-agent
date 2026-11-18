@@ -180,4 +180,6 @@ async def rebuild_production_agent(app_state: Any, config: dict[str, Any], confi
     from cuga.backend.server.main import _replace_default_runtime
 
     if getattr(app_state, "agent", None) is not None:
-        await _replace_default_runtime(app_state, config, config_version)
+        # Re-read under the replacement lock so overlapping publishes cannot
+        # install an older configuration than the stored published version.
+        await _replace_default_runtime(app_state, config, config_version, reread=True)

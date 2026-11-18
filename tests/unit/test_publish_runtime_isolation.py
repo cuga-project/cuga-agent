@@ -221,7 +221,16 @@ async def _rebuild(state, config_version):
     from cuga.backend.llm.models import LLMManager
     from cuga.backend.server.manage_routes.apply import rebuild_production_agent
 
-    with patch.object(LLMManager, "get_model", return_value=MagicMock()):
+    from unittest.mock import AsyncMock
+
+    # The rebuild re-reads the stored published config under the replacement lock.
+    with (
+        patch.object(LLMManager, "get_model", return_value=MagicMock()),
+        patch(
+            "cuga.backend.server.config_store.load_config",
+            AsyncMock(return_value=({"tools": []}, config_version)),
+        ),
+    ):
         await rebuild_production_agent(state, {}, config_version)
 
 
@@ -475,3 +484,85 @@ async def test_replacement_loads_published_manager_tools_before_build(
     assert requests == ([("POST", "/reload")] if manager_mode else [])
     await replacement._runtime_policy_snapshot.disconnect()
     await client.aclose()
+
+
+async def test_unresolvable_llm_key_falls_back_instead_of_failing_the_runtime(policy_state, monkeypatch):
+    def unresolvable(_config):
+        raise ValueError("secret reference could not be resolved")
+
+    monkeypatch.setattr("cuga.backend.llm.models.create_llm_from_config", unresolvable)
+    prepared = await runtime_refresh.prepare_runtime(policy_state, {"llm": {"api_key": "vault://kb/key"}})
+    try:
+        assert prepared.current_llm is None
+    finally:
+        await prepared.runtime_policy_snapshot.disconnect()
+
+
+async def test_publish_rebuild_installs_the_stored_version_not_an_older_capture(monkeypatch):
+    from cuga.backend.server.manage_routes.apply import rebuild_production_agent
+
+    replace = AsyncMock()
+    monkeypatch.setattr(main, "_replace_default_runtime", replace)
+    state = SimpleNamespace(agent=object())
+    await rebuild_production_agent(state, {"special_instructions": "captured"}, 5)
+    replace.assert_awaited_once_with(state, {"special_instructions": "captured"}, 5, reread=True)
+
+
+async def test_cancelled_cleanup_still_releases_every_runtime_in_the_turn():
+    gate = asyncio.Event()
+
+    async def slow_close():
+        await gate.wait()
+
+    first = SimpleNamespace(aclose=AsyncMock(side_effect=slow_close), _runtime_policy_snapshot=None)
+    second = SimpleNamespace(aclose=AsyncMock(), _runtime_policy_snapshot=None)
+    first._runtime_retired = second._runtime_retired = True
+    entered = asyncio.Event()
+
+    async def turn():
+        async with runtime_refresh.runtime_turn():
+            runtime_refresh.retain_runtime(first)
+            runtime_refresh.retain_runtime(second)  # a mid-turn refresh retained a second runtime
+            entered.set()
+
+    task = asyncio.create_task(turn())
+    await asyncio.wait_for(entered.wait(), 5)
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert first._active_published_turns == 0
+    assert second._active_published_turns == 0
+    gate.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    second.aclose.assert_awaited_once()
+    first.aclose.assert_awaited_once()
+
+
+@pytest.mark.parametrize("snapshot_has_guard", [True, False], ids=["enforced", "not-in-snapshot"])
+async def test_generated_guard_replaces_the_runtime_and_reports_enforcement(monkeypatch, snapshot_has_guard):
+    guarded = SimpleNamespace(tool_guards={"write": {"code": "deny"}})
+    snapshot = SimpleNamespace(get_policy=AsyncMock(return_value=guarded if snapshot_has_guard else None))
+    runtime = SimpleNamespace(_runtime_policy_snapshot=snapshot)
+    replace = AsyncMock(return_value=runtime)
+    monkeypatch.setattr(main, "_replace_default_runtime", replace)
+    monkeypatch.setattr(main.app_state, "agent", object())
+    assert await main._activate_generated_guard("guide") is snapshot_has_guard
+    replace.assert_awaited_once_with(main.app_state, {}, None, reread=True, force=True)
+
+
+async def test_forced_replacement_rebuilds_an_unchanged_configuration(policy_state, monkeypatch):
+    config = {"special_instructions": "same"}
+    current = SimpleNamespace(
+        aclose=AsyncMock(), _config_fingerprint=compute_fingerprint(config), _checkpoint_config_version="2"
+    )
+    policy_state.agent = current
+    replacement = SimpleNamespace(aclose=AsyncMock())
+    builder = AsyncMock(return_value=replacement)
+    monkeypatch.setattr(main, "_build_published_default_agent", builder)
+    assert await main._replace_default_runtime(policy_state, config, 2) is current
+    builder.assert_not_awaited()
+    assert await main._replace_default_runtime(policy_state, config, 2, force=True) is replacement
+    builder.assert_awaited_once()
+    await builder.call_args.kwargs["runtime_state"].runtime_policy_snapshot.disconnect()

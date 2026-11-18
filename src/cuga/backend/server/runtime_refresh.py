@@ -44,9 +44,13 @@ async def runtime_turn():
         yield
     finally:
         _turn_owners.reset(token)
+        # Release every runtime before the first await: a cancellation during one
+        # cleanup must not leave another runtime counting a turn that has ended.
         for owner in owners:
             owner._active_published_turns -= 1
-            await asyncio.shield(close_retired_runtime(owner))
+        cleanups = [asyncio.ensure_future(close_retired_runtime(owner)) for owner in owners]
+        if cleanups:
+            await asyncio.shield(asyncio.gather(*cleanups, return_exceptions=True))
 
 
 def runtime_stream(function):
@@ -85,7 +89,19 @@ async def prepare_runtime(state: Any, config: dict) -> Any:
     if getattr(getattr(settings, "secrets", None), "force_env", False):
         prepared.current_llm = None
     else:
-        prepared.current_llm = create_llm_from_config(config.get("llm") or {})
+        llm_cfg = config.get("llm") or {}
+        try:
+            prepared.current_llm = create_llm_from_config(llm_cfg)
+        except Exception as exc:
+            # Same fallback as apply_published_config: an unresolvable key must not
+            # block startup or publish; requests then use the env/TOML model settings.
+            logger.warning(
+                "Failed to create LLM from published config (provider={} model={}): {}",
+                llm_cfg.get("provider"),
+                llm_cfg.get("model"),
+                type(exc).__name__,
+            )
+            prepared.current_llm = None
 
     source = getattr(state, "policy_system", None)
     prepared.policy_system = source

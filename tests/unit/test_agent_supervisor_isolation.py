@@ -153,9 +153,10 @@ async def test_direct_edit_waits_for_member_triggered_rebuild(monkeypatch):
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(app_state=state)))
     seen = []
     monkeypatch.setattr(helpers, "_referrer_ids_for_agent", AsyncMock(return_value=["cuga-default"]))
+    stored = {"row": ({"special_instructions": "old"}, 1)}
     monkeypatch.setattr(
         "cuga.backend.server.config_store.load_config",
-        AsyncMock(return_value=({"special_instructions": "old"}, 1)),
+        AsyncMock(side_effect=lambda *_args: stored["row"]),
     )
     monkeypatch.setattr(
         runtime_refresh,
@@ -182,6 +183,7 @@ async def test_direct_edit_waits_for_member_triggered_rebuild(monkeypatch):
         helpers.invalidate_agent_graph_cache(request, "weatherbot", draft=False, published=True)
     )
     await asyncio.wait_for(started.wait(), timeout=5)
+    stored["row"] = ({"special_instructions": "published"}, 2)  # the publish saved v2
     publish = asyncio.create_task(rebuild_production_agent(state, {"special_instructions": "published"}, 2))
     await asyncio.sleep(0)
     assert seen == ["old"]
