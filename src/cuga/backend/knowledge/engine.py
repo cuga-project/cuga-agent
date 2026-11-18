@@ -140,6 +140,28 @@ BLOCKED_HOSTNAMES = {"localhost", "metadata.google.internal", "169.254.169.254"}
 ALLOWED_PORTS = {80, 443, 8080, 8443}
 _VS_CACHE_MAX = 64  # max cached vector store connections
 
+_malloc_trim: Any = None  # glibc's malloc_trim once looked up; False where there is none
+
+
+def _release_freed_memory() -> None:
+    """Hand memory that glibc keeps after a parse back to the OS.
+
+    Parsing frees most of what it allocates, but glibc keeps the freed pages in its
+    per-thread arenas, so the server's memory only grew from one upload to the next.
+    ``malloc_trim(0)`` returns them (0.4-1.4 GB after a large PDF, in 5-45 ms). It exists
+    only in glibc, so elsewhere (macOS, musl) this does nothing.
+    """
+    global _malloc_trim
+    if _malloc_trim is None:
+        try:
+            import ctypes
+
+            _malloc_trim = ctypes.CDLL("libc.so.6").malloc_trim
+        except (OSError, AttributeError):
+            _malloc_trim = False
+    if _malloc_trim:
+        _malloc_trim(0)
+
 
 def _iter_exception_messages(exc: BaseException) -> list[str]:
     """Collect exception messages across cause/context chains."""
@@ -980,7 +1002,15 @@ class _FastEmbedEmbeddings(Embeddings):
         # before ever reaching the local_files_only check.
         cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
         local_files_only = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
-        kwargs: dict[str, Any] = {"cache_dir": cache_dir, "local_files_only": local_files_only}
+        # ONNX Runtime's CPU arena grows to the largest batch it has embedded (about 1.7 GB
+        # for 64 chunks of 512 tokens) and never shrinks, so the server kept that memory
+        # after every large upload. Without the arena, embedding a file took 17-36% longer
+        # (a few seconds), while parsing it takes minutes; search latency did not change.
+        kwargs: dict[str, Any] = {
+            "cache_dir": cache_dir,
+            "local_files_only": local_files_only,
+            "enable_cpu_mem_arena": False,
+        }
         if providers:
             kwargs["providers"] = providers
         try:
@@ -2507,15 +2537,18 @@ class KnowledgeEngine:
         # Parse runs concurrently (bounded by the semaphore); the per-collection
         # lock is taken inside _ingest_inner around just the vector-store insert.
         async with self._ingest_sem:
-            await self._ingest_inner(
-                coll,
-                file_path,
-                filename,
-                task_id,
-                replace_duplicates,
-                cancel_event,
-                skip_file_copy,
-            )
+            try:
+                await self._ingest_inner(
+                    coll,
+                    file_path,
+                    filename,
+                    task_id,
+                    replace_duplicates,
+                    cancel_event,
+                    skip_file_copy,
+                )
+            finally:
+                await asyncio.to_thread(_release_freed_memory)
 
     async def ingest(
         self,
