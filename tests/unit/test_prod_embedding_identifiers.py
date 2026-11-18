@@ -68,9 +68,8 @@ async def test_ensure_table_uses_derived_embedding_index_name(schema: EmbeddingS
     connection_context.__aenter__.return_value = SimpleNamespace(execute=execute)
     pool = SimpleNamespace(acquire=lambda: connection_context)
     store = ProdEmbeddingStore("postgresql://unused", collection_name, schema)
-    store._pool = pool
 
-    await store._ensure_table()
+    await store._ensure_table(pool)
 
     ddl_statements = [call.args[0] for call in execute.await_args_list]
     assert ddl_statements[1] == (
