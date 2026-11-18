@@ -66,7 +66,7 @@ async def test_ensure_table_uses_derived_embedding_index_name(schema: EmbeddingS
     execute = AsyncMock()
     connection_context = AsyncMock()
     connection_context.__aenter__.return_value = SimpleNamespace(
-        execute=execute, transaction=AsyncMock, fetchval=AsyncMock(return_value=False)
+        execute=execute, fetchval=AsyncMock(return_value=False)
     )
     pool = SimpleNamespace(acquire=lambda: connection_context)
     store = ProdEmbeddingStore("postgresql://unused", collection_name, schema)
@@ -75,7 +75,7 @@ async def test_ensure_table_uses_derived_embedding_index_name(schema: EmbeddingS
 
     ddl_statements = [call.args[0] for call in execute.await_args_list]
     # The advisory lock comes first, so concurrent first calls create the table one at a time.
-    assert ddl_statements[0].startswith("SELECT pg_advisory_xact_lock(")
+    assert ddl_statements[0].startswith("SELECT pg_advisory_lock(")
     assert execute.await_args_list[0].args[1] == collection_name
     assert ddl_statements[2] == (
         f"CREATE INDEX IF NOT EXISTS {expected_index_name} "

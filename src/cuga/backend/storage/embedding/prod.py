@@ -143,17 +143,16 @@ class ProdEmbeddingStore:
                 return
             # Calls on other event loops, or in other processes, can create the same new table at
             # the same moment, and then all but one fail with a unique violation in the catalog.
-            # The lock makes them wait for the first to commit; their IF NOT EXISTS then skips.
-            async with conn.transaction():
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", self._collection_name
-                )
-                await conn.execute(create_sql)
-                index_name = _embedding_index_name(self._collection_name)
-                await conn.execute(
-                    f"CREATE INDEX IF NOT EXISTS {index_name} "
-                    f"ON {self._collection_name} USING hnsw (embedding vector_cosine_ops)"
-                )
+            # The lock makes them wait until the first has created both; their IF NOT EXISTS then
+            # skips. It is a session lock: the pool's reset of the connection when this block
+            # ends (asyncpg runs pg_advisory_unlock_all) releases it, also when a statement fails.
+            await conn.execute("SELECT pg_advisory_lock(hashtextextended($1, 0))", self._collection_name)
+            await conn.execute(create_sql)
+            index_name = _embedding_index_name(self._collection_name)
+            await conn.execute(
+                f"CREATE INDEX IF NOT EXISTS {index_name} "
+                f"ON {self._collection_name} USING hnsw (embedding vector_cosine_ops)"
+            )
 
     def _meta_keys(self) -> List[str]:
         return list(self._schema.metadata_columns.keys())
