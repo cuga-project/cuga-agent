@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import time
@@ -15,7 +16,6 @@ tracker = ActivityTracker()
 # Registry discovery targets a local service, so a short connect timeout is enough to
 # detect that it is down without stalling a turn for the aiohttp default (5 minutes).
 REGISTRY_CONNECT_TIMEOUT_SECONDS = 3.0
-REGISTRY_REQUEST_TIMEOUT_SECONDS = 10.0
 # After a failed discovery, skip probing the registry for this long and serve the last
 # successful app list (or external apps) instead.
 REGISTRY_FAILURE_COOLDOWN_SECONDS = 30.0
@@ -26,9 +26,7 @@ _registry_failed_at: Dict[str, float] = {}
 
 def registry_client_timeout() -> aiohttp.ClientTimeout:
     """Return the timeout used for registry discovery requests."""
-    return aiohttp.ClientTimeout(
-        total=REGISTRY_REQUEST_TIMEOUT_SECONDS, connect=REGISTRY_CONNECT_TIMEOUT_SECONDS
-    )
+    return aiohttp.ClientTimeout(connect=REGISTRY_CONNECT_TIMEOUT_SECONDS)
 
 
 def get_agent_id() -> Optional[str]:
@@ -178,7 +176,17 @@ async def get_apps(agent_id: Optional[str] = None) -> List[AppDefinition]:
                 _last_registry_apps[url] = registry_apps
                 _registry_failed_at.pop(url, None)
                 return list(registry_apps) + list(external_apps)
-    except Exception as e:
+    except (TimeoutError, asyncio.TimeoutError) as e:
+        last_apps = _last_registry_apps.get(url)
+        if last_apps is not None:
+            logger.warning("registry request timed out, using last known apps")
+            return list(last_apps) + list(external_apps)
+        if len(external_apps) > 0:
+            logger.warning("registry request timed out, using external apps")
+            return external_apps
+        logger.error("Error while calling registry to get apps")
+        raise e
+    except (aiohttp.ClientConnectorError, ConnectionError, OSError) as e:
         _registry_failed_at[url] = time.monotonic()
         last_apps = _last_registry_apps.get(url)
         if last_apps is not None:
@@ -187,9 +195,18 @@ async def get_apps(agent_id: Optional[str] = None) -> List[AppDefinition]:
         if len(external_apps) > 0:
             logger.warning("registry is not running, using external apps")
             return external_apps
-        else:
-            logger.error("Error while calling registry to get apps")
-            raise e
+        logger.error("Error while calling registry to get apps")
+        raise e
+    except Exception as e:
+        last_apps = _last_registry_apps.get(url)
+        if last_apps is not None:
+            logger.warning("failed to fetch apps from registry, using last known apps")
+            return list(last_apps) + list(external_apps)
+        if len(external_apps) > 0:
+            logger.warning("registry request failed, using external apps")
+            return external_apps
+        logger.error("Error while calling registry to get apps")
+        raise e
 
 
 async def count_total_tools() -> int:

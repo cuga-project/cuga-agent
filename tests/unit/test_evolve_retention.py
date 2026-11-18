@@ -13,10 +13,6 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture(autouse=True)
 def auth_overrides(monkeypatch):
-    from cuga.config import settings
-
-    # Evolve ships disabled by default; these tests exercise the enabled path.
-    monkeypatch.setattr(settings.evolve, "enabled", True)
     monkeypatch.setattr(
         EvolveIntegration,
         "get_compliance_status",
