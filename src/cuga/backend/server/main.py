@@ -770,7 +770,7 @@ async def _build_published_default_agent(
 
     state = runtime_state
     if state is None:
-        state = await prepare_runtime(app_state, startup_config or {})
+        state = await prepare_runtime(app_state, startup_config or {}, keep_store_when_list_empty=True)
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
 
     if isinstance(tool_provider, CombinedToolProvider):
@@ -842,7 +842,7 @@ async def _replace_default_runtime(
         from cuga.backend.server.manage_routes.apply import reload_manager_registry
 
         await reload_manager_registry()
-        prepared = await prepare_runtime(state, config)
+        prepared = await prepare_runtime(state, config, keep_store_when_list_empty=force)
         try:
             graph = await _build_published_default_agent(
                 tool_provider=CombinedToolProvider(
@@ -860,7 +860,13 @@ async def _replace_default_runtime(
             if prepared.runtime_policy_snapshot is not None:
                 await prepared.runtime_policy_snapshot.disconnect()
             raise
-        if config.get("policies") is not None and getattr(state, "policy_system", None) is not None:
+        # A forced rebuild exists for policy changes made outside the published config (a generated
+        # tool guard). Copying the published policies over the shared store would delete that change.
+        if (
+            not force
+            and config.get("policies") is not None
+            and getattr(state, "policy_system", None) is not None
+        ):
             from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
             from cuga.backend.server.manage_routes.helpers import policies_list_from_config
 

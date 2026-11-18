@@ -66,8 +66,13 @@ def runtime_stream(function):
     return wrapped
 
 
-async def prepare_runtime(state: Any, config: dict) -> Any:
-    """Build policy and model state without changing the current runtime or env."""
+async def prepare_runtime(state: Any, config: dict, *, keep_store_when_list_empty: bool = False) -> Any:
+    """Build policy and model state without changing the current runtime or env.
+
+    *keep_store_when_list_empty*: an empty published policy list means no policy is managed in the
+    published config. At startup and in a forced rebuild the runtime then keeps the shared store's
+    policies (for example the ones loaded from the .cuga folder), as before policy snapshots.
+    """
     from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
     from cuga.backend.cuga_graph.policy.storage import PolicyStorage
     from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
@@ -128,10 +133,11 @@ async def prepare_runtime(state: Any, config: dict) -> Any:
     try:
         await storage.connect()
         await storage._create_collection()
-        if config.get("policies") is not None:
-            result = await apply_policies_data_to_storage(
-                storage, policies_list_from_config(config["policies"]), clear_existing=False
-            )
+        published = (
+            policies_list_from_config(config["policies"]) if config.get("policies") is not None else None
+        )
+        if published is not None and (published or not keep_store_when_list_empty):
+            result = await apply_policies_data_to_storage(storage, published, clear_existing=False)
             if result["errors"]:
                 raise ValueError("Could not prepare all published policies")
         else:
