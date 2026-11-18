@@ -25,6 +25,8 @@
 #   inside run: scripts).
 # - Install deps from the trusted default branch, then switch to the PR
 #   head for editing (no uv sync / install hooks from the PR tree).
+# - Bob runs with the workspace trusted, so it loads AGENTS.md and the skills
+#   in .bob/skills from the PR branch. Fork branches never reach that step.
 # - Runs for one PR are queued, and each run starts from the current tip of
 #   the PR branch, so a second review does not overwrite Bob's last push.
 # - Checkout uses persist-credentials: false; the push token is applied
@@ -353,20 +355,25 @@ jobs:
               echo "Project notes:"
               echo "- A uv-managed .venv was created from the trusted default branch (uv sync --all-extras --dev), then this job switched to the PR head."
               echo "- Prefer \`uv run\` / the active venv for tools and tests. Do not re-run uv sync against untrusted lock/project files."
+              echo "- Follow AGENTS.md and CONTRIBUTING.md."
               echo "- Keep changes focused on the review feedback."
+              echo "- Do not commit, push, or change labels on GitHub. The workflow commits and pushes after you finish."
               echo "- Do not commit .venv/ or uv cache artifacts."
               echo "- New/changed pytest tests must use a type marker from pyproject.toml (e.g. @pytest.mark.unit)."
               echo "- Preserve lazy-import patterns in cuga/__init__.py, cuga/sdk.py, and LLM provider modules."
               echo
               echo "Analyze all review comments and make the necessary code changes to address each point."
               echo "Be thorough. If a comment is unclear, use best judgment from context."
+              echo
+              echo "Before you finish, run the tests for the code you changed: the colocated tests/ folder next to each changed module, the matching files under tests/unit, and every test that depends on a default value you changed. Fix the failures your change causes. Run ruff check and ruff format on the files you changed."
             } > "${PROMPT_FILE}"
 
             # Bob Shell 2.x reads stdin until it closes before it starts. This
             # action leaves stdin open, so without a redirect Bob waits forever
             # with no output. The prompt file goes in on stdin: Bob appends it
             # to -p. --yolo is gone: headless runs approve tools by default.
-            bob --accept-license -p "Complete the task described below." < "${PROMPT_FILE}"
+            # --trust: without it Bob skips AGENTS.md, .bob/rules and .bob/skills.
+            bob --accept-license -p "Complete the task described below." --trust < "${PROMPT_FILE}"
 
       - name: Check for Changes
         if: steps.prep.outputs.should_run == 'true'
