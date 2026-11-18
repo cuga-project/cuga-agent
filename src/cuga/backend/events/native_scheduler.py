@@ -34,43 +34,61 @@ def enabled() -> bool:
 
 
 # ── standard cron (minute hour day-of-month month day-of-week) ─────────────────────────────────────
-def _field_matches(spec: str, value: int, lo: int, hi: int) -> bool:
-    """Does ``value`` match one cron field? Supports '*', 'a', 'a-b', 'a,b,c', '*/n', 'a-b/n'."""
+def _num(s: str, spec: str) -> int:
+    """One number inside a cron field, with an error that says what to write instead."""
+    if not (s.isascii() and s.isdigit()):
+        raise ValueError(
+            f"cron field {spec!r} has {s!r}, which is not a number; use numbers only (e.g. 1 for MON or JAN)"
+        )
+    return int(s)
+
+
+def _parts(spec: str, lo: int, hi: int):
+    """Yield (start, end, step) for every comma-separated entry, validating each one.
+
+    ``*/0`` is not a schedule — it used to reach the modulo in the match check and raise
+    ZeroDivisionError from deep inside the tick. Refuse it here, as a ValueError like every other
+    malformed field, so it is rejected when the expression is first parsed rather than exploding the
+    first time the row comes due.
+    """
     for part in spec.split(","):
         step = 1
         if "/" in part:
             part, step_s = part.split("/", 1)
-            step = int(step_s)
-            # `*/0` is not a schedule — it used to reach the modulo below and raise
-            # ZeroDivisionError from deep inside the tick. Refuse it here, as a ValueError like
-            # every other malformed field, so it is rejected when the expression is first parsed
-            # rather than exploding the first time the row comes due.
+            step = _num(step_s, spec)
             if step <= 0:
                 raise ValueError(f"cron step must be positive, got {step!r} in {spec!r}")
         if part == "*":
             start, end = lo, hi
         elif "-" in part:
             a, b = part.split("-", 1)
-            start, end = int(a), int(b)
+            start, end = _num(a, spec), _num(b, spec)
         else:
-            start = end = int(part)
-        if start <= value <= end and (value - start) % step == 0:
-            return True
-    return False
+            start = end = _num(part, spec)
+        if not (lo <= start <= hi and lo <= end <= hi):
+            raise ValueError(f"cron field {spec!r} is out of range; allowed values are {lo}-{hi}")
+        if start > end:
+            raise ValueError(f"cron field {spec!r} has an inverted range {start}-{end}; start must be <= end")
+        yield start, end, step
 
 
-def _matches(expr: str, t: time.struct_time) -> bool:
-    mn, hr, dom, mon, dow = expr.split()
+def _matches_parts(parts, value: int) -> bool:
+    """Does ``value`` match any (start, end, step) entry parsed from one cron field?"""
+    return any(start <= value <= end and (value - start) % step == 0 for start, end, step in parts)
+
+
+def _matches(parsed, t: time.struct_time) -> bool:
+    mn, hr, dom, mon, dow = parsed
     # cron day-of-week: 0 and 7 are both Sunday; python tm_wday is Mon=0..Sun=6
     py_dow = t.tm_wday
     cron_dow = 0 if py_dow == 6 else py_dow + 1  # → Sun=0..Sat=6
     # cron allows 7 as a second name for Sunday, so on a Sunday also try the value 7
-    dow_ok = _field_matches(dow, cron_dow, 0, 7) or (cron_dow == 0 and _field_matches(dow, 7, 0, 7))
+    dow_ok = _matches_parts(dow, cron_dow) or (cron_dow == 0 and _matches_parts(dow, 7))
     return (
-        _field_matches(mn, t.tm_min, 0, 59)
-        and _field_matches(hr, t.tm_hour, 0, 23)
-        and _field_matches(dom, t.tm_mday, 1, 31)
-        and _field_matches(mon, t.tm_mon, 1, 12)
+        _matches_parts(mn, t.tm_min)
+        and _matches_parts(hr, t.tm_hour)
+        and _matches_parts(dom, t.tm_mday)
+        and _matches_parts(mon, t.tm_mon)
         and dow_ok
     )
 
@@ -78,10 +96,23 @@ def _matches(expr: str, t: time.struct_time) -> bool:
 def next_cron(expr: str, after: float) -> float:
     """Next epoch strictly after ``after`` matching a 5-field cron expression (local time). Scans
     minute-by-minute (bounded to ~366 days). Runs once per fire, not per tick, so the scan is cheap."""
+    fields = expr.split()
+    if len(fields) != 5:
+        raise ValueError(
+            f"cron {expr!r} has {len(fields)} field(s); it needs exactly 5: "
+            "minute hour day-of-month month day-of-week (macros like @daily are not supported)"
+        )
+    # Parse and validate every field and list entry once, before scanning: a matching early entry
+    # must not hide a malformed later one (e.g. '0,60 9 * * 1'), or the subscription would only fail
+    # on reschedule — and the scan must not re-parse the spec strings for every candidate minute
+    # (an annual schedule such as '0 0 1 1 *' walks ~500k candidates).
+    parsed = [
+        list(_parts(spec, lo, hi)) for spec, lo, hi in zip(fields, (0, 0, 1, 1, 0), (59, 23, 31, 12, 7))
+    ]
     # start at the next whole minute after `after`
     t = int(after) - (int(after) % 60) + 60
     for _ in range(366 * 24 * 60):
-        if _matches(expr, time.localtime(t)):
+        if _matches(parsed, time.localtime(t)):
             return float(t)
         t += 60
     raise ValueError(f"cron {expr!r} produced no time within a year")
@@ -139,8 +170,8 @@ async def process_due(store, now: float, fire_fn) -> list[str]:
             # "native fire X failed: " told an operator nothing at all. Always name the type.
             log.warning("native fire %s failed: %s: %s", sub.id, type(e).__name__, e or "(no detail)")
         # The RESCHEDULE needs the same guard as the fire. next_cron raises ValueError for an
-        # expression it can never satisfy (e.g. "0 0 30 2 *"), and _field_matches raises ValueError
-        # on a bad token or ZeroDivisionError on "*/0". Uncaught, that escaped the loop entirely: the
+        # expression it can never satisfy (e.g. "0 0 30 2 *"), and the field parser raises
+        # ValueError on a bad token or "*/0". Uncaught, that escaped the loop entirely: the
         # remaining due subscriptions never fired, and because the bad row stays due it repeated on
         # EVERY tick — one malformed cron silently stopping every schedule ordered after it.
         try:

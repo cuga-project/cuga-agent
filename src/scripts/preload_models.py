@@ -61,11 +61,15 @@ def preload_fastembed() -> None:
     print("→ Preloading fastembed models...")
     from fastembed import TextEmbedding
 
+    from cuga.backend.knowledge.fastembed_models import register
+
     cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
     models = [
-        "BAAI/bge-small-en-v1.5",  # default embedding model
+        "intfloat/multilingual-e5-small",  # default knowledge embedding model
+        "BAAI/bge-small-en-v1.5",  # policies, tool shortlisting and Evolve
     ]
     for model_name in models:
+        register(model_name)
         print(f"  Downloading {model_name}...")
         model = TextEmbedding(model_name, cache_dir=cache_dir)
         # Run one inference pass to ensure ONNX runtime initializes
@@ -141,7 +145,7 @@ def preload_readi() -> None:
 
     if importlib.util.find_spec("en_core_web_trf") is None:
         raise RuntimeError(
-            "READI requires the en_core_web_trf model installed by the evolve-image dependency group"
+            "READI requires the en_core_web_trf model from deployment/evolve-image-spacy-model.txt"
         )
     detector = build_readi_detector(extractor="spacy", model="en_core_web_trf")
     redacted = redact_text("John Smith lives in London.", detector)

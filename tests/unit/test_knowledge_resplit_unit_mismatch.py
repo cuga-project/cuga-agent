@@ -33,12 +33,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge.engine import (
     ChunkingTokenizer,
     KnowledgeEngine,
     _load_hf_tokenizer_for_chunking,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _make_engine(provider: str = "fastembed", model: str = "BAAI/bge-small-en-v1.5") -> KnowledgeEngine:
@@ -215,7 +219,7 @@ class TestResplitTriggerThreshold:
 
         src = inspect.getsource(eng.KnowledgeEngine._load_document)
         # The block uses _build_text_splitter for the emergency case.
-        assert "self._build_text_splitter(chunk_size, chunk_overlap)" in src
+        assert "self._build_text_splitter(chunk_size, chunk_overlap, pinned)" in src
 
 
 class TestStrictTokenBoundGuard:
