@@ -31,7 +31,7 @@ def test_stale_ingest_worker_records_superseded_when_apply_generation_bumps():
     eng = KnowledgeEngine(_cfg())
     assert eng._apply_generation == 0
 
-    def fake_load(path, pinned=None):
+    def fake_load(path, pinned=None, stage_timings=None):
         eng._apply_generation += 1  # simulate concurrent commit_knowledge_update
         return [Document(page_content="hi", metadata={"source": "f.txt"})]
 
