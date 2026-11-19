@@ -5,6 +5,7 @@ These tests do not require a Langfuse server.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
@@ -118,11 +119,13 @@ def tracing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_flush_only_once_off_loop_after_owned_root_closes(tracing):
+async def test_flush_is_explicit_after_owned_root_closes(tracing):
     events, _ = tracing
     async with lf.run_trace("root", "hello", "thread-1", {}):
         async with lf.run_trace("child", "hello", "thread-1", {}):
             pass
+    assert not any(isinstance(event, tuple) and event[0] == "flush_off_loop" for event in events)
+    await asyncio.to_thread(lf.flush)
     assert events[0]["session_id"] == "thread-1"
     assert events[1:] == [
         ("open", "root"),
@@ -180,3 +183,67 @@ async def test_constructor_handler_is_kept_and_shared_without_sdk_root(tracing, 
     monkeypatch.setattr(agent, "_invoke_untraced", invoke_untraced)
     await agent.invoke("test", thread_id="thread-1")
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_run_is_error_and_retains_partial_output(tracing, monkeypatch):
+    updates = []
+    io = []
+    client = lf._client()
+    monkeypatch.setattr(lf, "_client", lambda: client)
+
+    @contextmanager
+    def observation(**options):
+        yield SimpleNamespace(update=lambda **kw: updates.append(kw), set_trace_io=lambda **kw: io.append(kw))
+
+    monkeypatch.setattr(client, "start_as_current_observation", observation)
+    with pytest.raises(asyncio.CancelledError):
+        async with lf.run_trace("stream", "hello", "t", {}) as trace:
+            trace.end("partial")
+            raise asyncio.CancelledError()
+    assert updates[-1] == {"level": "ERROR", "status_message": "cancelled"}
+    assert io[-1] == {"output": "partial"}
+
+
+@pytest.mark.asyncio
+async def test_ordinary_error_retains_partial_output(tracing, monkeypatch):
+    updates = []
+    client = lf._client()
+    monkeypatch.setattr(lf, "_client", lambda: client)
+
+    @contextmanager
+    def observation(**options):
+        yield SimpleNamespace(update=lambda **kw: updates.append(kw), set_trace_io=lambda **kw: None)
+
+    monkeypatch.setattr(client, "start_as_current_observation", observation)
+    with pytest.raises(ValueError, match="failed"):
+        async with lf.run_trace("stream", "hello", "t", {}) as trace:
+            trace.end("partial")
+            raise ValueError("failed")
+    assert updates == [{"output": "partial"}, {"level": "ERROR", "status_message": "ValueError: failed"}]
+
+
+@pytest.mark.asyncio
+async def test_exporter_is_never_called_on_root_hot_path(tracing, monkeypatch):
+    monkeypatch.setattr(lf, "flush", lambda: pytest.fail("per-run exporter invoked"))
+    async with lf.run_trace("invoke", "synthetic", "t", {}):
+        pass
+    await asyncio.sleep(0)  # Also detect a scheduled fire-and-forget flush.
+
+
+def test_has_current_span_without_langfuse_probe():
+    from opentelemetry import trace
+
+    assert lf._has_current_span() is False
+    context = trace.SpanContext(1, 2, is_remote=False)
+    with trace.use_span(trace.NonRecordingSpan(context)):
+        assert lf._has_current_span() is True
+
+
+@pytest.mark.parametrize("module", ["example.callbacks", "my_app.handlers"])
+def test_unrelated_callback_handler_name_is_not_langfuse(module):
+    from cuga.backend.cuga_graph.utils.langfuse_tracing import is_langfuse_callback_handler
+
+    handler = type("CallbackHandler", (), {"__module__": module})()
+    # A name alone must not opt an unrelated callback into tracing ownership.
+    assert not is_langfuse_callback_handler(handler)

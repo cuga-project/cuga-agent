@@ -3608,7 +3608,7 @@ class CugaAgent:
         # One task also keeps ContextVar tokens valid on Python 3.10 (which has no Task(context=)).
         from contextlib import aclosing
 
-        from cuga.backend.observability.langfuse_sdk import enabled, final_answer, run_trace
+        from cuga.backend.observability.langfuse_sdk import caller_has_trace, enabled, final_answer, run_trace
 
         config = self._trace_run_config(config)
         thread_id = self._trace_thread_id(message, thread_id, action_response, config)
@@ -3624,8 +3624,8 @@ class CugaAgent:
                 step_discipline=step_discipline,
             )
 
-        if not enabled():
-            # Tracing is opt-in: preserve the original caller-task execution when it is off.
+        if not enabled() or caller_has_trace(config, getattr(self, "_callbacks", None)):
+            # Without an SDK span, preserve caller-task execution and ContextVar changes.
             async with aclosing(source()) as updates:
                 async for state in updates:
                     yield state
@@ -3677,7 +3677,18 @@ class CugaAgent:
                 response = asyncio.get_running_loop().create_future()
                 requests.put_nowait(response)
                 advancing = True
-                available, state = await response
+                try:
+                    await asyncio.wait((response, driver), return_when=asyncio.FIRST_COMPLETED)
+                    if not response.done():
+                        # Cancellation/failure between pulls may leave no response producer.
+                        driver.result()
+                        raise RuntimeError("stream driver exited without a response")
+                    available, state = response.result()
+                finally:
+                    if not response.done():
+                        response.cancel()
+                    elif not response.cancelled():
+                        response.exception()  # Retrieve a racing driver failure on caller cancellation.
                 advancing = False
                 if not available:
                     return
@@ -3688,11 +3699,22 @@ class CugaAgent:
                     driver.cancel()
                 else:
                     requests.put_nowait(None)
+            cleanup_cancelled = False
+            while not driver.done():
+                try:
+                    await asyncio.shield(driver)
+                except asyncio.CancelledError:
+                    # A repeated cancellation must not interrupt graph/hook cleanup.
+                    cleanup_cancelled = True
+                except BaseException:
+                    break  # Retrieve and propagate the driver's exception below.
             try:
-                await driver
+                driver.result()
             except asyncio.CancelledError:
                 if not advancing:
                     raise
+            if cleanup_cancelled:
+                raise asyncio.CancelledError()
 
     async def _stream_untraced(
         self,
@@ -3941,7 +3963,7 @@ class CugaAgent:
             self.add_tool(tool)
 
     invoke.__doc__ = _invoke_untraced.__doc__
-    stream.__doc__ = _stream_untraced.__doc__
+    stream.__doc__ = (stream.__doc__ or "") + (_stream_untraced.__doc__ or "")
 
 
 class CugaSupervisor:

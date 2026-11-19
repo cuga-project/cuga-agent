@@ -32,6 +32,8 @@ from loguru import logger
 
 _owned_trace: ContextVar[bool] = ContextVar('cuga_owned_langfuse_trace', default=False)
 
+_UNSET = object()
+
 MAX_FIELD_CHARS = 20000  # longer inputs and outputs are cut, so one tool result cannot fill the trace
 
 
@@ -96,6 +98,13 @@ def caller_has_trace(config: Optional[Dict[str, Any]], default_callbacks: Any = 
     )
 
 
+def _has_current_span() -> bool:
+    """Probe OTel without Langfuse's warning for an absent active observation."""
+    from opentelemetry.trace import get_current_span
+
+    return get_current_span().get_span_context().is_valid
+
+
 class RunTrace:
     """The root observation of one SDK run; ``end`` sets its output."""
 
@@ -104,18 +113,20 @@ class RunTrace:
         self.nested = nested
 
     def end(
-        self, output: Any = None, *, error: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
+        self, output: Any = _UNSET, *, error: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
         if self.span is None:
             return
         try:
-            self.span.update(
-                output=_cut(output),
-                metadata=_cut(metadata) if metadata else None,
-                level="ERROR" if error is not None else None,
-                status_message=error,
-            )
-            if not self.nested:
+            fields = {}
+            if output is not _UNSET:
+                fields["output"] = _cut(output)
+            if metadata is not None:
+                fields["metadata"] = _cut(metadata)
+            if error is not None:
+                fields.update(level="ERROR", status_message=error)
+            self.span.update(**fields)
+            if not self.nested and output is not _UNSET:
                 self.span.set_trace_io(output=_cut(output))
         except Exception as e:
             logger.debug(f"Langfuse: run output not recorded: {e}")
@@ -145,7 +156,7 @@ async def run_trace(
 
         client = _client()
         owned_parent = _owned_trace.get()
-        nested = owned_parent or bool(client.get_current_trace_id())
+        nested = owned_parent or _has_current_span()
         attrs = (
             nullcontext()
             if nested
@@ -187,6 +198,9 @@ async def run_trace(
             logger.debug(f"Langfuse: callback handler not added: {e}")
         try:
             yield trace
+        except asyncio.CancelledError:
+            trace.end(error="cancelled")
+            raise
         except Exception as e:
             trace.end(error=f"{type(e).__name__}: {e}")
             raise
@@ -196,9 +210,9 @@ async def run_trace(
             stack.close()
         except Exception as e:
             logger.debug(f"Langfuse: trace cleanup failed: {e}")
-        if not owned_parent and not nested:
-            # Flush after ending the root span. Nested runs share the parent's export.
-            await asyncio.to_thread(flush)
+        # The client's batch processor exports completed observations. Do not await or
+        # schedule an exporter here: even to_thread delays asyncio.run() shutdown.
+        # Short-lived applications explicitly call flush() after their runs close.
 
 
 def _handler_class(base: type) -> type:
@@ -206,6 +220,8 @@ def _handler_class(base: type) -> type:
     provider (registry, MCP, direct LangChain tools), with the app and the duration."""
 
     class CugaLangfuseHandler(base):  # type: ignore[misc,valid-type]
+        _cuga_skips_tool_observations = True
+
         def on_tool_start(self, *args: Any, **kwargs: Any) -> None:
             return None
 
@@ -244,23 +260,21 @@ def record_tool_call(
 ) -> None:
     """One ``tool`` observation for a finished tool call, timed from ``duration_ms`` back to now.
 
-    ``langchain_tool``: the call ran through a LangChain tool, so a caller's own LangChain handler (a caller trace) has
-    already recorded it; it is recorded here only under CUGA's handler, which leaves tool runs to this function.
+    ``langchain_tool`` means a caller-provided Langfuse handler received this tool's
+    callbacks. That handler owns the observation; the SDK's silent handler does not.
     """
-    if not enabled():
+    if not enabled() or langchain_tool:
         return
     try:
         client = _client()
         trace_context = None
-        if not client.get_current_trace_id():
+        if not _has_current_span():
             from cuga.backend.cuga_graph.utils.langfuse_tracing import _langfuse_trace_id
 
             tid = _langfuse_trace_id.get()
             if not tid:
                 return  # no trace to attach to: a tool call outside a traced run
             trace_context = {"trace_id": tid}
-            if langchain_tool:
-                return
         obs = client.start_observation(
             trace_context=trace_context,
             name=tool_name,
@@ -293,7 +307,7 @@ def record_event(
         return
     try:
         client = _client()
-        if not client.get_current_trace_id():
+        if not _has_current_span():
             return
         client.create_event(
             name=name, input=_cut(input), output=_cut(output), metadata=_cut(metadata), level=level
@@ -315,6 +329,12 @@ def _backdate(obs: Any, duration_ms: Optional[float]) -> None:
 
 
 def flush() -> None:
+    """Flush completed observations once at application shutdown, not per run.
+
+    Close streams and leave caller-owned trace contexts first. This is a blocking
+    exporter operation; async applications can explicitly await asyncio.to_thread(flush)
+    at their shutdown boundary. Long-lived applications rely on batch export.
+    """
     try:
         if enabled():
             _client().flush()

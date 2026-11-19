@@ -38,6 +38,7 @@ def traced_tools(request, monkeypatch):
     client = _Client(request.param)
     monkeypatch.setattr(lf, "enabled", lambda: True)
     monkeypatch.setattr(lf, "_client", lambda: client)
+    monkeypatch.setattr(lf, "_has_current_span", lambda: bool(client.current_trace_id))
     trace_token = langfuse_tracing._langfuse_trace_id.set("caller-trace")
     tracking_token = tracker._tracking_enabled_context.set(False)
     try:
@@ -95,20 +96,13 @@ async def test_tracked_async_tool_cancellation_is_an_error(traced_tools):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "payload, expected_error",
+    "payload",
     [
-        (
-            {"blocked_by_policy": True, "policy_violation": True, "error": "Tool call blocked by policy"},
-            "Tool call blocked by policy",
-        ),
-        ({"error": "A business result, not an exception"}, None),
-        ({"blocked_by_policy": True, "error": "missing second sentinel"}, None),
-        ({"blocked_by_policy": 1, "policy_violation": True, "error": "not a boolean"}, None),
-        ({"blocked_by_policy": True, "policy_violation": True, "error": ""}, None),
-        ({"blocked_by_policy": True, "policy_violation": True, "error": {"detail": "not text"}}, None),
+        {"blocked_by_policy": True, "policy_violation": True, "error": "A tool-owned response"},
+        {"error": "A business result, not an exception"},
     ],
 )
-async def test_direct_tool_only_marks_explicit_policy_denials(traced_tools, payload, expected_error):
+async def test_raw_tool_cannot_self_mark_guard_denial(traced_tools, payload):
     async def raw(value):
         return payload
 
@@ -119,7 +113,7 @@ async def test_direct_tool_only_marks_explicit_policy_denials(traced_tools, payl
     finally:
         calls = tracker.ToolCallTracker.stop_tracking()
     assert len(calls) == 1
-    assert calls[0]["error"] == expected_error
-    assert calls[0]["succeeded"] is (expected_error is None)
+    assert calls[0]["error"] is None
+    assert calls[0]["succeeded"] is True
     assert calls[0]["result"] == payload
-    _assert_one_observation(traced_tools, error=expected_error, output=payload)
+    _assert_one_observation(traced_tools, output=payload)

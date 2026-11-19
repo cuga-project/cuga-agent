@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from typing import Any, Dict, List, Tuple
 
 from langchain_core.tools import BaseTool, StructuredTool
@@ -20,7 +21,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     ToolProviderInterface,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import resolve_tool_call_args
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
+    ToolCallTracker,
+    tool_callback_recording,
+)
 
 
 _METADATA_ATTRS = (
@@ -31,6 +35,28 @@ _METADATA_ATTRS = (
 )
 
 _UNSET = object()
+
+
+def _langfuse_records_tool(tool: BaseTool) -> bool:
+    """Check the two callback sources used by BaseTool.ainvoke."""
+    from cuga.backend.observability.langfuse_sdk import enabled
+
+    if not enabled():
+        return False
+
+    from langchain_core.runnables.config import ensure_config
+
+    from cuga.backend.cuga_graph.utils.langfuse_tracing import collect_langfuse_callbacks_from_config
+
+    callbacks = ensure_config().get("callbacks")
+    handlers = collect_langfuse_callbacks_from_config(
+        {"callbacks": callbacks, "configurable": {"callbacks": tool.callbacks}}
+    )
+    return any(
+        not getattr(handler, "_cuga_skips_tool_observations", False)
+        and not getattr(handler, "ignore_agent", False)
+        for handler in handlers
+    )
 
 
 class ToolGuardingToolProvider(ToolProviderInterface):
@@ -274,6 +300,7 @@ class ToolGuardingToolProvider(ToolProviderInterface):
                 )
                 return {"error": error_msg}
 
+            start = time.monotonic()
             runtime = await self._get_or_create_toolguard_runtime()
             if runtime is not None:
                 error = await runtime.guard_tool_call(
@@ -282,7 +309,7 @@ class ToolGuardingToolProvider(ToolProviderInterface):
                     arguments=all_kwargs,
                 )
                 if error:
-                    return {
+                    denial = {
                         "error": f"Tool call blocked by policy: {error}",
                         "blocked_by_policy": True,
                         "policy_violation": True,
@@ -290,9 +317,22 @@ class ToolGuardingToolProvider(ToolProviderInterface):
                         "app": app_name,
                     }
 
-            result = await tool.ainvoke(all_kwargs)
-            while inspect.isawaitable(result):
-                result = await result
+                    ToolCallTracker.record_call(
+                        tool_name=tool_name,
+                        arguments=all_kwargs,
+                        result=denial,
+                        app_name=app_name,
+                        operation_id=getattr(tool, "_operation_id", None) or tool_name,
+                        duration_ms=(time.monotonic() - start) * 1000,
+                        error=denial["error"],
+                        param_names=param_names,
+                    )
+                    return denial
+
+            with tool_callback_recording(tool_name, covered=_langfuse_records_tool(tool)):
+                result = await tool.ainvoke(all_kwargs)
+                while inspect.isawaitable(result):
+                    result = await result
             return result
 
         def guarded_tool_func_sync(*args: Any, **kwargs: Any) -> Any:
@@ -305,6 +345,7 @@ class ToolGuardingToolProvider(ToolProviderInterface):
                 "Use ainvoke() for async execution."
             )
 
+        guarded_tool_func._cuga_toolguard_wrapper = True
         guarded_tool_func.__name__ = tool_name
         guarded_tool_func.__doc__ = description
         guarded_tool_func_sync.__name__ = tool_name

@@ -239,3 +239,94 @@ async def test_disabled_stream_stays_in_caller_task_and_closes(monkeypatch):
             break
         assert seen == ["advance"]
     assert seen == ["advance", "closed"]
+
+
+@pytest.mark.asyncio
+async def test_driver_cancelled_between_pulls_does_not_hang(traces):
+    drivers = []
+
+    async def source(message, **kwargs):
+        drivers.append(asyncio.current_task())
+        yield {"final_answer": "partial"}
+        yield {"final_answer": "done"}
+
+    stream = agent_for(source).stream("hi", thread_id="t")
+    await stream.__anext__()
+    drivers[0].cancel()
+    await asyncio.gather(*drivers, return_exceptions=True)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(stream.__anext__(), timeout=0.2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ownership", ["trace_id", "config_handler", "constructor_handler"])
+async def test_caller_owned_stream_stays_in_caller_context(monkeypatch, ownership):
+    from cuga.backend.cuga_graph.utils import langfuse_tracing
+
+    class CallbackHandler:
+        pass
+
+    monkeypatch.setattr(langfuse_tracing, "_langfuse_handler_classes", lambda: (CallbackHandler,))
+    monkeypatch.setattr(lf, "enabled", lambda: True)
+    monkeypatch.setattr(lf, "run_trace", lambda *args, **kwargs: pytest.fail("caller owns tracing"))
+    caller = asyncio.current_task()
+    value = ContextVar("caller_owned_stream", default=None)
+
+    async def source(message, **kwargs):
+        assert asyncio.current_task() is caller
+        value.set("visible")
+        try:
+            yield "first"
+        finally:
+            assert asyncio.current_task() is caller
+            value.set("closed")
+
+    agent = agent_for(source)
+    config = {}
+    if ownership == "trace_id":
+        config = {"configurable": {"langfuse_trace_id": "trace"}}
+    elif ownership == "config_handler":
+        config = {"callbacks": [CallbackHandler()]}
+    else:
+        agent._callbacks = [CallbackHandler()]
+    stream = agent.stream("hi", config=config)
+    assert await stream.__anext__() == "first"
+    assert value.get() == "visible"
+    await stream.aclose()
+    assert value.get() == "closed"
+
+
+def test_public_stream_doc_preserves_early_close_guidance():
+    assert "aclosing" in sdk.CugaAgent.stream.__doc__
+    assert "aclose()" in sdk.CugaAgent.stream.__doc__
+    assert "action_response" in sdk.CugaAgent.stream.__doc__
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_cannot_interrupt_graph_cleanup(traces):
+    started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def source(message, **kwargs):
+        try:
+            started.set()
+            await asyncio.Event().wait()
+            yield None
+        finally:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            traces.append(("t", "closed"))
+
+    stream = agent_for(source).stream("hi", thread_id="t")
+    pull = asyncio.create_task(stream.__anext__())
+    await started.wait()
+    pull.cancel()
+    await cleanup_started.wait()
+    pull.cancel()
+    await asyncio.sleep(0)
+    assert not pull.done()
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(pull, 1)
+    assert traces.index(("t", "closed")) < traces.index(("t", "exit"))

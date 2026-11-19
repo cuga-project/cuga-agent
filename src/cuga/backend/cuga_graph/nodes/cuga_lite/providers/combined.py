@@ -140,6 +140,9 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
                 error_msg = f"Tool call '{tool_name}' timed out after {timeout_seconds} seconds"
                 logger.error(error_msg)
                 raise TimeoutError(error_msg)
+        except asyncio.CancelledError:
+            error_msg = "cancelled"
+            raise
         except TimeoutError:
             raise
         except Exception as e:
