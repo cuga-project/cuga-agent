@@ -20,7 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 
 def _get_adapter_class():
@@ -498,3 +498,62 @@ def test_get_tools_needing_probing_empty_when_all_observed():
 def test_get_tools_needing_probing_empty_by_default():
     adapter = _make_adapter()
     assert adapter.get_tools_needing_probing() == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_classify_auto_continue_done_claim_override_returns_correction_and_marks_retry():
+    """The unexecuted-claim retry: a done_claim_override decision yields the corrective
+    message, spends its own one-shot marker, and reports that marker as evidence next time."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
+        AutoContinueDecision,
+        DONE_CLAIM_CORRECTION,
+    )
+
+    adapter = _make_adapter()
+    adapter._tools_context = {"zoom_update_meeting": object()}
+    state = SimpleNamespace(chat_messages=[], cuga_lite_metadata={})
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
+        new_callable=AsyncMock,
+        return_value=AutoContinueDecision(auto_continue=True, done_claim_override=True),
+    ) as mock_classify:
+        result = await adapter.classify_auto_continue(state, None, "The meeting has been rescheduled.", None)
+        assert result == DONE_CLAIM_CORRECTION
+        assert state.cuga_lite_metadata["_done_claim_retry"] is True
+        assert "_blocked_claim_retry" not in state.cuga_lite_metadata
+        await adapter.classify_auto_continue(state, None, "The meeting has been rescheduled.", None)
+        assert mock_classify.call_args.kwargs["evidence"].done_retry_used is True
+
+
+def test_any_execution_ran_counts_function_calling_tool_messages():
+    """Function-calling mode returns results as ToolMessages; the claim retries must see that work ran."""
+    from langchain_core.messages import ToolMessage
+
+    adapter = _make_adapter()
+    assert (
+        adapter._any_execution_ran(
+            SimpleNamespace(chat_messages=[HumanMessage(content="do it")], cuga_lite_metadata={})
+        )
+        is False
+    )
+    state = SimpleNamespace(
+        chat_messages=[ToolMessage(content='{"ok": true}', tool_call_id="c1")], cuga_lite_metadata={}
+    )
+    assert adapter._any_execution_ran(state) is True
+
+
+def test_any_execution_ran_counts_earlier_turns_of_the_thread():
+    """A follow-up turn may truthfully report work an earlier turn executed, so execution
+    anywhere in the retained thread keeps the claim retries off."""
+    from langchain_core.messages import ToolMessage
+
+    adapter = _make_adapter()
+    thread = [
+        HumanMessage(content="send the invoice"),
+        AIMessage(content="", tool_calls=[{"name": "send", "args": {}, "id": "c1", "type": "tool_call"}]),
+        ToolMessage(content='{"ok": true}', tool_call_id="c1"),
+        AIMessage(content="The invoice has been sent."),
+        HumanMessage(content="did you send it?"),
+    ]
+    assert adapter._any_execution_ran(SimpleNamespace(chat_messages=thread, cuga_lite_metadata={})) is True

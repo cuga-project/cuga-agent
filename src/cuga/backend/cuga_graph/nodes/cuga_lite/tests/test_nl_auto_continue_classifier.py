@@ -252,3 +252,124 @@ async def test_blocked_override_requires_confirmed_finalize_verdict_on_unparsabl
     )
     assert decision.auto_continue is False
     assert decision.blocked_override is False
+
+
+# ── Unexecuted completion claim (cuga_lite_unexecuted_claim_retry) ───────────
+# A first-turn answer with zero tool calls and invented IDs that the interim/final
+# classifier rates final.
+OBSERVED_DONE_CLAIM = (
+    "The lower-priority meeting has been rescheduled and a summary posted to **#ops-updates**.\n\n"
+    "- The Zoom meeting (ID `274839102`) was kept.\n"
+    "- The Google Calendar event (ID `c_5f9e3a2b7d1e4b6a9c0d`) was renamed to "
+    '**"[RESCHEDULED] Project Sync - Q1 Review"**.\n\n'
+    "A Slack message confirming this outcome has been sent to the #ops-updates channel."
+)
+
+
+@pytest.fixture
+def _done_retry_on(monkeypatch):
+    monkeypatch.setattr(
+        mod.settings.advanced_features, "cuga_lite_unexecuted_claim_retry", True, raising=False
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        OBSERVED_DONE_CLAIM,
+        "I've sent the email to the controller.",
+        "The ticket was updated.",
+        "Successfully created 3 invoices.",
+    ],
+)
+def test_done_claim_detected(text):
+    assert mod.looks_like_unexecuted_done_claim(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I can help you browse Amazon products and manage Gmail threads.",
+        "Which spreadsheet should I use?",
+        "I will send the email once I find the address.",
+    ],
+)
+def test_non_claim_not_detected(text):
+    assert not mod.looks_like_unexecuted_done_claim(text)
+
+
+@pytest.mark.asyncio
+async def test_done_claim_override_fires_without_execution(_done_retry_on):
+    decision = await classify_nl_auto_continue_decision(
+        _finalize_llm(), OBSERVED_DONE_CLAIM, None, evidence=_FULL_EVIDENCE
+    )
+    assert decision.auto_continue is True
+    assert decision.done_claim_override is True
+    assert decision.blocked_override is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        BlockedClaimEvidence(tools_available=False, code_executed=False, retry_used=False),
+        BlockedClaimEvidence(tools_available=True, code_executed=True, retry_used=False),
+        BlockedClaimEvidence(
+            tools_available=True, code_executed=False, retry_used=False, done_retry_used=True
+        ),
+        None,
+    ],
+)
+async def test_done_claim_override_requires_positive_evidence(_done_retry_on, evidence):
+    """No tools, code already executed, a spent retry, or no evidence → finalize as before."""
+    decision = await classify_nl_auto_continue_decision(
+        _finalize_llm(), OBSERVED_DONE_CLAIM, None, evidence=evidence
+    )
+    assert decision.auto_continue is False
+    assert decision.done_claim_override is False
+
+
+@pytest.mark.asyncio
+async def test_done_claim_override_off_by_default(monkeypatch):
+    monkeypatch.setattr(
+        mod.settings.advanced_features, "cuga_lite_unexecuted_claim_retry", False, raising=False
+    )
+    decision = await classify_nl_auto_continue_decision(
+        _finalize_llm(), OBSERVED_DONE_CLAIM, None, evidence=_FULL_EVIDENCE
+    )
+    assert decision.auto_continue is False
+    assert decision.done_claim_override is False
+
+
+@pytest.mark.asyncio
+async def test_done_claim_override_ignores_genuine_tool_free_answer(_done_retry_on):
+    decision = await classify_nl_auto_continue_decision(
+        _finalize_llm(),
+        "I can help you browse Amazon products, manage Gmail threads, and track expenses.",
+        None,
+        evidence=_FULL_EVIDENCE,
+    )
+    assert decision.done_claim_override is False
+
+
+# ── claim_override_decision: the overrides alone (function-calling mode) ────
+
+
+def test_claim_override_decision_matches_the_classifier_overrides(_done_retry_on):
+    """No LLM, same overrides and precedence as after a finalize verdict."""
+    done = mod.claim_override_decision(OBSERVED_DONE_CLAIM, None, evidence=_FULL_EVIDENCE)
+    assert (done.auto_continue, done.done_claim_override, done.blocked_override) == (True, True, False)
+
+    blocked = mod.claim_override_decision(OBSERVED_BLOCKER_STRINGS[0], None, evidence=_FULL_EVIDENCE)
+    assert (blocked.auto_continue, blocked.blocked_override) == (True, True)
+
+    plain = mod.claim_override_decision("Let me check the billing tools next.", None, evidence=_FULL_EVIDENCE)
+    assert plain == mod.AutoContinueDecision(auto_continue=False), "no planning fast-path here"
+
+
+def test_claim_override_decision_off_with_nl_auto_continue_off(_done_retry_on, monkeypatch):
+    monkeypatch.setattr(mod.settings.advanced_features, "cuga_lite_nl_auto_continue", False, raising=False)
+    for text in (OBSERVED_DONE_CLAIM, OBSERVED_BLOCKER_STRINGS[0]):
+        assert mod.claim_override_decision(text, None, evidence=_FULL_EVIDENCE) == mod.AutoContinueDecision(
+            auto_continue=False
+        )
