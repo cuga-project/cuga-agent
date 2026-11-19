@@ -12,11 +12,14 @@ Local run: start pgvector as described in ``test_knowledge_pgvector_rollback.py`
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import threading
 import time
 import uuid
 
 import pytest
+
+from cuga.backend.knowledge.storage.adapter import _table_name
 
 from .test_knowledge_pgvector_rollback import _build_adapter, _docs, _dsn, _setup_extension
 
@@ -83,21 +86,45 @@ def test_concurrent_searches_all_succeed(clean_tenant, monkeypatch):
 
 
 def test_searches_while_a_file_is_added(clean_tenant, monkeypatch):
+    """Searches start and end while an upload has its connection pool open, then the upload ends."""
     dsn = _dsn()
     asyncio.run(_setup_extension(dsn))
     adapter = _build_adapter(dsn, clean_tenant, monkeypatch, f"kb_conc_{uuid.uuid4().hex[:12]}")
     adapter.add_documents(_docs(4, "/tmp/first.pdf"))
+    store = adapter._store
+    add_many = store.add_many
+    upload_has_pool = threading.Event()
+    searches_done = threading.Event()
+
+    async def add_many_after_the_searches(items):
+        await store._get_pool()
+        upload_has_pool.set()
+        await asyncio.to_thread(searches_done.wait, 120)
+        return await add_many(items)
+
+    monkeypatch.setattr(store, "add_many", add_many_after_the_searches)
+    upload_errors: list = []
+
+    def upload():
+        try:
+            adapter.add_documents(_docs(40, "/tmp/second.pdf"))
+        except BaseException as exc:  # noqa: BLE001 - re-raised below
+            upload_errors.append(exc)
+
+    adding = threading.Thread(target=upload, daemon=True)
     try:
-        adding = threading.Thread(
-            target=adapter.add_documents, args=(_docs(40, "/tmp/second.pdf"),), daemon=True
-        )
         adding.start()
+        assert upload_has_pool.wait(60), "the upload did not reach the store"
         results = _run_together(lambda: [len(adapter.search("chunk", k=2)) for _ in range(3)], 4)
+        searches_done.set()
         adding.join(timeout=120)
         assert not adding.is_alive(), "adding the file did not finish in 120 s"
+        if upload_errors:
+            raise upload_errors[0]
         assert results == [[2] * 3] * 4
         assert len(adapter.search("chunk", k=100)) == 44
     finally:
+        searches_done.set()
         adapter.drop()
 
 
@@ -140,4 +167,64 @@ def test_first_calls_on_a_new_collection_at_the_same_time(clean_tenant, monkeypa
     try:
         assert _run_together(lambda: adapter.search("chunk", k=2), _THREADS) == [[]] * _THREADS
     finally:
+        adapter.drop()
+
+
+def test_lookalike_collections_search_and_drop_separately(clean_tenant, monkeypatch):
+    """A mixed-case session, the table the first version of the mapping gave it, and a name like
+    its new table: three collections, three tables."""
+    dsn = _dsn()
+    asyncio.run(_setup_extension(dsn))
+    first = f"kb_sess_SupportChat_{uuid.uuid4().hex[:8]}"
+    earlier = f"{first.lower()[:50]}_{hashlib.sha256(first.encode()).hexdigest()[:12]}"
+    adapters = [
+        _build_adapter(dsn, clean_tenant, monkeypatch, name)
+        for name in (first, earlier, _table_name(first, postgres=True))
+    ]
+    try:
+        assert len({a._collection for a in adapters}) == 3
+        for i, adapter in enumerate(adapters):
+            adapter.add_documents(_docs(i + 1, f"/tmp/lookalike{i}.pdf"))
+
+        assert [len(a.search("chunk", k=10)) for a in adapters] == [1, 2, 3]
+        adapters[0].drop()
+        assert [len(a.search("chunk", k=10)) for a in adapters[1:]] == [2, 3]
+        adapters[1].drop()
+        assert len(adapters[2].search("chunk", k=10)) == 3
+    finally:
+        for adapter in adapters:
+            adapter.drop()
+
+
+def test_the_table_lock_is_released_when_creating_the_table_fails(clean_tenant, monkeypatch):
+    dsn = _dsn()
+    asyncio.run(_setup_extension(dsn))
+    collection = f"kb_conc_{uuid.uuid4().hex[:12]}"
+    adapter = _build_adapter(dsn, clean_tenant, monkeypatch, collection)
+
+    async def fetch(sql: str, *args):
+        conn = await asyncpg.connect(dsn)
+        try:
+            return await conn.fetchval(sql, *args)
+        finally:
+            await conn.close()
+
+    held_sql = (
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 1 "
+        "AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)"
+    )
+    # A composite type with the table's name makes the DDL fail after the lock is taken: CREATE
+    # TABLE IF NOT EXISTS skips the existing relation and CREATE INDEX cannot index a type.
+    asyncio.run(fetch(f"CREATE TYPE {collection} AS (x int)"))
+    type_dropped = False
+    try:
+        with pytest.raises(asyncpg.exceptions.WrongObjectTypeError):
+            adapter.search("chunk", k=2)
+        assert asyncio.run(fetch(held_sql, collection)) == 0
+        asyncio.run(fetch(f"DROP TYPE {collection}"))
+        type_dropped = True
+        assert adapter.search("chunk", k=2) == []
+    finally:
+        if not type_dropped:
+            asyncio.run(fetch(f"DROP TYPE {collection}"))
         adapter.drop()
