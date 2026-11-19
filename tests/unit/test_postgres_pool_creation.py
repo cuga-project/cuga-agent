@@ -96,7 +96,7 @@ async def test_embedding_store_closes_the_pool_when_preparation_fails(monkeypatc
         await store._get_pool()
 
     pool.close.assert_awaited_once()
-    assert store._pool is None
+    assert not store._pools
 
 
 def _run_in_thread_loops(store_factory):
@@ -157,3 +157,48 @@ def test_embedding_store_pool_creation_does_not_hang_across_event_loops(monkeypa
     assert not any(t.is_alive() for t in threads), "a caller hung waiting for a lock on another loop"
     assert errors == []
     assert len(results) == 2
+
+
+def test_closing_one_event_loops_pool_leaves_another_loops_pool_open(monkeypatch):
+    """Two calls overlap on two loops (as two knowledge requests do): when the first finishes and
+    closes its pool, the second must still hold an open pool of its own."""
+
+    async def create_pool(*args, **kwargs):
+        return _fake_pool()
+
+    monkeypatch.setattr("asyncpg.create_pool", create_pool)
+    monkeypatch.setattr("pgvector.asyncpg.register_vector", AsyncMock())
+    schema = EmbeddingSchemaConfig(embedding_dim=4, id_column="id", metadata_columns={}, auxiliary_columns={})
+    store = ProdEmbeddingStore("postgresql://x/y", "docs", schema)
+    store._ensure_table = AsyncMock()
+
+    second_has_pool = threading.Event()
+    first_closed = threading.Event()
+    pools: dict[str, MagicMock] = {}
+
+    async def first():
+        pools["first"] = await store._get_pool()
+        second_has_pool.wait(timeout=5)
+        await store.close_pool()
+        first_closed.set()
+
+    async def second():
+        pools["second"] = await store._get_pool()
+        second_has_pool.set()
+        first_closed.wait(timeout=5)
+        # Still this loop's pool, and still open.
+        assert await store._get_pool() is pools["second"]
+        pools["second"].close.assert_not_awaited()
+        await store.close_pool()
+
+    threads = [threading.Thread(target=asyncio.run, args=(coro(),)) for coro in (first, second)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not any(t.is_alive() for t in threads)
+    assert pools["first"] is not pools["second"]
+    pools["first"].close.assert_awaited_once()
+    pools["second"].close.assert_awaited_once()
+    assert not store._pools

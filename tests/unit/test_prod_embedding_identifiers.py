@@ -65,16 +65,35 @@ async def test_ensure_table_uses_derived_embedding_index_name(schema: EmbeddingS
     expected_index_name = _embedding_index_name(collection_name)
     execute = AsyncMock()
     connection_context = AsyncMock()
-    connection_context.__aenter__.return_value = SimpleNamespace(execute=execute)
+    connection_context.__aenter__.return_value = SimpleNamespace(
+        execute=execute, fetchval=AsyncMock(return_value=False)
+    )
     pool = SimpleNamespace(acquire=lambda: connection_context)
     store = ProdEmbeddingStore("postgresql://unused", collection_name, schema)
-    store._pool = pool
 
-    await store._ensure_table()
+    await store._ensure_table(pool)
 
     ddl_statements = [call.args[0] for call in execute.await_args_list]
-    assert ddl_statements[1] == (
+    # The advisory lock comes first, so concurrent first calls create the table one at a time.
+    assert ddl_statements[0].startswith("SELECT pg_advisory_lock(")
+    assert execute.await_args_list[0].args[1] == collection_name
+    assert ddl_statements[2] == (
         f"CREATE INDEX IF NOT EXISTS {expected_index_name} "
         f"ON {collection_name} USING hnsw (embedding vector_cosine_ops)"
     )
     assert len(expected_index_name.encode("ascii")) <= 63
+
+
+@pytest.mark.asyncio
+async def test_ensure_table_skips_ddl_when_table_and_index_exist(schema: EmbeddingSchemaConfig) -> None:
+    execute = AsyncMock()
+    fetchval = AsyncMock(return_value=True)
+    connection_context = AsyncMock()
+    connection_context.__aenter__.return_value = SimpleNamespace(execute=execute, fetchval=fetchval)
+    pool = SimpleNamespace(acquire=lambda: connection_context)
+    store = ProdEmbeddingStore("postgresql://unused", "docs", schema)
+
+    await store._ensure_table(pool)
+
+    assert fetchval.await_args.args[1:] == ("docs", _embedding_index_name("docs"))
+    execute.assert_not_awaited()
