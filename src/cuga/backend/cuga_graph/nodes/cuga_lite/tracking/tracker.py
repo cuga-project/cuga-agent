@@ -524,7 +524,7 @@ def make_recording_awaitable(
     Used for direct LangChain tools, which (unlike registry/combined provider
     tools) have no built-in recorder. Apply AFTER make_tool_awaitable so sync
     tools record in the event-loop context, where this tracker's contextvars
-    are visible. Recording is a no-op unless a tracking session is active.
+    are visible. Langfuse observations also record when local tracking is disabled.
 
     ``param_names`` (from the tool's args schema) maps positional arguments to
     their real parameter names, so traces read the same as registry-tool traces.
@@ -542,6 +542,16 @@ def make_recording_awaitable(
 
         try:
             result = await awaitable_func(*args, **kwargs)
+            # ToolGuard returns denials instead of raising. Preserve that payload,
+            # but do not report the explicitly marked denial as a successful call.
+            if (
+                isinstance(result, dict)
+                and result.get("blocked_by_policy") is True
+                and result.get("policy_violation") is True
+                and isinstance(result.get("error"), str)
+                and result["error"]
+            ):
+                error_msg = result["error"]
             return result
         except asyncio.CancelledError:
             # CancelledError is a BaseException, so it would skip `except
@@ -563,7 +573,9 @@ def make_recording_awaitable(
                 duration_ms=duration_ms,
                 error=error_msg,
                 param_names=param_names,
-                langchain_tool=True,
+                # prepare_node invokes raw .func/.coroutine, not BaseTool.ainvoke.
+                # No LangChain callback has recorded this call, even with a caller trace.
+                langchain_tool=False,
             )
 
     return _recorded
@@ -631,6 +643,9 @@ def tracked_tool(
             try:
                 result = await func(*args, **kwargs)
                 return result
+            except asyncio.CancelledError:
+                error_msg = "cancelled"
+                raise
             except Exception as e:
                 error_msg = str(e)
                 raise

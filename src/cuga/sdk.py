@@ -2979,6 +2979,29 @@ class CugaAgent:
             result.hook_events = reg.run_events()
             return result
 
+    @staticmethod
+    def _trace_run_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Copy per-run config before adding tracing callbacks."""
+        run_config = dict(config or {})
+        run_config["configurable"] = dict(run_config.get("configurable") or {})
+        return run_config
+
+    def _trace_thread_id(
+        self,
+        message: Any,
+        thread_id: Optional[str],
+        action_response: Optional[Any],
+        config: Dict[str, Any],
+    ) -> Optional[str]:
+        """Allocate the new SDK thread before opening its trace, never for a resume."""
+        if thread_id or message is None or action_response is not None:
+            return thread_id
+        from cuga.backend.observability.langfuse_sdk import caller_has_trace, enabled
+
+        if not enabled() or caller_has_trace(config, getattr(self, "_callbacks", None)):
+            return thread_id
+        return f"sdk_{uuid.uuid4().hex[:8]}"
+
     async def invoke(
         self,
         message: Union[str, List[BaseMessage], None] = None,
@@ -2995,9 +3018,11 @@ class CugaAgent:
         # One Langfuse trace per call when advanced_features.langfuse_tracing is on (see observability/langfuse_sdk.py).
         from cuga.backend.observability.langfuse_sdk import run_trace
 
-        config = dict(config) if config else {}
-        config["configurable"] = dict(config.get("configurable") or {})
-        with run_trace("cuga.invoke", message, thread_id, config) as trace:
+        config = self._trace_run_config(config)
+        thread_id = self._trace_thread_id(message, thread_id, action_response, config)
+        async with run_trace(
+            "cuga.invoke", message, thread_id, config, default_callbacks=getattr(self, "_callbacks", None)
+        ) as trace:
             result = await self._invoke_untraced(
                 message,
                 thread_id=thread_id,
@@ -3572,14 +3597,24 @@ class CugaAgent:
         execution_mode: Optional[str] = None,
         step_discipline: Optional[str] = None,
     ):
-        # One Langfuse trace per call when advanced_features.langfuse_tracing is on (see observability/langfuse_sdk.py).
-        from cuga.backend.observability.langfuse_sdk import run_trace
+        """Stream graph updates. Close the iterator explicitly when stopping early.
 
-        config = dict(config) if config else {}
-        config["configurable"] = dict(config.get("configurable") or {})
-        with run_trace("cuga.stream", message, thread_id, config) as trace:
-            last = None
-            async for state in self._stream_untraced(
+        For deterministic cleanup after ``break`` (especially if keeping the iterator), use
+        ``async with contextlib.aclosing(agent.stream(...)) as updates:`` around the loop,
+        or call ``await updates.aclose()``. Breaking an ``async for`` alone does not close it.
+        """
+        # A dedicated pull task owns the trace context for the whole stream. It advances only on
+        # demand: neither tracing nor graph ContextVars leak into the consumer between updates.
+        # One task also keeps ContextVar tokens valid on Python 3.10 (which has no Task(context=)).
+        from contextlib import aclosing
+
+        from cuga.backend.observability.langfuse_sdk import enabled, final_answer, run_trace
+
+        config = self._trace_run_config(config)
+        thread_id = self._trace_thread_id(message, thread_id, action_response, config)
+
+        def source():
+            return self._stream_untraced(
                 message,
                 thread_id=thread_id,
                 config=config,
@@ -3587,12 +3622,77 @@ class CugaAgent:
                 shortlister=shortlister,
                 execution_mode=execution_mode,
                 step_discipline=step_discipline,
-            ):
-                last = state
-                yield state
-            from cuga.backend.observability.langfuse_sdk import final_answer
+            )
 
-            trace.end(final_answer(last))
+        if not enabled():
+            # Tracing is opt-in: preserve the original caller-task execution when it is off.
+            async with aclosing(source()) as updates:
+                async for state in updates:
+                    yield state
+            return
+
+        requests = asyncio.Queue()
+
+        async def drive():
+            response = None
+            try:
+                response = await requests.get()
+                async with run_trace(
+                    "cuga.stream",
+                    message,
+                    thread_id,
+                    config,
+                    default_callbacks=getattr(self, "_callbacks", None),
+                ) as trace:
+                    last = None
+                    try:
+                        async with aclosing(source()) as updates:
+                            while True:
+                                if response is None:  # normal early close, not a failed agent run
+                                    return
+                                try:
+                                    state = await updates.__anext__()
+                                except StopAsyncIteration:
+                                    if not response.done():
+                                        response.set_result((False, None))
+                                    response = None
+                                    return
+                                last = state
+                                if not response.done():
+                                    response.set_result((True, state))
+                                response = None
+                                response = await requests.get()
+                    finally:
+                        # Includes early close and errors; close the graph/hook generators first.
+                        trace.end(final_answer(last))
+            except BaseException as exc:
+                if response is not None and not response.done():
+                    response.set_exception(exc)
+                raise
+
+        driver = asyncio.create_task(drive())
+        advancing = False
+        try:
+            while True:
+                response = asyncio.get_running_loop().create_future()
+                requests.put_nowait(response)
+                advancing = True
+                available, state = await response
+                advancing = False
+                if not available:
+                    return
+                yield state
+        finally:
+            if not driver.done():
+                if advancing:
+                    driver.cancel()
+                else:
+                    requests.put_nowait(None)
+            try:
+                await driver
+            except asyncio.CancelledError:
+                if not advancing:
+                    raise
 
     async def _stream_untraced(
         self,
@@ -3643,6 +3743,8 @@ class CugaAgent:
                 print(f"Resuming: {state}")
             ```
         """
+        from contextlib import aclosing
+
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
@@ -3693,16 +3795,19 @@ class CugaAgent:
             if action_response:
                 logger.info(f"Streaming resume after HITL response (action_id: {action_response.action_id})")
 
-            async for state in self._in_hooks_run(
-                self.graph.astream(
-                    resume_input,
-                    config=run_config,
-                    stream_mode="updates",
-                    subgraphs=True,
-                ),
-                thread_id,
-            ):
-                yield state
+            async with aclosing(
+                self._in_hooks_run(
+                    self.graph.astream(
+                        resume_input,
+                        config=run_config,
+                        stream_mode="updates",
+                        subgraphs=True,
+                    ),
+                    thread_id,
+                )
+            ) as updates:
+                async for state in updates:
+                    yield state
             return
 
         # Normal streaming case
@@ -3745,16 +3850,19 @@ class CugaAgent:
 
         # Stream the graph with subgraph updates enabled
         logger.debug(f"Streaming agent with {len(messages)} messages")
-        async for state in self._in_hooks_run(
-            self.graph.astream(
-                initial_state,
-                config=run_config,
-                stream_mode="updates",  # Stream node updates (including subgraph internals)
-                subgraphs=True,  # Include subgraph updates
-            ),
-            thread_id,
-        ):
-            yield state
+        async with aclosing(
+            self._in_hooks_run(
+                self.graph.astream(
+                    initial_state,
+                    config=run_config,
+                    stream_mode="updates",  # Stream node updates (including subgraph internals)
+                    subgraphs=True,  # Include subgraph updates
+                ),
+                thread_id,
+            )
+        ) as updates:
+            async for state in updates:
+                yield state
 
     def _in_hooks_run(self, updates: Any, thread_id: Optional[str]) -> Any:
         """The graph updates of one stream(), read inside a hook run of their own, as invoke() has one: tool notes
@@ -4208,7 +4316,7 @@ class CugaSupervisor:
         from cuga.backend.observability.langfuse_sdk import run_trace
 
         trace_config: Dict[str, Any] = {"callbacks": list(self._callbacks or [])}
-        with run_trace("cuga.supervisor", message, thread_id, trace_config) as trace:
+        async with run_trace("cuga.supervisor", message, thread_id, trace_config) as trace:
             result = await self._invoke_untraced(
                 message,
                 thread_id=thread_id,

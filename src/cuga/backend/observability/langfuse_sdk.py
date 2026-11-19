@@ -21,12 +21,16 @@ Tracing never changes the run: every Langfuse error is logged at debug level and
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
-from contextlib import contextmanager, nullcontext
-from typing import Any, Dict, Iterator, Optional
+from contextlib import ExitStack, asynccontextmanager, nullcontext
+from contextvars import ContextVar
+from typing import Any, AsyncIterator, Dict, Optional
 
 from loguru import logger
+
+_owned_trace: ContextVar[bool] = ContextVar('cuga_owned_langfuse_trace', default=False)
 
 MAX_FIELD_CHARS = 20000  # longer inputs and outputs are cut, so one tool result cannot fill the trace
 
@@ -79,16 +83,17 @@ def _message_text(message: Any) -> Any:
     return _cut(message)
 
 
-def caller_has_trace(config: Optional[Dict[str, Any]]) -> bool:
+def caller_has_trace(config: Optional[Dict[str, Any]], default_callbacks: Any = None) -> bool:
     """The caller already traces this run (its own handler or a trace id)."""
-    if not config:
-        return False
-    configurable = config.get("configurable") or {}
+    configurable = (config or {}).get("configurable") or {}
     if configurable.get("langfuse_trace_id"):
         return True
     from cuga.backend.cuga_graph.utils.langfuse_tracing import collect_langfuse_callbacks_from_config
 
-    return bool(collect_langfuse_callbacks_from_config(config))
+    return bool(
+        collect_langfuse_callbacks_from_config(config)
+        or (default_callbacks and collect_langfuse_callbacks_from_config({"callbacks": default_callbacks}))
+    )
 
 
 class RunTrace:
@@ -107,7 +112,7 @@ class RunTrace:
             self.span.update(
                 output=_cut(output),
                 metadata=_cut(metadata) if metadata else None,
-                level="ERROR" if error else None,
+                level="ERROR" if error is not None else None,
                 status_message=error,
             )
             if not self.nested:
@@ -116,26 +121,31 @@ class RunTrace:
             logger.debug(f"Langfuse: run output not recorded: {e}")
 
 
-@contextmanager
-def run_trace(
-    name: str, message: Any, thread_id: Optional[str], config: Dict[str, Any]
-) -> Iterator[RunTrace]:
+@asynccontextmanager
+async def run_trace(
+    name: str,
+    message: Any,
+    thread_id: Optional[str],
+    config: Dict[str, Any],
+    *,
+    default_callbacks: Any = None,
+) -> AsyncIterator[RunTrace]:
     """Open the root observation of an SDK run and add a Langfuse callback handler to ``config["callbacks"]``.
 
     No-op (yields an empty ``RunTrace``) when tracing is off or the caller traces the run itself.
     """
-    if not enabled() or caller_has_trace(config):
+    if not enabled() or caller_has_trace(config, default_callbacks):
         yield RunTrace()
         return
-    opts = dict((config.get("configurable") or {}).get("langfuse") or {})
+    stack = ExitStack()
     try:
+        opts = dict((config.get("configurable") or {}).get("langfuse") or {})
         from langfuse import propagate_attributes
         from langfuse.langchain import CallbackHandler
 
         client = _client()
-        nested = bool(
-            client.get_current_trace_id()
-        )  # inside a traced run (a supervisor's sub-agent): keep its trace
+        owned_parent = _owned_trace.get()
+        nested = owned_parent or bool(client.get_current_trace_id())
         attrs = (
             nullcontext()
             if nested
@@ -147,31 +157,48 @@ def run_trace(
                 trace_name=opts.get("trace_name") or name,
             )
         )
-        span_cm = client.start_as_current_observation(
-            name=name, as_type="agent", input=_message_text(message)
+        stack.enter_context(attrs)
+        span = stack.enter_context(
+            client.start_as_current_observation(name=name, as_type="agent", input=_message_text(message))
         )
     except Exception as e:
+        try:
+            stack.close()
+        except Exception as cleanup_error:
+            logger.debug(f"Langfuse: failed trace startup cleanup: {cleanup_error}")
         logger.debug(f"Langfuse: trace not started: {e}")
         yield RunTrace()
         return
 
-    with attrs, span_cm as span:
-        trace = RunTrace(span, nested=nested)
+    token = _owned_trace.set(True)
+    trace = RunTrace(span, nested=nested)
+    try:
         try:
             if not nested:
                 span.set_trace_io(input=_message_text(message))
             callbacks = config.get("callbacks")
-            callbacks = list(callbacks) if isinstance(callbacks, list) else ([callbacks] if callbacks else [])
+            callbacks = (
+                list(callbacks)
+                if isinstance(callbacks, (list, tuple))
+                else ([callbacks] if callbacks else [])
+            )
             config["callbacks"] = callbacks + [_handler_class(CallbackHandler)()]
         except Exception as e:
             logger.debug(f"Langfuse: callback handler not added: {e}")
         try:
             yield trace
-        except BaseException as e:
+        except Exception as e:
             trace.end(error=f"{type(e).__name__}: {e}")
             raise
-        finally:
-            flush()
+    finally:
+        _owned_trace.reset(token)
+        try:
+            stack.close()
+        except Exception as e:
+            logger.debug(f"Langfuse: trace cleanup failed: {e}")
+        if not owned_parent and not nested:
+            # Flush after ending the root span. Nested runs share the parent's export.
+            await asyncio.to_thread(flush)
 
 
 def _handler_class(base: type) -> type:
@@ -197,7 +224,7 @@ def final_answer(state: Any) -> Any:
     while stack:
         item = stack.pop()
         if isinstance(item, dict):
-            if item.get("final_answer"):
+            if "final_answer" in item:
                 return item["final_answer"]
             stack.extend(item.values())
         elif isinstance(item, (list, tuple)):
@@ -244,8 +271,8 @@ def record_tool_call(
                 "app": app_name,
                 "duration_ms": round(duration_ms, 1) if duration_ms is not None else None,
             },
-            level="ERROR" if error else None,
-            status_message=_cut(error) if error else None,
+            level="ERROR" if error is not None else None,
+            status_message=_cut(error) if error is not None else None,
         )
         _backdate(obs, duration_ms)
         obs.end()

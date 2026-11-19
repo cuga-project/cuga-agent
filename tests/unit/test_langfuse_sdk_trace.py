@@ -5,6 +5,10 @@ These tests do not require a Langfuse server.
 
 from __future__ import annotations
 
+import threading
+from contextlib import contextmanager, nullcontext
+from types import SimpleNamespace
+
 import pytest
 
 from cuga.backend.observability import langfuse_sdk as lf
@@ -18,10 +22,11 @@ def test_tracing_is_off_without_keys(monkeypatch):
     assert lf.enabled() is False
 
 
-def test_run_trace_off_leaves_the_config_unchanged(monkeypatch):
+@pytest.mark.asyncio
+async def test_run_trace_off_leaves_the_config_unchanged(monkeypatch):
     monkeypatch.setattr(lf, "enabled", lambda: False)
     config = {"configurable": {"thread_id": "t1"}}
-    with lf.run_trace("CugaAgent.invoke", "hi", "t1", config) as trace:
+    async with lf.run_trace("CugaAgent.invoke", "hi", "t1", config) as trace:
         assert trace.span is None
     assert config == {"configurable": {"thread_id": "t1"}}
 
@@ -66,4 +71,112 @@ def test_long_values_are_cut():
 
 def test_final_answer_is_found_in_a_streamed_state():
     assert lf.final_answer(("ns", {"node": {"final_answer": "done"}})) == "done"
+    assert lf.final_answer({"node": {"final_answer": ""}}) == ""
     assert lf.final_answer({"other": 1}) == {"other": 1}
+
+
+@pytest.fixture
+def tracing(monkeypatch):
+    import langfuse
+    from langfuse import langchain
+
+    events = []
+    loop_thread = threading.get_ident()
+
+    class CallbackHandler:
+        pass
+
+    from cuga.backend.cuga_graph.utils import langfuse_tracing
+
+    monkeypatch.setattr(langfuse_tracing, "_langfuse_handler_classes", lambda: (CallbackHandler,))
+    monkeypatch.setattr(langchain, "CallbackHandler", CallbackHandler)
+    monkeypatch.setattr(
+        langfuse, "propagate_attributes", lambda **attrs: events.append(attrs) or nullcontext()
+    )
+    monkeypatch.setattr(lf, "enabled", lambda: True)
+
+    class Client:
+        @staticmethod
+        def get_current_trace_id():
+            return None
+
+        @staticmethod
+        @contextmanager
+        def start_as_current_observation(**options):
+            events.append(("open", options["name"]))
+            try:
+                yield SimpleNamespace(update=lambda **kw: None, set_trace_io=lambda **kw: None)
+            finally:
+                events.append(("close", options["name"]))
+
+        @staticmethod
+        def flush():
+            events.append(("flush_off_loop", threading.get_ident() != loop_thread))
+
+    monkeypatch.setattr(lf, "_client", Client)
+    return events, CallbackHandler
+
+
+@pytest.mark.asyncio
+async def test_flush_only_once_off_loop_after_owned_root_closes(tracing):
+    events, _ = tracing
+    async with lf.run_trace("root", "hello", "thread-1", {}):
+        async with lf.run_trace("child", "hello", "thread-1", {}):
+            pass
+    assert events[0]["session_id"] == "thread-1"
+    assert events[1:] == [
+        ("open", "root"),
+        ("open", "child"),
+        ("close", "child"),
+        ("close", "root"),
+        ("flush_off_loop", True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_preserves_one_handler_through_reentry_and_groups_first_turn(tracing, monkeypatch):
+    from cuga.backend.cuga_graph.utils.langfuse_tracing import get_langfuse_invoke_config
+    from cuga.sdk import CugaAgent, InvokeResult
+
+    events, _ = tracing
+    agent = CugaAgent.__new__(CugaAgent)
+    agent._callbacks = []
+    seen = []
+
+    async def invoke_untraced(message, *, thread_id, config, **kwargs):
+        seen.append(thread_id)
+        if message == "first":
+            return await agent.invoke("inner", thread_id=thread_id, config=config)
+        # Use the same callback config route as the SDK graph.
+        agent._apply_callbacks(config)
+        assert len(get_langfuse_invoke_config()["callbacks"]) == 1
+        return InvokeResult(answer="done", thread_id=thread_id)
+
+    monkeypatch.setattr(agent, "_invoke_untraced", invoke_untraced)
+    supplied = {"configurable": {"langfuse": {"user_id": "user"}}}
+    result = await agent.invoke("first", config=supplied)
+    assert result.thread_id and seen == [result.thread_id] * 2
+    assert events[0]["session_id"] == result.thread_id
+    assert [x for x in events if isinstance(x, tuple) and x[0] == "open"] == [("open", "cuga.invoke")]
+    assert "callbacks" not in supplied
+
+
+@pytest.mark.asyncio
+async def test_constructor_handler_is_kept_and_shared_without_sdk_root(tracing, monkeypatch):
+    from cuga.backend.cuga_graph.utils.langfuse_tracing import get_langfuse_invoke_config
+    from cuga.sdk import CugaAgent, InvokeResult
+
+    events, callback_class = tracing
+    agent = CugaAgent.__new__(CugaAgent)
+    supplied = callback_class()
+    agent._callbacks = [supplied]
+
+    async def invoke_untraced(message, *, thread_id, config, **kwargs):
+        agent._apply_callbacks(config)
+        assert get_langfuse_invoke_config()["callbacks"] == [supplied]
+        assert config["callbacks"].count(supplied) == 1
+        return InvokeResult(answer="done", thread_id=thread_id)
+
+    monkeypatch.setattr(agent, "_invoke_untraced", invoke_untraced)
+    await agent.invoke("test", thread_id="thread-1")
+    assert events == []
