@@ -1,5 +1,11 @@
 # Agent guidelines
 
+## Frontend changes
+
+Read [the frontend rules](src/frontend_workspaces/AGENTS.md) before editing frontend
+workspaces. They define the shared IBM Carbon components, loading states,
+navigation, accessibility, layout, secret handling, and browser validation.
+
 ## Declare known arguments explicitly
 
 When a function's arguments are known in advance, declare them explicitly instead
