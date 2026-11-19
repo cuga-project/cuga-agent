@@ -88,8 +88,11 @@ class DoclingServeClient:
                     f"{self._timeout_s:.0f}s (last status {status}). Raise knowledge.docling.timeout_s."
                 )
             t_poll = time.monotonic()
-            task = self._request(
-                "GET", f"/v1/status/poll/{task_id}", params={"wait": min(_POLL_WAIT_S, remaining)}
+            task = self._get(
+                f"/v1/status/poll/{task_id}",
+                file_path.name,
+                deadline,
+                params={"wait": min(_POLL_WAIT_S, remaining)},
             ).json()
             status = task.get("task_status")
             if status == "started" and t_started is None:
@@ -103,7 +106,7 @@ class DoclingServeClient:
             )
 
         t_done = time.monotonic()
-        result = self._request("GET", f"/v1/result/{task_id}").json()
+        result = self._get(f"/v1/result/{task_id}", file_path.name, deadline).json()
         content = (result.get("document") or {}).get("json_content")
         if not content:
             raise DoclingServiceError(
@@ -127,6 +130,33 @@ class DoclingServeClient:
         )
         return doc
 
+    def _get(self, path: str, filename: str, deadline: float, **kwargs: Any) -> httpx.Response:
+        """A status poll or result fetch. Both are reads, so a dropped connection, a proxy error
+        or a busy service (503 + Retry-After) is retried until the file's deadline."""
+        pause = 1.0
+        while True:
+            try:
+                response = self._http.get(path, **kwargs)
+            except httpx.TransportError as e:
+                why, wait = type(e).__name__, pause
+            else:
+                if response.status_code == 404:
+                    raise DoclingServiceError(
+                        f"Document service {self.name} lost the task for {filename}: it restarted, or "
+                        "another replica answered. docling-serve keeps tasks in memory unless it runs "
+                        "its RQ engine with Redis, so run it as one replica. Upload the file again."
+                    )
+                if response.status_code not in (502, 503, 504):
+                    return self._check(response)
+                why, wait = (
+                    f"HTTP {response.status_code}",
+                    _seconds(response.headers.get("Retry-After"), pause),
+                )
+            if time.monotonic() + wait >= deadline:
+                raise DoclingServiceError(f"Document service {self.name} is unreachable ({why})")
+            time.sleep(wait)
+            pause = min(pause * 2, 10.0)
+
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         try:
             response = self._http.request(method, path, **kwargs)
@@ -134,6 +164,9 @@ class DoclingServeClient:
             raise DoclingServiceError(
                 f"Document service {self.name} is unreachable ({type(e).__name__})"
             ) from e
+        return self._check(response)
+
+    def _check(self, response: httpx.Response) -> httpx.Response:
         if response.status_code in (401, 403):
             raise DoclingServiceError(
                 f"Document service {self.name} rejected the API key (HTTP {response.status_code}). "
@@ -144,6 +177,14 @@ class DoclingServeClient:
                 f"Document service {self.name} returned HTTP {response.status_code}: {response.text[:300]}"
             )
         return response
+
+
+def _seconds(retry_after: str | None, default: float) -> float:
+    """Retry-After in seconds (the HTTP-date form falls back to the default), capped at 30 s."""
+    try:
+        return min(float(retry_after), 30.0) if retry_after else default
+    except ValueError:
+        return default
 
 
 def load_processor(spec: str) -> Callable[[Path], DoclingDocument]:

@@ -212,6 +212,71 @@ def test_unreadable_document_names_both_schema_versions(pdf):
         )
 
 
+class _Flaky(_Service):
+    """docling-serve behind a restart or under load: the first answers on a path are errors."""
+
+    def __init__(self, path, errors, **kwargs):
+        super().__init__(**kwargs)
+        self.path, self.errors = path, list(errors)
+
+    def __call__(self, request):
+        if request.url.path == self.path and self.errors:
+            self.requests.append(request)
+            error = self.errors.pop(0)
+            if isinstance(error, Exception):
+                raise error
+            return error
+        return super().__call__(request)
+
+
+def test_polls_ride_out_overload_and_a_dropped_connection(pdf, monkeypatch):
+    """docling-serve answers 503 + Retry-After when its queue backend is busy; a proxy or a
+    restart drops connections. Polls are reads, so the file keeps its task instead of failing."""
+    pauses: list[float] = []
+    monkeypatch.setattr(docling_remote.time, "sleep", pauses.append)
+    errors = [
+        httpx.Response(503, headers={"Retry-After": "3"}),
+        httpx.ConnectError("connection reset"),
+        httpx.Response(502),
+    ]
+    service = _Flaky("/v1/status/poll/t1", errors, statuses=["success"])
+    doc = _client(service).convert(pdf, "balanced")
+
+    assert doc.export_to_dict() == _doc().export_to_dict()
+    assert pauses == [3.0, 2.0, 4.0]  # the service's Retry-After, else a back-off that doubles per retry
+
+
+def test_the_result_fetch_is_retried_too(pdf):
+    service = _Flaky("/v1/result/t1", [httpx.Response(504)], statuses=["success"])
+    assert _client(service).convert(pdf, "balanced").export_to_dict() == _doc().export_to_dict()
+
+
+def test_retries_stop_at_the_files_deadline(pdf, monkeypatch):
+    clock = iter(range(0, 10_000, 100))
+    monkeypatch.setattr(docling_remote.time, "monotonic", lambda: next(clock))
+    service = _Flaky("/v1/status/poll/t1", [httpx.Response(503)] * 50)
+    with pytest.raises(DoclingServiceError, match=r"unreachable \(HTTP 503\)"):
+        _client(service, timeout_s=250).convert(pdf, "balanced")
+
+
+def test_a_lost_task_says_why_and_what_to_change(pdf):
+    """docling-serve's default engine keeps tasks in process memory: after a restart, or from
+    another replica, a poll gets 404."""
+    service = _Flaky("/v1/status/poll/t1", [httpx.Response(404, json={"detail": "Task not found."})])
+    with pytest.raises(DoclingServiceError) as exc_info:
+        _client(service).convert(pdf, "balanced")
+    message = str(exc_info.value)
+    assert "lost the task for report.pdf" in message
+    assert "one replica" in message
+
+
+def test_the_upload_itself_is_not_retried(pdf):
+    """A retried upload could start a second parse of the same file."""
+    service = _Flaky("/v1/convert/file/async", [httpx.Response(503)])
+    with pytest.raises(DoclingServiceError, match="HTTP 503"):
+        _client(service).convert(pdf, "balanced")
+
+
 def test_health_passes_and_fails():
     _client(_Service()).health()
 
