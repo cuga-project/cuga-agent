@@ -80,3 +80,18 @@ async def test_per_stream_cap_replaces_the_callers_and_the_constructors(monkeypa
 
     assert graph.configs[-1]["configurable"]["cuga_lite_max_steps"] == 3
     assert caller["configurable"]["cuga_lite_max_steps"] == 9, "the caller's dict is not changed"
+
+
+@pytest.mark.asyncio
+async def test_per_invoke_cap_reaches_the_graph_when_the_agent_has_hooks(monkeypatch):
+    """With hooks, invoke() hands off to _invoke_with_hooks, which must pass the cap on."""
+    from cuga.backend.hooks.registry import AgentHooks
+    from cuga.sdk import CugaAgent
+
+    agent = CugaAgent(cuga_lite_max_steps=5, auto_load_policies=False, hooks=[AgentHooks()])
+    monkeypatch.setattr(agent, "_ensure_initialized", AsyncMock())
+    agent._compiled_graph = graph = _RecordingGraph()
+
+    await agent.invoke("hi", cuga_lite_max_steps=3)
+
+    assert graph.configs[-1]["configurable"]["cuga_lite_max_steps"] == 3
