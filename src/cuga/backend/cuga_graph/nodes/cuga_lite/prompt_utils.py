@@ -15,7 +15,10 @@ from jinja2.sandbox import SandboxedEnvironment
 from langchain_core.prompts import PromptTemplate
 from langchain_core.tools import StructuredTool
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
-from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
+from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
+    resolve_plan_then_step,
+    runtime_defaults_for_model,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.tool_schema import model_tool_schema
 from cuga.backend.tools_env.registry.utils.schema_utils import json_schema_type
 
@@ -834,6 +837,7 @@ def create_mcp_prompt(
     few_shots_enabled: Optional[bool] = None,
     agents_enabled: bool = False,
     agents_prompt_section: str = "",
+    plan_then_step: Optional[bool] = None,
 ):
     """Create a prompt for CodeAct agent that works with MCP tools.
 
@@ -858,7 +862,12 @@ def create_mcp_prompt(
         has_knowledge: If True, include knowledge-base search guidance in the prompt
         few_shot_examples: Unused (few-shots are chat-prefix only in ``cuga_lite_graph``).
         few_shots_enabled: Unused (reserved for API compatibility).
+        plan_then_step: If True, ask for a short numbered plan and code for its first step only,
+            and render the matching examples. None (the default) follows
+            ``advanced_features.cuga_lite_plan_then_step`` in settings.
     """
+    if plan_then_step is None:
+        plan_then_step = resolve_plan_then_step(None)
     processed_tools = []
     # Graph passes "" when no DB instructions; still allow CLI/demo env (e.g. cuga start demo_crm).
     if not special_instructions:
@@ -914,6 +923,7 @@ def create_mcp_prompt(
             "has_knowledge": has_knowledge,
             "agents_enabled": agents_enabled,
             "agents_prompt_section": agents_prompt_section,
+            "plan_then_step": plan_then_step,
         },
     )
     return prompt

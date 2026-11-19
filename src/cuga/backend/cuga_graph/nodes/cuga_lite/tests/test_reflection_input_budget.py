@@ -81,7 +81,9 @@ def _capturing_chain(content: str):
     return chain, captured
 
 
-async def _run_node(*, reflection: bool, verify: bool, reflection_chain=None, verify_chain=None):
+async def _run_node(
+    *, reflection: bool, verify: bool, reflection_chain=None, verify_chain=None, plan_then_step: bool = True
+):
     from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
 
     node = create_sandbox_node(_adapter(), base_thread_id="t", base_apps_list=[])
@@ -102,6 +104,7 @@ async def _run_node(*, reflection: bool, verify: bool, reflection_chain=None, ve
                 "configurable": {
                     "reflection_enabled": reflection,
                     "pre_execute_verify_enabled": verify,
+                    "cuga_lite_plan_then_step": plan_then_step,
                     "llm": MagicMock(spec=[]),  # unknown model: DEFAULT_CONTEXT_SIZE
                 }
             },
@@ -117,6 +120,31 @@ async def test_sandbox_reflection_sees_newest_history_beyond_30k_chars():
     assert len(history) > 30_000
     assert "NEWEST" in history, "the newest message reaches reflection"
     assert "step 1:" in history, "the whole run fits a 131,072-token budget"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_reflection_budget_and_invocation_share_plan_then_step(enabled):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.reflection import reflection_prompt
+    from cuga.backend.cuga_graph.utils.context_management_utils import rendered_prompt_chars
+
+    chain, captured = _capturing_chain("STATUS: ok\nNEXT: task complete.")
+    with (
+        patch(f"{SANDBOX}.rendered_prompt_chars", wraps=rendered_prompt_chars) as render_size,
+        patch(f"{SANDBOX}.model_input_budget_chars", return_value=200_000) as budget,
+    ):
+        await _run_node(reflection=True, verify=False, reflection_chain=chain, plan_then_step=enabled)
+
+    fixed_inputs = render_size.call_args.args[1]
+    assert fixed_inputs["plan_then_step"] is enabled
+    assert captured["plan_then_step"] is enabled
+    for name, value in fixed_inputs.items():
+        if name not in {"agent_history", "coder_agent_output", "skills_prompt_section"}:
+            assert captured[name] == value
+    expected_chars = rendered_prompt_chars(reflection_prompt(), fixed_inputs)
+    assert budget.call_args.args[1] == expected_chars
+    system_text = reflection_prompt().format_messages(**captured)[0].content
+    assert ("Exactly ONE sentence" in system_text) is enabled
 
 
 @pytest.mark.asyncio

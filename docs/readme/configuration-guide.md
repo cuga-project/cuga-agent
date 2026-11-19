@@ -1108,15 +1108,18 @@ By default CUGA Lite works in **CodeAct**: the model writes a Python block and t
 
 **Step discipline** (`cuga_lite_step_discipline = "one_tool_per_step"`) works in both modes: only the first tool call of a step is attempted — success or error, that is the result the model reads before it decides the next call. CodeAct keeps the block's variables (including that first result); function-calling answers the extra calls with a "deferred" reply.
 
+**Plan then step** (`cuga_lite_plan_then_step = true`, the default) changes only the built-in CodeAct prompts: each code reply starts with a numbered plan of at most four short steps and implements only step 1 (one step may still loop over pages or items); reflection names one next action; the executor does not claim completion while a planned action has no execution result. Bundled few-shots switch to a version written in the same shape. It is independent of step discipline: it does not cap tool calls per block. Set `false` to restore the previous rules and few-shots. One broken example stays fixed in both states: "Using variables from a previous run" now reads `my_accounts_data` instead of calling `example_tool()`. Custom static prompts keep their supplied text.
+
 ## Configuration
 
 | Key | Default | Values |
 |---|---|---|
 | `cuga_lite_execution_mode` | `"codeact"` | `codeact` \| `function_calling` (alias `fc`) |
 | `cuga_lite_step_discipline` | `"off"` | `off` \| `one_tool_per_step` |
+| `cuga_lite_plan_then_step` | `true` | CodeAct prompts: numbered plan, code for step 1 only, one next action in reflection |
 | `cuga_lite_fc_prompt_fragments` | `[]` | Opt-in prompt lines for function-calling mode. `evidence_first`: call a tool before answering, never answer from prior knowledge |
 
-Precedence, highest first: raw keys in `configurable` → per-invoke `invoke(..., execution_mode=..., step_discipline=...)` → constructor `CugaAgent(execution_mode=..., step_discipline=...)` → per-model runtime profile → `[advanced_features]` in `settings.toml` (also where `DYNACONF_ADVANCED_FEATURES__CUGA_LITE_EXECUTION_MODE` lands). An unknown value falls back to the default with a warning.
+Precedence, highest first: raw keys in `configurable` → per-invoke `invoke(..., execution_mode=..., step_discipline=...)` → constructor `CugaAgent(execution_mode=..., step_discipline=...)` → per-model runtime profile → `[advanced_features]` in `settings.toml` (also where `DYNACONF_ADVANCED_FEATURES__CUGA_LITE_EXECUTION_MODE` lands). Only `execution_mode` and `step_discipline` have `invoke` and `CugaAgent` keyword arguments; set `cuga_lite_plan_then_step` and `cuga_lite_fc_prompt_fragments` with the raw `configurable` key (for example `agent.invoke("...", config={"configurable": {"cuga_lite_plan_then_step": False}})`) or in `settings.toml`. An unknown value falls back to the default with a warning.
 
 ```python
 agent = CugaAgent(tools=[...], execution_mode="function_calling", step_discipline="one_tool_per_step")
