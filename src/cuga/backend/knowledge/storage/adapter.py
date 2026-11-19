@@ -61,14 +61,23 @@ def _pg_tsvector(text: str) -> str:
     return " ".join(f"'{term}':{pos}" for pos, term in enumerate(lexical.terms(text or ""), start=1))
 
 
-# One Postgres keyword backfill batch: the next 500 rows in primary-key order after ($1, $2, $3),
-# with the text of those that have no terms yet. Each batch starts where the last one ended, so it
-# reads only rows after it; a "terms IS NULL" filter re-reads every filled row on every batch.
+# One Postgres keyword backfill batch: the next 500 rows without terms, in primary-key order after
+# ($1, $2, $3). A partial index holds just the rows without terms (_pg_todo_index), so a batch
+# reads only those, and a check that finds none is one index probe. Each batch starts where the
+# last one ended, so it never re-reads the rows it just filled.
 _PG_FILL_BATCH = (
-    "SELECT tenant_id, instance_id, id, CASE WHEN " + _TERMS_COLUMN + " IS NULL THEN chunk_text END "
-    "AS pending_text FROM {table} WHERE (tenant_id, instance_id, id) > ($1, $2, $3) "
+    "SELECT tenant_id, instance_id, id, chunk_text FROM {table} "
+    "WHERE " + _TERMS_COLUMN + " IS NULL AND (tenant_id, instance_id, id) > ($1, $2, $3) "
     "ORDER BY tenant_id, instance_id, id LIMIT 500"
 )
+# How often an adapter checks again for rows stored without terms after its backfill. During a
+# rolling upgrade, a replica of an earlier version does not know the column and keeps storing
+# chunks without it; this check indexes them once the new replicas see them.
+_PG_TERMS_RECHECK_S = 60.0
+
+
+def _pg_todo_index(table: str) -> str:
+    return f"idx_{hashlib.sha256(table.encode()).hexdigest()[:16]}_{_TERMS_COLUMN}_todo"
 
 
 def _pg_tsquery(group: list[str]) -> str:
@@ -174,6 +183,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         self._store: Any = None
         self._dim: int | None = None
         self._fts_ready = False
+        self._pg_recheck_at = 0.0  # when to look again for rows stored without terms
         self._pg_ensure_lock = threading.Lock()  # one Postgres keyword backfill at a time
         # One keyword-table setup at a time in this process, across adapters (_fts_setup_lock). A
         # re-index of an old table holds SQLite's write lock for about a minute per 50,000 chunks:
@@ -456,62 +466,70 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             return pool.submit(lambda: asyncio.run(_go())).result()
 
     async def _pg_ensure_terms(self, conn) -> bool:
-        """Add the Postgres keyword column and its GIN index if missing, then fill every row
+        """Add the Postgres keyword column and its indexes if missing, then fill every row
         without terms (rows ingested before the column existed, or whose term write failed).
 
         The column lives on the knowledge table, so tenant scope, deletes and drops apply to it
-        with no extra code. Checked once per adapter. ``False`` when the table does not exist yet.
+        with no extra code. Set up once per adapter, and filled again at most every
+        ``_PG_TERMS_RECHECK_S`` for rows an earlier version stores meanwhile. ``False`` when the
+        table does not exist yet.
         """
-        if self._fts_ready:
+        if self._fts_ready and time.monotonic() < self._pg_recheck_at:
             return True
-        # One backfill per adapter. Concurrent keyword calls skip it (their keyword leg is empty
-        # this once) rather than scan the same rows again and hold more connections.
+        # One backfill per adapter. Concurrent keyword calls skip it rather than scan the same rows
+        # again and hold more connections; before the first one completes, their keyword leg is
+        # empty this once.
         if not self._pg_ensure_lock.acquire(blocking=False):
-            return False
+            return self._fts_ready
         try:
             return await self._pg_add_and_fill_terms(conn)
         finally:
             self._pg_ensure_lock.release()
 
     async def _pg_add_and_fill_terms(self, conn) -> bool:
-        if self._fts_ready:
-            return True
         table = self._collection
-        if await conn.fetchval("SELECT to_regclass($1)", table) is None:
-            return False
-        has_column = await conn.fetchval(
-            "SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass($1) AND attname = $2 AND NOT attisdropped",
-            table,
-            _TERMS_COLUMN,
-        )
-        if not has_column:
-            index = f"idx_{hashlib.sha256(table.encode()).hexdigest()[:16]}_{_TERMS_COLUMN}"
-            async with conn.transaction():  # column and index together, or neither
-                # ALTER TABLE queues behind any open transaction on the table, and every query on
-                # the table queues behind the ALTER. Give up after 2 s; the next keyword call retries.
-                await conn.execute("SET LOCAL lock_timeout = '2s'")
-                await conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {_TERMS_COLUMN} tsvector")
-                await conn.execute(
-                    f"CREATE INDEX IF NOT EXISTS {index} ON {table} USING gin ({_TERMS_COLUMN})"
-                )
+        if not self._fts_ready:
+            if await conn.fetchval("SELECT to_regclass($1)", table) is None:
+                return False
+            has_column = await conn.fetchval(
+                "SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass($1) AND attname = $2 AND NOT attisdropped",
+                table,
+                _TERMS_COLUMN,
+            )
+            todo = _pg_todo_index(table)
+            if not has_column or await conn.fetchval("SELECT to_regclass($1)", todo) is None:
+                index = f"idx_{hashlib.sha256(table.encode()).hexdigest()[:16]}_{_TERMS_COLUMN}"
+                async with conn.transaction():  # column and indexes together, or none
+                    # ALTER TABLE queues behind any open transaction on the table, and every query
+                    # on the table queues behind the ALTER. Give up after 2 s; the next keyword call
+                    # retries.
+                    await conn.execute("SET LOCAL lock_timeout = '2s'")
+                    if not has_column:
+                        await conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {_TERMS_COLUMN} tsvector"
+                        )
+                        await conn.execute(
+                            f"CREATE INDEX IF NOT EXISTS {index} ON {table} USING gin ({_TERMS_COLUMN})"
+                        )
+                    await conn.execute(
+                        f"CREATE INDEX IF NOT EXISTS {todo} ON {table} (tenant_id, instance_id, id) "
+                        f"WHERE {_TERMS_COLUMN} IS NULL"
+                    )
         # ponytail: one pass on first use; a very large collection pays it on its first query.
         # Move it to engine warmup if that first-query latency matters.
         filled, after = 0, ("", "", "")
         while rows := await conn.fetch(_PG_FILL_BATCH.format(table=table), *after):
             after = (rows[-1]["tenant_id"], rows[-1]["instance_id"], rows[-1]["id"])
-            if pending := [r for r in rows if r["pending_text"] is not None]:
-                await conn.executemany(
-                    f"UPDATE {table} SET {_TERMS_COLUMN} = $1::text::tsvector "
-                    "WHERE id = $2 AND tenant_id = $3 AND instance_id = $4",
-                    [
-                        (_pg_tsvector(r["pending_text"]), r["id"], r["tenant_id"], r["instance_id"])
-                        for r in pending
-                    ],
-                )
-                filled += len(pending)
+            await conn.executemany(
+                f"UPDATE {table} SET {_TERMS_COLUMN} = $1::text::tsvector "
+                f"WHERE id = $2 AND tenant_id = $3 AND instance_id = $4 AND {_TERMS_COLUMN} IS NULL",
+                [(_pg_tsvector(r["chunk_text"]), r["id"], r["tenant_id"], r["instance_id"]) for r in rows],
+            )
+            filled += len(rows)
         if filled:
-            logger.info("Indexed keyword terms for {} existing chunks in {}", filled, table)
+            logger.info("Indexed keyword terms for {} chunks stored without them in {}", filled, table)
         self._fts_ready = True
+        self._pg_recheck_at = time.monotonic() + _PG_TERMS_RECHECK_S
         return True
 
     def _pg_batch_terms(self, batch: list[tuple[str, list[float], dict[str, Any]]], bare: list[bool]):

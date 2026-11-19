@@ -777,6 +777,42 @@ def test_postgres_upload_into_a_busy_table_without_the_keyword_column(make_adapt
 
 
 @pytest.mark.pgvector
+def test_postgres_rows_an_older_version_stores_after_the_backfill_are_indexed(make_adapter, monkeypatch):
+    """A rolling upgrade: a new replica has filled every row's terms and stopped checking, and an
+    old replica, which does not know the column, keeps storing chunks without them. The new
+    replica checks again, at most once a minute, and indexes them."""
+    import time
+
+    import asyncpg
+
+    from cuga.backend.knowledge.storage import adapter as adapter_mod
+    from cuga.backend.knowledge.storage.adapter import _TERMS_COLUMN
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kwru")
+    new = make_adapter("pgvector", collection)
+    _add(new, collection, "seed", "Invoice ABC-100 was issued.")
+    assert _hit_sources(new, "ABC-100")  # the backfill ran; this adapter now trusts its terms
+    late = _add(new, collection, "late", "Invoice ZQX-4417 was paid.")
+
+    async def _as_an_old_replica_wrote_it():
+        conn = await asyncpg.connect(_pgvector_dsn())
+        try:
+            await conn.execute(
+                f"UPDATE {collection} SET {_TERMS_COLUMN} = NULL WHERE meta_json::jsonb->>'source' = $1", late
+            )
+        finally:
+            await conn.close()
+
+    asyncio.run(_as_an_old_replica_wrote_it())
+    assert _hit_sources(new, "ZQX-4417") == set(), "not checked again within the minute"
+
+    assert new._pg_recheck_at - time.monotonic() <= adapter_mod._PG_TERMS_RECHECK_S
+    new._pg_recheck_at = time.monotonic()  # a minute later
+    assert _hit_sources(new, "ZQX-4417") == {late}
+
+
+@pytest.mark.pgvector
 def test_postgres_backfill_batches_skip_rows_already_filled(make_adapter, monkeypatch):
     """Each backfill batch starts where the last one ended: its cost does not grow with the rows
     already filled. Filtering on "terms IS NULL" re-read every filled row on every batch."""
