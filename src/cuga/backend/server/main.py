@@ -1787,6 +1787,7 @@ async def event_stream(
     issued_thread_id: Optional[str] = None,
     preloaded_snapshot: Any = None,
     claim_owner: bool = True,
+    gateway_tokens: Any = None,
 ):
     """Handles the main agent event stream. If agent is None, uses app_state.agent (published).
 
@@ -1795,7 +1796,12 @@ async def event_stream(
     sent to the client as the first event. ``preloaded_snapshot`` is the checkpoint ``/stream``
     already read and validated under the lease; the turn runs on it instead of reading again.
     ``claim_owner=False`` checks ownership without recording an owner, for preview and draft chats.
+    ``gateway_tokens`` is the signed-in user's MCP gateway token provider for this run's tool calls.
     """
+    from cuga.backend.server.auth.gateway_tokens import set_provider
+
+    # The signed-in user's MCP gateway tokens for tool calls of this run (task-local).
+    set_provider(gateway_tokens)
     from cuga.backend.activity_tracker.tracker import ActivityTracker
     from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
     from cuga.backend.cuga_graph.utils.agent_loop import AgentLoop, AgentLoopAnswer, StreamEvent
@@ -2747,6 +2753,20 @@ async def auth_callback(request: Request):
         samesite="lax",
         secure=secure,
     )
+    # Keep the IdP token (encrypted, bound to this session) for MCP gateway tools that run as
+    # the signed-in user. Skipped when no encryption key is configured.
+    from cuga.backend.server.auth import gateway_tokens
+
+    idp_cookie = gateway_tokens.encode_idp_cookie(token_response.access_token or "", token)
+    if idp_cookie:
+        response.set_cookie(
+            key=gateway_tokens.IDP_COOKIE_NAME,
+            value=idp_cookie,
+            max_age=session_max_age,
+            httponly=True,
+            samesite="lax",
+            secure=secure,
+        )
     state_samesite = "none" if secure else "lax"
     response.delete_cookie("cuga_auth_state", secure=secure, samesite=state_samesite)
     return response
@@ -2775,6 +2795,9 @@ async def auth_logout():
         httponly=True,
         samesite="lax",
     )
+    from cuga.backend.server.auth.gateway_tokens import IDP_COOKIE_NAME
+
+    response.delete_cookie(key=IDP_COOKIE_NAME, path="/", httponly=True, samesite="lax")
     return response
 
 
@@ -2844,6 +2867,10 @@ async def extension_agent_query(
         return JSONResponse({"type": "agent_error", "message": e.detail}, status_code=e.status_code)
 
     await _assert_thread_access(request_id, user_id, app_state.agent_id)
+    from cuga.backend.server.auth.gateway_tokens import provider_from_request
+
+    # The signed-in user's MCP gateway tokens, as for /stream (None without a session cookie).
+    gateway_tokens = provider_from_request(request, current_user)
 
     async def event_gen():
         # Initial processing message
@@ -2865,6 +2892,7 @@ async def extension_agent_query(
                 thread_id=request_id,
                 entry="ext",
                 user_id=user_id,
+                gateway_tokens=gateway_tokens,
             ):
                 if chunk.strip():
                     # Remove 'data: ' prefix if present
@@ -3064,6 +3092,7 @@ async def stream(
 ):
     """Endpoint to start the agent stream. Use draft agent when X-Use-Draft is set."""
     from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+    from cuga.backend.server.auth.gateway_tokens import provider_from_request
 
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     query = await get_query(request)
@@ -3174,6 +3203,7 @@ async def stream(
             user_attachments=user_attachments,
             agent_id=agent_id_header,
             current_llm=runtime_llm,
+            gateway_tokens=provider_from_request(request, current_user),
             issued_thread_id=issued_thread_id,
             preloaded_snapshot=preloaded_snapshot,
             claim_owner=not preview,
