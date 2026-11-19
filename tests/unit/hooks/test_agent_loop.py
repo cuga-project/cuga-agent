@@ -259,13 +259,33 @@ class _FakeAgent:
         self.calls: List[tuple] = []
 
     async def invoke(self, message, **kwargs):
+        import inspect
+
         from cuga.sdk import InvokeResult
 
-        self.calls.append((message, kwargs["action_response"]))
+        # the arguments must fit the real invoke(): a renamed parameter fails here
+        bound = inspect.signature(CugaAgent.invoke).bind(self, message, **kwargs)
+        self.calls.append((message, bound.arguments["action_response"]))
         return InvokeResult(answer=f"answer {len(self.calls)}", thread_id="t-1")
 
     async def _approval_pending(self, thread_id):
         return self.pending.pop(0) if self.pending else False
+
+    async def _thread_snapshot(self, thread_id):
+        return None, []
+
+
+def test_invoke_with_hooks_declares_the_arguments_of_invoke():
+    import inspect
+
+    def names(fn):
+        return {p for p in inspect.signature(fn).parameters if p not in ("self", "message")}
+
+    assert names(CugaAgent._invoke_with_hooks) == names(CugaAgent.invoke)
+    assert not any(
+        p.kind is inspect.Parameter.VAR_KEYWORD
+        for p in inspect.signature(CugaAgent._invoke_with_hooks).parameters.values()
+    )
 
 
 def _kwargs(**overrides):
@@ -347,3 +367,140 @@ async def test_a_rewritten_reply_is_the_saved_answer_for_the_next_turn(monkeypat
     turn_two = model.history[-1]
     assert "REDACTED-REPLY-4b8" in turn_two
     assert not any("ORIGINAL-SECRET-91f" in text for text in turn_two)
+
+
+@pytest.mark.parametrize(
+    "raw_answer, final_answer",
+    [
+        ("ORIGINAL-SECRET-91f", lambda text: text + " (formatted)"),  # CugaAgent(final_answer=fn)
+        ("ORIGINAL-SECRET-91f [s1]", None),  # citation markers are resolved (or stripped) after the chat copy
+    ],
+    ids=["final-answer-function", "citation-markers"],
+)
+async def test_a_rewrite_is_saved_when_the_answer_changed_after_the_chat_copy(
+    monkeypatch, raw_answer, final_answer
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "scripted-run-no-calls")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9/unused")
+    model = FullHistoryModel(script=[f"ANSWER:{raw_answer}", "ANSWER:second"], seen=[], history=[])
+    agent = CugaAgent(
+        tools=[touch],
+        model=model,
+        hooks=[RewriteHooks()],
+        auto_load_policies=False,
+        filesystem_sync=False,
+        final_answer=final_answer,
+    )
+
+    first = await agent.invoke("First question.")
+    saved = (await agent.graph.aget_state({"configurable": {"thread_id": first.thread_id}})).values
+    assert first.answer == saved["final_answer"] == "REDACTED-REPLY-4b8"
+    assert "ORIGINAL-SECRET-91f" not in str(saved)
+
+    await agent.invoke("Repeat your last answer.", thread_id=first.thread_id)
+    turn_two = model.history[-1]
+    assert "REDACTED-REPLY-4b8" in turn_two
+    assert not any("ORIGINAL-SECRET-91f" in text for text in turn_two)
+
+
+def _content(message):
+    return message["content"] if isinstance(message, dict) else message.content
+
+
+async def test_a_rewrite_replaces_only_what_the_run_saved(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "scripted-run-no-calls")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9/unused")
+    model = FullHistoryModel(script=["ANSWER:first"], seen=[], history=[])
+    agent = CugaAgent(
+        tools=[touch], model=model, hooks=[RewriteHooks()], auto_load_policies=False, filesystem_sync=False
+    )
+    first = await agent.invoke("First question.")
+    config = {"configurable": {"thread_id": first.thread_id}}
+
+    async def saved():
+        return (await agent.graph.aget_state(config)).values
+
+    # nothing was saved since the snapshot (the graph did not run): the earlier turn's answer stays
+    before = await agent._thread_snapshot(first.thread_id)
+    await agent._save_rewritten_answer(first.thread_id, "not run", "NOT-SAVED-1c4", before)
+    assert "NOT-SAVED-1c4" not in str(await saved())
+
+    # the run saved an answer but added no chat message (a denied approval ends like this):
+    # final_answer is replaced, the earlier reply in chat_messages is not
+    await agent.graph.aupdate_state(config, {"final_answer": "Execution Cancelled"})
+    await agent._save_rewritten_answer(first.thread_id, "Execution Cancelled", "CANCEL-REWRITE-6a0", before)
+    values = await saved()
+    assert values["final_answer"] == "CANCEL-REWRITE-6a0"
+    assert _content(values["chat_messages"][-1]) == "REDACTED-REPLY-4b8"
+
+
+class GuardHooks(AgentHooks):
+    """Answers a forbidden message itself, like an intent guard."""
+
+    def before_llm_call(self, thread_id):
+        return MARKER
+
+    def on_user_message(self, message, thread_id):
+        return HookResult(answer="GUARD-ANSWER-3d1") if "forbidden" in message else None
+
+
+async def test_a_stream_the_caller_leaves_early_does_not_turn_off_the_invoke_hooks(monkeypatch):
+    hooks = GuardHooks()
+    model, agent = _run(monkeypatch, ["ANSWER:the agent ran"], hooks)
+
+    stream = agent.stream("Say something.")
+    try:
+        async for _ in stream:
+            assert not agent.hooks.in_run()  # the caller is not inside the stream's run
+            break  # stop reading; the stream stays open
+
+        assert not agent.hooks.in_run()
+        result = await agent.invoke("A forbidden thing.")
+        assert result.answer == "GUARD-ANSWER-3d1"  # the guard still answers: the agent did not run
+        assert [e["hook"] for e in result.hook_events] == ["session_start", "on_user_message", "on_task_end"]
+    finally:
+        await stream.aclose()
+
+
+def _direct_provider(tools):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+
+    return DirectLangChainToolsProvider(tools=tools, app_name="kv")
+
+
+def _caller_toolguard_provider(tools):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ToolGuardingToolProvider
+
+    return ToolGuardingToolProvider(_direct_provider(tools), enabled=False)
+
+
+@pytest.mark.parametrize(
+    "setup",
+    ["tools", "direct-provider", "caller-toolguard-provider", "add-tool-to-direct-provider"],
+)
+async def test_a_tool_call_is_tracked_once_whatever_the_provider_layers(monkeypatch, setup):
+    """The prepare node and the hooks wrapper split the recording between them; a layering that both or neither
+    record shows up here as two records or none."""
+    monkeypatch.setenv("OPENAI_API_KEY", "scripted-run-no-calls")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9/unused")
+    TOUCHED.clear()
+    kwargs = {
+        "tools": {"tools": [touch]},
+        "direct-provider": {"tool_provider": _direct_provider([touch])},
+        "caller-toolguard-provider": {"tool_provider": _caller_toolguard_provider([touch])},
+        "add-tool-to-direct-provider": {"tool_provider": _direct_provider([])},
+    }[setup]
+    agent = CugaAgent(
+        model=ScriptedModel(script=[ONE_TOUCH, "ANSWER:done"], seen=[]),
+        hooks=[RecordingHooks(send_backs=0)],
+        auto_load_policies=False,
+        filesystem_sync=False,
+        **kwargs,
+    )
+    if setup == "add-tool-to-direct-provider":
+        agent.add_tool(touch)
+
+    result = await agent.invoke("Touch a.", track_tool_calls=True)
+
+    assert TOUCHED == ["a"]
+    assert [c["name"] for c in result.tool_calls] == ["touch"]

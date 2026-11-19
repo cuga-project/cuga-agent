@@ -144,7 +144,7 @@ def _python_tokens(code: str) -> Optional[List[tokenize.TokenInfo]]:
     except Exception:  # not Python (3.12+ can raise more than TokenError)
         return None
     if any(t.type == tokenize.ERRORTOKEN and t.string in ("'", '"') for t in tokens):
-        return None  # an unclosed quote: 3.12+ raise above, 3.10/3.11 yield an error token
+        return None  # an unclosed quote: 3.12+ raise above, 3.11 yields an error token
     return tokens
 
 

@@ -104,13 +104,15 @@ async def test_child_change_rebuilds_default_parent_even_without_cached_graphs(m
     monkeypatch.setattr("cuga.backend.server.config_store.load_draft", AsyncMock(return_value=config))
     rebuild = AsyncMock()
     monkeypatch.setattr("cuga.backend.server.manage_routes.draft_ops._apply_config_and_rebuild", rebuild)
+    published_rebuild = AsyncMock()
+    monkeypatch.setattr("cuga.backend.server.manage_routes.apply.rebuild_production_agent", published_rebuild)
 
     await helpers.invalidate_agent_graph_cache(request, "weatherbot", draft=draft, published=published)
 
-    assert rebuild.await_count == int(draft) + int(published)
+    assert rebuild.await_count == int(draft)
+    assert published_rebuild.await_count == int(published)
     if published:
-        # The published default agent keeps the shared saver, so its conversations survive (#774).
-        rebuild.assert_any_await(prod, config, use_draft=False, checkpointer=saver)
+        published_rebuild.assert_awaited_once_with(state, config, 1)
     if draft:
         rebuild.assert_any_await(preview, config, use_draft=True, checkpointer=None)
 

@@ -161,9 +161,55 @@ async def test_a_tool_added_to_a_hooked_direct_provider_is_tracked_once():
     assert [c["name"] for c in tracked] == ["count"]
 
 
-def test_stream_keeps_hook_state_in_its_own_run():
-    agent = _agent(tools=[read])
-    assert not agent.hooks.in_run()
-    with agent._hooks_scope("stream-thread"):
-        assert agent.hooks.in_run() and agent.hooks.thread_id == "stream-thread"
-    assert not agent.hooks.in_run()
+@pytest.mark.asyncio
+async def test_a_self_recording_tool_added_to_a_hooked_direct_provider_is_tracked_once():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker, tracked_tool
+
+    agent = _agent(tool_provider=DirectLangChainToolsProvider(tools=[read], app_name="kv"))
+
+    @tool
+    @tracked_tool
+    async def counted(key: str) -> str:
+        """Count values; the decorator records the call."""
+        return "3"
+
+    agent.add_tool(counted)  # the wrapper recorded it a second time
+    ToolCallTracker.start_tracking()
+    try:
+        assert await (await _tool(agent, "counted")).ainvoke({"key": "k"}) == "3"
+    finally:
+        tracked = ToolCallTracker.stop_tracking()
+    assert [c["name"] for c in tracked] == ["counted"]
+
+
+def test_one_function_decides_which_hooked_tools_the_wrapper_records():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ToolGuardingToolProvider
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import tracked_tool
+    from cuga.backend.hooks import HookRegistry, wrap_provider_with_hooks
+    from cuga.backend.hooks.registry import hook_wrapper_records
+
+    @tool
+    @tracked_tool
+    async def counted(key: str) -> str:
+        """Count values."""
+        return "3"
+
+    reg = HookRegistry([BlockDelete()])
+
+    def direct():
+        return DirectLangChainToolsProvider(tools=[read], app_name="kv")
+
+    def guard(provider):
+        return ToolGuardingToolProvider(provider, enabled=False)
+
+    hooked = wrap_provider_with_hooks(direct(), reg)
+    # a caller's ToolGuard provider, as CugaAgent wraps it
+    nested = guard(wrap_provider_with_hooks(guard(direct()), reg))
+    # the prepare node records these: no hooks layer hides the direct provider from it
+    assert not hook_wrapper_records(direct(), read)
+    assert not hook_wrapper_records(guard(direct()), read)
+    # behind a hooks layer the wrapper records, unless the tool records itself
+    assert hook_wrapper_records(hooked, read) and hook_wrapper_records(nested, read)
+    assert not hook_wrapper_records(hooked, counted) and not hook_wrapper_records(nested, counted)
+    # registry and combined provider tools record themselves
+    assert not hook_wrapper_records(wrap_provider_with_hooks(_SelfRecordingProvider(), reg), read)

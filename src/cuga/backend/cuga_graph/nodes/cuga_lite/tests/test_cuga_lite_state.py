@@ -1,5 +1,6 @@
 """Tests for CugaLiteState model."""
 
+import pytest
 from langchain_core.messages import HumanMessage
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import CugaLiteState
@@ -75,6 +76,24 @@ def test_cuga_lite_state_handles_empty_service_scope():
 
     tenant_id = (state.service_scope or {}).get("tenant_id")
     assert tenant_id is None
+
+
+@pytest.mark.unit
+def test_cuga_lite_state_accepts_config_fingerprint_dict_in_service_scope():
+    """The server stamps config_fingerprint as a dict; entering the CugaLite subgraph must not reject it (#774)."""
+    fingerprint = {"agent_hash": "abc123", "tools_hash": "def456"}
+    state = CugaLiteState(
+        chat_messages=[HumanMessage(content="test")],
+        sub_task="test task",
+        service_scope={
+            "tenant_id": "",
+            "instance_id": "",
+            "agent_id": "cuga-default",
+            "config_fingerprint": fingerprint,
+        },
+    )
+
+    assert state.service_scope["config_fingerprint"] == fingerprint
 
 
 # Made with Bob

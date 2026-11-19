@@ -7,7 +7,8 @@ from cuga.config import get_service_instance_id, get_tenant_id
 
 
 class LocalPolicyStore:
-    def __init__(self, db_path: str, collection_name: str):
+    def __init__(self, db_path: str, collection_name: str, *, distance_metric: str = "l2"):
+        self._distance_metric = distance_metric
         self._db_path = db_path
         self._collection_name = collection_name
         self._embedding_dim: Optional[int] = None
@@ -16,7 +17,9 @@ class LocalPolicyStore:
     def _get_store(self, embedding_dim: int) -> LocalEmbeddingStore:
         if self._store is None:
             schema = policy_embedding_schema(embedding_dim)
-            self._store = LocalEmbeddingStore(self._db_path, self._collection_name, schema)
+            self._store = LocalEmbeddingStore(
+                self._db_path, self._collection_name, schema, distance_metric=self._distance_metric
+            )
             self._embedding_dim = embedding_dim
         return self._store
 

@@ -195,6 +195,9 @@ validators = [
     Validator("storage.checkpoint_pool_max_size", default=10, gte=1),
     Validator("storage.thread_lease_ttl_seconds", default=60, gte=1),
     Validator("storage.thread_lease_renew_seconds", default=20, gte=1),
+    # Scheduled checkpoint retention (prod + durable only); 0 disables the sweep.
+    Validator("storage.checkpoint_retention_days", default=90, gte=0),
+    Validator("storage.checkpoint_prune_interval_minutes", default=60, gte=1),
     Validator("service.instance_id", default=""),
     Validator("service.tenant_id", default=""),
     Validator("secrets.mode", default="local"),
@@ -233,6 +236,9 @@ validators = [
     Validator("auth.iam_proxy_skip_verify", default=False),
     Validator("auth.iam_proxy_ca_bundle", default=""),
     Validator("auth.role_token_source", default="auto"),
+    Validator("mcp_gateway.skip_verify", default=False),
+    Validator("mcp_gateway.ca_bundle", default=""),
+    Validator("mcp_gateway.allowed_hosts", default=[]),
     Validator("skills.enabled", default=False),
     Validator("skills.root", default="cuga", is_in=["cuga", "agents", "global_agents", "global_cuga"]),
     # Phase 6: explicit execution axes — override advanced_features when set.

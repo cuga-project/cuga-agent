@@ -52,3 +52,35 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: bash scripts/smoke_pip_install_isolated.sh
+
+  # The same smoke on the lowest supported Python (requires-python in pyproject.toml).
+  # A separate job, not a matrix: a matrix renames the required context above.
+  # uv downloads this exact version; setup-python is not needed.
+  smoke-pip-isolated-min-python:
+    name: Wheel install + demo_crm OpenAPI (minimum Python 3.11.5)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
+      MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+
+      - name: Isolated wheel smoke on Python 3.11.5
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash scripts/smoke_pip_install_isolated.sh --python 3.11.5

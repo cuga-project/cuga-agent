@@ -61,6 +61,8 @@ async def _apply_config_and_rebuild(
         if hasattr(scoped_provider, "app_names"):
             scoped_provider.app_names = configured_tool_apps(config)
     agent.special_instructions = agent_special_instructions(config)
-    for key, value in (await supervisor_graph_overrides(config, use_draft=use_draft)).items():
+    for key, value in (
+        await supervisor_graph_overrides(config, use_draft=use_draft, checkpointer=checkpointer)
+    ).items():
         setattr(agent, key, value)
     await agent.build_graph(checkpointer=checkpointer)

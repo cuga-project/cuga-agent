@@ -1871,6 +1871,11 @@ def _empty_answer_is_final(result: dict, formatter_configured: bool) -> bool:
     return formatter_configured and _finalization_ran(result)
 
 
+def _checkpoint_id(state: Any) -> Optional[str]:
+    """The checkpoint id of a LangGraph state snapshot (None when nothing is saved for the thread)."""
+    return ((getattr(state, "config", None) or {}).get("configurable") or {}).get("checkpoint_id")
+
+
 def _resolve_checkpointer(saver: Optional["BaseCheckpointSaver"], owner: str) -> "BaseCheckpointSaver":
     """Return the saver to compile ``owner``'s graph with.
 
@@ -2419,7 +2424,7 @@ class CugaAgent:
 
                 from cuga.backend.hooks.registry import (
                     base_tool_provider,
-                    has_hooks_layer,
+                    hook_wrapper_records,
                     wrap_tools_with_hooks,
                 )
 
@@ -2430,10 +2435,12 @@ class CugaAgent:
                     new_tools = [t for t in knowledge_tools if t.name not in existing_names]
                     if new_tools:
                         if self.hooks:  # the same tool-call hooks as the tools given at construction
-                            # behind a hooks layer the prepare node does not record direct tools: the wrapper does
-                            new_tools = wrap_tools_with_hooks(
-                                new_tools, self.hooks, record=has_hooks_layer(self.tool_provider)
-                            )
+                            new_tools = [
+                                wrap_tools_with_hooks(
+                                    [t], self.hooks, record=hook_wrapper_records(self.tool_provider, t)
+                                )[0]
+                                for t in new_tools
+                            ]
                         self.tool_provider.add_tools(new_tools)
                         logger.info(f"Auto-injected {len(new_tools)} knowledge tools into SDK agent")
                 # Mark success only after injection completes (or knowledge disabled)
@@ -2818,18 +2825,51 @@ class CugaAgent:
             logger.debug(f"Could not check interrupt state: {e}")
             return False
 
-    async def _save_rewritten_answer(self, thread_id: Optional[str], shown: Optional[str], new: str) -> None:
+    async def _thread_snapshot(self, thread_id: Optional[str]) -> Optional[Tuple[Optional[str], List[Any]]]:
+        """The thread's last checkpoint id and its ``chat_messages``, read before a run, so that
+        ``_save_rewritten_answer`` can tell what the run added. ``(None, [])`` when nothing is saved for the
+        thread; None when this cannot be read (a caller's checkpointer before the first run builds the graph)."""
+        if not thread_id:
+            return None, []  # invoke() starts a new thread
+        if self._compiled_graph is None:
+            # invoke() builds the graph after it sets up tools and policies. The default saver is created with the
+            # graph, so it holds nothing yet; a caller's saver may already hold the thread.
+            return (None, []) if self._checkpointer is None else None
+        try:
+            state = await self.graph.aget_state({"configurable": {"thread_id": thread_id}})
+        except Exception as exc:
+            logger.debug(f"hooks: thread {thread_id} not read before the run: {exc}")
+            return None
+        return _checkpoint_id(state), list((state.values or {}).get("chat_messages") or [])
+
+    async def _save_rewritten_answer(
+        self,
+        thread_id: Optional[str],
+        shown: Optional[str],
+        new: str,
+        before: Optional[Tuple[Optional[str], List[Any]]],
+    ) -> None:
         """A before_reply rewrite becomes the thread's saved answer, so the next turn continues from the reply the
-        caller got. The answer is saved in three places: ``final_answer``, the last agent message of
-        ``chat_messages`` and the final-answer node's message in ``messages``."""
+        caller got. The answer is saved in three places: ``final_answer``, the agent's reply in ``chat_messages``
+        and the final-answer node's message in ``messages``.
+
+        ``before`` is the ``_thread_snapshot`` taken before the run. The reply in ``chat_messages`` is found by
+        position, not by text: it is the last message, when that is an agent message and the run changed
+        ``chat_messages``. Its text can differ from ``final_answer``, because ``final_answer=``, output formatters
+        and citation resolution change the answer after the chat copy is taken. When the run saved nothing (the
+        graph did not run), nothing is changed."""
         if not thread_id:
             return
         config = {"configurable": {"thread_id": thread_id}}
         try:
-            values = (await self.graph.aget_state(config)).values or {}
+            state = await self.graph.aget_state(config)
         except Exception as exc:
             logger.warning("hooks: rewritten answer not saved for thread {}: {}", thread_id, exc)
             return
+        checkpoint = _checkpoint_id(state)
+        if checkpoint is None or (before is not None and checkpoint == before[0]):
+            return  # no checkpoint from this run: the saved answer is an earlier turn's
+        values = state.values or {}
         saved = values.get("final_answer")
         old = {a for a in (saved, shown) if a}
         update: Dict[str, Any] = {"final_answer": new}
@@ -2848,11 +2888,10 @@ class CugaAgent:
             return (m.get("type") if isinstance(m, dict) else getattr(m, "type", None)) == "ai"
 
         chat = list(values.get("chat_messages") or [])
-        for i in range(len(chat) - 1, -1, -1):
-            if _is_ai(chat[i]) and _content(chat[i]) in old:
-                chat[i] = _with(chat[i], new)
-                update["chat_messages"] = chat
-                break
+        if chat and _is_ai(chat[-1]) and (before is None or chat != before[1]):  # the reply this run added
+            chat[-1] = _with(chat[-1], new)
+            update["chat_messages"] = chat
+        # the final-answer node saves the finished answer, the same text as final_answer
         node_messages = list(values.get("messages") or [])
         for i in range(len(node_messages) - 1, -1, -1):
             content = _content(node_messages[i])
@@ -2869,7 +2908,20 @@ class CugaAgent:
         except Exception as exc:
             logger.warning("hooks: rewritten answer not saved for thread {}: {}", thread_id, exc)
 
-    async def _invoke_with_hooks(self, message: Any, **kwargs: Any) -> "InvokeResult":
+    async def _invoke_with_hooks(
+        self,
+        message: Union[str, List[BaseMessage], None],
+        *,
+        thread_id: Optional[str],
+        config: Optional[Dict[str, Any]],
+        action_response: Optional[Any],
+        user_context: Optional[str],
+        track_tool_calls: bool,
+        variables: Optional[Dict[str, Any]],
+        shortlister: Optional["Shortlister"],
+        execution_mode: Optional[str],
+        step_discipline: Optional[str],
+    ) -> "InvokeResult":
         """Run invoke() inside the session_start, on_user_message, before_reply and on_task_end hooks.
 
         A before_reply hook can send the agent back to work (at most twice); its message becomes the next
@@ -2878,7 +2930,26 @@ class CugaAgent:
         ``result.hook_events``.
         """
         reg = self.hooks
-        thread_id = kwargs.get("thread_id")
+
+        async def run(
+            turn: Union[str, List[BaseMessage], None], turn_thread_id: Optional[str], resume: Optional[Any]
+        ) -> Tuple["InvokeResult", Optional[Tuple[Optional[str], List[Any]]]]:
+            """One invoke() (inside this run it does not run the hooks again), and the thread as it was before."""
+            before = await self._thread_snapshot(turn_thread_id)
+            result = await self.invoke(
+                turn,
+                thread_id=turn_thread_id,
+                config=config,
+                action_response=resume,
+                user_context=user_context,
+                track_tool_calls=track_tool_calls,
+                variables=variables,
+                shortlister=shortlister,
+                execution_mode=execution_mode,
+                step_discipline=step_discipline,
+            )
+            return result, before
+
         with reg.run(thread_id):
             if isinstance(message, str):
                 if not reg.thread_started(thread_id):
@@ -2889,8 +2960,7 @@ class CugaAgent:
                     return InvokeResult(
                         answer=guard.answer, thread_id=thread_id, hook_events=reg.run_events()
                     )
-            result = await self.invoke(message, **kwargs)
-            kwargs["action_response"] = None  # a send-back is a new user turn, not another resume
+            result, before = await run(message, thread_id, action_response)
             for attempt in range(3):
                 reg.set_thread(result.thread_id)
                 if not result.error and await self._approval_pending(result.thread_id):
@@ -2898,11 +2968,11 @@ class CugaAgent:
                     return result
                 reply = reg.before_reply(result.answer or "")
                 if reply.message and not result.error and attempt < 2:  # sent back to work (at most twice)
-                    kwargs["thread_id"] = result.thread_id
-                    result = await self.invoke(reply.message, **kwargs)
+                    # a send-back is a new user turn in the same thread, not another resume
+                    result, before = await run(reply.message, result.thread_id, None)
                     continue
                 if reply.answer is not None:  # e.g. an output formatter added a required note
-                    await self._save_rewritten_answer(result.thread_id, result.answer, reply.answer)
+                    await self._save_rewritten_answer(result.thread_id, result.answer, reply.answer, before)
                     result.answer = reply.answer
                 break
             reg.on_task_end(result.answer or "")
@@ -3201,8 +3271,8 @@ class CugaAgent:
             if state_snapshot and state_snapshot.values:
                 existing_state = AgentState(**state_snapshot.values)
                 logger.debug(f"Found existing state for thread_id: {thread_id}")
-        except Exception as e:
-            logger.debug(f"No existing state found for thread_id {thread_id}: {e}")
+        except Exception as exc:
+            raise RuntimeError("Could not read conversation state. Please retry.") from exc
 
         # Build state: use existing state if available, otherwise create new
         if existing_state:
@@ -3553,14 +3623,16 @@ class CugaAgent:
             if action_response:
                 logger.info(f"Streaming resume after HITL response (action_id: {action_response.action_id})")
 
-            with self._hooks_scope(thread_id):
-                async for state in self.graph.astream(
+            async for state in self._in_hooks_run(
+                self.graph.astream(
                     resume_input,
                     config=run_config,
                     stream_mode="updates",
                     subgraphs=True,
-                ):
-                    yield state
+                ),
+                thread_id,
+            ):
+                yield state
             return
 
         # Normal streaming case
@@ -3603,23 +3675,24 @@ class CugaAgent:
 
         # Stream the graph with subgraph updates enabled
         logger.debug(f"Streaming agent with {len(messages)} messages")
-        with self._hooks_scope(thread_id):
-            async for state in self.graph.astream(
+        async for state in self._in_hooks_run(
+            self.graph.astream(
                 initial_state,
                 config=run_config,
                 stream_mode="updates",  # Stream node updates (including subgraph internals)
                 subgraphs=True,  # Include subgraph updates
-            ):
-                yield state
+            ),
+            thread_id,
+        ):
+            yield state
 
-    def _hooks_scope(self, thread_id: Optional[str]):
-        """Hook state of one stream(), as invoke() has: tool notes carried to the next model call stay in this
-        stream (a stream outside any run would share them with every other thread)."""
+    def _in_hooks_run(self, updates: Any, thread_id: Optional[str]) -> Any:
+        """The graph updates of one stream(), read inside a hook run of their own, as invoke() has one: tool notes
+        carried to the next model call stay in this stream (a stream outside any run would share them with every
+        other thread). The caller of stream() never runs inside that run (see ``HookRegistry.run_stream``)."""
         if getattr(self, "hooks", None) and not self.hooks.in_run():
-            return self.hooks.run(thread_id)
-        from contextlib import nullcontext
-
-        return nullcontext()
+            return self.hooks.run_stream(updates, thread_id)
+        return updates
 
     def add_tool(self, tool: BaseTool):
         """
@@ -3647,7 +3720,11 @@ class CugaAgent:
         """
         from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import invalidate_toolguard_provider
         from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
-        from cuga.backend.hooks.registry import base_tool_provider, has_hooks_layer, wrap_tools_with_hooks
+        from cuga.backend.hooks.registry import (
+            base_tool_provider,
+            hook_wrapper_records,
+            wrap_tools_with_hooks,
+        )
 
         base_provider = base_tool_provider(self.tool_provider)
         if isinstance(base_provider, DirectLangChainToolsProvider) and hasattr(
@@ -3655,7 +3732,7 @@ class CugaAgent:
         ):
             if self.hooks:  # the same tool-call hooks as the tools given at construction
                 (tool,) = wrap_tools_with_hooks(
-                    [tool], self.hooks, record=has_hooks_layer(self.tool_provider)
+                    [tool], self.hooks, record=hook_wrapper_records(self.tool_provider, tool)
                 )
             self.tool_provider.add_tool(tool)
             invalidate_toolguard_provider(self.tool_provider)  # noqa: F821
