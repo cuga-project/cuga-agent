@@ -13,9 +13,8 @@ the canonical term + its other aliases as additional semantic anchors, so the
 embedder pulls neighboring vectors from multiple synonymous regions.
 
 Trade-offs (be honest in the doc):
-- This is heuristic expansion, not true hybrid (no BM25 sparse component).
-  cuga's storage is dense-only via fastembed/Milvus; a true hybrid lives in
-  a future PR.
+- This is heuristic expansion of the query that is embedded. It is separate
+  from the keyword (BM25) leg that hybrid search fuses with the dense results.
 - Appending too many aliases can shift the embedding *away* from useful
   regions. We cap aliases per match and de-dup aggressively.
 - Word-boundary matching only — substring matches would over-trigger.

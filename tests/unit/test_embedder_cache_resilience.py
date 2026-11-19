@@ -254,6 +254,7 @@ def _probe(default_embeddings, initializing, enabled=True):
         _scrub_secret_text=lambda s: s,
         # Already-initialized in these cases, so this is a no-op.
         _ensure_embeddings=lambda: None,
+        _to_thread=asyncio.to_thread,
     )
     return asyncio.run(KnowledgeEngine.probe_active_embedder(fake))
 

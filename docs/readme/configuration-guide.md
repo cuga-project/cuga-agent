@@ -459,7 +459,7 @@ redaction mechanism.
 
 ### Knowledge Base
 
-CUGA includes a built-in knowledge base powered by LangChain and local vector stores. **Docling** is integrated for document ingestion: it parses and normalizes PDFs, Office files, HTML, Markdown, images, and other supported types before chunking and embedding, so the pipeline stays self-contained with no external document services.
+CUGA includes a built-in knowledge base powered by LangChain. Vectors are stored in SQLite (sqlite-vec) by default, or in Postgres (pgvector) when `[storage] mode = "prod"` in `settings.toml`. **Docling** is integrated for document ingestion: it parses and normalizes PDFs, Office files, HTML, Markdown, images, and other supported types before chunking and embedding, so the pipeline stays self-contained with no external document services.
 
 When enabled, the agent can search, ingest, and manage documents.
 
@@ -491,8 +491,20 @@ cuga start demo_knowledge
 > Walk through a full HR-Benefits demo with sample documents and example prompts:
 > **[docs/examples/knowledge_demo/](../../docs/examples/knowledge_demo)**
 
-Knowledge is **enabled by default** via `settings.toml`. The SDK auto-injects knowledge tools
-and awareness into the agent, so it knows what documents are available and how to search them.
+Knowledge is **off by default** (`enabled = false` under `[knowledge]` in
+`src/cuga/configurations/knowledge/knowledge_settings.toml`). To turn it on:
+
+- **Demo:** `cuga start demo_knowledge` turns it on.
+- **Server:** set `DYNACONF_KNOWLEDGE__ENABLED=true` in the environment before `cuga start`.
+- **SDK:** pass `CugaAgent(enable_knowledge=True)`. It overrides the setting for that agent.
+
+When knowledge is on, the SDK auto-injects knowledge tools and awareness into an agent built
+with `tools=` (or with no tools), so it knows what documents are available and how to search
+them. An agent built with a custom `tool_provider` does not get them automatically: add the
+tools from `agent.knowledge.get_langchain_tools()` to your provider yourself. Called without
+arguments, it returns tools for the agent's documents only. For session documents, pass the
+conversation's `thread_id=` and use those tools only in that conversation, since they are bound
+to it.
 
 #### Programmatic Access
 
@@ -542,6 +554,8 @@ await agent.knowledge.ingest("/path/to/file.pdf", scope="agent")
 ```
 
 #### Disabling Knowledge
+
+To keep knowledge off for one agent even when the setting turns it on:
 
 ```python
 agent = CugaAgent(tools=[my_tools], enable_knowledge=False)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import functools
+import gc
 import hashlib
 import ipaddress
 from loguru import logger as loguru_logger
@@ -19,9 +20,10 @@ import threading
 import time
 import unicodedata
 import uuid
+import weakref
 from dataclasses import dataclass, fields as dc_fields
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urljoin, urlparse
 
 from pydantic import ConfigDict
@@ -1788,13 +1790,76 @@ def _get_embedding_dim(embeddings: Embeddings) -> int:
 
 # --- Engine ---
 
+# The engine in this process that holds each knowledge directory's lock. Weak: it never keeps an
+# engine alive.
+_LOCK_HOLDERS: "weakref.WeakValueDictionary[str, KnowledgeEngine]" = weakref.WeakValueDictionary()
+
+
+def _take_over_lock(key: str, lock_file: Any) -> bool:
+    """Take a knowledge directory's lock from this process's engine for it once nothing uses that
+    engine. Never from another process.
+
+    A dropped CugaAgent is freed only by a garbage collection, because it sits in reference cycles.
+    On Postgres its engine outlives even that, for about five minutes: asyncpg schedules timers that
+    keep a copy of the finished run's context, and through LangGraph's run loop that copy reaches the
+    agent's graph, tools, knowledge client and engine. So: collect once, which frees a dropped agent
+    and, on SQLite, its engine and lock; then shut down an engine whose owner has been collected and
+    that has no ingest in flight.
+    """
+    if key not in _LOCK_HOLDERS:
+        return False  # another process holds it
+    gc.collect()
+    holder = _LOCK_HOLDERS.get(key)
+    if holder is not None:
+        owner = holder._owner
+        busy = (
+            getattr(holder, "_active_tasks", None)
+            or getattr(holder, "_reindex_in_progress", None)
+            or getattr(holder, "_writes_in_flight", 0)
+            or getattr(holder, "_threads_in_flight", 0)
+        )
+        if owner is None or owner() is not None or busy:
+            return False  # still in use: a live owner, the server's engine, a write or a worker thread
+        logger.info(f"Knowledge data in {key}: its previous agent is gone; shutting down its engine")
+        holder._taken_over = True  # a client kept from that agent now gets an error, not shared writes
+        holder.shutdown()
+    try:
+        acquire_exclusive_nonblocking(lock_file)
+    except OSError:
+        return False
+    return True
+
+
+def _holds_directory(method):
+    """Count a write call while it runs, so no other engine takes the directory over until it
+    returns (``_take_over_lock``). Reads need no count: they cannot corrupt the directory."""
+
+    @functools.wraps(method)
+    async def call(self, *args, **kwargs):
+        self._writes_in_flight = getattr(self, "_writes_in_flight", 0) + 1
+        try:
+            return await method(self, *args, **kwargs)
+        finally:
+            self._writes_in_flight -= 1
+
+    return call
+
 
 class KnowledgeEngine:
     """In-process knowledge engine (chunking, embeddings, pluggable vector backends)."""
 
-    def __init__(self, config: KnowledgeConfig, chat_generator: Any = None):
+    _threads_in_flight = 0  # worker threads started and not yet returned (_to_thread)
+    _threads_lock = threading.Lock()  # guards it; shared by all engines, held for a few lines
+
+    def __init__(self, config: KnowledgeConfig, chat_generator: Any = None, owner: Any = None):
+        """``owner`` is what uses this engine (the SDK passes its CugaAgent), held weakly. Once it
+        has been collected, a new engine for the same directory in this process may take the lock
+        over; an engine without an owner (the server's) is never taken over."""
         config.validate()
         self._config = config
+        self._owner = weakref.ref(owner) if owner is not None else None
+        self._taken_over = False
+        self._writes_in_flight = 0
         # Optional, host-injected chat model for query transformation (multi_query
         # / HyDE). Duck-typed to the query_transform.ChatGenerator Protocol so the
         # knowledge package stays standalone (no host import). None → transforms
@@ -1810,11 +1875,19 @@ class KnowledgeEngine:
 
         # Single-writer lock (flock / msvcrt — race-free)
         self._lock_file = open(config.persist_dir / ".lock", "w+b")
+        self._lock_key = str(config.persist_dir.resolve())
         try:
             acquire_exclusive_nonblocking(self._lock_file)
         except OSError:
-            self._lock_file.close()
-            raise RuntimeError("Knowledge engine already running in another process. Start with --workers 1")
+            if not _take_over_lock(self._lock_key, self._lock_file):
+                self._lock_file.close()
+                raise RuntimeError(
+                    f"Knowledge data in {config.persist_dir} is already open in another knowledge engine: "
+                    "another server worker, or another CugaAgent in this process that is still in use. "
+                    "Run the server with one worker; in the SDK, reuse one agent's knowledge or call "
+                    "`await agent.aclose()` on the other agent first."
+                )
+        _LOCK_HOLDERS[self._lock_key] = self
 
         # Default embeddings (lazy — initialized on first use to speed up startup)
         self._default_embeddings = None
@@ -2022,9 +2095,52 @@ class KnowledgeEngine:
         task = asyncio.ensure_future(_maintenance_loop())
         self._background_tasks.append(task)
 
+    async def _to_thread(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        """``asyncio.to_thread``, counted from dispatch until ``fn`` returns.
+
+        Cancelling the caller does not stop a thread that is running, and a delete's thread still
+        removes its file, so a takeover waits for the thread, not the caller (``_take_over_lock``).
+        A call cancelled before its thread starts never runs.
+        """
+        started = abandoned = False
+
+        def run() -> Any:
+            nonlocal started
+            with self._threads_lock:
+                if abandoned:
+                    return None
+                started = True
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                with self._threads_lock:
+                    self._threads_in_flight -= 1
+
+        with self._threads_lock:
+            self._threads_in_flight += 1
+        try:
+            return await asyncio.to_thread(run)
+        except BaseException:
+            with self._threads_lock:
+                if not started:
+                    abandoned = True
+                    self._threads_in_flight -= 1
+            raise
+
+    def _refuse_if_taken_over(self) -> None:
+        if getattr(self, "_taken_over", False):
+            raise RuntimeError(
+                f"This knowledge engine was shut down: another agent opened {self._config.persist_dir} "
+                "after the agent that owned this engine was dropped. Use the new agent's knowledge."
+            )
+
     async def _ensure_metadata_ready(self) -> None:
-        if self._metadata_ready:
-            return
+        self._refuse_if_taken_over()  # every operation starts here, before it reads or writes
+        if not self._metadata_ready:
+            await self._init_metadata()
+
+    @_holds_directory  # first use writes: it recovers stale tasks, reconciles deletes and purges
+    async def _init_metadata(self) -> None:
         async with self._metadata_init_lock:
             if self._metadata_ready:
                 return
@@ -2078,6 +2194,9 @@ class KnowledgeEngine:
             self._lock_file.close()
         except Exception:
             pass
+        key = getattr(self, "_lock_key", None)
+        if key and _LOCK_HOLDERS.get(key) is self:
+            del _LOCK_HOLDERS[key]
         logger.info("Knowledge engine stopped")
 
     # --- Embeddings (lazy init) ---
@@ -2139,7 +2258,7 @@ class KnowledgeEngine:
 
         await self._ensure_metadata_ready()
         # Step 2: embeddings — same call existing code paths use.
-        await asyncio.to_thread(self._ensure_embeddings)
+        await self._to_thread(self._ensure_embeddings)
 
         # Step 3: Docling. Only build the converter for the *configured* mode
         # — if the user later switches to a different mode it'll rebuild then.
@@ -2150,14 +2269,14 @@ class KnowledgeEngine:
         docling_error: str | None = None
         try:
             # Step A: build the converter (cheap — just registers options).
-            converter = await asyncio.to_thread(self._get_docling_converter)
+            converter = await self._to_thread(self._get_docling_converter)
             # Step B: FORCE the pipeline + models to load right now. Without
             # this, Docling lazy-loads the layout-model weights (~22s) on the
             # first convert() call, defeating the whole point of prewarm.
             try:
                 from docling.datamodel.base_models import InputFormat
 
-                await asyncio.to_thread(converter.initialize_pipeline, InputFormat.PDF)
+                await self._to_thread(converter.initialize_pipeline, InputFormat.PDF)
             except Exception as init_err:  # pragma: no cover - defensive
                 logger.warning(
                     "Docling pipeline init during prewarm raised; weights will "
@@ -2184,7 +2303,7 @@ class KnowledgeEngine:
             try:
                 from cuga.backend.knowledge.reranker import prewarm as _rerank_prewarm
 
-                await asyncio.to_thread(
+                await self._to_thread(
                     _rerank_prewarm, str(getattr(self._config, "rerank_model", "BAAI/bge-reranker-base"))
                 )
                 reranker_prewarmed = True
@@ -2372,7 +2491,7 @@ class KnowledgeEngine:
                 adapter = self._create_vector_adapter(collection, embeddings)
                 self._vector_cache_put(collection, adapter)
 
-        await asyncio.to_thread(_sync_put)
+        await self._to_thread(_sync_put)
 
     async def _ensure_collection_config(self, collection: str) -> None:
         if await self._metadata.get_collection_config(collection):
@@ -2517,6 +2636,7 @@ class KnowledgeEngine:
                 skip_file_copy,
             )
 
+    @_holds_directory
     async def ingest(
         self,
         collection: str,
@@ -2605,7 +2725,7 @@ class KnowledgeEngine:
             # run past a pinned model's token limit, and the text past it is never embedded.
             pinned = await self._pinned_model(collection)
             t_parse = time.monotonic()
-            docs = await asyncio.to_thread(self._load_document, file_path, pinned)
+            docs = await self._to_thread(self._load_document, file_path, pinned)
             stage_timings["parse_s"] = round(time.monotonic() - t_parse, 3)
             if not docs:
                 raise ValueError(f"No content extracted from {filename}")
@@ -2634,7 +2754,7 @@ class KnowledgeEngine:
             )
 
             # The adapter's progress_cb is called from the worker thread (via
-            # asyncio.to_thread(_vector_mutation)). To get those updates back
+            # self._to_thread(_vector_mutation)). To get those updates back
             # into the metadata store, we capture the outer event loop here
             # and ferry each emit via run_coroutine_threadsafe. Futures are
             # tracked and drained before the completion update so the final
@@ -2850,11 +2970,11 @@ class KnowledgeEngine:
                 dest = dest_dir / filename
                 if file_path.resolve() != dest.resolve():
                     try:
-                        await asyncio.to_thread(shutil.copy2, str(file_path), str(dest))
+                        await self._to_thread(shutil.copy2, str(file_path), str(dest))
                     except Exception:
                         if dest.exists():
                             try:
-                                await asyncio.to_thread(dest.unlink)
+                                await self._to_thread(dest.unlink)
                             except OSError:
                                 pass
                         raise
@@ -3026,7 +3146,7 @@ class KnowledgeEngine:
                         return adapter.add_documents(docs, **common_kwargs)
                     return {"num_added": 0, "num_skipped": len(docs)}
 
-            return await asyncio.to_thread(_vector_mutation)
+            return await self._to_thread(_vector_mutation)
         except Exception as e:
             if retry and ("DataNotMatch" in str(e) or "schema" in str(e).lower()):
                 logger.warning(f"Schema mismatch in {collection}, dropping and recreating: {e}")
@@ -3042,7 +3162,7 @@ class KnowledgeEngine:
                             if ad:
                                 ad.drop()
 
-                    await asyncio.to_thread(_drop_vec)
+                    await self._to_thread(_drop_vec)
                 except Exception:
                     pass
                 await self._metadata.delete_collection_metadata(collection)
@@ -3059,6 +3179,7 @@ class KnowledgeEngine:
                 )
             raise
 
+    @_holds_directory
     async def ingest_url(self, collection: str, url: str) -> dict[str, Any]:
         """Ingest a document from URL."""
         self._validate_url(url)
@@ -3169,6 +3290,7 @@ class KnowledgeEngine:
                 raise IngestStillFinishingError(filename, task_id)
         return stopped
 
+    @_holds_directory
     async def delete_document(self, collection: str, filename: str) -> None:
         """Delete a document. Idempotent compensating flow across stores."""
         await self._ensure_metadata_ready()
@@ -3213,7 +3335,7 @@ class KnowledgeEngine:
                 raise DocumentNotFoundError(filename)
             await self._ensure_vector_store_cached(collection)
             try:
-                await asyncio.to_thread(self._delete_vector_and_file, collection, filename)
+                await self._to_thread(self._delete_vector_and_file, collection, filename)
                 await self._metadata.remove_document(collection, filename)
                 logger.info(f"Deleted {filename} from {collection}")
             except Exception as e:
@@ -3245,7 +3367,7 @@ class KnowledgeEngine:
         async with self._get_collection_lock(collection):
             await self._ensure_vector_store_cached(collection)
             try:
-                await asyncio.to_thread(self._delete_vector_and_file, collection, filename)
+                await self._to_thread(self._delete_vector_and_file, collection, filename)
                 await self._metadata.remove_document(collection, filename)
                 logger.info(f"Reconciled delete: {filename} from {collection}")
             except Exception as e:
@@ -3468,11 +3590,11 @@ class KnowledgeEngine:
         # usually faster than dense (no embedding round-trip), so the
         # added latency is bounded by the dense call.
         if _hybrid_on:
-            dense_task = asyncio.to_thread(_do_dense_search, first_k)
-            lexical_task = asyncio.to_thread(_do_lexical_search, first_k)
+            dense_task = self._to_thread(_do_dense_search, first_k)
+            lexical_task = self._to_thread(_do_lexical_search, first_k)
             dense_scored, lexical_scored = await asyncio.gather(dense_task, lexical_task)
         else:
-            dense_scored = await asyncio.to_thread(_do_dense_search, first_k)
+            dense_scored = await self._to_thread(_do_dense_search, first_k)
             lexical_scored = []
 
         # Empty-guard retry: if glossary expansion drove the dense embedding
@@ -3490,7 +3612,7 @@ class KnowledgeEngine:
                 },
             )
 
-            dense_scored = await asyncio.to_thread(_do_dense_search, first_k, original_query)
+            dense_scored = await self._to_thread(_do_dense_search, first_k, original_query)
 
         if dense_scored:
             logger.debug(
@@ -3536,10 +3658,10 @@ class KnowledgeEngine:
             except Exception:
                 _variants = None
             if _variants is not None and _variants.active:
-                _legs = [asyncio.to_thread(_do_dense_search, first_k, qv) for qv in _variants.dense_extra]
+                _legs = [self._to_thread(_do_dense_search, first_k, qv) for qv in _variants.dense_extra]
                 if _hybrid_on:
                     _legs += [
-                        asyncio.to_thread(_do_lexical_search, first_k, qv) for qv in _variants.lexical_extra
+                        self._to_thread(_do_lexical_search, first_k, qv) for qv in _variants.lexical_extra
                     ]
                 _scored_legs = await asyncio.gather(*_legs, return_exceptions=True)
                 _variant_lists = [
@@ -3579,7 +3701,7 @@ class KnowledgeEngine:
         # is only needed for pure-dense pathological pages.
         if _filter_mode == "enforce" and len(results) < limit and len(dense_scored) >= first_k:
             second_k = min(200, max(limit * 2, first_k + limit))
-            scored2 = await asyncio.to_thread(_do_dense_search, second_k)
+            scored2 = await self._to_thread(_do_dense_search, second_k)
             seen_drain = set(r.text for r in results)
             # Snapshot the threshold counter so we can split drain-pass
             # rejects from the original pass for the wire ``drain_drops``
@@ -3660,7 +3782,7 @@ class KnowledgeEngine:
                         )
                         for i, r in enumerate(results)
                     ]
-                    reranked = await asyncio.to_thread(
+                    reranked = await self._to_thread(
                         _rr.rerank, original_query, candidates, limit, _rerank_model
                     )
                     logger.info(
@@ -3955,6 +4077,7 @@ class KnowledgeEngine:
         await self._ensure_metadata_ready()
         return await self._metadata.get_task(task_id)
 
+    @_holds_directory
     async def cancel_task(self, task_id: str) -> dict[str, Any] | None:
         """Cancel a task and record the OUTCOME, not just the intent.
 
@@ -4459,11 +4582,11 @@ class KnowledgeEngine:
             # _ensure_embeddings can load a local model / construct a provider
             # client — run it off the event loop so a cold engine doesn't stall
             # the polled health endpoint.
-            await asyncio.to_thread(self._ensure_embeddings)
+            await self._to_thread(self._ensure_embeddings)
             embeddings = self._default_embeddings
             if embeddings is None:
                 raise RuntimeError("embedding initialization produced no client")
-            await asyncio.to_thread(embeddings.embed_query, "ping")
+            await self._to_thread(embeddings.embed_query, "ping")
         except Exception as e:  # noqa: BLE001 — any failure means "unavailable"
             available = False
             # Scrub the FULL error THEN truncate — truncating first could cut a
@@ -4512,6 +4635,7 @@ class KnowledgeEngine:
 
     # --- Collection lifecycle ---
 
+    @_holds_directory
     async def drop_collection(self, collection: str) -> None:
         """Drop a collection and all its data."""
         await self._ensure_metadata_ready()
@@ -4533,6 +4657,7 @@ class KnowledgeEngine:
         await self._metadata.delete_collection_metadata(collection)
         logger.info(f"Dropped collection {collection}")
 
+    @_holds_directory
     async def drop_collection_vectors(self, collection: str) -> None:
         """Drop vectors and metadata but preserve source files for re-indexing."""
         await self._ensure_metadata_ready()
@@ -4555,6 +4680,7 @@ class KnowledgeEngine:
         await self._metadata.delete_collection_metadata(collection)
         logger.info(f"Dropped collection vectors {collection} (files preserved)")
 
+    @_holds_directory
     async def copy_source_files(self, source_collection: str, target_collection: str) -> int:
         """Mirror source's files into target. Removes stale files in target
         (files not present in source) BEFORE copying so a prior failed
@@ -4562,6 +4688,8 @@ class KnowledgeEngine:
         Refuses source==target (would delete source's own files). Does not
         re-ingest — call reindex() on target after."""
         import shutil
+
+        self._refuse_if_taken_over()
 
         source_collection = _sanitize_collection(source_collection)
         target_collection = _sanitize_collection(target_collection)
@@ -4591,7 +4719,7 @@ class KnowledgeEngine:
         # review): a large migration (many/large files) would otherwise block
         # every concurrent request for its whole duration. Same to_thread
         # pattern used for ingest + delete I/O in this file.
-        stale, count = await asyncio.to_thread(_mirror)
+        stale, count = await self._to_thread(_mirror)
         if stale:
             logger.info(
                 f"Removed {stale} stale file(s) from {target_collection}; copied {count} from {source_collection}"
@@ -4600,6 +4728,7 @@ class KnowledgeEngine:
             logger.info(f"Copied {count} source files from {source_collection} to {target_collection}")
         return count
 
+    @_holds_directory
     async def reindex(self, collection: str) -> dict[str, Any]:
         """Drop collection vectors and re-ingest all files with current settings.
 
