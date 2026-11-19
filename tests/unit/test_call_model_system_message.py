@@ -118,3 +118,74 @@ async def test_a_system_text_inside_a_longer_one_is_still_added():
     )
 
     assert captured[0][0]["content"] == "SYSTEM\n\nAnswer in English. Be brief.\n\nAnswer in English."
+
+
+async def _resumed_turns(turns):
+    """Run one call_model per turn on one thread: each turn's messages join the history the
+    previous turn persisted, as the checkpointer does. Returns what each turn sent and persisted."""
+    from langchain_core.messages import AIMessage
+
+    history: list = []
+    prompts, persisted = [], []
+    for messages in turns:
+        captured: list[list[dict]] = []
+        history = await _run_turn(history + messages, captured)
+        history = history + [AIMessage(content="ok")]
+        prompts.append(captured[0][0]["content"])
+        persisted.append(history)
+    return prompts, persisted
+
+
+@pytest.mark.asyncio
+async def test_the_latest_system_message_replaces_the_earlier_ones():
+    """English, then French, then English again: the model is told English, once."""
+    prompts, _ = await _resumed_turns(
+        [
+            [SystemMessage(content="Answer in English."), HumanMessage(content="a")],
+            [SystemMessage(content="Answer in French."), HumanMessage(content="b")],
+            [SystemMessage(content="Answer in English."), HumanMessage(content="c")],
+        ]
+    )
+
+    assert prompts == [
+        "SYSTEM\n\nAnswer in English.",
+        "SYSTEM\n\nAnswer in French.",
+        "SYSTEM\n\nAnswer in English.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_without_a_system_message_keeps_the_last_one():
+    prompts, _ = await _resumed_turns(
+        [
+            [SystemMessage(content="Answer in French."), HumanMessage(content="a")],
+            [HumanMessage(content="b")],
+            [HumanMessage(content="c")],
+        ]
+    )
+
+    assert prompts == ["SYSTEM\n\nAnswer in French."] * 3
+
+
+@pytest.mark.asyncio
+async def test_an_empty_system_message_clears_the_instructions():
+    prompts, _ = await _resumed_turns(
+        [
+            [SystemMessage(content="Answer in French."), HumanMessage(content="a")],
+            [SystemMessage(content=""), HumanMessage(content="b")],
+            [HumanMessage(content="c")],
+        ]
+    )
+
+    assert prompts == ["SYSTEM\n\nAnswer in French.", "SYSTEM", "SYSTEM"]
+
+
+@pytest.mark.asyncio
+async def test_new_instructions_every_turn_do_not_pile_up():
+    """An app that regenerates its instructions each turn: the prompt and the history carry only
+    the latest ones."""
+    turns = [[SystemMessage(content=f"Today is day {n}."), HumanMessage(content=str(n))] for n in range(5)]
+    prompts, persisted = await _resumed_turns(turns)
+
+    assert prompts[-1] == "SYSTEM\n\nToday is day 4."
+    assert [m.text for m in persisted[-1] if isinstance(m, SystemMessage)] == ["Today is day 4."]

@@ -124,14 +124,21 @@ def create_call_model_node(
             summarization_system_prompt += f"\n\n## Task Guidance\n{playbook_guidance}"
 
         # ── Context summarisation ──────────────────────────────────────────
-        # A caller's SystemMessage holds for the whole thread, but summarization keeps only
-        # recent turns. Keep system messages out of it and put them back in front, one per
-        # text: an SDK caller resends its SystemMessage with every turn.
+        # A caller's instructions are the system messages it sent last: a turn that sends one or
+        # more replaces the earlier ones, a turn that sends none keeps them, and SystemMessage("")
+        # clears them. They hold for the whole thread, but summarization keeps only recent turns,
+        # so they stay out of it and go back in front, one per text: an SDK caller resends its
+        # SystemMessage with every turn. Earlier ones are dropped, from the prompt and the history.
         history = adapter.get_messages(state) or []
         system_messages: dict = {}
+        after_system = False
         for m in history:
-            if getattr(m, "type", None) == "system":
+            is_system = getattr(m, "type", None) == "system"
+            if is_system and not after_system:
+                system_messages = {}  # a new group of instructions replaces the last one
+            if is_system:
                 system_messages.setdefault(m.text, m)
+            after_system = is_system
         summarization_system_prompt += "".join(f"\n\n{text}" for text in system_messages if text)
         effective_messages = list(system_messages.values()) + await apply_context_summarization(
             [m for m in history if getattr(m, "type", None) != "system"],
