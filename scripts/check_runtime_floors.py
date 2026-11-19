@@ -18,12 +18,8 @@ Exit status: 0 when every named package is installed and meets its floors, 1 oth
 from __future__ import annotations
 
 import sys
+import tomllib
 from importlib.metadata import PackageNotFoundError, version
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python < 3.11
-    sys.exit("error: check_runtime_floors.py needs Python 3.11 or later (tomllib)")
 
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
