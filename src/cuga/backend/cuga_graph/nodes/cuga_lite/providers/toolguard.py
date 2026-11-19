@@ -329,7 +329,12 @@ class ToolGuardingToolProvider(ToolProviderInterface):
                     )
                     return denial
 
-            with tool_callback_recording(tool_name, covered=_langfuse_records_tool(tool)):
+            recorder = getattr(tool, "coroutine", None) or getattr(tool, "func", None)
+            with tool_callback_recording(
+                tool_name,
+                covered=_langfuse_records_tool(tool),
+                recorder=recorder if getattr(recorder, "_cuga_tracked", False) else None,
+            ):
                 result = await tool.ainvoke(all_kwargs)
                 while inspect.isawaitable(result):
                     result = await result

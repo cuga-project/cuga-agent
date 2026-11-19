@@ -302,31 +302,51 @@ def test_public_stream_doc_preserves_early_close_guidance():
     assert "action_response" in sdk.CugaAgent.stream.__doc__
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
-async def test_repeated_cancellation_cannot_interrupt_graph_cleanup(traces):
+async def test_repeated_cancellation_releases_caller_before_uncooperative_graph_cleanup(traces):
     started = asyncio.Event()
     cleanup_started = asyncio.Event()
+    cleanup_cancelled = asyncio.Event()
     release_cleanup = asyncio.Event()
+    driver = None
 
     async def source(message, **kwargs):
+        nonlocal driver
+        driver = asyncio.current_task()
         try:
             started.set()
             await asyncio.Event().wait()
             yield None
         finally:
             cleanup_started.set()
-            await release_cleanup.wait()
+            try:
+                await release_cleanup.wait()
+            except asyncio.CancelledError:
+                cleanup_cancelled.set()
+                # asyncio cannot force a cancellation-suppressing generator to finish.
+                await release_cleanup.wait()
             traces.append(("t", "closed"))
 
     stream = agent_for(source).stream("hi", thread_id="t")
     pull = asyncio.create_task(stream.__anext__())
-    await started.wait()
-    pull.cancel()
-    await cleanup_started.wait()
-    pull.cancel()
-    await asyncio.sleep(0)
-    assert not pull.done()
-    release_cleanup.set()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(pull, 1)
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        pull.cancel()
+        await asyncio.wait_for(cleanup_started.wait(), 1)
+        pull.cancel()
+        done, _ = await asyncio.wait({pull}, timeout=0.25)
+        assert pull in done
+        with pytest.raises(asyncio.CancelledError):
+            pull.result()
+        await asyncio.wait_for(cleanup_cancelled.wait(), 1)
+        assert driver is not None and not driver.done()
+        assert ("t", "exit") not in traces
+    finally:
+        release_cleanup.set()
+        await asyncio.gather(pull, return_exceptions=True)
+        if driver is not None:
+            await asyncio.gather(driver, return_exceptions=True)
+        await stream.aclose()
+
     assert traces.index(("t", "closed")) < traces.index(("t", "exit"))

@@ -247,3 +247,11 @@ def test_unrelated_callback_handler_name_is_not_langfuse(module):
     handler = type("CallbackHandler", (), {"__module__": module})()
     # A name alone must not opt an unrelated callback into tracing ownership.
     assert not is_langfuse_callback_handler(handler)
+
+
+def test_run_error_status_is_cut_without_changing_output():
+    updates = []
+    span = SimpleNamespace(update=lambda **fields: updates.append(fields))
+    text = "synthetic diagnostic " + "x" * lf.MAX_FIELD_CHARS
+    lf.RunTrace(span).end(error=text)
+    assert updates == [{"level": "ERROR", "status_message": lf._cut(text)}]

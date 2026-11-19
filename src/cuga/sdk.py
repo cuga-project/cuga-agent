@@ -3699,22 +3699,29 @@ class CugaAgent:
                     driver.cancel()
                 else:
                     requests.put_nowait(None)
-            cleanup_cancelled = False
-            while not driver.done():
+
+            def stop_driver():
+                # Don't wait for a generator that suppresses cancellation indefinitely.
+                # Retrieve any late error so it isn't reported as an unhandled task failure.
+                driver.cancel()
+                driver.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+
+            if not driver.done():
                 try:
-                    await asyncio.shield(driver)
+                    # Let normal close finish deterministically. Give an already-cancelled
+                    # pull only a short grace period to unwind before returning to its caller.
+                    done, _ = await asyncio.wait({driver}, timeout=0.5 if advancing else None)
                 except asyncio.CancelledError:
-                    # A repeated cancellation must not interrupt graph/hook cleanup.
-                    cleanup_cancelled = True
-                except BaseException:
-                    break  # Retrieve and propagate the driver's exception below.
-            try:
-                driver.result()
-            except asyncio.CancelledError:
-                if not advancing:
+                    stop_driver()
                     raise
-            if cleanup_cancelled:
-                raise asyncio.CancelledError()
+                if not done:
+                    stop_driver()
+            if driver.done():
+                try:
+                    driver.result()
+                except asyncio.CancelledError:
+                    if not advancing:
+                        raise
 
     async def _stream_untraced(
         self,

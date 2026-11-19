@@ -124,7 +124,7 @@ class RunTrace:
             if metadata is not None:
                 fields["metadata"] = _cut(metadata)
             if error is not None:
-                fields.update(level="ERROR", status_message=error)
+                fields.update(level="ERROR", status_message=_cut(error))
             self.span.update(**fields)
             if not self.nested and output is not _UNSET:
                 self.span.set_trace_io(output=_cut(output))
@@ -134,6 +134,40 @@ class RunTrace:
 
 @asynccontextmanager
 async def run_trace(
+    name: str,
+    message: Any,
+    thread_id: Optional[str],
+    config: Dict[str, Any],
+    *,
+    default_callbacks: Any = None,
+) -> AsyncIterator[RunTrace]:
+    """Preserve caller ancestry and diagnose incompatible tool observation ownership."""
+    from cuga.backend.cuga_graph.utils.langfuse_tracing import collect_langfuse_callbacks_from_config
+
+    handlers = collect_langfuse_callbacks_from_config(config)
+    handlers += collect_langfuse_callbacks_from_config({"callbacks": default_callbacks})
+    managed = any(getattr(handler, "_cuga_skips_tool_observations", False) for handler in handlers)
+    stock = any(not getattr(handler, "_cuga_skips_tool_observations", False) for handler in handlers)
+    if managed and stock:
+        logger.warning(
+            "CUGA tool ownership mixed: stock and managed Langfuse handlers; strict single-writer guarantee unavailable"
+        )
+    if (
+        managed
+        and enabled()
+        and not _has_current_span()
+        and not (config.get("configurable") or {}).get("langfuse_trace_id")
+    ):
+        logger.warning(
+            "CUGA managed tool observations require active span or explicit langfuse_trace_id; strict correlation unavailable"
+        )
+
+    async with _run_trace(name, message, thread_id, config, default_callbacks=default_callbacks) as trace:
+        yield trace
+
+
+@asynccontextmanager
+async def _run_trace(
     name: str,
     message: Any,
     thread_id: Optional[str],
@@ -232,6 +266,18 @@ def _handler_class(base: type) -> type:
             return None
 
     return CugaLangfuseHandler
+
+
+def create_sdk_tool_handler(*, public_key: Optional[str] = None, trace_context: Any = None) -> Any:
+    """Create an explicitly opted-in handler: Langfuse owns chains/LLMs, CUGA tools.
+
+    Pass this *new* handler instead of a stock Langfuse handler. Never automatically
+    convert or mutate an existing supplied instance. Requires SDK tracing enabled
+    and active span or explicit trace ID for CUGA tool observations.
+    """
+    from langfuse.langchain import CallbackHandler
+
+    return _handler_class(CallbackHandler)(public_key=public_key, trace_context=trace_context)
 
 
 def final_answer(state: Any) -> Any:

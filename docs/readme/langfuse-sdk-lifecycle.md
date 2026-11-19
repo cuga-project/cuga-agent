@@ -34,8 +34,12 @@ server-ingestion acknowledgement or a guarantee of delivery after failure.
 
 A bare `break` does not close a retained async iterator. Use `aclosing` as above
 or `await updates.aclose()`. Early close preserves the last output and is not an
-error. Cancellation is re-raised and classified as an error after graph/hook
-cleanup. Caller-provided Langfuse callbacks or a `langfuse_trace_id` keep their
+error. On cancellation, an SDK-owned stream allows up to 500 ms for graph/hook
+cleanup; a second cancellation stops waiting immediately. This bounds the caller's
+wait, not the lifetime of a graph that suppresses cancellation. Such a graph can
+continue cleanup in its driver task, and process shutdown can still wait for it.
+Ordinary `aclose()` waits for cleanup; caller-owned/off streams stay in their
+calling task and do not use this SDK driver grace period. Caller-provided Langfuse callbacks or a `langfuse_trace_id` keep their
 existing caller-task context; only SDK-owned traces use an isolated pull task.
 
 This change does not decide the pending metadata/privacy policy in design
@@ -64,3 +68,23 @@ that calls a different same-named tracked tool inside that guarded invocation
 can still share that coverage. The standard direct/registry/MCP provider routes
 are covered by the regression tests; arbitrary same-name nesting is not claimed
 to have invocation-identity-based deduplication.
+
+## Known caller-owned outcome limitations
+
+Registry and MCP providers preserve their existing error-result dictionaries.
+When delegated through a caller-owned Langfuse callback, LangChain dispatches
+`on_tool_end` for that returned value, not `on_tool_error`. Local CUGA tracking
+retains the unsuccessful outcome, but the caller's completed tool observation
+does not automatically become ERROR. The SDK does not rewrite that handler's
+private state or add a duplicate tool observation. Correcting that classification
+requires an explicit ownership/outcome contract, not a change to tool payloads.
+
+The cancellation limitation above likewise remains: a missing terminal callback
+can leave the caller-owned tool observation incomplete. The local regression
+suite records these limitations; passing that suite does not mean they are fixed.
+
+For an explicit single-writer policy on dedicated CUGA runs, construct
+`create_sdk_tool_handler()` instead of supplying a stock Langfuse handler.
+It preserves inherited chain/model callbacks while CUGA owns tool observations.
+See [tool observation ownership](../design/sdk-tool-observation-ownership.md)
+for ancestry requirements, mixed-handler limits, and the scope of this contract.
