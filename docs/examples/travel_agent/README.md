@@ -80,7 +80,7 @@ User: "I'll take the first compliant flight and hotel"
 
 | Requirement | Notes |
 |-------------|-------|
-| Python 3.11.5+ | |
+| Python 3.11.5 to 3.14 | |
 | CUGA installed | `pip install cuga` or from source |
 | `OPENAI_API_KEY` | Or configure another LLM provider |
 | `SERPAPI_API_KEY` | Free tier at [serpapi.com](https://serpapi.com) — required for real flight/hotel data |
