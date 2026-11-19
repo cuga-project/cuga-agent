@@ -5,7 +5,7 @@ description = "CUGA is an open-source generalist agent for the enterprise, suppo
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
-requires-python = ">=3.10, <3.15"
+requires-python = ">=3.11.5, <3.15"
 dependencies = [
     # First-party MCPAdapter replaces the archived langchain-mcp-adapters package.
     # The MCP namespace is beta: stay within the tested minor series.
@@ -114,6 +114,10 @@ dependencies = [
     "opentelemetry-api>=1.45.2", # via langfuse; GHSA-mf5v-w3w3-f6cg, GHSA-xcq7-p3pf-p88h
     "black>=26.10.1",            # via toolguard → datamodel-code-generator; GHSA-cg8m-r9f2-5wm2
     "setuptools>=84.1.0",        # via torch; GHSA-xmj3-9gf7-h52w
+    "pillow>=13.0.0",            # via docling/fastembed; GHSA-332p-7hrc-92wf, GHSA-8g5g-8vmr-9782 and 41 more
+    "soupsieve>=4.0.0",          # via beautifulsoup4; GHSA-mmhr-3c5m-f64f, GHSA-6655-6qjp-jx7x and 2 more
+    "filelock>=4.2.1",           # via huggingface-hub/torch; GHSA-v4x8-3wr5-3wq8 and 8 more
+    "dnspython>=2.9.2",          # via email-validator; GHSA-vvf4-9x63-8xvv, GHSA-45c3-73f7-pv4m
 ]
 
 [project.optional-dependencies]
@@ -127,7 +131,6 @@ health = ["cuga-oak-health; python_version>='3.12'"]  # kept for backward compat
 opensandbox = ["opensandbox", "opensandbox-code-interpreter"]
 # Core keeps Phoenix optional; explicitly include the server, storage and PII integrations CUGA uses.
 evolve = ["altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]>=1.8.0,<2; python_version>='3.12'", "einops==0.8.1; python_version>='3.12'"]
-# wxO SDK requires Python >=3.11; keep it an extra so 3.10 installs are unaffected.
 wxo = ["ibm-watsonx-orchestrate-sdk>=2.15.0; python_version>='3.11'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
 # Note: When using observability extra, ensure python-dotenv>=1.1.0 is installed to avoid conflicts
@@ -142,7 +145,7 @@ Repository = "https://github.com/cuga-project/cuga-agent"
 [tool.uv]
 package = true
 constraint-dependencies = [
-    "pillow>=12.3.0",  # GHSA-62p4-gmf7-7g93 and related Pillow OOB/DoS CVEs in <=12.2.x
+    "pillow>=13.0.0",  # GHSA-332p-7hrc-92wf, GHSA-8g5g-8vmr-9782, GHSA-5x8w-8jj5-q52h, GHSA-v9pv-5gc8-w2m6, GHSA-w889-685w-c8fh (critical) and 38 more in <13.0.0. Needs Python 3.11. Earlier GHSA-62p4-gmf7-7g93
     # GHSA-8988-9cw3-xx77 (HTTPS proxy TLS config ignored), GHSA-vxq7-64xx-v4gw (unbounded chunk-size
     # line), GHSA-gh4c-6fx4-qh6g (chunked deflate infinite loop), all <2.8.0; earlier GHSA-qccp-gfcp-xxvc,
     # GHSA-mf9v-mfxr-j63j (<=2.6.x).
@@ -172,7 +175,9 @@ constraint-dependencies = [
     "docling>=2.132.0",
     "docling-slim>=2.132.0",
     "mako>=1.4.2",            # GHSA-5639-2j2p-m4mx (drive-letter URI path traversal on Windows, <=1.4.1); earlier GHSA-v92g-xgxw-vvmm (// traversal, <=1.3.10), GHSA-2h4p-vjrc-8xpq (Windows \\ traversal, <=1.3.11)
-    "soupsieve>=2.8.4",  # GHSA-2wc2-fm75-p42x, GHSA-836r-79rf-4m37 (memory / ReDoS in <=2.8.3)
+    "soupsieve>=4.0.0",  # GHSA-mmhr-3c5m-f64f (descendant combinator DoS, <4.0.0), GHSA-6655-6qjp-jx7x (ReDoS), GHSA-7g44-g9rc-x53w (parser recursion), GHSA-4j63-6c4x-wfg4. Needs Python 3.11.5. Earlier GHSA-2wc2-fm75-p42x, GHSA-836r-79rf-4m37
+    "filelock>=4.2.1",  # GHSA-v4x8-3wr5-3wq8 (ReadWriteLock SQLite reopen), GHSA-69hj-f68j-2879 (UnixFileLock truncates any file) and 7 more in <=4.2.0. Needs Python 3.11
+    "dnspython>=2.9.2",  # GHSA-vvf4-9x63-8xvv (excessive memory and CPU, <2.9.2), GHSA-45c3-73f7-pv4m (from_wire_parser CPU, <2.9.0). Needs Python 3.11
     "joserfc>=1.7.6",  # GHSA-jpxq-7h8p-2q76 (unbounded JWE recipients CPU DoS, <1.7.5), GHSA-9pg5-8c7x-5hfx (compact JWS size guard allocates first, <1.7.6); earlier GHSA-gg9x-qcx2-xmrh: empty/nil HMAC key accepted for HS* verify (<=1.6.7)
     "mail-parser>=4.6.3",  # GHSA-72px-j8gh-p79x (sender IP spoofing), GHSA-r7w7-vpq8-c5vv (header ReDoS), GHSA-fr3h-cpq2-9496 (attachment path traversal), GHSA-24mq-4vc6-2prf, GHSA-xhrq-2mqv-q8wx (<4.6.3)
     "opentelemetry-api>=1.45.2",  # GHSA-mf5v-w3w3-f6cg (quadratic traceparent parsing, <=1.45.1), GHSA-xcq7-p3pf-p88h (unbounded tracestate parsing, <=1.45.0)
@@ -194,8 +199,9 @@ constraint-dependencies = [
     "sentence-transformers>=5.6.0",
     # GHSA-p58f-9548-mpm2 (activate scripts run commands embedded in paths, <=21.7.12), GHSA-x78j-v8h9-3j2q
     # (--prompt injection in activate.bat), GHSA-94p9-xgh2-xp45 (seed wheels not integrity-checked),
-    # GHSA-9h9j-4vrj-gf7g (pyvenv.cfg line injection). Dev-only, via pre-commit.
-    "virtualenv>=21.7.13",
+    # GHSA-9h9j-4vrj-gf7g (pyvenv.cfg line injection). >=21.14.13 also fixes GHSA-vxj4-q4g9-crj7, GHSA-c978-59m8-c77v,
+    # GHSA-6w3r-xr62-4xcp, GHSA-394h-qwmc-48pf and 8 more (<21.14.9). Needs Python 3.11. Dev-only, via pre-commit.
+    "virtualenv>=21.14.13",
     "fsspec>=2026.6.0",  # GHSA-27vj-qcqg-25rc: server-side template injection in ReferenceFileSystem (<2026.6.0)
     "multidict>=6.9.1",  # GHSA-54p9-h82j-f925: reference leak in CIMultiDict/MultiDict items-view union (6.7.0..6.9.0)
     # Not security: hold click where it was before this re-lock. Nothing requires >=8.2, but
@@ -415,7 +421,7 @@ line-length = 110
 indent-width = 4
 
 # Assume Python 3.9
-target-version = "py312"
+target-version = "py311"
 
 [tool.ruff.lint]
 # Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`)  codes by default.

@@ -291,7 +291,7 @@ def test_text_compile_rejects_counts_as_no_code(text: str) -> None:
 
 @pytest.mark.parametrize("error", [RecursionError, SystemError, MemoryError, ValueError])
 def test_any_compile_error_counts_as_no_code(monkeypatch, error) -> None:
-    """``RecursionError`` (3.10/3.11) and ``SystemError`` (3.11 f-strings) are version-specific; simulate them."""
+    """``RecursionError`` and ``SystemError`` (3.11 f-strings) depend on the input and the Python version; simulate them."""
 
     def _raise(*args, **kwargs):
         raise error("simulated")
