@@ -182,3 +182,90 @@ def test_a_first_use_setting_up_its_metadata_blocks_the_takeover(kb_dir, no_auto
         return KnowledgeEngine(_cfg(kb_dir), owner=_Agent())
 
     asyncio.run(scenario()).shutdown()
+
+
+class _PausedAdapter:
+    """A vector store whose delete blocks in its worker thread until released."""
+
+    def __init__(self):
+        import threading
+
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def delete_by_source(self, source_id):
+        self.entered.set()
+        self.release.wait(10)
+
+
+def test_a_cancelled_delete_keeps_the_directory_until_its_thread_returns(kb_dir, no_auto_gc):
+    """Cancelling a delete does not stop its worker thread, which still removes the file. Until that
+    thread returns, no other engine may take the directory over and write a replacement."""
+    agent = _Agent()
+    old = KnowledgeEngine(_cfg(kb_dir), owner=agent)
+    del agent
+    adapter = _PausedAdapter()
+    stored = kb_dir / "files" / "kb_agent" / "f.txt"
+    stored.parent.mkdir(parents=True)
+    stored.write_text("old")
+
+    async def marked(collection, filename):
+        return True
+
+    async def cached(collection):
+        old._vector_stores[collection] = adapter
+
+    async def scenario():
+        old._metadata.mark_deleting = marked
+        old._ensure_vector_store_cached = cached
+        delete = asyncio.create_task(old.delete_document("kb_agent", "f.txt"))
+        await asyncio.to_thread(adapter.entered.wait, 10)
+        delete.cancel()
+        await asyncio.gather(delete, return_exceptions=True)
+
+        with pytest.raises(RuntimeError, match="already open in another knowledge engine"):
+            KnowledgeEngine(_cfg(kb_dir), owner=_Agent())
+
+        adapter.release.set()
+        for _ in range(200):
+            if not stored.exists():
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)  # the thread has unlinked the file; let it return
+        new = KnowledgeEngine(_cfg(kb_dir), owner=_Agent())
+        stored.write_text("replacement")
+        return new
+
+    new = asyncio.run(scenario())
+    assert stored.read_text() == "replacement"
+    assert old._threads_in_flight == 0 and old._lock_file.closed
+    new.shutdown()
+
+
+def test_a_thread_cancelled_before_it_starts_never_runs_and_is_not_counted(kb_dir):
+    """A call still queued for a worker when it is cancelled must not run later, after a takeover,
+    and must not hold the directory forever."""
+    import concurrent.futures
+    import threading
+
+    engine = KnowledgeEngine(_cfg(kb_dir), owner=_Agent())
+    busy = threading.Event()
+    ran = []
+
+    async def scenario():
+        asyncio.get_running_loop().set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=1))
+        blocker = asyncio.create_task(engine._to_thread(busy.wait, 10))
+        await asyncio.sleep(0.05)
+        queued = asyncio.create_task(engine._to_thread(ran.append, "ran"))
+        await asyncio.sleep(0.05)
+        assert engine._threads_in_flight == 2
+        queued.cancel()
+        await asyncio.gather(queued, return_exceptions=True)
+        assert engine._threads_in_flight == 1
+        busy.set()
+        await blocker
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+    assert ran == [] and engine._threads_in_flight == 0
+    engine.shutdown()
