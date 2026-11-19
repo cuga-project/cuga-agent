@@ -2994,7 +2994,7 @@ class CugaAgent:
         shortlister: Optional["Shortlister"],
         execution_mode: Optional[str],
         step_discipline: Optional[str],
-        cuga_lite_max_steps: Optional[int],
+        cuga_lite_max_steps: Optional[int] = None,
     ) -> "InvokeResult":
         """Run invoke() inside the session_start, on_user_message, before_reply and on_task_end hooks.
 
