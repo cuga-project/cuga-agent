@@ -9,6 +9,7 @@ is synchronous on purpose: ``KnowledgeEngine._load_document`` already runs in a 
 from __future__ import annotations
 
 import time
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlsplit
@@ -26,12 +27,16 @@ _PDF_MODE_FIELDS: dict[str, dict[str, str]] = {
     "balanced": {"do_ocr": "false", "do_table_structure": "true"},
     "accurate": {"do_ocr": "true", "force_ocr": "true", "do_table_structure": "true"},
 }
-# A status poll or result fetch is a read, so any of these answers, or a dropped connection,
-# is retried. An upload is retried only when the service took nothing: no connection was made,
-# or it answered busy (429, or 503, which docling-serve sends while its queue is full).
-_RETRY_READ = frozenset({429, 500, 502, 503, 504})
+# A status poll or result fetch is a read, so a busy or gateway answer, or a dropped
+# connection, is retried. An upload is retried only when the service most likely took nothing:
+# no connection was made, or it answered busy (429, or 503 while its queue is full; with the RQ
+# engine a 503 can rarely follow a queued task, which then parses twice with the same result).
+# Upload retries stop after _UPLOAD_RETRY_S, enough for a docling-serve restart: a wrong address
+# or certificate fails the same way every time.
+_RETRY_READ = frozenset({429, 502, 503, 504})
 _RETRY_UPLOAD = frozenset({429, 503})
 _NOT_CONNECTED = (httpx.ConnectError, httpx.ConnectTimeout)
+_UPLOAD_RETRY_S = 120.0
 
 
 class DoclingServiceError(RuntimeError):
@@ -62,7 +67,14 @@ class DoclingServeClient:
         )
 
     def health(self) -> None:
-        self._send("GET", "/health", deadline=0.0)
+        """The service answers and accepts the API key. docling-serve's /health needs no key, so
+        this polls a task that does not exist: 404 is the healthy answer."""
+        try:
+            response = self._http.get(f"/v1/status/poll/{uuid.uuid4().hex}")
+        except httpx.RequestError as e:
+            raise DoclingServiceError(f"The document service is unreachable ({self._cause(e)})") from e
+        if response.status_code != 404:
+            _json(response)
 
     def close(self) -> None:
         self._http.close()
@@ -89,7 +101,7 @@ class DoclingServeClient:
             task = self._send(
                 "POST",
                 "/v1/convert/file/async",
-                deadline,
+                min(deadline, t0 + _UPLOAD_RETRY_S),
                 _RETRY_UPLOAD,
                 _NOT_CONNECTED,
                 files={"files": (name, fh)},
@@ -174,18 +186,22 @@ class DoclingServeClient:
         while True:
             try:
                 response = self._http.request(method, path, **request)
-            except httpx.TransportError as e:
-                why = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
-                if not isinstance(e, retry_errors):
-                    raise DoclingServiceError(f"The document service is unreachable ({why})") from e
+            except httpx.RequestError as e:
+                if not isinstance(e, retry_errors) or time.monotonic() + pause >= deadline:
+                    raise DoclingServiceError(
+                        f"The document service is unreachable ({self._cause(e)})"
+                    ) from e
             else:
-                if response.status_code not in retry_codes:
+                if response.status_code not in retry_codes or time.monotonic() + pause >= deadline:
                     return _json(response)
-                why = f"HTTP {response.status_code}"
-            if time.monotonic() + pause >= deadline:
-                raise DoclingServiceError(f"The document service is unreachable ({why})")
             time.sleep(pause)
             pause = min(pause * 2, 10.0)
+
+    def _cause(self, error: httpx.RequestError) -> str:
+        """The error's type and text (a TLS or DNS reason) for users, without the service's host."""
+        text = str(error).replace(self._http.base_url.host, "<service>")
+        logger.warning("Document service {}: {}: {}", self.name, type(error).__name__, error)
+        return f"{type(error).__name__}: {text}" if text else type(error).__name__
 
 
 def _json(response: httpx.Response) -> dict[str, Any]:
@@ -200,9 +216,16 @@ def _json(response: httpx.Response) -> dict[str, Any]:
             "docling-serve keeps tasks in memory unless it runs its RQ engine with Redis, so run it "
             "as one replica. Upload the file again."
         )
+    if response.is_redirect:
+        logger.warning(
+            "Document service redirects {} to {}", response.request.url, response.headers.get("location")
+        )
+        raise DoclingServiceError(
+            f"The document service redirects elsewhere (HTTP {code}). Check knowledge.docling.url, "
+            "for example http against https."
+        )
     if not response.is_success:
-        moved = f", redirected to {response.headers.get('location')}" if response.is_redirect else ""
-        raise DoclingServiceError(f"The document service answered HTTP {code}{moved}: {response.text[:300]}")
+        raise DoclingServiceError(f"The document service answered HTTP {code}: {response.text[:300]}")
     try:
         body = response.json()
     except ValueError:

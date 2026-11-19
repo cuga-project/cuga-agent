@@ -2055,8 +2055,8 @@ class CugaAgent:
                 (e.g. `SqliteSaver`) raises `TypeError` on first compile.
             document_processor: Keyword-only function that parses one knowledge file into a
                 Docling `DoclingDocument`; CUGA chunks and cites its output as usual. None = the
-                `[knowledge.docling]` settings (a docling-serve `url`, a `processor`, or local
-                Docling). Runs in up to `max_ingest_workers` threads at once: make it thread-safe.
+                `[knowledge.docling]` settings (a docling-serve `url`, or local Docling). Runs in
+                up to `max_ingest_workers` threads at once: make it thread-safe.
 
         Example with tool approval policy:
             ```python

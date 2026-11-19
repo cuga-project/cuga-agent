@@ -20,6 +20,7 @@ pytestmark = pytest.mark.unit
 
 URL = "http://docling.test:5001"
 KEY = "sekret"  # pragma: allowlist secret
+ROTATED_KEY = "stale"  # pragma: allowlist secret
 URL_WITH_CREDENTIALS = "http://user:pw@docling.test:5001"  # pragma: allowlist secret
 
 
@@ -70,7 +71,11 @@ class _Service:
 
 @pytest.fixture(autouse=True)
 def _no_sleep(monkeypatch):
-    monkeypatch.setattr(docling_remote.time, "sleep", lambda s: None)
+    """Pauses take no real time but still move the client's clock, so retry windows end."""
+    slept = [0.0]
+    monotonic = docling_remote.time.monotonic
+    monkeypatch.setattr(docling_remote.time, "sleep", lambda s: slept.__setitem__(0, slept[0] + s))
+    monkeypatch.setattr(docling_remote.time, "monotonic", lambda: monotonic() + slept[0])
 
 
 def _client(service, api_key="", timeout_s=3600.0) -> DoclingServeClient:
@@ -263,13 +268,22 @@ def test_polls_ride_out_overload_and_a_dropped_connection(pdf, monkeypatch):
         httpx.ConnectError("connection reset"),
         httpx.Response(502),
         httpx.Response(429),
-        httpx.Response(500),
+        httpx.Response(504),
     ]
     service = _Flaky("/v1/status/poll/t1", errors, statuses=["success"])
     doc = _client(service).convert(pdf, "balanced")
 
     assert doc.export_to_dict() == _doc().export_to_dict()
     assert pauses == [0.05, 1.0, 2.0, 4.0, 8.0, 10.0]  # first poll, then a back-off that doubles to 10 s
+
+
+def test_an_error_inside_the_service_is_not_retried(pdf):
+    """A 500 from docling-serve is an unhandled error on its side: the same request fails again."""
+    service = _Flaky(
+        "/v1/result/t1", [httpx.Response(500, text="Internal Server Error")], statuses=["success"]
+    )
+    with pytest.raises(DoclingServiceError, match="answered HTTP 500: Internal Server Error"):
+        _client(service).convert(pdf, "balanced")
 
 
 def test_the_result_fetch_is_retried_too(pdf):
@@ -280,9 +294,43 @@ def test_the_result_fetch_is_retried_too(pdf):
 def test_retries_stop_at_the_files_deadline(pdf, monkeypatch):
     clock = iter(range(0, 10_000, 100))
     monkeypatch.setattr(docling_remote.time, "monotonic", lambda: next(clock))
-    service = _Flaky("/v1/status/poll/t1", [httpx.Response(503)] * 50)
-    with pytest.raises(DoclingServiceError, match=r"unreachable \(HTTP 503\)"):
+    service = _Flaky("/v1/status/poll/t1", [httpx.Response(503, text="Server is busy")] * 50)
+    with pytest.raises(DoclingServiceError, match=r"answered HTTP 503: Server is busy"):
         _client(service, timeout_s=250).convert(pdf, "balanced")
+
+
+def test_an_upload_that_cannot_connect_fails_within_two_minutes(pdf, monkeypatch):
+    """Long enough for a docling-serve restart; a wrong address or certificate fails every time,
+    so the user hears about it in minutes, not after timeout_s."""
+    clock = iter(range(0, 100_000, 10))
+    monkeypatch.setattr(docling_remote.time, "monotonic", lambda: next(clock))
+    service = _Flaky("/v1/convert/file/async", [httpx.ConnectError("refused")] * 1000)
+    with pytest.raises(DoclingServiceError, match="unreachable"):
+        _client(service).convert(pdf, "balanced")
+    assert 1 < len(service.requests) < 20
+
+
+def test_a_tls_error_names_the_cause_but_not_the_host(pdf):
+    def mismatch(request):
+        raise httpx.ConnectError(
+            "certificate verify failed: Hostname mismatch, certificate is not valid for 'docling.test'",
+            request=request,
+        )
+
+    client = DoclingServeClient(URL, transport=httpx.MockTransport(mismatch))
+    with pytest.raises(DoclingServiceError, match="Hostname mismatch") as exc_info:
+        client.convert(pdf, "balanced")
+    assert "docling.test" not in str(exc_info.value)
+
+
+def test_a_body_that_cannot_be_decoded_reads_as_a_service_error(pdf):
+    def garbled(request):
+        if request.url.path == "/v1/convert/file/async":
+            return httpx.Response(200, json={"task_id": "t1", "task_status": "success"})
+        return httpx.Response(200, headers={"content-encoding": "gzip"}, content=b"not gzip")
+
+    with pytest.raises(DoclingServiceError, match="DecodingError"):
+        DoclingServeClient(URL, transport=httpx.MockTransport(garbled)).convert(pdf, "balanced")
 
 
 def test_a_lost_task_says_why_and_what_to_change(pdf):
@@ -329,8 +377,8 @@ def test_an_upload_the_service_may_have_taken_is_not_sent_again(pdf, refusal, me
     ("answer", "message"),
     [
         (
-            httpx.Response(301, headers={"location": "https://docling.test/"}),
-            "redirected to https://docling.test/",
+            httpx.Response(301, headers={"location": "https://login.test/"}),
+            r"redirects elsewhere \(HTTP 301\)",
         ),
         (httpx.Response(200, text="<html>Sign in</html>"), "did not answer like docling-serve"),
         (httpx.Response(200, json={"status": "queued"}), "no task id"),
@@ -343,12 +391,32 @@ def test_a_url_that_is_not_docling_serve_says_so(pdf, answer, message):
         _client(service).convert(pdf, "balanced")
 
 
-def test_a_redirect_fails_the_health_check():
+def test_a_redirect_fails_the_health_check_without_naming_where_it_goes():
     def moved(request):
-        return httpx.Response(301, headers={"location": "https://docling.test/health"})
+        return httpx.Response(
+            301, headers={"location": "https://sso.test/login?next=http://docling.test:5001/"}
+        )
 
-    with pytest.raises(DoclingServiceError, match="redirected"):
+    with pytest.raises(DoclingServiceError, match="redirects elsewhere") as exc_info:
         DoclingServeClient(URL, transport=httpx.MockTransport(moved)).health()
+    assert "sso.test" not in str(exc_info.value) and "docling.test" not in str(exc_info.value)
+
+
+def test_the_health_check_needs_the_api_key():
+    """docling-serve's /health answers without a key; polling a task does not. A reindex relies
+    on this check before it drops anything, so a wrong key must fail it."""
+    seen: list[httpx.Request] = []
+
+    def service(request):
+        seen.append(request)
+        if request.headers.get("X-Api-Key") != KEY:
+            return httpx.Response(401, json={"detail": "Invalid API key"})
+        return httpx.Response(404, json={"detail": "Task not found."})
+
+    DoclingServeClient(URL, api_key=KEY, transport=httpx.MockTransport(service)).health()
+    assert seen[0].url.path.startswith("/v1/status/poll/")
+    with pytest.raises(DoclingServiceError, match="rejected the API key"):
+        DoclingServeClient(URL, api_key=ROTATED_KEY, transport=httpx.MockTransport(service)).health()
 
 
 def test_a_partly_parsed_document_is_indexed_and_logged(pdf):

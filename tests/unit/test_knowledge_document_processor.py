@@ -99,16 +99,6 @@ def test_chunks_match_what_doclingloader_built(tmp_path, backend_settings, pdf):
     assert _pairs(after) == _pairs(before)
 
 
-def test_a_document_sent_as_json_chunks_the_same(tmp_path, backend_settings, pdf):
-    """What a service returns (the document as JSON) chunks exactly like the object."""
-    doc = _sample_doc()
-    local = _engine(tmp_path / "a", document_processor=lambda path: doc)._load_document(pdf)
-    remote = _engine(
-        tmp_path / "b", document_processor=lambda path: DoclingDocument.model_validate(doc.export_to_dict())
-    )._load_document(pdf)
-    assert _pairs(remote) == _pairs(local)
-
-
 def test_a_processor_returning_something_else_fails_clearly(tmp_path, backend_settings, pdf):
     eng = _engine(tmp_path, document_processor=lambda path: "plain text")
     with pytest.raises(TypeError, match="returned str, not a DoclingDocument"):

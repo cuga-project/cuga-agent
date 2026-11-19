@@ -242,6 +242,7 @@ async def migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_st
             live_engine._reindex_deferred.discard(source)
             return {"triggered": False, "target": target, "error": "copy_failed"}
 
+    from cuga.backend.knowledge.docling_remote import DoclingServiceError
     from cuga.backend.knowledge.engine import ReindexBusyError
 
     def _release_source() -> None:
@@ -263,6 +264,11 @@ async def migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_st
         triggered.append({"collection": target, "error": f"busy: {berr}"})
         _release_source()
         return {"triggered": False, "target": target, "collections": triggered, "error": "reindex_busy"}
+    except DoclingServiceError as derr:
+        # Raised before anything was dropped: the documents stay searchable as they were.
+        logger.warning(f"reindex of {target} refused (agent={agent_id}): {derr}")
+        _release_source()
+        return {"triggered": False, "target": target, "error": "document_service_unavailable"}
     except Exception as rerr:
         logger.warning(f"Reindex of {target} failed: {rerr}")
         triggered.append({"collection": target, "error": str(rerr)})

@@ -13,8 +13,12 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from cuga.backend.knowledge.engine import ReindexBusyError
 from cuga.backend.server import manage_routes
+
+pytestmark = pytest.mark.unit
 
 
 class _FakeEngineBase:
@@ -77,3 +81,18 @@ def test_generic_failure_still_maps_to_reindex_failed():
     assert result.get("error") == "reindex_failed", (
         f"non-busy errors must keep the old generic code: {result!r}"
     )
+
+
+class _FakeEngineServiceDown(_FakeEngineBase):
+    async def reindex(self, _target: str) -> dict:
+        from cuga.backend.knowledge.docling_remote import DoclingServiceError
+
+        raise DoclingServiceError("The document service is unreachable (ConnectError)")
+
+
+def test_a_down_document_service_says_nothing_changed():
+    """The engine refuses before it drops anything, so the UI must not say the re-index ran."""
+    result = _run_migrate(_FakeEngineServiceDown())
+
+    assert result.get("triggered") is False, result
+    assert result.get("error") == "document_service_unavailable", result
