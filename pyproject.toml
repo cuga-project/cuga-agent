@@ -36,7 +36,7 @@ dependencies = [
     "markdownify",
     "uvicorn",
     "fastapi[standard]",
-    "langfuse",
+    "langfuse>=4,<5",
     "dynaconf>=3.2.13",
     "playwright>=1.59.0",  # CVE-2025-9611 (MCP origin/DNS rebinding), CVE-2025-59288 (browser download SSL)
     "browsergym-core==0.13.0",

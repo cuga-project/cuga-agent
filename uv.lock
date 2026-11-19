@@ -1412,7 +1412,7 @@ requires-dist = [
     { name = "langchain-ollama", specifier = ">=0.2.0" },
     { name = "langchain-openai", specifier = ">=1.1.14" },
     { name = "langchain-text-splitters", specifier = ">=1.0,<2.0" },
-    { name = "langfuse" },
+    { name = "langfuse", specifier = ">=4,<5" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-postgres", specifier = ">=3.1.3,<4" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.2,<4" },
