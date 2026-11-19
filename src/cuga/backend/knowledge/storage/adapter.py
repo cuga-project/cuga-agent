@@ -46,23 +46,27 @@ _COLLECTION_CHARS_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_]+$")
 # and the store requires lower case; both backends get at most 63 characters.
 _SQLITE_TABLE_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_]{1,63}$")
 _POSTGRES_TABLE_RE: re.Pattern[str] = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
-_TABLE_DIGEST_LENGTH = 12
+# Every mapped table starts with this prefix, and no name used as it is may start with it, so a
+# mapped table can never be another collection's table. 32 hex digits keep the digest out of reach
+# of a search for a second name with the same table.
+_MAPPED_TABLE_PREFIX = "kbh_"
+_TABLE_DIGEST_LENGTH = 32
 
 
 def _table_name(collection: str, *, postgres: bool) -> str:
     """Return the table that holds ``collection``'s chunks.
 
     A name the backend accepts is used as it is, so existing tables keep their names. Any other
-    name (an agent id with upper case on PostgreSQL, or a name longer than 63 characters) maps to
-    its lower-case start plus a digest of the full name, so two collections never share a table.
+    name (an agent id with upper case on PostgreSQL, a name longer than 63 characters, or one that
+    starts with the mapped prefix) maps to the prefix, its lower-case start and a digest of the full
+    name, so two collections never share a table.
     """
-    if (_POSTGRES_TABLE_RE if postgres else _SQLITE_TABLE_RE).fullmatch(collection):
+    valid = (_POSTGRES_TABLE_RE if postgres else _SQLITE_TABLE_RE).fullmatch(collection)
+    if valid and not collection.lower().startswith(_MAPPED_TABLE_PREFIX):
         return collection
     digest = hashlib.sha256(collection.encode("ascii")).hexdigest()[:_TABLE_DIGEST_LENGTH]
-    stem = collection.lower()
-    if not stem[0].isalpha():
-        stem = f"t_{stem}"
-    return f"{stem[: 63 - len(digest) - 1]}_{digest}"
+    stem = collection.lower()[: 63 - len(_MAPPED_TABLE_PREFIX) - len(digest) - 1]
+    return f"{_MAPPED_TABLE_PREFIX}{stem}_{digest}"
 
 
 class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
