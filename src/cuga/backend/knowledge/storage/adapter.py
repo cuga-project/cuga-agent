@@ -567,11 +567,14 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         async def _search(conn):
             if not await self._pg_ensure_terms(conn):
                 return []
-            # SQLite FTS5's BM25 (k1 1.2, b 0.75), so both backends rank alike. Each query group
-            # gets FTS5's inverse document frequency in the caller's scope, floored near zero: a
-            # group in half or more of the chunks adds nothing, as "the" should not. Its count in
-            # the chunk (ts_rank_cd with unit weights: 1 per match) saturates, and the chunk's
-            # length (its distinct terms, against the scope's average) normalises it. The weights
+            # SQLite FTS5's BM25 formula (k1 1.2, b 0.75). Each query group gets FTS5's inverse
+            # document frequency in the caller's scope, floored near zero: a group in half or more
+            # of the chunks adds nothing, as "the" should not. Its count in the chunk (ts_rank_cd
+            # with unit weights: 1 per match) saturates, and the chunk's length, against the
+            # scope's average, normalises it. One difference: the length here is the chunk's
+            # distinct terms (a tsvector has one entry per term), where FTS5 counts every token. So
+            # a chunk that repeats its words counts as shorter here, and can rank above a chunk
+            # that SQLite puts first. The weights
             # are computed once (MATERIALIZED, one indexed count per group), and candidates come
             # from one indexed match on the union of the groups.
             return await conn.fetch(

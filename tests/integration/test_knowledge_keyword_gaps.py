@@ -895,9 +895,11 @@ def test_rare_word_outranks_common_words(backend, make_adapter, monkeypatch):
 
 @pytest.mark.pgvector
 def test_postgres_ranks_keyword_hits_like_sqlite(make_adapter, monkeypatch):
-    """Both backends rank a natural-language question's keyword hits with FTS5's BM25, so the
-    same chunks come back in the same order: a word in half or more of the chunks adds nothing,
-    a repeated word saturates, and a long chunk is not favoured for its length."""
+    """Both backends rank a natural-language question's keyword hits with FTS5's BM25 formula, so
+    these chunks come back in the same order: a word in half or more of the chunks adds nothing,
+    a repeated word saturates, and a long chunk is not favoured for its length. Postgres measures
+    a chunk's length in distinct terms, not tokens, so a chunk that repeats many of its words can
+    rank differently than on SQLite; these chunks repeat few."""
     _set_tenant(monkeypatch, "tenant_a")
     chunks = {
         "short_rare": "Zambezi river film notes.",
