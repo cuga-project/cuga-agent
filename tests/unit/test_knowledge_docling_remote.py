@@ -1,19 +1,20 @@
 """The docling-serve client: CUGA sends the file, polls the task and reads the
 DoclingDocument back. Every service failure must reach the user as one clear message
-that never carries the API key."""
+that carries neither the API key nor the service's address."""
 
 from __future__ import annotations
 
-import json
+import base64
 from pathlib import Path
 
 import httpx
 import pytest
 from docling_core.types.doc import DoclingDocument
 from docling_core.types.doc.document import CURRENT_VERSION
+from loguru import logger
 
 from cuga.backend.knowledge import docling_remote
-from cuga.backend.knowledge.docling_remote import DoclingServeClient, DoclingServiceError, load_processor
+from cuga.backend.knowledge.docling_remote import DoclingServeClient, DoclingServiceError
 
 pytestmark = pytest.mark.unit
 
@@ -72,7 +73,7 @@ def _no_sleep(monkeypatch):
     monkeypatch.setattr(docling_remote.time, "sleep", lambda s: None)
 
 
-def _client(service, api_key="", timeout_s=900.0) -> DoclingServeClient:
+def _client(service, api_key="", timeout_s=3600.0) -> DoclingServeClient:
     return DoclingServeClient(
         URL, api_key=api_key, timeout_s=timeout_s, transport=httpx.MockTransport(service)
     )
@@ -122,6 +123,7 @@ def test_pdf_mode_keeps_its_local_meaning(pdf, pdf_mode, expected, absent):
     for name in absent:
         assert f'name="{name}"' not in body
     assert 'name="include_images"\r\n\r\nfalse' in body
+    assert 'name="document_timeout"\r\n\r\n3600.0' in body  # the service stops when CUGA does
 
 
 def test_pdf_mode_applies_to_pdfs_only_like_local_parsing(tmp_path):
@@ -137,11 +139,12 @@ def test_pdf_mode_applies_to_pdfs_only_like_local_parsing(tmp_path):
     assert 'name="include_images"\r\n\r\nfalse' in body
 
 
-def test_a_finished_task_is_not_paused_before_its_result(pdf, monkeypatch):
+def test_polls_start_fast_then_settle_at_once_a_second(pdf, monkeypatch):
+    """A short file is back within a poll or two; a long one costs one poll a second."""
     pauses: list[float] = []
     monkeypatch.setattr(docling_remote.time, "sleep", pauses.append)
-    _client(_Service(statuses=["started", "success"])).convert(pdf, "balanced")
-    assert len(pauses) == 1  # after "started" only
+    _client(_Service(statuses=["pending"] * 6 + ["success"])).convert(pdf, "balanced")
+    assert pauses == [0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.0]  # none after "success"
 
 
 def test_no_api_key_sends_no_key_header(pdf):
@@ -170,27 +173,48 @@ def test_other_http_errors_carry_the_detail(pdf):
         _client(_Service(submit_status=422)).convert(pdf, "balanced")
 
 
-def test_unreachable_service_says_so_without_credentials(pdf):
+def test_unreachable_service_gives_the_cause_but_not_the_address(pdf):
     def refuse(request):
-        raise httpx.ConnectError("connection refused", request=request)
+        raise httpx.ConnectError(
+            "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed", request=request
+        )
 
-    client = DoclingServeClient(
-        URL_WITH_CREDENTIALS,
-        timeout_s=5,
-        transport=httpx.MockTransport(refuse),
-    )
+    client = DoclingServeClient(URL_WITH_CREDENTIALS, timeout_s=5, transport=httpx.MockTransport(refuse))
     with pytest.raises(DoclingServiceError) as exc_info:
         client.convert(pdf, "balanced")
     message = str(exc_info.value)
-    assert "http://docling.test:5001 is unreachable" in message
-    assert "pw" not in message
+    assert "unreachable (ConnectError: [SSL: CERTIFICATE_VERIFY_FAILED]" in message
+    assert "docling.test" not in message and "pw" not in message
 
 
-def test_deadline_names_the_timeout_setting(pdf, monkeypatch):
+def test_credentials_in_the_url_travel_as_basic_auth_only(pdf):
+    """httpx logs every request's URL, so the password must not be part of it."""
+    service = _Service()
+    client = DoclingServeClient(URL_WITH_CREDENTIALS, transport=httpx.MockTransport(service))
+    client.convert(pdf, "balanced")
+    assert client.name == URL
+    for request in service.requests:
+        assert request.url.userinfo == b""
+        assert request.headers["Authorization"] == "Basic " + base64.b64encode(b"user:pw").decode()
+
+
+@pytest.mark.parametrize(("status", "phase"), [("started", "parsing"), ("pending", "waiting in its queue")])
+def test_deadline_names_the_phase_and_the_timeout_setting(pdf, monkeypatch, status, phase):
     clock = iter(range(0, 10_000, 100))
     monkeypatch.setattr(docling_remote.time, "monotonic", lambda: next(clock))
-    with pytest.raises(DoclingServiceError, match=r"within 250s .*started.*knowledge\.docling\.timeout_s"):
-        _client(_Service(statuses=["started"] * 50), timeout_s=250).convert(pdf, "balanced")
+    with pytest.raises(
+        DoclingServiceError, match=rf"within 250s of {phase}\. Raise knowledge\.docling\.timeout_s"
+    ):
+        _client(_Service(statuses=[status] * 50), timeout_s=250).convert(pdf, "balanced")
+
+
+def test_parsing_gets_the_full_timeout_after_time_in_the_queue(pdf, monkeypatch):
+    """The service counts document_timeout from when it starts parsing; so does CUGA."""
+    clock = iter(range(0, 10_000, 100))
+    monkeypatch.setattr(docling_remote.time, "monotonic", lambda: next(clock))
+    statuses = ["started"] * 3 + ["success"]  # seen started at 300, done at 600: past 250 from the upload
+    doc = _client(_Service(statuses=statuses), timeout_s=250).convert(pdf, "balanced")
+    assert doc.export_to_dict() == _doc().export_to_dict()
 
 
 def test_result_without_a_document_lists_the_errors(pdf):
@@ -235,15 +259,17 @@ def test_polls_ride_out_overload_and_a_dropped_connection(pdf, monkeypatch):
     pauses: list[float] = []
     monkeypatch.setattr(docling_remote.time, "sleep", pauses.append)
     errors = [
-        httpx.Response(503, headers={"Retry-After": "3"}),
+        httpx.Response(503),
         httpx.ConnectError("connection reset"),
         httpx.Response(502),
+        httpx.Response(429),
+        httpx.Response(500),
     ]
     service = _Flaky("/v1/status/poll/t1", errors, statuses=["success"])
     doc = _client(service).convert(pdf, "balanced")
 
     assert doc.export_to_dict() == _doc().export_to_dict()
-    assert pauses == [3.0, 2.0, 4.0]  # the service's Retry-After, else a back-off that doubles per retry
+    assert pauses == [0.05, 1.0, 2.0, 4.0, 8.0, 10.0]  # first poll, then a back-off that doubles to 10 s
 
 
 def test_the_result_fetch_is_retried_too(pdf):
@@ -266,15 +292,79 @@ def test_a_lost_task_says_why_and_what_to_change(pdf):
     with pytest.raises(DoclingServiceError) as exc_info:
         _client(service).convert(pdf, "balanced")
     message = str(exc_info.value)
-    assert "lost the task for report.pdf" in message
+    assert "lost the task" in message
     assert "one replica" in message
 
 
-def test_the_upload_itself_is_not_retried(pdf):
-    """A retried upload could start a second parse of the same file."""
-    service = _Flaky("/v1/convert/file/async", [httpx.Response(503)])
-    with pytest.raises(DoclingServiceError, match="HTTP 503"):
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        httpx.ConnectError("refused"),
+        httpx.ConnectTimeout("timed out"),
+        httpx.Response(503),
+        httpx.Response(429),
+    ],
+)
+def test_an_upload_the_service_never_took_is_sent_again(pdf, refusal):
+    """No connection, or docling-serve's busy answer: nothing was queued, so sending again is safe."""
+    service = _Flaky("/v1/convert/file/async", [refusal])
+    _client(service).convert(pdf, "balanced")
+    uploads = [r for r in service.requests if r.url.path == "/v1/convert/file/async"]
+    assert len(uploads) == 2
+    assert b"%PDF-1.4 test" in uploads[1].read()  # the file was sent again from its start
+
+
+@pytest.mark.parametrize(
+    ("refusal", "message"),
+    [(httpx.Response(502), "HTTP 502"), (httpx.ReadTimeout("no answer"), "ReadTimeout")],
+)
+def test_an_upload_the_service_may_have_taken_is_not_sent_again(pdf, refusal, message):
+    """A gateway error or a lost answer can follow a queued task: a second upload could parse twice."""
+    service = _Flaky("/v1/convert/file/async", [refusal])
+    with pytest.raises(DoclingServiceError, match=message):
         _client(service).convert(pdf, "balanced")
+
+
+@pytest.mark.parametrize(
+    ("answer", "message"),
+    [
+        (
+            httpx.Response(301, headers={"location": "https://docling.test/"}),
+            "redirected to https://docling.test/",
+        ),
+        (httpx.Response(200, text="<html>Sign in</html>"), "did not answer like docling-serve"),
+        (httpx.Response(200, json={"status": "queued"}), "no task id"),
+    ],
+)
+def test_a_url_that_is_not_docling_serve_says_so(pdf, answer, message):
+    """A login page, a redirect to https or another app's port must not read as a Python error."""
+    service = _Flaky("/v1/convert/file/async", [answer])
+    with pytest.raises(DoclingServiceError, match=message):
+        _client(service).convert(pdf, "balanced")
+
+
+def test_a_redirect_fails_the_health_check():
+    def moved(request):
+        return httpx.Response(301, headers={"location": "https://docling.test/health"})
+
+    with pytest.raises(DoclingServiceError, match="redirected"):
+        DoclingServeClient(URL, transport=httpx.MockTransport(moved)).health()
+
+
+def test_a_partly_parsed_document_is_indexed_and_logged(pdf):
+    result = {
+        "document": {"json_content": _doc().export_to_dict()},
+        "status": "partial_success",
+        "errors": [{"error_message": "page 7 failed"}],
+    }
+    lines: list[str] = []
+    sink = logger.add(lines.append, level="WARNING")
+    try:
+        doc = _client(_Service(result=result)).convert(pdf, "balanced")
+    finally:
+        logger.remove(sink)
+    assert doc.export_to_dict() == _doc().export_to_dict()
+    assert any("partial_success" in line and "page 7 failed" in line for line in lines)
 
 
 def test_health_passes_and_fails():
@@ -285,13 +375,3 @@ def test_health_passes_and_fails():
 
     with pytest.raises(DoclingServiceError, match="HTTP 503"):
         DoclingServeClient(URL, transport=httpx.MockTransport(down)).health()
-
-
-def test_load_processor_resolves_a_dotted_path():
-    assert load_processor("json:dumps") is json.dumps
-
-
-@pytest.mark.parametrize("spec", ["json.dumps", "no_such_module_xyz:fn", "json:no_such_attr", "json:__doc__"])
-def test_load_processor_rejects_bad_specs(spec):
-    with pytest.raises(ValueError, match="knowledge.docling.processor"):
-        load_processor(spec)
