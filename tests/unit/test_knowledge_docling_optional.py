@@ -115,6 +115,7 @@ def test_pdf_raises_clear_error_without_docling(tmp_path):
     assert "easyocr" in msg
     assert "torch" in msg
     assert "full CUGA image" in msg
+    assert "knowledge.docling.url" in msg  # the slim image's other way to parse
     assert "cuga[docling]" not in msg
     assert "report.pdf" in msg
 

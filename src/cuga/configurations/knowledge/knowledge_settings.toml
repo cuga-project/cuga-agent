@@ -103,17 +103,16 @@ pdf_mode = "accurate"
 #                    because the model loads in full PyTorch.
 layout_engine = "auto"
 # Where documents are parsed. Empty = Docling inside CUGA. Set url to send each file to a
-# docling-serve service (or any service with its v1 async convert API); CUGA still does the
-# chunking, so chunks and citations are the same. The service gets pdf_mode; layout_engine
-# and use_gpu apply only to local parsing. processor = "package.module:function" names a
-# function that turns a file path into a DoclingDocument and wins over url (SDK users can
-# pass CugaAgent(document_processor=...) instead). These four are read at startup from this
-# file or DYNACONF_KNOWLEDGE__DOCLING__URL / __API_KEY / __TIMEOUT_S / __PROCESSOR; the UI
-# and the settings API cannot read or change them.
+# docling-serve service (or another service that returns the document inline, as docling-serve
+# does by default). CUGA still does the chunking; the service's Docling version and OCR engine
+# decide the text and headings, so re-test scanned documents after switching. The service gets
+# pdf_mode; layout_engine and use_gpu apply only to local parsing. SDK users can pass
+# CugaAgent(document_processor=...) instead. These three are read at startup from this file or
+# DYNACONF_KNOWLEDGE__DOCLING__URL / __API_KEY / __TIMEOUT_S; the UI and the settings API cannot
+# read or change them.
 url = ""
 api_key = ""      # sent as X-Api-Key; prefer the env var
-timeout_s = 900   # longest wait for one file, queue included
-processor = ""
+timeout_s = 3600  # per file: the longest wait in the service's queue, then the longest parse
 # NOTE: drop_page_chrome is now owned by the active rag_profile TOML
 # (configurations/knowledge/knowledge_profiles/<profile>.toml). Setting
 # it here would be silently overridden by the profile and the file

@@ -37,7 +37,7 @@ from cuga.backend.knowledge.config import (
     client_glossary_hash as _client_glossary_hash,
     knowledge_vector_backend_for_settings,
 )
-from cuga.backend.knowledge.docling_remote import DoclingServeClient, DoclingServiceError, load_processor
+from cuga.backend.knowledge.docling_remote import DoclingServeClient, DoclingServiceError
 from cuga.backend.knowledge.interprocess_lock import acquire_exclusive_nonblocking, release_exclusive
 from cuga.backend.knowledge.metadata import create_knowledge_metadata
 from cuga.backend.storage.facade import get_storage_connection_params
@@ -172,14 +172,15 @@ def _docling_not_installed_error(file_path: Path) -> ImportError:
     return ImportError(
         f"Cannot parse {file_path.name}: optional document-processing dependencies "
         "(docling, easyocr, torch) are not installed. "
-        "Use the full CUGA image instead of the slim one."
+        "Use the full CUGA image, or parse in a docling-serve service: set knowledge.docling.url "
+        "(DYNACONF_KNOWLEDGE__DOCLING__URL)."
     )
 
 
 def _docling_backend_settings() -> Any:
-    """``[knowledge.docling]`` from settings.toml / env. The document service and processor
-    are operator settings: read once at engine start, never part of the config that the
-    settings API reads, writes or publishes."""
+    """``[knowledge.docling]`` from settings.toml / env. The document service is an operator
+    setting: read once at engine start, never part of the config that the settings API reads,
+    writes or publishes."""
     from cuga.config import settings
 
     return settings.get("knowledge", {}).get("docling", {}) or {}
@@ -1815,21 +1816,17 @@ class KnowledgeEngine:
         # knowledge package stays standalone (no host import). None → transforms
         # are inert and search runs on the plain query.
         self._chat_generator = chat_generator
-        # Where documents are parsed: a processor the host passes (SDK), else
-        # knowledge.docling.processor, else the service at knowledge.docling.url, else
-        # Docling in this process. Resolved before the lock so a bad setting holds nothing.
+        # Where documents are parsed: a processor the host passes (SDK), else the service at
+        # knowledge.docling.url, else Docling in this process.
         docling = _docling_backend_settings()
-        processor_spec = str(docling.get("processor") or "")
         service_url = str(docling.get("url") or "")
-        self._document_processor = document_processor or (
-            load_processor(processor_spec) if processor_spec else None
-        )
+        self._document_processor = document_processor
         self._docling_service = None
-        if self._document_processor is None and service_url:
+        if document_processor is None and service_url:
             self._docling_service = DoclingServeClient(
                 service_url,
                 api_key=str(docling.get("api_key") or ""),
-                timeout_s=float(docling.get("timeout_s") or 900),
+                timeout_s=float(docling.get("timeout_s") or 3600),
             )
         self._parse_backend = (
             "custom" if self._document_processor else "service" if self._docling_service else "local"
@@ -4671,6 +4668,10 @@ class KnowledgeEngine:
         files_dir = self._files_dir / collection
         if not files_dir.exists():
             return {"status": "no_documents", "count": 0}
+        if self._docling_service is not None:
+            # Reindexing drops the collection's vectors first: with the service down, every
+            # file would fail and the collection would be left empty. Raises DoclingServiceError.
+            await asyncio.to_thread(self._docling_service.health)
 
         task_ids: list[str] = []
         # Parallel list of {task_id, filename} pairs so the route can return

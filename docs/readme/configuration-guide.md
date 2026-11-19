@@ -553,16 +553,15 @@ PDF, DOCX, XLSX, PPTX, HTML, Markdown, images, and more (via Docling).
 
 #### Where documents are parsed
 
-By default Docling parses each file inside the CUGA server. Two settings move parsing out,
-for example to keep Docling's models and memory peaks out of the agent pod, or to use the
-slim image:
+By default Docling parses each file inside the CUGA server. A setting moves parsing to a
+docling-serve service, for example to keep Docling's models and memory peaks out of the agent
+pod, or to use the slim image (from the release that adds this setting):
 
 ```toml
 [knowledge.docling]
-url = "http://docling-serve:5001"   # a docling-serve service, or any service with its v1 async convert API
+url = "http://docling-serve:5001"   # docling-serve, or another service that returns the document inline
 api_key = ""                        # sent as X-Api-Key; prefer DYNACONF_KNOWLEDGE__DOCLING__API_KEY
-timeout_s = 900                     # longest wait for one file, queue included
-processor = ""                      # "package.module:function", wins over url
+timeout_s = 3600                    # per file: longest wait in the queue, then longest parse
 ```
 
 From the SDK, pass a function instead:
@@ -577,10 +576,13 @@ def parse(path: Path) -> DoclingDocument:
 agent = CugaAgent(enable_knowledge=True, document_processor=parse)
 ```
 
-CUGA still chunks the returned document, so chunks, page numbers and citations are the same
-whichever backend parsed the file. A function runs in up to `CUGA_MAX_INGEST_WORKERS`
-threads at once, so it must be thread-safe; with a service, the same setting is how many
-files CUGA sends at once.
+CUGA chunks the returned document the same way whichever backend parsed it. The parser
+decides the text and headings, though: a service running another Docling version or OCR
+engine can change them, so re-test your documents (scanned and non-Latin ones especially)
+after switching. A function runs in up to `CUGA_MAX_INGEST_WORKERS` threads at once, so it
+must be thread-safe; with a service, the same setting is how many files CUGA sends at once.
+Services that return results as download links, such as Docling for IBM watsonx by default,
+are not supported yet.
 
 `pdf_mode` keeps its meaning with a service (as locally, it applies to PDFs only; other
 formats, such as scanned images, keep the service's defaults):
@@ -591,10 +593,11 @@ formats, such as scanned images, keep the service's defaults):
 | `balanced` | `do_ocr=false` |
 | `accurate` | `do_ocr=true`, `force_ocr=true` (the service's own OCR engine and languages) |
 
-`layout_engine` and `use_gpu` apply only to local parsing. These four settings are read at
-startup from `src/cuga/configurations/knowledge/knowledge_settings.toml` or `DYNACONF_KNOWLEDGE__DOCLING__URL`, `__API_KEY`,
-`__TIMEOUT_S` and `__PROCESSOR`; the UI and the settings API can neither read nor change
-them. If the service is down or rejects the key, the upload fails with a message that says so.
+`layout_engine` and `use_gpu` apply only to local parsing. These three settings are read at
+startup from `src/cuga/configurations/knowledge/knowledge_settings.toml` or `DYNACONF_KNOWLEDGE__DOCLING__URL`, `__API_KEY`
+and `__TIMEOUT_S`; the UI and the settings API can neither read nor change them. If the
+service is down or rejects the key, the upload fails with a message that says so. For an
+`https` service signed by an internal CA, set `SSL_CERT_FILE` to the CA bundle.
 
 #### Embedding providers + tuning
 

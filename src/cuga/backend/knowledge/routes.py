@@ -22,6 +22,7 @@ from cuga.backend.knowledge.auth import (
     resolve_agent_collection,
     resolve_collection,
 )
+from cuga.backend.knowledge.docling_remote import DoclingServiceError
 from cuga.backend.knowledge.engine import (
     DocumentExistsError,
     DocumentNotFoundError,
@@ -948,6 +949,8 @@ async def reindex_collection(
             status_code=409,
             detail=f"Cannot reindex: {e.pending_count} upload(s) in progress",
         )
+    except DoclingServiceError as e:
+        raise HTTPException(status_code=503, detail=f"Cannot reindex: {e}")
 
 
 # --- Tasks ---

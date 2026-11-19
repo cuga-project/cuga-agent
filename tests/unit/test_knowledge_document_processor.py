@@ -1,23 +1,23 @@
 """Where documents are parsed: Docling in CUGA, a docling-serve service, or a function the
-host brings. CUGA chunks every backend's DoclingDocument the same way, so chunks and
-citations never depend on where parsing ran, and only operators (settings.toml / env / SDK)
-choose the backend: the settings API can neither change it nor read the service's key."""
+host brings. CUGA chunks every backend's DoclingDocument the same way, and only operators
+(settings.toml / env / SDK) choose the backend: the settings API can neither change it nor
+read the service's key."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import sys
-import types
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from docling_core.types.doc import DoclingDocument, TableCell, TableData
 
 from cuga.backend.knowledge import engine as engine_module
 from cuga.backend.knowledge.config import KnowledgeConfig
+from cuga.backend.knowledge.docling_remote import DoclingServeClient, DoclingServiceError
 from cuga.backend.knowledge.engine import KnowledgeEngine
 
 pytestmark = pytest.mark.unit
@@ -128,14 +128,6 @@ def test_a_processor_names_its_own_reason_for_an_unknown_file_type(tmp_path, bac
         _engine(tmp_path, document_processor=parse)._load_document(odd)
 
 
-@pytest.fixture
-def test_processor_module(monkeypatch):
-    module = types.ModuleType("cuga_test_processor")
-    module.parse = lambda path: _sample_doc()
-    monkeypatch.setitem(sys.modules, "cuga_test_processor", module)
-    return module
-
-
 def test_local_is_the_default(tmp_path, backend_settings):
     eng = _engine(tmp_path)
     assert eng._parse_backend == "local"
@@ -150,33 +142,59 @@ def test_a_url_selects_the_service(tmp_path, backend_settings):
     assert eng._docling_service._timeout_s == 60.0
 
 
-def test_a_processor_setting_wins_over_the_url(tmp_path, backend_settings, test_processor_module, pdf):
-    backend_settings.update(url="http://docling.test:5001", processor="cuga_test_processor:parse")
-    eng = _engine(tmp_path)
-    assert eng._parse_backend == "custom"
-    assert eng._docling_service is None
-    assert [d.page_content for d in eng._load_document(pdf)] == [
-        d.page_content
-        for d in _engine(tmp_path / "x", document_processor=lambda p: _sample_doc())._load_document(pdf)
-    ]
-
-
-def test_the_sdk_processor_wins_over_settings(tmp_path, backend_settings, test_processor_module):
-    backend_settings.update(processor="cuga_test_processor:parse")
+def test_the_sdk_processor_wins_over_the_url(tmp_path, backend_settings):
+    backend_settings.update(url="http://docling.test:5001")
 
     def mine(path):
         return _sample_doc()
 
     eng = _engine(tmp_path, document_processor=mine)
     assert eng._document_processor is mine
+    assert eng._parse_backend == "custom" and eng._docling_service is None
 
 
-def test_a_bad_processor_fails_before_the_engine_takes_its_lock(tmp_path, backend_settings):
-    backend_settings.update(processor="no_such_module_xyz:parse")
-    with pytest.raises(ValueError, match="knowledge.docling.processor"):
-        _engine(tmp_path)
-    backend_settings.clear()
-    _engine(tmp_path)  # same persist dir: the failed start held no lock
+def _service_returning(doc: DoclingDocument, sent: list[httpx.Request]) -> httpx.MockTransport:
+    def answer(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        if request.url.path == "/v1/convert/file/async":
+            return httpx.Response(200, json={"task_id": "t1", "task_status": "success"})
+        return httpx.Response(
+            200, json={"document": {"json_content": doc.export_to_dict()}, "status": "success"}
+        )
+
+    return httpx.MockTransport(answer)
+
+
+def test_a_service_parse_chunks_like_a_local_one(tmp_path, backend_settings, pdf):
+    """The engine end to end through the real client, with the agent's live pdf_mode."""
+    backend_settings.update(url="http://docling.test:5001")
+    eng = _engine(tmp_path)
+    sent: list[httpx.Request] = []
+    eng._docling_service = DoclingServeClient(
+        "http://docling.test:5001", transport=_service_returning(_sample_doc(), sent)
+    )
+    eng.apply_knowledge_config({"docling_pdf_mode": "fast"})
+    remote = eng._load_document(pdf)
+
+    local = _engine(tmp_path / "local", document_processor=lambda p: _sample_doc())._load_document(pdf)
+    assert _pairs(remote) == _pairs(local)
+    assert 'name="do_table_structure"\r\n\r\nfalse' in sent[0].read().decode("latin-1")
+
+
+def test_reindex_checks_the_service_before_dropping_anything(tmp_path, backend_settings):
+    """Reindexing drops the collection's vectors first: with the service down, that would
+    leave the collection empty."""
+    backend_settings.update(url="http://docling.test:5001")
+    eng = _engine(tmp_path)
+    collection = "kb_agent_test"
+    (eng._files_dir / collection).mkdir(parents=True)
+    (eng._files_dir / collection / "report.pdf").write_bytes(b"%PDF-1.4 test")
+    eng._docling_service = MagicMock()
+    eng._docling_service.health.side_effect = DoclingServiceError("The document service is unreachable")
+    with patch.object(eng, "drop_collection_vectors", new=AsyncMock()) as drop:
+        with pytest.raises(DoclingServiceError):
+            asyncio.run(eng.reindex(collection))
+    drop.assert_not_called()
 
 
 def test_the_settings_api_cannot_choose_the_backend(tmp_path, backend_settings):
@@ -223,11 +241,15 @@ def test_warmup_loads_no_docling_models_when_parsing_runs_elsewhere(tmp_path, ba
         asyncio.run(custom.warmup())
 
 
-def test_the_convert_time_is_recorded(tmp_path, backend_settings, pdf):
-    eng = _engine(tmp_path, document_processor=lambda p: _sample_doc())
-    timings: dict = {}
-    eng._load_document(pdf, stage_timings=timings)
-    assert timings["convert_s"] >= 0
+def test_warmup_reports_a_service_that_does_not_answer(tmp_path, backend_settings):
+    backend_settings.update(url="http://docling.test:5001")
+    eng = _engine(tmp_path)
+    eng._docling_service = MagicMock()
+    eng._docling_service.health.side_effect = DoclingServiceError("The document service is unreachable")
+    with patch.object(eng, "_ensure_embeddings"):
+        result = asyncio.run(eng.warmup())
+    assert result["docling_prewarmed"] is False
+    assert result["docling_prewarm_error"] == "The document service is unreachable"
 
 
 def test_sdk_passes_the_processor_to_the_engine():
