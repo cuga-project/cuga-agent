@@ -189,6 +189,12 @@ for (const registry of [true, false]) {
 
 test("a newly answered YKT weather conversation reopens from the recent list", async ({ page }) => {
   await stubAgents(page);
+  const creations: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/conversations") {
+      creations.push(request.url());
+    }
+  });
   let savedThread = "";
   const savedEvents = new Map<string, object[]>();
   await page.route("**/api/conversations?*", (route) => route.fulfill({
@@ -220,6 +226,7 @@ test("a newly answered YKT weather conversation reopens from the recent list", a
   await composer.fill("YKT weather");
   await composer.press("Enter");
   await expect(page.getByText("YKT weather answer.", { exact: true })).toBeVisible();
+  expect(creations).toEqual([]); // /stream issues a fresh chat's ID.
   await expect(page.getByRole("button", { name: /YKT weather/ })).toBeVisible();
   for (let visit = 0; visit < 2; visit += 1) {
     await page.getByRole("button", { name: /Another conversation/ }).click();
@@ -326,4 +333,102 @@ test("restarting while saved history is pending keeps the conversation empty", a
     expect(sentThread).toBeUndefined(); // not the restarted conversation's ID
     await expect(page.locator("code").first()).toHaveText("weatherbot-fresh");
   } finally { release(); }
+});
+
+
+test("an old draft creation failure cannot detach the current upload from its first send", async ({ page }) => {
+  await stubAgents(page);
+  let releaseOld!: () => void;
+  let releaseCurrent!: () => void;
+  const oldCreation = new Promise<void>((resolve) => { releaseOld = resolve; });
+  const currentCreation = new Promise<void>((resolve) => { releaseCurrent = resolve; });
+  let creations = 0;
+  const sentThreads: Array<string | undefined> = [];
+  const uploadThreads: Array<string | null> = [];
+  await page.route("**/api/conversations", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    const index = creations++;
+    await (index === 0 ? oldCreation : currentCreation);
+    await route.fulfill(index === 0
+      ? { status: 503, json: { detail: "Old creation failed" } }
+      : { json: { id: "current-upload", status: "new" } });
+  });
+  await page.route("**/api/workspace/upload?*", async (route) => {
+    uploadThreads.push(new URL(route.request().url()).searchParams.get("thread_id"));
+    await route.fulfill({ json: {} });
+  });
+  await page.route("**/stream", async (route) => {
+    sentThreads.push(route.request().headers()["x-thread-id"]);
+    await route.fulfill({ contentType: "text/event-stream", body: "event: Answer\ndata: Current upload answer.\n\n" });
+  });
+  try {
+    await page.goto("/chat/weatherbot");
+    await expect(page.getByTestId("header_name").last()).toHaveText("Weather specialist");
+    const upload = page.locator('input[type="file"][accept=".json,.jsonl,.ndjson"]');
+    await upload.setInputFiles({ name: "old.json", mimeType: "application/json", buffer: Buffer.from("{}") });
+    await expect.poll(() => creations).toBe(1);
+    await page.getByRole("button", { name: "New conversation", exact: true }).click();
+    await upload.setInputFiles({ name: "current.json", mimeType: "application/json", buffer: Buffer.from("{}") });
+    await expect.poll(() => creations).toBe(2);
+    const failed = page.waitForResponse((response) => response.request().method() === "POST"
+      && new URL(response.url()).pathname === "/api/conversations" && response.status() === 503);
+    releaseOld();
+    await (await failed).finished();
+    const composer = page.getByRole("region", { name: "Chat", exact: true }).getByRole("textbox");
+    await composer.fill("Use the current upload");
+    await composer.press("Enter");
+    await expect(page.getByText("Use the current upload", { exact: true }).first()).toBeVisible();
+    releaseCurrent();
+    await expect(page.getByText("Current upload answer.", { exact: true })).toBeVisible();
+    expect(sentThreads).toEqual(["current-upload"]);
+    await expect.poll(() => uploadThreads).toEqual(["current-upload"]);
+    expect(creations).toBe(2);
+    await expect(page.locator("code").first()).toHaveText("current-upload");
+  } finally {
+    releaseOld();
+    releaseCurrent();
+  }
+});
+
+
+test("a first send during rejected draft validation starts a fresh conversation", async ({ page }) => {
+  await stubAgents(page);
+  await page.addInitScript(() => {
+    window.sessionStorage.setItem("cuga-demo-draft-thread:weatherbot", JSON.stringify({
+      threadId: "expired-draft",
+      serverIssued: true,
+      hasSentFirstMessage: false,
+      updatedAt: new Date().toISOString(),
+      agentId: "weatherbot",
+    }));
+  });
+  let releaseValidation!: () => void;
+  const validation = new Promise<void>((resolve) => { releaseValidation = resolve; });
+  let validations = 0;
+  await page.route("**/api/conversations/expired-draft?*", async (route) => {
+    validations += 1;
+    await validation;
+    await route.fulfill({ status: 404, json: { detail: "Conversation not found" } });
+  });
+  const sentThreads: Array<string | undefined> = [];
+  await page.route("**/stream", async (route) => {
+    sentThreads.push(route.request().headers()["x-thread-id"]);
+    await route.fulfill({
+      contentType: "text/event-stream",
+      body: "event: thread_created\ndata: fresh-thread\n\nevent: Answer\ndata: Fresh draft answer.\n\n",
+    });
+  });
+  try {
+    await page.goto("/chat/weatherbot");
+    await expect(page.getByTestId("header_name").last()).toHaveText("Weather specialist");
+    await expect.poll(() => validations).toBe(1);
+    const composer = page.getByRole("region", { name: "Chat", exact: true }).getByRole("textbox");
+    await composer.fill("Weather after a restart");
+    await composer.press("Enter");
+    await expect(page.getByText("Weather after a restart", { exact: true }).first()).toBeVisible();
+    releaseValidation();
+    await expect(page.getByText("Fresh draft answer.", { exact: true })).toBeVisible();
+    expect(sentThreads).toEqual([undefined]); // /stream issues the replacement ID
+    await expect(page.getByText("Weather after a restart", { exact: true }).first()).toBeVisible();
+  } finally { releaseValidation(); }
 });

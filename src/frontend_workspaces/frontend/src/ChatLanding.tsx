@@ -2,10 +2,12 @@ import { ContentSkeleton } from "agentic_chat/LoadingState";
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import * as api from "./api";
+import { createDraftConversation, restoredServerThreadId } from "./draftConversation";
 import { useAuth } from "./AuthContext";
 import { useCarbonFeedback } from "./CarbonFeedback";
 import { ConfigHeader } from "./ConfigHeader";
 import CarbonChat from "./carbon-chat/CarbonChat";
+import type { ConfigNotice } from "./carbon-chat/customSendMessage";
 import { MemoryWorkspace } from "./memory/MemoryWorkspace";
 import { SupervisorRoster, type SupervisorMember } from "./SupervisorRoster";
 import {
@@ -167,6 +169,7 @@ interface SkillInfo {
 }
 
 interface DraftThreadState {
+  serverIssued?: boolean;
   threadId: string | null;
   hasSentFirstMessage: boolean;
   updatedAt: string;
@@ -327,7 +330,8 @@ const loadDraftThreadState = (agentId: string): DraftThreadState | null => {
       return null;
     }
     return {
-      threadId: typeof parsed.threadId === "string" ? parsed.threadId : null,
+      threadId: restoredServerThreadId(parsed, agentId),
+      serverIssued: parsed.serverIssued === true,
       hasSentFirstMessage: false,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
       agentId,
@@ -489,6 +493,7 @@ export function ChatLanding() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [selectedThreadStatus, setSelectedThreadStatus] = useState<string | null>(null);
   const [selectedThreadUnavailable, setSelectedThreadUnavailable] = useState(false);
+  const [configNotice, setConfigNotice] = useState<ConfigNotice | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(draftThread.threadId);
   const [rightSection, setRightSection] = useState<RightPanelSection>("workspace");
   const [knowledgeDocCount, setKnowledgeDocCount] = useState(0);
@@ -519,7 +524,9 @@ export function ChatLanding() {
   chatAgentIdRef.current = effectiveChatAgentId;
   // Bumped with every new draft, so a conversation created for an older draft is not applied to this one.
   const draftGenerationRef = useRef(0);
-  const pendingConversationRef = useRef<Promise<string> | null>(null);
+  const pendingConversationRef = useRef<ReturnType<typeof createDraftConversation> | null>(null);
+  const selectedThreadIdRef = useRef(selectedThreadId);
+  selectedThreadIdRef.current = selectedThreadId;
   // Bumped by "Remove all": a thread list requested before it must not bring the old threads back.
   const threadsGenerationRef = useRef(0);
   const threadsRequestSeqRef = useRef(0);
@@ -535,6 +542,7 @@ export function ChatLanding() {
     setSelectedThreadId(null);
     setSelectedThreadStatus(null);
     setSelectedThreadUnavailable(false);
+    setConfigNotice(null);
     setActiveThreadId(nextDraft.threadId);
     setThreads([]);
     setLoading(true);
@@ -721,6 +729,7 @@ export function ChatLanding() {
     setSelectedThreadId(null);
     setSelectedThreadStatus(null);
     setSelectedThreadUnavailable(false);
+    setConfigNotice(null);
     setActiveThreadId(nextDraft.threadId);
     setSessionDocsVersion((version) => version + 1);
     return nextDraft;
@@ -823,6 +832,7 @@ export function ChatLanding() {
     setSelectedThreadId(threadId);
     setSelectedThreadStatus(thread?.status || null);
     setSelectedThreadUnavailable(false);
+    setConfigNotice(null);
   }, [threads]);
 
   const handleRemoveAll = async () => {
@@ -1170,24 +1180,52 @@ export function ChatLanding() {
     [addToast, effectiveChatThreadId, effectiveChatAgentId],
   );
 
-  // An upload needs a conversation before the first message: create it once per draft.
-  const conversationIdForUpload = useCallback(async (): Promise<string> => {
-    if (effectiveChatThreadId) return effectiveChatThreadId;
+  const draftConversation = useCallback(() => {
+    if (draftThread.agentId !== effectiveChatAgentId) {
+      throw new DOMException("Agent changed before creating conversation", "AbortError");
+    }
     if (!pendingConversationRef.current) {
       const generation = draftGenerationRef.current;
-      pendingConversationRef.current = api.createConversation(effectiveChatAgentId).then((created) => {
-        if (generation === draftGenerationRef.current) {
-          setDraftThread((prev) => (prev.threadId ? prev : { ...prev, threadId: created.id }));
-          setActiveThreadId(created.id);
-        }
-        return created.id;
-      });
-      pendingConversationRef.current.catch(() => {
-        pendingConversationRef.current = null;
-      });
+      const agentId = effectiveChatAgentId;
+      pendingConversationRef.current = createDraftConversation(
+        draftThread.threadId,
+        (id) => api.validateConversation(id, agentId),
+        async () => (await api.createConversation(agentId)).id,
+        (id) => {
+          if (generation !== draftGenerationRef.current || chatAgentIdRef.current !== agentId) return;
+          setDraftThread((prev) => ({ ...prev, threadId: id, serverIssued: true }));
+          if (selectedThreadIdRef.current === null) setActiveThreadId(id);
+        },
+      );
     }
     return pendingConversationRef.current;
-  }, [effectiveChatThreadId, effectiveChatAgentId]);
+  }, [draftThread.agentId, draftThread.threadId, effectiveChatAgentId]);
+
+  // Validate restored IDs without creating a conversation just by opening the page.
+  useEffect(() => {
+    if (draftThread.agentId !== effectiveChatAgentId || selectedThreadId
+      || !draftThread.threadId || draftThread.hasSentFirstMessage) return;
+    let cancelled = false;
+    const threadId = draftThread.threadId;
+    void draftConversation().validate().then((id) => {
+      if (!cancelled && id === null) {
+        setDraftThread((prev) => prev.threadId === threadId ? { ...prev, threadId: null, serverIssued: false } : prev);
+        setActiveThreadId((prev) => prev === threadId ? null : prev);
+      }
+    }).catch((error) => console.error("Failed to validate draft conversation:", error));
+    return () => { cancelled = true; };
+  }, [draftConversation, draftThread.agentId, draftThread.hasSentFirstMessage, draftThread.threadId, effectiveChatAgentId, selectedThreadId]);
+
+  // Both uploads and sending wait for the same in-flight creation/validation.
+  const conversationIdForUpload = useCallback(async (): Promise<string> => {
+    if (selectedThreadId) return selectedThreadId;
+    return draftConversation().resolve();
+  }, [selectedThreadId, draftConversation]);
+
+  const conversationIdBeforeSend = useCallback(async (beforePublish?: (id: string) => void): Promise<string | null> => {
+    if (selectedThreadId) return selectedThreadId;
+    return draftConversation().prepareSend(beforePublish);
+  }, [selectedThreadId, draftConversation]);
 
   const handleWorkspaceUpload = useCallback(
     async (files: File[]) => {
@@ -1469,6 +1507,7 @@ export function ChatLanding() {
               setSelectedThreadId(threadId);
               setSelectedThreadStatus(thread?.status || null);
               setSelectedThreadUnavailable(false);
+              setConfigNotice(null);
               setActiveView("chat");
             }}
           />
@@ -1510,6 +1549,30 @@ export function ChatLanding() {
               </Button>
             </div>
           )}
+          {/* The agent configuration changed since the conversation last ran */}
+          {configNotice && (
+            <div style={{
+              padding: "0.75rem 1rem",
+              background: configNotice === "pending_cancelled"
+                ? "var(--cds-notification-background-warning, #fdf6dd)"
+                : "var(--cds-notification-background-info, #edf5ff)",
+              borderBottom: "1px solid var(--cds-border-subtle-01)",
+              fontSize: "0.8125rem",
+              color: "var(--cds-text-primary)",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.75rem",
+            }}>
+              <span style={{ flex: 1 }} role="status">
+                {configNotice === "pending_cancelled"
+                  ? "A pending approval was cancelled because the agent\u2019s configuration changed."
+                  : "This agent\u2019s configuration was updated since your last message. Replies now use the latest version."}
+              </span>
+              <Button kind="ghost" size="sm" onClick={() => setConfigNotice(null)}>
+                Dismiss
+              </Button>
+            </div>
+          )}
           <CarbonChat
             agentId={effectiveChatAgentId}
             contained={true}
@@ -1524,6 +1587,7 @@ export function ChatLanding() {
             sessionDocsVersion={sessionDocsVersion}
             onSessionDocsChanged={handleSessionDocsChanged}
             resolveThreadId={conversationIdForUpload}
+            prepareThreadId={conversationIdBeforeSend}
             onOpenKnowledge={handleToggleKnowledge}
             onOpenMemoryUsage={memoryEnabled ? (entityIds, relationship) => {
               setFocusedMemoryRelationship(relationship);
@@ -1532,6 +1596,7 @@ export function ChatLanding() {
             } : undefined}
             onPreviewKnowledgeAttachment={handlePreviewKnowledgeAttachment}
             onStreamError={handleStreamError}
+            onConfigNotice={setConfigNotice}
           />
         </div>
 
