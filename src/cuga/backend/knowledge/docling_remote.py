@@ -31,12 +31,13 @@ _PDF_MODE_FIELDS: dict[str, dict[str, str]] = {
 # connection, is retried. An upload is retried only when the service most likely took nothing:
 # no connection was made, or it answered busy (429, or 503 while its queue is full; with the RQ
 # engine a 503 can rarely follow a queued task, which then parses twice with the same result).
-# Upload retries stop after _UPLOAD_RETRY_S, enough for a docling-serve restart: a wrong address
-# or certificate fails the same way every time.
+# A request keeps retrying for _RETRY_S at most, enough for a docling-serve restart: a wrong
+# address or certificate fails the same way every time, and a service that stays down should not
+# hold an ingest slot until timeout_s.
 _RETRY_READ = frozenset({429, 502, 503, 504})
 _RETRY_UPLOAD = frozenset({429, 503})
 _NOT_CONNECTED = (httpx.ConnectError, httpx.ConnectTimeout)
-_UPLOAD_RETRY_S = 120.0
+_RETRY_S = 60.0
 
 
 class DoclingServiceError(RuntimeError):
@@ -101,7 +102,7 @@ class DoclingServeClient:
             task = self._send(
                 "POST",
                 "/v1/convert/file/async",
-                min(deadline, t0 + _UPLOAD_RETRY_S),
+                deadline,
                 _RETRY_UPLOAD,
                 _NOT_CONNECTED,
                 files={"files": (name, fh)},
@@ -180,19 +181,20 @@ class DoclingServeClient:
         **request: Any,
     ) -> dict[str, Any]:
         """One request, repeated with a pause that doubles from 1 s to 10 s while the answer
-        is in ``retry_codes`` or the error in ``retry_errors``, until ``deadline``. ``request``
-        is passed to httpx (files, data, headers). Returns the JSON body."""
-        pause = 1.0
+        is in ``retry_codes`` or the error in ``retry_errors``, for at most ``_RETRY_S`` and never
+        past ``deadline``. ``request`` is passed to httpx (files, data, headers). Returns the JSON
+        body."""
+        pause, give_up = 1.0, min(deadline, time.monotonic() + _RETRY_S)
         while True:
             try:
                 response = self._http.request(method, path, **request)
             except httpx.RequestError as e:
-                if not isinstance(e, retry_errors) or time.monotonic() + pause >= deadline:
+                if not isinstance(e, retry_errors) or time.monotonic() + pause >= give_up:
                     raise DoclingServiceError(
                         f"The document service is unreachable ({self._cause(e)})"
                     ) from e
             else:
-                if response.status_code not in retry_codes or time.monotonic() + pause >= deadline:
+                if response.status_code not in retry_codes or time.monotonic() + pause >= give_up:
                     return _json(response)
             time.sleep(pause)
             pause = min(pause * 2, 10.0)

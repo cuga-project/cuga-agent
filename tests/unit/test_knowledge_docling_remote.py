@@ -204,21 +204,19 @@ def test_credentials_in_the_url_travel_as_basic_auth_only(pdf):
 
 
 @pytest.mark.parametrize(("status", "phase"), [("started", "parsing"), ("pending", "waiting in its queue")])
-def test_deadline_names_the_phase_and_the_timeout_setting(pdf, monkeypatch, status, phase):
-    clock = iter(range(0, 10_000, 100))
-    monkeypatch.setattr(docling_remote.time, "monotonic", lambda: next(clock))
+def test_deadline_names_the_phase_and_the_timeout_setting(pdf, status, phase):
     with pytest.raises(
-        DoclingServiceError, match=rf"within 250s of {phase}\. Raise knowledge\.docling\.timeout_s"
+        DoclingServiceError, match=rf"within 5s of {phase}\. Raise knowledge\.docling\.timeout_s"
     ):
-        _client(_Service(statuses=[status] * 50), timeout_s=250).convert(pdf, "balanced")
+        _client(_Service(statuses=[status] * 50), timeout_s=5).convert(pdf, "balanced")
 
 
-def test_parsing_gets_the_full_timeout_after_time_in_the_queue(pdf, monkeypatch):
+def test_parsing_gets_the_full_timeout_after_time_in_the_queue(pdf):
     """The service counts document_timeout from when it starts parsing; so does CUGA."""
-    clock = iter(range(0, 10_000, 100))
-    monkeypatch.setattr(docling_remote.time, "monotonic", lambda: next(clock))
-    statuses = ["started"] * 3 + ["success"]  # seen started at 300, done at 600: past 250 from the upload
-    doc = _client(_Service(statuses=statuses), timeout_s=250).convert(pdf, "balanced")
+    # Polls at 0.05 s, then doubling to 1 s: started is seen at 3.55 s, success at 8.55 s,
+    # past 5 s from the upload but within 5 s of the start.
+    statuses = ["pending"] * 6 + ["started"] * 5 + ["success"]
+    doc = _client(_Service(statuses=statuses), timeout_s=5).convert(pdf, "balanced")
     assert doc.export_to_dict() == _doc().export_to_dict()
 
 
@@ -291,23 +289,33 @@ def test_the_result_fetch_is_retried_too(pdf):
     assert _client(service).convert(pdf, "balanced").export_to_dict() == _doc().export_to_dict()
 
 
-def test_retries_stop_at_the_files_deadline(pdf, monkeypatch):
-    clock = iter(range(0, 10_000, 100))
-    monkeypatch.setattr(docling_remote.time, "monotonic", lambda: next(clock))
+@pytest.mark.parametrize("timeout_s", [20, 3600])
+def test_retries_stop_at_the_files_deadline_or_after_a_minute(pdf, timeout_s):
     service = _Flaky("/v1/status/poll/t1", [httpx.Response(503, text="Server is busy")] * 50)
+    started = docling_remote.time.monotonic()
     with pytest.raises(DoclingServiceError, match=r"answered HTTP 503: Server is busy"):
-        _client(service, timeout_s=250).convert(pdf, "balanced")
+        _client(service, timeout_s=timeout_s).convert(pdf, "balanced")
+    assert docling_remote.time.monotonic() - started <= min(timeout_s, 60) + 1
 
 
-def test_an_upload_that_cannot_connect_fails_within_two_minutes(pdf, monkeypatch):
+def test_an_upload_that_cannot_connect_fails_within_a_minute(pdf):
     """Long enough for a docling-serve restart; a wrong address or certificate fails every time,
-    so the user hears about it in minutes, not after timeout_s."""
-    clock = iter(range(0, 100_000, 10))
-    monkeypatch.setattr(docling_remote.time, "monotonic", lambda: next(clock))
+    so the user hears about it in a minute, not after timeout_s."""
     service = _Flaky("/v1/convert/file/async", [httpx.ConnectError("refused")] * 1000)
+    started = docling_remote.time.monotonic()
     with pytest.raises(DoclingServiceError, match="unreachable"):
         _client(service).convert(pdf, "balanced")
-    assert 1 < len(service.requests) < 20
+    assert docling_remote.time.monotonic() - started <= 61
+
+
+def test_a_service_that_stays_down_fails_the_file_within_a_minute(pdf):
+    """Polls ride out a restart, but a service that does not come back must not hold the
+    ingest slot until timeout_s."""
+    service = _Flaky("/v1/status/poll/t1", [httpx.ConnectError("refused")] * 1000)
+    started = docling_remote.time.monotonic()
+    with pytest.raises(DoclingServiceError, match="unreachable"):
+        _client(service).convert(pdf, "balanced")
+    assert docling_remote.time.monotonic() - started <= 61
 
 
 def test_a_tls_error_names_the_cause_but_not_the_host(pdf):
