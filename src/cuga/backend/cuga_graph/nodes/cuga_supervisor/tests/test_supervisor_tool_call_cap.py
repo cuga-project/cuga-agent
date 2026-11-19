@@ -74,6 +74,7 @@ def _make_state(script, used=0):
         agent_chat_messages={},
         # Read by _delegation_state_update, which every exit from the node calls.
         supervisor_metadata={},
+        service_scope={},
         metrics={},
     )
 
@@ -318,3 +319,38 @@ async def test_step_limit_exit_still_persists_the_spent_budget(monkeypatch):
     assert update.get("tool_calls_used_thread") == 30 + executed["n"], (
         "spent thread budget lost on the step-limit exit"
     )
+
+
+@pytest.mark.asyncio
+async def test_message_limit_after_a_failed_block_keeps_the_delegation_state(monkeypatch):
+    """The error exit that also hits the message limit saves the same scope as its sibling exits."""
+    from langchain_core.messages import AIMessage
+
+    _set_cap(monkeypatch, 100)
+    _skip_policy(monkeypatch)
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool.core_append",
+        lambda adapter, state, msgs: ([], AIMessage(content="Maximum message limit reached.")),
+    )
+
+    async def executor_failure(**_kwargs):
+        raise RuntimeError("delegation failed")
+
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool"
+        ".CodeExecutor.eval_with_tools_async",
+        executor_failure,
+    )
+
+    async def delegate_to_researcher(task: str) -> str:
+        return "ok"
+
+    node = create_execute_agent_tool_node(
+        _make_adapter({"delegate_to_researcher": counted_tool_call(delegate_to_researcher)})
+    )
+    state = _make_state("await delegate_to_researcher('t')\n")
+    state.service_scope = {"child_checkpoint_ids": ["child-1"]}
+    result = await node(state)
+    update = result.update if hasattr(result, "update") else result
+
+    assert update.get("service_scope") == {"child_checkpoint_ids": ["child-1"]}

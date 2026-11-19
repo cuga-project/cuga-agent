@@ -93,6 +93,7 @@ from cuga.backend.server.tool_guard_generation import (
     generate_tool_guards_for_policy,
 )
 from cuga.backend.server.conversation_history import ThreadOwnershipError, get_conversation_db
+from cuga.backend.server.runtime_refresh import runtime_stream
 
 # Default user ID for conversation history
 DEFAULT_USER_ID = "default_user"
@@ -256,6 +257,30 @@ async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id:
     provider = getattr(app_state, "knowledge_provider", None)
     if provider:
         provider.clear_session(thread_id)
+
+
+async def _delete_child_checkpoints(
+    *,
+    saver: Any,
+    agent_id: str,
+    conversation_id: str,
+    user_id: str,
+) -> None:
+    """Delete the conversation-scoped supervisor child checkpoints of one conversation.
+
+    Read both legacy IDs in ``service_scope`` and the durable registry in the parent's
+    reserved namespace. The latter survives stops and errors before a node returns its
+    state update. Called before parent deletion; read/delete failures remain retriable.
+    """
+    from cuga.backend.storage.checkpoint.children import recorded_child_ids
+
+    parent_key = _checkpoint_thread_id(conversation_id, user_id, agent_id)
+    last = await saver.aget_tuple({"configurable": {"thread_id": parent_key}})
+    scope = ((last.checkpoint or {}).get("channel_values") or {}).get("service_scope") if last else None
+    children = list(scope.get("child_checkpoint_ids") or []) if isinstance(scope, dict) else []
+    children.extend(await recorded_child_ids(saver, parent_key))
+    for child_key in dict.fromkeys(child for child in children if isinstance(child, str) and child):
+        await saver.adelete_thread(child_key)
 
 
 def _knowledge_config(app_state: "AppState" | None):
@@ -728,6 +753,7 @@ async def _build_published_default_agent(
     startup_llm_cfg: Optional[Dict[str, Any]],
     startup_version: Optional[int] = None,
     langfuse_handler: Any = None,
+    runtime_state: Any = None,
 ) -> "DynamicAgentGraph":
     """Build the published cuga-default graph at startup (``app_state.agent``).
 
@@ -737,11 +763,23 @@ async def _build_published_default_agent(
     from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph as DynamicAgentGraph
     from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
 
+    from cuga.backend.server.config_fingerprint import compute_published_fingerprint
+
+    fingerprint = await compute_published_fingerprint(startup_config) if startup_config is not None else None
+    from cuga.backend.server.runtime_refresh import prepare_runtime
+
+    state = runtime_state
+    if state is None:
+        state = await prepare_runtime(app_state, startup_config or {}, keep_store_when_list_empty=True)
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
+
+    if isinstance(tool_provider, CombinedToolProvider):
+        tool_provider.get_include_by_app = lambda: (state.tools_include_by_app, startup_version or 0)
     overrides = _extract_agent_feature_overrides(startup_config or {})
     agent = DynamicAgentGraph(
         None,
         langfuse_handler=langfuse_handler,
-        policy_system=app_state.policy_system,
+        policy_system=state.policy_system,
         tool_provider=tool_provider,
         llm_config=startup_llm_cfg or None,
         enable_todos=overrides.get("enable_todos"),
@@ -750,12 +788,127 @@ async def _build_published_default_agent(
         cuga_lite_max_steps=overrides.get("cuga_lite_max_steps"),
         enable_filesystem_tools=overrides.get("enable_filesystem_tools"),
         special_instructions=agent_registry.agent_special_instructions(startup_config or {}),
-        supervisor_id=app_state.agent_id,
-        **await agent_registry.supervisor_graph_overrides(startup_config or {}),
+        supervisor_id=state.agent_id,
+        **await agent_registry.supervisor_graph_overrides(
+            startup_config or {}, checkpointer=state.checkpointer
+        ),
     )
-    await agent.build_graph(checkpointer=app_state.checkpointer)
+    await agent.build_graph(checkpointer=state.checkpointer)
     agent._checkpoint_config_version = str(startup_version or 0)
+    if startup_config is not None:
+        agent._config_fingerprint = fingerprint
+    agent._runtime_policy_snapshot = state.runtime_policy_snapshot
+    agent._runtime_llm = state.current_llm
+    agent._runtime_config = startup_config or {}
     return agent
+
+
+async def _refresh_published_graph(agent_id: str, config: Dict[str, Any], version: int | None) -> Any:
+    """Build a complete replacement under a stable lock, then install it."""
+    if agent_id != app_state.agent_id:
+        app_state.agent_graphs_cache.pop((agent_id, False), None)
+        return await _resolve_stream_agent(None, agent_id, False)
+    return await _replace_default_runtime(app_state, config, version, reread=True)
+
+
+async def _replace_default_runtime(
+    state: Any, config: dict, version: Any, *, reread: bool = False, force: bool = False
+) -> Any:
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
+    from cuga.backend.server.config_fingerprint import compute_published_fingerprint
+    from cuga.backend.server.runtime_refresh import prepare_runtime, close_retired_runtime
+
+    lock = getattr(state, "published_runtime_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        state.published_runtime_lock = lock
+    async with lock:
+        if reread:
+            from cuga.backend.server.config_store import load_config
+
+            config, version = await load_config(None, getattr(state, "agent_id", "cuga-default"))
+            if not config:
+                raise ValueError("Published configuration unavailable")
+        fingerprint = await compute_published_fingerprint(config)
+        current = state.agent
+        # ``force`` rebuilds an unchanged configuration, for policy changes made
+        # outside the published config (for example a generated tool guard).
+        if (
+            not force
+            and getattr(current, "_config_fingerprint", None) == fingerprint
+            and getattr(current, "_checkpoint_config_version", None) == str(version or 0)
+        ):
+            return current
+        from cuga.backend.server.manage_routes.apply import reload_manager_registry
+
+        await reload_manager_registry()
+        prepared = await prepare_runtime(state, config, keep_store_when_list_empty=force)
+        try:
+            graph = await _build_published_default_agent(
+                tool_provider=CombinedToolProvider(
+                    get_include_by_app=lambda: (prepared.tools_include_by_app, version or 0),
+                    agent_id=prepared.agent_id,
+                    app_names=agent_registry.configured_tool_apps(config),
+                ),
+                startup_config=config,
+                startup_llm_cfg=config.get("llm") or {},
+                startup_version=version,
+                langfuse_handler=getattr(current, "langfuse_handler", None),
+                runtime_state=prepared,
+            )
+        except BaseException:
+            if prepared.runtime_policy_snapshot is not None:
+                await prepared.runtime_policy_snapshot.disconnect()
+            raise
+        # A forced rebuild exists for policy changes made outside the published config (a generated
+        # tool guard). Copying the published policies over the shared store would delete that change.
+        if (
+            not force
+            and config.get("policies") is not None
+            and getattr(state, "policy_system", None) is not None
+        ):
+            from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+            from cuga.backend.server.manage_routes.helpers import policies_list_from_config
+
+            try:
+                result = await apply_policies_data_to_storage(
+                    state.policy_system.storage,
+                    policies_list_from_config(config["policies"]),
+                    clear_existing=True,
+                    filesystem_sync=getattr(state, "policy_filesystem_sync", None),
+                )
+                if result["errors"]:
+                    raise ValueError("Could not persist all published policies")
+            except BaseException:
+                graph._runtime_retired = True
+                await close_retired_runtime(graph)
+                raise
+        # No await between assignments: requests observe a complete old or new runtime.
+        state.current_llm = prepared.current_llm
+        state.tools_include_by_app = prepared.tools_include_by_app
+        state.config_version = version
+        state.tools_include_version = int(version or 0)
+        state.agent = graph
+        current._runtime_retired = True
+        await close_retired_runtime(current)
+        return graph
+
+
+async def _initialize_conversation_storage() -> None:
+    """Schema errors must fail deployment, before any request or background work."""
+    from cuga.backend.server.thread_lease import get_thread_lease
+
+    try:
+        await get_conversation_db().initialize_schema()
+        await get_thread_lease().initialize_schema()
+    except BaseException:
+        from cuga.backend.storage.facade import get_storage
+
+        try:
+            await asyncio.shield(get_storage().close_relational_stores())
+        except Exception as exc:
+            logger.error("Could not close relational stores after schema failure: {}", type(exc).__name__)
+        raise
 
 
 @asynccontextmanager
@@ -770,6 +923,7 @@ async def lifespan(app: FastAPI):
     """
     await _open_checkpointer()
     try:
+        await _initialize_conversation_storage()
         async with _app_lifespan(app):
             yield
     finally:
@@ -1365,6 +1519,29 @@ async def _app_lifespan(app: FastAPI):
     if await EvolveIntegration.is_configured():
         app_state.background_tasks.append(asyncio.create_task(source_deletion_delivery_loop()))
 
+    # Checkpoint retention sweep: prod + durable checkpointer only; 0 days disables it.
+    storage_settings = settings.storage
+    retention_days = int(getattr(storage_settings, "checkpoint_retention_days", 0) or 0)
+    if (
+        getattr(storage_settings, "mode", "local") == "prod"
+        and getattr(storage_settings, "checkpointer", "memory") == "durable"
+        and retention_days > 0
+        and app_state.checkpointer_handle is not None
+    ):
+        from cuga.backend.server.retention import run_retention_loop
+
+        prune_interval_minutes = int(getattr(storage_settings, "checkpoint_prune_interval_minutes", 60) or 60)
+        app_state.background_tasks.append(
+            asyncio.create_task(
+                run_retention_loop(
+                    handle=app_state.checkpointer_handle,
+                    checkpoint_thread_id_fn=_checkpoint_thread_id,
+                    interval_seconds=prune_interval_minutes * 60,
+                    retention_days=retention_days,
+                )
+            )
+        )
+
     yield
 
     logger.info("Application is shutting down...")
@@ -1384,6 +1561,9 @@ async def _app_lifespan(app: FastAPI):
     except Exception:
         logger.exception("close_graph_owners failed during shutdown (non-fatal)")
     app_state.agent_graphs_cache.clear()
+    snapshot = getattr(app_state.agent, "_runtime_policy_snapshot", None)
+    if snapshot is not None:
+        await snapshot.disconnect()
 
     for task in app_state.background_tasks:
         task.cancel()
@@ -1768,10 +1948,41 @@ def apply_request_user_context(state: AgentState, user_id: Optional[str]) -> Non
     """
     from cuga.config import get_service_instance_id, get_tenant_id
 
+    previous_scope = state.service_scope or {}
+    child_ids = previous_scope.get("child_checkpoint_ids") if isinstance(previous_scope, dict) else None
     state.user_id = user_id
     state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
+    if isinstance(child_ids, list):
+        state.service_scope["child_checkpoint_ids"] = child_ids
 
 
+async def _cancel_pending_interrupt(graph: Any, checkpoint_key: str) -> bool:
+    """Cancel a paused turn without touching its history.
+
+    The pending node is recorded as having run, with its ``hitl_action`` cleared so the next turn
+    does not re-raise the old approval, and whatever it would have scheduled is then dropped. That
+    works for both a static ``interrupt_after`` breakpoint and ``WaitForResponse``'s dynamic
+    ``interrupt()``. Resuming instead is not an option: ``WaitForResponse`` would parse a
+    cancellation as an ``ActionResponse`` and run the old approved action.
+
+    Returns True when no node is pending afterwards.
+    """
+    from langgraph.graph import END
+
+    config = {"configurable": {"thread_id": checkpoint_key}}
+    try:
+        snapshot = await graph.aget_state(config)
+        if not snapshot.next:
+            return True
+        await graph.aupdate_state(config, {"hitl_action": None}, as_node=snapshot.next[0])
+        await graph.aupdate_state(config, None, as_node=END)
+        return not (await graph.aget_state(config)).next
+    except Exception as exc:
+        logger.warning("Cancelling the pending interrupt failed: {}", type(exc).__name__)
+        return False
+
+
+@runtime_stream
 async def event_stream(
     query: str,
     api_mode=False,
@@ -1787,6 +1998,7 @@ async def event_stream(
     issued_thread_id: Optional[str] = None,
     preloaded_snapshot: Any = None,
     claim_owner: bool = True,
+    reset_stop_event: bool = True,
     gateway_tokens: Any = None,
 ):
     """Handles the main agent event stream. If agent is None, uses app_state.agent (published).
@@ -1808,35 +2020,117 @@ async def event_stream(
     from cuga.backend.cuga_graph.utils.controller import AgentRunner
     from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
     from langchain_core.messages import AIMessage
+    from cuga.backend.server.config_fingerprint import (
+        ConfigDecision,
+        classify_config_change,
+        compute_published_fingerprint,
+        ReferencedConfigUnavailable,
+    )
 
     checkpoint_config_key = "published_config_version"
-
-    async def _stale_pending_checkpoint(snapshot: Any) -> bool:
-        """A paused action may only resume on the published config that created it."""
-        expected = getattr(run_agent, "_checkpoint_config_version", None)
-        if expected is None or not getattr(snapshot, "next", None):
-            return False
-        values = getattr(snapshot, "values", None) or {}
-        scope = values.get("service_scope") or {}
-        if not isinstance(scope, dict) or scope.get(checkpoint_config_key) != expected:
-            return True
-        # A publish may have committed after /stream resolved its graph but before
-        # this request reached the checkpoint. Check the store as well as the graph.
-        try:
-            from cuga.backend.server.config_store import load_config
-
-            _, current_version = await load_config(None, runtime_agent_id)
-        except Exception as exc:
-            logger.warning("Could not verify pending approval configuration: {}", type(exc).__name__)
-            return True
-        return str(current_version or 0) != expected
-
+    fingerprint_key = "config_fingerprint"
     stale_approval_message = (
         "This pending approval belongs to an older agent configuration. Start a new conversation to continue."
     )
+    config_changed_message = (
+        "The agent configuration changed, so the pending approval was cancelled. Please repeat your request."
+    )
+
+    def _notice(name: str, data: str) -> str:
+        return StreamEvent(name=name, data=data).format(app_state.output_format, thread_id=thread_id)
+
+    async def _reconcile_config(snapshot: Any, is_resume: bool) -> tuple[Any, List[str], bool]:
+        """Apply the config-change decision table to a loaded checkpoint (#774).
+
+        Returns the checkpoint to continue from (re-read after a cancel), the events to send
+        before the graph runs, and whether the request ends with those events. The events are
+        notices, not conversation content: they never enter the stream-event buffer.
+        """
+        nonlocal run_agent, runtime_llm
+        from cuga.backend.server.runtime_refresh import retain_runtime
+
+        expected_version = getattr(run_agent, "_checkpoint_config_version", None)
+        pending = bool(getattr(snapshot, "next", None))
+        stored_config = None
+        stored_version = None
+        stored_fingerprint = None
+        if expected_version is not None:
+            try:
+                from cuga.backend.server.config_store import load_config
+
+                stored_config, stored_version = await load_config(None, runtime_agent_id)
+                if stored_config:
+                    stored_fingerprint = await compute_published_fingerprint(stored_config)
+            except ReferencedConfigUnavailable:
+                return (
+                    snapshot,
+                    [_notice("Error", "Could not verify referenced sub-agent configuration.")],
+                    True,
+                )
+            except Exception as exc:
+                logger.warning("Could not verify the published configuration: {}", type(exc).__name__)
+                return snapshot, [_notice("Error", "Could not verify the published configuration.")], True
+        fingerprint = getattr(run_agent, "_config_fingerprint", None)
+        version_moved = stored_version is not None and str(stored_version or 0) != expected_version
+        content_moved = (
+            stored_fingerprint is not None
+            and fingerprint is not None
+            and stored_fingerprint.agent_hash != fingerprint.agent_hash
+        )
+        graph_stale = version_moved or content_moved
+        values = getattr(snapshot, "values", None) or {}
+        scope = values.get("service_scope")
+        scope = scope if isinstance(scope, dict) else {}
+        # The fingerprint decides. Only a checkpoint without one falls back to the
+        # version, and then to the stored (latest) version, so a no-op republish
+        # gives the same decision on every replica.
+        current_version = str(stored_version or 0) if stored_version is not None else expected_version
+        decision = classify_config_change(scope, stored_fingerprint or fingerprint, pending, current_version)
+
+        notices = []
+        if decision is ConfigDecision.CANCEL_PENDING:
+            if not await _cancel_pending_interrupt(run_agent.graph, checkpoint_thread_id):
+                return snapshot, [_notice("Error", stale_approval_message)], True
+            notices.append(_notice("pending_cancelled", json.dumps({"reason": "config_changed"})))
+            if is_resume:
+                return snapshot, [*notices, _notice("Answer", config_changed_message)], True
+        if graph_stale and not stored_config:
+            return (
+                snapshot,
+                [*notices, _notice("Error", "Could not verify the published configuration.")],
+                True,
+            )
+
+        if graph_stale and stored_config:
+            try:
+                run_agent = await _refresh_published_graph(runtime_agent_id, stored_config, stored_version)
+                retain_runtime(run_agent)
+                if runtime_agent_id == app_state.agent_id and agent is None:
+                    runtime_llm = getattr(run_agent, "_runtime_llm", app_state.current_llm)
+                snapshot = await run_agent.graph.aget_state(
+                    {"configurable": {"thread_id": checkpoint_thread_id}}
+                )
+            except Exception as exc:
+                logger.error("Could not rebuild the published graph: {}", type(exc).__name__)
+                return snapshot, [*notices, _notice("Error", "Agent configuration unavailable.")], True
+        elif decision is ConfigDecision.CANCEL_PENDING:
+            snapshot = await run_agent.graph.aget_state({"configurable": {"thread_id": checkpoint_thread_id}})
+
+        fingerprint = getattr(run_agent, "_config_fingerprint", None)
+        if decision is ConfigDecision.NOTICE and fingerprint is not None:
+            stamped = scope.get(fingerprint_key) or {}
+            payload = {
+                "previous_agent_hash": str(stamped.get("agent_hash", ""))[:12],
+                "current_agent_hash": fingerprint.short_hash(),
+            }
+            notices.append(_notice("config_changed", json.dumps(payload)))
+        return snapshot, notices, False
 
     memory_turn_id = str(uuid.uuid4()) if not resume else ""
     run_agent = agent if agent is not None else app_state.agent
+    from cuga.backend.server.runtime_refresh import retain_runtime
+
+    retain_runtime(run_agent)
     runtime_agent_id = agent_id or app_state.agent_id
     thread_id = _canonical_thread_id(thread_id or str(uuid.uuid4()))
     try:
@@ -1862,6 +2156,8 @@ async def event_stream(
         )
     else:
         runtime_llm = current_llm
+    if run_agent is not None and hasattr(run_agent, "_runtime_llm"):
+        runtime_llm = run_agent._runtime_llm
     if not run_agent or not run_agent.graph:
         yield StreamEvent(name="Error", data="Agent not available.").format()
         return
@@ -1869,12 +2165,13 @@ async def event_stream(
     if thread_id:
         if thread_id not in app_state.stop_events:
             app_state.stop_events[thread_id] = asyncio.Event()
-        else:
-            # Reset the event for a new stream
+        elif reset_stop_event:
+            # Leased streams reset before the poller starts; do not erase its signal here.
             app_state.stop_events[thread_id].clear()
 
     # Create a local state object - retrieve from LangGraph if resuming or if thread_id exists, otherwise create new
     local_state = None
+    config_notices: List[str] = []
 
     # Create local tracker instance
     local_tracker = ActivityTracker()
@@ -1892,10 +2189,10 @@ async def event_stream(
                     snapshot = await run_agent.graph.aget_state(
                         {"configurable": {"thread_id": checkpoint_thread_id}}
                     )
-                if await _stale_pending_checkpoint(snapshot):
-                    yield StreamEvent(name="Error", data=stale_approval_message).format(
-                        app_state.output_format, thread_id=thread_id
-                    )
+                snapshot, config_notices, finished = await _reconcile_config(snapshot, False)
+                if finished:
+                    for notice in config_notices:
+                        yield notice
                     return
                 latest_state_values = snapshot.values
                 if latest_state_values:
@@ -1914,13 +2211,10 @@ async def event_stream(
                     local_state.thread_id = thread_id
                     local_tracker.intent = query
                     logger.info(f"Created new state for thread_id: {thread_id}")
-            except Exception as e:
-                # If state retrieval fails, create new state
-                logger.warning(f"Failed to retrieve state for thread_id {thread_id}, creating new state: {e}")
-                local_state = default_state(page=None, observation=None, goal="")
-                local_state.input = query
-                local_state.thread_id = thread_id
-                local_tracker.intent = query
+            except Exception as exc:
+                logger.warning("Could not load conversation state: {}", type(exc).__name__)
+                yield _notice("Error", "Could not read conversation state. Please retry.")
+                return
         else:
             # No thread_id, create new state
             local_state = default_state(page=None, observation=None, goal="")
@@ -1928,31 +2222,42 @@ async def event_stream(
             local_state.thread_id = thread_id
             local_tracker.intent = query
     else:
-        # For resume, fetch state from LangGraph
+        # Resume must preserve the saved approval if its state cannot be read.
         if thread_id:
-            snapshot = preloaded_snapshot
-            if snapshot is None:
-                snapshot = await run_agent.graph.aget_state(
-                    {"configurable": {"thread_id": checkpoint_thread_id}}
-                )
-            if await _stale_pending_checkpoint(snapshot):
-                yield StreamEvent(name="Error", data=stale_approval_message).format(
-                    app_state.output_format, thread_id=thread_id
-                )
+            try:
+                snapshot = preloaded_snapshot
+                if snapshot is None:
+                    snapshot = await run_agent.graph.aget_state(
+                        {"configurable": {"thread_id": checkpoint_thread_id}}
+                    )
+                snapshot, config_notices, finished = await _reconcile_config(snapshot, True)
+                if finished:
+                    for notice in config_notices:
+                        yield notice
+                    return
+                latest_state_values = snapshot.values
+                if latest_state_values:
+                    local_state = AgentState(**latest_state_values)
+                    local_state.thread_id = thread_id
+            except Exception as exc:
+                logger.warning("Could not load approval state: {}", type(exc).__name__)
+                yield _notice("Error", "Could not read conversation state. Please retry.")
                 return
-            latest_state_values = snapshot.values
-            if latest_state_values:
-                local_state = AgentState(**latest_state_values)
-                local_state.thread_id = thread_id
+
+    for notice in config_notices:
+        yield notice
 
     if local_state:
         config_version = getattr(run_agent, "_checkpoint_config_version", None)
+        fingerprint = getattr(run_agent, "_config_fingerprint", None)
         if resume:
             memory_turn_id = str((local_state.service_scope or {}).get("memory_turn_id") or "")
         apply_request_user_context(local_state, user_id)
         local_state.service_scope.update({"agent_id": runtime_agent_id, "memory_turn_id": memory_turn_id})
         if not resume and config_version is not None:
             local_state.service_scope[checkpoint_config_key] = config_version
+        if not resume and fingerprint is not None:
+            local_state.service_scope[fingerprint_key] = fingerprint.to_scope_dict()
         # An explicit single-agent role must override global settings and any
         # supervisor mode retained in an older checkpoint too.
         supervisor_enabled = getattr(run_agent, "supervisor_enabled", None)
@@ -2071,6 +2376,14 @@ async def event_stream(
 
     _upload_ctx = format_upload_context(thread_id) if thread_id else None
 
+    from cuga.backend.storage.checkpoint.children import ChildCheckpointRecorder
+
+    handle = getattr(app_state, "checkpointer_handle", None)
+    child_recorder = (
+        ChildCheckpointRecorder(handle.saver, checkpoint_thread_id)
+        if handle is not None and entry == "web" and claim_owner
+        else None
+    )
     agent_loop_obj = AgentLoop(
         graph=run_agent.graph,
         langfuse_handler=langfuse_handler,
@@ -2089,6 +2402,7 @@ async def event_stream(
         knowledge_user_id=_knowledge_user_id,
         upload_context=_upload_ctx,
         special_instructions=getattr(run_agent, "special_instructions", None),
+        child_checkpoint_recorder=child_recorder,
     )
     logger.debug(f"Resume: {resume.model_dump_json() if resume else ''}")
 
@@ -2929,7 +3243,7 @@ if getattr(settings.advanced_features, "use_extension", False):
 
 
 async def _resolve_stream_agent(
-    request: Request, agent_id: str, use_draft: bool
+    request: Optional[Request], agent_id: str, use_draft: bool
 ) -> Optional[DynamicAgentGraph]:
     """Resolve the DynamicAgentGraph to run /stream against for a given X-Agent-ID.
 
@@ -2940,7 +3254,7 @@ async def _resolve_stream_agent(
     special_instructions) otherwise. Built graphs are cached on app_state.agent_graphs_cache,
     keyed by (agent_id, use_draft); manage_routes invalidates the entry on draft-save/publish.
     """
-    draft_state = getattr(request.app.state, "draft_app_state", None)
+    draft_state = getattr(request.app.state, "draft_app_state", None) if request is not None else None
     default_graph = (getattr(draft_state, "agent", None) if use_draft else app_state.agent) or app_state.agent
 
     if not agent_registry.is_agent_registry_enabled() or not agent_id or agent_id == "cuga-default":
@@ -2988,6 +3302,9 @@ async def _resolve_stream_agent(
 
             from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
 
+            from cuga.backend.server.config_fingerprint import compute_published_fingerprint
+
+            fingerprint = await compute_published_fingerprint(config) if not use_draft else None
             agent_meta = config.get("agent") or {}
             kind = agent_meta.get("kind") or "single"
 
@@ -3005,6 +3322,9 @@ async def _resolve_stream_agent(
                 agents_dict = await build_agents_from_stored_subagents(
                     supervisor_cfg.get("subAgents") or [],
                     use_draft=use_draft,
+                    # Published builds share the lifespan saver so sub-agent state survives
+                    # restarts. Draft builds keep their own MemorySaver.
+                    checkpointer=app_state.checkpointer if not use_draft else None,
                 )
 
                 # Supervisors have no LLM UI section (that panel is hidden for kind=supervisor), so a
@@ -3064,6 +3384,7 @@ async def _resolve_stream_agent(
             else:
                 await graph.build_graph(checkpointer=app_state.checkpointer)
                 graph._checkpoint_config_version = str(config_version or 0)
+                graph._config_fingerprint = fingerprint
             # Another request may have finished first, or a draft-save/publish may have
             # invalidated this key while we were building. The cache only dedupes builds:
             # published state lives in the shared saver, not in the graph instance, so a
@@ -3191,7 +3512,7 @@ async def stream(
         runtime_llm = None
     await issue_conversation()
 
-    def body(preloaded_snapshot: Any = None):
+    def body(preloaded_snapshot: Any = None, *, leased: bool = False):
         return event_stream(
             query if isinstance(query, str) else None,
             api_mode=settings.advanced_features.mode == "api",
@@ -3207,6 +3528,7 @@ async def stream(
             issued_thread_id=issued_thread_id,
             preloaded_snapshot=preloaded_snapshot,
             claim_owner=not preview,
+            reset_stop_event=not leased,
         )
 
     graph = getattr(run_agent or app_state.agent, "graph", None)
@@ -3234,7 +3556,9 @@ async def stream(
         await lease.release(token)
         raise
     return _LeasedStreamingResponse(
-        _leased_turn(body(snapshot), lease, token, thread_id, user_id, graph, checkpoint_key, status),
+        _leased_turn(
+            body(snapshot, leased=True), lease, token, thread_id, user_id, graph, checkpoint_key, status
+        ),
         lease=lease,
         token=token,
         media_type="text/event-stream",
@@ -3265,23 +3589,25 @@ async def _leased_turn(
     from cuga.backend.server.thread_lease import keep_lease
 
     stop_event = app_state.stop_events.setdefault(thread_id, asyncio.Event())
+    stop_event.clear()
     async with keep_lease(lease, token, stop_event=stop_event):
         try:
             async for chunk in body:
                 yield chunk
         finally:
-            if status == "new":  # an active conversation needs no re-read after its turn
-                # Shielded: a client disconnect cancels the response, and must not leave a
-                # conversation that has state marked ``new`` (#774).
-                with anyio.CancelScope(shield=True):
-                    try:
-                        snapshot = await graph.aget_state({"configurable": {"thread_id": checkpoint_key}})
-                        if snapshot and (snapshot.values or snapshot.next):
-                            await get_conversation_db().set_thread_status(
+            # A disconnect must not leave completed state marked as a new conversation.
+            with anyio.CancelScope(shield=True):
+                try:
+                    snapshot = await graph.aget_state({"configurable": {"thread_id": checkpoint_key}})
+                    if snapshot and (snapshot.values or snapshot.next):
+                        conversation_db = get_conversation_db()
+                        if status == "new":
+                            await conversation_db.set_thread_status(
                                 thread_id, user_id, "active", only_from="new"
                             )
-                    except Exception as exc:
-                        logger.error(f"Could not mark conversation active: {type(exc).__name__}")
+                        await conversation_db.mark_last_turn_at(thread_id, user_id)
+                except Exception as exc:
+                    logger.error(f"Could not update conversation after turn: {type(exc).__name__}")
 
 
 class _LeasedStreamingResponse(StreamingResponse):
@@ -3345,6 +3671,18 @@ async def stop(request: Request, current_user: Optional[UserInfo] = Depends(requ
         if thread_id not in app_state.stop_events:
             app_state.stop_events[thread_id] = asyncio.Event()
         app_state.stop_events[thread_id].set()
+        # The turn may be running on another replica: flag its lease so that replica stops it too.
+        try:
+            from cuga.backend.server.thread_lease import get_thread_lease
+
+            checkpoint_key = _checkpoint_thread_id(
+                thread_id,
+                _workspace_user_id(current_user),
+                owner_agent or _runtime_agent_id(request) or "cuga-default",
+            )
+            await get_thread_lease().request_stop(checkpoint_key)
+        except Exception as e:
+            logger.warning(f"Failed to request cross-replica stop for {thread_id}: {type(e).__name__}")
         try:
             from cuga.backend.agent_spawn import clear_runtime_caches
 
@@ -3610,6 +3948,18 @@ async def get_conversations(
         raise HTTPException(status_code=500, detail="Failed to load conversations")
 
 
+@app.get("/api/conversations/{conversation_id}")
+async def validate_conversation(
+    conversation_id: str,
+    agent_id: str = "cuga-default",
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
+):
+    """Validate a restored draft, including an empty conversation with uploads but no history."""
+    user_id = current_user.sub if current_user else DEFAULT_USER_ID
+    status = await _require_continuable_conversation(conversation_id, user_id, agent_id)
+    return JSONResponse({"id": conversation_id, "status": status})
+
+
 @app.post("/api/conversations")
 async def create_conversation(
     request: Request,
@@ -3699,8 +4049,8 @@ async def delete_conversation(
     except ThreadBusy:
         return JSONResponse(status_code=409, content={"error": "conflict", "retry_after_ms": 2000})
     try:
-        # Renewed while cleanup runs, so a slow delete cannot lose the lease to a new turn. If the
-        # lease is lost anyway, stop before the next step: every step is safe to retry.
+        # Keep renewing during cleanup. Delete children before the parent so a failed
+        # child delete leaves the parent checkpoint available for a retry.
         lost = asyncio.Event()
         async with keep_lease(lease, token, stop_event=lost):
 
@@ -3710,10 +4060,17 @@ async def delete_conversation(
 
             handle = getattr(request.app.state.app_state, "checkpointer_handle", None)
             if handle is not None:
-                # /run, A2A and the extension keep their own checkpoints of this conversation (#774).
+                saver = handle.saver
+                still_held()
+                await _delete_child_checkpoints(
+                    saver=saver,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                )
                 for entry in ("web", "run", "a2a", "ext"):
                     still_held()
-                    await handle.saver.adelete_thread(
+                    await saver.adelete_thread(
                         _checkpoint_thread_id(conversation_id, user_id, agent_id, entry)
                     )
             still_held()
@@ -3813,6 +4170,35 @@ _TOOL_GUARD_SYNC_ERROR_MESSAGES = {
     "no_published_version": "No published configuration version available",
     "unexpected": "Failed to sync policy to configuration store",
 }
+
+
+_TOOL_GUARD_INACTIVE_MESSAGE = (
+    "The tool guard is saved but the running agent does not enforce it yet. Publish the agent to apply it."
+)
+
+
+async def _activate_generated_guard(policy_id: str) -> bool:
+    """Rebuild the published default runtime so it enforces a newly generated guard.
+
+    The default runtime enforces a private policy snapshot, so a guard written to the
+    shared policy store applies only after a replacement. Returns whether the running
+    runtime now carries the guard; a failed sync can leave it out of the snapshot.
+    """
+    if getattr(app_state, "agent", None) is None:
+        return False
+    try:
+        runtime = await _replace_default_runtime(app_state, {}, None, reread=True, force=True)
+        snapshot = getattr(runtime, "_runtime_policy_snapshot", None)
+        if snapshot is None:
+            # No private snapshot: the runtime reads the shared store directly.
+            return True
+        policy = await snapshot.get_policy(policy_id)
+        return bool(policy is not None and getattr(policy, "tool_guards", None))
+    except Exception as exc:
+        logger.warning(
+            "Could not apply the generated tool guard to the running agent: {}", type(exc).__name__
+        )
+        return False
 
 
 async def _sync_policy_to_config_store(
@@ -4056,6 +4442,29 @@ async def save_policies_config(
             await storage.disconnect()
             logger.info("Storage disconnected")
 
+        if (
+            not use_draft
+            and is_default
+            and getattr(app_state.agent, "_runtime_policy_snapshot", None) is not None
+        ):
+            # Direct policy saves must reach future turns too. Persist the changed
+            # config so every replica detects it, then install a fresh runtime.
+            from copy import deepcopy
+            from cuga.backend.server.config_store import (
+                load_config,
+                save_config,
+                update_published_config_at_version,
+            )
+
+            config, version = await load_config(None, app_state.agent_id)
+            config = config or deepcopy(app_state.agent._runtime_config)
+            config["policies"] = data
+            if version is None:
+                version = await save_config(config, app_state.agent_id)
+            elif not await update_published_config_at_version(config, app_state.agent_id, version):
+                raise RuntimeError("Published configuration changed during policy save; retry")
+            await _replace_default_runtime(app_state, config, version, reread=True)
+
         logger.info(f"Policies configuration saved: {len(policies)} policies")
         return JSONResponse({"status": "success", "message": f"Saved {len(policies)} policies successfully"})
     except Exception as e:
@@ -4178,6 +4587,11 @@ async def generate_tool_guard_for_policy(
             logger.warning("Failed to sync policy to config_store: %s", sync_exc)
             result["config_synced"] = False
             result["sync_error"] = _TOOL_GUARD_SYNC_ERROR_MESSAGES["unexpected"]
+
+        if not use_draft and updated_policy is not None:
+            result["guard_active"] = await _activate_generated_guard(policy_id)
+            if not result["guard_active"]:
+                result["guard_warning"] = _TOOL_GUARD_INACTIVE_MESSAGE
 
         return JSONResponse(result, status_code=200)
     except ValueError as exc:
