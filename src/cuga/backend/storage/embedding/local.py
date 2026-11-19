@@ -20,7 +20,17 @@ def _serialize_float32(embedding: List[float]):
 
 
 class LocalEmbeddingStore:
-    def __init__(self, db_path: str, collection_name: str, schema: EmbeddingSchemaConfig):
+    def __init__(
+        self,
+        db_path: str,
+        collection_name: str,
+        schema: EmbeddingSchemaConfig,
+        *,
+        distance_metric: str = "l2",
+    ):
+        if distance_metric not in {"l2", "cosine"}:
+            raise ValueError("Unsupported vector distance metric")
+        self._distance_metric = distance_metric
         self._db_path = db_path
         self._collection_name = collection_name
         self._schema = schema
@@ -36,6 +46,16 @@ class LocalEmbeddingStore:
                 return fn(*args)
 
         return await asyncio.to_thread(locked)
+
+    async def close(self) -> None:
+        """Close this store's connection after its owning runtime has retired."""
+
+        def close_connection() -> None:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
+
+        await self._run(close_connection)
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -55,7 +75,7 @@ class LocalEmbeddingStore:
         meta = self._schema.metadata_columns
         aux = self._schema.auxiliary_columns
         dim = self._schema.embedding_dim
-        parts = [f"embedding float[{dim}]"]
+        parts = [f"embedding float[{dim}] distance_metric={self._distance_metric}"]
         for k, v in meta.items():
             typ = _VEC0_TYPE.get(v.lower(), "TEXT")
             parts.append(f"{k} {typ}")

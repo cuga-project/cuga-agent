@@ -81,6 +81,7 @@ def _extract_pending_delegations(script: Optional[str], known_agents: Iterable[s
 
 def _delegation_state_update(state: CugaSupervisorState) -> dict:
     return {
+        "service_scope": dict(state.service_scope or {}),
         "selected_agents": list(state.selected_agents),
         "agent_results": dict(state.agent_results),
         "agent_variables": dict(state.agent_variables),
@@ -147,6 +148,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
             update={
                 adapter.messages_key: updated_messages,
                 "final_answer": hitl_action.description,
+                "script": state.script,
                 adapter.metadata_key: approval_metadata,
                 "hitl_action": hitl_action,
                 "sender": adapter.sender_name,
@@ -358,6 +360,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
             thread_id=_resolve_thread_id(state, config),
             interactive=adapter._interactive,
             pending_acp_registry=adapter._pending_acp_registry,
+            child_checkpoint_recorder=(config or {}).get("configurable", {}).get("child_checkpoint_recorder"),
         )
         context = {
             **existing_vars,
@@ -463,7 +466,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                     updated_messages,
                     limit_error_message,
                     state.step_count,
-                    additional_updates=_budget_updates(),
+                    additional_updates={**_budget_updates(), **_delegation_state_update(state)},
                 )
 
             return {

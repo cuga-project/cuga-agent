@@ -1,0 +1,318 @@
+"""A pending approval survives an app restart and can be resumed (#774).
+
+The tests use the durable checkpointer with CUGA's strict serializer and the real approval action
+and response models. They cover a static ``interrupt_after`` breakpoint, a dynamic ``interrupt()``
+in ``WaitForResponse`` resumed through ``/stream``, and the product supervisor plan approval.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from types import SimpleNamespace
+from typing import Literal
+from unittest.mock import patch
+
+import pytest
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain_core.messages import AIMessage
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
+
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import resolve_child_checkpoint_id
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.delegation import create_agent_delegation_func
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import SupervisorExecutionContext
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import SupervisorGraphAdapter
+from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
+    ActionResponse,
+    ActionType,
+    create_tool_approval_action,
+)
+from cuga.backend.cuga_graph.nodes.human_in_the_loop.wait_for_response import WaitForResponse
+from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.supervisor_utils.supervisor_config import build_agents_from_list
+
+pytestmark = pytest.mark.slow
+
+APPROVED = "approved"
+ACTED = "acted"
+WAIT = "WaitForResponse"
+
+
+def _approval_action():
+    return create_tool_approval_action(
+        policy_name="Approve deletes",
+        required_tools=["delete_database"],
+        code_preview=["delete_database('users')"],
+        full_code="delete_database('users')",
+    )
+
+
+def _approval() -> ActionResponse:
+    return ActionResponse(
+        action_id="tool_approval",
+        response_type=ActionType.CONFIRMATION,
+        confirmed=True,
+        timestamp=datetime.now().isoformat(),
+    )
+
+
+def _dynamic_graph(saver):
+    """Ask -> WaitForResponse (``interrupt()``) -> Ask, which answers once it finds the response."""
+
+    async def ask(state) -> Command[Literal["WaitForResponse", "FinalAnswerAgent"]]:
+        if state.hitl_response is not None:
+            return Command(update={"hitl_action": None}, goto="FinalAnswerAgent")
+        return Command(
+            update={
+                "hitl_action": _approval_action(),
+                "sender": "Ask",
+                "messages": [AIMessage(content="This needs your approval.")],
+            },
+            goto=WAIT,
+        )
+
+    async def final_answer(state):
+        return {"final_answer": APPROVED if state.hitl_response.confirmed else "declined"}
+
+    async def unused(state):
+        return {}
+
+    builder = StateGraph(AgentState)
+    builder.add_node("Ask", ask)
+    builder.add_node(WAIT, WaitForResponse().node)
+    builder.add_node("FinalAnswerAgent", final_answer)
+    # WaitForResponse declares these as its possible destinations; the graph must contain them.
+    for declared in ("ChatAgent", "CugaLite", "EntryRouter"):
+        builder.add_node(declared, unused)
+    builder.add_edge(START, "Ask")
+    builder.add_edge("FinalAnswerAgent", END)
+    return builder.compile(checkpointer=saver)
+
+
+def _static_graph(saver):
+    """Ask -> Act with a breakpoint after Ask, the shape of the browser ``interrupt_after`` nodes."""
+
+    async def ask(state):
+        return {"hitl_action": _approval_action(), "messages": [AIMessage(content="Approve?")]}
+
+    async def act(state):
+        return {"final_answer": ACTED, "hitl_action": None}
+
+    builder = StateGraph(AgentState)
+    builder.add_node("Ask", ask)
+    builder.add_node("Act", act)
+    builder.add_edge(START, "Ask")
+    builder.add_edge("Ask", "Act")
+    builder.add_edge("Act", END)
+    return builder.compile(checkpointer=saver, interrupt_after=["Ask"])
+
+
+async def test_static_breakpoint_approval_survives_restart_and_resumes(checkpoints):
+    """The dynamic ``interrupt()`` and supervisor pauses are covered through the product paths."""
+    config = {"configurable": {"thread_id": "pending-approval"}}
+
+    graph = _static_graph((await checkpoints.open()).saver)
+    await graph.ainvoke({"input": "delete the users table"}, config)
+    assert (await graph.aget_state(config)).next == ("Act",)
+
+    graph = _static_graph((await checkpoints.open()).saver)  # a new saver on the same file, a new graph
+
+    restored = await graph.aget_state(config)
+    assert restored.next == ("Act",)
+    assert restored.values["input"] == "delete the users table"
+    assert restored.values["hitl_action"].action_id == "tool_approval"  # a model, not a plain dict
+
+    result = await graph.ainvoke(None, config)
+
+    assert result["final_answer"] == ACTED
+    assert (await graph.aget_state(config)).next == ()
+
+
+async def test_pending_approval_is_resumed_through_stream_after_restart(conversation_server):
+    server = conversation_server
+    server.graph_factory = lambda saver: _dynamic_graph(saver)
+    await server.restart()
+    thread_id = await server.create()
+
+    paused = await server.send(thread_id, "delete the users table")
+    assert paused.status_code == 200, paused.text
+    assert "Error" not in server.event_names(paused)
+    assert (await server.graph.aget_state(server.config(thread_id))).next == (WAIT,)
+
+    await server.restart()
+
+    assert (await server.graph.aget_state(server.config(thread_id))).next == (WAIT,)
+    resumed = await server.client.post(
+        "/stream", headers={"X-Thread-ID": thread_id}, json=_approval().model_dump(mode="json")
+    )
+    assert resumed.status_code == 200, resumed.text
+    assert "Error" not in server.event_names(resumed)
+    assert APPROVED in resumed.text
+
+    snapshot = await server.graph.aget_state(server.config(thread_id))
+    assert snapshot.next == ()
+    assert snapshot.values["final_answer"] == APPROVED
+
+
+def _delegation_state():
+    """The supervisor state fields that child checkpoint identity and ``record_delegation`` read."""
+    return SimpleNamespace(
+        user_id="u1",
+        thread_id="row-2f-parent-thread",
+        service_scope={"tenant_id": "t1", "instance_id": "i1"},
+        selected_agents=[],
+        agent_results={},
+        agent_variables={},
+        agent_chat_messages={},
+        metrics={},
+    )
+
+
+async def _delegate(adapter, agents, name, state, task):
+    """Call the real delegation function from a frame that carries the supervisor context."""
+    delegate = create_agent_delegation_func(adapter, name, agents[name])
+    __supervisor_exec__ = SupervisorExecutionContext(state=state)  # noqa: F841 (found by frame walk)
+    return await delegate(task)
+
+
+async def _build_roster(saver, reply):
+    """The same loader the server uses for the YAML roster and the stored sub-agents."""
+    model = FakeListChatModel(responses=[reply])
+    with patch("cuga.supervisor_utils.supervisor_config._get_model_from_config", return_value=model):
+        return await build_agents_from_list(
+            [
+                {
+                    "name": "child-a",
+                    "model": {"provider": "openai", "model_name": "fake"},
+                    "memory_scope": "conversation",
+                    "auto_load_policies": False,
+                }
+            ],
+            checkpointer=saver,
+        )
+
+
+async def _child_messages(agents, adapter, state):
+    child_id = resolve_child_checkpoint_id(
+        state=state, adapter=adapter, agent_name="child-a", agent_or_config=agents["child-a"]
+    )
+    snapshot = await agents["child-a"].graph.aget_state({"configurable": {"thread_id": child_id}})
+    # The nodes persist ``model_dump()``, so messages come back as plain dicts.
+    return [
+        m["content"] if isinstance(m, dict) else m.content
+        for m in (snapshot.values or {}).get("chat_messages", [])
+    ]
+
+
+async def test_conversation_scoped_child_agent_retains_history_across_restart_and_rebuild(checkpoints):
+    """A conversation-scoped child keeps its history across both events.
+
+    The roster is built by ``build_agents_from_list`` with the shared saver, so the child is a real
+    ``CugaAgent`` on it, and each delegation goes through ``create_agent_delegation_func`` and
+    ``resolve_child_checkpoint_id``. Only the supervisor's own model is left out: the test calls the
+    delegation function the generated supervisor code would call. The saver is closed and reopened
+    (a restart), then the roster is rebuilt on the same saver (a publish).
+    """
+    state = _delegation_state()
+
+    # --- first process: one delegation ---
+    saver = (await checkpoints.open()).saver
+    agents = await _build_roster(saver, "child answer 1")
+    adapter = SupervisorGraphAdapter(agents=agents, supervisor_id="test-supervisor")
+    assert await _delegate(adapter, agents, "child-a", state, "first message") == "child answer 1"
+    assert len(await _child_messages(agents, adapter, state)) == 2
+
+    # --- restart: a new saver on the same file, a rebuilt roster and supervisor ---
+    saver = (await checkpoints.open()).saver
+    agents = await _build_roster(saver, "child answer 2")
+    adapter = SupervisorGraphAdapter(agents=agents, supervisor_id="test-supervisor")
+    before = await _child_messages(agents, adapter, state)
+    assert len(before) == 2, "child history must survive the restart"
+    assert before[-1] == "child answer 1"
+    assert await _delegate(adapter, agents, "child-a", state, "second message") == "child answer 2"
+    assert (await _child_messages(agents, adapter, state))[-2:] == ["second message", "child answer 2"]
+
+    # --- publish: the roster is rebuilt on the same saver, the old agents are discarded ---
+    agents = await _build_roster(saver, "child answer 3")
+    adapter = SupervisorGraphAdapter(agents=agents, supervisor_id="test-supervisor")
+    assert await _delegate(adapter, agents, "child-a", state, "third message") == "child answer 3"
+    history = await _child_messages(agents, adapter, state)
+    assert history == [
+        "first message",
+        "child answer 1",
+        "second message",
+        "child answer 2",
+        "third message",
+        "child answer 3",
+    ]
+
+
+@pytest.mark.parametrize("confirmed", [True, False])
+async def test_product_supervisor_plan_approval_resumes_once_after_restart(checkpoints, confirmed):
+    """The entry graph executes its approved plan once after reopening the saver."""
+    from cuga import CugaAgent
+    from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph
+    from cuga.backend.cuga_graph.state.agent_state import default_state
+
+    class SupervisorModel(FakeListChatModel):
+        def with_structured_output(self, schema, **kwargs):
+            return self
+
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+    thread_id = f"plan-approval-restart-{confirmed}"
+    cfg = {"configurable": {"thread_id": thread_id}}
+
+    async def build(saver, responses):
+        child = CugaAgent(
+            tools=[],
+            model=FakeListChatModel(responses=["child answer"]),
+            auto_load_policies=False,
+            enable_knowledge=False,
+            enable_skills=False,
+            checkpointer=saver,
+        )
+        model = SupervisorModel(responses=responses)
+        with patch("cuga.backend.llm.models.LLMManager.get_model", return_value=model):
+            owner = CugaEntryGraph(
+                None,
+                supervisor_agents={"worker": child},
+                supervisor_enabled=True,
+                supervisor_plan_approval=True,
+                supervisor_id="test-supervisor",
+            )
+            await owner.build_graph(checkpointer=saver)
+        return owner.graph, model, child
+
+    saver = (await checkpoints.open()).saver
+    graph, model, _ = await build(saver, ['```python\nprint(await delegate_to_worker(task="lookup"))\n```'])
+    state = default_state(page=None, observation=None, goal="")
+    state.input = "delegate to worker"
+    state.thread_id = thread_id
+    state.supervisor_mode = True
+    with patch("cuga.backend.llm.models.LLMManager.get_model", return_value=model):
+        await graph.ainvoke(state.model_dump(), cfg)
+    paused = await graph.aget_state(cfg)
+    assert paused.next == (WAIT,)
+    assert paused.values["hitl_action"]["action_id"] == "agent_approval"
+    assert paused.values["script"] == 'print(await delegate_to_worker(task="lookup"))'
+
+    saver = (await checkpoints.open()).saver
+    graph, model, child = await build(saver, ["done"])
+    response = ActionResponse(
+        action_id="agent_approval",
+        response_type=ActionType.CONFIRMATION,
+        confirmed=confirmed,
+        timestamp=datetime.now().isoformat(),
+    )
+    with patch("cuga.backend.llm.models.LLMManager.get_model", return_value=model):
+        result = await graph.ainvoke(Command(resume=response.model_dump()), cfg)
+    assert result["final_answer"] == ("done" if confirmed else "Agent execution was cancelled by user.")
+    assert (await graph.aget_state(cfg)).next == ()
+    adapter = SupervisorGraphAdapter(agents={"worker": child}, supervisor_id="test-supervisor")
+    child_id = resolve_child_checkpoint_id(
+        state=state, adapter=adapter, agent_name="worker", agent_or_config=child
+    )
+    child_snapshot = await child.graph.aget_state({"configurable": {"thread_id": child_id}})
+    assert len((child_snapshot.values or {}).get("chat_messages", [])) == (2 if confirmed else 0)
