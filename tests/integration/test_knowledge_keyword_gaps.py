@@ -407,6 +407,71 @@ def test_a_keyword_rebuild_does_not_block_uploads_to_other_collections(tmp_path,
 
 
 @pytest.mark.unit
+def test_two_adapters_rebuilding_one_keyword_table_do_not_break_each_other(tmp_path, monkeypatch):
+    """A cached adapter can be evicted while it rebuilds, and the next call gets a new adapter for
+    the same collection. Both stage the rebuild in one table, so they must take turns: an upload
+    through the second one waits for the first rebuild instead of replacing its staging table."""
+    import sqlite3
+    import threading
+    import time
+
+    from cuga.backend.knowledge.storage import adapter as adapter_mod
+    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
+
+    _set_tenant(monkeypatch, "tenant_a")
+    db = str(tmp_path / "kb.db")
+    collection = unique_collection("kwtw")
+    seeded = StorageBackedKnowledgeVectorStore(collection, DeterministicEmbeddings(), local_db_path=db)
+    for i in range(40):
+        _add(seeded, collection, f"doc{i}", f"The policy covers dental {i}.")
+    with sqlite3.connect(db) as conn:  # its keyword table is missing: the next call rebuilds it
+        conn.execute(f"DROP TABLE {collection}__fts")
+
+    first_batch, go = threading.Event(), threading.Event()
+    rebuilding: list[threading.Thread] = []
+
+    class _PausedClock:  # the first rebuild stops after its first committed batch
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+        def sleep(self, seconds):
+            if rebuilding and threading.current_thread() is rebuilding[0] and not first_batch.is_set():
+                first_batch.set()
+                go.wait(10)
+
+    monkeypatch.setattr(adapter_mod, "_FTS_BUILD_BATCH", 5)
+    monkeypatch.setattr(adapter_mod, "time", _PausedClock())
+    results: dict[str, object] = {}
+
+    def search():
+        evicted = StorageBackedKnowledgeVectorStore(collection, DeterministicEmbeddings(), local_db_path=db)
+        results["hits"] = len(evicted.search_lexical("dental", k=60))
+
+    def upload():
+        fresh = StorageBackedKnowledgeVectorStore(collection, DeterministicEmbeddings(), local_db_path=db)
+        try:
+            results["source"] = _add(fresh, collection, "late", "Late dental note.")
+        except Exception as exc:  # noqa: BLE001 — reported below
+            results["upload_error"] = exc
+
+    rebuilding.append(threading.Thread(target=search))
+    rebuilding[0].start()
+    assert first_batch.wait(10)
+    uploader = threading.Thread(target=upload)
+    uploader.start()
+    uploader.join(timeout=1)
+    waited = uploader.is_alive()
+    go.set()
+    rebuilding[0].join(timeout=30)
+    uploader.join(timeout=30)
+
+    assert "upload_error" not in results, results.get("upload_error")
+    assert waited, "the upload waits for the rebuild in progress"
+    assert results["hits"] == 40
+    assert len(seeded.search_lexical("dental", k=60)) == 41
+
+
+@pytest.mark.unit
 def test_a_chunk_deleted_during_a_keyword_rebuild_is_not_indexed(tmp_path, monkeypatch):
     """The rebuild reads and tokenizes the stored chunks before it takes the write lock; a chunk
     deleted in between must not come back as a keyword hit."""

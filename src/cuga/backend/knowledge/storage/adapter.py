@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -104,6 +105,20 @@ def _doc_from_row(chunk_text: Any, meta_json: Any) -> Document:
 _COLLECTION_NAME_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_]{1,63}$")
 
 
+# One keyword-table setup lock per SQLite file and table, shared by every adapter in the process.
+# The engine caches one adapter per collection but can evict it while it rebuilds, and the next
+# call then gets a new adapter for the same table; both stage the rebuild in one table, so they
+# must take turns. Other processes never write this file: it lives in the knowledge directory,
+# which one engine per process holds (the engine's single-writer lock).
+_FTS_SETUP_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+_FTS_SETUP_LOCKS_GUARD = threading.Lock()
+
+
+def _fts_setup_lock(db_path: str, table: str) -> threading.Lock:
+    with _FTS_SETUP_LOCKS_GUARD:
+        return _FTS_SETUP_LOCKS.setdefault((os.path.realpath(db_path), table), threading.Lock())
+
+
 class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
     """Knowledge chunks in sqlite-vec (local) or pgvector (prod) with tenant/instance scope."""
 
@@ -160,10 +175,13 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         self._dim: int | None = None
         self._fts_ready = False
         self._pg_ensure_lock = threading.Lock()  # one Postgres keyword backfill at a time
-        # One keyword-table setup at a time in this process. A re-index of an old table holds
-        # SQLite's write lock for about a minute per 50,000 chunks: searches skip the keyword leg
-        # meanwhile, and writes wait for it here instead of timing out on the lock.
-        self._fts_ensure_lock = threading.Lock()
+        # One keyword-table setup at a time in this process, across adapters (_fts_setup_lock). A
+        # re-index of an old table holds SQLite's write lock for about a minute per 50,000 chunks:
+        # searches skip the keyword leg meanwhile, and writes wait for it here instead of timing
+        # out on the lock.
+        self._fts_ensure_lock = (
+            threading.Lock() if self._use_prod else _fts_setup_lock(self._local_db_path, self._fts_table())
+        )
 
     def _scope(self) -> dict[str, str]:
         return {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
