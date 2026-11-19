@@ -56,3 +56,64 @@ def test_invoke_and_stream_restore_the_callers_context():
 
     asyncio.run(run())
     assert CugaAgent.invoke.__wrapped__ and CugaAgent.stream.__wrapped__
+
+
+def _stream_under_test(seen, closed):
+    from cuga.sdk import _restores_run_context
+
+    @_restores_run_context
+    async def stream():
+        try:
+            config = {"configurable": {"knowledge_engine": object(), "langfuse_trace_id": "t"}}
+            lt.sync_langfuse_callbacks_from_config(config)
+            yield 1
+            seen.append(lt._langgraph_run_config.get())
+            yield 2
+        finally:
+            closed.append(True)
+
+    return stream()
+
+
+def test_a_stream_keeps_its_own_context_between_steps_and_leaves_its_consumers_alone():
+    """Task A starts the stream, task B takes the next step and closes it. Each task's context ends
+    as it was, and the stream sees its own run config in every step."""
+    seen, closed = [], []
+    mine = object()
+
+    async def run():
+        s = _stream_under_test(seen, closed)
+
+        async def task_a():
+            assert await s.__anext__() == 1
+            return lt._langgraph_run_config.get()
+
+        async def task_b():
+            lt._langgraph_run_config.set(mine)
+            assert await s.__anext__() == 2
+            await s.aclose()
+            return lt._langgraph_run_config.get()
+
+        a_after = await asyncio.create_task(task_a())
+        b_after = await asyncio.create_task(task_b())
+        return a_after, b_after
+
+    a_after, b_after = asyncio.run(run())
+    assert a_after is None  # A does not keep the stream's config
+    assert b_after is mine  # B is not given A's saved context
+    assert seen and seen[0] is not None and seen[0] is not mine  # the stream's own config in step 2
+    assert closed == [True]
+
+
+def test_closing_a_stream_early_closes_the_wrapped_generator_at_once():
+    seen, closed = [], []
+
+    async def run():
+        s = _stream_under_test(seen, closed)
+        assert await s.__anext__() == 1
+        await s.aclose()
+        return list(closed), lt._langgraph_run_config.get()
+
+    closed_at_once, after = asyncio.run(run())
+    assert closed_at_once == [True]
+    assert after is None

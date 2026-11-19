@@ -120,16 +120,43 @@ def _restores_run_context(fn):
 
     Otherwise the finished run's config, and the knowledge engine it holds, stays referenced
     from the caller's context; an agent created afterwards then cannot open knowledge.
+
+    A stream's steps run in whichever task asks for the next item or closes it, so the stream
+    keeps its own values: each step starts from them and leaves the caller's as they were.
+    Closing the stream closes the wrapped generator before it returns.
     """
     if inspect.isasyncgenfunction(fn):
 
         @functools.wraps(fn)
         async def gen(*args, **kwargs):
-            from cuga.backend.cuga_graph.utils.langfuse_tracing import restore_run_context
+            from cuga.backend.cuga_graph.utils.langfuse_tracing import (
+                get_run_context,
+                restore_run_context,
+                set_run_context,
+            )
 
-            with restore_run_context():
-                async for item in fn(*args, **kwargs):
+            inner = fn(*args, **kwargs)
+            own = None  # the stream's values, from one step to the next
+
+            async def step(call):
+                nonlocal own
+                with restore_run_context():
+                    if own is not None:
+                        set_run_context(own)
+                    try:
+                        return await call()
+                    finally:
+                        own = get_run_context()
+
+            try:
+                while True:
+                    try:
+                        item = await step(inner.__anext__)
+                    except StopAsyncIteration:
+                        return
                     yield item
+            finally:
+                await step(inner.aclose)
 
         return gen
 

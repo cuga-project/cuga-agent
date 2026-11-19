@@ -20,6 +20,12 @@ _langfuse_callbacks: ContextVar[Optional[list[Any]]] = ContextVar("langfuse_call
 _langfuse_trace_id: ContextVar[Optional[str]] = ContextVar("langfuse_trace_id", default=None)
 _langfuse_primary_handler: ContextVar[Optional[Any]] = ContextVar("langfuse_primary_handler", default=None)
 _langgraph_run_config: ContextVar[Optional[Any]] = ContextVar("langgraph_run_config", default=None)
+_RUN_CONTEXT_VARS = (
+    _langgraph_run_config,
+    _langfuse_callbacks,
+    _langfuse_trace_id,
+    _langfuse_primary_handler,
+)
 _TRACE_SCOPED_HANDLER_CLASS: type | None = None
 
 
@@ -184,6 +190,16 @@ def sync_langfuse_callbacks_from_config(config: Any = None) -> None:
     set_langfuse_callbacks(callbacks or None)
 
 
+def get_run_context() -> tuple[Any, ...]:
+    """The run-context variables that ``sync_langfuse_callbacks_from_config`` sets, as one value."""
+    return tuple(var.get() for var in _RUN_CONTEXT_VARS)
+
+
+def set_run_context(values: tuple[Any, ...]) -> None:
+    for var, value in zip(_RUN_CONTEXT_VARS, values):
+        var.set(value)
+
+
 @contextmanager
 def restore_run_context():
     """Put back the run-context variables that ``sync_langfuse_callbacks_from_config`` sets.
@@ -191,15 +207,11 @@ def restore_run_context():
     The SDK sets them in its caller's context. Left set after the call, they keep that run's
     config, and everything it holds such as the knowledge engine, alive in the caller.
     """
-    saved = [
-        (var, var.get())
-        for var in (_langgraph_run_config, _langfuse_callbacks, _langfuse_trace_id, _langfuse_primary_handler)
-    ]
+    saved = get_run_context()
     try:
         yield
     finally:
-        for var, value in saved:
-            var.set(value)
+        set_run_context(saved)
 
 
 def get_langfuse_callbacks() -> list[Any]:
