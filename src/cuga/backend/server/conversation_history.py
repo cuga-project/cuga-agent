@@ -71,6 +71,10 @@ class ConversationHistoryDB:
     def _get_store(self):
         return get_storage().get_relational_store("conversation")
 
+    async def initialize_schema(self) -> None:
+        """Prepare conversation tables and migrations before requests are accepted."""
+        await self._ensure_schema()
+
     async def _ensure_schema(self):
         store = self._get_store()
         if self._schema_ensured and self._schema_store is store:
@@ -109,6 +113,31 @@ class ConversationHistoryDB:
             tenant_id TEXT NOT NULL, instance_id TEXT NOT NULL, thread_id TEXT NOT NULL,
             user_id TEXT NOT NULL, agent_id TEXT NOT NULL, created_at TEXT NOT NULL,
             PRIMARY KEY (tenant_id, instance_id, thread_id))""")
+        # Conversation status for session continuity (#774): new | active | legacy | external | deleted.
+        # Owners recorded before the column existed are conversations that cannot be continued.
+        try:
+            await store.execute(
+                "ALTER TABLE runtime_thread_owners ADD COLUMN status TEXT NOT NULL DEFAULT 'legacy'"
+            )
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower() and "already exists" not in str(exc).lower():
+                raise
+        # Last completed turn, used by the retention sweep; '' falls back to created_at.
+        try:
+            await store.execute(
+                "ALTER TABLE runtime_thread_owners ADD COLUMN last_turn_at TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower() and "already exists" not in str(exc).lower():
+                raise
+        else:
+            # Existing rows have no recorded activity. Start their retention window at the
+            # upgrade so an old but recently used conversation is not pruned by the first
+            # sweep. Runs only when the column is added, so later startups never extend it.
+            await store.execute(
+                "UPDATE runtime_thread_owners SET last_turn_at = ? WHERE last_turn_at = ''",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
         for idx_sql in [
             "CREATE INDEX IF NOT EXISTS idx_thread_id ON conversation_history(thread_id)",
             "CREATE INDEX IF NOT EXISTS idx_user_id ON conversation_history(user_id)",
@@ -129,6 +158,7 @@ class ConversationHistoryDB:
 
         Resource access can reserve only the user; the first run binds the agent.
         Ownership survives history deletion because checkpoints may still exist.
+        A deleted conversation's ID can never be claimed again, even by its owner (#774).
         With create=False, check existing ownership without inserting or binding;
         None means no owner or legacy records, while "" is an existing unbound owner.
         Storage errors propagate: callers must fail closed.
@@ -137,23 +167,50 @@ class ConversationHistoryDB:
         await self._ensure_schema()
         store = self._get_store()
         scope = (_tenant_id(), _instance_id(), thread_id)
-        owner_sql = """SELECT user_id, agent_id FROM runtime_thread_owners
+        owner_sql = """SELECT user_id, agent_id, status FROM runtime_thread_owners
             WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?"""
-        owner = await store.fetchone(owner_sql, scope)
+        if create:
+            owner = await store.fetchone(owner_sql, scope)
+        else:
+            # The owner row and legacy history must come from one statement snapshot.
+            # A shared legacy deletion retires the ID while removing one user's history;
+            # separate reads could miss the new owner row and authorize from the remainder.
+            rows = await store.fetchall(
+                """WITH owner AS (
+                    SELECT user_id, agent_id, status FROM runtime_thread_owners
+                    WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
+                ), legacy AS (
+                    SELECT user_id, agent_id FROM conversation_history
+                    WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
+                    UNION
+                    SELECT user_id, agent_id FROM stream_events
+                    WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
+                )
+                SELECT user_id, agent_id, status, 1 AS is_owner FROM owner
+                UNION ALL
+                SELECT user_id, agent_id, NULL AS status, 0 AS is_owner FROM legacy
+                WHERE NOT EXISTS (SELECT 1 FROM owner)""",
+                scope + scope + scope,
+            )
+            owner = next((row for row in rows if row["is_owner"]), None)
+            legacy = [row for row in rows if not row["is_owner"]]
         if owner:
+            if owner["status"] == "deleted":
+                raise ThreadOwnershipError("Access denied: conversation was deleted")
             if owner["user_id"] != user_id:
                 raise ThreadOwnershipError("Access denied: thread belongs to another user")
             if agent_id and owner["agent_id"] and owner["agent_id"] != agent_id:
                 raise ThreadOwnershipError("Access denied: thread belongs to another agent")
             if not create or not agent_id or owner["agent_id"]:
                 return owner["agent_id"]
-        legacy = await store.fetchall(
-            """SELECT user_id, agent_id FROM conversation_history
-            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
-            UNION SELECT user_id, agent_id FROM stream_events
-            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?""",
-            scope + scope,
-        )
+        if create:
+            legacy = await store.fetchall(
+                """SELECT user_id, agent_id FROM conversation_history
+                WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
+                UNION SELECT user_id, agent_id FROM stream_events
+                WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?""",
+                scope + scope,
+            )
         if any(row["user_id"] != user_id for row in legacy):
             raise ThreadOwnershipError("Access denied: thread belongs to another user")
         legacy_agents = {row["agent_id"] for row in legacy}
@@ -169,8 +226,8 @@ class ConversationHistoryDB:
             [
                 (
                     """INSERT INTO runtime_thread_owners
-                    (tenant_id, instance_id, thread_id, user_id, agent_id, created_at)
-                    SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (
+                    (tenant_id, instance_id, thread_id, user_id, agent_id, created_at, status)
+                    SELECT ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (
                         SELECT 1 FROM conversation_history
                         WHERE tenant_id = ? AND instance_id = ? AND thread_id = ? AND user_id <> ?
                     ) AND NOT EXISTS (
@@ -178,7 +235,16 @@ class ConversationHistoryDB:
                         WHERE tenant_id = ? AND instance_id = ? AND thread_id = ? AND user_id <> ?
                     ) ON CONFLICT (tenant_id, instance_id, thread_id) DO NOTHING""",
                     scope
-                    + (user_id, claimed_agent, datetime.now(timezone.utc).isoformat())
+                    # Binding pre-existing history keeps the thread read-only in the web UI. Web
+                    # conversations are created by create_conversation, so a new ID claimed here
+                    # comes from /run, A2A or the extension: its checkpoint lives under that
+                    # entry's key, so the web UI shows it read-only too (#774).
+                    + (
+                        user_id,
+                        claimed_agent,
+                        datetime.now(timezone.utc).isoformat(),
+                        "legacy" if legacy else "external",
+                    )
                     + scope
                     + (user_id,)
                     + scope
@@ -198,6 +264,126 @@ class ConversationHistoryDB:
         if agent_id and owner["agent_id"] != agent_id:
             raise ThreadOwnershipError("Access denied: thread belongs to another agent")
         return owner["agent_id"]
+
+    async def create_conversation(self, thread_id: str, user_id: str, agent_id: str) -> None:
+        """Record a server-issued conversation in status ``new`` (#774).
+
+        Raises ``ThreadOwnershipError`` if the ID is already taken.
+        """
+        await self._ensure_schema()
+        store = self._get_store()
+        scope = (_tenant_id(), _instance_id(), thread_id)
+        await store.execute(
+            """INSERT INTO runtime_thread_owners
+            (tenant_id, instance_id, thread_id, user_id, agent_id, created_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'new') ON CONFLICT (tenant_id, instance_id, thread_id) DO NOTHING""",
+            scope + (user_id, agent_id, datetime.now(timezone.utc).isoformat()),
+        )
+        await store.commit()
+        row = await store.fetchone(
+            """SELECT user_id, agent_id, status FROM runtime_thread_owners
+            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?""",
+            scope,
+        )
+        if not row or (row["user_id"], row["agent_id"], row["status"]) != (user_id, agent_id, "new"):
+            raise ThreadOwnershipError("Thread ID already in use")
+
+    async def get_thread_status(self, thread_id: str, user_id: str, agent_id: str) -> Optional[str]:
+        """The conversation status if ``user_id`` / ``agent_id`` own the thread, else ``None``.
+
+        Storage errors propagate: callers must fail closed.
+        """
+        await self._ensure_schema()
+        row = await self._get_store().fetchone(
+            """SELECT user_id, agent_id, status FROM runtime_thread_owners
+            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?""",
+            (_tenant_id(), _instance_id(), thread_id.strip()),
+        )
+        if not row or row["user_id"] != user_id or (row["agent_id"] and row["agent_id"] != agent_id):
+            return None
+        return row["status"]
+
+    async def set_thread_status(
+        self, thread_id: str, user_id: str, status: str, *, only_from: Optional[str] = None
+    ) -> None:
+        sql = """UPDATE runtime_thread_owners SET status = ?
+            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ? AND user_id = ?"""
+        params: tuple = (status, _tenant_id(), _instance_id(), thread_id.strip(), user_id)
+        if only_from is not None:
+            sql += " AND status = ?"
+            params += (only_from,)
+        await self._ensure_schema()
+        store = self._get_store()
+        await store.execute(sql, params)
+        await store.commit()
+
+    async def mark_last_turn_at(self, thread_id: str, user_id: str) -> None:
+        """Record that a turn just ran on the thread. Best effort: failures are logged, not raised."""
+        try:
+            await self._ensure_schema()
+            store = self._get_store()
+            await store.execute(
+                """UPDATE runtime_thread_owners SET last_turn_at = ?
+                WHERE tenant_id = ? AND instance_id = ? AND thread_id = ? AND user_id = ?""",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    _tenant_id(),
+                    _instance_id(),
+                    thread_id.strip(),
+                    user_id,
+                ),
+            )
+            await store.commit()
+        except Exception as exc:
+            logger.error(f"mark_last_turn_at failed: {type(exc).__name__}")
+
+    async def get_idle_before(
+        self, cutoff_iso: str, limit: int = 200, *, after: Optional[tuple[str, str]] = None
+    ) -> List[Dict[str, Any]]:
+        """Page idle, continuable conversations by activity time and unique thread ID.
+
+        A cursor advances past selected rows even when cleanup fails or they are busy.
+        Activity time is ``last_turn_at`` when set, else ``created_at``.
+        """
+        await self._ensure_schema()
+        activity = "COALESCE(NULLIF(last_turn_at, ''), created_at)"
+        sql = f"""SELECT thread_id, user_id, agent_id, {activity} AS last_activity
+            FROM runtime_thread_owners
+            WHERE tenant_id = ? AND instance_id = ? AND status IN ('new', 'active')
+            AND {activity} < ?"""
+        params: tuple = (_tenant_id(), _instance_id(), cutoff_iso)
+        if after is not None:
+            sql += f" AND ({activity}, thread_id) > (?, ?)"
+            params += after
+        sql += f" ORDER BY {activity}, thread_id LIMIT ?"
+        return await self._get_store().fetchall(sql, params + (limit,))
+
+    async def get_idle_thread_before(
+        self, thread_id: str, user_id: str, agent_id: str, cutoff_iso: str
+    ) -> Optional[Dict[str, Any]]:
+        """Recheck retention eligibility after acquiring the conversation lease.
+
+        Storage errors propagate so the sweep never treats an unreadable row as
+        permission to delete its checkpoint.
+        """
+        await self._ensure_schema()
+        return await self._get_store().fetchone(
+            """SELECT status FROM runtime_thread_owners
+            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
+            AND user_id = ? AND agent_id = ? AND status IN ('new', 'active')
+            AND COALESCE(NULLIF(last_turn_at, ''), created_at) < ?""",
+            (_tenant_id(), _instance_id(), thread_id, user_id, agent_id, cutoff_iso),
+        )
+
+    async def get_thread_statuses(self, user_id: str, agent_id: str) -> Dict[str, str]:
+        """``thread_id -> status`` for every conversation the user owns with this agent."""
+        await self._ensure_schema()
+        rows = await self._get_store().fetchall(
+            """SELECT thread_id, status FROM runtime_thread_owners
+            WHERE tenant_id = ? AND instance_id = ? AND user_id = ? AND agent_id IN (?, '')""",
+            (_tenant_id(), _instance_id(), user_id, agent_id),
+        )
+        return {row["thread_id"]: row["status"] for row in rows}
 
     async def save_conversation(
         self, agent_id: str, thread_id: str, version: int, user_id: str, messages: List[Dict[str, Any]]
@@ -315,7 +501,14 @@ class ConversationHistoryDB:
             logger.error(f"Error retrieving thread history: {e}")
             return []
 
-    async def get_latest_version(self, agent_id: str, thread_id: str, user_id: str) -> int:
+    async def get_latest_version(
+        self, agent_id: str, thread_id: str, user_id: str, *, strict: bool = False
+    ) -> int:
+        """The caller's latest history version, or 0 if there is none.
+
+        Storage errors also give 0 unless ``strict=True``, where they propagate so the caller can
+        fail closed instead of treating the conversation as missing (#774).
+        """
         try:
             await self._ensure_schema()
             store = self._get_store()
@@ -331,6 +524,8 @@ class ConversationHistoryDB:
             v = result.get("max") if result else None
             return v if v is not None else 0
         except Exception as e:
+            if strict:
+                raise
             logger.error(f"Error getting latest version: {e}")
             return 0
 
@@ -369,32 +564,59 @@ class ConversationHistoryDB:
             logger.error(f"Error deleting stream events: {e}")
             return False
 
+    def _delete_history_statements(self, agent_id: str, thread_id: str, user_id: str) -> list:
+        scope = (_tenant_id(), _instance_id(), agent_id, thread_id, user_id)
+        where = "tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?"
+        return [
+            (
+                "INSERT INTO conversation_deletion_outbox SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM conversation_history WHERE "
+                + where
+                + ") OR EXISTS (SELECT 1 FROM stream_events WHERE "
+                + where
+                + ")",
+                (str(uuid.uuid4()), *scope, datetime.now(timezone.utc).isoformat(), *scope, *scope),
+            ),
+            ("DELETE FROM conversation_history WHERE " + where, scope),
+            ("DELETE FROM stream_events WHERE " + where, scope),
+        ]
+
     async def delete_thread(self, agent_id: str, thread_id: str, user_id: str) -> bool:
         try:
             await self._ensure_schema()
-            store = self._get_store()
-            tenant_id = _tenant_id()
-            inst_id = _instance_id()
-            scope = (tenant_id, inst_id, agent_id, thread_id, user_id)
-            where = "tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?"
-            await store.execute_batch(
-                [
-                    (
-                        "INSERT INTO conversation_deletion_outbox SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM conversation_history WHERE "
-                        + where
-                        + ") OR EXISTS (SELECT 1 FROM stream_events WHERE "
-                        + where
-                        + ")",
-                        (str(uuid.uuid4()), *scope, datetime.now(timezone.utc).isoformat(), *scope, *scope),
-                    ),
-                    ("DELETE FROM conversation_history WHERE " + where, scope),
-                    ("DELETE FROM stream_events WHERE " + where, scope),
-                ]
+            await self._get_store().execute_batch(
+                self._delete_history_statements(agent_id, thread_id, user_id)
             )
             return True
         except Exception as e:
             logger.error(f"Error deleting thread: {e}")
             return False
+
+    async def delete_thread_and_retire(self, agent_id: str, thread_id: str, user_id: str) -> None:
+        """Delete the caller's history and mark the thread ID ``deleted`` for good, in one transaction.
+
+        Used for a legacy ID shared by several users (#774): its uploads are keyed by thread ID
+        alone, so they cannot be removed for one user, and the retired ID keeps anyone from claiming
+        them. Atomic, so the ID is never left claimable with the caller's history already gone.
+        Storage errors propagate: the caller's history is then unchanged and the delete can be retried.
+        """
+        await self._ensure_schema()
+        retire = (
+            """INSERT INTO runtime_thread_owners
+            (tenant_id, instance_id, thread_id, user_id, agent_id, created_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'deleted')
+            ON CONFLICT (tenant_id, instance_id, thread_id) DO UPDATE SET status = 'deleted'""",
+            (
+                _tenant_id(),
+                _instance_id(),
+                thread_id.strip(),
+                user_id,
+                agent_id,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        await self._get_store().execute_batch(
+            [retire, *self._delete_history_statements(agent_id, thread_id, user_id)]
+        )
 
     async def pending_source_deletions(self) -> list[dict]:
         """Read a bounded batch of committed deletion events for this instance."""

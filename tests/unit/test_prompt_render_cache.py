@@ -84,3 +84,18 @@ def test_prompt_template_subclass_keeps_its_own_format():
     template = Suffixed.from_template("Hello {{ name }}", template_format="jinja2")
 
     assert render_prompt_cached(template, {"name": "x"}) == template.invoke({"name": "x"}).to_string()
+
+
+@pytest.mark.parametrize("description", [None, ""], ids=["missing", "empty"])
+def test_apps_without_a_description_get_the_fallback_text(description):
+    from types import SimpleNamespace
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import format_apps_for_prompt
+
+    apps = [SimpleNamespace(name="crm", type="api", description=description)]
+    assert format_apps_for_prompt(apps) == [
+        {"name": "crm", "type": "api", "description": "No description available"}
+    ]
+    assert (
+        format_apps_for_prompt([SimpleNamespace(name="bare")])[0]["description"] == "No description available"
+    )

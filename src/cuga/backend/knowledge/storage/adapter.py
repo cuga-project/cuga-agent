@@ -193,6 +193,10 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             threading.Lock() if self._use_prod else _fts_setup_lock(self._local_db_path, self._fts_table())
         )
 
+    @property
+    def embeddings(self) -> Embeddings:
+        return self._embeddings
+
     def _scope(self) -> dict[str, str]:
         return {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
 

@@ -204,8 +204,8 @@ and omit `WXO_API_KEY` — local instances are auto-detected and don't require a
 
 CUGA does not require OpenAI: OpenAI-compatible endpoints work through the standard override, including Chinese providers. Two services are commonly unreachable from mainland China and have workarounds:
 
-- **PyPI is slow:** use a local mirror, for example `pip install cuga -i https://pypi.tuna.tsinghua.edu.cn/simple`. With uv, set `UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple` rather than adding a `uv.toml` to the project root, which would make uv ignore the `[tool.uv]` section of `pyproject.toml`. A changed index re-resolves `uv.lock`; don't commit that change. torch and torchvision still come from the PyTorch CPU index pinned in `pyproject.toml`, not the mirror.
-- **Hugging Face is blocked:** with the default `[storage.embedding] provider = "local"`, policies and knowledge download a small embedding model from Hugging Face on first use. Set `HF_ENDPOINT=https://hf-mirror.com`, or preload the models ahead of time (this also needs `HF_ENDPOINT` set):
+- **PyPI is slow:** use a local mirror, for example `pip install cuga -i https://pypi.tuna.tsinghua.edu.cn/simple`. With uv, set `UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple` rather than adding a `uv.toml` to the project root, which would make uv ignore the `[tool.uv]` section of `pyproject.toml`. A changed index re-resolves `uv.lock`; don't commit that change. torch and torchvision still come from the PyTorch CPU index pinned in `pyproject.toml`, not the mirror. Without Python 3.12, uv downloads it from GitHub, which can be slow; install it yourself first or set `UV_PYTHON_INSTALL_MIRROR`.
+- **Hugging Face is blocked:** with the default `[storage.embedding] provider = "local"`, policies and knowledge download small embedding models from Hugging Face on first use. Set `HF_ENDPOINT=https://hf-mirror.com`, or preload the models ahead of time (this also needs `HF_ENDPOINT` set):
 
   ```bash
   export FASTEMBED_CACHE_PATH="$HOME/.cache/cuga/fastembed"
@@ -462,6 +462,25 @@ redaction mechanism.
 CUGA includes a built-in knowledge base powered by LangChain and local vector stores. **Docling** is integrated for document ingestion: it parses and normalizes PDFs, Office files, HTML, Markdown, images, and other supported types before chunking and embedding, so the pipeline stays self-contained with no external document services.
 
 When enabled, the agent can search, ingest, and manage documents.
+
+The default embedding model is `intfloat/multilingual-e5-small`, which covers about 100 languages and
+runs locally as an int8 ONNX model. Knowledge bases built with another model keep that model: a
+server keeps the model its saved agent config names, and an SDK knowledge base keeps the model it was
+built with. To move a server agent to another model, change it in the knowledge settings and select
+**Re-index now**. To rebuild an SDK knowledge base, add its documents again in new storage: a new
+`knowledge.persist_dir` and, with `storage.mode = "prod"`, a new database for `storage.postgres_url`
+and for `knowledge.pgvector_connection_string` if you set it. The `storage.postgres_url` database
+also holds other data, such as policies, so move what you still need first. The rebuilt knowledge
+base uses the configured model: the profile's, or `DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL` when that
+is set.
+
+Offline, searching an existing knowledge base needs only the model it was built with, so an
+air-gapped install keeps searching it after an upgrade. Everything else must be in the model cache
+before going offline: the model for new knowledge bases (`multilingual-e5-small` under the
+`standard` and `speed` profiles), Docling's models to parse PDFs, and, under `balanced` or
+`max_quality`, that profile's embedding and reranker models. The preload script in [Using CUGA in
+mainland China](#using-cuga-in-mainland-china) fetches the first two; for the others, start CUGA
+once with that profile while online, which loads them.
 
 **Try the knowledge demo:** same as the main demo but with the knowledge engine on (upload documents and query them):
 
@@ -996,7 +1015,7 @@ When an app exposes many tools, CUGA shrinks the set before the model sees it. T
 
 `embedding` compares one vector built from your question against one vector per tool (name + description + parameter names + return field names). It is strong at **recall** but weak at separating near-identical tools such as `get_contacts` (list) and `get_contact` (by id) — so `hybrid` is usually the better choice for discovery, and `embedding` for the provider cap where only "don't drop the needed tool" matters.
 
-Embeddings are local by default (`BAAI/bge-small-en-v1.5` via fastembed) — the same weights knowledge and policy already load, so there is one ONNX session and nothing extra for airgapped preload to fetch. Ranking makes no network call and is not billed. Setting `embedding_provider = "openai"` trades that away for a hosted model. Either way the *agent* still calls an LLM for its own reasoning — only the shortlister's ranking step is affected. The first call while a local model is still downloading is served by `fallback_strategy`, so **a query never waits on a download**.
+Embeddings are local by default (`BAAI/bge-small-en-v1.5` via fastembed) — the same weights policies already load, so there is one ONNX session and nothing extra for airgapped preload to fetch. Ranking makes no network call and is not billed. Setting `embedding_provider = "openai"` trades that away for a hosted model. Either way the *agent* still calls an LLM for its own reasoning — only the shortlister's ranking step is affected. The first call while a local model is still downloading is served by `fallback_strategy`, so **a query never waits on a download**.
 
 In **server mode** the catalogue is embedded at startup and again whenever the tool list changes, so the first `find_tools` after boot uses cosine rather than falling back. Vectors are keyed by content hash, so adding a tool embeds one document rather than the whole catalogue. The SDK stays lazy.
 
@@ -1175,7 +1194,7 @@ instruction_set = "default"  # or any instruction set above
 
 These `[storage]` keys in `settings.toml` control how published agent graphs persist execution state between turns. `checkpointer` defaults to `"memory"`, which keeps the current in-process behavior. Set any key with `DYNACONF_STORAGE__<KEY>`, for example `DYNACONF_STORAGE__CHECKPOINTER=durable`.
 
-A pending approval is tied to the published agent configuration that created it. If the agent is published again before the approval arrives, the server rejects that approval; start a new conversation with the updated agent.
+A pending approval is tied to the agent configuration and CUGA version that created it. If a publish changes the agent's effective configuration (including the published configuration of a sub-agent that a supervisor references), or CUGA is upgraded, before the approval arrives, the pending approval is cancelled and the client receives a `pending_cancelled` event; the conversation itself continues. Publishing again without changes does not cancel it. When a publish changes the agent, the next turn of a completed conversation starts with a `config_changed` event.
 
 | Key | Default | Description |
 |---|---|---|
@@ -1183,8 +1202,20 @@ A pending approval is tied to the published agent configuration that created it.
 | `checkpoint_db_path` | `""` | Local mode only. SQLite file for checkpoints; empty means `DBS_DIR/checkpoints.db` |
 | `checkpoint_pool_min_size` | `1` | Prod mode only. Minimum Postgres connection pool size |
 | `checkpoint_pool_max_size` | `10` | Prod mode only. Maximum Postgres connection pool size |
+| `thread_lease_ttl_seconds` | `60` | How long a conversation's turn lease lasts without renewal |
+| `thread_lease_renew_seconds` | `20` | How often a running turn renews its lease |
+| `checkpoint_retention_days` | `90` | Prod mode only. Conversations with no completed turn for this many days lose their checkpoint and become read-only. The sweep removes the web conversation's checkpoint and its recorded sub-agent checkpoints; session knowledge, workspace files and `/run` or extension checkpoints stay until the conversation is deleted. `0` turns the sweep off |
+| `checkpoint_prune_interval_minutes` | `60` | Prod mode only. How often the retention sweep runs |
 
-In `prod` mode the checkpoint tables are created at startup, so the database user needs DDL rights.
+**Database rights.** In `prod` mode CUGA creates and alters its tables at startup, so the database user needs DDL rights (`CREATE TABLE`, `CREATE INDEX`, `ALTER TABLE`). Conversation and lease schemas are initialized explicitly before requests or background work start, in both memory and durable checkpoint modes. If either schema cannot be prepared, startup fails; schema errors are not deferred to the first user request. Existing PostgreSQL lease timestamp columns are widened to `DOUBLE PRECISION` during this initialization.
+
+**Tables CUGA creates.**
+
+- LangGraph checkpoint tables, created by the checkpointer: `checkpoints`, `checkpoint_blobs`, `checkpoint_writes` and `checkpoint_migrations`. In `local` mode they are in the checkpoint SQLite file.
+- `thread_leases` in the conversation database: one row per running turn, coordinating turns across replicas and routing stop requests to the replica running the turn. Leases provide best-effort isolation; checkpoint writes are not yet fenced against an expired holder.
+- `runtime_thread_owners` gains two columns when an existing database is first opened: `status` (`new`, `active`, `legacy` or `deleted`) and `last_turn_at` (the end of the last completed turn, used by the retention sweep).
+
+**What users see.** A conversation created in the UI can be continued by typing into it, after a restart or on another replica, and keeps its ID and its sidebar entry. API clients create a conversation by omitting the thread ID (the response starts with a `thread_created` event) and continue it by sending that ID in the `X-Thread-ID` header. Conversations from before the upgrade, and conversations idle for longer than `checkpoint_retention_days`, stay readable but are read-only.
 
 </details>
 

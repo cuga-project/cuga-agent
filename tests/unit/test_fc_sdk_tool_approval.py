@@ -71,11 +71,15 @@ def _response(confirmed: bool) -> ActionResponse:
     )
 
 
-async def _guarded_fc_agent(model):
+async def _guarded_fc_agent(model, *, checkpointer=None):
     from cuga.sdk import CugaAgent
 
     agent = CugaAgent(
-        tools=[_delete_record()], model=model, execution_mode="function_calling", reset_policy_storage=True
+        tools=[_delete_record()],
+        model=model,
+        execution_mode="function_calling",
+        reset_policy_storage=True,
+        checkpointer=checkpointer,
     )
     await agent.policies.add_tool_approval(
         name="Approve deletions",
@@ -142,3 +146,28 @@ async def test_codeact_on_the_same_agent_still_asks():
 
     assert codeact_model.invocations == 1 and RAN == []
     assert "Deleting needs approval." in result.answer, result.answer
+
+
+@pytest.mark.slow
+async def test_tool_policy_approval_resumes_after_saver_and_agent_restart(tmp_path):
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    db_path = str(tmp_path / "approval.db")
+    thread_id = "restart-approval"
+    first_model = _ScriptedModel([AIMessage(content="", tool_calls=[_CALL])])
+    async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+        first = await _guarded_fc_agent(first_model, checkpointer=saver)
+        paused = await first.invoke("delete record 1", thread_id=thread_id)
+        assert "Deleting needs approval." in paused.answer
+        assert RAN == []
+        assert (await first.graph.aget_state({"configurable": {"thread_id": thread_id}})).next == (
+            "WaitForResponse",
+        )
+
+    second_model = _ScriptedModel([AIMessage(content="Deleted record 1.")])
+    async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+        second = await _guarded_fc_agent(second_model, checkpointer=saver)
+        resumed = await second.invoke(None, thread_id=thread_id, action_response=_response(True))
+        assert resumed.answer == "Deleted record 1."
+        assert RAN == [1]
+        assert (await second.graph.aget_state({"configurable": {"thread_id": thread_id}})).next == ()
