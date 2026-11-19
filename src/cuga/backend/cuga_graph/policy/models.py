@@ -255,7 +255,8 @@ class ToolGuide(BaseModel):
         None,
         description=(
             "List of app names to enrich tools for (optional). Directly provided LangChain/runtime "
-            "tools use the app name 'runtime_tools', so scoped policies for those tools must include it."
+            "tools use their metadata['app_name'], or 'runtime_tools' without it, so scoped policies "
+            "for those tools must include that app name."
         ),
     )
     guide_content: str = Field(..., description="Markdown content to append to tool descriptions")

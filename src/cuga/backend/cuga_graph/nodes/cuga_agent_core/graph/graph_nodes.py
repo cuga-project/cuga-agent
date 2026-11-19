@@ -71,6 +71,12 @@ class CoreGraphAdapter(ABC):
     def set_metadata(self, state: Any, metadata: dict) -> None:
         setattr(state, self.metadata_key, metadata)
 
+    def get_tool_apps(self) -> Optional[Dict[str, str]]:
+        """Tool name -> app name for the tools the graph can call, so ToolApproval
+        ``required_apps`` matches tools by app. Default: ``None`` (match by the
+        ``<app>_`` name prefix only)."""
+        return None
+
     # ── Optional call_model hooks ──────────────────────────────────────────
     # Defaults are no-ops so the Supervisor adapter (which has none of these
     # features) requires no changes.  AgentGraphAdapter (Lite) overrides all
