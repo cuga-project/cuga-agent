@@ -26,7 +26,7 @@ def configured_tool_apps(config: dict) -> list[str] | None:
     return [tool["name"] for tool in config.get("tools") or [] if isinstance(tool, dict) and tool.get("name")]
 
 
-async def supervisor_graph_overrides(config: dict, *, use_draft: bool = False) -> dict:
+async def supervisor_graph_overrides(config: dict, *, use_draft: bool = False, checkpointer=None) -> dict:
     """Registry agents use their stored role, including the default agent.
 
     Outside registry mode the legacy YAML/global supervisor configuration still
@@ -40,7 +40,11 @@ async def supervisor_graph_overrides(config: dict, *, use_draft: bool = False) -
     from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
 
     supervisor = (config or {}).get("supervisor") or {}
-    agents = await build_agents_from_stored_subagents(supervisor.get("subAgents") or [], use_draft=use_draft)
+    agents = await build_agents_from_stored_subagents(
+        supervisor.get("subAgents") or [],
+        use_draft=use_draft,
+        checkpointer=None if use_draft else checkpointer,
+    )
     return {
         "supervisor_enabled": True,
         "supervisor_agents": agents,

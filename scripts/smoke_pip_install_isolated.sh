@@ -78,6 +78,31 @@ uv pip install --python "$WORK_DIR/.venv/bin/python" "$WHEEL"
 echo "==> Smoke import"
 "$WORK_DIR/.venv/bin/python" -c "import cuga; from importlib.metadata import version; print('import ok, cuga', version('cuga'))"
 
+# Upgrade path: an existing environment with older, vulnerable versions of cuga's transitive
+# dependencies. [tool.uv] constraint-dependencies are not in the wheel metadata, so only the
+# floors in [project].dependencies make the installer upgrade them. The versions below are the
+# ones main locked before the floors were raised.
+UPGRADE_FROM=(
+  "authlib==1.7.2"
+  "certifi==2026.4.22"
+  "pyasn1==0.6.4"
+  "joserfc==1.7.4"
+  "mail-parser==4.4.0"
+  "opentelemetry-api==1.41.1"
+  "black==26.5.1"
+  "setuptools==84.0.0"
+  "pillow==12.3.0"
+  "soupsieve==2.9.1"
+  "filelock==3.29.0"
+  "dnspython==2.8.0"
+)
+echo "==> Upgrade path: install over older transitive dependencies"
+uv venv .venv-upgrade --python "$PYTHON"
+uv pip install --python "$WORK_DIR/.venv-upgrade/bin/python" "${UPGRADE_FROM[@]}"
+uv pip install --python "$WORK_DIR/.venv-upgrade/bin/python" "$WHEEL"
+"$WORK_DIR/.venv-upgrade/bin/python" "$REPO_ROOT/scripts/check_runtime_floors.py" \
+  "$REPO_ROOT/pyproject.toml" "${UPGRADE_FROM[@]%%==*}"
+
 echo "==> Smoke: cuga start demo_crm (OpenAPI must become reachable, then stop)"
 # Env is expected from the caller (e.g. GitHub Actions secrets → env), same pattern as .github/workflows/tests.yml
 if [[ -z "${GROQ_API_KEY:-}" ]]; then

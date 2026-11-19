@@ -18,7 +18,9 @@ pytestmark = pytest.mark.unit
 def runtime(monkeypatch):
     provider = SessionProvider()
     graph = MagicMock()
+    graph.aget_state = AsyncMock(return_value=SimpleNamespace(values={}, next=()))
     state = SimpleNamespace(
+        stop_events={},
         knowledge_provider=provider,
         knowledge_engine=SimpleNamespace(_config=SimpleNamespace(enabled=True)),
         current_llm=None,
@@ -39,7 +41,9 @@ async def test_stream_authorizes_thread_before_dispatch(runtime, monkeypatch, ow
     provider, database, _ = runtime
     if owner_source == "knowledge":
         provider.claim_session("victim-thread", "alice")
+        await database.create_conversation("victim-thread", "alice", "cuga-default")
     else:
+        # History only: a conversation from before session continuity, which nobody can continue.
         await database.save_conversation("cuga-default", "victim-thread", 1, "alice", [])
 
     async def empty_stream(*args, **kwargs):
@@ -56,23 +60,15 @@ async def test_stream_authorizes_thread_before_dispatch(runtime, monkeypatch, ow
     app.dependency_overrides[main.require_chat_access] = lambda: SimpleNamespace(sub=user)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post("/stream", headers={"X-Thread-ID": " victim-thread "})
-    if user == "bob":
-        assert response.status_code == 403, response.text
-        dispatch.assert_not_called()
-        if owner_source == "conversation":
-            assert provider.get_session("victim-thread") is None
-        else:
-            assert await database.claim_thread("victim-thread", "alice", create=False) is None
-            app.dependency_overrides[main.require_chat_access] = lambda: SimpleNamespace(sub="alice")
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                owner_response = await client.post("/stream", headers={"X-Thread-ID": "victim-thread"})
-            assert owner_response.status_code == 200, owner_response.text
-    else:
+    if user == "alice" and owner_source == "knowledge":
         assert response.status_code == 200, response.text
         assert dispatch.call_args.kwargs["thread_id"] == "victim-thread"
         assert provider.get_session("victim-thread").user_id == "alice"
+    else:
+        assert response.status_code == 404, response.text
+        dispatch.assert_not_called()
+        if owner_source == "conversation":
+            assert provider.get_session("victim-thread") is None
 
 
 @pytest.mark.asyncio
@@ -118,7 +114,7 @@ async def test_conversation_delete_cannot_remove_another_users_ownership(
     app.dependency_overrides[main.require_chat_access] = lambda: SimpleNamespace(sub="bob")
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.delete(f"/api/conversations/{thread}")
-    assert response.status_code == 403, response.text
+    assert response.status_code == 404, response.text
     database.delete_thread.assert_not_awaited()
     main.app_state.knowledge_engine.drop_collection.assert_not_awaited()
     uploads.assert_not_awaited()
@@ -129,6 +125,7 @@ async def test_conversation_delete_cannot_remove_another_users_ownership(
 async def test_conversation_owner_can_still_delete_knowledge_and_uploads(runtime, monkeypatch):
     provider, database, _ = runtime
     provider.claim_session("victim-thread", "alice")
+    await database.create_conversation("victim-thread", "alice", "cuga-default")
     database.delete_thread = AsyncMock(return_value=True)
     main.app_state.knowledge_engine.drop_collection = AsyncMock()
     uploads = AsyncMock()

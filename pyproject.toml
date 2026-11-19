@@ -5,7 +5,7 @@ description = "CUGA is an open-source generalist agent for the enterprise, suppo
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
-requires-python = ">=3.10, <3.15"
+requires-python = ">=3.11.5, <3.15"
 dependencies = [
     # First-party MCPAdapter replaces the archived langchain-mcp-adapters package.
     # The MCP namespace is beta: stay within the tested minor series.
@@ -16,22 +16,27 @@ dependencies = [
     "ibm-watsonx-ai>=1.5.13; python_version>='3.14'",  # 1.5.10 StrEnum.__init__ crashes on 3.14
     "langchain-openai>=1.1.14",  # GHSA-r7w7-9xr2-qq2r: image-token-counting SSRF guard bypassed via DNS rebinding
     "langchain-core>=1.3.3",  # GHSA-pjwx-r37v-7724: unsafe deserialization via broad load() allowlists (<=1.3.2)
-    # GHSA-cq5v-8q36-5273 (OOB heap read) and related aiohttp parser issues fixed in 3.14.3+.
-    "aiohttp>=3.14.3",
+    # >=3.14.4 fixes 17 GHSAs in <=3.14.3, e.g. GHSA-3rp8-rxj8-mvjw (WebSocket max_msg_size bypass),
+    # GHSA-24c4-3p7v-29cm (base64 multipart bypasses client_max_size), GHSA-pqxq-w44r-73xw (pure-Python
+    # parser request smuggling), GHSA-9xw5-w5jj-pvcg (multipart file descriptor exhaustion).
+    # Earlier: GHSA-cq5v-8q36-5273 (OOB heap read, 3.14.3).
+    "aiohttp>=3.14.4",
     "httpx",
     "docker",
     "langgraph",
     # Durable checkpoint savers for session continuity (#774). Both require
     # langgraph-checkpoint<5; the >=4.1.1 security floor is in constraint-dependencies.
     # Imported lazily inside the functions that build a checkpointer, never at module top.
-    "langgraph-checkpoint-sqlite>=3.1.1,<4",
-    "langgraph-checkpoint-postgres>=3.1.2,<4",
+    # GHSA-6hmw-9432-67qq: namespace labels containing "." reach other namespaces
+    # (sqlite <3.1.2, postgres <3.1.3).
+    "langgraph-checkpoint-sqlite>=3.1.2,<4",
+    "langgraph-checkpoint-postgres>=3.1.3,<4",
     "aiosqlite>=0.20",
     "psycopg-pool>=3.2",  # explicit: imported directly by the checkpointer factory
     "markdownify",
     "uvicorn",
     "fastapi[standard]",
-    "langfuse",
+    "langfuse>=4,<5",
     "dynaconf>=3.2.13",
     "playwright>=1.59.0",  # CVE-2025-9611 (MCP origin/DNS rebinding), CVE-2025-59288 (browser download SSL)
     "browsergym-core==0.13.0",
@@ -56,9 +61,11 @@ dependencies = [
     # 0.6+/0.7.0 publish cryptography<49, which blocks GHSA-g6cj-pr64-35w5 (needs cryptography>=50).
     # Stay on 0.5.x until langchain-litellm lifts that cap; ChatLiteLLM API used here is unchanged.
     "langchain-litellm>=0.5.1,<0.6",
-    # 1.89.7+ fixes GHSA-3cv6-jpf6-8222 (SSRF / provider-credential exfiltration via request-body
+    # 1.104.0+ fixes GHSA-g5ff-637f-6q2m (internal_user_viewer arbitrary local file read via
+    # vertex_ai_credentials, <1.95.0) and the advisories in 1.91.0..1.104.0rc1.
+    # 1.89.7+ fixed GHSA-3cv6-jpf6-8222 (SSRF / provider-credential exfiltration via request-body
     # routing params, 1.89.0..1.89.6); 1.84.0+ fixed GHSA-4xpc-pv4p-pm3w (Host header auth bypass).
-    "litellm>=1.89.7",
+    "litellm>=1.104.0",
     "tavily-python",
     "fastembed>=0.6.0",
     "a2a-sdk[http-server]>=0.3.22",
@@ -95,6 +102,22 @@ dependencies = [
     "toolguard>=0.2.17",
     "cuga-oak-health; python_version>='3.12'",
     "aiosmtpd",
+    # Security floors for transitive dependencies that the wheel installs. The same floors are in
+    # [tool.uv].constraint-dependencies, but those apply only when uv resolves uv.lock and are not
+    # in the wheel metadata. Without these lines, `pip install -U cuga` over an older environment
+    # keeps the vulnerable versions. scripts/smoke_pip_install_isolated.sh checks the upgrade path.
+    "authlib>=1.9.1",            # via fastmcp; GHSA-6v38-4h7w-rj9h, GHSA-8m4g-j4wp-wgcg and 7 more
+    "certifi>=2026.10.18",       # via requests/httpx; GHSA-6q48-6c7w-9gw2
+    "pyasn1>=0.6.5",             # via google-auth; GHSA-fm9c-5rcf-2q5p and 3 more
+    "joserfc>=1.7.6",            # via authlib; GHSA-jpxq-7h8p-2q76, GHSA-9pg5-8c7x-5hfx
+    "mail-parser>=4.6.3",        # via docling[standard]; GHSA-72px-j8gh-p79x and 4 more
+    "opentelemetry-api>=1.45.2", # via langfuse; GHSA-mf5v-w3w3-f6cg, GHSA-xcq7-p3pf-p88h
+    "black>=26.10.1",            # via toolguard → datamodel-code-generator; GHSA-cg8m-r9f2-5wm2
+    "setuptools>=84.1.0",        # via torch; GHSA-xmj3-9gf7-h52w
+    "pillow>=13.0.0",            # via docling/fastembed; GHSA-332p-7hrc-92wf, GHSA-8g5g-8vmr-9782 and 41 more
+    "soupsieve>=4.0.0",          # via beautifulsoup4; GHSA-mmhr-3c5m-f64f, GHSA-6655-6qjp-jx7x and 2 more
+    "filelock>=4.2.1",           # via huggingface-hub/torch; GHSA-v4x8-3wr5-3wq8 and 8 more
+    "dnspython>=2.9.2",          # via email-validator; GHSA-vvf4-9x63-8xvv, GHSA-45c3-73f7-pv4m
 ]
 
 [project.optional-dependencies]
@@ -108,7 +131,6 @@ health = ["cuga-oak-health; python_version>='3.12'"]  # kept for backward compat
 opensandbox = ["opensandbox", "opensandbox-code-interpreter"]
 # Core keeps Phoenix optional; explicitly include the server, storage and PII integrations CUGA uses.
 evolve = ["altk-evolve-core[server,cli,fastembed,pgvector,pii-regex]>=1.8.0,<2; python_version>='3.12'", "einops==0.8.1; python_version>='3.12'"]
-# wxO SDK requires Python >=3.11; keep it an extra so 3.10 installs are unaffected.
 wxo = ["ibm-watsonx-orchestrate-sdk>=2.15.0; python_version>='3.11'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
 # Note: When using observability extra, ensure python-dotenv>=1.1.0 is installed to avoid conflicts
@@ -123,18 +145,20 @@ Repository = "https://github.com/cuga-project/cuga-agent"
 [tool.uv]
 package = true
 constraint-dependencies = [
-    "pillow>=12.3.0",  # GHSA-62p4-gmf7-7g93 and related Pillow OOB/DoS CVEs in <=12.2.x
+    "pillow>=13.0.0",  # GHSA-332p-7hrc-92wf, GHSA-8g5g-8vmr-9782, GHSA-5x8w-8jj5-q52h, GHSA-v9pv-5gc8-w2m6, GHSA-w889-685w-c8fh (critical) and 38 more in <13.0.0. Needs Python 3.11. Earlier GHSA-62p4-gmf7-7g93
     # GHSA-8988-9cw3-xx77 (HTTPS proxy TLS config ignored), GHSA-vxq7-64xx-v4gw (unbounded chunk-size
     # line), GHSA-gh4c-6fx4-qh6g (chunked deflate infinite loop), all <2.8.0; earlier GHSA-qccp-gfcp-xxvc,
     # GHSA-mf9v-mfxr-j63j (<=2.6.x).
     "urllib3>=2.8.0",
     "h11>=0.16.0",     # CVE-2025-43859: HTTP request smuggling via chunked encoding
-    "setuptools>=83.0.0",  # GHSA-h35f-9h28-mq5c (MANIFEST.in bypass via Unicode NFC/NFD collision, <83); earlier GHSA-cx63-2mw6-8hw5, GHSA-5rjg-fvgr-3xxf
+    "setuptools>=84.1.0",  # GHSA-xmj3-9gf7-h52w (Windows path escape via namespace_packages.txt, <84.1.0); earlier GHSA-h35f-9h28-mq5c (MANIFEST.in bypass via Unicode NFC/NFD collision, <83); earlier GHSA-cx63-2mw6-8hw5, GHSA-5rjg-fvgr-3xxf
     # Security updates for transitive dependencies
-    "authlib>=1.7.1",      # GHSA-r95x-qfjj-fjj2, GHSA-w8p2-r796-3vmq (OAuth/OIDC open redirect in 1.7.0); earlier GHSA-wvwj-cvrp-7pv5, GHSA-m344-f55w-2m6j, GHSA-7wc2-qxgw-g8gg, GHSA-7432-952r-cw78
+    # GHSA-6v38-4h7w-rj9h (critical: empty JWS JSON signatures accepted), GHSA-8m4g-j4wp-wgcg (empty HMAC
+    # key allows JWS/JWT forgery), GHSA-7vr2-2fgp-9w7p (algorithm-confusion HMAC forgery), and 6 more, all <1.9.1.
+    "authlib>=1.9.1",      # earlier GHSA-r95x-qfjj-fjj2, GHSA-w8p2-r796-3vmq (OAuth/OIDC open redirect in 1.7.0); earlier GHSA-wvwj-cvrp-7pv5, GHSA-m344-f55w-2m6j, GHSA-7wc2-qxgw-g8gg, GHSA-7432-952r-cw78
     "idna>=3.15",          # GHSA-65pc-fj4g-8rjx: crafted input to idna.encode() bypasses the CVE-2024-3651 fix (<3.15)
     "orjson>=3.11.6",      # GHSA-hx9q-6w63-j58v
-    "pyasn1>=0.6.4",       # GHSA-m4p7-r5rc-7g4j, GHSA-8ppf-4f7h-5ppj, GHSA-hm4w-wwcw-mr6r (DoS in <=0.6.3)
+    "pyasn1>=0.6.5",       # GHSA-fm9c-5rcf-2q5p, GHSA-2qm8-x737-gmw5, GHSA-9m75-vc3g-4x39, GHSA-mm57-4v3p-rchx (quadratic-CPU DoS in BER/DER decoding, <=0.6.4); earlier GHSA-m4p7-r5rc-7g4j, GHSA-8ppf-4f7h-5ppj, GHSA-hm4w-wwcw-mr6r (DoS in <=0.6.3)
     "protobuf>=5.29.6",    # GHSA-7gcm-g887-7qv7
     "starlette>=1.3.1",       # GHSA-82w8-qh3p-5jfq (form DoS), GHSA-wqp7-x3pw-xc5r (UNC SSRF on Windows)
     "python-multipart>=0.0.30",  # GHSA-5rvq-cxj2-64vf (querystring DoS); GHSA-pp6c-gr5w-3c5g fixed in 0.0.27+
@@ -151,8 +175,14 @@ constraint-dependencies = [
     "docling>=2.132.0",
     "docling-slim>=2.132.0",
     "mako>=1.4.2",            # GHSA-5639-2j2p-m4mx (drive-letter URI path traversal on Windows, <=1.4.1); earlier GHSA-v92g-xgxw-vvmm (// traversal, <=1.3.10), GHSA-2h4p-vjrc-8xpq (Windows \\ traversal, <=1.3.11)
-    "soupsieve>=2.8.4",  # GHSA-2wc2-fm75-p42x, GHSA-836r-79rf-4m37 (memory / ReDoS in <=2.8.3)
-    "joserfc>=1.6.8",  # GHSA-gg9x-qcx2-xmrh: empty/nil HMAC key accepted for HS* verify (<=1.6.7)
+    "soupsieve>=4.0.0",  # GHSA-mmhr-3c5m-f64f (descendant combinator DoS, <4.0.0), GHSA-6655-6qjp-jx7x (ReDoS), GHSA-7g44-g9rc-x53w (parser recursion), GHSA-4j63-6c4x-wfg4. Needs Python 3.11.5. Earlier GHSA-2wc2-fm75-p42x, GHSA-836r-79rf-4m37
+    "filelock>=4.2.1",  # GHSA-v4x8-3wr5-3wq8 (ReadWriteLock SQLite reopen), GHSA-69hj-f68j-2879 (UnixFileLock truncates any file) and 7 more in <=4.2.0. Needs Python 3.11
+    "dnspython>=2.9.2",  # GHSA-vvf4-9x63-8xvv (excessive memory and CPU, <2.9.2), GHSA-45c3-73f7-pv4m (from_wire_parser CPU, <2.9.0). Needs Python 3.11
+    "joserfc>=1.7.6",  # GHSA-jpxq-7h8p-2q76 (unbounded JWE recipients CPU DoS, <1.7.5), GHSA-9pg5-8c7x-5hfx (compact JWS size guard allocates first, <1.7.6); earlier GHSA-gg9x-qcx2-xmrh: empty/nil HMAC key accepted for HS* verify (<=1.6.7)
+    "mail-parser>=4.6.3",  # GHSA-72px-j8gh-p79x (sender IP spoofing), GHSA-r7w7-vpq8-c5vv (header ReDoS), GHSA-fr3h-cpq2-9496 (attachment path traversal), GHSA-24mq-4vc6-2prf, GHSA-xhrq-2mqv-q8wx (<4.6.3)
+    "opentelemetry-api>=1.45.2",  # GHSA-mf5v-w3w3-f6cg (quadratic traceparent parsing, <=1.45.1), GHSA-xcq7-p3pf-p88h (unbounded tracestate parsing, <=1.45.0)
+    "black>=26.10.1",  # GHSA-cg8m-r9f2-5wm2: GitHub Action installs unvalidated required-version (<26.10.1). Dev-only.
+    "certifi>=2026.10.18",  # GHSA-6q48-6c7w-9gw2 (critical): bundled emSign root CAs with compromised intermediate keys (<2026.10.18)
     "json-repair>=0.60.1",  # GHSA-xf7x-x43h-rpqh: circular JSON Schema $ref DoS (<=0.60.0)
     "datamodel-code-generator>=0.81.0",  # GHSA-77xj-x4rm-935c (Protobuf weak-import path traversal, <=0.80.0); earlier GHSA-5578-w22f-pfx9 and related code-injection / SSRF / path-read CVEs
     "transformers>=5.10.0",  # GHSA-xrqw-3rrv-vx5w: save_pretrained path traversal via chat template names (<5.10.0)
@@ -169,8 +199,9 @@ constraint-dependencies = [
     "sentence-transformers>=5.6.0",
     # GHSA-p58f-9548-mpm2 (activate scripts run commands embedded in paths, <=21.7.12), GHSA-x78j-v8h9-3j2q
     # (--prompt injection in activate.bat), GHSA-94p9-xgh2-xp45 (seed wheels not integrity-checked),
-    # GHSA-9h9j-4vrj-gf7g (pyvenv.cfg line injection). Dev-only, via pre-commit.
-    "virtualenv>=21.7.13",
+    # GHSA-9h9j-4vrj-gf7g (pyvenv.cfg line injection). >=21.14.13 also fixes GHSA-vxj4-q4g9-crj7, GHSA-c978-59m8-c77v,
+    # GHSA-6w3r-xr62-4xcp, GHSA-394h-qwmc-48pf and 8 more (<21.14.9). Needs Python 3.11. Dev-only, via pre-commit.
+    "virtualenv>=21.14.13",
     "fsspec>=2026.6.0",  # GHSA-27vj-qcqg-25rc: server-side template injection in ReferenceFileSystem (<2026.6.0)
     "multidict>=6.9.1",  # GHSA-54p9-h82j-f925: reference leak in CIMultiDict/MultiDict items-view union (6.7.0..6.9.0)
     # Not security: hold click where it was before this re-lock. Nothing requires >=8.2, but
@@ -183,7 +214,7 @@ constraint-dependencies = [
 # the pandas range supported by watsonx. Exercise READI in the offline image check.
 override-dependencies = [
     "python-dotenv>=1.1.0",
-    "nltk>=3.10.3",
+    "nltk>=3.10.4",
     "pytz>=2025.1",
     "pandas>=2.3.3,<2.4",
     "safetensors>=0.8.0",
@@ -308,8 +339,10 @@ dev = [
     # NOTE: GHSA-8mgp-746c-j5xp (model-artifact APIs bypassing pathsec: TransitionParser,
     # AveragedPerceptron, PerceptronTagger, save_maxent_params) has no patched version as of
     # 3.10.3 upstream. CUGA does not call these model train/save/load APIs (grepped clean), so
-    # it isn't reachable here, but the Dependabot alert (#619) can't be closed by a version bump.
-    "nltk>=3.10.3",  # GHSA-p4gq-832x-fm9v and related path traversal / ReDoS / SSRF in <=3.9.x
+    # it isn't reachable here. 3.10.4 fixes it (alert 619) and 12 more GHSAs in <=3.10.3, e.g.
+    # GHSA-7mxv-7h3q-9324 (dot2img local code execution via PATH), GHSA-j456-xh4h-cpf2 (WekaClassifier
+    # model path), GHSA-59f9-gqg8-mqpj (maxent params path traversal), and several quadratic-CPU DoS.
+    "nltk>=3.10.4",  # GHSA-p4gq-832x-fm9v and related path traversal / ReDoS / SSRF in <=3.9.x
     "termcolor",
     "rapidfuzz",
     "pytest>=8.3.5",
@@ -388,7 +421,7 @@ line-length = 110
 indent-width = 4
 
 # Assume Python 3.9
-target-version = "py312"
+target-version = "py311"
 
 [tool.ruff.lint]
 # Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`)  codes by default.
