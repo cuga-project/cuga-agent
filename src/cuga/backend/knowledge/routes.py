@@ -950,7 +950,12 @@ async def reindex_collection(
             detail=f"Cannot reindex: {e.pending_count} upload(s) in progress",
         )
     except DoclingServiceError as e:
-        raise HTTPException(status_code=503, detail=f"Cannot reindex: {e}")
+        logger.warning("Reindex of %s refused: %s", collection, e)
+        raise HTTPException(
+            status_code=503,
+            detail="Cannot reindex: the document service is unavailable or rejected the API key. "
+            "Nothing was changed; see the server log.",
+        )
 
 
 # --- Tasks ---

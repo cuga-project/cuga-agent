@@ -56,6 +56,8 @@ class DoclingServeClient:
         parts = urlsplit(url.rstrip("/"))
         # The address without user:password, so neither CUGA nor httpx ever logs a password.
         self.name = parts._replace(netloc=parts.netloc.rpartition("@")[2]).geturl()
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError(f"knowledge.docling.url must look like http://host:port, got {self.name!r}")
         self._timeout_s = timeout_s
         self._http = httpx.Client(
             base_url=self.name,
@@ -69,13 +71,15 @@ class DoclingServeClient:
 
     def health(self) -> None:
         """The service answers and accepts the API key. docling-serve's /health needs no key, so
-        this polls a task that does not exist: 404 is the healthy answer."""
+        this polls a task that does not exist: docling-serve's own "Task not found." is healthy."""
         try:
             response = self._http.get(f"/v1/status/poll/{uuid.uuid4().hex}")
         except httpx.RequestError as e:
             raise DoclingServiceError(f"The document service is unreachable ({self._cause(e)})") from e
         if response.status_code != 404:
             _json(response)
+        elif "task not found" not in response.text.lower():  # a proxy or another app 404s every path
+            raise _not_docling_serve("HTTP 404 on its status endpoint")
 
     def close(self) -> None:
         self._http.close()
@@ -141,8 +145,9 @@ class DoclingServeClient:
             httpx.TransportError,
             headers=version,
         )
-        content = (result.get("document") or {}).get("json_content")
-        if not content:
+        document = result.get("document")
+        content = document.get("json_content") if isinstance(document, dict) else None
+        if not isinstance(content, dict) or not content:
             raise DoclingServiceError(
                 f"The document service returned no document for {name} (status {result.get('status')}); "
                 f"errors: {result.get('errors') or 'none given'}"
@@ -152,7 +157,7 @@ class DoclingServeClient:
                 "Document service parsed {} with status {}: {}",
                 name,
                 result.get("status"),
-                (result.get("errors") or [])[:3],
+                str(result.get("errors"))[:300],
             )
         try:
             doc = DoclingDocument.model_validate(content)
@@ -176,18 +181,19 @@ class DoclingServeClient:
         method: str,
         path: str,
         deadline: float,
-        retry_codes: frozenset[int] = frozenset(),
-        retry_errors: tuple[type[Exception], ...] | type[Exception] = (),
-        **request: Any,
+        retry_codes: frozenset[int],
+        retry_errors: tuple[type[Exception], ...] | type[Exception],
+        files: dict[str, Any] | None = None,
+        data: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """One request, repeated with a pause that doubles from 1 s to 10 s while the answer
         is in ``retry_codes`` or the error in ``retry_errors``, for at most ``_RETRY_S`` and never
-        past ``deadline``. ``request`` is passed to httpx (files, data, headers). Returns the JSON
-        body."""
+        past ``deadline``. Returns the JSON body."""
         pause, give_up = 1.0, min(deadline, time.monotonic() + _RETRY_S)
         while True:
             try:
-                response = self._http.request(method, path, **request)
+                response = self._http.request(method, path, files=files, data=data, headers=headers)
             except httpx.RequestError as e:
                 if not isinstance(e, retry_errors) or time.monotonic() + pause >= give_up:
                     raise DoclingServiceError(
@@ -201,7 +207,8 @@ class DoclingServeClient:
 
     def _cause(self, error: httpx.RequestError) -> str:
         """The error's type and text (a TLS or DNS reason) for users, without the service's host."""
-        text = str(error).replace(self._http.base_url.host, "<service>")
+        host = self._http.base_url.host
+        text = str(error).replace(host, "<service>") if host else str(error)
         logger.warning("Document service {}: {}: {}", self.name, type(error).__name__, error)
         return f"{type(error).__name__}: {text}" if text else type(error).__name__
 

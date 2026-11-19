@@ -4,8 +4,8 @@
 Docling loading paths. These tests simulate that by blocking the ``docling``
 import (it stays installed in this dev venv; blocking the import is the actual
 failure mode in the slim image, which never installs the package at all).
-docling-core is not blocked: chunking always runs in CUGA, and with a document
-processor or service set, a slim image parses through it.
+docling-core is not blocked: chunking always runs in CUGA, so with a document
+processor set and docling-core installed, a .pdf still parses without Docling.
 
 Coverage:
   - ``.md`` degrades to the plain-text splitter instead of raising —
@@ -55,9 +55,9 @@ def _make_engine(document_processor=None) -> KnowledgeEngine:
     return KnowledgeEngine(cfg, document_processor=document_processor)
 
 
-def _fake_converter(doc: DoclingDocument | None = None) -> MagicMock:
+def _fake_converter() -> MagicMock:
     converter = MagicMock()
-    converter.convert.return_value = SimpleNamespace(document=doc or DoclingDocument(name="doc"))
+    converter.convert.return_value = SimpleNamespace(document=DoclingDocument(name="doc"))
     return converter
 
 
@@ -115,7 +115,6 @@ def test_pdf_raises_clear_error_without_docling(tmp_path):
     assert "easyocr" in msg
     assert "torch" in msg
     assert "full CUGA image" in msg
-    assert "knowledge.docling.url" in msg  # the slim image's other way to parse
     assert "cuga[docling]" not in msg
     assert "report.pdf" in msg
 
@@ -155,9 +154,8 @@ def test_markdown_still_uses_docling_when_available(tmp_path):
 
 
 def test_pdf_parses_through_a_processor_without_docling(tmp_path):
-    """The slim image with a document processor (or service): Docling is not
-    installed, docling-core is, and a .pdf is parsed by the processor and
-    chunked in CUGA."""
+    """Docling is not installed, docling-core is, and a document processor is
+    set: a .pdf is parsed by the processor and chunked in CUGA."""
     doc = DoclingDocument(name="report")
     doc.add_text(label="text", text="Revenue grew 12% in the third quarter.")
     eng = _make_engine(document_processor=lambda path: doc)

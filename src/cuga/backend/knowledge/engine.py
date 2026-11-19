@@ -172,8 +172,7 @@ def _docling_not_installed_error(file_path: Path) -> ImportError:
     return ImportError(
         f"Cannot parse {file_path.name}: optional document-processing dependencies "
         "(docling, easyocr, torch) are not installed. "
-        "Use the full CUGA image, or parse in a docling-serve service: set knowledge.docling.url "
-        "(DYNACONF_KNOWLEDGE__DOCLING__URL)."
+        "Use the full CUGA image instead of the slim one."
     )
 
 
@@ -2189,11 +2188,10 @@ class KnowledgeEngine:
         docling_loaded = False
         docling_error: str | None = None
         try:
-            if self._parse_backend != "local":
-                # Parsing runs elsewhere: load no Docling models here. A service has to answer.
-                if self._docling_service is not None:
-                    await asyncio.to_thread(self._docling_service.health)
-            else:
+            if self._docling_service is not None:
+                # Parsing runs in the service: load no Docling models here, but it has to answer.
+                await asyncio.to_thread(self._docling_service.health)
+            elif self._parse_backend == "local":
                 # Step A: build the converter (cheap — just registers options).
                 converter = await asyncio.to_thread(self._get_docling_converter)
                 # Step B: FORCE the pipeline + models to load right now. Without

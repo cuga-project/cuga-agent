@@ -555,7 +555,7 @@ PDF, DOCX, XLSX, PPTX, HTML, Markdown, images, and more (via Docling).
 
 By default Docling parses each file inside the CUGA server. A setting moves parsing to a
 docling-serve service, for example to keep Docling's models and memory peaks out of the agent
-pod, or to use the slim image (from the release that adds this setting):
+pod:
 
 ```toml
 [knowledge.docling]
@@ -590,14 +590,18 @@ formats, such as scanned images, keep the service's defaults):
 | `pdf_mode` | Sent to the service |
 |---|---|
 | `fast` | `do_ocr=false`, `do_table_structure=false` |
-| `balanced` | `do_ocr=false` |
-| `accurate` | `do_ocr=true`, `force_ocr=true` (the service's own OCR engine and languages) |
+| `balanced` | `do_ocr=false`, `do_table_structure=true` |
+| `accurate` | `do_ocr=true`, `force_ocr=true`, `do_table_structure=true` (the service's own OCR engine and languages) |
 
 `layout_engine` and `use_gpu` apply only to local parsing. These three settings are read at
 startup from `src/cuga/configurations/knowledge/knowledge_settings.toml` or `DYNACONF_KNOWLEDGE__DOCLING__URL`, `__API_KEY`
 and `__TIMEOUT_S`; the UI and the settings API can neither read nor change them. If the
-service is down or rejects the key, the upload fails with a message that says so. For an
-`https` service signed by an internal CA, set `SSL_CERT_FILE` to the CA bundle.
+service is down or rejects the key, the upload fails with a message that says so. CUGA sends
+`timeout_s` as the service's `document_timeout`, so keep it within the service's
+`DOCLING_SERVE_MAX_DOCUMENT_TIMEOUT` (7 days by default). For an `https` service signed by an
+internal CA, set `SSL_CERT_FILE` to a PEM bundle that holds the public roots and that CA (for
+example `cat $(python -m certifi) internal-ca.pem > bundle.pem`); it applies to every HTTPS
+call CUGA makes.
 
 #### Embedding providers + tuning
 

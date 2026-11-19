@@ -52,8 +52,6 @@ class _Service:
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         path = request.url.path
-        if path == "/health":
-            return httpx.Response(200, json={"status": "ok"})
         if path == "/v1/convert/file/async":
             if self.submit_status != 200:
                 return httpx.Response(self.submit_status, json={"detail": "nope"})
@@ -66,7 +64,7 @@ class _Service:
             return httpx.Response(200, json=body)
         if path == "/v1/result/t1":
             return httpx.Response(200, json=self.result)
-        return httpx.Response(404)
+        return httpx.Response(404, json={"detail": "Task not found."})  # docling-serve's own answer
 
 
 @pytest.fixture(autouse=True)
@@ -178,18 +176,25 @@ def test_other_http_errors_carry_the_detail(pdf):
         _client(_Service(submit_status=422)).convert(pdf, "balanced")
 
 
-def test_unreachable_service_gives_the_cause_but_not_the_address(pdf):
-    def refuse(request):
+def test_an_unreachable_service_gives_the_cause_but_not_the_address(pdf):
+    def mismatch(request):
         raise httpx.ConnectError(
-            "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed", request=request
+            "certificate verify failed: Hostname mismatch, certificate is not valid for 'docling.test'",
+            request=request,
         )
 
-    client = DoclingServeClient(URL_WITH_CREDENTIALS, timeout_s=5, transport=httpx.MockTransport(refuse))
+    client = DoclingServeClient(URL_WITH_CREDENTIALS, timeout_s=5, transport=httpx.MockTransport(mismatch))
     with pytest.raises(DoclingServiceError) as exc_info:
         client.convert(pdf, "balanced")
     message = str(exc_info.value)
-    assert "unreachable (ConnectError: [SSL: CERTIFICATE_VERIFY_FAILED]" in message
+    assert "unreachable (ConnectError: certificate verify failed: Hostname mismatch" in message
     assert "docling.test" not in message and "pw" not in message
+
+
+@pytest.mark.parametrize("url", ["docling-serve:5001", "localhost:5001", "http://"])
+def test_a_url_without_scheme_or_host_is_refused_at_start(url):
+    with pytest.raises(ValueError, match=r"knowledge\.docling\.url must look like http://host:port"):
+        DoclingServeClient(url)
 
 
 def test_credentials_in_the_url_travel_as_basic_auth_only(pdf):
@@ -298,37 +303,21 @@ def test_retries_stop_at_the_files_deadline_or_after_a_minute(pdf, timeout_s):
     assert docling_remote.time.monotonic() - started <= min(timeout_s, 60) + 1
 
 
-def test_an_upload_that_cannot_connect_fails_within_a_minute(pdf):
-    """Long enough for a docling-serve restart; a wrong address or certificate fails every time,
-    so the user hears about it in a minute, not after timeout_s."""
-    service = _Flaky("/v1/convert/file/async", [httpx.ConnectError("refused")] * 1000)
+@pytest.mark.parametrize("path", ["/v1/convert/file/async", "/v1/status/poll/t1"])
+def test_a_service_that_stays_down_fails_the_file_within_a_minute(pdf, path):
+    """Long enough for a docling-serve restart; a wrong address, a bad certificate or a service
+    that does not come back must not hold the ingest slot until timeout_s."""
+    service = _Flaky(path, [httpx.ConnectError("refused")] * 1000)
     started = docling_remote.time.monotonic()
     with pytest.raises(DoclingServiceError, match="unreachable"):
         _client(service).convert(pdf, "balanced")
     assert docling_remote.time.monotonic() - started <= 61
 
 
-def test_a_service_that_stays_down_fails_the_file_within_a_minute(pdf):
-    """Polls ride out a restart, but a service that does not come back must not hold the
-    ingest slot until timeout_s."""
-    service = _Flaky("/v1/status/poll/t1", [httpx.ConnectError("refused")] * 1000)
-    started = docling_remote.time.monotonic()
-    with pytest.raises(DoclingServiceError, match="unreachable"):
-        _client(service).convert(pdf, "balanced")
-    assert docling_remote.time.monotonic() - started <= 61
-
-
-def test_a_tls_error_names_the_cause_but_not_the_host(pdf):
-    def mismatch(request):
-        raise httpx.ConnectError(
-            "certificate verify failed: Hostname mismatch, certificate is not valid for 'docling.test'",
-            request=request,
-        )
-
-    client = DoclingServeClient(URL, transport=httpx.MockTransport(mismatch))
-    with pytest.raises(DoclingServiceError, match="Hostname mismatch") as exc_info:
-        client.convert(pdf, "balanced")
-    assert "docling.test" not in str(exc_info.value)
+def test_a_result_of_the_wrong_shape_is_a_service_error(pdf):
+    result = {"document": "not an object", "status": "success"}
+    with pytest.raises(DoclingServiceError, match="returned no document"):
+        _client(_Service(result=result)).convert(pdf, "balanced")
 
 
 def test_a_body_that_cannot_be_decoded_reads_as_a_service_error(pdf):
@@ -443,11 +432,20 @@ def test_a_partly_parsed_document_is_indexed_and_logged(pdf):
     assert any("partial_success" in line and "page 7 failed" in line for line in lines)
 
 
-def test_health_passes_and_fails():
-    _client(_Service()).health()
-
+def test_health_fails_when_the_service_errors():
     def down(request):
         return httpx.Response(503, text="starting")
 
     with pytest.raises(DoclingServiceError, match="HTTP 503"):
         DoclingServeClient(URL, transport=httpx.MockTransport(down)).health()
+
+
+def test_health_fails_on_a_server_that_404s_every_path():
+    """A proxy's default backend or another app answers 404 too; only docling-serve's own
+    "Task not found." counts as healthy, or a reindex would drop vectors it cannot rebuild."""
+
+    def not_docling(request):
+        return httpx.Response(404, text="<html><body>default backend - 404</body></html>")
+
+    with pytest.raises(DoclingServiceError, match="did not answer like docling-serve"):
+        DoclingServeClient(URL, transport=httpx.MockTransport(not_docling)).health()
