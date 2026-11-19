@@ -27,6 +27,21 @@ origin_url="$(git remote get-url origin)"
 origin_repo="$(gh repo view "$origin_url" --json nameWithOwner -q .nameWithOwner)"
 ```
 
+### Open pull request limit (HARD RULE)
+
+An author may have at most **5 open pull requests, drafts included**. No exceptions. Run this after resolving `origin_repo`:
+
+```bash
+open_count="$(gh pr list --repo "$origin_repo" --author "@me" --state open --json number --jq length)"
+if [ "$open_count" -ge 5 ]; then
+  echo "You already have $open_count open pull requests; the limit is 5 (drafts count)." >&2
+  echo "Merge or close one first. Do not open this pull request." >&2
+  exit 1
+fi
+```
+
+If the limit is reached, **STOP** and tell the user. Do not open the pull request as a draft or split it. CI (`.github/workflows/pr-limit.yml`) closes every pull request newer than the author's 5 oldest open ones.
+
 ### Remote parity (`origin/<branch>`)
 
 Prefer `refs/remotes/origin/<branch>` over `@{u}`. Fetch first so the check is not stale.
@@ -77,8 +92,9 @@ Only if the tree is clean and both counts are zero, continue.
    - Testing
    - Checklist
 5. **Choose labels (MUST).** Follow [labels.md](labels.md) against `origin/main...HEAD`: exactly one
-   `design-impact:`, one `area:` label per changed area, and exactly one `readability:` (improve the description
-   until `readability: good` is true). Do not create the PR without them.
+   `design-impact:`, exactly one `design-review:`, one `area:` label per changed area, exactly one `evaluation:`,
+   and exactly one `readability:` (improve the description until `readability: good` is true). Do not create the
+   PR without them.
 6. Create (pass title via a variable; pass body via `--body-file` so shell does not interpolate the Markdown; pass
    each label with `--label`):
 
@@ -92,7 +108,9 @@ EOF
 
 gh pr create --repo "$origin_repo" --base main --title "$title" --body-file "$body_file" \
   --label "design-impact: <low|medium|high>" \
+  --label "design-review: <needed|done|not needed>" \
   --label "area: <area>" \
+  --label "evaluation: <needed|done|not needed>" \
   --label "readability: <good|fair|poor>"
 ```
 
