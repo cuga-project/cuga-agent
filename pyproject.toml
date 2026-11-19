@@ -102,6 +102,18 @@ dependencies = [
     "toolguard>=0.2.17",
     "cuga-oak-health; python_version>='3.12'",
     "aiosmtpd",
+    # Security floors for transitive dependencies that the wheel installs. The same floors are in
+    # [tool.uv].constraint-dependencies, but those apply only when uv resolves uv.lock and are not
+    # in the wheel metadata. Without these lines, `pip install -U cuga` over an older environment
+    # keeps the vulnerable versions. scripts/smoke_pip_install_isolated.sh checks the upgrade path.
+    "authlib>=1.9.1",            # via fastmcp; GHSA-6v38-4h7w-rj9h, GHSA-8m4g-j4wp-wgcg and 7 more
+    "certifi>=2026.10.18",       # via requests/httpx; GHSA-6q48-6c7w-9gw2
+    "pyasn1>=0.6.5",             # via google-auth; GHSA-fm9c-5rcf-2q5p and 3 more
+    "joserfc>=1.7.6",            # via authlib; GHSA-jpxq-7h8p-2q76, GHSA-9pg5-8c7x-5hfx
+    "mail-parser>=4.6.3",        # via docling[standard]; GHSA-72px-j8gh-p79x and 4 more
+    "opentelemetry-api>=1.45.2", # via langfuse; GHSA-mf5v-w3w3-f6cg, GHSA-xcq7-p3pf-p88h
+    "black>=26.10.1",            # via toolguard → datamodel-code-generator; GHSA-cg8m-r9f2-5wm2
+    "setuptools>=84.1.0",        # via torch; GHSA-xmj3-9gf7-h52w
 ]
 
 [project.optional-dependencies]
