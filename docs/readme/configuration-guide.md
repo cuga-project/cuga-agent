@@ -1136,6 +1136,29 @@ result = await agent.invoke("...", execution_mode="codeact")   # per-call overri
 - Function-calling needs tools bound natively: if `bind_tools` fails or the model does not support it, or the agent has no executable tools, the run stops with a clear error (fail closed) instead of silently answering without tools. A static prompt is ignored in this mode.
 - A thread can switch modes between turns: results from function-calling turns are shown to a later CodeAct turn as text and as variables.
 
+## What each mode supports
+
+| | CodeAct | Function calling |
+|---|---|---|
+| Tool-approval policies, pre-execute VERIFY, tool-call budgets, block timeout, variables | Yes | Yes: the same checks, run on the translated block |
+| Reflection | Yes | No (CodeAct only for now) |
+| Execution backend | The configured sandbox | Always the local executor, even with `e2b_sandbox = true` |
+| Step discipline | Yes | Yes |
+| `find_tools` | Called from code | Bound as a native tool when the prompt advertises it |
+| Bundled few-shot demos, static prompt | Yes | Not used |
+| Spawned sub-agents (`agent_spawn`) | Yes | Known gaps, see #1123 |
+| Supervisor sub-agent | Yes | Yes |
+| The supervisor itself | Yes | No (the supervisor always runs CodeAct) |
+| Switching modes between turns of one thread | Yes | Yes |
+
+## CodeAct changes that came with function calling
+
+Function calling reuses the CodeAct pipeline, and three CodeAct behaviors changed with it in #777:
+
+- **Variables survive a tool-call budget error** (kept by decision in #976). When a call is refused because a budget is spent (`max_tool_calls_per_block`, `max_tool_calls_per_run` or `max_tool_calls_per_thread`), the variables the block computed before that call are kept, as after a timeout or `exit()`. Before, they were dropped with the error. This applies to the local and execd executors, not E2B.
+- **Saved messages keep their type.** `AgentState` message lists (`CugaAgent` and server threads) are saved by their runtime type and rebuilt as the same message classes on load, so an assistant turn keeps its `tool_calls` and a tool reply its `tool_call_id`. Threads saved before the change still load.
+- **CodeAct can read native tool replies.** On a thread that switches modes, results from a function-calling turn reach the next CodeAct turn as `Tool result (<tool>):` text.
+
 </details>
 
 <details>
