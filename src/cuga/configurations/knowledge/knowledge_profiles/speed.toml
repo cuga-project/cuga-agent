@@ -7,10 +7,13 @@ description = "Quick lookups for big libraries."
 # same keys apply at both layers; profile values override settings.toml.
 
 [embeddings]
-# bge-small-en-v1.5 (384d, ~33M params, MTEB retrieval 53.9). Same encoder
-# as standard, but switching speed<->standard DOES re-index: speed uses
-# chunk_size=1000 vs standard=800, and chunk_size is in vector_config_hash.
-model = "BAAI/bge-small-en-v1.5"
+# multilingual-e5-small (384d, MIT): about 100 languages, run as its own int8 ONNX build
+# (cuga/backend/knowledge/fastembed_models.py). Measured on XQUAD and IndicQA through this
+# engine: found first 0.93 vs 0.59 in Hindi, 0.63 vs 0.29 in Tamil, English 0.93 vs 0.96,
+# English questions over Hindi text 0.99 vs 0.18 in the top 5, against bge-small-en-v1.5.
+# Same encoder as standard, but switching speed<->standard still re-indexes:
+# chunk_size differs (speed 1000, standard 800) and is part of vector_config_hash.
+model = "intfloat/multilingual-e5-small"
 # Memory, not throughput, is the binding constraint here. A local ONNX
 # embedder allocates intermediate tensors that scale as batch x sequence^2,
 # and onnxruntime's arena does not return that memory to the OS — so the

@@ -99,6 +99,10 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         self._store: Any = None
         self._dim: int | None = None
 
+    @property
+    def embeddings(self) -> Embeddings:
+        return self._embeddings
+
     def _scope(self) -> dict[str, str]:
         return {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
 

@@ -455,6 +455,26 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
     }
 
 
+async def _saved_embedding(agent_id: str) -> tuple[str, str] | None:
+    """The embedding provider and model of the agent's saved config, unless this start names a
+    model or another provider (the saved model belongs to the saved provider)."""
+    # A blank variable counts as unset, as in KnowledgeConfig's _profile_key.
+    if os.environ.get("DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL", "").strip():
+        return None
+    from cuga.backend.server.config_store import load_config
+
+    try:
+        config, _ = await load_config(None, agent_id)
+    except Exception:
+        return None
+    knowledge = (config or {}).get("knowledge") or {}
+    provider, model = knowledge.get("embedding_provider"), knowledge.get("embedding_model")
+    env_provider = os.environ.get("DYNACONF_KNOWLEDGE__EMBEDDINGS__PROVIDER", "").strip()
+    if env_provider and env_provider != provider:
+        return None
+    return (provider, model) if provider and model else None
+
+
 def setup_demo_manage_config(
     demo_type: str,
     agent_id: str = "cuga-default",
@@ -536,6 +556,11 @@ def setup_demo_manage_config(
     ]
 
     preserve_existing = run_sync(resolve_preserve_existing(agent_id))
+    # Uploaded documents survive restarts (only --reset wipes them). Keep the embedding model
+    # they were indexed with: a new default model would put the agent on a new, empty collection.
+    previous_embedding = (
+        None if preserve_existing or reset_knowledge else run_sync(_saved_embedding(agent_id))
+    )
     if not preserve_existing:
         reset_config_db()
 
@@ -678,6 +703,8 @@ def setup_demo_manage_config(
         from cuga.config import settings as _settings
 
         _kc = _KC.from_settings(_settings)
+        if previous_embedding:
+            _kc.embedding_provider, _kc.embedding_model = previous_embedding
         knowledge_cfg = _kc.to_dict()
         knowledge_cfg["_vector_config_hash"] = _kc.vector_config_hash()
     except Exception:

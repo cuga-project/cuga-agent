@@ -275,6 +275,28 @@ def test_actual_dockerfile_profile_is_parseable_and_frozen(profile):
         assert len(excluded) > 30
 
 
+def test_image_pip_installs_are_scanned_and_must_be_hash_pinned(tmp_path):
+    assert check.profile_pip_installs("slim", ROOT) == []
+    [install] = check.profile_pip_installs("full", ROOT)
+    assert "--require-hashes" in install
+    assert (ROOT / install[-1]).is_file()
+
+    (tmp_path / "Dockerfile.ubi").write_text("RUN uv pip install requests\n")
+    with pytest.raises(ValueError, match="hash-pinned"):
+        check.profile_pip_installs("full", tmp_path)
+
+
+def test_prepare_python_installs_what_the_image_installs(monkeypatch, tmp_path):
+    commands = []
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(check.subprocess, "run", lambda args, **_: commands.append(args))
+
+    check.sync_profile("full", tmp_path / "venv")
+
+    assert [command[:3] for command in commands] == [["uv", "sync", "--frozen"], ["uv", "pip", "install"]]
+    assert commands[1][3:5] == ["--python", str(tmp_path.resolve() / "venv" / "bin" / "python")]
+
+
 def test_bundled_file_evidence_hashes_exact_content_and_rejects_paths_outside_root(tmp_path):
     (tmp_path / "LICENSE").write_text("first")
     data = report(["MIT"])

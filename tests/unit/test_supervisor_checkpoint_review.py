@@ -103,7 +103,9 @@ async def test_run_releases_supervisor_after_failed_or_cancelled_invoke(monkeypa
         "hello",
         thread_id="shared-thread",
         user_id="alice",
-        checkpoint_thread_id=checkpoint_thread_id("shared-thread", "alice", run_routes._RUNTIME_AGENT_ID()),
+        checkpoint_thread_id=checkpoint_thread_id(
+            "shared-thread", "alice", run_routes._RUNTIME_AGENT_ID(), "run"
+        ),
     )
     release.assert_awaited_once_with(supervisor)
 

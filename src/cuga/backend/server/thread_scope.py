@@ -24,7 +24,11 @@ import json
 from cuga.config import get_service_instance_id, get_tenant_id
 
 
-def checkpoint_thread_id(thread_id: str, user_id: str, agent_id: str) -> str:
+def checkpoint_thread_id(thread_id: str, user_id: str, agent_id: str, entry: str = "web") -> str:
+    """``entry`` keeps non-UI callers (``run``, ``a2a``, ``ext``) off web conversations' checkpoints
+    even when they pass the same thread ID (#774). Web keys are unchanged."""
     identity = [get_tenant_id(), get_service_instance_id(), user_id, agent_id, thread_id]
+    if entry != "web":
+        identity.append(entry)
     digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode("utf-8")).hexdigest()
     return f"cuga-thread-v1:{digest}"

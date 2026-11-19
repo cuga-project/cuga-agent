@@ -238,7 +238,7 @@ If you are working in an AI-assisted IDE or using an AI agent (Cursor, Claude, B
 
 | Skill | What it does |
 |---|---|
-| `cuga-github-issues` | Creates GitHub issues (bugs, features, epics, and related work) with epic → feature → issue hierarchy, `gh` sub-issue linking, and the required `design-impact:` and `area:` labels |
+| `cuga-github-issues` | Creates GitHub issues (bugs, features, epics, and related work) with epic → feature → issue hierarchy, `gh` sub-issue linking, and the required `design-impact:`, `design-review:`, and `area:` labels |
 | `cuga-contributor-workflows` | Commit (Conventional Commits), push, create PRs via `gh` + PR templates, run `uv run ruff check --fix` / `ruff format`, and set the required labels |
 
 These skills follow repo conventions (Conventional Commits, `gh` CLI, no promotional footers). Agents should load them when you ask to create issues/bugs/features/epics, commit, push, open a PR, or run ruff.
@@ -299,3 +299,8 @@ For local development and testing:
 1. Open VS Code's Run and Debug panel
 2. Select the desired configuration from the dropdown
 3. Start debugging
+## Frontend design and implementation
+
+Follow the [frontend development rules](src/frontend_workspaces/AGENTS.md) for the
+shared IBM Carbon experience, asynchronous states, accessibility, and production
+build verification. These rules apply to frontend features and conflict resolutions.
