@@ -168,6 +168,8 @@ async def test_a_thread_switches_fc_codeact_fc_and_each_turn_sees_the_earlier_on
     _assert_valid_fc_replay(replay)
     assert [c["id"] for m in replay if isinstance(m, AIMessage) for c in m.tool_calls] == ["c1"]
     assert any(isinstance(m, AIMessage) and "tool_result_c1 + 1" in _text(m) for m in replay)
+    assert any(isinstance(m, HumanMessage) and "plus one: 8" in _text(m) for m in replay), "turn 2's output"
+    assert any(isinstance(m, AIMessage) and _text(m) == "It is 8." for m in replay), "turn 2's answer"
 
 
 @pytest.mark.asyncio
