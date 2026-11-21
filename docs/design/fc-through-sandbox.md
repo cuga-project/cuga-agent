@@ -33,13 +33,13 @@ variables, no observed shapes, no todos). One pipeline closes them at once.
 - Feature off: the branches above are gated on a pending plan, which a CodeAct turn
   never writes, and every new parameter defaults to the old behavior. The golden in
   `cuga_lite/tests/test_feature_off_snapshot.py` pins one CodeAct run, recorded
-  before this change: final state, messages (type, content, tool calls), every
-  outbound turn, and no bound tools. Since #976 it also pins the whole system prompt
-  (`snapshots/codeact_feature_off_system_prompt.txt`). That file was recorded after
-  this change merged, so it guards later changes; it cannot show this change left
-  the prompt alone. It covers that scenario only (one tool; no apps, `find_tools`,
-  todos, policies, few-shots, memory, agent spawning or forced autonomous mode), not
-  every CodeAct path. CodeAct did change in
+  before this change: final state, messages (type, content, tool calls) and every
+  outbound turn. Since #976 it also checks that no tools are bound and pins the whole
+  system prompt (`snapshots/codeact_feature_off_system_prompt.txt`). That file was
+  recorded after this change merged, so it guards later changes; it cannot show this
+  change left the prompt alone. It covers that scenario only (one tool; no apps,
+  `find_tools`, todos, policies, few-shots, memory, agent spawning, forced autonomous
+  mode or tool binding), not every CodeAct path. CodeAct did change in
   three ways; see "CodeAct changes that came with function calling" in
   `docs/readme/configuration-guide.md`.
 
