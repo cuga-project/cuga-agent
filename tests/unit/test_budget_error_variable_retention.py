@@ -222,7 +222,7 @@ async def test_run_cap_keeps_the_variables_for_the_final_pass_and_the_next_turn(
         [
             FOUR_CALLS,
             "Got 1, 2 and 3 before the limit.",
-            "```python\nprint('sum:', a + b + c)\n```",
+            "```python\ntotal = await echo(value=a + b + c)\nprint('sum:', total)\n```",
             "The sum is 6.",
         ]
     )
@@ -242,7 +242,7 @@ async def test_run_cap_keeps_the_variables_for_the_final_pass_and_the_next_turn(
 
     turn2 = await agent.invoke("add them up", thread_id="run-cap")
 
-    assert CALLS == [1, 2, 3], "turn 2 used the kept values without calling a tool"
+    assert CALLS == [1, 2, 3, 6], "turn 2 read the kept values, and its run budget was fresh"
     assert "sum: 6" in _text(model.seen[3][1][-1]), "the kept variables survived the checkpoint"
     assert turn2.answer == "The sum is 6."
 
