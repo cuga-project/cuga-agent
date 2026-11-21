@@ -1,9 +1,9 @@
 """Knowledge on pgvector under concurrent requests and with any collection name.
 
-Every adapter call runs on its own short-lived event loop (``_run_embedding_coro``), so
-requests that overlap use the store from several loops at once. These tests run the
-adapter from many threads against a real pgvector, as the server does, and use
-collection names that are not valid PostgreSQL identifiers as they stand.
+Adapter calls arrive on many threads at once and all run on the process's one Postgres event
+loop (``_postgres_loop``), sharing each store's connection pool. These tests run the adapter
+from many threads against a real pgvector, as the server does, and use collection names that
+are not valid PostgreSQL identifiers as they stand.
 
 Local run: start pgvector as described in ``test_knowledge_pgvector_rollback.py`` and set
 ``CUGA_KNOWLEDGE_PGVECTOR_CONNECTION_STRING``.
@@ -70,17 +70,23 @@ async def _table_exists(dsn: str, table: str) -> bool:
         await conn.close()
 
 
-def test_concurrent_searches_all_succeed(clean_tenant, monkeypatch):
+def test_concurrent_searches_all_succeed_on_the_upload_s_pool(clean_tenant, monkeypatch):
     dsn = _dsn()
     asyncio.run(_setup_extension(dsn))
     adapter = _build_adapter(dsn, clean_tenant, monkeypatch, f"kb_conc_{uuid.uuid4().hex[:12]}")
     adapter.add_documents(_docs(6, "/tmp/conc.pdf"))
+    pools_created = []
+    create_pool = asyncpg.create_pool
+    monkeypatch.setattr(
+        asyncpg, "create_pool", lambda *a, **kw: pools_created.append(1) or create_pool(*a, **kw)
+    )
     try:
         results = _run_together(
             lambda: [len(adapter.search("chunk text body", k=3)) for _ in range(_SEARCHES_PER_THREAD)],
             _THREADS,
         )
         assert results == [[3] * _SEARCHES_PER_THREAD] * _THREADS
+        assert pools_created == []  # every search reused the pool the upload opened
     finally:
         adapter.drop()
 

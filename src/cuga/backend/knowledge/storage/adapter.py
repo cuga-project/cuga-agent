@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -67,6 +69,37 @@ def _table_name(collection: str, *, postgres: bool) -> str:
     digest = hashlib.sha256(collection.encode("ascii")).hexdigest()[:_TABLE_DIGEST_LENGTH]
     stem = collection.lower()[: 63 - len(_MAPPED_TABLE_PREFIX) - len(digest) - 1]
     return f"{_MAPPED_TABLE_PREFIX}{stem}_{digest}"
+
+
+_postgres_loop_state: tuple[int, asyncio.AbstractEventLoop] | None = None
+_postgres_loop_lock = threading.Lock()
+
+
+def _postgres_loop() -> asyncio.AbstractEventLoop:
+    """The event loop that runs every knowledge Postgres call in this process, started on first use.
+
+    A Postgres connection pool works only on the event loop that created it, and searches and
+    writes arrive on many worker threads. Running them all on this one loop lets each collection
+    keep its pool, so a search reuses an open connection instead of opening and preparing a new one.
+    """
+    global _postgres_loop_state
+    with _postgres_loop_lock:
+        pid = os.getpid()
+        if _postgres_loop_state is None or _postgres_loop_state[0] != pid:  # a forked child starts its own
+            loop = asyncio.new_event_loop()
+            threading.Thread(target=loop.run_forever, name="knowledge-postgres", daemon=True).start()
+            _postgres_loop_state = (pid, loop)
+        return _postgres_loop_state[1]
+
+
+def _run_on_own_loop(coro):
+    """Run ``coro`` on a new event loop, from a worker thread if this thread is already running one."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: asyncio.run(coro)).result()
 
 
 class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
@@ -154,29 +187,32 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         )
 
     def _run_embedding_coro(self, coro):
-        """Run async embedding store work on a short-lived loop; close prod asyncpg pool afterward.
+        """Run async vector store work and return its result.
 
-        ``ProdEmbeddingStore`` pools are tied to the event loop. ``KnowledgeEngine`` invokes
-        search/add from worker threads via ``asyncio.run`` / ``asyncio.to_thread``, so each run
-        must not reuse a pool from a previous closed loop.
+        Postgres work runs on the process's Postgres loop (see ``_postgres_loop``), so every call
+        reuses the store's pool and its open connections. SQLite work runs on a loop of its own.
         """
-
-        async def _wrapped():
-            try:
-                return await coro
-            finally:
-                if self._use_prod and self._store is not None:
-                    from cuga.backend.storage.embedding.prod import ProdEmbeddingStore
-
-                    if isinstance(self._store, ProdEmbeddingStore):
-                        await self._store.close_pool()
-
+        if not self._use_prod:
+            return _run_on_own_loop(coro)
+        loop = _postgres_loop()
         try:
-            asyncio.get_running_loop()
+            running = asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(_wrapped())
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(lambda: asyncio.run(_wrapped())).result()
+            running = None
+        if running is loop:  # waiting here would block the loop the work needs
+            coro.close()
+            raise RuntimeError("Called from the Postgres loop itself; await the store there instead.")
+        return asyncio.run_coroutine_threadsafe(coro, loop).result()
+
+    async def close_pool(self) -> None:
+        """Close this collection's Postgres connections; a later call opens new ones.
+
+        ``KnowledgeEngine.aclose`` calls it for every collection it holds.
+        """
+        if self._use_prod and self._store is not None:
+            await asyncio.wrap_future(
+                asyncio.run_coroutine_threadsafe(self._store.close_pool(), _postgres_loop())
+            )
 
     def _l2_similarity(self, distance: float) -> float:
         """Map sqlite-vec L2 distance to [0, 1] (higher = nearer)."""
@@ -550,7 +586,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             async def _embed_all() -> None:
                 await asyncio.gather(*(_embed_one(s) for s in starts))
 
-            self._run_embedding_coro(_embed_all())
+            _run_on_own_loop(_embed_all())
         else:
             # Local providers: embedder runtime already exploits threads.
             for start in starts:
