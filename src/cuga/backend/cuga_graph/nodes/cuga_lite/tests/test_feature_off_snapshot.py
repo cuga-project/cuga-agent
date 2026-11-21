@@ -14,8 +14,8 @@ cannot show that #777 left the prompt unchanged. The model must also see no boun
 tools and no extra request arguments.
 
 Scope: this one scenario (one tool; no apps, ``find_tools``, todos, policies,
-few-shots, memory, agent spawning or forced autonomous mode). Other CodeAct paths
-are not pinned here.
+few-shots, memory, agent spawning, forced autonomous mode or tool binding). Other
+CodeAct paths are not pinned here.
 
 Re-record (only for an intentional CodeAct change, never to make this pass):
 ``CUGA_SNAPSHOT_WRITE=1 pytest <this file>``.
@@ -95,13 +95,14 @@ def _quiet(monkeypatch):
     from cuga.config import settings
 
     monkeypatch.setattr(settings.policy, "enabled", False, raising=False)
-    # Settings that change the prompt, pinned off so a local override cannot: the memory
-    # section (it reads the evolve setting, a preferences row in the local database and,
-    # with memory on, a running Evolve server; pinning it also skips that I/O), agent
-    # spawning and forced autonomous mode.
+    # Settings that change the prompt or the bound tools, pinned off so a local override
+    # cannot: the memory section (it reads the evolve setting, a preferences row in the
+    # local database and, with memory on, a running Evolve server; pinning it also skips
+    # that I/O), agent spawning, forced autonomous mode and tool binding.
     monkeypatch.setattr("cuga.backend.evolve.memory.memory_enabled", AsyncMock(return_value=False))
     monkeypatch.setattr(settings.agent_spawn, "enabled", False, raising=False)
     monkeypatch.setattr(settings.advanced_features, "force_autonomous_mode", False, raising=False)
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_bind_tools_mode", "none", raising=False)
     CALLS.clear()
     yield
     CALLS.clear()
