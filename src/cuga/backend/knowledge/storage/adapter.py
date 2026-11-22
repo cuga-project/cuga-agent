@@ -591,6 +591,8 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         return _columns
 
     def _pg_search_lexical(self, groups: list[list[str]], k: int) -> list[tuple[Any, Any, float]]:
+        from cuga.backend.knowledge.engine import _KEYWORD_LEG_BUDGET_S
+
         scope = self._scope()
 
         async def _search(conn):
@@ -623,12 +625,15 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                     ) df
                 )
                 SELECT c.chunk_text, c.meta_json,
-                       (SELECT sum(w.idf * t.tf * 2.2 / (t.tf + 1.2 * (0.25 + 0.75 * length(c.{_TERMS_COLUMN}) / n.avgdl)))
+                       (SELECT sum(w.idf * t.tf * 2.2 / (t.tf + 1.2 * (0.25 + 0.75 * length(d.tv) / n.avgdl)))
                         FROM w CROSS JOIN LATERAL (
-                            SELECT ts_rank_cd('{{1,1,1,1}}'::float4[], c.{_TERMS_COLUMN}, w.q, 0) AS tf
+                            SELECT ts_rank_cd('{{1,1,1,1}}'::float4[], d.tv, w.q, 0) AS tf
                         ) t
-                        WHERE c.{_TERMS_COLUMN} @@ w.q) AS rank
+                        WHERE d.tv @@ w.q) AS rank
                 FROM {self._collection} c CROSS JOIN n
+                -- Each candidate's terms are read (detoasted) once here, not once per group in the
+                -- scoring subquery; OFFSET 0 keeps the planner from inlining it back.
+                CROSS JOIN LATERAL (SELECT c.{_TERMS_COLUMN} || ''::tsvector AS tv OFFSET 0) d
                 WHERE c.tenant_id = $2 AND c.instance_id = $3 AND c.{_TERMS_COLUMN} @@ $5::text::tsquery
                 ORDER BY rank DESC, c.id LIMIT $4  -- a stable order for ties, so results reproduce
                 """,
@@ -637,6 +642,9 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                 scope["instance_id"],
                 max(1, int(k)),
                 " | ".join(f"({_pg_tsquery(group)})" for group in groups),
+                # The engine drops a keyword search slower than this anyway; the server then
+                # cancels it instead of running on for command_timeout.
+                timeout=_KEYWORD_LEG_BUDGET_S,
             )
 
         return [(r["chunk_text"], r["meta_json"], float(r["rank"])) for r in self._pg_keyword_run(_search)]
@@ -788,9 +796,11 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             try:
                 if not self._ensure_fts_table(conn, wait=False):
                     return []  # another call is re-indexing; this search ranks by meaning only
+                # FTS5's hidden rank column is bm25() (no custom rank is configured), and ordering
+                # by it lets FTS5 sort inside the index and stop after k rows pass the tenant
+                # filter; "bm25(...) AS rank" sorted every match in a temporary B-tree instead.
                 rows = conn.execute(
-                    f"SELECT chunk_id, source, filename, page, section_path, "
-                    f"chunk_text, bm25({self._fts_table()}) AS rank "
+                    f"SELECT chunk_id, source, filename, page, section_path, chunk_text, rank "
                     f"FROM {self._fts_table()} "
                     f"WHERE {self._fts_table()} MATCH ? AND tenant_id = ? AND instance_id = ? "
                     f"ORDER BY rank LIMIT ?",

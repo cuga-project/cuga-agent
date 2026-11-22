@@ -977,3 +977,155 @@ def test_concurrent_keyword_calls_skip_a_running_backfill(make_adapter, monkeypa
     finally:
         adapter._pg_ensure_lock.release()
     assert source in _hit_sources(adapter, "ZQX-4417")
+
+
+_RANKING_DOCS = {
+    "a": "Invoice ABC-123 was issued to Contoso for the backup service and the backup policy.",
+    "b": "The backup policy runs every night; backup backup backup logs are kept for a week.",
+    "c": "Contoso renewed the service contract. The invoice was paid on time.",
+    "d": "我们的数据备份策略每天执行一次。备份日志保存一周。",
+    "e": "A short note about the weather and the office plants.",
+}
+_RANKING_QUERIES = ["backup policy", "ABC-123 invoice", "the service", "备份策略", "Contoso contract invoice"]
+
+
+@pytest.mark.unit
+def test_sqlite_keyword_ranking_is_bm25_sorted_inside_fts5(make_adapter, monkeypatch):
+    """Ordering by FTS5's rank column returns the same rows and scores as bm25(), per tenant, and
+    lets FTS5 sort in its index instead of a temporary B-tree."""
+    _set_tenant(monkeypatch, "tenant_a")
+    adapter = make_adapter("sqlite", unique_collection("kw_rank"))
+    for name, text in _RANKING_DOCS.items():
+        _add(adapter, "kw_rank", name, text)
+    _set_tenant(monkeypatch, "tenant_b")  # a second scope in the same table
+    for name, text in _RANKING_DOCS.items():
+        _add(adapter, "kw_rank", f"b_{name}", text + " Tenant B copy.")
+    _set_tenant(monkeypatch, "tenant_a")
+
+    conn = adapter._fts_connect()
+    try:
+        table = adapter._fts_table()
+        for query in _RANKING_QUERIES:
+            expected = conn.execute(
+                f"SELECT chunk_text, bm25({table}) AS r FROM {table} "
+                f"WHERE {table} MATCH ? AND tenant_id = ? AND instance_id = ? ORDER BY r LIMIT 10",
+                (adapter._fts_match(query), "tenant_a", "inst"),
+            ).fetchall()
+            got = adapter.search_lexical(query, k=10)
+            assert [d.page_content for d, _ in got] == [text for text, _ in expected], query
+            assert [round(s, 12) for _, s in got] == [
+                round(abs(r) / (1 + abs(r)), 12) for _, r in expected
+            ], query
+        statements: list[str] = []
+        connect = adapter._fts_connect
+
+        def traced():
+            c = connect()
+            c.set_trace_callback(statements.append)
+            return c
+
+        monkeypatch.setattr(adapter, "_fts_connect", traced)
+        adapter.search_lexical("backup policy", k=10)
+        search_sql = next(
+            st for st in statements if " MATCH " in st and st.lstrip().upper().startswith("SELECT")
+        )
+        plan = " ".join(str(row[-1]) for row in conn.execute(f"EXPLAIN QUERY PLAN {search_sql}"))
+        assert "TEMP B-TREE" not in plan, plan
+    finally:
+        conn.close()
+
+
+@pytest.mark.unit
+def test_postgres_keyword_query_runs_with_the_keyword_budget_as_its_time_limit(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from cuga.backend.knowledge.engine import _KEYWORD_LEG_BUDGET_S
+    from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
+
+    adapter = StorageBackedKnowledgeVectorStore(
+        "kb_budget", DeterministicEmbeddings(), postgres_url="postgresql://u@h/db"
+    )
+    conn = MagicMock(fetch=AsyncMock(return_value=[]))
+    monkeypatch.setattr(adapter, "_pg_ensure_terms", AsyncMock(return_value=True))
+    monkeypatch.setattr(adapter, "_pg_keyword_run", lambda work: asyncio.run(work(conn)))
+
+    adapter._pg_search_lexical([["backup"]], 5)
+
+    assert conn.fetch.await_args.kwargs["timeout"] == _KEYWORD_LEG_BUDGET_S
+
+
+# The Postgres keyword query before each candidate's terms were read once (#1118 at e0f899bf);
+# the current query must score every row exactly as it did.
+_HEAD_PG_KEYWORD_SQL = """
+WITH n AS (
+    SELECT count(*)::float8 AS n, greatest(avg(length({t})), 1)::float8 AS avgdl
+    FROM {c} WHERE tenant_id = $2 AND instance_id = $3
+),
+w AS MATERIALIZED (
+    SELECT g.q::tsquery AS q, greatest(ln((n.n - df.df + 0.5) / (df.df + 0.5)), 1e-6) AS idf
+    FROM unnest($1::text[]) AS g(q) CROSS JOIN n
+    CROSS JOIN LATERAL (
+        SELECT count(*)::float8 AS df FROM {c}
+        WHERE tenant_id = $2 AND instance_id = $3 AND {t} @@ g.q::tsquery
+    ) df
+)
+SELECT c.chunk_text, c.meta_json,
+       (SELECT sum(w.idf * t.tf * 2.2 / (t.tf + 1.2 * (0.25 + 0.75 * length(c.{t}) / n.avgdl)))
+        FROM w CROSS JOIN LATERAL (
+            SELECT ts_rank_cd('{{1,1,1,1}}'::float4[], c.{t}, w.q, 0) AS tf
+        ) t
+        WHERE c.{t} @@ w.q) AS rank
+FROM {c} c CROSS JOIN n
+WHERE c.tenant_id = $2 AND c.instance_id = $3 AND c.{t} @@ $5::text::tsquery
+ORDER BY rank DESC, c.id LIMIT $4
+"""
+
+
+@pytest.mark.pgvector
+def test_postgres_keyword_scores_are_unchanged_by_reading_terms_once(make_adapter, monkeypatch):
+    import asyncpg
+
+    from cuga.backend.knowledge import lexical
+    from cuga.backend.knowledge.storage.adapter import _TERMS_COLUMN, _pg_tsquery
+
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kw_once")
+    adapter = make_adapter("pgvector", collection)
+    for name, text in _RANKING_DOCS.items():
+        _add(adapter, collection, name, text)
+    sql = _HEAD_PG_KEYWORD_SQL.format(t=_TERMS_COLUMN, c=adapter._collection)
+
+    async def head(groups):
+        conn = await asyncpg.connect(_pgvector_dsn())
+        try:
+            rows = await conn.fetch(
+                sql,
+                [_pg_tsquery(g) for g in groups],
+                "tenant_a",
+                "inst",
+                10,
+                " | ".join(f"({_pg_tsquery(g)})" for g in groups),
+            )
+            return [(r["chunk_text"], float(r["rank"])) for r in rows]
+        finally:
+            await conn.close()
+
+    for query in _RANKING_QUERIES:
+        groups = lexical.query_groups(query)
+        expected = asyncio.run(head(groups))
+        assert expected, query
+        assert [(t, r) for t, _m, r in adapter._pg_search_lexical(groups, 10)] == expected, query
+
+
+@pytest.mark.pgvector
+def test_postgres_keyword_search_stops_at_its_time_limit(make_adapter, monkeypatch):
+    """A keyword search slower than the engine's budget is cancelled in Postgres and returns
+    nothing, so it frees its connection instead of running on."""
+    _set_tenant(monkeypatch, "tenant_a")
+    collection = unique_collection("kw_slow")
+    adapter = make_adapter("pgvector", collection)
+    _add(adapter, collection, "a", _RANKING_DOCS["a"])
+    assert adapter.search_lexical("backup policy", k=5)
+
+    monkeypatch.setattr("cuga.backend.knowledge.engine._KEYWORD_LEG_BUDGET_S", 0.000001)
+    assert adapter.search_lexical("backup policy", k=5) == []
