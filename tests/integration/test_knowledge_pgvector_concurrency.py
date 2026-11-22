@@ -234,3 +234,102 @@ def test_the_table_lock_is_released_when_creating_the_table_fails(clean_tenant, 
         if not type_dropped:
             asyncio.run(fetch(f"DROP TYPE {collection}"))
         adapter.drop()
+
+
+async def _knowledge_connections(dsn: str) -> int:
+    """Client connections to the test database, other than these counting ones."""
+    conn = await asyncpg.connect(dsn, server_settings={"application_name": "test-counter"})
+    try:
+        return await conn.fetchval(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+            "AND backend_type = 'client backend' AND application_name <> 'test-counter'"
+        )
+    finally:
+        await conn.close()
+
+
+def test_many_collections_share_a_bounded_pool(clean_tenant, monkeypatch):
+    """Every agent and conversation has its own collection; together they hold at most the shared
+    pool's connections, not a pool each."""
+    from cuga.backend.storage.embedding.prod import SHARED_POOL_MAX_SIZE
+
+    dsn = _dsn()
+    asyncio.run(_setup_extension(dsn))
+    adapters = [
+        _build_adapter(dsn, clean_tenant, monkeypatch, f"kb_many_{uuid.uuid4().hex[:12]}") for _ in range(12)
+    ]
+    peak = []
+    try:
+
+        def use(adapter):
+            adapter.add_documents(_docs(2, "/tmp/many.pdf"))
+            assert len(adapter.search("chunk text body", k=2)) == 2
+            peak.append(asyncio.run(_knowledge_connections(dsn)))
+
+        threads = [threading.Thread(target=use, args=(a,), daemon=True) for a in adapters]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(120)
+        assert not any(t.is_alive() for t in threads)
+        assert len(peak) == len(adapters)  # every collection was written and searched
+        assert max(peak) <= SHARED_POOL_MAX_SIZE
+    finally:
+        for a in adapters:
+            a.drop()
+
+
+def test_dropping_a_collection_while_it_is_searched(clean_tenant, monkeypatch):
+    """Searches keep running, many of them waiting for a pooled connection, while the collection is
+    dropped: every search returns (results, or nothing once the table is gone), none hangs or fails."""
+    dsn = _dsn()
+    asyncio.run(_setup_extension(dsn))
+    adapter = _build_adapter(dsn, clean_tenant, monkeypatch, f"kb_dropq_{uuid.uuid4().hex[:12]}")
+    adapter.add_documents(_docs(6, "/tmp/dropq.pdf"))
+    stop, errors, done = threading.Event(), [], []
+
+    def search_until_stopped():
+        while not stop.is_set():
+            try:
+                adapter.search("chunk text body", k=3)
+            except Exception as exc:  # noqa: BLE001 - reported below
+                errors.append(repr(exc))
+        done.append(1)
+
+    threads = [threading.Thread(target=search_until_stopped, daemon=True) for _ in range(16)]
+    for t in threads:
+        t.start()
+    time.sleep(0.5)
+    adapter.drop()
+    time.sleep(0.5)
+    stop.set()
+    for t in threads:
+        t.join(60)
+    assert len(done) == len(threads), "searches hung after the collection was dropped"
+    assert errors == []
+    adapter.drop()
+
+
+async def _drop_table(dsn: str, table: str) -> None:
+    conn = await asyncpg.connect(dsn)
+    try:
+        await conn.execute(f"DROP TABLE IF EXISTS {table}")
+    finally:
+        await conn.close()
+
+
+def test_a_table_dropped_by_another_process(clean_tenant, monkeypatch):
+    """Another replica drops the table this process still holds open: searches find nothing and the
+    next upload creates the table again, as when each call opened its own pool."""
+    dsn = _dsn()
+    asyncio.run(_setup_extension(dsn))
+    adapter = _build_adapter(dsn, clean_tenant, monkeypatch, f"kb_gone_{uuid.uuid4().hex[:12]}")
+    adapter.add_documents(_docs(3, "/tmp/gone.pdf"))
+    assert len(adapter.search("chunk text body", k=5)) == 3
+    try:
+        asyncio.run(_drop_table(dsn, adapter._collection))
+        assert adapter.search("chunk text body", k=5) == []
+        adapter.add_documents(_docs(2, "/tmp/again.pdf"))
+        assert len(adapter.search("chunk text body", k=5)) == 2
+    finally:
+        adapter.drop()

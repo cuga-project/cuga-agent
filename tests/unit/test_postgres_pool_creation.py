@@ -202,3 +202,43 @@ def test_closing_one_event_loops_pool_leaves_another_loops_pool_open(monkeypatch
     pools["first"].close.assert_awaited_once()
     pools["second"].close.assert_awaited_once()
     assert not store._pools
+
+
+@pytest.mark.parametrize(
+    "extension_error",
+    [None, "UniqueViolationError", "InsufficientPrivilegeError"],
+    ids=["created", "created-by-another-session", "no-privilege-but-installed"],
+)
+@pytest.mark.asyncio
+async def test_every_pooled_connection_gets_the_vector_type(monkeypatch, extension_error):
+    """#1208: the vector codec is registered on each connection the pool opens, not only the first."""
+    import asyncpg
+
+    captured = {}
+
+    async def create_pool(*args, **kwargs):
+        captured.update(kwargs)
+        return _fake_pool()
+
+    registered = []
+
+    async def register_vector(conn):
+        registered.append(conn)
+
+    monkeypatch.setattr("asyncpg.create_pool", create_pool)
+    monkeypatch.setattr("pgvector.asyncpg.register_vector", register_vector)
+    schema = EmbeddingSchemaConfig(embedding_dim=4, id_column="id", metadata_columns={}, auxiliary_columns={})
+    store = ProdEmbeddingStore("postgresql://x/y", "docs", schema)
+    store._ensure_table = AsyncMock()
+    await store._get_pool()
+
+    init = captured.get("init")
+    assert init is not None
+    connections = [MagicMock() for _ in range(3)]
+    for conn in connections:
+        conn.execute = AsyncMock(
+            side_effect=getattr(asyncpg.exceptions, extension_error)("x") if extension_error else None
+        )
+        await init(conn)
+        conn.execute.assert_awaited_once_with("CREATE EXTENSION IF NOT EXISTS vector")
+    assert registered == connections

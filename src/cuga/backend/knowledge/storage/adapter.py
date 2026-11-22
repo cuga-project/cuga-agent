@@ -79,8 +79,9 @@ def _postgres_loop() -> asyncio.AbstractEventLoop:
     """The event loop that runs every knowledge Postgres call in this process, started on first use.
 
     A Postgres connection pool works only on the event loop that created it, and searches and
-    writes arrive on many worker threads. Running them all on this one loop lets each collection
-    keep its pool, so a search reuses an open connection instead of opening and preparing a new one.
+    writes arrive on many worker threads. Running them all on this one loop lets every collection
+    share one bounded pool per database (``ProdEmbeddingStore(..., shared_pool=True)``), so a search
+    reuses an open connection instead of opening and preparing a new one.
     """
     global _postgres_loop_state
     with _postgres_loop_lock:
@@ -173,7 +174,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         if self._use_prod:
             from cuga.backend.storage.embedding.prod import ProdEmbeddingStore
 
-            self._store = ProdEmbeddingStore(self._postgres_url, self._collection, schema)
+            self._store = ProdEmbeddingStore(self._postgres_url, self._collection, schema, shared_pool=True)
         else:
             from cuga.backend.storage.embedding.local import LocalEmbeddingStore
 
@@ -189,8 +190,8 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
     def _run_embedding_coro(self, coro):
         """Run async vector store work and return its result.
 
-        Postgres work runs on the process's Postgres loop (see ``_postgres_loop``), so every call
-        reuses the store's pool and its open connections. SQLite work runs on a loop of its own.
+        Postgres work runs on the process's Postgres loop (see ``_postgres_loop``), where every
+        collection shares one pool per database. SQLite work runs on a loop of its own.
         """
         if not self._use_prod:
             return _run_on_own_loop(coro)
@@ -203,16 +204,6 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             coro.close()
             raise RuntimeError("Called from the Postgres loop itself; await the store there instead.")
         return asyncio.run_coroutine_threadsafe(coro, loop).result()
-
-    async def close_pool(self) -> None:
-        """Close this collection's Postgres connections; a later call opens new ones.
-
-        ``KnowledgeEngine.aclose`` calls it for every collection it holds.
-        """
-        if self._use_prod and self._store is not None:
-            await asyncio.wrap_future(
-                asyncio.run_coroutine_threadsafe(self._store.close_pool(), _postgres_loop())
-            )
 
     def _l2_similarity(self, distance: float) -> float:
         """Map sqlite-vec L2 distance to [0, 1] (higher = nearer)."""
@@ -705,8 +696,8 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                     # source_id. Inline the delete loop here (mirror of
                     # ``delete_by_source``) so we stay on the current event
                     # loop — the adapter-level helper would call
-                    # ``_run_embedding_coro`` which would deadlock against
-                    # the loop we're already inside.
+                    # ``_run_embedding_coro``, which raises when called from
+                    # the Postgres loop we're already on.
                     if partial and source_for_rollback:
                         try:
                             _scope = self._scope()

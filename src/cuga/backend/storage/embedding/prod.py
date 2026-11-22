@@ -39,8 +39,74 @@ def _pg_type(s: str) -> str:
     return m.get(s.lower(), "TEXT")
 
 
+# Stores created with shared_pool=True use one pool per (event loop, database) instead of one each.
+# The knowledge adapter runs every Postgres call on one loop, so all its collections (one per agent
+# and one per conversation) share this bounded set of connections.
+SHARED_POOL_MAX_SIZE = 8
+_shared_pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Dict[str, Any]]" = (
+    weakref.WeakKeyDictionary()
+)
+_shared_pools_guard = threading.Lock()
+_shared_pool_lock = PerLoopLock()
+
+
+async def _new_pool(postgres_url: str, **pool_kwargs: Any) -> Any:
+    """An asyncpg pool whose every connection can store and return vectors."""
+    import asyncpg
+
+    try:
+        from pgvector.asyncpg import register_vector
+    except ImportError:
+        raise ImportError("pgvector is required for storage.mode=prod. Install with: uv add pgvector")
+
+    async def prepare_connection(conn: Any) -> None:
+        # Runs for every connection the pool opens, so each one accepts and returns vectors.
+        try:
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        except asyncpg.exceptions.UniqueViolationError:
+            pass  # another session created it at the same moment
+        except asyncpg.exceptions.InsufficientPrivilegeError:
+            logger.warning(
+                "Permission denied for CREATE EXTENSION vector; assuming it was pre-installed by "
+                "a database admin. If pgvector is not installed in this database, embedding store "
+                "setup will fail next."
+            )
+        await register_vector(conn)
+
+    return await asyncpg.create_pool(postgres_url, command_timeout=60, init=prepare_connection, **pool_kwargs)
+
+
+async def _shared_pool(postgres_url: str) -> Any:
+    """The running loop's pool for ``postgres_url``, created on first use. Idle connections close
+    after asyncpg's 5 minutes, down to none."""
+    loop = asyncio.get_running_loop()
+    with _shared_pools_guard:
+        pool = _shared_pools.get(loop, {}).get(postgres_url)
+    if pool is None:
+        async with _shared_pool_lock.get():
+            with _shared_pools_guard:
+                pool = _shared_pools.get(loop, {}).get(postgres_url)
+            if pool is None:
+                pool = await _new_pool(
+                    postgres_url,
+                    min_size=0,
+                    max_size=SHARED_POOL_MAX_SIZE,
+                    server_settings={"application_name": "cuga-knowledge"},  # visible in pg_stat_activity
+                )
+                with _shared_pools_guard:
+                    _shared_pools.setdefault(loop, {})[postgres_url] = pool
+    return pool
+
+
 class ProdEmbeddingStore:
-    def __init__(self, postgres_url: str, collection_name: str, schema: EmbeddingSchemaConfig):
+    def __init__(
+        self,
+        postgres_url: str,
+        collection_name: str,
+        schema: EmbeddingSchemaConfig,
+        *,
+        shared_pool: bool = False,
+    ):
         if _SAFE_IDENTIFIER_RE.fullmatch(collection_name) is None:
             raise ValueError(
                 f"collection_name {collection_name!r} is not a valid PostgreSQL identifier. "
@@ -49,14 +115,25 @@ class ProdEmbeddingStore:
         self._postgres_url = postgres_url
         self._collection_name = collection_name
         self._schema = schema
-        # An asyncpg pool works only on the event loop that created it, and callers such as the
-        # knowledge adapter run each call on its own short-lived loop. So each loop gets its own
-        # pool, and closing one loop's pool leaves the pools other loops are still using alone.
+        # An asyncpg pool works only on the event loop that created it, and callers may use several
+        # loops (worker threads that each call asyncio.run, the server's loop). So each loop gets its
+        # own pool, and closing one loop's pool leaves the pools other loops are still using alone.
+        # With shared_pool, the store uses the loop's pool for its database (_shared_pool) instead.
+        self._shared = shared_pool
+        self._ensured_pool: Any = None  # the shared pool this store's table was last checked on
         self._pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any]" = weakref.WeakKeyDictionary()
         self._pools_guard = threading.Lock()
         self._pool_lock = PerLoopLock()
 
     async def _get_pool(self):
+        if self._shared:
+            pool = await _shared_pool(self._postgres_url)
+            if self._ensured_pool is not pool:
+                async with self._pool_lock.get():
+                    if self._ensured_pool is not pool:
+                        await self._ensure_table(pool)
+                        self._ensured_pool = pool
+            return pool
         loop = asyncio.get_running_loop()
         with self._pools_guard:
             pool = self._pools.get(loop)
@@ -73,34 +150,7 @@ class ProdEmbeddingStore:
         return pool
 
     async def _create_pool(self) -> Any:
-        import asyncpg
-
-        try:
-            from pgvector.asyncpg import register_vector
-        except ImportError:
-            raise ImportError("pgvector is required for storage.mode=prod. Install with: uv add pgvector")
-
-        async def prepare_connection(conn: Any) -> None:
-            # Runs for every connection the pool opens, so each one accepts and returns vectors.
-            try:
-                await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            except asyncpg.exceptions.UniqueViolationError:
-                pass  # another session created it at the same moment
-            except asyncpg.exceptions.InsufficientPrivilegeError:
-                logger.warning(
-                    "Permission denied for CREATE EXTENSION vector; assuming it was pre-installed by "
-                    "a database admin. If pgvector is not installed in this database, embedding store "
-                    "setup will fail next."
-                )
-            await register_vector(conn)
-
-        pool = await asyncpg.create_pool(
-            self._postgres_url,
-            min_size=1,
-            max_size=4,
-            command_timeout=60,
-            init=prepare_connection,
-        )
+        pool = await _new_pool(self._postgres_url, min_size=1, max_size=4)
         try:
             await self._ensure_table(pool)
         except BaseException:
@@ -110,7 +160,11 @@ class ProdEmbeddingStore:
 
     async def close_pool(self) -> None:
         """Close the running event loop's pool (required before that loop is discarded, e.g. at the end of
-        ``asyncio.run``). Pools that other loops are using stay open."""
+        ``asyncio.run``). Pools that other loops are using stay open. A shared pool stays open for the
+        other stores using it; this store only forgets that its table was checked."""
+        if self._shared:
+            self._ensured_pool = None
+            return
         with self._pools_guard:
             pool = self._pools.pop(asyncio.get_running_loop(), None)
         if pool is not None:
@@ -216,9 +270,19 @@ class ProdEmbeddingStore:
         # ``conn.transaction`` so a mid-batch failure rolls back cleanly.
         # The original ``add`` had implicit per-row transactions; the bulk
         # path needs an explicit one to retain the same safety.
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.executemany(sql, rows)
+        from asyncpg.exceptions import UndefinedTableError
+
+        for attempt in (1, 2):
+            try:
+                async with pool.acquire() as conn:
+                    async with conn.transaction():
+                        await conn.executemany(sql, rows)
+                return
+            except UndefinedTableError:
+                if attempt == 2:
+                    raise
+                # Another process dropped the table after this store checked it: create it again.
+                await self._ensure_table(pool)
 
     async def search(
         self, query_embedding: List[float], limit: int, metadata_filter: Dict[str, Any]
@@ -239,11 +303,18 @@ class ProdEmbeddingStore:
             f"SELECT {id_col}, {', '.join(aux_keys)}, (embedding <=> ${i1}) AS distance "
             f"FROM {self._collection_name}{where}ORDER BY embedding <=> ${i2} LIMIT ${i3}"
         )
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(sql, *params)
+        from asyncpg.exceptions import UndefinedTableError
+
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(sql, *params)
+        except UndefinedTableError:  # dropped by another process: nothing to find
+            return []
         return [tuple(r) for r in rows]
 
     async def get(self, id: str, tenant_id: str = "", instance_id: str = "") -> Optional[Dict[str, Any]]:
+        from asyncpg.exceptions import UndefinedTableError
+
         pool = await self._get_pool()
         id_col = self._schema.id_column
         meta_keys = self._meta_keys()
@@ -258,23 +329,24 @@ class ProdEmbeddingStore:
         if scope and any(scope_vals):
             where_parts = [f"{c} = ${i + 1}" for i, c in enumerate(scope)]
             where_parts.append(f"{id_col} = ${len(scope) + 1}")
-            async with pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    f"SELECT {', '.join(cols)} FROM {self._collection_name} WHERE {' AND '.join(where_parts)}",
-                    *scope_vals,
-                    id,
-                )
+            sql, args = (
+                f"SELECT {', '.join(cols)} FROM {self._collection_name} WHERE {' AND '.join(where_parts)}",
+                [*scope_vals, id],
+            )
         else:
+            sql, args = f"SELECT {', '.join(cols)} FROM {self._collection_name} WHERE {id_col} = $1", [id]
+        try:
             async with pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    f"SELECT {', '.join(cols)} FROM {self._collection_name} WHERE {id_col} = $1",
-                    id,
-                )
+                row = await conn.fetchrow(sql, *args)
+        except UndefinedTableError:  # dropped by another process
+            return None
         if not row:
             return None
         return dict(row)
 
     async def delete(self, id: str, tenant_id: str = "", instance_id: str = "") -> None:
+        from asyncpg.exceptions import UndefinedTableError
+
         pool = await self._get_pool()
         id_col = self._schema.id_column
         scope = self._scope_cols()
@@ -286,15 +358,17 @@ class ProdEmbeddingStore:
         if scope and any(scope_vals):
             where_parts = [f"{c} = ${i + 1}" for i, c in enumerate(scope)]
             where_parts.append(f"{id_col} = ${len(scope) + 1}")
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    f"DELETE FROM {self._collection_name} WHERE {' AND '.join(where_parts)}",
-                    *scope_vals,
-                    id,
-                )
+            sql, args = (
+                f"DELETE FROM {self._collection_name} WHERE {' AND '.join(where_parts)}",
+                [*scope_vals, id],
+            )
         else:
+            sql, args = f"DELETE FROM {self._collection_name} WHERE {id_col} = $1", [id]
+        try:
             async with pool.acquire() as conn:
-                await conn.execute(f"DELETE FROM {self._collection_name} WHERE {id_col} = $1", id)
+                await conn.execute(sql, *args)
+        except UndefinedTableError:  # dropped by another process: nothing to delete
+            pass
 
     async def list(self, metadata_filter: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
         pool = await self._get_pool()
@@ -309,9 +383,14 @@ class ProdEmbeddingStore:
                 where_parts.append(f"{k} = ${len(params)}")
         params.append(limit)
         where = (" WHERE " + " AND ".join(where_parts) + " ") if where_parts else " "
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                f"SELECT {', '.join(cols)} FROM {self._collection_name}{where}LIMIT ${len(params)}",
-                *params,
-            )
+        from asyncpg.exceptions import UndefinedTableError
+
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    f"SELECT {', '.join(cols)} FROM {self._collection_name}{where}LIMIT ${len(params)}",
+                    *params,
+                )
+        except UndefinedTableError:  # dropped by another process: nothing to list
+            return []
         return [dict(row) for row in rows]

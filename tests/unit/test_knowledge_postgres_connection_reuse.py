@@ -1,4 +1,5 @@
-"""Knowledge calls on Postgres reuse one connection pool instead of connecting for every call."""
+"""Knowledge calls on Postgres share one connection pool per database instead of connecting for
+every call, and the shared pool survives a collection being dropped or closed."""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ import pytest
 
 from cuga.backend.knowledge.storage import adapter as adapter_mod
 from cuga.backend.knowledge.storage.adapter import StorageBackedKnowledgeVectorStore
-from cuga.backend.storage.embedding.prod import ProdEmbeddingStore
+from cuga.backend.storage.embedding import prod
 
 pytestmark = pytest.mark.unit
 
@@ -26,12 +27,15 @@ class _Embeddings:
 def _fake_pool() -> MagicMock:
     connection = MagicMock()
     connection.fetch = AsyncMock(return_value=[])
+    connection.fetchval = AsyncMock(return_value=True)  # the table and its index exist
+    connection.execute = AsyncMock()
     acquire = MagicMock()
     acquire.__aenter__ = AsyncMock(return_value=connection)
     acquire.__aexit__ = AsyncMock(return_value=False)
     pool = MagicMock()
     pool.acquire = MagicMock(return_value=acquire)
     pool.close = AsyncMock()
+    pool.connection = connection
     return pool
 
 
@@ -39,17 +43,19 @@ def _fake_pool() -> MagicMock:
 def created_pools(monkeypatch):
     created: list[MagicMock] = []
 
-    async def create_pool(self):
+    async def new_pool(postgres_url, **kwargs):
         created.append(_fake_pool())
         return created[-1]
 
-    monkeypatch.setattr(ProdEmbeddingStore, "_create_pool", create_pool)
+    monkeypatch.setattr(prod, "_new_pool", new_pool)
+    # Each test gets fresh shared pools; the Postgres loop itself is shared by the process.
+    monkeypatch.setattr(prod, "_shared_pools", type(prod._shared_pools)())
     return created
 
 
-def _adapter() -> StorageBackedKnowledgeVectorStore:
+def _adapter(collection: str = "kb_reuse") -> StorageBackedKnowledgeVectorStore:
     return StorageBackedKnowledgeVectorStore(
-        "kb_reuse", _Embeddings(), local_db_path="", postgres_url="postgresql://u@h/db"
+        collection, _Embeddings(), local_db_path="", postgres_url="postgresql://u@h/db"
     )
 
 
@@ -66,6 +72,14 @@ def test_searches_from_many_threads_share_one_pool(created_pools):
     created_pools[0].close.assert_not_awaited()
 
 
+def test_collections_share_one_pool_per_database(created_pools):
+    adapters = [_adapter(f"kb_reuse_{i}") for i in range(12)]
+    for a in adapters:
+        a.search("q")
+
+    assert len(created_pools) == 1  # one bounded pool, not one per collection
+
+
 @pytest.mark.asyncio
 async def test_a_call_from_inside_an_event_loop_still_reuses_the_pool(created_pools):
     adapter = _adapter()
@@ -73,18 +87,6 @@ async def test_a_call_from_inside_an_event_loop_still_reuses_the_pool(created_po
     adapter.search("from a running loop")  # the server's request loop calls in like this
 
     assert len(created_pools) == 1
-
-
-@pytest.mark.asyncio
-async def test_closing_the_adapter_closes_its_connections(created_pools):
-    adapter = _adapter()
-    adapter.search("q")
-
-    await adapter.close_pool()  # what KnowledgeEngine.aclose calls for each collection
-
-    created_pools[0].close.assert_awaited_once()
-    adapter.search("after close")
-    assert len(created_pools) == 2  # a later call opens a new pool
 
 
 def test_a_call_from_the_postgres_loop_itself_fails_instead_of_hanging(created_pools):
@@ -95,3 +97,48 @@ def test_a_call_from_the_postgres_loop_itself_fails_instead_of_hanging(created_p
 
     with pytest.raises(RuntimeError, match="Postgres loop"):
         asyncio.run_coroutine_threadsafe(nested(), adapter_mod._postgres_loop()).result(10)
+
+
+def _store(name: str = "kb_store", shared: bool = True) -> prod.ProdEmbeddingStore:
+    schema = prod.EmbeddingSchemaConfig(
+        embedding_dim=3, id_column="id", metadata_columns={}, auxiliary_columns={"chunk_text": "text"}
+    )
+    return prod.ProdEmbeddingStore("postgresql://u@h/db", name, schema, shared_pool=shared)
+
+
+@pytest.mark.asyncio
+async def test_closing_one_store_leaves_the_shared_pool_open(created_pools):
+    a, b = _store("kb_a"), _store("kb_b")
+    await a.search([0.0, 0.0, 1.0], 3, {})
+    await b.search([0.0, 0.0, 1.0], 3, {})
+
+    await a.close_pool()  # what dropping a collection does first
+
+    created_pools[0].close.assert_not_awaited()
+    assert await b.search([0.0, 0.0, 1.0], 3, {}) == []
+    assert len(created_pools) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_table_reads_as_empty_and_the_next_write_recreates_it(created_pools, monkeypatch):
+    import asyncpg
+
+    store = _store()
+    await store.search([0.0, 0.0, 1.0], 3, {})
+    conn = created_pools[0].connection
+    missing = asyncpg.exceptions.UndefinedTableError('relation "kb_store" does not exist')
+
+    conn.fetch = AsyncMock(side_effect=missing)
+    assert await store.search([0.0, 0.0, 1.0], 3, {}) == []
+    assert await store.list({}, 10) == []
+
+    ensure = AsyncMock()
+    monkeypatch.setattr(store, "_ensure_table", ensure)
+    conn.executemany = AsyncMock(side_effect=[missing, None])
+    conn.transaction = MagicMock(
+        return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock(return_value=False))
+    )
+    await store.add_many([("a", [0.0, 0.0, 1.0], {"chunk_text": "x"})])
+
+    ensure.assert_awaited_once()
+    assert conn.executemany.await_count == 2
