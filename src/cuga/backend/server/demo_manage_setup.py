@@ -978,7 +978,17 @@ async def seed_demo_knowledge_oobe_pdf_via_engine_if_needed(app_state: Any) -> N
         if any(d.filename == DEMO_KNOWLEDGE_OOBE_PDF_NAME for d in docs):
             loguru_logger.info("OOBE knowledge PDF already indexed; skip ingest")
             return
-        await engine.ingest(collection, pdf_path, True, DEMO_KNOWLEDGE_OOBE_PDF_NAME)
+        # A failed ingest does not raise: the engine records it on the returned task.
+        task = await engine.ingest(collection, pdf_path, True, DEMO_KNOWLEDGE_OOBE_PDF_NAME) or {}
+        if task.get("status") != "completed":
+            file_task = (task.get("file_tasks") or {}).get(DEMO_KNOWLEDGE_OOBE_PDF_NAME) or {}
+            loguru_logger.warning(
+                "OOBE knowledge PDF {} was not ingested (status={}): {}",
+                DEMO_KNOWLEDGE_OOBE_PDF_NAME,
+                task.get("status"),
+                file_task.get("error"),
+            )
+            return
         loguru_logger.info("Ingested OOBE knowledge PDF {}", DEMO_KNOWLEDGE_OOBE_PDF_NAME)
     except DocumentExistsError:
         loguru_logger.info("OOBE knowledge PDF already present; skip ingest")
