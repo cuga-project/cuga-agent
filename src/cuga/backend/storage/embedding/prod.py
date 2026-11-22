@@ -1,9 +1,10 @@
 import asyncio
+import contextlib
 import hashlib
 import re
 import threading
 import weakref
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
 from loguru import logger
 
@@ -40,9 +41,11 @@ def _pg_type(s: str) -> str:
 
 
 # Stores created with shared_pool=True use one pool per (event loop, database) instead of one each.
-# The knowledge adapter runs every Postgres call on one loop, so all its collections (one per agent
-# and one per conversation) share this bounded set of connections.
+# The knowledge adapter runs every Postgres call on one loop that lives as long as the process, so
+# all its collections (one per agent and one per conversation) share this bounded set of
+# connections. A shared pool is never closed: use it only from such a loop.
 SHARED_POOL_MAX_SIZE = 8
+SHARED_POOL_IDLE_S = 60.0  # an idle connection closes after this, down to none
 _shared_pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Dict[str, Any]]" = (
     weakref.WeakKeyDictionary()
 )
@@ -76,9 +79,10 @@ async def _new_pool(postgres_url: str, **pool_kwargs: Any) -> Any:
     return await asyncpg.create_pool(postgres_url, command_timeout=60, init=prepare_connection, **pool_kwargs)
 
 
-async def _shared_pool(postgres_url: str) -> Any:
-    """The running loop's pool for ``postgres_url``, created on first use. Idle connections close
-    after asyncpg's 5 minutes, down to none."""
+async def shared_pool(postgres_url: str) -> Any:
+    """The running loop's shared pool for ``postgres_url``, created on first use: at most
+    SHARED_POOL_MAX_SIZE connections, each closed after SHARED_POOL_IDLE_S idle. It is never
+    closed, so call this only from an event loop that lives as long as the process."""
     loop = asyncio.get_running_loop()
     with _shared_pools_guard:
         pool = _shared_pools.get(loop, {}).get(postgres_url)
@@ -91,11 +95,31 @@ async def _shared_pool(postgres_url: str) -> Any:
                     postgres_url,
                     min_size=0,
                     max_size=SHARED_POOL_MAX_SIZE,
+                    max_inactive_connection_lifetime=SHARED_POOL_IDLE_S,
                     server_settings={"application_name": "cuga-knowledge"},  # visible in pg_stat_activity
                 )
                 with _shared_pools_guard:
                     _shared_pools.setdefault(loop, {})[postgres_url] = pool
     return pool
+
+
+@contextlib.asynccontextmanager
+async def _acquire(pool: Any) -> AsyncIterator[Any]:
+    """A connection from ``pool``. asyncpg returns a slot whose connect failed (for example at a
+    role's connection limit) to the top of its LIFO queue, so every later call would retry that
+    refused connect while the pool's open connections sit idle below it until they expire. After
+    a failed acquire, the open connections go back on top."""
+    try:
+        conn = await pool.acquire()
+    except Exception:
+        slots = getattr(getattr(pool, "_queue", None), "_queue", None)  # asyncpg internals, pinned by a test
+        if isinstance(slots, list):
+            slots.sort(key=lambda holder: holder.is_connected())  # popped from the end: open ones first
+        raise
+    try:
+        yield conn
+    finally:
+        await pool.release(conn)
 
 
 class ProdEmbeddingStore:
@@ -121,13 +145,14 @@ class ProdEmbeddingStore:
         # With shared_pool, the store uses the loop's pool for its database (_shared_pool) instead.
         self._shared = shared_pool
         self._ensured_pool: Any = None  # the shared pool this store's table was last checked on
+        self._slots: Optional[asyncio.Semaphore] = None  # this store's share of the shared pool
         self._pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any]" = weakref.WeakKeyDictionary()
         self._pools_guard = threading.Lock()
         self._pool_lock = PerLoopLock()
 
     async def _get_pool(self):
         if self._shared:
-            pool = await _shared_pool(self._postgres_url)
+            pool = await shared_pool(self._postgres_url)
             if self._ensured_pool is not pool:
                 async with self._pool_lock.get():
                     if self._ensured_pool is not pool:
@@ -170,6 +195,25 @@ class ProdEmbeddingStore:
         if pool is not None:
             await pool.close()
 
+    @contextlib.asynccontextmanager
+    async def _connection(self, pool: Any) -> AsyncIterator[Any]:
+        """A connection for one operation. On the shared pool a store holds at most
+        SHARED_POOL_MAX_SIZE - 2 connections, so one slow or locked table leaves connections for
+        every other collection."""
+        if self._shared and self._slots is None:
+            self._slots = asyncio.Semaphore(SHARED_POOL_MAX_SIZE - 2)  # shared stores run on one loop
+        async with self._slots if self._shared else contextlib.nullcontext():
+            async with _acquire(pool) as conn:
+                yield conn
+
+    def _table_is_missing(self, exc: BaseException) -> bool:
+        """A shared (knowledge) store's table was dropped by another process. Such a store reads it
+        as empty, and an upload's first batch creates it again. Other stores (the policy store)
+        keep failing, as before."""
+        from asyncpg.exceptions import UndefinedTableError
+
+        return self._shared and isinstance(exc, UndefinedTableError)
+
     def _scope_cols(self) -> List[str]:
         meta = self._schema.metadata_columns
         return [c for c in SCOPE_COLS if c in meta]
@@ -190,7 +234,7 @@ class ProdEmbeddingStore:
             parts.append(f"{k} {_pg_type(v)}")
         parts.append(f"PRIMARY KEY {pk}")
         create_sql = f"CREATE TABLE IF NOT EXISTS {self._collection_name} ({', '.join(parts)})"
-        async with pool.acquire() as conn:
+        async with self._connection(pool) as conn:
             # Most calls find both in place and skip the DDL, which would otherwise wait for
             # any insert in progress on the table.
             exists_sql = "SELECT to_regclass($1) IS NOT NULL AND to_regclass($2) IS NOT NULL"
@@ -263,8 +307,15 @@ class ProdEmbeddingStore:
         self,
         items: List[tuple[str, List[float], Dict[str, Any]]],
         columns: Optional[Callable[[Any], Awaitable[Dict[str, tuple[str, List[Any]]]]]] = None,
+        *,
+        recreate_if_missing: bool = True,
     ) -> None:
         """Bulk-upsert items via a single ``executemany`` (issue #183 step 3).
+
+        When a shared store's table was dropped by another process, the batch creates it again and
+        is retried, but only with ``recreate_if_missing`` (an upload's first batch). A later batch
+        fails instead, so the upload rolls back rather than bring back a collection deleted while
+        it ran.
 
         ``columns(conn)``, when given, runs in the batch's transaction before the rows are
         written and returns more columns for them, ``{name: (placeholder cast, [value per
@@ -281,11 +332,9 @@ class ProdEmbeddingStore:
         # ``conn.transaction`` so a mid-batch failure rolls back cleanly.
         # The original ``add`` had implicit per-row transactions; the bulk
         # path needs an explicit one to retain the same safety.
-        from asyncpg.exceptions import UndefinedTableError
-
         for attempt in (1, 2):
             try:
-                async with pool.acquire() as conn:
+                async with self._connection(pool) as conn:
                     async with conn.transaction():
                         extra = await columns(conn) if columns is not None else {}
                         sql = self._upsert_sql({name: cast for name, (cast, _) in extra.items()})
@@ -295,11 +344,10 @@ class ProdEmbeddingStore:
                         ]
                         await conn.executemany(sql, rows)
                 return
-            except UndefinedTableError:
-                if attempt == 2:
+            except Exception as exc:
+                if attempt == 2 or not recreate_if_missing or not self._table_is_missing(exc):
                     raise
-                # Another process dropped the table after this store checked it: create it again.
-                await self._ensure_table(pool)
+                await self._ensure_table(pool)  # another process dropped it: create it again
 
     async def search(
         self, query_embedding: List[float], limit: int, metadata_filter: Dict[str, Any]
@@ -320,18 +368,16 @@ class ProdEmbeddingStore:
             f"SELECT {id_col}, {', '.join(aux_keys)}, (embedding <=> ${i1}) AS distance "
             f"FROM {self._collection_name}{where}ORDER BY embedding <=> ${i2} LIMIT ${i3}"
         )
-        from asyncpg.exceptions import UndefinedTableError
-
         try:
-            async with pool.acquire() as conn:
+            async with self._connection(pool) as conn:
                 rows = await conn.fetch(sql, *params)
-        except UndefinedTableError:  # dropped by another process: nothing to find
-            return []
+        except Exception as exc:
+            if not self._table_is_missing(exc):
+                raise
+            return []  # nothing to find
         return [tuple(r) for r in rows]
 
     async def get(self, id: str, tenant_id: str = "", instance_id: str = "") -> Optional[Dict[str, Any]]:
-        from asyncpg.exceptions import UndefinedTableError
-
         pool = await self._get_pool()
         id_col = self._schema.id_column
         meta_keys = self._meta_keys()
@@ -353,17 +399,17 @@ class ProdEmbeddingStore:
         else:
             sql, args = f"SELECT {', '.join(cols)} FROM {self._collection_name} WHERE {id_col} = $1", [id]
         try:
-            async with pool.acquire() as conn:
+            async with self._connection(pool) as conn:
                 row = await conn.fetchrow(sql, *args)
-        except UndefinedTableError:  # dropped by another process
+        except Exception as exc:
+            if not self._table_is_missing(exc):
+                raise
             return None
         if not row:
             return None
         return dict(row)
 
     async def delete(self, id: str, tenant_id: str = "", instance_id: str = "") -> None:
-        from asyncpg.exceptions import UndefinedTableError
-
         pool = await self._get_pool()
         id_col = self._schema.id_column
         scope = self._scope_cols()
@@ -382,10 +428,11 @@ class ProdEmbeddingStore:
         else:
             sql, args = f"DELETE FROM {self._collection_name} WHERE {id_col} = $1", [id]
         try:
-            async with pool.acquire() as conn:
+            async with self._connection(pool) as conn:
                 await conn.execute(sql, *args)
-        except UndefinedTableError:  # dropped by another process: nothing to delete
-            pass
+        except Exception as exc:
+            if not self._table_is_missing(exc):
+                raise
 
     async def list(self, metadata_filter: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
         pool = await self._get_pool()
@@ -400,14 +447,14 @@ class ProdEmbeddingStore:
                 where_parts.append(f"{k} = ${len(params)}")
         params.append(limit)
         where = (" WHERE " + " AND ".join(where_parts) + " ") if where_parts else " "
-        from asyncpg.exceptions import UndefinedTableError
-
         try:
-            async with pool.acquire() as conn:
+            async with self._connection(pool) as conn:
                 rows = await conn.fetch(
                     f"SELECT {', '.join(cols)} FROM {self._collection_name}{where}LIMIT ${len(params)}",
                     *params,
                 )
-        except UndefinedTableError:  # dropped by another process: nothing to list
-            return []
+        except Exception as exc:
+            if not self._table_is_missing(exc):
+                raise
+            return []  # nothing to list
         return [dict(row) for row in rows]

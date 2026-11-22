@@ -64,11 +64,8 @@ async def test_ensure_table_uses_derived_embedding_index_name(schema: EmbeddingS
     collection_name = "a" * 63
     expected_index_name = _embedding_index_name(collection_name)
     execute = AsyncMock()
-    connection_context = AsyncMock()
-    connection_context.__aenter__.return_value = SimpleNamespace(
-        execute=execute, fetchval=AsyncMock(return_value=False)
-    )
-    pool = SimpleNamespace(acquire=lambda: connection_context)
+    connection = SimpleNamespace(execute=execute, fetchval=AsyncMock(return_value=False))
+    pool = SimpleNamespace(acquire=AsyncMock(return_value=connection), release=AsyncMock())
     store = ProdEmbeddingStore("postgresql://unused", collection_name, schema)
 
     await store._ensure_table(pool)
@@ -88,9 +85,8 @@ async def test_ensure_table_uses_derived_embedding_index_name(schema: EmbeddingS
 async def test_ensure_table_skips_ddl_when_table_and_index_exist(schema: EmbeddingSchemaConfig) -> None:
     execute = AsyncMock()
     fetchval = AsyncMock(return_value=True)
-    connection_context = AsyncMock()
-    connection_context.__aenter__.return_value = SimpleNamespace(execute=execute, fetchval=fetchval)
-    pool = SimpleNamespace(acquire=lambda: connection_context)
+    connection = SimpleNamespace(execute=execute, fetchval=fetchval)
+    pool = SimpleNamespace(acquire=AsyncMock(return_value=connection), release=AsyncMock())
     store = ProdEmbeddingStore("postgresql://unused", "docs", schema)
 
     await store._ensure_table(pool)

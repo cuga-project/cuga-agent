@@ -499,14 +499,19 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         ]
 
     def _pg_keyword_run(self, work):
-        """Run ``work(conn)`` on a connection of its own. The engine runs the dense and keyword
-        legs concurrently, each in a thread with its own event loop, so the dense store's pool
-        (bound to one loop, and closed after each dense call) cannot be shared."""
+        """Run ``work(conn)`` on a connection of its own. The engine runs the keyword leg in a
+        worker thread with its own event loop and a time budget, so it does not use the dense
+        store's shared pool on the knowledge Postgres loop, where a slow keyword query could hold
+        connections that dense search needs."""
 
         async def _go():
             import asyncpg
 
-            conn = await asyncpg.connect(self._postgres_url, command_timeout=60)
+            conn = await asyncpg.connect(
+                self._postgres_url,
+                command_timeout=60,
+                server_settings={"application_name": "cuga-knowledge-keyword"},  # visible in pg_stat_activity
+            )
             try:
                 return await work(conn)
             finally:
@@ -1056,7 +1061,11 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                 chunk = items[i : i + insert_bs]
                 try:
                     if self._use_prod:
-                        await self._store.add_many(chunk, columns=self._pg_batch_terms(chunk, bare))
+                        # Only the first batch may create a table another process dropped; a
+                        # later one fails and rolls back instead of reviving a deleted collection.
+                        await self._store.add_many(
+                            chunk, columns=self._pg_batch_terms(chunk, bare), recreate_if_missing=(i == 0)
+                        )
                     else:
                         await self._store.add_many(chunk)
                 except Exception:
@@ -1168,11 +1177,12 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
 
     def search(self, query: str, k: int = 10) -> list[tuple[Document, float]]:
         self._ensure_store()
+        store = self._store  # drop() may clear self._store before the Postgres loop runs _go
         q_emb = self._embeddings.embed_query(query)
         filt = dict(self._scope())
 
         async def _go():
-            return await self._store.search(q_emb, k, filt)
+            return await store.search(q_emb, k, filt)
 
         rows = self._run_embedding_coro(_go())
         out: list[tuple[Document, float]] = []
@@ -1228,23 +1238,13 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                 return
 
             async def _drop_pg():
-                from cuga.backend.storage.embedding.prod import ProdEmbeddingStore
+                from cuga.backend.storage.embedding.prod import shared_pool
 
-                if self._store is not None and isinstance(self._store, ProdEmbeddingStore):
-                    await self._store.close_pool()
-                import asyncpg
-
-                pool = await asyncpg.create_pool(
-                    self._postgres_url,
-                    min_size=1,
-                    max_size=1,
-                    command_timeout=60,
-                )
-                try:
-                    async with pool.acquire() as conn:
-                        await conn.execute(f"DROP TABLE IF EXISTS {self._collection}")
-                finally:
-                    await pool.close()
+                if self._store is not None:
+                    await self._store.close_pool()  # its next call checks for the table again
+                pool = await shared_pool(self._postgres_url)
+                async with pool.acquire() as conn:
+                    await conn.execute(f"DROP TABLE IF EXISTS {self._collection}")
 
             self._run_embedding_coro(_drop_pg())
         else:

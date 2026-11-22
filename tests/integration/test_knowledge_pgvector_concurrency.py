@@ -1,7 +1,7 @@
 """Knowledge on pgvector under concurrent requests and with any collection name.
 
 Adapter calls arrive on many threads at once and all run on the process's one Postgres event
-loop (``_postgres_loop``), sharing each store's connection pool. These tests run the adapter
+loop (``_postgres_loop``), sharing one connection pool per database. These tests run the adapter
 from many threads against a real pgvector, as the server does, and use collection names that
 are not valid PostgreSQL identifiers as they stand.
 
@@ -102,11 +102,11 @@ def test_searches_while_a_file_is_added(clean_tenant, monkeypatch):
     upload_has_pool = threading.Event()
     searches_done = threading.Event()
 
-    async def add_many_after_the_searches(items, columns=None):
+    async def add_many_after_the_searches(items, columns=None, **kwargs):
         await store._get_pool()
         upload_has_pool.set()
         await asyncio.to_thread(searches_done.wait, 120)
-        return await add_many(items, columns=columns)
+        return await add_many(items, columns=columns, **kwargs)
 
     monkeypatch.setattr(store, "add_many", add_many_after_the_searches)
     upload_errors: list = []
@@ -237,12 +237,14 @@ def test_the_table_lock_is_released_when_creating_the_table_fails(clean_tenant, 
 
 
 async def _knowledge_connections(dsn: str) -> int:
-    """Client connections to the test database, other than these counting ones."""
+    """Client connections to the test database, other than these counting ones and the keyword
+    leg's own connections (opened per call, outside the shared pool)."""
     conn = await asyncpg.connect(dsn, server_settings={"application_name": "test-counter"})
     try:
         return await conn.fetchval(
             "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
-            "AND backend_type = 'client backend' AND application_name <> 'test-counter'"
+            "AND backend_type = 'client backend' "
+            "AND application_name NOT IN ('test-counter', 'cuga-knowledge-keyword')"
         )
     finally:
         await conn.close()
@@ -331,5 +333,99 @@ def test_a_table_dropped_by_another_process(clean_tenant, monkeypatch):
         assert adapter.search("chunk text body", k=5) == []
         adapter.add_documents(_docs(2, "/tmp/again.pdf"))
         assert len(adapter.search("chunk text body", k=5)) == 2
+    finally:
+        adapter.drop()
+
+
+def test_after_the_server_refuses_connections_later_calls_still_work(clean_tenant, monkeypatch):
+    """At a role's connection limit a call that needs one more connection is refused. The calls
+    after it must use the pool's open connections, not retry the refused connect until those
+    connections expire."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    dsn = _dsn()
+    asyncio.run(_setup_extension(dsn))
+    role = f"kb_lim_{uuid.uuid4().hex[:8]}"
+
+    async def admin(*statements: str) -> None:
+        conn = await asyncpg.connect(dsn)
+        try:
+            for statement in statements:
+                await conn.execute(statement)
+        finally:
+            await conn.close()
+
+    try:
+        db = urlsplit(dsn).path.lstrip("/")
+        asyncio.run(
+            admin(
+                f"CREATE ROLE {role} LOGIN PASSWORD 'limited' CONNECTION LIMIT 3",
+                f'GRANT CONNECT ON DATABASE "{db}" TO {role}',
+                f"GRANT USAGE, CREATE ON SCHEMA public TO {role}",
+            )
+        )
+    except asyncpg.exceptions.InsufficientPrivilegeError:
+        pytest.skip("the test database user cannot create roles")
+    parts = urlsplit(dsn)
+    role_dsn = urlunsplit(parts._replace(netloc=f"{role}:limited@{parts.hostname}:{parts.port or 5432}"))
+    adapter = _build_adapter(role_dsn, clean_tenant, monkeypatch, f"kb_lim_{uuid.uuid4().hex[:12]}")
+    try:
+        adapter.add_documents(_docs(4, "/tmp/limit.pdf"))
+        from cuga.backend.storage.embedding.prod import _acquire, shared_pool
+
+        async def refuse_a_connect_after_the_pool_went_idle():
+            # The role allows 3 connections and the pool holds all 3. A call that needs a 4th is
+            # refused, and the refusal comes back after the pool's 3 connections were released, as
+            # it does in a burst (refusing takes longer than a search). The pool's 3 open
+            # connections then sit idle below the refused slot.
+            pool = await shared_pool(role_dsn)
+            held = [await pool.acquire() for _ in range(3)]
+
+            async def needs_one_more():
+                async with _acquire(pool):
+                    pass
+
+            refused = asyncio.ensure_future(needs_one_more())
+            await asyncio.sleep(0)  # its connect is under way
+            for conn in held:
+                await pool.release(conn)
+            with pytest.raises(asyncpg.exceptions.TooManyConnectionsError):
+                await refused
+
+        adapter._run_embedding_coro(refuse_a_connect_after_the_pool_went_idle())
+        assert [len(adapter.search("chunk text body", k=3)) for _ in range(10)] == [3] * 10
+    finally:
+        adapter.drop()
+        asyncio.run(
+            admin(
+                f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = '{role}'",
+                f"DROP OWNED BY {role}",
+                f"DROP ROLE {role}",
+            )
+        )
+
+
+def test_a_collection_dropped_during_an_upload_is_not_created_again(clean_tenant, monkeypatch):
+    """Another process drops the collection between two batches of an upload: the upload fails and
+    rolls back instead of creating the table again with half the document in it."""
+    dsn = _dsn()
+    asyncio.run(_setup_extension(dsn))
+    adapter = _build_adapter(dsn, clean_tenant, monkeypatch, f"kb_midup_{uuid.uuid4().hex[:12]}")
+    adapter.add_documents(_docs(2, "/tmp/first.pdf"))
+    add_many = adapter._store.add_many
+    batches: list = []
+
+    async def drop_after_the_first_batch(items, *args, **kwargs):
+        await add_many(items, *args, **kwargs)
+        batches.append(len(items))
+        if len(batches) == 1:
+            await _drop_table(dsn, adapter._collection)
+
+    monkeypatch.setattr(adapter._store, "add_many", drop_after_the_first_batch)
+    try:
+        with pytest.raises(Exception):  # noqa: B017 - the second batch finds no table
+            adapter.add_documents(_docs(6, "/tmp/second.pdf"))
+        assert batches == [2]
+        assert not asyncio.run(_table_exists(dsn, adapter._collection))
     finally:
         adapter.drop()

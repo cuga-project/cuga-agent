@@ -29,11 +29,9 @@ def _fake_pool() -> MagicMock:
     connection.fetch = AsyncMock(return_value=[])
     connection.fetchval = AsyncMock(return_value=True)  # the table and its index exist
     connection.execute = AsyncMock()
-    acquire = MagicMock()
-    acquire.__aenter__ = AsyncMock(return_value=connection)
-    acquire.__aexit__ = AsyncMock(return_value=False)
     pool = MagicMock()
-    pool.acquire = MagicMock(return_value=acquire)
+    pool.acquire = AsyncMock(return_value=connection)
+    pool.release = AsyncMock()
     pool.close = AsyncMock()
     pool.connection = connection
     return pool
@@ -45,6 +43,7 @@ def created_pools(monkeypatch):
 
     async def new_pool(postgres_url, **kwargs):
         created.append(_fake_pool())
+        created[-1].create_kwargs = kwargs
         return created[-1]
 
     monkeypatch.setattr(prod, "_new_pool", new_pool)
@@ -78,6 +77,10 @@ def test_collections_share_one_pool_per_database(created_pools):
         a.search("q")
 
     assert len(created_pools) == 1  # one bounded pool, not one per collection
+    kwargs = created_pools[0].create_kwargs
+    assert kwargs["max_size"] == prod.SHARED_POOL_MAX_SIZE
+    assert kwargs["min_size"] == 0
+    assert kwargs["max_inactive_connection_lifetime"] == prod.SHARED_POOL_IDLE_S
 
 
 @pytest.mark.asyncio
@@ -142,3 +145,69 @@ async def test_a_dropped_table_reads_as_empty_and_the_next_write_recreates_it(cr
 
     ensure.assert_awaited_once()
     assert conn.executemany.await_count == 2
+
+    # A later batch of the same upload fails instead, so the upload rolls back.
+    conn.executemany = AsyncMock(side_effect=missing)
+    with pytest.raises(asyncpg.exceptions.UndefinedTableError):
+        await store.add_many([("b", [0.0, 0.0, 1.0], {"chunk_text": "y"})], recreate_if_missing=False)
+    ensure.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_missing_table_still_fails_for_a_store_without_the_shared_pool(monkeypatch):
+    """The policy store keeps failing closed when its table is gone."""
+    import asyncpg
+
+    pool = _fake_pool()
+    monkeypatch.setattr(prod, "_new_pool", AsyncMock(return_value=pool))
+    store = _store(shared=False)
+    await store.search([0.0, 0.0, 1.0], 3, {})
+    missing = asyncpg.exceptions.UndefinedTableError('relation "kb_store" does not exist')
+    pool.connection.fetch = AsyncMock(side_effect=missing)
+
+    with pytest.raises(asyncpg.exceptions.UndefinedTableError):
+        await store.search([0.0, 0.0, 1.0], 3, {})
+    with pytest.raises(asyncpg.exceptions.UndefinedTableError):
+        await store.list({}, 10)
+
+
+class _Slot:
+    def __init__(self, connected: bool):
+        self.connected = connected
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+
+@pytest.mark.asyncio
+async def test_after_a_refused_connection_the_open_connections_are_used_first():
+    """asyncpg puts a slot whose connect was refused back on top of its LIFO queue; the next call
+    must get an open connection, not retry the refused connect."""
+    import asyncpg
+
+    queue = asyncio.LifoQueue()
+    for slot in (_Slot(True), _Slot(True), _Slot(False)):  # the refused slot was returned last, on top
+        queue.put_nowait(slot)
+    pool = MagicMock(
+        _queue=queue, acquire=AsyncMock(side_effect=asyncpg.exceptions.TooManyConnectionsError("x"))
+    )
+
+    with pytest.raises(asyncpg.exceptions.TooManyConnectionsError):
+        async with prod._acquire(pool):
+            pass
+
+    assert queue.get_nowait().is_connected()
+
+
+@pytest.mark.asyncio
+async def test_asyncpg_pool_still_keeps_its_slots_in_a_lifo_list():
+    """Pins the asyncpg internals _acquire reorders: no database needed with min_size=0."""
+    import asyncpg
+
+    pool = await asyncpg.create_pool("postgresql://u@127.0.0.1:1/none", min_size=0, max_size=2)
+    try:
+        slots = pool._queue._queue
+        assert isinstance(pool._queue, asyncio.LifoQueue) and isinstance(slots, list)
+        assert len(slots) == 2 and not any(slot.is_connected() for slot in slots)
+    finally:
+        await pool.close()

@@ -219,11 +219,11 @@ def test_partial_insert_rollback_clears_orphans(clean_tenant, monkeypatch):
 
     call_count = {"n": 0}
 
-    async def flaky_add_many(items, columns=None):
+    async def flaky_add_many(items, columns=None, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
             # First sub-batch commits via the real pool — orphan rows on disk.
-            await real_add_many(items, columns=columns)
+            await real_add_many(items, columns=columns, **kwargs)
             return
         # Second sub-batch raises BEFORE pgvector commits — the rollback
         # path is responsible for cleaning up the orphans from call 1.
@@ -280,18 +280,12 @@ def test_rollback_respects_tenant_scope_isolation(clean_tenant, monkeypatch):
     adapter._ensure_store()
 
     # ``_ensure_store()`` only constructs ``ProdEmbeddingStore`` — DDL
-    # fires lazily inside ``_get_pool`` on the first ``add_many``. We
-    # need the table to exist NOW so the raw asyncpg seed below can
-    # INSERT control rows for tenant B. ``_get_pool()`` creates the pool
-    # + runs ``CREATE TABLE IF NOT EXISTS``; ``close_pool()`` then
-    # releases the pool so the adapter's later ``add_documents`` (which
-    # runs on its OWN thread+loop) can rebuild the pool on that loop —
-    # avoiding the cross-loop binding the first three CI runs tripped on.
-    async def _init_table(store) -> None:
-        await store._get_pool()
-        await store.close_pool()
-
-    asyncio.run(_init_table(adapter._store))
+    # fires lazily inside ``_get_pool`` on the first call. We need the
+    # table to exist NOW so the raw asyncpg seed below can INSERT control
+    # rows for tenant B. The store's pool is the knowledge Postgres loop's
+    # shared pool, so the table is prepared on that loop, as the adapter's
+    # own calls are.
+    adapter._run_embedding_coro(adapter._store._get_pool())
 
     tenant_b = f"control_{uuid.uuid4().hex[:8]}"
     instance_b = f"control_{uuid.uuid4().hex[:8]}"
@@ -333,10 +327,10 @@ def test_rollback_respects_tenant_scope_isolation(clean_tenant, monkeypatch):
     real_add_many = adapter._store.add_many
     call_count = {"n": 0}
 
-    async def flaky_add_many(items, columns=None):
+    async def flaky_add_many(items, columns=None, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
-            await real_add_many(items, columns=columns)
+            await real_add_many(items, columns=columns, **kwargs)
             return
         raise asyncpg.exceptions.PostgresError("simulated mid-batch failure")
 

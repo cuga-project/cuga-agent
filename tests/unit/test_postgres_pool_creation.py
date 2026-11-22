@@ -223,7 +223,7 @@ async def test_every_pooled_connection_gets_the_vector_type(monkeypatch, extensi
     registered = []
 
     async def register_vector(conn):
-        registered.append(conn)
+        registered.append((conn, conn.execute.await_count))  # the extension must exist first
 
     monkeypatch.setattr("asyncpg.create_pool", create_pool)
     monkeypatch.setattr("pgvector.asyncpg.register_vector", register_vector)
@@ -241,4 +241,4 @@ async def test_every_pooled_connection_gets_the_vector_type(monkeypatch, extensi
         )
         await init(conn)
         conn.execute.assert_awaited_once_with("CREATE EXTENSION IF NOT EXISTS vector")
-    assert registered == connections
+    assert registered == [(conn, 1) for conn in connections]

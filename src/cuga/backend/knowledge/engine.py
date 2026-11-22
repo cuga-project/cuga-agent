@@ -153,7 +153,7 @@ _bridge_docling_engine_logs_to_loguru()
 
 BLOCKED_HOSTNAMES = {"localhost", "metadata.google.internal", "169.254.169.254"}
 ALLOWED_PORTS = {80, 443, 8080, 8443}
-_VS_CACHE_MAX = 64  # max cached vector store connections
+_VS_CACHE_MAX = 64  # max cached vector store adapters
 
 
 def _iter_exception_messages(exc: BaseException) -> list[str]:
@@ -2059,30 +2059,19 @@ class KnowledgeEngine:
         """Close all engine-held async resources.
 
         Required at the end of any event loop that called engine methods
-        which acquired a pool — otherwise the next loop's first call
-        would re-use a pool bound to the closed loop and raise
+        which acquired a metadata pool — otherwise the next loop's first
+        call would re-use a pool bound to the closed loop and raise
         ``RuntimeError: ... attached to a different loop``. Production
         runs on a single long-lived loop and rarely hits this; tests
         and short-lived script harnesses MUST call aclose() before the
-        loop exits.
+        loop exits. Vector stores on Postgres share the process's
+        knowledge pool (``ProdEmbeddingStore(shared_pool=True)``), whose
+        idle connections close on their own.
         """
         try:
             await self._metadata.close()
         except Exception as e:
             logger.debug(f"Knowledge metadata close: {e}")
-        # Close every cached vector store's underlying connection pool.
-        # Without this, the asyncpg pool inside ProdEmbeddingStore stays
-        # bound to whatever loop first called ``_get_pool()`` — fine in
-        # production (one process, one loop) but a foot-gun for tests
-        # that use ``asyncio.run`` per call.
-        for collection, adapter in list(self._vector_stores.items()):
-            close = getattr(adapter, "close_pool", None)
-            if close is None:
-                continue
-            try:
-                await close()
-            except Exception as e:
-                logger.debug(f"close_pool failed for {collection}: {e}")
         self._vector_stores.clear()
 
     def shutdown(self) -> None:
