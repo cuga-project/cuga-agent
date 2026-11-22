@@ -158,29 +158,31 @@ def test_chunker_for_ollama_uses_tiktoken_zero_download():
     assert tok.encoding.name == "cl100k_base"
 
 
-def test_chunker_for_huggingface_uses_own_tokenizer():
-    """When provider=huggingface, reuse the loaded HF tokenizer from
-    _PyTorchEmbeddings — perfect match, zero extra cost (already in memory)."""
+@pytest.mark.unit
+def test_chunker_for_huggingface_uses_its_own_tokenizer():
+    """When provider=huggingface, the chunker gets a tokenizer of its own, not the
+    embedder's. Both load from the same local model files (no new download), but the
+    embedder calls its tokenizer with truncation and padding on and chunking with both
+    off; ingest threads sharing one fast tokenizer then fail with "Already borrowed"."""
     eng = KnowledgeEngine(
         _cfg(
             embedding_provider="huggingface",
             embedding_model="BAAI/bge-small-en-v1.5",
         )
     )
-    fake_tokenizer = MagicMock()
-    fake_emb = MagicMock()
-    fake_emb._tokenizer = fake_tokenizer
-    eng._default_embeddings = fake_emb
-    eng._ensure_embeddings = MagicMock()
+    embedders_tokenizer = MagicMock()
+    eng._default_embeddings = MagicMock(_tokenizer=embedders_tokenizer)
+    own_tokenizer = MagicMock(model_max_length=512)
 
-    with patch("docling_core.transforms.chunker.HybridChunker") as MockHC:
-        with patch("docling_core.transforms.chunker.tokenizer.huggingface.HuggingFaceTokenizer") as MockHFTok:
-            eng._build_docling_chunker(chunk_size=1000)
+    with (
+        patch("cuga.backend.knowledge.engine._load_hf_tokenizer_for_chunking", return_value=own_tokenizer),
+        patch("docling_core.transforms.chunker.HybridChunker") as MockHC,
+        patch("docling_core.transforms.chunker.tokenizer.huggingface.HuggingFaceTokenizer") as MockHFTok,
+    ):
+        eng._build_docling_chunker(chunk_size=1000)
 
     MockHFTok.assert_called_once()
-    # The wrapper must be constructed with the SAME tokenizer the embedding
-    # wrapper already loaded — no new download / model load.
-    assert MockHFTok.call_args.kwargs.get("tokenizer") is fake_tokenizer
+    assert MockHFTok.call_args.kwargs.get("tokenizer") is own_tokenizer
     assert MockHC.called
     assert "tokenizer" in MockHC.call_args.kwargs
 

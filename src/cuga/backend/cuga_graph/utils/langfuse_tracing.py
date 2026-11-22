@@ -270,11 +270,19 @@ def _langfuse_handler_classes() -> tuple[type, ...]:
 
 def is_langfuse_callback_handler(cb: Any) -> bool:
     """True if *cb* is a Langfuse LangChain callback handler."""
-    name = type(cb).__name__
-    if name not in ("CallbackHandler", "LangchainCallbackHandler", "TraceScopedLangfuseCallbackHandler"):
+    cls = type(cb)
+    # Skip import work for unrelated callbacks but recognize Langfuse subclasses.
+    if not any(
+        base.__name__ in ("CallbackHandler", "LangchainCallbackHandler", "TraceScopedLangfuseCallbackHandler")
+        for base in cls.__mro__
+    ):
         return False
     for handler_cls in _langfuse_handler_classes():
         if isinstance(cb, handler_cls):
             return True
-    mod = getattr(type(cb), "__module__", "") or ""
-    return "langfuse" in mod
+    return any(
+        "langfuse" in (getattr(base, "__module__", "") or "")
+        for base in cls.__mro__
+        if base.__name__
+        in ("CallbackHandler", "LangchainCallbackHandler", "TraceScopedLangfuseCallbackHandler")
+    )
