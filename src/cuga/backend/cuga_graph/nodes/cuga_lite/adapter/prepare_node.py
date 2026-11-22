@@ -440,6 +440,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 _decorator_records = getattr(tool_func, "_cuga_tracked", False) and iscoroutinefunction(
                     tool_func
                 )
+                _guard_records = bool(getattr(tool_func, "_cuga_toolguard_wrapper", False))
                 _param_names = _tool_param_names(tool)
                 tool_func = make_arg_warning_callable(
                     tool_func,
@@ -453,6 +454,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                         tool.name,
                         app_name=_provider.app_name,
                         param_names=_param_names,
+                        accepts_inner_record=_guard_records,
                     )
                 adapter._tools_context[tool.name] = awaitable_tool
             else:
