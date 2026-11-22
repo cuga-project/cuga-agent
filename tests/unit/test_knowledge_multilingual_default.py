@@ -140,6 +140,8 @@ def test_an_upload_into_a_pinned_collection_is_chunked_for_that_model(tmp_path, 
         "create_embeddings",
         lambda cfg: built.append(cfg.embedding_model) or _Embedder(limits[cfg.embedding_model]),
     )
+    # The chunker loads the model's tokenizer by name, apart from the embedder's.
+    monkeypatch.setattr(engine_mod, "_load_hf_tokenizer_for_chunking", lambda name: _Words(limits[name]))
     monkeypatch.setattr(
         engine_mod, "get_storage_connection_params", lambda: ("local", str(tmp_path / "s.db"), "")
     )
