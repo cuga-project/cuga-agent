@@ -150,26 +150,27 @@ def get_secret_sync(
     agent_id: str | None = None,
     version: str = "*",
 ) -> str | None:
+    async def get_then_close_pools() -> str | None:
+        try:
+            return await get_secret(
+                secret_id, tenant_id=tenant_id, instance_id=instance_id, agent_id=agent_id, version=version
+            )
+        finally:
+            # The read gets a loop of its own; close the pools it opened on it.
+            await get_storage().close_loop_pools()
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
     if loop is None:
-        return asyncio.run(
-            get_secret(
-                secret_id, tenant_id=tenant_id, instance_id=instance_id, agent_id=agent_id, version=version
-            )
-        )
+        return asyncio.run(get_then_close_pools())
     result: list[Any] = [None]
     done = threading.Event()
 
     def run():
         nonlocal result
-        result[0] = asyncio.run(
-            get_secret(
-                secret_id, tenant_id=tenant_id, instance_id=instance_id, agent_id=agent_id, version=version
-            )
-        )
+        result[0] = asyncio.run(get_then_close_pools())
         done.set()
 
     t = threading.Thread(target=run, daemon=True)

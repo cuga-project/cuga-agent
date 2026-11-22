@@ -375,7 +375,7 @@ async def test_postgres_runtime_thread_claims_across_workers(monkeypatch):
     monkeypatch.setattr(history, "_instance_id", lambda: "service-a")
     try:
         for db, store in zip(dbs, stores):
-            store._pool = await asyncpg.create_pool(
+            store._pools[asyncio.get_running_loop()] = await asyncpg.create_pool(
                 dsn, min_size=1, max_size=4, server_settings={"search_path": schema}
             )
             db._get_store = lambda store=store: store
@@ -389,7 +389,7 @@ async def test_postgres_runtime_thread_claims_across_workers(monkeypatch):
         winner = f"user-{claims.index('agent')}"
         # Reload ownership through a new connection pool, without conversation history.
         await stores[1].close()
-        stores[1]._pool = await asyncpg.create_pool(
+        stores[1]._pools[asyncio.get_running_loop()] = await asyncpg.create_pool(
             dsn, min_size=1, max_size=4, server_settings={"search_path": schema}
         )
         assert await dbs[1].claim_thread("race", winner, "agent") == "agent"

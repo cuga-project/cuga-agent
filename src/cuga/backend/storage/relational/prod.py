@@ -1,4 +1,7 @@
+import asyncio
 import re
+import threading
+import weakref
 from typing import Any, List, Optional
 
 from cuga.backend.storage.loop_lock import PerLoopLock
@@ -23,26 +26,37 @@ class ProdRelationalStore:
     def __init__(self, postgres_url: str, db_name: str):
         self._postgres_url = postgres_url
         self._db_name = db_name
-        self._pool: Any = None
+        # An asyncpg pool works only on the event loop that created it. The store is cached for
+        # the whole process, and sync callers (config_store.run_sync, secrets_store.get_secret_sync)
+        # run each call on its own short-lived loop, so each loop gets its own pool.
+        self._pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any]" = weakref.WeakKeyDictionary()
+        self._pools_guard = threading.Lock()
         self._pool_lock = PerLoopLock()
 
     async def _get_pool(self):
-        if self._pool is None:
-            # Concurrent first requests would each create a pool (up to 4 connections each)
-            # and leak all but the last one.
+        loop = asyncio.get_running_loop()
+        with self._pools_guard:
+            pool = self._pools.get(loop)
+        if pool is None:
+            # Concurrent first requests on a loop would each create a pool (up to 4 connections
+            # each) and leak all but the last one.
             async with self._pool_lock.get():
-                if self._pool is None:
+                with self._pools_guard:
+                    pool = self._pools.get(loop)
+                if pool is None:
                     if asyncpg is None:
                         raise ImportError(
                             "asyncpg required for storage.mode=prod. Install with: uv add asyncpg"
                         )
-                    self._pool = await asyncpg.create_pool(
+                    pool = await asyncpg.create_pool(
                         self._postgres_url,
                         min_size=1,
                         max_size=4,
                         command_timeout=60,
                     )
-        return self._pool
+                    with self._pools_guard:
+                        self._pools[loop] = pool
+        return pool
 
     async def execute(self, sql: str, params: tuple = ()) -> None:
         sql = _placeholders(sql)
@@ -84,6 +98,9 @@ class ProdRelationalStore:
         pass
 
     async def close(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
-            self._pool = None
+        """Close the running event loop's pool (required before a short-lived loop ends, e.g. at the
+        end of ``asyncio.run``). Pools that other loops are using stay open."""
+        with self._pools_guard:
+            pool = self._pools.pop(asyncio.get_running_loop(), None)
+        if pool is not None:
+            await pool.close()

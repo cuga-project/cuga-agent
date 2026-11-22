@@ -52,12 +52,19 @@ def run_sync(coro: Any) -> Any:
     """
     import asyncio
 
+    async def run_then_close_pools() -> Any:
+        try:
+            return await coro
+        finally:
+            # The call gets a loop of its own; close the pools it opened on it.
+            await get_storage().close_loop_pools()
+
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
+        return asyncio.run(run_then_close_pools())
     with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+        return pool.submit(asyncio.run, run_then_close_pools()).result()
 
 
 def should_preserve_existing_configs() -> bool:
