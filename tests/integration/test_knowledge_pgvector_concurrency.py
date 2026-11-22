@@ -96,11 +96,11 @@ def test_searches_while_a_file_is_added(clean_tenant, monkeypatch):
     upload_has_pool = threading.Event()
     searches_done = threading.Event()
 
-    async def add_many_after_the_searches(items):
+    async def add_many_after_the_searches(items, columns=None):
         await store._get_pool()
         upload_has_pool.set()
         await asyncio.to_thread(searches_done.wait, 120)
-        return await add_many(items)
+        return await add_many(items, columns=columns)
 
     monkeypatch.setattr(store, "add_many", add_many_after_the_searches)
     upload_errors: list = []

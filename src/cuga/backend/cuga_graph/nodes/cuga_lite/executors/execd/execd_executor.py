@@ -102,7 +102,15 @@ _KERNEL_PREFIXES = ("_cuga", "_Cuga", "_CUGA")
 # dunder attribute is refused by SecurityValidator.
 _KERNEL_FORBIDDEN_NAMES = frozenset({"globals", "vars", "eval", "exec", "compile"})
 _KERNEL_FORBIDDEN_ATTRS = frozenset(
-    {"create_subprocess_shell", "create_subprocess_exec", "subprocess_shell", "subprocess_exec", "subprocess"}
+    {
+        "create_subprocess_shell",
+        "create_subprocess_exec",
+        "subprocess_shell",
+        "subprocess_exec",
+        "subprocess",
+        # The loop method that the four spawn names above call.
+        "_make_subprocess_transport",
+    }
 )
 
 
