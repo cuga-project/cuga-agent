@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 SUPERVISOR_EXEC_KEY = "__supervisor_exec__"
 
@@ -22,6 +22,7 @@ class SupervisorExecutionContext:
     thread_id: str | None = None
     interactive: bool = True
     pending_acp_registry: Any = None
+    child_checkpoint_recorder: Optional[Callable[[str], Awaitable[None]]] = None
 
 
 def resolve_supervisor_execution_context() -> Optional[SupervisorExecutionContext]:

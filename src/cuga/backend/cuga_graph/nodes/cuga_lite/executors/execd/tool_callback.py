@@ -34,7 +34,6 @@ import hmac
 import inspect
 import json
 import secrets
-import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -247,10 +246,7 @@ async def handle_call(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
     t0 = time.monotonic()
     try:
-        if sys.version_info >= (3, 11):
-            result = await asyncio.create_task(_invoke(), context=block.context)
-        else:  # pragma: no cover - 3.10 has no context= on create_task
-            result = await block.context.run(asyncio.ensure_future, _invoke())
+        result = await asyncio.create_task(_invoke(), context=block.context)
     except asyncio.CancelledError:
         raise
     except Exception as exc:

@@ -223,6 +223,7 @@ gh issue create \
   --label "enhancement" \
   --label "needs-triage" \
   --label "design-impact: medium" \
+  --label "design-review: needed" \
   --label "area: orchestration"
 ```
 
@@ -236,6 +237,7 @@ gh api repos/cuga-project/cuga-agent/issues \
   -f type="Epic" \
   -f labels[]="type: epic" \
   -f labels[]="design-impact: high" \
+  -f labels[]="design-review: needed" \
   -f labels[]="area: orchestration" \
   --jq '{number, html_url}'
 ```

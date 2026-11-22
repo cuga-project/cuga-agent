@@ -11,7 +11,7 @@ from cuga.backend.server.agent_registry import agent_special_instructions
 
 import asyncio as _asyncio
 
-from cuga.backend.server.manage_routes.apply import apply_published_config, rebuild_production_agent
+from cuga.backend.server.manage_routes.apply import rebuild_production_agent
 from cuga.backend.server.manage_routes.helpers import (
     agent_draft_lock,
     app_state,
@@ -356,8 +356,6 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         # other agent must leave app_state.agent / current_llm / tools / policies
         # untouched; those agents run from the per-id graph cache instead.
         if is_default_agent(agent_id):
-            await apply_published_config(state, config or {})
-
             try:
                 await rebuild_production_agent(state, config or {}, ver)
             except Exception as rebuild_err:
