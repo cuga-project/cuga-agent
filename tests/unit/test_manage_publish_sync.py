@@ -182,7 +182,6 @@ def test_publish_defers_flip_when_reindex_started(monkeypatch):
         _flip_seen["task_ids"] = list(task_ids)
 
     monkeypatch.setattr(config_routes, "deferred_reindex_complete_and_flip", _capture_flip)
-    monkeypatch.setattr(config_routes, "apply_published_config", _allow_publish)
     monkeypatch.setattr(config_routes, "rebuild_production_agent", _allow_publish)
     # Enable registry and make test-agent discoverable so resolve_registered_agent_id
     # returns "test-agent" (which drives the kb_agent_test_agent collection name).

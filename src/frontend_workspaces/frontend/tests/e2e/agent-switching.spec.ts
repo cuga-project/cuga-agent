@@ -31,12 +31,13 @@ async function stubAgents(page: Page, options: {
     else if (url.pathname === "/api/tools/list") body = {
       tools: [{ name: `${id}_tool`, app: `${id}_app`, description: `Tools for ${id}` }],
     };
-    else if (url.pathname === "/api/conversation-threads") body = { threads: ["thread", "other"].map((suffix) => ({
-      thread_id: `${id}-${suffix}`,
-      latest_version: 1,
-      first_message: `${id} recent ${suffix}`,
-      updated_at: "2026-10-22T00:00:00Z",
-    })) };
+    else if (url.pathname === "/api/conversations") body = ["thread", "other"].map((suffix) => ({
+      id: `${id}-${suffix}`,
+      title: `${id} recent ${suffix}`,
+      timestamp: Date.parse("2026-10-22T00:00:00Z"),
+      preview: "",
+      status: "active",
+    }));
     else if (url.pathname.startsWith("/api/conversation-stream-events/")) {
       const thread = url.pathname.split("/").pop()!;
       historyRequests.push({ thread, agent: url.searchParams.get("agent_id") });
@@ -111,9 +112,11 @@ test("new conversations skip knowledge cleanup when knowledge is disabled", asyn
   });
   await page.goto("/chat/weatherbot");
   await expect(page.getByText("Config v2", { exact: true })).toBeVisible();
-  const priorThread = await page.locator("code").first().textContent();
+  // A new chat has no ID until its first send (#774): leave a saved conversation instead.
+  await page.getByRole("button", { name: /weatherbot recent thread/ }).click();
+  await expect(page.locator("code").first()).toHaveText("weatherbot-thread");
   await page.getByRole("button", { name: "New conversation", exact: true }).click();
-  await expect(page.locator("code").first()).not.toHaveText(priorThread!);
+  await expect(page.locator("code")).toHaveCount(0);
   await expect(page.getByText("Draft cleanup incomplete", { exact: true })).toHaveCount(0);
   expect(cleanupRequests).toEqual([]);
 });
@@ -186,13 +189,19 @@ for (const registry of [true, false]) {
 
 test("a newly answered YKT weather conversation reopens from the recent list", async ({ page }) => {
   await stubAgents(page);
+  const creations: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/conversations") {
+      creations.push(request.url());
+    }
+  });
   let savedThread = "";
   const savedEvents = new Map<string, object[]>();
-  await page.route("**/api/conversation-threads?*", (route) => route.fulfill({
-    contentType: "application/json", body: JSON.stringify({ threads: [
-      ...(savedThread ? [{ thread_id: savedThread, first_message: "YKT weather", latest_version: 1, updated_at: "2026-10-22T00:00:00Z" }] : []),
-      { thread_id: "weatherbot-other", first_message: "Another conversation", latest_version: 1, updated_at: "2026-10-22T00:00:00Z" },
-    ] }),
+  await page.route("**/api/conversations?*", (route) => route.fulfill({
+    contentType: "application/json", body: JSON.stringify([
+      ...(savedThread ? [{ id: savedThread, title: "YKT weather", timestamp: Date.parse("2026-10-22T00:00:00Z"), preview: "", status: "active" }] : []),
+      { id: "weatherbot-other", title: "Another conversation", timestamp: Date.parse("2026-10-22T00:00:00Z"), preview: "", status: "active" },
+    ]),
   }));
   await page.route("**/api/conversation-stream-events/**", (route) => {
     const thread = new URL(route.request().url()).pathname.split("/").pop()!;
@@ -201,12 +210,15 @@ test("a newly answered YKT weather conversation reopens from the recent list", a
     }] : []) }) });
   });
   await page.route("**/stream", async (route) => {
-    savedThread = route.request().headers()["x-thread-id"];
+    // Like the server: a new chat sends no ID, so issue one and announce it first (#774).
+    const issued = route.request().headers()["x-thread-id"] ? "" : "weatherbot-ykt";
+    savedThread = route.request().headers()["x-thread-id"] || issued;
     savedEvents.set(savedThread, [
       { event_name: "UserMessage", event_data: "YKT weather", timestamp: "2026-10-22T00:00:02Z", sequence: 0 },
       { event_name: "Answer", event_data: "YKT weather answer.", timestamp: "2026-10-22T00:00:03Z", sequence: 1 },
     ]);
-    await route.fulfill({ contentType: "text/event-stream", body: "event: Answer\ndata: YKT weather answer.\n\n" });
+    const announce = issued ? `event: thread_created\ndata: ${issued}\n\n` : "";
+    await route.fulfill({ contentType: "text/event-stream", body: `${announce}event: Answer\ndata: YKT weather answer.\n\n` });
   });
   await page.goto("/chat/weatherbot");
   await expect(page.getByTestId("header_name").last()).toHaveText("Weather specialist");
@@ -214,6 +226,7 @@ test("a newly answered YKT weather conversation reopens from the recent list", a
   await composer.fill("YKT weather");
   await composer.press("Enter");
   await expect(page.getByText("YKT weather answer.", { exact: true })).toBeVisible();
+  expect(creations).toEqual([]); // /stream issues a fresh chat's ID.
   await expect(page.getByRole("button", { name: /YKT weather/ })).toBeVisible();
   for (let visit = 0; visit < 2; visit += 1) {
     await page.getByRole("button", { name: /Another conversation/ }).click();
@@ -261,18 +274,17 @@ test("rapid conversation selection during hydration keeps the last selected tran
   const draftDelay = new Promise<void>((resolve) => { releaseDraft = resolve; });
   await page.route("**/api/conversation-stream-events/**", async (route) => {
     const thread = new URL(route.request().url()).pathname.split("/").pop()!;
-    const saved = ["weatherbot-thread", "weatherbot-other"].includes(thread);
-    if (!saved) await draftDelay;
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ events: saved ? [{
+    // A new chat loads no history (#774): hold the first conversation's history instead.
+    if (thread === "weatherbot-thread") await draftDelay;
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ events: [{
       event_name: "Answer", event_data: `Saved answer for ${thread}.`, timestamp: "2026-10-22T00:00:00Z", sequence: 0,
-    }] : [] }) });
+    }] }) });
   });
   try {
-    const initialHistory = page.waitForRequest((request) => new URL(request.url()).pathname.startsWith("/api/conversation-stream-events/")
-      && !new URL(request.url()).pathname.endsWith("/weatherbot-thread"));
     await page.goto("/chat/weatherbot");
-    await initialHistory;
+    const firstHistory = page.waitForRequest("**/conversation-stream-events/weatherbot-thread?*");
     await page.getByRole("button", { name: /weatherbot recent thread/ }).click();
+    await firstHistory;
     await page.getByRole("button", { name: /weatherbot recent other/ }).click();
     await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     releaseDraft();
@@ -294,10 +306,11 @@ test("restarting while saved history is pending keeps the conversation empty", a
   let release!: () => void;
   const delayed = new Promise<void>((resolve) => { release = resolve; });
   await stubAgents(page, { historyDelay: delayed });
-  let sentThread = "";
+  let sentThread: string | undefined = "unset";
   await page.route("**/stream", async (route) => {
     sentThread = route.request().headers()["x-thread-id"];
-    await route.fulfill({ contentType: "text/event-stream", body: "event: Answer\ndata: Fresh conversation answer.\n\n" });
+    // Like the server: a new chat sends no ID, so issue one and announce it first (#774).
+    await route.fulfill({ contentType: "text/event-stream", body: "event: thread_created\ndata: weatherbot-fresh\n\nevent: Answer\ndata: Fresh conversation answer.\n\n" });
   });
   try {
     await page.goto("/chat/weatherbot");
@@ -312,12 +325,110 @@ test("restarting while saved history is pending keeps the conversation empty", a
     await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     await expect(page.getByText("History answer for weatherbot-thread.", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Hello, how can I help you today?" })).toBeVisible();
-    await expect(page.locator("code").first()).not.toHaveText("weatherbot-thread");
-    const newDraft = await page.locator("code").first().textContent();
+    await expect(page.locator("code")).toHaveCount(0); // a new chat has no ID until its first send
     const composer = page.getByRole("region", { name: "Chat", exact: true }).getByRole("textbox");
     await composer.fill("Weather after restart");
     await composer.press("Enter");
     await expect(page.getByText("Fresh conversation answer.", { exact: true })).toBeVisible();
-    expect(sentThread).toBe(newDraft);
+    expect(sentThread).toBeUndefined(); // not the restarted conversation's ID
+    await expect(page.locator("code").first()).toHaveText("weatherbot-fresh");
   } finally { release(); }
+});
+
+
+test("an old draft creation failure cannot detach the current upload from its first send", async ({ page }) => {
+  await stubAgents(page);
+  let releaseOld!: () => void;
+  let releaseCurrent!: () => void;
+  const oldCreation = new Promise<void>((resolve) => { releaseOld = resolve; });
+  const currentCreation = new Promise<void>((resolve) => { releaseCurrent = resolve; });
+  let creations = 0;
+  const sentThreads: Array<string | undefined> = [];
+  const uploadThreads: Array<string | null> = [];
+  await page.route("**/api/conversations", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    const index = creations++;
+    await (index === 0 ? oldCreation : currentCreation);
+    await route.fulfill(index === 0
+      ? { status: 503, json: { detail: "Old creation failed" } }
+      : { json: { id: "current-upload", status: "new" } });
+  });
+  await page.route("**/api/workspace/upload?*", async (route) => {
+    uploadThreads.push(new URL(route.request().url()).searchParams.get("thread_id"));
+    await route.fulfill({ json: {} });
+  });
+  await page.route("**/stream", async (route) => {
+    sentThreads.push(route.request().headers()["x-thread-id"]);
+    await route.fulfill({ contentType: "text/event-stream", body: "event: Answer\ndata: Current upload answer.\n\n" });
+  });
+  try {
+    await page.goto("/chat/weatherbot");
+    await expect(page.getByTestId("header_name").last()).toHaveText("Weather specialist");
+    const upload = page.locator('input[type="file"][accept=".json,.jsonl,.ndjson"]');
+    await upload.setInputFiles({ name: "old.json", mimeType: "application/json", buffer: Buffer.from("{}") });
+    await expect.poll(() => creations).toBe(1);
+    await page.getByRole("button", { name: "New conversation", exact: true }).click();
+    await upload.setInputFiles({ name: "current.json", mimeType: "application/json", buffer: Buffer.from("{}") });
+    await expect.poll(() => creations).toBe(2);
+    const failed = page.waitForResponse((response) => response.request().method() === "POST"
+      && new URL(response.url()).pathname === "/api/conversations" && response.status() === 503);
+    releaseOld();
+    await (await failed).finished();
+    const composer = page.getByRole("region", { name: "Chat", exact: true }).getByRole("textbox");
+    await composer.fill("Use the current upload");
+    await composer.press("Enter");
+    await expect(page.getByText("Use the current upload", { exact: true }).first()).toBeVisible();
+    releaseCurrent();
+    await expect(page.getByText("Current upload answer.", { exact: true })).toBeVisible();
+    expect(sentThreads).toEqual(["current-upload"]);
+    await expect.poll(() => uploadThreads).toEqual(["current-upload"]);
+    expect(creations).toBe(2);
+    await expect(page.locator("code").first()).toHaveText("current-upload");
+  } finally {
+    releaseOld();
+    releaseCurrent();
+  }
+});
+
+
+test("a first send during rejected draft validation starts a fresh conversation", async ({ page }) => {
+  await stubAgents(page);
+  await page.addInitScript(() => {
+    window.sessionStorage.setItem("cuga-demo-draft-thread:weatherbot", JSON.stringify({
+      threadId: "expired-draft",
+      serverIssued: true,
+      hasSentFirstMessage: false,
+      updatedAt: new Date().toISOString(),
+      agentId: "weatherbot",
+    }));
+  });
+  let releaseValidation!: () => void;
+  const validation = new Promise<void>((resolve) => { releaseValidation = resolve; });
+  let validations = 0;
+  await page.route("**/api/conversations/expired-draft?*", async (route) => {
+    validations += 1;
+    await validation;
+    await route.fulfill({ status: 404, json: { detail: "Conversation not found" } });
+  });
+  const sentThreads: Array<string | undefined> = [];
+  await page.route("**/stream", async (route) => {
+    sentThreads.push(route.request().headers()["x-thread-id"]);
+    await route.fulfill({
+      contentType: "text/event-stream",
+      body: "event: thread_created\ndata: fresh-thread\n\nevent: Answer\ndata: Fresh draft answer.\n\n",
+    });
+  });
+  try {
+    await page.goto("/chat/weatherbot");
+    await expect(page.getByTestId("header_name").last()).toHaveText("Weather specialist");
+    await expect.poll(() => validations).toBe(1);
+    const composer = page.getByRole("region", { name: "Chat", exact: true }).getByRole("textbox");
+    await composer.fill("Weather after a restart");
+    await composer.press("Enter");
+    await expect(page.getByText("Weather after a restart", { exact: true }).first()).toBeVisible();
+    releaseValidation();
+    await expect(page.getByText("Fresh draft answer.", { exact: true })).toBeVisible();
+    expect(sentThreads).toEqual([undefined]); // /stream issues the replacement ID
+    await expect(page.getByText("Weather after a restart", { exact: true }).first()).toBeVisible();
+  } finally { releaseValidation(); }
 });

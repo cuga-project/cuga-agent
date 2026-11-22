@@ -1,5 +1,11 @@
 # Agent guidelines
 
+## Frontend changes
+
+Read [the frontend rules](src/frontend_workspaces/AGENTS.md) before editing frontend
+workspaces. They define the shared IBM Carbon components, loading states,
+navigation, accessibility, layout, secret handling, and browser validation.
+
 ## Declare known arguments explicitly
 
 When a function's arguments are known in advance, declare them explicitly instead
@@ -137,4 +143,4 @@ When creating a new GitHub issue or pull request, use the AI agent skills docume
 
 These skills are mirrored under `.cursor/skills/`, `.claude/skills/`, and `.bob/skills/` and follow repo conventions (templates, Conventional Commits, DCO signoff expectations, no promotional footers).
 
-**Labels (MUST).** Before every push to a branch with a pull request, before opening a pull request, and when creating an issue, set the `design-impact:`, `area:`, and (pull requests only) `readability:` labels with the rules in `.claude/skills/cuga-contributor-workflows/labels.md` (same file in the `.cursor/` and `.bob/` mirrors). CodeRabbit does not set these labels. When you change `labels.md` or another skill file, update all three mirrors.
+**Labels (MUST).** Before every push to a branch with a pull request, before opening a pull request, and when creating an issue, set the `design-impact:`, `design-review:`, `area:`, and (pull requests only) `evaluation:` and `readability:` labels with the rules in `.claude/skills/cuga-contributor-workflows/labels.md` (same file in the `.cursor/` and `.bob/` mirrors). CodeRabbit does not set these labels. When you change `labels.md` or another skill file, update all three mirrors.
