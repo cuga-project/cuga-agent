@@ -73,6 +73,10 @@ class CallApiHelper:
             start_time = time.time()
             result = None
             error_msg = None
+            # Decided before the call: a caller's stock Langfuse handler also sees the inner tool.ainvoke.
+            caller_records = bool(
+                tracker.tools and app_name in tracker.tools
+            ) and tracker.caller_handler_records(app_name, api_name)
 
             try:
                 # First try tracker (for runtime tools)
@@ -139,6 +143,7 @@ class CallApiHelper:
                     operation_id=operation_id,
                     duration_ms=duration_ms,
                     error=error_msg,
+                    langchain_tool=caller_records,
                 )
 
         return call_api

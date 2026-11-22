@@ -113,6 +113,8 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
         start_time = time.time()
         result = None
         error_msg = None
+        # Decided before the call: a caller's stock Langfuse handler also sees the inner tool.ainvoke.
+        caller_records = tracker.caller_handler_records(app_name, tool_name)
 
         try:
             param_names = list(field_definitions.keys()) if field_definitions else []
@@ -159,6 +161,7 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
                 operation_id=_operation_id,
                 duration_ms=duration_ms,
                 error=error_msg,
+                langchain_tool=caller_records,
             )
 
     def tool_func_sync(*args, **kwargs):

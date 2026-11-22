@@ -97,14 +97,28 @@ class ActivityTracker(object):
             cls._instance = super(ActivityTracker, cls).__new__(cls)
         return cls._instance
 
+    def caller_handler_records(self, server_name: str, tool_name: str) -> bool:
+        """A caller's stock Langfuse handler records this tool's call, so CUGA must not record it as well.
+
+        Decide this before calling ``invoke_tool``: the callers record after the call returns.
+        """
+        from cuga.backend.observability.langfuse_sdk import caller_handler_records_tool
+
+        for tool in self.tools.get(server_name) or []:
+            if tool.name == tool_name:
+                return caller_handler_records_tool(tool)
+        return False
+
     async def invoke_tool(self, server_name: str, tool_name: str, args: dict):
         if server_name not in self.tools:
             raise ValueError(f"Server '{server_name}' not found")
 
+        from cuga.backend.observability.langfuse_sdk import inner_tool_config
+
         # Find the tool by name
         for tool in self.tools[server_name]:
             if tool.name == tool_name:
-                result = await tool.ainvoke(args)
+                result = await tool.ainvoke(args, config=inner_tool_config(tool_name))
                 logger.debug(f"type of {type(result)}")
                 # logger.debug(f"Tool output call {result.con}")
                 # Check if result is JSON parseable
@@ -140,12 +154,15 @@ class ActivityTracker(object):
         if server_name not in self.tools:
             raise ValueError(f"Server '{server_name}' not found")
 
+        from cuga.backend.observability.langfuse_sdk import inner_tool_config
+
         # Find the tool by name
         for tool in self.tools[server_name]:
             if tool.name == tool_name:
+                inner_config = inner_tool_config(tool_name)
                 # Try synchronous invoke first
                 try:
-                    result = tool.invoke(args)  # Use synchronous invoke
+                    result = tool.invoke(args, config=inner_config)  # Use synchronous invoke
                 except RuntimeError as e:
                     if "event loop is already running" in str(e):
                         # We're in an async context, need to handle this differently
@@ -160,7 +177,7 @@ class ActivityTracker(object):
                                 try:
                                     # Use async invoke in the new loop
                                     async def async_invoke():
-                                        return await tool.ainvoke(args)
+                                        return await tool.ainvoke(args, config=inner_config)
 
                                     return new_loop.run_until_complete(async_invoke())
                                 finally:
@@ -174,7 +191,7 @@ class ActivityTracker(object):
                             import asyncio
 
                             async def async_invoke():
-                                return await tool.ainvoke(args)
+                                return await tool.ainvoke(args, config=inner_config)
 
                             result = asyncio.run(async_invoke())
                     else:

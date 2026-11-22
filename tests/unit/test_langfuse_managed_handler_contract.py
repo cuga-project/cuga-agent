@@ -91,7 +91,8 @@ async def test_managed_handler_warns_without_mutating_callback_owners(monkeypatc
     log.warning.assert_called_once_with(
         "CUGA tool ownership mixed: stock and managed Langfuse handlers; strict single-writer guarantee unavailable"
         if mixed
-        else "CUGA managed tool observations require active span or explicit langfuse_trace_id; strict correlation unavailable"
+        else "CUGA managed tool observations require an active span or an explicit langfuse_trace_id; "
+        "tool observations are not recorded for this run"
     )
 
 

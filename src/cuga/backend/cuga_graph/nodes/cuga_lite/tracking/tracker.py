@@ -94,6 +94,11 @@ def _claim_delegated_recording(recorder: Callable[..., Any]) -> Iterator[Optiona
         _delegated_recorder.reset(delegate_token)
 
 
+def outer_callback_records(tool_name: str) -> bool:
+    """A caller's Langfuse handler already received an outer ``tool.ainvoke`` for this call (ToolGuard path)."""
+    return _tool_callback_recording.get() == tool_name
+
+
 def _note_tool_record(tool_name: str) -> None:
     recording = _direct_tool_recording.get()
     if recording is not None and recording.accepts_inner_record and recording.name == tool_name:

@@ -105,17 +105,116 @@ def _has_current_span() -> bool:
     return get_current_span().get_span_context().is_valid
 
 
+def caller_handler_records_tool(tool: Any) -> bool:
+    """A caller's stock Langfuse handler receives this LangChain tool's callbacks when CUGA calls ``tool.ainvoke``.
+
+    Checks the two callback sources that ``BaseTool.ainvoke`` uses: the inherited run config and ``tool.callbacks``.
+    The SDK's own handler and ``create_sdk_tool_handler()`` skip tool callbacks, so they do not count.
+    """
+    if not enabled():
+        return False
+    from langchain_core.runnables.config import ensure_config
+
+    from cuga.backend.cuga_graph.utils.langfuse_tracing import collect_langfuse_callbacks_from_config
+
+    handlers = collect_langfuse_callbacks_from_config(
+        {
+            "callbacks": ensure_config().get("callbacks"),
+            "configurable": {"callbacks": getattr(tool, "callbacks", None)},
+        }
+    )
+    return any(
+        not getattr(handler, "_cuga_skips_tool_observations", False)
+        and not getattr(handler, "ignore_agent", False)
+        for handler in handlers
+    )
+
+
+def inner_tool_config(tool_name: str) -> Optional[Dict[str, Any]]:
+    """The ``config`` for a LangChain tool that CUGA calls inside a tool call that is already recorded.
+
+    A ToolGuard-wrapped tool reaches the real tool through a second ``tool.ainvoke``. When the caller's handler
+    already received the outer call, the inner call must not reach a Langfuse handler again, or one call becomes two
+    observations. Returns ``None`` (keep LangChain's inherited callbacks) in every other case.
+    """
+    if not enabled():
+        return None
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import outer_callback_records
+
+    if not outer_callback_records(tool_name):
+        return None
+    from langchain_core.callbacks import BaseCallbackManager
+    from langchain_core.runnables.config import ensure_config
+
+    from cuga.backend.cuga_graph.utils.langfuse_tracing import is_langfuse_callback_handler
+
+    callbacks = ensure_config().get("callbacks")
+    if isinstance(callbacks, BaseCallbackManager):
+        manager = callbacks.copy()
+        for handler in list(manager.handlers) + list(manager.inheritable_handlers):
+            if is_langfuse_callback_handler(handler):
+                manager.remove_handler(handler)
+        return {"callbacks": manager}
+    if isinstance(callbacks, (list, tuple)):
+        return {"callbacks": [cb for cb in callbacks if not is_langfuse_callback_handler(cb)]}
+    return None
+
+
+def check_tool_ownership(config: Optional[Dict[str, Any]], default_callbacks: Any = None) -> None:
+    """Warn about handler setups that cannot give one tool observation per call in one trace.
+
+    Called at the start of ``invoke``, ``stream`` and the supervisor, in SDK-owned and caller-owned runs alike.
+    """
+    if not enabled():
+        return
+    try:
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import collect_langfuse_callbacks_from_config
+
+        config = config or {}
+        handlers = collect_langfuse_callbacks_from_config(config)
+        handlers += collect_langfuse_callbacks_from_config({"callbacks": default_callbacks})
+        managed = [h for h in handlers if getattr(h, "_cuga_skips_tool_observations", False)]
+        managed = [h for h in managed if not getattr(h, "_cuga_sdk_owned", False)]
+        stock = [h for h in handlers if not getattr(h, "_cuga_skips_tool_observations", False)]
+        if managed and stock:
+            logger.warning(
+                "CUGA tool ownership mixed: stock and managed Langfuse handlers; "
+                "strict single-writer guarantee unavailable"
+            )
+        if not managed:
+            return
+        trace_id = (config.get("configurable") or {}).get("langfuse_trace_id")
+        if not trace_id and not _has_current_span():
+            logger.warning(
+                "CUGA managed tool observations require an active span or an explicit langfuse_trace_id; "
+                "tool observations are not recorded for this run"
+            )
+            return
+        if trace_id:
+            for handler in managed:
+                if getattr(handler, "_cuga_trace_id", None) != str(trace_id):
+                    logger.warning(
+                        "CUGA managed handler trace id does not match configurable.langfuse_trace_id; "
+                        "tool observations and chain/model observations go to different traces. "
+                        "Create the handler with create_sdk_tool_handler(trace_id=<the same id>)"
+                    )
+                    return
+    except Exception as e:
+        logger.debug(f"Langfuse: tool ownership check failed: {e}")
+
+
 class RunTrace:
     """The root observation of one SDK run; ``end`` sets its output."""
 
     def __init__(self, span: Any = None, nested: bool = False):
         self.span = span
         self.nested = nested
+        self.closed = False
 
     def end(
         self, output: Any = _UNSET, *, error: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
-        if self.span is None:
+        if self.span is None or self.closed:
             return
         try:
             fields = {}
@@ -131,6 +230,20 @@ class RunTrace:
         except Exception as e:
             logger.debug(f"Langfuse: run output not recorded: {e}")
 
+    def close(self) -> None:
+        """End the root observation once. Later ``end`` and ``close`` calls do nothing.
+
+        ``run_trace`` calls this when the run leaves its context. A stream calls it earlier when its cleanup
+        outlives the grace period, so the root observation does not stay open until the detached work finishes.
+        """
+        if self.span is None or self.closed:
+            return
+        self.closed = True
+        try:
+            self.span.end()
+        except Exception as e:
+            logger.debug(f"Langfuse: run observation not ended: {e}")
+
 
 @asynccontextmanager
 async def run_trace(
@@ -142,26 +255,7 @@ async def run_trace(
     default_callbacks: Any = None,
 ) -> AsyncIterator[RunTrace]:
     """Preserve caller ancestry and diagnose incompatible tool observation ownership."""
-    from cuga.backend.cuga_graph.utils.langfuse_tracing import collect_langfuse_callbacks_from_config
-
-    handlers = collect_langfuse_callbacks_from_config(config)
-    handlers += collect_langfuse_callbacks_from_config({"callbacks": default_callbacks})
-    managed = any(getattr(handler, "_cuga_skips_tool_observations", False) for handler in handlers)
-    stock = any(not getattr(handler, "_cuga_skips_tool_observations", False) for handler in handlers)
-    if managed and stock:
-        logger.warning(
-            "CUGA tool ownership mixed: stock and managed Langfuse handlers; strict single-writer guarantee unavailable"
-        )
-    if (
-        managed
-        and enabled()
-        and not _has_current_span()
-        and not (config.get("configurable") or {}).get("langfuse_trace_id")
-    ):
-        logger.warning(
-            "CUGA managed tool observations require active span or explicit langfuse_trace_id; strict correlation unavailable"
-        )
-
+    check_tool_ownership(config, default_callbacks)
     async with _run_trace(name, message, thread_id, config, default_callbacks=default_callbacks) as trace:
         yield trace
 
@@ -204,7 +298,9 @@ async def _run_trace(
         )
         stack.enter_context(attrs)
         span = stack.enter_context(
-            client.start_as_current_observation(name=name, as_type="agent", input=_message_text(message))
+            client.start_as_current_observation(
+                name=name, as_type="agent", input=_message_text(message), end_on_exit=False
+            )
         )
     except Exception as e:
         try:
@@ -227,7 +323,9 @@ async def _run_trace(
                 if isinstance(callbacks, (list, tuple))
                 else ([callbacks] if callbacks else [])
             )
-            config["callbacks"] = callbacks + [_handler_class(CallbackHandler)()]
+            sdk_handler = _handler_class(CallbackHandler)()
+            sdk_handler._cuga_sdk_owned = True
+            config["callbacks"] = callbacks + [sdk_handler]
         except Exception as e:
             logger.debug(f"Langfuse: callback handler not added: {e}")
         try:
@@ -244,6 +342,7 @@ async def _run_trace(
             stack.close()
         except Exception as e:
             logger.debug(f"Langfuse: trace cleanup failed: {e}")
+        trace.close()
         # The client's batch processor exports completed observations. Do not await or
         # schedule an exporter here: even to_thread delays asyncio.run() shutdown.
         # Short-lived applications explicitly call flush() after their runs close.
@@ -268,16 +367,31 @@ def _handler_class(base: type) -> type:
     return CugaLangfuseHandler
 
 
-def create_sdk_tool_handler(*, public_key: Optional[str] = None, trace_context: Any = None) -> Any:
+def create_sdk_tool_handler(
+    *, trace_id: Optional[str] = None, public_key: Optional[str] = None, trace_context: Any = None
+) -> Any:
     """Create an explicitly opted-in handler: Langfuse owns chains/LLMs, CUGA tools.
 
     Pass this *new* handler instead of a stock Langfuse handler. Never automatically
     convert or mutate an existing supplied instance. Requires SDK tracing enabled
     and active span or explicit trace ID for CUGA tool observations.
+
+    ``trace_id`` must be the same id as ``configurable.langfuse_trace_id``. Without it, the
+    handler writes chain and model observations to a new trace while CUGA writes tool
+    observations to the configured one, so one run is split into two traces.
+    ``trace_id`` is a shortcut for ``trace_context={"trace_id": trace_id}``.
     """
     from langfuse.langchain import CallbackHandler
 
-    return _handler_class(CallbackHandler)(public_key=public_key, trace_context=trace_context)
+    if trace_id is not None:
+        if trace_context is not None and dict(trace_context).get("trace_id") != trace_id:
+            raise ValueError("create_sdk_tool_handler: trace_id and trace_context['trace_id'] differ")
+        trace_context = {**dict(trace_context or {}), "trace_id": trace_id}
+    handler = _handler_class(CallbackHandler)(public_key=public_key, trace_context=trace_context)
+    handler_trace_id = dict(trace_context or {}).get("trace_id")
+    # Kept on the CUGA subclass so check_tool_ownership never reads the handler's private state.
+    handler._cuga_trace_id = str(handler_trace_id) if handler_trace_id else None
+    return handler
 
 
 def final_answer(state: Any) -> Any:

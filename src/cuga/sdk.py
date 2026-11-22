@@ -107,6 +107,10 @@ from cuga.backend.cuga_graph.utils.run_receipt import (
 
 _llm_manager_instance = None
 
+# Stream driver tasks whose cleanup outlived the grace period. The event loop holds only weak
+# references to tasks, so this set keeps each one alive until it finishes (see CugaAgent.stream).
+_DETACHED_STREAM_DRIVERS: set = set()
+
 
 def _get_llm_manager():
     global _llm_manager_instance
@@ -3608,7 +3612,13 @@ class CugaAgent:
         # One task also keeps ContextVar tokens valid on Python 3.10 (which has no Task(context=)).
         from contextlib import aclosing
 
-        from cuga.backend.observability.langfuse_sdk import caller_has_trace, enabled, final_answer, run_trace
+        from cuga.backend.observability.langfuse_sdk import (
+            caller_has_trace,
+            check_tool_ownership,
+            enabled,
+            final_answer,
+            run_trace,
+        )
 
         config = self._trace_run_config(config)
         thread_id = self._trace_thread_id(message, thread_id, action_response, config)
@@ -3626,12 +3636,14 @@ class CugaAgent:
 
         if not enabled() or caller_has_trace(config, getattr(self, "_callbacks", None)):
             # Without an SDK span, preserve caller-task execution and ContextVar changes.
+            check_tool_ownership(config, getattr(self, "_callbacks", None))
             async with aclosing(source()) as updates:
                 async for state in updates:
                     yield state
             return
 
         requests = asyncio.Queue()
+        traces = []  # the driver's RunTrace, so cleanup that outlives the grace period can end it
 
         async def drive():
             response = None
@@ -3644,6 +3656,7 @@ class CugaAgent:
                     config,
                     default_callbacks=getattr(self, "_callbacks", None),
                 ) as trace:
+                    traces.append(trace)
                     last = None
                     try:
                         async with aclosing(source()) as updates:
@@ -3704,7 +3717,16 @@ class CugaAgent:
                 # Don't wait for a generator that suppresses cancellation indefinitely.
                 # Retrieve any late error so it isn't reported as an unhandled task failure.
                 driver.cancel()
+                if driver.done():
+                    return
+                # The event loop keeps only weak references to tasks: hold the driver until it finishes.
+                _DETACHED_STREAM_DRIVERS.add(driver)
+                driver.add_done_callback(_DETACHED_STREAM_DRIVERS.discard)
                 driver.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+                # End the root observation now; the detached cleanup may run for much longer.
+                for trace in traces:
+                    trace.end(error="cancelled: stream cleanup did not finish within the grace period")
+                    trace.close()
 
             if not driver.done():
                 try:

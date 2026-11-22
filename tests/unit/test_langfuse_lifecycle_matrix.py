@@ -24,8 +24,11 @@ def stream_agent(monkeypatch):
         token = context.set("sdk root")
 
         class Span:
-            def end(self, output):
-                events.append(("end", output))
+            def end(self, output=None, *, error=None):
+                events.append(("end", output) if error is None else ("end error", error))
+
+            def close(self):
+                events.append("closed early")
 
         try:
             yield Span()

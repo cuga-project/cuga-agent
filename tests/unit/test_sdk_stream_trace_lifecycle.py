@@ -25,11 +25,14 @@ def traces(monkeypatch):
         token = _CURRENT.set(thread_id)
         events.append((thread_id, "start"))
 
-        def end(output):
-            events.append((thread_id, "output", output))
+        def end(output=None, *, error=None):
+            events.append((thread_id, "output", output) if error is None else (thread_id, "error-end", error))
+
+        def close():
+            events.append((thread_id, "closed-early"))
 
         try:
-            yield SimpleNamespace(end=end)
+            yield SimpleNamespace(end=end, close=close)
         except BaseException as exc:
             events.append((thread_id, "error", type(exc)))
             raise
@@ -342,6 +345,10 @@ async def test_repeated_cancellation_releases_caller_before_uncooperative_graph_
         await asyncio.wait_for(cleanup_cancelled.wait(), 1)
         assert driver is not None and not driver.done()
         assert ("t", "exit") not in traces
+        # The detached driver is held until it finishes, and its root observation is already ended.
+        assert driver in sdk._DETACHED_STREAM_DRIVERS
+        assert ("t", "closed-early") in traces
+        assert any(event[:2] == ("t", "error-end") for event in traces)
     finally:
         release_cleanup.set()
         await asyncio.gather(pull, return_exceptions=True)
@@ -350,3 +357,43 @@ async def test_repeated_cancellation_releases_caller_before_uncooperative_graph_
         await stream.aclose()
 
     assert traces.index(("t", "closed")) < traces.index(("t", "exit"))
+    assert driver not in sdk._DETACHED_STREAM_DRIVERS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cleanup_past_grace_period_detaches_driver_and_ends_trace(traces):
+    started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    driver = None
+
+    async def source(message, **kwargs):
+        nonlocal driver
+        driver = asyncio.current_task()
+        try:
+            started.set()
+            await asyncio.Event().wait()
+            yield None
+        finally:
+            while not release_cleanup.is_set():
+                try:
+                    await release_cleanup.wait()
+                except asyncio.CancelledError:
+                    pass  # suppresses every cancel until released
+
+    stream = agent_for(source).stream("hi", thread_id="g")
+    pull = asyncio.create_task(stream.__anext__())
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        pull.cancel()  # one cancel: the caller waits the 500 ms grace period, then returns
+        done, _ = await asyncio.wait({pull}, timeout=2)
+        assert pull in done
+        assert driver in sdk._DETACHED_STREAM_DRIVERS
+        assert ("g", "closed-early") in traces
+        assert ("g", "exit") not in traces
+    finally:
+        release_cleanup.set()
+        await asyncio.gather(pull, return_exceptions=True)
+        if driver is not None:
+            await asyncio.gather(driver, return_exceptions=True)
+    assert driver not in sdk._DETACHED_STREAM_DRIVERS

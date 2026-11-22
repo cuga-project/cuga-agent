@@ -25,6 +25,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
     ToolCallTracker,
     tool_callback_recording,
 )
+from cuga.backend.observability.langfuse_sdk import caller_handler_records_tool
 
 
 _METADATA_ATTRS = (
@@ -35,28 +36,6 @@ _METADATA_ATTRS = (
 )
 
 _UNSET = object()
-
-
-def _langfuse_records_tool(tool: BaseTool) -> bool:
-    """Check the two callback sources used by BaseTool.ainvoke."""
-    from cuga.backend.observability.langfuse_sdk import enabled
-
-    if not enabled():
-        return False
-
-    from langchain_core.runnables.config import ensure_config
-
-    from cuga.backend.cuga_graph.utils.langfuse_tracing import collect_langfuse_callbacks_from_config
-
-    callbacks = ensure_config().get("callbacks")
-    handlers = collect_langfuse_callbacks_from_config(
-        {"callbacks": callbacks, "configurable": {"callbacks": tool.callbacks}}
-    )
-    return any(
-        not getattr(handler, "_cuga_skips_tool_observations", False)
-        and not getattr(handler, "ignore_agent", False)
-        for handler in handlers
-    )
 
 
 class ToolGuardingToolProvider(ToolProviderInterface):
@@ -332,7 +311,7 @@ class ToolGuardingToolProvider(ToolProviderInterface):
             recorder = getattr(tool, "coroutine", None) or getattr(tool, "func", None)
             with tool_callback_recording(
                 tool_name,
-                covered=_langfuse_records_tool(tool),
+                covered=caller_handler_records_tool(tool),
                 recorder=recorder if getattr(recorder, "_cuga_tracked", False) else None,
             ):
                 result = await tool.ainvoke(all_kwargs)
