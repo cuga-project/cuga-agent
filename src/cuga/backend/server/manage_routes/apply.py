@@ -6,13 +6,10 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from cuga.backend.server.manage_routes.draft_ops import _apply_config_and_rebuild, agent_rebuild_lock
 from cuga.backend.server.manage_routes.helpers import policies_list_from_config
 
 
 async def apply_published_config(app_state: Any, config: dict[str, Any]) -> None:
-    from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
-
     tools_list = (config or {}).get("tools") or []
     app_state.tools_include_by_app = {
         t["name"]: t["include"]
@@ -94,6 +91,13 @@ async def apply_published_config(app_state: Any, config: dict[str, Any]) -> None
             logger.info(f"Applied {len(policies_list)} policies from saved config")
         except Exception as policy_err:
             logger.warning(f"Failed to apply policies from config: {policy_err}")
+    await reload_manager_registry()
+
+
+async def reload_manager_registry() -> None:
+    """Refresh manager tool connections before a replacement graph reads them."""
+    from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
+
     if os.getenv("CUGA_MANAGER_MODE", "").lower() in ("true", "1", "yes", "on"):
         try:
             registry_url = get_registry_base_url()
@@ -172,21 +176,10 @@ def apply_llm_to_draft_state(state: Any, llm_cfg: dict) -> None:
 
 
 async def rebuild_production_agent(app_state: Any, config: dict[str, Any], config_version: Any) -> None:
-    """Reset tool provider and rebuild the production agent graph from config.
+    """Build and install a complete default runtime without mutating active graphs."""
+    from cuga.backend.server.main import _replace_default_runtime
 
-    ``config_version`` is the version this publish saved. It is passed in rather
-    than read from ``app_state.config_version``, which any agent's publish may
-    overwrite while the rebuild awaits.
-    """
-    prod_agent = getattr(app_state, "agent", None)
-    if not prod_agent:
-        logger.warning("No production agent found in state, skipping rebuild")
-        return
-    async with agent_rebuild_lock(prod_agent):
-        # Pass the shared saver so a publish keeps conversations (#774). None (lifespan
-        # not run) falls back to a fresh MemorySaver, as before.
-        await _apply_config_and_rebuild(
-            prod_agent, config, checkpointer=getattr(app_state, "checkpointer", None)
-        )
-        prod_agent._checkpoint_config_version = str(config_version or 0)
-    logger.info("Production agent graph rebuilt successfully")
+    if getattr(app_state, "agent", None) is not None:
+        # Re-read under the replacement lock so overlapping publishes cannot
+        # install an older configuration than the stored published version.
+        await _replace_default_runtime(app_state, config, config_version, reread=True)

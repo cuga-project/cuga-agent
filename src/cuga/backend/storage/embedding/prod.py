@@ -1,6 +1,9 @@
+import asyncio
 import hashlib
 import re
-from typing import Any, Dict, List, Optional
+import threading
+import weakref
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from loguru import logger
 
@@ -46,17 +49,28 @@ class ProdEmbeddingStore:
         self._postgres_url = postgres_url
         self._collection_name = collection_name
         self._schema = schema
-        self._pool: Any = None
+        # An asyncpg pool works only on the event loop that created it, and callers such as the
+        # knowledge adapter run each call on its own short-lived loop. So each loop gets its own
+        # pool, and closing one loop's pool leaves the pools other loops are still using alone.
+        self._pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any]" = weakref.WeakKeyDictionary()
+        self._pools_guard = threading.Lock()
         self._pool_lock = PerLoopLock()
 
     async def _get_pool(self):
-        if self._pool is None:
-            # One caller creates and prepares the pool; concurrent first callers wait for it
-            # instead of creating their own pools or using one before the table exists.
+        loop = asyncio.get_running_loop()
+        with self._pools_guard:
+            pool = self._pools.get(loop)
+        if pool is None:
+            # One caller creates and prepares the loop's pool; concurrent first callers on the
+            # same loop wait for it instead of creating their own or using it before the table exists.
             async with self._pool_lock.get():
-                if self._pool is None:
-                    self._pool = await self._create_pool()
-        return self._pool
+                with self._pools_guard:
+                    pool = self._pools.get(loop)
+                if pool is None:
+                    pool = await self._create_pool()
+                    with self._pools_guard:
+                        self._pools[loop] = pool
+        return pool
 
     async def _create_pool(self) -> Any:
         import asyncpg
@@ -76,6 +90,8 @@ class ProdEmbeddingStore:
             async with pool.acquire() as conn:
                 try:
                     await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                except asyncpg.exceptions.UniqueViolationError:
+                    pass  # another session created it at the same moment
                 except asyncpg.exceptions.InsufficientPrivilegeError:
                     logger.warning(
                         "Permission denied for CREATE EXTENSION vector; assuming it was pre-installed by "
@@ -90,17 +106,19 @@ class ProdEmbeddingStore:
         return pool
 
     async def close_pool(self) -> None:
-        """Release the pool (required when the surrounding event loop is discarded, e.g. after ``asyncio.run``)."""
-        if self._pool is not None:
-            await self._pool.close()
-            self._pool = None
+        """Close the running event loop's pool (required before that loop is discarded, e.g. at the end of
+        ``asyncio.run``). Pools that other loops are using stay open."""
+        with self._pools_guard:
+            pool = self._pools.pop(asyncio.get_running_loop(), None)
+        if pool is not None:
+            await pool.close()
 
     def _scope_cols(self) -> List[str]:
         meta = self._schema.metadata_columns
         return [c for c in SCOPE_COLS if c in meta]
 
     async def _ensure_table(self, pool: Any = None) -> None:
-        pool = pool or self._pool
+        pool = pool if pool is not None else await self._get_pool()
         id_col = self._schema.id_column
         meta = self._schema.metadata_columns
         aux = self._schema.auxiliary_columns
@@ -116,6 +134,19 @@ class ProdEmbeddingStore:
         parts.append(f"PRIMARY KEY {pk}")
         create_sql = f"CREATE TABLE IF NOT EXISTS {self._collection_name} ({', '.join(parts)})"
         async with pool.acquire() as conn:
+            # Most calls find both in place and skip the DDL, which would otherwise wait for
+            # any insert in progress on the table.
+            exists_sql = "SELECT to_regclass($1) IS NOT NULL AND to_regclass($2) IS NOT NULL"
+            if await conn.fetchval(
+                exists_sql, self._collection_name, _embedding_index_name(self._collection_name)
+            ):
+                return
+            # Calls on other event loops, or in other processes, can create the same new table at
+            # the same moment, and then all but one fail with a unique violation in the catalog.
+            # The lock makes them wait until the first has created both; their IF NOT EXISTS then
+            # skips. It is a session lock: the pool's reset of the connection when this block
+            # ends (asyncpg runs pg_advisory_unlock_all) releases it, also when a statement fails.
+            await conn.execute("SELECT pg_advisory_lock(hashtextextended($1, 0))", self._collection_name)
             await conn.execute(create_sql)
             index_name = _embedding_index_name(self._collection_name)
             await conn.execute(
@@ -129,20 +160,27 @@ class ProdEmbeddingStore:
     def _aux_keys(self) -> List[str]:
         return list(self._schema.auxiliary_columns.keys())
 
-    def _upsert_sql(self) -> str:
+    def _upsert_sql(self, extra: Optional[Dict[str, str]] = None) -> str:
         """Build the INSERT ... ON CONFLICT DO UPDATE statement once.
 
         Shared between ``add`` (one row via ``executemany`` of length 1) and
         ``add_many`` so schema/UPSERT order lives in exactly one place.
+        ``extra`` maps more columns, written after the schema's, to the cast their
+        placeholder needs (``""`` for none).
         """
+        extra = extra or {}
         id_col = self._schema.id_column
         meta_keys = self._meta_keys()
         aux_keys = self._aux_keys()
         meta_keys_no_id = [k for k in meta_keys if k != id_col]
         cols = ["embedding", id_col] + meta_keys_no_id + aux_keys
-        ph = _placeholders(len(cols))
+        ph = ", ".join(
+            [_placeholders(len(cols))]
+            + [f"${len(cols) + i + 1}{cast}" for i, cast in enumerate(extra.values())]
+        )
+        cols += list(extra)
         col_list = ", ".join(cols)
-        upsert = ", ".join(f"{c} = EXCLUDED.{c}" for c in ["embedding"] + meta_keys + aux_keys)
+        upsert = ", ".join(f"{c} = EXCLUDED.{c}" for c in ["embedding"] + meta_keys + aux_keys + list(extra))
         scope = self._scope_cols()
         conflict_cols = f"{', '.join(scope + [id_col])}" if scope else id_col
         return (
@@ -167,8 +205,13 @@ class ProdEmbeddingStore:
     async def add_many(
         self,
         items: List[tuple[str, List[float], Dict[str, Any]]],
+        columns: Optional[Callable[[Any], Awaitable[Dict[str, tuple[str, List[Any]]]]]] = None,
     ) -> None:
         """Bulk-upsert items via a single ``executemany`` (issue #183 step 3).
+
+        ``columns(conn)``, when given, runs in the batch's transaction before the rows are
+        written and returns more columns for them, ``{name: (placeholder cast, [value per
+        item])}``. They are written in the same INSERT, and updated with the row on conflict.
 
         One ``pool.acquire`` and one ``conn.transaction`` per batch instead of
         per item, which is the big win on pgvector where each row was
@@ -177,13 +220,15 @@ class ProdEmbeddingStore:
         if not items:
             return
         pool = await self._get_pool()
-        sql = self._upsert_sql()
         rows = [self._row_values(id_, embedding, metadata) for id_, embedding, metadata in items]
         # ``conn.transaction`` so a mid-batch failure rolls back cleanly.
         # The original ``add`` had implicit per-row transactions; the bulk
         # path needs an explicit one to retain the same safety.
         async with pool.acquire() as conn:
             async with conn.transaction():
+                extra = await columns(conn) if columns is not None else {}
+                sql = self._upsert_sql({name: cast for name, (cast, _) in extra.items()})
+                rows = [row + [values[i] for _, values in extra.values()] for i, row in enumerate(rows)]
                 await conn.executemany(sql, rows)
 
     async def search(

@@ -32,7 +32,7 @@ CUGA 可根据业务请求，在应用、API 和文档之间执行操作。你�
 
 在中国大陆？请先按[在中国大陆使用](#在中国大陆使用)设置镜像环境变量，再在同一终端中执行以下步骤。
 
-需要 **Python 3.12** 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
+需要 **Python 3.12** 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。CUGA 支持 Python 3.11.5 至 3.14，推荐使用 3.12。
 
 ```bash
 git clone https://github.com/cuga-project/cuga-agent.git

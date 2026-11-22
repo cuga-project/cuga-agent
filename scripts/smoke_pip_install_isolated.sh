@@ -91,6 +91,10 @@ UPGRADE_FROM=(
   "opentelemetry-api==1.41.1"
   "black==26.5.1"
   "setuptools==84.0.0"
+  "pillow==12.3.0"
+  "soupsieve==2.9.1"
+  "filelock==3.29.0"
+  "dnspython==2.8.0"
 )
 echo "==> Upgrade path: install over older transitive dependencies"
 uv venv .venv-upgrade --python "$PYTHON"
