@@ -58,10 +58,9 @@ def _compiles(code: str) -> bool:
     """Whether ``code`` (with ``await`` stripped) compiles.
 
     ``compile()`` raises more than ``SyntaxError`` on model text: ``ValueError``
-    for a NUL byte (3.10) or a lone surrogate (``UnicodeEncodeError``),
-    ``MemoryError`` for a very long run of operators, ``RecursionError`` for a
-    deeply nested expression (3.10/3.11). Any of them means "not code here";
-    none may crash the turn.
+    for a lone surrogate (``UnicodeEncodeError``), ``MemoryError`` for a very
+    long run of operators, ``RecursionError`` for a deeply nested expression.
+    Any of them means "not code here"; none may crash the turn.
     """
     try:
         compile(code.replace("await ", ""), "<string>", "exec")

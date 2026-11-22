@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import sqlite3
@@ -39,9 +40,33 @@ _FTS_STRIP_RE: re.Pattern[str] = re.compile(r"[^\w\s.@\-+]+", re.UNICODE)
 # class and nothing in its constructor enforces that invariant. Catching
 # a bad name at __init__ converts a corrupted DDL statement (data
 # corruption / SQL-injection footgun) into a clear ValueError at
-# construction time. The 63-char cap matches Postgres identifier limits
-# and SQLite's practical sweet spot.
-_COLLECTION_NAME_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_]{1,63}$")
+# construction time.
+_COLLECTION_CHARS_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_]+$")
+# Names used as table names unchanged. PostgreSQL folds unquoted identifiers to lower case
+# and the store requires lower case; both backends get at most 63 characters.
+_SQLITE_TABLE_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_]{1,63}$")
+_POSTGRES_TABLE_RE: re.Pattern[str] = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+# Every mapped table starts with this prefix, and no name used as it is may start with it, so a
+# mapped table can never be another collection's table. 32 hex digits keep the digest out of reach
+# of a search for a second name with the same table.
+_MAPPED_TABLE_PREFIX = "kbh_"
+_TABLE_DIGEST_LENGTH = 32
+
+
+def _table_name(collection: str, *, postgres: bool) -> str:
+    """Return the table that holds ``collection``'s chunks.
+
+    A name the backend accepts is used as it is, so existing tables keep their names. Any other
+    name (an agent id with upper case on PostgreSQL, a name longer than 63 characters, or one that
+    starts with the mapped prefix) maps to the prefix, its lower-case start and a digest of the full
+    name, so two collections never share a table.
+    """
+    valid = (_POSTGRES_TABLE_RE if postgres else _SQLITE_TABLE_RE).fullmatch(collection)
+    if valid and not collection.lower().startswith(_MAPPED_TABLE_PREFIX):
+        return collection
+    digest = hashlib.sha256(collection.encode("ascii")).hexdigest()[:_TABLE_DIGEST_LENGTH]
+    stem = collection.lower()[: 63 - len(_MAPPED_TABLE_PREFIX) - len(digest) - 1]
+    return f"{_MAPPED_TABLE_PREFIX}{stem}_{digest}"
 
 
 class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
@@ -78,13 +103,14 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         # arbitrary string in DDL/DML interpolations below. Catching it
         # here turns a corrupted CREATE TABLE statement into a clear
         # ValueError at construction time.
-        if not _COLLECTION_NAME_RE.fullmatch(collection):
+        if not _COLLECTION_CHARS_RE.fullmatch(collection):
             raise ValueError(
                 f"collection name {collection!r} contains characters not in "
-                f"[A-Za-z0-9_]{{1,63}}. The adapter interpolates this into DDL "
+                f"[A-Za-z0-9_]. The adapter interpolates this into DDL "
                 f"so arbitrary names risk SQL injection / DDL corruption."
             )
-        self._collection = collection
+        # The table that holds this collection's chunks; ``collection`` stays the name everywhere else.
+        self._collection = _table_name(collection, postgres=bool(postgres_url))
         self._embeddings = embeddings
         self._embedding_batch_size = max(1, int(embedding_batch_size))
         self._embedding_concurrency = max(1, int(embedding_concurrency))

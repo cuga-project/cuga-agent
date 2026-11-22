@@ -27,6 +27,7 @@ from loguru import logger
 from cuga.backend.storage import get_storage
 
 REPLICA_ID = uuid.uuid4().hex[:12]
+_STOP_POLL_SECONDS = 2.0
 
 
 @dataclass
@@ -58,6 +59,10 @@ class ThreadLease:
     def _get_store(self):
         return get_storage().get_relational_store("conversation")
 
+    async def initialize_schema(self) -> None:
+        """Prepare the lease table and timestamp migration during server startup."""
+        await self._store()
+
     async def _store(self):
         store = self._get_store()
         if self._schema_store is not store:
@@ -65,11 +70,32 @@ class ThreadLease:
                 CREATE TABLE IF NOT EXISTS thread_leases (
                     thread_id      TEXT PRIMARY KEY,
                     holder_id      TEXT NOT NULL,
-                    expires_at     REAL NOT NULL,
+                    expires_at     DOUBLE PRECISION NOT NULL,
                     stop_requested INTEGER NOT NULL DEFAULT 0,
-                    updated_at     REAL NOT NULL
+                    updated_at     DOUBLE PRECISION NOT NULL
                 )
             """)
+            from cuga.backend.storage.relational.prod import ProdRelationalStore
+
+            if isinstance(store, ProdRelationalStore):
+                # CREATE IF NOT EXISTS does not upgrade tables made by older releases.
+                # Widen both float4 columns without dropping held leases. SQLite REAL
+                # already has double precision and needs no migration.
+                await store.execute("""
+                    DO $$
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM pg_attribute
+                            WHERE attrelid = 'thread_leases'::regclass
+                              AND attname IN ('expires_at', 'updated_at')
+                              AND atttypid = 'real'::regtype
+                        ) THEN
+                            ALTER TABLE thread_leases
+                                ALTER COLUMN expires_at TYPE DOUBLE PRECISION,
+                                ALTER COLUMN updated_at TYPE DOUBLE PRECISION;
+                        END IF;
+                    END $$
+                """)
             await store.commit()
             self._schema_store = store
         return store
@@ -120,6 +146,24 @@ class ThreadLease:
         )
         await store.commit()
 
+    async def request_stop(self, thread_id: str) -> None:
+        """Ask the replica running a turn on this thread to stop it. A no-op if no lease is held."""
+        store = await self._store()
+        await store.execute(
+            "UPDATE thread_leases SET stop_requested = 1, updated_at = ? WHERE thread_id = ?",
+            (time.time(), thread_id),
+        )
+        await store.commit()
+
+    async def stop_requested(self, token: LeaseToken) -> bool:
+        """Whether a stop was requested for the turn this token holds the lease for."""
+        store = await self._store()
+        row = await store.fetchone(
+            "SELECT stop_requested FROM thread_leases WHERE thread_id = ? AND holder_id = ?",
+            (token.thread_id, token.holder_id),
+        )
+        return bool(row and row["stop_requested"])
+
 
 @asynccontextmanager
 async def keep_lease(
@@ -131,9 +175,9 @@ async def keep_lease(
 ):
     """Renew an acquired lease while the body runs, then release it, also on cancellation.
 
-    If the lease is lost, ``stop_event`` is set so the running turn stops. A renewal that errors is
-    retried until the TTL has actually run out since the last success, so one storage hiccup does
-    not kill the turn; a renewal that finds another holder stops the turn at once.
+    If the lease is lost, or another replica requests a stop, ``stop_event`` is set so the
+    running turn stops. A renewal error is retried until the TTL has elapsed since the last
+    success, while a renewal that finds a different holder stops the turn immediately.
     """
 
     async def _renew_loop() -> None:
@@ -166,15 +210,33 @@ async def keep_lease(
             last_renewed = time.monotonic()
             delay = interval
 
-    renew_task = asyncio.create_task(_renew_loop())
+    async def _stop_poll_loop() -> None:
+        while True:
+            await asyncio.sleep(_STOP_POLL_SECONDS)
+            try:
+                requested = await lease.stop_requested(token)
+            except Exception:
+                logger.exception("stop request poll failed")
+                continue
+            if requested:
+                logger.info("stop requested by another replica; stopping the turn")
+                stop_event.set()
+                # The durable flag belongs to this lease until the turn ends. Keep
+                # observing it even if a consumer clears its local cancellation event.
+
+    tasks = [asyncio.create_task(_renew_loop())]
+    if stop_event is not None:
+        tasks.append(asyncio.create_task(_stop_poll_loop()))
     try:
         yield token
     finally:
-        renew_task.cancel()
-        try:
-            await renew_task
-        except asyncio.CancelledError:
-            pass
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await asyncio.shield(lease.release(token))
 
 
