@@ -3717,15 +3717,15 @@ class CugaAgent:
                 # Don't wait for a generator that suppresses cancellation indefinitely.
                 # Retrieve any late error so it isn't reported as an unhandled task failure.
                 driver.cancel()
+                driver.add_done_callback(lambda task: None if task.cancelled() else task.exception())
                 if driver.done():
                     return
                 # The event loop keeps only weak references to tasks: hold the driver until it finishes.
                 _DETACHED_STREAM_DRIVERS.add(driver)
                 driver.add_done_callback(_DETACHED_STREAM_DRIVERS.discard)
-                driver.add_done_callback(lambda task: None if task.cancelled() else task.exception())
                 # End the root observation now; the detached cleanup may run for much longer.
                 for trace in traces:
-                    trace.end(error="cancelled: stream cleanup did not finish within the grace period")
+                    trace.end(error="cancelled: stream cleanup was still running when the caller left")
                     trace.close()
 
             if not driver.done():

@@ -2,6 +2,8 @@ import copy
 import json
 import os
 import shutil
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,6 +29,22 @@ try:
 except Exception:
     AGENT_ANALYTICS = False
     logger.warning("Ignoring agent analytics")
+
+
+@dataclass
+class InnerToolCall:
+    """Set by a caller of ``ActivityTracker.invoke_tool`` that records the call itself (``combined.py``,
+    ``call_api_helper.py``). ``invoke_tool`` sets ``caller_recorded`` when a caller's stock Langfuse handler received
+    both the start and the end of the inner ``tool.ainvoke``. Only then does the caller skip its own record.
+
+    It stays False when the inner call never ran (argument errors), or was cancelled or timed out (LangChain sends
+    no end callback for ``CancelledError``), so the call is still recorded once.
+    """
+
+    caller_recorded: bool = False
+
+
+inner_tool_call: ContextVar[Optional[InnerToolCall]] = ContextVar("inner_tool_call", default=None)
 
 
 class MergeResult(BaseModel):
@@ -97,28 +115,27 @@ class ActivityTracker(object):
             cls._instance = super(ActivityTracker, cls).__new__(cls)
         return cls._instance
 
-    def caller_handler_records(self, server_name: str, tool_name: str) -> bool:
-        """A caller's stock Langfuse handler records this tool's call, so CUGA must not record it as well.
-
-        Decide this before calling ``invoke_tool``: the callers record after the call returns.
-        """
-        from cuga.backend.observability.langfuse_sdk import caller_handler_records_tool
-
-        for tool in self.tools.get(server_name) or []:
-            if tool.name == tool_name:
-                return caller_handler_records_tool(tool)
-        return False
-
     async def invoke_tool(self, server_name: str, tool_name: str, args: dict):
         if server_name not in self.tools:
             raise ValueError(f"Server '{server_name}' not found")
 
-        from cuga.backend.observability.langfuse_sdk import inner_tool_config
+        from cuga.backend.observability.langfuse_sdk import caller_handler_records_tool, inner_tool_config
 
         # Find the tool by name
         for tool in self.tools[server_name]:
             if tool.name == tool_name:
-                result = await tool.ainvoke(args, config=inner_tool_config(tool_name))
+                config = inner_tool_config(tool_name)
+                call = inner_tool_call.get()
+                # Decided before the call; reported only after the handler got the call's end (result or error).
+                handler_records = call is not None and config is None and caller_handler_records_tool(tool)
+                try:
+                    result = await tool.ainvoke(args, config=config)
+                except Exception:
+                    if handler_records:
+                        call.caller_recorded = True
+                    raise
+                if handler_records:
+                    call.caller_recorded = True
                 logger.debug(f"type of {type(result)}")
                 # logger.debug(f"Tool output call {result.con}")
                 # Check if result is JSON parseable

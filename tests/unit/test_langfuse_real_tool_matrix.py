@@ -29,7 +29,18 @@ ROUTES = ["mcp", "direct"]
 #   managed        create_sdk_tool_handler(trace_id=...) plus configurable.langfuse_trace_id
 OWNERS = ["sdk", "stock_trace_id", "managed"]
 # (guarded, outcome)
-CASES = [(False, "allowed"), (False, "failed"), (True, "allowed"), (True, "failed"), (True, "denied")]
+# "badarg": the model passes an argument the tool does not declare, so the inner tool never runs.
+CASES = [
+    (False, "allowed"),
+    (False, "failed"),
+    (False, "badarg"),
+    (True, "allowed"),
+    (True, "failed"),
+    (True, "badarg"),
+    (True, "denied"),
+]
+# The MCP wrapper times the inner call out (tool_call_timeout); a stock handler gets no end callback for it.
+TIMEOUT_ROUTES = ["mcp"]
 CANCEL_OWNERS = [
     "sdk",
     "managed",
@@ -171,13 +182,12 @@ def _run(mode: str, route: str) -> list[dict]:
     ToolGuardingToolProvider._get_or_create_toolguard_runtime = runtime
 
     class ScriptedModel:
-        def __init__(self, value):
+        def __init__(self, args):
             if mode == "function_calling":
-                first = AIMessage(
-                    content="", tool_calls=[{"name": "lookup", "args": {"value": value}, "id": "c1"}]
-                )
+                first = AIMessage(content="", tool_calls=[{"name": "lookup", "args": args, "id": "c1"}])
             else:
-                first = AIMessage(content=f"```python\nprint(await lookup(value={value}))\n```")
+                call = ", ".join(f"{key}={value!r}" for key, value in args.items())
+                first = AIMessage(content=f"```python\nprint(await lookup({call}))\n```")
             self.responses = [first, AIMessage(content="Synthetic answer.")]
 
         def bind_tools(self, tools, **kwargs):
@@ -193,8 +203,15 @@ def _run(mode: str, route: str) -> list[dict]:
         return {a.key: a.value.string_value for a in span.attributes}
 
     async def one_run(owner, guarded, outcome):
-        value = {"allowed": 7, "failed": FAIL, "denied": DENY, "cancelled": HANG}[outcome]
-        model = ScriptedModel(value)
+        args = {
+            "allowed": {"value": 7},
+            "failed": {"value": FAIL},
+            "badarg": {"bogus": 1},
+            "denied": {"value": DENY},
+            "cancelled": {"value": HANG},
+            "timeout": {"value": HANG},
+        }[outcome]
+        model = ScriptedModel(args)
         if route == "mcp":
             agent = CugaAgent(tool_provider=ProviderFixture(wrapper), model=model, execution_mode=mode)
         else:
@@ -217,6 +234,13 @@ def _run(mode: str, route: str) -> list[dict]:
                 await asyncio.wait_for(agent.invoke("Look up a number.", config=config), 2)
             except asyncio.TimeoutError:
                 pass
+        elif outcome == "timeout":
+            previous = settings.advanced_features.tool_call_timeout
+            settings.advanced_features.tool_call_timeout = 1
+            try:
+                await agent.invoke("Look up a number.", config=config)
+            finally:
+                settings.advanced_features.tool_call_timeout = previous
         else:
             await agent.invoke("Look up a number.", config=config)
 
@@ -225,6 +249,8 @@ def _run(mode: str, route: str) -> list[dict]:
     async def exercise():
         combos = [(o, g, out) for o in OWNERS for g, out in CASES]
         combos += [(o, g, "cancelled") for o in CANCEL_OWNERS for g in (False, True)]
+        if route in TIMEOUT_ROUTES:
+            combos += [(o, g, "timeout") for o in OWNERS for g in (False, True)]
         for owner, guarded, outcome in combos:
             before = len(packets)
             error = None
