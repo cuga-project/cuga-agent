@@ -452,7 +452,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                     awaitable_tool = make_recording_awaitable(
                         awaitable_tool,
                         tool.name,
-                        app_name=_provider.app_name,
+                        app_name=_provider.app_of(tool),
                         param_names=_param_names,
                         accepts_inner_record=_guard_records,
                     )
