@@ -234,6 +234,7 @@ async def test_toolguard_provider_preserves_metadata_on_wrapped_tool_function() 
     assert guarded_tool.args_schema is raw_tool.args_schema
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_toolguard_provider_keeps_langchain_metadata_for_tool_guides() -> None:
     raw_tool = _make_recording_tool([])
@@ -251,6 +252,7 @@ async def test_toolguard_provider_keeps_langchain_metadata_for_tool_guides() -> 
     assert enriched.description.endswith("Check the fare first.")
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_toolguard_provider_guards_tagged_sdk_tool_under_its_app() -> None:
     calls: list[dict[str, Any]] = []
