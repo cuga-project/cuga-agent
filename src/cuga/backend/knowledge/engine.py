@@ -1620,11 +1620,17 @@ def _fastembed_docling_tokenizer_cls():
     fastembed loads that tokenizer with truncation at the model's limit, so a count made with it
     never exceeds 512 and every chunk looks like it fits (#1166). The chunker counts with a copy
     without truncation or padding, and counts the prefix the embedder adds to each passage
-    (E5's ``passage: ``). The embedder keeps its own truncating tokenizer for the ONNX model."""
+    (E5's ``passage: ``). The embedder keeps its own truncating tokenizer for the ONNX model.
+
+    The copy is made once per model and kept on fastembed's model object: the engine builds a
+    chunker per file, and semchunk keeps every tokenizer it is given for the life of the process,
+    so a copy per file would keep ~300 MB per file alive. After setup the copy only encodes, so
+    ingest threads share it."""
     import copy
 
     from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
-    from pydantic import PrivateAttr
+
+    lock = threading.Lock()
 
     class _FastEmbedDoclingTokenizer(BaseTokenizer):
         model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -1632,21 +1638,21 @@ def _fastembed_docling_tokenizer_cls():
         text_embedding: Any
         max_tokens: int
         passage_prefix: str = ""
-        _counter: Any = PrivateAttr(default=None)
-
-        def _rust_tokenizer(self):
-            inner = self.text_embedding.model
-            if inner.tokenizer is None:
-                inner.load_onnx_model()
-            return inner.tokenizer
 
         def _untruncated(self):
-            if self._counter is None:
-                counter = copy.deepcopy(self._rust_tokenizer())
-                counter.no_truncation()
-                counter.no_padding()
-                self._counter = counter
-            return self._counter
+            inner = self.text_embedding.model
+            counter = getattr(inner, "_cuga_chunk_counter", None)
+            if counter is None:
+                with lock:
+                    counter = getattr(inner, "_cuga_chunk_counter", None)
+                    if counter is None:
+                        if inner.tokenizer is None:
+                            inner.load_onnx_model()
+                        counter = copy.deepcopy(inner.tokenizer)
+                        counter.no_truncation()
+                        counter.no_padding()
+                        inner._cuga_chunk_counter = counter
+            return counter
 
         def count_tokens(self, text: str) -> int:
             return len(self._untruncated().encode(self.passage_prefix + text).ids)
@@ -1659,6 +1665,22 @@ def _fastembed_docling_tokenizer_cls():
             return self._untruncated()
 
     return _FastEmbedDoclingTokenizer
+
+
+def _forget_semchunk_counters() -> None:
+    """Drop the token counters semchunk keeps for the life of the process.
+
+    For each item longer than a chunk, docling's HybridChunker gives semchunk a new counter, and
+    semchunk stores it with an unbounded cache of its counts: 35-140 KB a PDF, never freed. A
+    counter is only reused while splitting that one item, so nothing is lost; a split running in
+    another thread keeps the counter it already holds."""
+    try:
+        from semchunk import semchunk
+    except ImportError:
+        return
+    counters = getattr(semchunk, "_memoized_token_counters", None)  # pinned by a test
+    if isinstance(counters, dict):
+        counters.clear()
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -5525,6 +5547,7 @@ class KnowledgeEngine:
                 raise ValueError(f"Unsupported file format: {suffix}")
 
         logger.info(f"Loaded {len(docs)} raw chunks from {file_path.name}")
+        _forget_semchunk_counters()
 
         # Post-process re-split (issue #387 follow-up). The old version of
         # this block fired whenever any chunk's CHAR length exceeded
@@ -5556,11 +5579,12 @@ class KnowledgeEngine:
         # item, or a docling-core regression). This converts a SILENT
         # embedder-side truncation — degraded retrieval, near-impossible to
         # debug — into a clean token-aware re-split plus one visible WARNING.
-        # Only ``hf``/``tiktoken`` are checked here. fastembed chunks are bounded
-        # by HybridChunker, which counts them in full with the embedder's own
-        # tokenizer and passage prefix (``_fastembed_docling_tokenizer_cls``,
-        # #1166); the char-based ``approximate`` path has no exact counter here.
-        # Both fall to the coarse net below.
+        # Only ``hf``/``tiktoken`` are checked here. fastembed chunks of Docling
+        # formats are bounded by HybridChunker, which counts them in full with the
+        # embedder's own tokenizer and passage prefix
+        # (``_fastembed_docling_tokenizer_cls``, #1166); plain-text files are split
+        # by characters, and the ``approximate`` path has no exact counter here.
+        # These fall to the coarse net below.
         if docs:
             tok_info = self.get_chunking_tokenizer(pinned)
             if tok_info.kind in ("hf", "tiktoken"):
