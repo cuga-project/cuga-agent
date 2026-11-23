@@ -288,22 +288,29 @@ def test_dropping_a_collection_while_it_is_searched(clean_tenant, monkeypatch):
     asyncio.run(_setup_extension(dsn))
     adapter = _build_adapter(dsn, clean_tenant, monkeypatch, f"kb_dropq_{uuid.uuid4().hex[:12]}")
     adapter.add_documents(_docs(6, "/tmp/dropq.pdf"))
-    stop, errors, done = threading.Event(), [], []
+    stop, errors, done, searches = threading.Event(), [], [], []
 
     def search_until_stopped():
         while not stop.is_set():
+            searches.append(1)
             try:
                 adapter.search("chunk text body", k=3)
             except Exception as exc:  # noqa: BLE001 - reported below
                 errors.append(repr(exc))
         done.append(1)
 
+    def wait_for_searches(count: int) -> None:
+        deadline = time.monotonic() + 30
+        while len(searches) < count:
+            assert time.monotonic() < deadline, "searches did not start"
+            time.sleep(0.005)
+
     threads = [threading.Thread(target=search_until_stopped, daemon=True) for _ in range(16)]
     for t in threads:
         t.start()
-    time.sleep(0.5)
+    wait_for_searches(64)  # every thread is searching, more than the 6 connections a collection gets
     adapter.drop()
-    time.sleep(0.5)
+    wait_for_searches(len(searches) + 64)  # and searches keep running after the drop
     stop.set()
     for t in threads:
         t.join(60)
@@ -333,6 +340,8 @@ def test_a_table_dropped_by_another_process(clean_tenant, monkeypatch):
         assert adapter.search("chunk text body", k=5) == []
         adapter.add_documents(_docs(2, "/tmp/again.pdf"))
         assert len(adapter.search("chunk text body", k=5)) == 2
+        # The re-created table has no keyword column yet; keyword search must set it up again.
+        assert len(adapter.search_lexical("chunk text body", k=5)) == 2
     finally:
         adapter.drop()
 

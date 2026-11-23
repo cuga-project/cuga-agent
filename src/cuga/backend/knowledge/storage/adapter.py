@@ -257,19 +257,23 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
     def _scope(self) -> dict[str, str]:
         return {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
 
-    def _ensure_store(self) -> None:
-        if self._store is not None:
-            return
+    def _ensure_store(self) -> Any:
+        """The store, created on first use. Returned so a caller keeps it even if ``drop()`` clears
+        ``self._store`` from another thread meanwhile."""
+        store = self._store
+        if store is not None:
+            return store
         dim = len(self._embeddings.embed_query("probe"))
         schema = knowledge_embedding_schema(dim)
         if self._use_prod:
             from cuga.backend.storage.embedding.prod import ProdEmbeddingStore
 
-            self._store = ProdEmbeddingStore(self._postgres_url, self._collection, schema, shared_pool=True)
+            store = ProdEmbeddingStore(self._postgres_url, self._collection, schema, shared_pool=True)
         else:
             from cuga.backend.storage.embedding.local import LocalEmbeddingStore
 
-            self._store = LocalEmbeddingStore(self._local_db_path, self._collection, schema)
+            store = LocalEmbeddingStore(self._local_db_path, self._collection, schema)
+        self._store = store
         self._dim = dim
         logger.info(
             "Knowledge storage-backed vector store ready: collection={} dim={} prod={}",
@@ -277,6 +281,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             dim,
             self._use_prod,
         )
+        return store
 
     def _run_embedding_coro(self, coro):
         """Run async vector store work and return its result.
@@ -1142,8 +1147,11 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         t_insert = time.monotonic()
         count = self._run_embedding_coro(_add_all())
         if bare:
-            # No keyword column yet (a new table, or one from before keyword search): add it and
-            # fill these rows now if the table is free; if it is busy, the next keyword search does.
+            # No keyword column yet (a new table, one from before keyword search, or one another
+            # process dropped and this upload created again): add it and fill these rows now if the
+            # table is free; if it is busy, the next keyword search does. An earlier setup of the
+            # dropped table no longer counts.
+            self._fts_ready = False
             try:
                 self._pg_keyword_run(self._pg_ensure_terms)
             except Exception as exc:  # noqa: BLE001 — the chunks are stored; only keywords wait
@@ -1176,8 +1184,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         return {"num_added": count, "num_skipped": 0}
 
     def search(self, query: str, k: int = 10) -> list[tuple[Document, float]]:
-        self._ensure_store()
-        store = self._store  # drop() may clear self._store before the Postgres loop runs _go
+        store = self._ensure_store()  # kept even if drop() clears self._store meanwhile
         q_emb = self._embeddings.embed_query(query)
         filt = dict(self._scope())
 
