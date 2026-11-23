@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -28,6 +29,11 @@ class VectorStoreAdapter(ABC):
     @abstractmethod
     def search(self, query: str, k: int = 10) -> list[tuple[Document, float]]:
         """Dense similarity search; scores in [0, 1], higher is more similar."""
+
+    async def asearch(self, query: str, k: int = 10) -> list[tuple[Document, float]]:
+        """:meth:`search` for a caller on an event loop. The default runs ``search`` in a worker
+        thread; an adapter whose store is async can await it on the caller's loop instead."""
+        return await asyncio.to_thread(self.search, query, k)
 
     def search_lexical(self, query: str, k: int = 10) -> list[tuple[Document, float]]:
         """BM25 / lexical retrieval companion to :meth:`search`.
