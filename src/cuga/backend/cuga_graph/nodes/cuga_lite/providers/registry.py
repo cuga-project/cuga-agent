@@ -93,6 +93,9 @@ async def call_api(
             except json.JSONDecodeError:
                 result = response_data
             return result
+    except asyncio.CancelledError:
+        error_msg = "cancelled"
+        raise
     except asyncio.TimeoutError:
         error_msg = f"Tool call '{api_name}' timed out after {timeout_seconds} seconds"
         raise TimeoutError(error_msg)

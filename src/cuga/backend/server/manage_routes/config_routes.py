@@ -1,6 +1,5 @@
 """Config read/publish/history/delete endpoints."""
 
-from collections.abc import Mapping
 from typing import Any, Optional
 
 from fastapi import HTTPException, Request
@@ -106,6 +105,9 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
 
     data = await request.json()
     config = data.get("config", data) or {}
+    # Earlier versions saved an unused knowledge_state snapshot into drafts;
+    # drop a copy sent back from one so it is not published again.
+    config.pop("knowledge_state", None)
     agent_meta = config.get("agent")
     if not isinstance(agent_meta, dict) or not (agent_meta.get("name") or "").strip():
         return JSONResponse(
@@ -314,49 +316,6 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         config["knowledge"]["_adaptation_hash"] = _new_adapt_hash
         config["knowledge"]["_glossary_hash"] = _new_gloss_hash
 
-        # Snapshot knowledge state for import/export portability.
-        # Stores collection name, persist_dir, pinned collection config, and
-        # document metadata (filenames + file paths) so an imported config can
-        # reconnect to existing on-disk knowledge data without re-ingestion.
-        if engine:
-            import re as _re_snap
-
-            _current_hash = (
-                (_prev_hash if _defer_vector_hash_promotion else _vec_hash)
-                or getattr(state, "knowledge_config_hash", "")
-                or _prev_hash
-            )
-            _snap_id = _re_snap.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
-            _snap_col = f"kb_agent_{_snap_id}_{_current_hash}" if _current_hash else f"kb_agent_{_snap_id}"
-            try:
-                _state: dict[str, Any] = {
-                    "collection": _snap_col,
-                    "persist_dir": str(engine._config.persist_dir),
-                }
-                _col_cfg = await engine._metadata.get_collection_config(_snap_col)
-                if _col_cfg and (isinstance(_col_cfg, dict) or isinstance(_col_cfg, Mapping)):
-                    _state["collection_config"] = {
-                        "embedding_provider": _col_cfg.get("embedding_provider", ""),
-                        "embedding_model": _col_cfg.get("embedding_model", ""),
-                        "embedding_dim": _col_cfg.get("embedding_dim"),
-                    }
-                _docs = await engine.list_documents(_snap_col)
-                if _docs:
-                    _files_dir = engine._files_dir / _snap_col
-                    _state["documents"] = [
-                        {
-                            "filename": d.filename,
-                            "file_path": str(_files_dir / d.filename),
-                            "chunk_count": d.chunk_count,
-                            "status": d.status,
-                            "ingested_at": d.ingested_at,
-                        }
-                        for d in _docs
-                    ]
-                config["knowledge_state"] = _state
-            except Exception as _snap_err:
-                logger.warning(f"Failed to snapshot knowledge state: {_snap_err}")
-
         # Phase B: Save version + commit knowledge immediately after
         # Keep draft aligned with the just-published configuration because
         # Manage loads draft first on re-entry.
@@ -393,8 +352,6 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
             knowledge_result = engine.commit_knowledge_update(prepared_knowledge)
 
         # Phase C: Apply LLM/tools/policies + rebuild (existing, best-effort)
-        # Strip knowledge_state before runtime apply — it's for export/import only.
-        config.pop("knowledge_state", None)
         # Only cuga-default owns the process-wide singleton runtime. Publishing any
         # other agent must leave app_state.agent / current_llm / tools / policies
         # untouched; those agents run from the per-id graph cache instead.

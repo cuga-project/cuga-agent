@@ -46,7 +46,7 @@ class CallApiHelper:
         import json
         import aiohttp
         from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url, post_registry_call
-        from cuga.backend.activity_tracker.tracker import ActivityTracker
+        from cuga.backend.activity_tracker.tracker import ActivityTracker, InnerToolCall, inner_tool_call
         from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
 
         tracker = ActivityTracker()
@@ -73,6 +73,9 @@ class CallApiHelper:
             start_time = time.time()
             result = None
             error_msg = None
+            # invoke_tool reports whether a caller's stock Langfuse handler recorded the inner tool.ainvoke.
+            inner_call = InnerToolCall()
+            inner_token = inner_tool_call.set(inner_call)
 
             try:
                 # First try tracker (for runtime tools)
@@ -139,7 +142,9 @@ class CallApiHelper:
                     operation_id=operation_id,
                     duration_ms=duration_ms,
                     error=error_msg,
+                    langchain_tool=inner_call.caller_recorded,
                 )
+                inner_tool_call.reset(inner_token)
 
         return call_api
 
