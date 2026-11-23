@@ -394,12 +394,28 @@ def test_after_the_server_refuses_connections_later_calls_still_work(clean_tenan
                 async with _acquire(pool):
                     pass
 
-            refused = asyncio.ensure_future(needs_one_more())
-            await asyncio.sleep(0)  # its connect is under way
-            for conn in held:
-                await pool.release(conn)
-            with pytest.raises(asyncpg.exceptions.TooManyConnectionsError):
-                await refused
+            # Hold the extra call's connect until the 3 connections are back in the pool, so the
+            # refusal surely comes back last (releasing is a round trip too; without this gate the
+            # order depends on timing and the test can pass without the fix).
+            connect_started, releases_done = asyncio.Event(), asyncio.Event()
+            real_connect = pool._connect
+
+            async def gated_connect(*args, **kwargs):  # forwards asyncpg's own connect arguments
+                connect_started.set()
+                await releases_done.wait()
+                return await real_connect(*args, **kwargs)
+
+            pool._connect = gated_connect  # an asyncpg slot; if it is renamed, this test fails
+            try:
+                refused = asyncio.ensure_future(needs_one_more())
+                await asyncio.wait_for(connect_started.wait(), 10)
+                for conn in held:
+                    await pool.release(conn)
+                releases_done.set()
+                with pytest.raises(asyncpg.exceptions.TooManyConnectionsError):
+                    await refused
+            finally:
+                pool._connect = real_connect
 
         adapter._run_embedding_coro(refuse_a_connect_after_the_pool_went_idle())
         assert [len(adapter.search("chunk text body", k=3)) for _ in range(10)] == [3] * 10
