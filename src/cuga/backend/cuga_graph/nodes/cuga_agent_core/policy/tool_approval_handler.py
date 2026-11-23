@@ -152,9 +152,7 @@ class ToolApprovalHandler:
             context = PolicyConfigurable.create_context_from_state(state, config or {})
             logger.debug(f"Created context with user_input: '{context.user_input}'")
 
-            policy_match = await policy_system.agent.check_tool_approval_for_code(
-                code, context, tool_apps=adapter.get_tool_apps()
-            )
+            policy_match = await policy_system.agent.check_tool_approval_for_code(code, context)
             logger.debug(f"Policy match result: {policy_match}")
 
         except Exception as e:
