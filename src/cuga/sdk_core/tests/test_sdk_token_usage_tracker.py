@@ -159,6 +159,7 @@ class TestTokenUsageTrackerIntegration:
         # (This is verified by code inspection - both invoke() and stream()
         # set run_config["callbacks"] and run_config["configurable"]["callbacks"])
 
+    @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_invoke_does_not_mutate_caller_config(self):
         """Reusing a config across invoke() calls must not accumulate callbacks.
@@ -167,6 +168,7 @@ class TestTokenUsageTrackerIntegration:
         config dict, causing TokenUsageTracker instances to pile up on each call.
         """
         from unittest.mock import patch, AsyncMock
+        from types import SimpleNamespace
 
         agent = CugaAgent(tools=[simple_calculator])
 
@@ -175,7 +177,12 @@ class TestTokenUsageTrackerIntegration:
             patch.object(
                 type(agent),
                 "graph",
-                new_callable=lambda: property(lambda self: AsyncMock(ainvoke=AsyncMock(return_value={}))),
+                new_callable=lambda: property(
+                    lambda self: AsyncMock(
+                        ainvoke=AsyncMock(return_value={}),
+                        aget_state=AsyncMock(return_value=SimpleNamespace(values={})),
+                    )
+                ),
             ),
         ):
             caller_config: dict = {"configurable": {"thread_id": "t-1"}}

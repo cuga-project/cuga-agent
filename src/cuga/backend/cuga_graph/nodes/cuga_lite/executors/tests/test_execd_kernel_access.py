@@ -42,6 +42,7 @@ def _wrapped(code: str, fake_datetime: str | None = None) -> str:
         "import asyncio\nawait asyncio.create_subprocess_shell('id')",
         "import asyncio\nawait asyncio.create_subprocess_exec('id')",
         "import asyncio\nasyncio.subprocess",
+        "import asyncio\nasyncio.get_running_loop()._make_subprocess_transport",
         "global _cuga_x\n_cuga_x = 1",
         "import json\njson._cuga_x",
     ],

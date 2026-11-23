@@ -19,12 +19,14 @@ class _SecurityAstVisitor(ast.NodeVisitor):
         forbidden_calls: FrozenSet[str],
         forbidden_attrs: FrozenSet[str],
         forbidden_io_attrs: FrozenSet[str] = frozenset(),
+        forbidden_spawn_attrs: FrozenSet[str] = frozenset(),
         strict: bool,
     ) -> None:
         self.forbidden_modules = forbidden_modules
         self.forbidden_calls = forbidden_calls
         self.forbidden_attrs = forbidden_attrs
         self.forbidden_io_attrs = forbidden_io_attrs
+        self.forbidden_spawn_attrs = forbidden_spawn_attrs
         self.strict = strict
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -40,7 +42,7 @@ class _SecurityAstVisitor(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         if self.strict:
             name = self._call_name(node.func)
-            if name in self.forbidden_calls:
+            if name in self.forbidden_calls or name in self.forbidden_spawn_attrs:
                 raise PermissionError(
                     f"Security violation: Suspicious pattern detected - "
                     f"dangerous call '{name}' in wrapped code"
@@ -74,6 +76,11 @@ class _SecurityAstVisitor(ast.NodeVisitor):
                 raise PermissionError(
                     f"Security violation: Suspicious pattern detected - "
                     f"forbidden module '{attr}' reached via attribute access in wrapped code"
+                )
+            if attr in self.forbidden_spawn_attrs:
+                raise PermissionError(
+                    f"Security violation: Suspicious pattern detected - "
+                    f"forbidden process or event-loop attribute '{attr}' in wrapped code"
                 )
             # Allowlisted data libraries (pandas, numpy) expose file/URL/pickle I/O that
             # escapes the sandbox (read_pickle -> __reduce__ RCE, read_csv host read,
@@ -211,6 +218,38 @@ class SecurityValidator:
             # (``<any>.modules[...]``, ``<any>.environ``) is caught.
             'modules',
             'environ',
+            # Frame and await-chain links: a coroutine made in a real module (a tool, or
+            # the asyncio facade helpers) has a frame whose f_builtins are the real
+            # builtins, and its await chain leads to real asyncio objects and the loop.
+            'f_builtins',
+            'f_trace',
+            'cr_frame',
+            'gi_frame',
+            'ag_frame',
+            'tb_frame',
+            'cr_await',
+            'gi_yieldfrom',
+            'ag_await',
+            # A coroutine stepped by hand (``send``) yields the real Future it awaits;
+            # these are that Future's links to the running event loop.
+            'get_loop',
+            '_loop',
+        }
+    )
+
+    # Backstop only. The asyncio facade (restricted_environment) and the frame /
+    # await-chain / loop names above are the fix; these names catch a process-spawn
+    # or event-loop reach through some other object.
+    FORBIDDEN_SPAWN_ATTRS: FrozenSet[str] = frozenset(
+        {
+            'create_subprocess_exec',
+            'create_subprocess_shell',
+            'subprocess_exec',
+            'subprocess_shell',
+            'get_running_loop',
+            'get_event_loop',
+            # The loop method that create_subprocess_* and subprocess_* call.
+            '_make_subprocess_transport',
         }
     )
 
@@ -369,6 +408,7 @@ class SecurityValidator:
             forbidden_calls=SecurityValidator.FORBIDDEN_CALLS,
             forbidden_attrs=SecurityValidator.FORBIDDEN_ATTRS,
             forbidden_io_attrs=SecurityValidator.FORBIDDEN_IO_ATTRS if strict else frozenset(),
+            forbidden_spawn_attrs=SecurityValidator.FORBIDDEN_SPAWN_ATTRS if strict else frozenset(),
             strict=strict,
         )
         visitor.visit(tree)

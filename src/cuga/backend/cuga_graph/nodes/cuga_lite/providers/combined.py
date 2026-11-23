@@ -12,7 +12,7 @@ import aiohttp
 from langchain_core.tools import StructuredTool
 from loguru import logger
 
-from cuga.backend.activity_tracker.tracker import ActivityTracker
+from cuga.backend.activity_tracker.tracker import ActivityTracker, InnerToolCall, inner_tool_call
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     AppDefinition,
     ToolProviderInterface,
@@ -113,6 +113,9 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
         start_time = time.time()
         result = None
         error_msg = None
+        # invoke_tool reports whether a caller's stock Langfuse handler recorded the inner tool.ainvoke.
+        inner_call = InnerToolCall()
+        inner_token = inner_tool_call.set(inner_call)
 
         try:
             param_names = list(field_definitions.keys()) if field_definitions else []
@@ -140,6 +143,9 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
                 error_msg = f"Tool call '{tool_name}' timed out after {timeout_seconds} seconds"
                 logger.error(error_msg)
                 raise TimeoutError(error_msg)
+        except asyncio.CancelledError:
+            error_msg = "cancelled"
+            raise
         except TimeoutError:
             raise
         except Exception as e:
@@ -156,7 +162,9 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
                 operation_id=_operation_id,
                 duration_ms=duration_ms,
                 error=error_msg,
+                langchain_tool=inner_call.caller_recorded,
             )
+            inner_tool_call.reset(inner_token)
 
     def tool_func_sync(*args, **kwargs):
         try:

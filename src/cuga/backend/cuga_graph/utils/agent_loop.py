@@ -14,7 +14,7 @@ from cuga.backend.cuga_graph.nodes.browser.qa_agent.prompts.load_prompt import Q
 from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
 from cuga.config import settings
 import logging
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, Awaitable, Callable, Dict, Generator, List, Optional
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, ToolCall
@@ -356,6 +356,7 @@ class AgentLoop:
         agent_id: Optional[str] = None,
         knowledge_user_id: Optional[str] = None,
         checkpoint_thread_id: Optional[str] = None,
+        child_checkpoint_recorder: Optional[Callable[[str], Awaitable[None]]] = None,
     ):
         self.env_pointer = env_pointer
         self.thread_id = thread_id
@@ -376,6 +377,7 @@ class AgentLoop:
         self.special_instructions = special_instructions
         self.agent_id = agent_id
         self.knowledge_user_id = knowledge_user_id
+        self.child_checkpoint_recorder = child_checkpoint_recorder
 
     async def stream_event(self, event: StreamEvent) -> Generator[str, None, None]:
         yield event.format()
@@ -597,6 +599,8 @@ class AgentLoop:
             },
         }
 
+        if self.child_checkpoint_recorder is not None:
+            config["configurable"]["child_checkpoint_recorder"] = self.child_checkpoint_recorder
         if self.agent_id:
             config["configurable"]["knowledge_agent_id"] = self.agent_id
         if self.knowledge_user_id:

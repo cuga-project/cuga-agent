@@ -449,6 +449,13 @@ export async function getConversations(agentId?: string): Promise<ConversationTh
   return response.json();
 }
 
+export async function validateConversation(threadId: string, agentId: string): Promise<boolean> {
+  const response = await apiFetch(`/api/conversations/${encodeURIComponent(threadId)}?agent_id=${encodeURIComponent(agentId)}`);
+  if (response.status === 404) return false;
+  if (!response.ok) throw new Error(`Failed to validate conversation: HTTP ${response.status}`);
+  return true;
+}
+
 export async function createConversation(agentId: string, title?: string): Promise<ConversationThread> {
   const response = await apiFetch("/api/conversations", {
     method: "POST",

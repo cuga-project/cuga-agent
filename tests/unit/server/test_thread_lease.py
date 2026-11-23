@@ -58,7 +58,7 @@ async def test_keep_lease_renews_releases_and_stops_the_turn_when_lost(lease):
         await store.commit()
         await asyncio.wait_for(stop.wait(), timeout=5.0)
 
-    # One failed renewal is retried while the lease is still valid, so the turn keeps running.
+    # One failed renewal is retried while the lease is still valid.
     renew = lease.renew
     failures = iter([True])
 
@@ -76,7 +76,6 @@ async def test_keep_lease_renews_releases_and_stops_the_turn_when_lost(lease):
         with pytest.raises(ThreadBusy):
             await lease.acquire("t2")
 
-    # Renewals that keep failing stop the turn once the TTL has run out.
     async def broken_renew(*args, **kwargs):
         raise RuntimeError("database down")
 
@@ -85,3 +84,29 @@ async def test_keep_lease_renews_releases_and_stops_the_turn_when_lost(lease):
     lease.renew = broken_renew
     async with keep_lease(lease, token, stop_event=stop, renew_seconds=0.02, ttl_seconds=0.1):
         await asyncio.wait_for(stop.wait(), timeout=5.0)
+
+
+async def test_cross_replica_stop_sets_the_holders_stop_event(lease, monkeypatch):
+    monkeypatch.setattr(thread_lease_module, "_STOP_POLL_SECONDS", 0.01)
+    replica_b = ThreadLease()
+    token = await lease.acquire("t1")
+    stop = asyncio.Event()
+    async with keep_lease(lease, token, stop_event=stop, renew_seconds=30.0):
+        assert not stop.is_set()
+        await replica_b.request_stop("t1")
+        await asyncio.wait_for(stop.wait(), timeout=5.0)
+        stop.clear()
+        # A cleared local event must not lose the durable stop for this turn.
+        await asyncio.wait_for(stop.wait(), timeout=5.0)
+
+
+async def test_acquire_clears_the_stop_flag(lease):
+    await lease.request_stop("t1")
+    token = await lease.acquire("t1", ttl_seconds=-1.0)
+    assert await lease.stop_requested(token) is False
+    await lease.request_stop("t1")
+    assert await lease.stop_requested(token) is True
+
+    new = await lease.acquire("t1")
+    assert await lease.stop_requested(new) is False
+    assert await lease.stop_requested(token) is False
