@@ -227,7 +227,9 @@ def problem() -> Optional[str]:
     try:
         conn = configured()
     except Exception as e:
-        return str(e)
+        # The text can name secret paths or a secret store's reply: the log gets it, the UI does not.
+        logger.warning(f"[execd:conn] Could not read the sandbox connection: {e}")
+        return "The sandbox connection could not be read; see the server log"
     if not conn.url:
         return "Sandbox URL is not configured"
     from . import tool_callback
