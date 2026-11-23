@@ -81,6 +81,7 @@ def test_collections_share_one_pool_per_database(created_pools):
     assert kwargs["max_size"] == prod.SHARED_POOL_MAX_SIZE
     assert kwargs["min_size"] == 0
     assert kwargs["max_inactive_connection_lifetime"] == prod.SHARED_POOL_IDLE_S
+    assert kwargs["server_settings"] == {"application_name": "cuga-knowledge"}
 
 
 @pytest.mark.asyncio
@@ -134,6 +135,10 @@ async def test_a_dropped_table_reads_as_empty_and_the_next_write_recreates_it(cr
     conn.fetch = AsyncMock(side_effect=missing)
     assert await store.search([0.0, 0.0, 1.0], 3, {}) == []
     assert await store.list({}, 10) == []
+    conn.fetchrow = AsyncMock(side_effect=missing)
+    assert await store.get("a") is None
+    conn.execute = AsyncMock(side_effect=missing)
+    await store.delete("a")  # nothing to delete
 
     ensure = AsyncMock()
     monkeypatch.setattr(store, "_ensure_table", ensure)
@@ -211,3 +216,58 @@ async def test_asyncpg_pool_still_keeps_its_slots_in_a_lifo_list():
         assert len(slots) == 2 and not any(slot.is_connected() for slot in slots)
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_one_busy_collection_leaves_connections_for_the_others(created_pools):
+    """A store holds at most SHARED_POOL_MAX_SIZE - 2 of the shared pool's connections, so a slow
+    or locked table cannot take every connection from the other collections."""
+    busy = _store("kb_busy")
+    await busy.search([0.0, 0.0, 1.0], 3, {})  # creates the pool and checks the table
+    pool = created_pools[0]
+    release = asyncio.Event()
+
+    async def slow_fetch(*args):
+        await release.wait()
+        return []
+
+    pool.connection.fetch = AsyncMock(side_effect=slow_fetch)
+    before = pool.acquire.await_count
+    searches = [
+        asyncio.ensure_future(busy.search([0.0, 0.0, 1.0], 3, {})) for _ in range(prod.SHARED_POOL_MAX_SIZE)
+    ]
+    await asyncio.sleep(0.05)  # no I/O: every search has run as far as it can
+    held = pool.acquire.await_count - before
+    release.set()
+    await asyncio.gather(*searches)
+
+    assert held == prod.SHARED_POOL_MAX_SIZE - 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_calls_create_one_shared_pool(created_pools, monkeypatch):
+    async def slow_new_pool(postgres_url, **kwargs):
+        await asyncio.sleep(0.01)  # connecting yields, so every caller reaches the pool check meanwhile
+        created_pools.append(_fake_pool())
+        return created_pools[-1]
+
+    monkeypatch.setattr(prod, "_new_pool", slow_new_pool)
+
+    pools = await asyncio.gather(*(prod.shared_pool("postgresql://u@h/db") for _ in range(10)))
+
+    assert len(created_pools) == 1
+    assert all(pool is created_pools[0] for pool in pools)
+
+
+def test_a_search_keeps_its_store_when_the_collection_is_dropped_meanwhile(created_pools):
+    adapter = _adapter()
+    adapter.search("q")  # creates the store
+    embed_query = adapter._embeddings.embed_query
+
+    def dropped_meanwhile(text):
+        adapter._store = None  # what drop() leaves, from another thread, while this search embeds
+        return embed_query(text)
+
+    adapter._embeddings.embed_query = dropped_meanwhile
+
+    assert adapter.search("q") == []
