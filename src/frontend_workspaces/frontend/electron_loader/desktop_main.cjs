@@ -18,8 +18,10 @@ let backendProcess = null;
 function resolveUv() {
     if (process.env.UV_PATH) return process.env.UV_PATH;
     // Common install locations when Electron strips PATH down to /usr/bin:/bin
+    const os = require('os');
+    const home = os.homedir();
     const candidates = [
-        '/Users/' + require('os').userInfo().username + '/.local/bin/uv',
+        path.join(home, '.local', 'bin', 'uv'),
         '/usr/local/bin/uv',
         '/opt/homebrew/bin/uv',
         'uv',
@@ -32,11 +34,12 @@ function spawnBackend() {
     const uvPath = resolveUv();
     // __dirname is .../frontend/electron_loader — go up 4 levels to reach repo root
     const repoRoot = path.resolve(__dirname, '../../../..');
+    const homeBin = path.join(require('os').homedir(), '.local', 'bin');
     backendProcess = spawn(uvPath, ['run', 'cuga', 'start', 'demo'], {
         cwd: repoRoot,
         env: {
             ...process.env,
-            PATH: `/Users/${require('os').userInfo().username}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
+            PATH: `${homeBin}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
         },
         stdio: 'inherit',
         detached: false,
