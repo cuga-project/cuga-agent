@@ -75,3 +75,17 @@ async def test_no_tools_still_lists_the_default_app():
     p = DirectLangChainToolsProvider(tools=[])
     assert [a.name for a in await p.get_apps()] == ["runtime_tools"]
     assert await p.get_tools("runtime_tools") == []
+
+
+@pytest.mark.parametrize("reserved", ["web", "knowledge", "filesystem", "shell"])
+def test_tool_tagged_with_a_built_in_app_name_is_rejected(reserved):
+    @tool
+    def lookup(query: str) -> str:
+        """Look something up."""
+        return ""
+
+    lookup.metadata = {"app_name": reserved}
+    with pytest.raises(ValueError, match="built-in app name"):
+        DirectLangChainToolsProvider(tools=[lookup])
+    with pytest.raises(ValueError, match="built-in app name"):
+        DirectLangChainToolsProvider(tools=[]).add_tool(lookup)

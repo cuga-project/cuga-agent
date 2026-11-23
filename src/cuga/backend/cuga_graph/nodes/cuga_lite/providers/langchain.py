@@ -47,6 +47,8 @@ class DirectLangChainToolsProvider(ToolProviderInterface):
     """
 
     APP_METADATA_KEY = "app_name"
+    # Apps that CUGA adds itself; a tool tagged with one would be mixed into the built-in app
+    RESERVED_APP_NAMES = frozenset({"web", "knowledge", "filesystem", "shell"})
 
     def __init__(
         self,
@@ -80,6 +82,8 @@ class DirectLangChainToolsProvider(ToolProviderInterface):
             if not hasattr(tool, "name") or not tool.name:
                 raise ValueError(f"Tool at index {i} is missing a name")
 
+            self._check_app_name(tool)
+
             if isinstance(tool, StructuredTool) and not hasattr(tool, "func"):
                 logger.warning(
                     f"StructuredTool '{tool.name}' is missing .func attribute. "
@@ -103,6 +107,15 @@ class DirectLangChainToolsProvider(ToolProviderInterface):
             )
 
         self.initialized = True
+
+    def _check_app_name(self, tool: BaseTool) -> None:
+        """Reject a tool whose ``metadata["app_name"]`` is a built-in app name."""
+        name = (getattr(tool, "metadata", None) or {}).get(self.APP_METADATA_KEY)
+        if name in self.RESERVED_APP_NAMES:
+            raise ValueError(
+                f"Tool '{tool.name}' has metadata['app_name']={name!r}, which is a built-in app name. "
+                f"Use another app name; reserved: {sorted(self.RESERVED_APP_NAMES)}."
+            )
 
     def app_of(self, tool: BaseTool) -> str:
         """The app a tool belongs to: ``tool.metadata["app_name"]``, else the default app."""
@@ -180,6 +193,7 @@ class DirectLangChainToolsProvider(ToolProviderInterface):
         """
         if not isinstance(tool, BaseTool):
             raise ValueError(f"Tool must be a LangChain BaseTool, got {type(tool).__name__}")
+        self._check_app_name(tool)
 
         self.tools.append(tool)
         logger.info(f"Added tool '{tool.name}' to DirectLangChainToolsProvider")
