@@ -17,7 +17,9 @@ import shutil
 import socket
 import threading
 import time
+import unicodedata
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields as dc_fields
 from pathlib import Path
 from typing import Any, Optional
@@ -49,6 +51,20 @@ logger = loguru_logger
 # and blocking every future reindex/publish for that agent with no self-heal
 # short of a process restart.
 _REINDEX_WORKER_TIMEOUT_S = 1800  # 30 min; matches the deferred-flip wall-clock cap
+
+# A keyword leg slower than this is left out of that search, which then ranks by meaning only,
+# as it does when a collection has no keyword index. Its thread runs on: after an upgrade the
+# first keyword call rebuilds the keyword index (about a minute per 50,000 chunks), which must
+# finish, but must not hold up a search past the agent's tool timeout.
+_KEYWORD_LEG_BUDGET_S = 5.0
+
+# Keyword calls run on their own few threads. A call past its budget keeps its thread until the
+# database returns (Postgres allows 60 s); on the shared default executor such threads would pile
+# up and hold up the vector leg and every other to_thread call. A slot is held until the call
+# returns, and with every slot busy a search skips the keyword leg instead of queueing.
+_KEYWORD_LEG_THREADS = 4
+_KEYWORD_POOL = ThreadPoolExecutor(max_workers=_KEYWORD_LEG_THREADS, thread_name_prefix="cuga-keyword")
+_KEYWORD_SLOTS = threading.BoundedSemaphore(_KEYWORD_LEG_THREADS)
 
 # Strong-ref set for fire-and-forget reindex worker tasks — the event loop keeps
 # only WEAK refs to create_task() results, so a GC mid-run would drop the finally
@@ -323,7 +339,9 @@ def _classify_junk_chunk(text: str, filename: str) -> str | None:
 
     Rules — kept few and explicable so an SRE reading a log line can
     instantly diagnose a false positive:
-      - ``"too_short"`` : ``len(text.strip()) < 30`` — orphan caption fragments.
+      - ``"too_short"`` : under 30 columns of display width — orphan caption
+        fragments. Chinese, Japanese and Korean characters count as two columns
+        (East Asian Wide), so a 16-character Chinese sentence is not dropped.
       - ``"cid_glyph_run"``: a consecutive run of ≥3 CID-shape tokens.
         Catches mixed-content chunks where a glyph fragment is intermixed
         with prose (the ratio rule below misses these because the prose
@@ -348,7 +366,9 @@ def _classify_junk_chunk(text: str, filename: str) -> str | None:
     """
     stripped = text.strip()
     total = len(stripped)
-    if total < 30:
+    # Composed first: a decomposed (NFD) kana or Hangul syllable would count each of its parts.
+    composed = unicodedata.normalize("NFC", stripped)
+    if total < 30 and sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in composed) < 30:
         return "too_short"
 
     # CID-glyph rules run BEFORE the code-file whitelist because no
@@ -558,13 +578,15 @@ def _rrf_fuse(
         _r.lexical_rank = _l
         _r.rrf_score = round(_rrf_score(_d, _l), 6)
 
-    # Deterministic ordering: primary key is fused score (desc); ties
-    # break on (filename, page) so identical queries produce identical
-    # orderings across runs.
+    # Deterministic ordering: primary key is fused score (desc). Equal fused
+    # scores are common: when the two legs swap their top two, both chunks
+    # score 1/(k+1) + 1/(k+2). Break those ties on the dense rank, then on
+    # (filename, page) so identical queries produce identical orderings.
     fused = sorted(
         items.values(),
         key=lambda v: (
             -v[0].rrf_score if v[0].rrf_score is not None else 0.0,
+            v[1] if v[1] is not None else float("inf"),
             v[0].filename,
             v[0].page if v[0].page is not None else -1,
         ),
@@ -893,6 +915,16 @@ def _detect_accelerator(use_gpu: bool) -> tuple[str, list[str]]:
     return device, providers
 
 
+def _docling_device(use_gpu: bool) -> str:
+    """The device Docling's models run on: CUDA when available, otherwise CPU.
+
+    Docling's models fail on Apple's MPS (the layout model builds float64 tensors, the
+    table model rejects MPS), so on a Mac Docling runs on CPU while embeddings keep the GPU.
+    """
+    device, _ = _detect_accelerator(use_gpu)
+    return "cuda" if device == "cuda" else "cpu"
+
+
 # --- Embedding factory ---
 
 
@@ -949,6 +981,13 @@ def _purge_model_cache(cache_root: Path) -> None:
     shutil.rmtree(cache_root, ignore_errors=True)
     lock_dir = cache_root.parent / ".locks" / cache_root.name
     shutil.rmtree(lock_dir, ignore_errors=True)
+
+
+def _e5_prefixes(model_name: str) -> tuple[str, str]:
+    """E5-family models need "query: " / "passage: " on their inputs to reach their published recall."""
+    m = (model_name or "").lower()
+    is_e5 = "e5" in m and ("intfloat" in m or "multilingual" in m or m.startswith("e5"))
+    return ("query: ", "passage: ") if is_e5 else ("", "")
 
 
 class _FastEmbedEmbeddings(Embeddings):
@@ -1016,10 +1055,7 @@ class _FastEmbedEmbeddings(Embeddings):
         # E5-family prefix: required for any intfloat/e5-* model to reach
         # published recall numbers. Detected from model name. Non-E5 models
         # see a no-op (empty prefixes).
-        m = (model_name or "").lower()
-        is_e5 = "e5" in m and ("intfloat" in m or "multilingual" in m or m.startswith("e5"))
-        self._query_prefix = "query: " if is_e5 else ""
-        self._passage_prefix = "passage: " if is_e5 else ""
+        self._query_prefix, self._passage_prefix = _e5_prefixes(model_name)
 
     def _detect_active_providers(self) -> list[str]:
         # fastembed nests the ORT session under model.model.model — versions vary.
@@ -1100,6 +1136,7 @@ class _PyTorchEmbeddings(Embeddings):
         # Some tokenizers report a sentinel like 1e30 for "no limit"; cap to 512.
         if self._max_seq_len > 8192:
             self._max_seq_len = 512
+        self._query_prefix, self._passage_prefix = _e5_prefixes(model_name)
 
     @staticmethod
     def _mean_pool(last_hidden_state, attention_mask):
@@ -1114,14 +1151,14 @@ class _PyTorchEmbeddings(Embeddings):
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         import torch
 
-        enc = self._tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=self._max_seq_len,
-            return_tensors="pt",
-        ).to(self._device)
         with torch.no_grad():
+            enc = self._tokenizer(
+                texts,
+                padding=True,
+                truncation=True,
+                max_length=self._max_seq_len,
+                return_tensors="pt",
+            ).to(self._device)
             out = self._model(**enc)
         pooled = self._mean_pool(out.last_hidden_state, enc["attention_mask"])
         pooled = torch.nn.functional.normalize(pooled, p=2, dim=1)
@@ -1132,13 +1169,14 @@ class _PyTorchEmbeddings(Embeddings):
         # Smaller internal batch keeps MPS memory bounded; outer batching is
         # done by the adapter for progress granularity.
         BATCH = 32
+        texts = [self._passage_prefix + t for t in texts]
         out: list[list[float]] = []
         for i in range(0, len(texts), BATCH):
             out.extend(self._embed_batch(texts[i : i + BATCH]))
         return out
 
     def embed_query(self, text: str) -> list[float]:
-        return self._embed_batch([text])[0]
+        return self._embed_batch([self._query_prefix + text])[0]
 
 
 def _is_local_http_host(hostname: str | None) -> bool:
@@ -2900,12 +2938,12 @@ class KnowledgeEngine:
             # glance. Also includes the active config so the line is
             # self-describing if shared in a bug report.
             # Per-stage device honesty:
-            #   - layout: depends on the resolved engine (transformers → MPS/CUDA;
+            #   - layout: depends on the resolved engine (transformers → CUDA or CPU;
             #     ONNX is CPU-only regardless of device_label).
             #   - embed: the local accelerator backing fastembed/huggingface,
             #     or "N/A — cloud" for openai/openrouter/ollama.
             # We surface both so a single timing line is enough to diagnose.
-            _device_label, _ = _detect_accelerator(self._config.use_gpu)
+            _device_label = _docling_device(self._config.use_gpu)
             _eff_layout_engine, _layout_device = self._resolve_layout(
                 self._config.docling_layout_engine or "auto", _device_label
             )
@@ -3412,11 +3450,36 @@ class KnowledgeEngine:
                 adapter = self._vector_stores[collection]
             # Adapters without a lexical index inherit the base class's
             # ``[]`` so this never raises — the engine degrades cleanly
-            # to pure-dense when (a) the adapter is pgvector, (b) the
-            # FTS table hasn't been created yet for a pre-upgrade
-            # collection, or (c) the query has no usable tokens after
-            # FTS5 sanitization.
+            # to pure-dense when (a) the collection has no keyword rows
+            # yet (a pre-FTS SQLite collection), (b) the query has no
+            # keyword terms, or (c) the keyword query fails.
             return adapter.search_lexical(q, k=k)
+
+        async def _lexical_within_budget(k: int, q: str = query):
+            slots, pool = _KEYWORD_SLOTS, _KEYWORD_POOL
+            if not slots.acquire(blocking=False):
+                logger.warning(
+                    f"Keyword search on {collection} skipped: every keyword thread is still busy with "
+                    "a slow call; this search ranked by meaning only."
+                )
+                return []
+
+            try:
+                fut = pool.submit(_do_lexical_search, k, q)
+            except RuntimeError:  # the pool is shut down (interpreter exit)
+                slots.release()
+                return []
+            # Fires once, when the call returns or when it is cancelled before it starts, so a
+            # call cancelled while still queued gives its slot back too.
+            fut.add_done_callback(lambda _f: slots.release())
+            try:
+                return await asyncio.wait_for(asyncio.wrap_future(fut), _KEYWORD_LEG_BUDGET_S)
+            except asyncio.TimeoutError:  # the thread is not stopped; only this search stops waiting
+                logger.warning(
+                    f"Keyword search on {collection} took over {_KEYWORD_LEG_BUDGET_S:g}s; this search "
+                    "ranked by meaning only. The keyword call keeps running in the background."
+                )
+                return []
 
         # ``below_threshold_counter`` is a one-element list so the closure
         # can mutate it (avoid `nonlocal` since this function is itself a
@@ -3482,8 +3545,7 @@ class KnowledgeEngine:
         # added latency is bounded by the dense call.
         if _hybrid_on:
             dense_task = asyncio.to_thread(_do_dense_search, first_k)
-            lexical_task = asyncio.to_thread(_do_lexical_search, first_k)
-            dense_scored, lexical_scored = await asyncio.gather(dense_task, lexical_task)
+            dense_scored, lexical_scored = await asyncio.gather(dense_task, _lexical_within_budget(first_k))
         else:
             dense_scored = await asyncio.to_thread(_do_dense_search, first_k)
             lexical_scored = []
@@ -3551,9 +3613,7 @@ class KnowledgeEngine:
             if _variants is not None and _variants.active:
                 _legs = [asyncio.to_thread(_do_dense_search, first_k, qv) for qv in _variants.dense_extra]
                 if _hybrid_on:
-                    _legs += [
-                        asyncio.to_thread(_do_lexical_search, first_k, qv) for qv in _variants.lexical_extra
-                    ]
+                    _legs += [_lexical_within_budget(first_k, qv) for qv in _variants.lexical_extra]
                 _scored_legs = await asyncio.gather(*_legs, return_exceptions=True)
                 _variant_lists = [
                     _materialize(sc, set(), apply_score_threshold=False)
@@ -4537,7 +4597,9 @@ class KnowledgeEngine:
                 try:
                     adapter.drop()
                 except Exception as e:
-                    logger.debug(f"Drop collection {collection}: {e}")
+                    logger.warning(
+                        f"Could not drop the vectors of {collection}; its table is left behind: {e}"
+                    )
 
         files_dir = self._files_dir / collection
         if files_dir.exists():
@@ -4554,17 +4616,9 @@ class KnowledgeEngine:
         with self._vector_store_lock:
             adapter = self._vector_stores.pop(collection, None)
             self._record_managers.pop(collection, None)
-            if adapter:
-                try:
-                    adapter.drop()
-                except Exception as e:
-                    logger.debug(f"Drop collection vectors {collection}: {e}")
-            else:
-                try:
-                    temp = self._create_vector_adapter(collection, embeddings)
-                    temp.drop()
-                except Exception as e:
-                    logger.debug(f"Drop uncached collection {collection}: {e}")
+            # A failed drop stops the caller with the collection intact. Swallowing it let reindex
+            # re-ingest on top of the old vectors: mixed rows, or a dimension error on insert.
+            (adapter or self._create_vector_adapter(collection, embeddings)).drop()
         await self._metadata.delete_collection_metadata(collection)
         logger.info(f"Dropped collection vectors {collection} (files preserved)")
 
@@ -4775,7 +4829,8 @@ class KnowledgeEngine:
 
         Dispatch (first match wins):
           1. fastembed -> Rust ONNX tokenizer (exact match w/ embedder)
-          2. huggingface -> the embedder's own ``_tokenizer`` attr
+          2. huggingface -> a tokenizer of its own for the model, loaded
+              apart from the embedder's (sharing it fails in parallel ingest)
           3a. litellm/openrouter/openai routed to openai/azure -> tiktoken
               cl100k_base (no Hub HEAD; correct encoding for these models)
           3b. litellm/openrouter/openai with any other slash-containing
@@ -4833,19 +4888,19 @@ class KnowledgeEngine:
             except Exception:
                 pass  # fall through to approximate
 
-        # 2. HuggingFace provider — embedder loaded its own tokenizer.
+        # 2. HuggingFace provider — a tokenizer of its own, not the embedder's.
+        # The embedder calls its tokenizer with truncation and padding on, chunking
+        # calls it with both off, and each switch mutates the shared Rust tokenizer:
+        # parallel ingest threads then fail with "Already borrowed".
         if provider == "huggingface":
-            try:
-                emb = _embedder()
-                if getattr(emb, "_tokenizer", None) is not None:
-                    return _make(
-                        "hf",
-                        emb._tokenizer,
-                        model_raw or "huggingface",
-                        _hf_tokenizer_seq_limit(emb._tokenizer),
-                    )
-            except Exception:
-                pass
+            tok = _load_hf_tokenizer_for_chunking(model_raw or "BAAI/bge-small-en-v1.5")
+            if tok is not None:
+                return _make(
+                    "hf",
+                    tok,
+                    model_raw or "huggingface",
+                    _hf_tokenizer_seq_limit(tok),
+                )
 
         # 3. litellm/openrouter/openai routes.
         if provider in ("litellm", "openrouter", "openai"):
@@ -5147,7 +5202,7 @@ class KnowledgeEngine:
             mode = "accurate"
 
         layout_engine_choice = (self._config.docling_layout_engine or "auto").lower()
-        device_label, _ = _detect_accelerator(self._config.use_gpu)
+        device_label = _docling_device(self._config.use_gpu)
         effective_layout_engine, _ = self._resolve_layout(layout_engine_choice, device_label)
 
         # Cache by EFFECTIVE engine so explicit "transformers" and "auto"
@@ -5169,7 +5224,6 @@ class KnowledgeEngine:
         try:
             device_enum = {
                 "cuda": AcceleratorDevice.CUDA,
-                "mps": AcceleratorDevice.MPS,
                 "cpu": AcceleratorDevice.CPU,
             }.get(device_label, AcceleratorDevice.AUTO)
             pipeline_options.accelerator_options = AcceleratorOptions(device=device_enum)

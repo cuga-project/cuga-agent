@@ -71,6 +71,10 @@ class ConversationHistoryDB:
     def _get_store(self):
         return get_storage().get_relational_store("conversation")
 
+    async def initialize_schema(self) -> None:
+        """Prepare conversation tables and migrations before requests are accepted."""
+        await self._ensure_schema()
+
     async def _ensure_schema(self):
         store = self._get_store()
         if self._schema_ensured and self._schema_store is store:
@@ -118,6 +122,22 @@ class ConversationHistoryDB:
         except Exception as exc:
             if "duplicate column" not in str(exc).lower() and "already exists" not in str(exc).lower():
                 raise
+        # Last completed turn, used by the retention sweep; '' falls back to created_at.
+        try:
+            await store.execute(
+                "ALTER TABLE runtime_thread_owners ADD COLUMN last_turn_at TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower() and "already exists" not in str(exc).lower():
+                raise
+        else:
+            # Existing rows have no recorded activity. Start their retention window at the
+            # upgrade so an old but recently used conversation is not pruned by the first
+            # sweep. Runs only when the column is added, so later startups never extend it.
+            await store.execute(
+                "UPDATE runtime_thread_owners SET last_turn_at = ? WHERE last_turn_at = ''",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
         for idx_sql in [
             "CREATE INDEX IF NOT EXISTS idx_thread_id ON conversation_history(thread_id)",
             "CREATE INDEX IF NOT EXISTS idx_user_id ON conversation_history(user_id)",
@@ -296,6 +316,64 @@ class ConversationHistoryDB:
         store = self._get_store()
         await store.execute(sql, params)
         await store.commit()
+
+    async def mark_last_turn_at(self, thread_id: str, user_id: str) -> None:
+        """Record that a turn just ran on the thread. Best effort: failures are logged, not raised."""
+        try:
+            await self._ensure_schema()
+            store = self._get_store()
+            await store.execute(
+                """UPDATE runtime_thread_owners SET last_turn_at = ?
+                WHERE tenant_id = ? AND instance_id = ? AND thread_id = ? AND user_id = ?""",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    _tenant_id(),
+                    _instance_id(),
+                    thread_id.strip(),
+                    user_id,
+                ),
+            )
+            await store.commit()
+        except Exception as exc:
+            logger.error(f"mark_last_turn_at failed: {type(exc).__name__}")
+
+    async def get_idle_before(
+        self, cutoff_iso: str, limit: int = 200, *, after: Optional[tuple[str, str]] = None
+    ) -> List[Dict[str, Any]]:
+        """Page idle, continuable conversations by activity time and unique thread ID.
+
+        A cursor advances past selected rows even when cleanup fails or they are busy.
+        Activity time is ``last_turn_at`` when set, else ``created_at``.
+        """
+        await self._ensure_schema()
+        activity = "COALESCE(NULLIF(last_turn_at, ''), created_at)"
+        sql = f"""SELECT thread_id, user_id, agent_id, {activity} AS last_activity
+            FROM runtime_thread_owners
+            WHERE tenant_id = ? AND instance_id = ? AND status IN ('new', 'active')
+            AND {activity} < ?"""
+        params: tuple = (_tenant_id(), _instance_id(), cutoff_iso)
+        if after is not None:
+            sql += f" AND ({activity}, thread_id) > (?, ?)"
+            params += after
+        sql += f" ORDER BY {activity}, thread_id LIMIT ?"
+        return await self._get_store().fetchall(sql, params + (limit,))
+
+    async def get_idle_thread_before(
+        self, thread_id: str, user_id: str, agent_id: str, cutoff_iso: str
+    ) -> Optional[Dict[str, Any]]:
+        """Recheck retention eligibility after acquiring the conversation lease.
+
+        Storage errors propagate so the sweep never treats an unreadable row as
+        permission to delete its checkpoint.
+        """
+        await self._ensure_schema()
+        return await self._get_store().fetchone(
+            """SELECT status FROM runtime_thread_owners
+            WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
+            AND user_id = ? AND agent_id = ? AND status IN ('new', 'active')
+            AND COALESCE(NULLIF(last_turn_at, ''), created_at) < ?""",
+            (_tenant_id(), _instance_id(), thread_id, user_id, agent_id, cutoff_iso),
+        )
 
     async def get_thread_statuses(self, user_id: str, agent_id: str) -> Dict[str, str]:
         """``thread_id -> status`` for every conversation the user owns with this agent."""
