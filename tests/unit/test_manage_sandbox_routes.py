@@ -218,6 +218,37 @@ def test_status_names_what_is_missing(monkeypatch):
     assert "sandbox_callback_url" in connection.status()["error"]
 
 
+def _connection_read_fails(monkeypatch):
+    def broken():
+        raise PermissionError("[Errno 13] Permission denied: '/var/run/secrets/sandbox/api_key'")
+
+    monkeypatch.setattr(connection, "configured", broken)
+
+
+def test_status_gives_a_reason_not_the_exception_text(monkeypatch):
+    # The exception text can name secret paths; it goes to the log only (CodeQL py/stack-trace-exposure).
+    monkeypatch.setattr(settings.advanced_features, "sandbox_mode", "execd", raising=False)
+    _connection_read_fails(monkeypatch)
+
+    error = connection.status()["error"]
+
+    assert error == "The sandbox connection could not be read; see the server log"
+    assert "/var/run/secrets" not in error
+
+
+@pytest.mark.asyncio
+async def test_switching_on_gives_a_reason_not_the_exception_text(monkeypatch, tmp_path, _isolated):
+    _mount_secret(monkeypatch, tmp_path)
+    _connection_read_fails(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        await put_sandbox_settings(SandboxSettingsBody(enabled=True))
+
+    assert exc.value.status_code == 422 and "could not be read" in exc.value.detail
+    assert "/var/run/secrets" not in exc.value.detail
+    assert _isolated == []
+
+
 @pytest.mark.asyncio
 async def test_switching_off_releases_the_kernels_this_process_holds(monkeypatch, tmp_path):
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.execd import ExecdExecutor
