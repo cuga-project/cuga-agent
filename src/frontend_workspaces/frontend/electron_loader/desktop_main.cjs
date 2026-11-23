@@ -7,6 +7,7 @@ app.disableHardwareAcceleration && void 0; // keep hardware accel enabled (defau
 const { spawn } = require('child_process');
 const path = require('path');
 const http = require('http');
+const { resolveUv, buildBackendPath } = require('./uv_paths.cjs');
 
 const BACKEND_URL = 'http://127.0.0.1:7860';
 const POLL_INTERVAL_MS = 1000;
@@ -14,19 +15,6 @@ const STARTUP_TIMEOUT_MS = 120_000;
 
 let mainWindow = null;
 let backendProcess = null;
-
-function resolveUv() {
-    if (process.env.UV_PATH) return process.env.UV_PATH;
-    // Common install locations when Electron strips PATH down to /usr/bin:/bin
-    const candidates = [
-        '/Users/' + require('os').userInfo().username + '/.local/bin/uv',
-        '/usr/local/bin/uv',
-        '/opt/homebrew/bin/uv',
-        'uv',
-    ];
-    const fs = require('fs');
-    return candidates.find(p => { try { fs.accessSync(p, fs.constants.X_OK); return true; } catch { return false; } }) || 'uv';
-}
 
 function spawnBackend() {
     const uvPath = resolveUv();
@@ -36,7 +24,7 @@ function spawnBackend() {
         cwd: repoRoot,
         env: {
             ...process.env,
-            PATH: `/Users/${require('os').userInfo().username}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
+            PATH: buildBackendPath(),
         },
         stdio: 'inherit',
         detached: false,
