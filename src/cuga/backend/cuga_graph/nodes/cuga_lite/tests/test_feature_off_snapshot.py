@@ -1,10 +1,21 @@
-"""Feature-off golden: a CodeAct run is byte-identical with function-calling code present.
+"""Feature-off golden: one CodeAct run, pinned, with function-calling code present.
 
 ``snapshots/codeact_feature_off.json`` was recorded on the tree *before* the
-function-calling execution path was routed through the sandbox. Every field of
-the final graph state, every message, every outbound turn the model saw and the
-sandbox's variable bookkeeping must still match. Timestamps are the only thing
-normalised away.
+function-calling execution path was routed through the sandbox (#777): every
+field of the final graph state, every message (type, content, tool calls, call
+id), the role and content of every outbound turn the model saw (the system prompt
+as a marker), and the sandbox's variable bookkeeping. Timestamps are dropped;
+other non-JSON values are compared by ``repr``.
+
+``snapshots/codeact_feature_off_system_prompt.txt`` pins the whole system prompt
+those turns carry, apart from whitespace at line ends and blank lines at either
+end. It was recorded after #777 merged (for #976), so it guards later changes; it
+cannot show that #777 left the prompt unchanged. The model must also see no bound
+tools and no extra request arguments.
+
+Scope: this one scenario (one tool; no apps, ``find_tools``, todos, policies,
+few-shots, memory, agent spawning, forced autonomous mode or tool binding). Other
+CodeAct paths are not pinned here.
 
 Re-record (only for an intentional CodeAct change, never to make this pass):
 ``CUGA_SNAPSHOT_WRITE=1 pytest <this file>``.
@@ -12,6 +23,7 @@ Re-record (only for an intentional CodeAct change, never to make this pass):
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 from pathlib import Path
@@ -30,6 +42,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.tracking import tracker as tracker_
 pytestmark = pytest.mark.unit
 
 SNAPSHOT = Path(__file__).parent / "snapshots" / "codeact_feature_off.json"
+SYSTEM_PROMPT = Path(__file__).parent / "snapshots" / "codeact_feature_off_system_prompt.txt"
 _VOLATILE_KEYS = {"created_at"}
 CALLS: list = []
 
@@ -46,12 +59,16 @@ class _ScriptedModel:
     def __init__(self, responses):
         self._responses = list(responses)
         self.seen: list = []
+        self.bound: list = []  # tool names of every bind_tools call
+        self.request_kwargs: list = []  # anything sent besides the messages and config
 
     def bind_tools(self, tools, **kwargs):
+        self.bound.append([getattr(t, "name", t) for t in tools])
         return _Bound(self)
 
     async def ainvoke(self, messages, config=None, **kwargs):
         self.seen.append(list(messages))
+        self.request_kwargs.append(kwargs)
         return self._responses.pop(0)
 
 
@@ -78,6 +95,14 @@ def _quiet(monkeypatch):
     from cuga.config import settings
 
     monkeypatch.setattr(settings.policy, "enabled", False, raising=False)
+    # Settings that change the prompt or the bound tools, pinned off so a local override
+    # cannot: the memory section (it reads the evolve setting, a preferences row in the
+    # local database and, with memory on, a running Evolve server; pinning it also skips
+    # that I/O), agent spawning, forced autonomous mode and tool binding.
+    monkeypatch.setattr("cuga.backend.evolve.memory.memory_enabled", AsyncMock(return_value=False))
+    monkeypatch.setattr(settings.agent_spawn, "enabled", False, raising=False)
+    monkeypatch.setattr(settings.advanced_features, "force_autonomous_mode", False, raising=False)
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_bind_tools_mode", "none", raising=False)
     CALLS.clear()
     yield
     CALLS.clear()
@@ -115,8 +140,14 @@ def _outbound(messages: list) -> list:
     return out
 
 
+def _canonical(prompt: str) -> str:
+    """The prompt as the golden stores it: no whitespace at line ends and no blank lines at
+    either end, so an editor that trims on save cannot break the comparison."""
+    return "\n".join(line.rstrip() for line in prompt.splitlines()).strip("\n") + "\n"
+
+
 @pytest.mark.asyncio
-async def test_codeact_run_matches_the_recorded_snapshot():
+async def test_codeact_run_matches_the_recorded_snapshot(request):
     model = _ScriptedModel(
         [
             AIMessage(content="```python\nr = await echo(value=3)\nprint(r)\n```"),
@@ -134,6 +165,8 @@ async def test_codeact_run_matches_the_recorded_snapshot():
     prompt = result["prepared_prompt"]
     assert "```python" in prompt
     assert all(turn[0]["content"] == prompt for turn in model.seen), "system prompt is the prepared prompt"
+    assert model.bound == [], f"CodeAct bound tools to the model: {model.bound}"
+    assert model.request_kwargs == [{}] * len(model.seen), f"extra request arguments: {model.request_kwargs}"
 
     state = _normalize({k: v for k, v in result.items() if k != "prepared_prompt"})
     snapshot = {
@@ -142,12 +175,30 @@ async def test_codeact_run_matches_the_recorded_snapshot():
         "outbound": [_outbound(turn) for turn in model.seen],
     }
 
+    current_prompt = _canonical(prompt)
     if os.environ.get("CUGA_SNAPSHOT_WRITE"):
         SNAPSHOT.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n")
-        pytest.skip(f"snapshot written to {SNAPSHOT}")
+        SYSTEM_PROMPT.write_text(current_prompt, encoding="utf-8", newline="\n")
+        pytest.skip(f"snapshot written to {SNAPSHOT} and {SYSTEM_PROMPT}")
 
     recorded = json.loads(SNAPSHOT.read_text())
     assert snapshot == recorded, "CodeAct behaviour changed with the feature off"
+
+    recorded_prompt = _canonical(SYSTEM_PROMPT.read_text(encoding="utf-8"))
+    if current_prompt != recorded_prompt:
+        diff = "".join(
+            difflib.unified_diff(
+                recorded_prompt.splitlines(keepends=True),
+                current_prompt.splitlines(keepends=True),
+                fromfile=f"recorded {SYSTEM_PROMPT.name}",
+                tofile="current CodeAct system prompt",
+            )
+        )
+        test_file = os.path.relpath(__file__, request.config.rootpath)
+        pytest.fail(
+            "CodeAct system prompt changed with the feature off. If the change is intended, "
+            f"re-record with CUGA_SNAPSHOT_WRITE=1 pytest {test_file}\n{diff}"
+        )
 
 
 @pytest.mark.asyncio
