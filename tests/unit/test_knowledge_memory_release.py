@@ -37,6 +37,25 @@ def test_fastembed_runs_without_the_onnx_cpu_arena(monkeypatch, tmp_path):
     assert created[0]["enable_cpu_mem_arena"] is False
 
 
+def test_reranker_runs_without_the_onnx_cpu_arena(monkeypatch, tmp_path):
+    from cuga.backend.knowledge import reranker
+
+    created: list[dict] = []
+
+    class FakeTextCrossEncoder:
+        def __init__(self, model_name, **kwargs):
+            created.append(kwargs)
+
+    fake = types.ModuleType("fastembed.rerank.cross_encoder")
+    fake.TextCrossEncoder = FakeTextCrossEncoder
+    monkeypatch.setitem(sys.modules, "fastembed.rerank.cross_encoder", fake)
+    monkeypatch.setenv("FASTEMBED_CACHE_PATH", str(tmp_path))
+
+    reranker._build_encoder("BAAI/bge-reranker-base")
+
+    assert created[0]["enable_cpu_mem_arena"] is False
+
+
 def test_release_freed_memory_calls_malloc_trim(monkeypatch):
     trim = MagicMock()
     monkeypatch.setattr(engine_mod, "_malloc_trim", None)
