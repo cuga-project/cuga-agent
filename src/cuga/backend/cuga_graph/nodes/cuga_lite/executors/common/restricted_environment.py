@@ -4,6 +4,38 @@ from cuga.config import settings
 from .benchmark_mode import is_relaxed_execution
 
 
+async def _sleep(delay, result=None):
+    return await asyncio.sleep(delay, result)
+
+
+async def _gather(*aws, return_exceptions=False):
+    return await asyncio.gather(*aws, return_exceptions=return_exceptions)
+
+
+async def _wait_for(aw, timeout):
+    return await asyncio.wait_for(aw, timeout)
+
+
+class _AsyncioFacade:
+    """The part of ``asyncio`` that strict-mode code may use.
+
+    The real module exposes process-spawn entry points and the running event loop,
+    which has its own spawn methods. The facade keeps only what generated code uses
+    and holds no reference to the real module. The helpers are coroutines, but a
+    coroutine that is stepped by hand yields the real Future it awaits, so the
+    strict validator must also reject the loop accessors (``get_loop``, ``_loop``).
+    """
+
+    __slots__ = ('sleep', 'gather', 'wait_for', 'TimeoutError')
+
+    def __init__(self) -> None:
+        self.sleep = _sleep
+        self.gather = _gather
+        self.wait_for = _wait_for
+        # asyncio.TimeoutError is the builtin only on 3.11+; on 3.10 wait_for raises its own class.
+        self.TimeoutError = asyncio.TimeoutError
+
+
 class RestrictedEnvironment:
     """Manages restricted execution environment for local code execution."""
 
@@ -33,9 +65,17 @@ class RestrictedEnvironment:
             __builtins__['__import__'] if isinstance(__builtins__, dict) else __builtins__.__import__
         )
 
+        asyncio_facade = _AsyncioFacade()
+
         def restricted_import(name, globals=None, locals=None, fromlist=(), level=0):
-            if name.split('.')[0] not in allowed_modules:
+            root = name.split('.')[0]
+            if root not in allowed_modules:
                 raise ImportError(f"Import of '{name}' is not allowed in restricted execution context")
+            if root == 'asyncio':
+                # Never hand out the real asyncio package or its submodules.
+                if name != 'asyncio':
+                    raise ImportError(f"Import of '{name}' is not allowed in restricted execution context")
+                return asyncio_facade
             return _original_import(name, globals, locals, fromlist, level)
 
         return restricted_import
@@ -169,7 +209,6 @@ class RestrictedEnvironment:
 
         restricted_globals = {
             "__builtins__": safe_builtins,
-            "asyncio": asyncio,
             "json": json,
         }
 
@@ -182,4 +221,7 @@ class RestrictedEnvironment:
             pass
 
         restricted_globals.update(safe_locals)
+        # Set after the locals, so a facade that an earlier block changed and left in
+        # the locals never replaces the fresh one.
+        restricted_globals["asyncio"] = _AsyncioFacade()
         return restricted_globals

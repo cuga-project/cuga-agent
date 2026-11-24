@@ -541,6 +541,28 @@ results = await agent.knowledge.search("query", scope="session", thread_id=threa
 await agent.knowledge.ingest("/path/to/file.pdf", scope="agent")
 ```
 
+#### How search finds documents
+
+With the `standard` (default), `balanced` and `max_quality` profiles, every search combines two
+kinds of match and merges the results: **meaning** (embeddings, so
+"time off" finds "vacation policy") and **keywords** (exact words, so `INV-2026-0042`, a
+product name or a rare term finds the document that contains it). Both run on local storage
+(SQLite) and on production storage (Postgres with pgvector), and both match the same words.
+
+Keyword matching works the same way in every language:
+
+- Case, full-width forms and the accents or vowel points people usually leave out do not
+  matter: `cafe` finds "café", `STRASSE` finds "Straße", `שלום` finds "שָׁלוֹם".
+- Words in Hindi, Bengali, Telugu, Tamil and other Indic scripts match as whole words.
+- Chinese, Japanese, Korean and Thai words are found inside sentences without spaces.
+- Identifiers match however they are written: `ABC-123` also finds "abc_123", "ＡＢＣ－１２３"
+  and an "ABC-123." that ends a sentence, but not "ABC-124".
+
+Stemming is not applied, so `invoices` does not match "invoice"; the meaning match usually
+covers it. Existing collections, on either backend, get their keyword index automatically the
+first time they are searched or added to. The `speed` profile uses meaning only (`hybrid_mode = "off"` in
+its profile file under `src/cuga/configurations/knowledge/knowledge_profiles/`).
+
 #### Disabling Knowledge
 
 ```python
@@ -1135,6 +1157,29 @@ result = await agent.invoke("...", execution_mode="codeact")   # per-call overri
 - Each result is kept as a variable (`tool_result_<call id>`): a large result is truncated in the reply to `execution_output_max_length` but survives whole for later turns, and a later CodeAct turn on the same thread can use it by name.
 - Function-calling needs tools bound natively: if `bind_tools` fails or the model does not support it, or the agent has no executable tools, the run stops with a clear error (fail closed) instead of silently answering without tools. A static prompt is ignored in this mode.
 - A thread can switch modes between turns: results from function-calling turns are shown to a later CodeAct turn as text and as variables.
+
+## What each mode supports
+
+| | CodeAct | Function calling |
+|---|---|---|
+| Tool-approval policies, pre-execute VERIFY, tool-call budgets, block timeout, variables | Yes | Yes: the same checks, run on the translated block |
+| Reflection | Yes | No (CodeAct only for now) |
+| Execution backend | The configured sandbox | Always the local executor, even with `e2b_sandbox = true` |
+| Step discipline | Yes | Yes |
+| `find_tools` | Called from code | Bound as a native tool when the prompt advertises it |
+| Bundled few-shot demos, static prompt | Yes | Not used |
+| Spawned sub-agents (`agent_spawn`) | Yes | Known gaps, see #1123 |
+| Supervisor sub-agent | Yes | Yes |
+| The supervisor itself | Yes | No (the supervisor always runs CodeAct) |
+| Switching modes between turns of one thread | Yes | Yes |
+
+## CodeAct changes that came with function calling
+
+Function calling reuses the CodeAct pipeline, and three CodeAct behaviors changed with it in #777:
+
+- **Variables survive a tool-call budget error** (kept by decision in #976). When a call is refused because a budget is spent (`max_tool_calls_per_block`, `max_tool_calls_per_run` or `max_tool_calls_per_thread`), the variables the block computed before that call are kept, as after a timeout or `exit()`. Before, they were dropped with the error. This applies to the local and execd executors, not E2B.
+- **Saved messages keep their type.** `AgentState` message lists (`CugaAgent` and server threads) are saved by their runtime type and rebuilt as the same message classes on load, so an assistant turn keeps its `tool_calls` and a tool reply its `tool_call_id`. Threads saved before the change still load.
+- **CodeAct can read native tool replies.** On a thread that switches modes, results from a function-calling turn reach the next CodeAct turn as `Tool result (<tool>):` text.
 
 </details>
 
