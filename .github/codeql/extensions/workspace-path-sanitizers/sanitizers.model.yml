@@ -74,3 +74,12 @@ extensions:
           "Member[_upload_file_host_path].ReturnValue",
           "path-injection",
         ]
+      # The table name the embedding store puts into its SQL. safe_sql_identifier() raises
+      # unless the name matches ^[a-z][a-z0-9_]{0,62}$, so its return value cannot change
+      # the statement. See tests/unit/test_prod_embedding_identifiers.py. It is in its own
+      # module because an entry matches only calls from modules that import the function.
+      - [
+          "cuga.backend.storage.sql_identifier!",
+          "Member[safe_sql_identifier].ReturnValue",
+          "sql-injection",
+        ]
