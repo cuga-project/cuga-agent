@@ -563,6 +563,28 @@ covers it. Existing collections, on either backend, get their keyword index auto
 first time they are searched or added to. The `speed` profile uses meaning only (`hybrid_mode = "off"` in
 its profile file under `src/cuga/configurations/knowledge/knowledge_profiles/`).
 
+#### Citations
+
+Answers cite the knowledge they use with numbered sources (`knowledge.citations_enabled`, on by
+default; the Citations switch in the knowledge settings turns it off for an agent). Three more
+settings decide how citations are checked against their sources. On a server they are
+administrator settings, in `knowledge_settings.toml`, and apply to every agent it serves; the UI
+does not change them. An SDK agent can set the first two for itself, and they apply to that
+agent's runs only:
+
+```python
+agent = CugaAgent(enable_knowledge=True, citation_check="llm", citation_strict=True)
+```
+
+| Setting | Values | What it does |
+|---|---|---|
+| `citation_check` | `"reused"` (default), `"off"`, `"llm"`, `"nli"` | `reused`: a follow-up that reuses a citation from an earlier answer keeps it only if the agent's model finds that the source states it; answers citing only their own search results make no extra call. `off`: no check and no extra call, and reused citations are removed. `llm`: every citation is checked with the agent's model, one extra call per cited answer. `nli`: every citation is checked with a local multilingual model, no API calls, about 1 GB downloaded on first use. A checked source shows whether it states what it is cited for. |
+| `citation_strict` | `false` (default), `true` | Show only the citations the check found supported. Needs `llm` or `nli`. If the check fails, the answer is delivered without citations. |
+| `citation_search_retry` | `true` (default), `false` | When an answer cites sources that no search returned in that turn, send the model back once to search first, so the answer keeps its sources. |
+
+For answers that are not in English, `llm` is the better checker: before the `nli` check, phrases
+such as "according to the document" are removed in English only.
+
 #### Disabling Knowledge
 
 ```python
