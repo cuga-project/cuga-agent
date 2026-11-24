@@ -98,11 +98,15 @@ def test_each_loop_gets_its_own_pool_and_closes_it(created_pools):
     assert len(created_pools) == 2
     for pool in created_pools:
         pool.close.assert_awaited_once()
-    # The table is checked once per pool: one existence query on each, not one per search.
-    assert [p.connection.fetchval.await_count for p in created_pools] == [1, 1]
+    # A search runs no DDL and no table check: only the search itself.
+    assert [p.connection.fetch.await_count for p in created_pools] == [2, 2]
+    checks_and_ddl = [
+        p.connection.fetchval.await_count + p.connection.execute.await_count for p in created_pools
+    ]
+    assert checks_and_ddl == [0, 0]
 
 
-def test_a_dropped_table_reads_as_empty_and_is_checked_again(created_pools):
+def test_a_missing_table_reads_as_empty_and_is_not_created(created_pools):
     adapter = _adapter("kb_dropped")
 
     async def main():
@@ -117,7 +121,9 @@ def test_a_dropped_table_reads_as_empty_and_is_checked_again(created_pools):
 
     pool = asyncio.run(main())
 
-    assert pool.connection.fetchval.await_count == 2  # checked again after the missing table
+    # During a reindex in another process, creating the table again would use the old vector size.
+    assert pool.connection.fetchval.await_count == 0
+    assert pool.connection.execute.await_count == 0
 
 
 def test_a_search_running_while_the_collection_is_dropped_finds_nothing(created_pools):

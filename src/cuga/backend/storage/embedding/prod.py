@@ -135,8 +135,8 @@ class ProdEmbeddingStore:
         # An asyncpg pool works only on the event loop that created it, and callers such as the
         # knowledge adapter run each call on its own short-lived loop. So each loop gets its own
         # pool, and closing one loop's pool leaves the pools other loops are still using alone.
-        # With use_loop_pool, the store uses the loop's shared pool (loop_pool) instead, and
-        # _pools holds, per loop, the shared pool on which this store's table was checked.
+        # With use_loop_pool, the store only searches, through the loop's shared pool
+        # (loop_pool), and never creates its table (see search).
         self._use_loop_pool = use_loop_pool
         self._pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any]" = weakref.WeakKeyDictionary()
         self._pools_guard = threading.Lock()
@@ -145,18 +145,7 @@ class ProdEmbeddingStore:
     async def _get_pool(self):
         loop = asyncio.get_running_loop()
         if self._use_loop_pool:
-            pool = await loop_pool(self._postgres_url)
-            with self._pools_guard:
-                checked = self._pools.get(loop) is pool
-            if not checked:
-                async with self._pool_lock.get():
-                    with self._pools_guard:
-                        checked = self._pools.get(loop) is pool
-                    if not checked:
-                        await self._ensure_table(pool)
-                        with self._pools_guard:
-                            self._pools[loop] = pool
-            return pool
+            return await loop_pool(self._postgres_url)
         with self._pools_guard:
             pool = self._pools.get(loop)
         if pool is None:
@@ -183,10 +172,10 @@ class ProdEmbeddingStore:
     async def close_pool(self) -> None:
         """Close the running event loop's pool (required before that loop is discarded, e.g. at the end of
         ``asyncio.run``). Pools that other loops are using stay open. A store with use_loop_pool
-        leaves the shared pool open for the other stores; close_loop_pools() closes it."""
+        has none of its own: close_loop_pools() closes the shared one."""
         with self._pools_guard:
             pool = self._pools.pop(asyncio.get_running_loop(), None)
-        if pool is not None and not self._use_loop_pool:
+        if pool is not None:
             await pool.close()
 
     def _scope_cols(self) -> List[str]:
@@ -334,11 +323,9 @@ class ProdEmbeddingStore:
         except UndefinedTableError:
             if not self._use_loop_pool:
                 raise
-            # Dropped after this store checked it, by drop() or another process: nothing to find.
-            # The next search through this store checks the table again, as each call did before
-            # the pool was shared.
-            with self._pools_guard:
-                self._pools.pop(asyncio.get_running_loop(), None)
+            # Not created yet, or dropped by drop() or another process: nothing to find. A search
+            # never creates the table: during a reindex in another process, it would create it
+            # again with the old vector size, and the reindex would then fail on insert.
             return []
         return [tuple(r) for r in rows]
 

@@ -156,3 +156,38 @@ def test_an_upload_while_the_collection_is_searched_on_the_loop(clean_tenant, mo
         assert len(rows) == 42
     finally:
         adapter.drop()
+
+
+async def _drop_table(dsn: str, table: str) -> None:
+    conn = await asyncpg.connect(dsn)
+    try:
+        await conn.execute(f"DROP TABLE {table}")
+    finally:
+        await conn.close()
+
+
+def test_a_search_never_creates_a_dropped_table_again(clean_tenant, monkeypatch):
+    # Another process drops the table, for example to reindex it with a new embedder. A search must
+    # not create it again with the old vector size: the reindex would then fail on insert. Neither
+    # a store that has searched on this loop nor one that has not may run DDL.
+    dsn = _dsn()
+    asyncio.run(_setup_extension(dsn))
+    name = f"kb_loopddl_{uuid.uuid4().hex[:8]}"
+    searched = _build_adapter(dsn, clean_tenant, monkeypatch, name)
+    searched.add_documents(_docs(3, "/tmp/ddl.pdf"))
+    fresh = _build_adapter(dsn, clean_tenant, monkeypatch, name)
+    fresh._ensure_store()  # a store for the table that has not searched on this loop yet
+
+    async def main():
+        assert len(await searched.asearch("chunk text body", k=3)) == 3
+        await _drop_table(dsn, name)
+        results = [await searched.asearch("chunk text body", k=3) for _ in range(2)]
+        results.append(await fresh.asearch("chunk text body", k=3))
+        await prod.close_loop_pools()
+        return results
+
+    try:
+        assert asyncio.run(main()) == [[], [], []]
+        assert not asyncio.run(_table_exists(dsn, name))
+    finally:
+        searched.drop()
