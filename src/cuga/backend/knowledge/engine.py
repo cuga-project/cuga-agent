@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import copy
 import functools
 import hashlib
 import ipaddress
@@ -154,6 +155,28 @@ _bridge_docling_engine_logs_to_loguru()
 BLOCKED_HOSTNAMES = {"localhost", "metadata.google.internal", "169.254.169.254"}
 ALLOWED_PORTS = {80, 443, 8080, 8443}
 _VS_CACHE_MAX = 64  # max cached vector store connections
+
+_malloc_trim: Any = None  # glibc's malloc_trim once looked up; False where there is none
+
+
+def _release_freed_memory() -> None:
+    """Hand memory that glibc keeps after a parse back to the OS.
+
+    Parsing frees most of what it allocates, but glibc keeps the freed pages in its
+    per-thread arenas, so the server's memory only grew from one upload to the next.
+    ``malloc_trim(0)`` returns them (0.4-1.4 GB after a large PDF, in 5-45 ms). It exists
+    only in glibc, so elsewhere (macOS, musl) this does nothing.
+    """
+    global _malloc_trim
+    if _malloc_trim is None:
+        try:
+            import ctypes
+
+            _malloc_trim = ctypes.CDLL("libc.so.6").malloc_trim
+        except (OSError, AttributeError):
+            _malloc_trim = False
+    if _malloc_trim:
+        _malloc_trim(0)
 
 
 def _iter_exception_messages(exc: BaseException) -> list[str]:
@@ -915,6 +938,16 @@ def _detect_accelerator(use_gpu: bool) -> tuple[str, list[str]]:
     return device, providers
 
 
+def _docling_device(use_gpu: bool) -> str:
+    """The device Docling's models run on: CUDA when available, otherwise CPU.
+
+    Docling's models fail on Apple's MPS (the layout model builds float64 tensors, the
+    table model rejects MPS), so on a Mac Docling runs on CPU while embeddings keep the GPU.
+    """
+    device, _ = _detect_accelerator(use_gpu)
+    return "cuda" if device == "cuda" else "cpu"
+
+
 # --- Embedding factory ---
 
 
@@ -973,6 +1006,13 @@ def _purge_model_cache(cache_root: Path) -> None:
     shutil.rmtree(lock_dir, ignore_errors=True)
 
 
+def _e5_prefixes(model_name: str) -> tuple[str, str]:
+    """E5-family models need "query: " / "passage: " on their inputs to reach their published recall."""
+    m = (model_name or "").lower()
+    is_e5 = "e5" in m and ("intfloat" in m or "multilingual" in m or m.startswith("e5"))
+    return ("query: ", "passage: ") if is_e5 else ("", "")
+
+
 class _FastEmbedEmbeddings(Embeddings):
     """LangChain Embeddings adapter around fastembed.TextEmbedding.
 
@@ -997,7 +1037,15 @@ class _FastEmbedEmbeddings(Embeddings):
         # before ever reaching the local_files_only check.
         cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
         local_files_only = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
-        kwargs: dict[str, Any] = {"cache_dir": cache_dir, "local_files_only": local_files_only}
+        # ONNX Runtime's CPU arena grows to the largest batch it has embedded (about 1.7 GB
+        # for 64 chunks of 512 tokens) and never shrinks, so the server kept that memory
+        # after every large upload. Without the arena, embedding a file took 17-36% longer
+        # (a few seconds), while parsing it takes minutes; search latency did not change.
+        kwargs: dict[str, Any] = {
+            "cache_dir": cache_dir,
+            "local_files_only": local_files_only,
+            "enable_cpu_mem_arena": False,
+        }
         if providers:
             kwargs["providers"] = providers
         try:
@@ -1038,10 +1086,7 @@ class _FastEmbedEmbeddings(Embeddings):
         # E5-family prefix: required for any intfloat/e5-* model to reach
         # published recall numbers. Detected from model name. Non-E5 models
         # see a no-op (empty prefixes).
-        m = (model_name or "").lower()
-        is_e5 = "e5" in m and ("intfloat" in m or "multilingual" in m or m.startswith("e5"))
-        self._query_prefix = "query: " if is_e5 else ""
-        self._passage_prefix = "passage: " if is_e5 else ""
+        self._query_prefix, self._passage_prefix = _e5_prefixes(model_name)
 
     def _detect_active_providers(self) -> list[str]:
         # fastembed nests the ORT session under model.model.model — versions vary.
@@ -1067,6 +1112,51 @@ class _FastEmbedEmbeddings(Embeddings):
             if cur is self._model:
                 break
         return []
+
+    _passage_counter: Any = None  # see passage_token_counter
+    _passage_counter_lock = threading.Lock()
+
+    def _onnx_tokenizer(self) -> Any:
+        inner = self._model.model
+        if inner.tokenizer is None:
+            inner.load_onnx_model()
+        return inner.tokenizer
+
+    def chunk_token_limit(self, default: int) -> int:
+        """Tokens of a passage the model reads, its prefix and special tokens included.
+
+        fastembed truncates every input at the ``max_length`` of the model's tokenizer config,
+        which is below 512 for some models: 256 for all-MiniLM-L6-v2, 128 for
+        paraphrase-multilingual-MiniLM-L12-v2. ``default`` applies if the tokenizer does not
+        truncate."""
+        truncation = self._onnx_tokenizer().truncation
+        return int(truncation["max_length"]) if truncation else default
+
+    def passage_token_counter(self) -> Any:
+        """The model's tokenizer without truncation or padding, to size chunks with.
+
+        The embedder's own tokenizer truncates at the model's limit, so a count made with it never
+        exceeds the limit and every chunk looks like it fits (#1166). The copy is made once per
+        embedder: the engine builds a chunker per file, and semchunk keeps every tokenizer it is
+        given, so a copy per file kept ~300 MB per file alive. After setup the copy only encodes,
+        so ingest threads share it."""
+        counter = self._passage_counter
+        if counter is None:
+            with self._passage_counter_lock:
+                counter = self._passage_counter
+                if counter is None:
+                    counter = copy.deepcopy(self._onnx_tokenizer())
+                    counter.no_truncation()
+                    counter.no_padding()
+                    self._passage_counter = counter
+        return counter
+
+    def passage_token_ids(self, text: str) -> list[int]:
+        """The tokens the model gets for ``text`` as a passage: prefix and special tokens included."""
+        return self.passage_token_counter().encode(self._passage_prefix + text).ids
+
+    def count_passage_tokens(self, text: str) -> int:
+        return len(self.passage_token_ids(text))
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if self._passage_prefix:
@@ -1122,6 +1212,7 @@ class _PyTorchEmbeddings(Embeddings):
         # Some tokenizers report a sentinel like 1e30 for "no limit"; cap to 512.
         if self._max_seq_len > 8192:
             self._max_seq_len = 512
+        self._query_prefix, self._passage_prefix = _e5_prefixes(model_name)
 
     @staticmethod
     def _mean_pool(last_hidden_state, attention_mask):
@@ -1136,14 +1227,14 @@ class _PyTorchEmbeddings(Embeddings):
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         import torch
 
-        enc = self._tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=self._max_seq_len,
-            return_tensors="pt",
-        ).to(self._device)
         with torch.no_grad():
+            enc = self._tokenizer(
+                texts,
+                padding=True,
+                truncation=True,
+                max_length=self._max_seq_len,
+                return_tensors="pt",
+            ).to(self._device)
             out = self._model(**enc)
         pooled = self._mean_pool(out.last_hidden_state, enc["attention_mask"])
         pooled = torch.nn.functional.normalize(pooled, p=2, dim=1)
@@ -1154,13 +1245,14 @@ class _PyTorchEmbeddings(Embeddings):
         # Smaller internal batch keeps MPS memory bounded; outer batching is
         # done by the adapter for progress granularity.
         BATCH = 32
+        texts = [self._passage_prefix + t for t in texts]
         out: list[list[float]] = []
         for i in range(0, len(texts), BATCH):
             out.extend(self._embed_batch(texts[i : i + BATCH]))
         return out
 
     def embed_query(self, text: str) -> list[float]:
-        return self._embed_batch([text])[0]
+        return self._embed_batch([self._query_prefix + text])[0]
 
 
 def _is_local_http_host(hostname: str | None) -> bool:
@@ -1537,7 +1629,7 @@ class ChunkingTokenizer:
     thinking 'more context = better'."""
 
     kind: str  # Literal["hf", "tiktoken", "fastembed", "approximate"]
-    encoder: Any  # HF tokenizer | tiktoken Encoding | fastembed model | None
+    encoder: Any  # HF tokenizer | tiktoken Encoding | _FastEmbedEmbeddings | None
     name: str  # repo id / "cl100k_base" / "fastembed:<model>" / "char-based"
     safe_max_tokens: int  # already margined for HF; sensible default for others
     recommended_chunk_tokens: int  # retrieval-quality default (≤512 for long-ctx)
@@ -1599,32 +1691,62 @@ def _recommended_chunk_tokens(safe_max: int) -> int:
 
 @functools.lru_cache(maxsize=1)
 def _fastembed_docling_tokenizer_cls():
-    """HybridChunker tokenizer using fastembed's Rust tokenizer (avoids HF MiniLM download)."""
+    """HybridChunker tokenizer that counts as the fastembed embedder does.
+
+    It counts with ``_FastEmbedEmbeddings.passage_token_ids``: the model's tokenizer without
+    truncation (#1166), with the passage prefix and special tokens. It also avoids the HF MiniLM
+    download that Docling's default tokenizer needs."""
     from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
+
+    class _PassageTokens:
+        """What HybridChunker gives semchunk to split an item longer than a chunk.
+
+        semchunk counts ``len(encode(text))``, and without special tokens when ``encode`` takes
+        ``add_special_tokens``. This ``encode`` does not take it, so semchunk counts the prefix and
+        special tokens too, and its pieces fit on the first split instead of being split again."""
+
+        def __init__(self, embedder: Any):
+            self._embedder = embedder
+
+        def encode(self, text: str) -> list[int]:
+            return self._embedder.passage_token_ids(text)
+
+        def get_vocab(self) -> dict[str, int]:
+            # semchunk reads the longest token to skip counting texts far over the limit.
+            return self._embedder.passage_token_counter().get_vocab()
 
     class _FastEmbedDoclingTokenizer(BaseTokenizer):
         model_config = ConfigDict(arbitrary_types_allowed=True)
 
-        text_embedding: Any
+        embedder: Any  # _FastEmbedEmbeddings
         max_tokens: int
 
-        def _rust_tokenizer(self):
-            inner = self.text_embedding.model
-            if inner.tokenizer is None:
-                inner.load_onnx_model()
-            return inner.tokenizer
-
         def count_tokens(self, text: str) -> int:
-            enc = self._rust_tokenizer().encode(text)
-            return int(sum(enc.attention_mask))
+            return self.embedder.count_passage_tokens(text)
 
         def get_max_tokens(self) -> int:
             return self.max_tokens
 
         def get_tokenizer(self) -> Any:
-            return self._rust_tokenizer()
+            return _PassageTokens(self.embedder)
 
     return _FastEmbedDoclingTokenizer
+
+
+def _forget_semchunk_counters() -> None:
+    """Drop the token counters semchunk keeps for the life of the process.
+
+    For each item longer than a chunk, docling's HybridChunker gives semchunk a new counter, and
+    semchunk stores it with an unbounded cache of its counts: 35-140 KB a PDF, never freed. A
+    counter is only reused while splitting that one item, so nothing is lost; a split running in
+    another thread keeps the counter it already holds."""
+    try:
+        from semchunk import semchunk
+    except ImportError:
+        return
+    counters = getattr(semchunk, "_memoized_token_counters", None)  # pinned by a test
+    if isinstance(counters, dict):
+        counters.clear()
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -2524,15 +2646,18 @@ class KnowledgeEngine:
         # Parse runs concurrently (bounded by the semaphore); the per-collection
         # lock is taken inside _ingest_inner around just the vector-store insert.
         async with self._ingest_sem:
-            await self._ingest_inner(
-                coll,
-                file_path,
-                filename,
-                task_id,
-                replace_duplicates,
-                cancel_event,
-                skip_file_copy,
-            )
+            try:
+                await self._ingest_inner(
+                    coll,
+                    file_path,
+                    filename,
+                    task_id,
+                    replace_duplicates,
+                    cancel_event,
+                    skip_file_copy,
+                )
+            finally:
+                await asyncio.to_thread(_release_freed_memory)
 
     async def ingest(
         self,
@@ -2904,12 +3029,12 @@ class KnowledgeEngine:
             # glance. Also includes the active config so the line is
             # self-describing if shared in a bug report.
             # Per-stage device honesty:
-            #   - layout: depends on the resolved engine (transformers → MPS/CUDA;
+            #   - layout: depends on the resolved engine (transformers → CUDA or CPU;
             #     ONNX is CPU-only regardless of device_label).
             #   - embed: the local accelerator backing fastembed/huggingface,
             #     or "N/A — cloud" for openai/openrouter/ollama.
             # We surface both so a single timing line is enough to diagnose.
-            _device_label, _ = _detect_accelerator(self._config.use_gpu)
+            _device_label = _docling_device(self._config.use_gpu)
             _eff_layout_engine, _layout_device = self._resolve_layout(
                 self._config.docling_layout_engine or "auto", _device_label
             )
@@ -4563,7 +4688,9 @@ class KnowledgeEngine:
                 try:
                     adapter.drop()
                 except Exception as e:
-                    logger.debug(f"Drop collection {collection}: {e}")
+                    logger.warning(
+                        f"Could not drop the vectors of {collection}; its table is left behind: {e}"
+                    )
 
         files_dir = self._files_dir / collection
         if files_dir.exists():
@@ -4580,17 +4707,9 @@ class KnowledgeEngine:
         with self._vector_store_lock:
             adapter = self._vector_stores.pop(collection, None)
             self._record_managers.pop(collection, None)
-            if adapter:
-                try:
-                    adapter.drop()
-                except Exception as e:
-                    logger.debug(f"Drop collection vectors {collection}: {e}")
-            else:
-                try:
-                    temp = self._create_vector_adapter(collection, embeddings)
-                    temp.drop()
-                except Exception as e:
-                    logger.debug(f"Drop uncached collection {collection}: {e}")
+            # A failed drop stops the caller with the collection intact. Swallowing it let reindex
+            # re-ingest on top of the old vectors: mixed rows, or a dimension error on insert.
+            (adapter or self._create_vector_adapter(collection, embeddings)).drop()
         await self._metadata.delete_collection_metadata(collection)
         logger.info(f"Dropped collection vectors {collection} (files preserved)")
 
@@ -4801,7 +4920,8 @@ class KnowledgeEngine:
 
         Dispatch (first match wins):
           1. fastembed -> Rust ONNX tokenizer (exact match w/ embedder)
-          2. huggingface -> the embedder's own ``_tokenizer`` attr
+          2. huggingface -> a tokenizer of its own for the model, loaded
+              apart from the embedder's (sharing it fails in parallel ingest)
           3a. litellm/openrouter/openai routed to openai/azure -> tiktoken
               cl100k_base (no Hub HEAD; correct encoding for these models)
           3b. litellm/openrouter/openai with any other slash-containing
@@ -4849,29 +4969,31 @@ class KnowledgeEngine:
             try:
                 emb = _embedder()
                 if isinstance(emb, _FastEmbedEmbeddings):
+                    # Where fastembed truncates (#1166), but never above the cap used so far, so
+                    # long-context models (nomic, jina v2: 8192) keep the chunks they had.
                     seq = _fastembed_docling_seq_limit(model_raw)
                     return _make(
                         "fastembed",
-                        emb._model,
+                        emb,
                         f"fastembed:{model_raw or 'default'}",
-                        seq,
+                        min(emb.chunk_token_limit(default=seq), seq),
                     )
             except Exception:
                 pass  # fall through to approximate
 
-        # 2. HuggingFace provider — embedder loaded its own tokenizer.
+        # 2. HuggingFace provider — a tokenizer of its own, not the embedder's.
+        # The embedder calls its tokenizer with truncation and padding on, chunking
+        # calls it with both off, and each switch mutates the shared Rust tokenizer:
+        # parallel ingest threads then fail with "Already borrowed".
         if provider == "huggingface":
-            try:
-                emb = _embedder()
-                if getattr(emb, "_tokenizer", None) is not None:
-                    return _make(
-                        "hf",
-                        emb._tokenizer,
-                        model_raw or "huggingface",
-                        _hf_tokenizer_seq_limit(emb._tokenizer),
-                    )
-            except Exception:
-                pass
+            tok = _load_hf_tokenizer_for_chunking(model_raw or "BAAI/bge-small-en-v1.5")
+            if tok is not None:
+                return _make(
+                    "hf",
+                    tok,
+                    model_raw or "huggingface",
+                    _hf_tokenizer_seq_limit(tok),
+                )
 
         # 3. litellm/openrouter/openai routes.
         if provider in ("litellm", "openrouter", "openai"):
@@ -4999,11 +5121,14 @@ class KnowledgeEngine:
         """Exact token count for a finished chunk in the embedder's OWN
         tokenizer. Defined only for the kinds with a cheap local counter
         and a HARD context limit (``hf`` e.g. e5=512, ``tiktoken`` e.g.
-        openai=8191) — the post-chunk boundary guard restricts itself to
-        those. ``tok.encoder`` is the HF AutoTokenizer (``hf``) or the
-        tiktoken Encoding (``tiktoken``)."""
+        openai=8191, ``fastembed`` the model's truncation) — the post-chunk
+        boundary guard restricts itself to those. ``tok.encoder`` is the HF
+        AutoTokenizer (``hf``), the tiktoken Encoding (``tiktoken``) or the
+        ``_FastEmbedEmbeddings`` (``fastembed``, prefix included)."""
         if tok.kind == "hf":
             return len(tok.encoder.tokenize(text))
+        if tok.kind == "fastembed":
+            return tok.encoder.count_passage_tokens(text)
         return len(tok.encoder.encode(text))
 
     def _build_docling_chunker(
@@ -5031,7 +5156,7 @@ class KnowledgeEngine:
             model_str = self._config.embedding_model or "default"
 
             if tok_info.kind == "fastembed":
-                tok = _fastembed_docling_tokenizer_cls()(text_embedding=tok_info.encoder, max_tokens=cap)
+                tok = _fastembed_docling_tokenizer_cls()(embedder=tok_info.encoder, max_tokens=cap)
                 logger.debug(
                     f"HybridChunker tokenizer: fastembed ONNX (model={tok_info.name!r}, "
                     f"chunk_token_limit={cap}, model_seq_limit={tok_info.safe_max_tokens})"
@@ -5168,7 +5293,7 @@ class KnowledgeEngine:
             mode = "accurate"
 
         layout_engine_choice = (self._config.docling_layout_engine or "auto").lower()
-        device_label, _ = _detect_accelerator(self._config.use_gpu)
+        device_label = _docling_device(self._config.use_gpu)
         effective_layout_engine, _ = self._resolve_layout(layout_engine_choice, device_label)
 
         # Cache by EFFECTIVE engine so explicit "transformers" and "auto"
@@ -5190,7 +5315,6 @@ class KnowledgeEngine:
         try:
             device_enum = {
                 "cuda": AcceleratorDevice.CUDA,
-                "mps": AcceleratorDevice.MPS,
                 "cpu": AcceleratorDevice.CPU,
             }.get(device_label, AcceleratorDevice.AUTO)
             pipeline_options.accelerator_options = AcceleratorOptions(device=device_enum)
@@ -5454,6 +5578,8 @@ class KnowledgeEngine:
                         f"Docling failed to parse {file_path.name}: {type(translated).__name__}: {translated}"
                     )
                     raise translated from e
+                finally:
+                    _forget_semchunk_counters()
         elif suffix in (
             ".txt",
             ".text",
@@ -5490,6 +5616,8 @@ class KnowledgeEngine:
                 raise
             except Exception:
                 raise ValueError(f"Unsupported file format: {suffix}")
+            finally:
+                _forget_semchunk_counters()
 
         logger.info(f"Loaded {len(docs)} raw chunks from {file_path.name}")
 
@@ -5523,25 +5651,45 @@ class KnowledgeEngine:
         # item, or a docling-core regression). This converts a SILENT
         # embedder-side truncation — degraded retrieval, near-impossible to
         # debug — into a clean token-aware re-split plus one visible WARNING.
-        # Only ``hf``/``tiktoken`` have a cheap exact local counter; fastembed
-        # is docling-bounded (<=512 always) and the char-based ``approximate``
-        # path has no exact counter here, so both fall to the coarse net below.
+        # ``hf``, ``tiktoken`` and ``fastembed`` are checked here; the
+        # ``approximate`` path has no exact counter and falls to the coarse net
+        # below. Only the chunks over the limit are re-split; the others stay
+        # as they are.
         if docs:
             tok_info = self.get_chunking_tokenizer(pinned)
-            if tok_info.kind in ("hf", "tiktoken"):
+            if tok_info.kind in ("hf", "tiktoken", "fastembed"):
                 try:
-                    over = sum(
-                        1
+                    too_long = [
+                        self._exact_chunk_tokens(d.page_content, tok_info) > tok_info.safe_max_tokens
                         for d in docs
-                        if self._exact_chunk_tokens(d.page_content, tok_info) > tok_info.safe_max_tokens
-                    )
+                    ]
                 except Exception as e:  # noqa: BLE001 — never let the guard break ingest
                     logger.debug(f"post-chunk token check skipped for {file_path.name}: {e!r}")
-                    over = 0
+                    too_long = []
+                over = sum(too_long)
                 if over:
-                    splitter = self._build_text_splitter(chunk_size, chunk_overlap, pinned)
+                    if tok_info.kind == "fastembed":
+                        # The fastembed text splitter counts characters, and a piece of ``cap``
+                        # characters can still be over the limit (one token per CJK character).
+                        # The splitter adds up the length of each piece it joins, so it counts
+                        # them without the prefix and special tokens, which are taken off once.
+                        counter = tok_info.encoder.passage_token_counter()
+                        cap = min(
+                            chunk_size, tok_info.safe_max_tokens
+                        ) - tok_info.encoder.count_passage_tokens("")
+                        splitter = RecursiveCharacterTextSplitter(
+                            chunk_size=cap,
+                            chunk_overlap=min(chunk_overlap, max(cap // 4, 1)),
+                            length_function=lambda t: len(counter.encode(t, add_special_tokens=False).ids),
+                        )
+                    else:
+                        splitter = self._build_text_splitter(chunk_size, chunk_overlap, pinned)
                     n_before = len(docs)
-                    docs = splitter.split_documents(docs)
+                    docs = [
+                        piece
+                        for d, long_ in zip(docs, too_long)
+                        for piece in (splitter.split_documents([d]) if long_ else [d])
+                    ]
                     logger.warning(
                         f"Token-bound re-split for {file_path.name}: {over}/{n_before} chunk(s) "
                         f"exceeded safe_max_tokens={tok_info.safe_max_tokens} for "
