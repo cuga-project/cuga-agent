@@ -84,7 +84,8 @@ LOOP_POOL_APPLICATION_NAME = "cuga-embedding-store"  # visible in pg_stat_activi
 _loop_pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Dict[str, Any]]" = (
     weakref.WeakKeyDictionary()
 )
-_loop_pool_holders: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, set[int]]" = (
+# An owner garbage-collected without releasing (an agent dropped without aclose) stops holding.
+_loop_pool_holders: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, weakref.WeakSet]" = (
     weakref.WeakKeyDictionary()
 )
 _loop_pools_guard = threading.Lock()
@@ -123,15 +124,15 @@ async def close_loop_pools() -> None:
 def hold_loop_pools(owner: object) -> None:
     """``owner`` uses the running loop's shared pools: another owner's release leaves them open."""
     with _loop_pools_guard:
-        _loop_pool_holders.setdefault(asyncio.get_running_loop(), set()).add(id(owner))
+        _loop_pool_holders.setdefault(asyncio.get_running_loop(), weakref.WeakSet()).add(owner)
 
 
 async def release_loop_pools(owner: object) -> None:
     """``owner`` is done with the running loop's shared pools; the last holder closes them."""
     loop = asyncio.get_running_loop()
     with _loop_pools_guard:
-        holders = _loop_pool_holders.get(loop, set())
-        holders.discard(id(owner))
+        holders = _loop_pool_holders.get(loop, weakref.WeakSet())
+        holders.discard(owner)
         if holders:
             return
         _loop_pool_holders.pop(loop, None)

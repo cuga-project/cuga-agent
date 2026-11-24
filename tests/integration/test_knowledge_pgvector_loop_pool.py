@@ -193,6 +193,10 @@ def test_a_search_never_creates_a_dropped_table_again(clean_tenant, monkeypatch)
         searched.drop()
 
 
+class _Engine:
+    """An owner of the loop's pools, as a KnowledgeEngine is."""
+
+
 def test_one_engine_closing_leaves_the_pool_of_another_engine_open(clean_tenant, monkeypatch):
     # Two SDK agents on one loop have one engine each, and both search through the loop's pool.
     # When one agent closes, the other's searches keep working, including those waiting for a
@@ -201,7 +205,7 @@ def test_one_engine_closing_leaves_the_pool_of_another_engine_open(clean_tenant,
     asyncio.run(_setup_extension(dsn))
     adapter = _build_adapter(dsn, clean_tenant, monkeypatch, f"kb_loopclose_{uuid.uuid4().hex[:8]}")
     adapter.add_documents(_docs(3, "/tmp/close.pdf"))
-    closing, searching = object(), object()  # the two engines
+    closing, searching = _Engine(), _Engine()
     errors: list[str] = []
 
     async def main():
@@ -242,3 +246,55 @@ def test_one_engine_closing_leaves_the_pool_of_another_engine_open(clean_tenant,
         assert errors == []
     finally:
         adapter.drop()
+
+
+def test_an_engine_searched_on_a_new_loop_each_call_keeps_one_pool(tmp_path, monkeypatch):
+    # SDK code that runs each call with asyncio.run: only the engine's first loop gets the shared
+    # pool; searches on later loops use a pool of their own for the call, as before, instead of
+    # leaving one open on every loop that ended.
+    from cuga.backend.knowledge.config import KnowledgeConfig
+    from cuga.backend.knowledge.engine import KnowledgeEngine
+
+    dsn = _dsn()
+    asyncio.run(_setup_extension(dsn))
+    monkeypatch.setattr(
+        "cuga.backend.knowledge.engine.knowledge_vector_backend_for_settings", lambda _s: "storage_prod"
+    )
+    monkeypatch.setattr(
+        "cuga.backend.knowledge.engine.get_storage_connection_params",
+        lambda: ("prod", str(tmp_path / "cuga.db"), dsn),
+    )
+    monkeypatch.setattr(prod, "_loop_pools", type(prod._loop_pools)())
+    collection = f"kb_loopengine_{uuid.uuid4().hex[:8]}"
+    doc = tmp_path / "notes.txt"
+    doc.write_text("The warehouse in Haifa ships invoices every Tuesday.\n\n" * 20)
+    engine = KnowledgeEngine(
+        KnowledgeConfig(
+            enabled=True,
+            persist_dir=tmp_path / "knowledge",
+            embedding_provider="fastembed",
+            embedding_model="",
+            pgvector_connection_string=dsn,
+        )
+    )
+
+    async def setup():
+        await engine.warmup()
+        assert (await engine.ingest(collection, doc))["status"] == "completed"
+        return await engine.search(collection, "when are invoices shipped", limit=3)
+
+    async def cleanup():
+        await engine.drop_collection(collection)
+        await engine.aclose()
+
+    home = asyncio.new_event_loop()  # the loop the app keeps, as a server or an SDK app does
+    try:
+        assert home.run_until_complete(setup())
+        for _ in range(3):  # calls made on a new loop each
+            assert asyncio.run(engine.search(collection, "when are invoices shipped", limit=3))
+        assert len(prod._loop_pools) == 1  # only the home loop's
+        home.run_until_complete(cleanup())
+        assert len(prod._loop_pools) == 0  # aclose() on the home loop closed it
+    finally:
+        home.close()
+        engine.shutdown()

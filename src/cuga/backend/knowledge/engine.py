@@ -1877,6 +1877,9 @@ class KnowledgeEngine:
         self._docling_converters: dict[str, Any] = {}
 
         self._vector_store_lock = threading.Lock()
+        # The event loop of the first dense search: only searches on it use that loop's shared
+        # Postgres pool, which aclose() releases there (see ``_dense_search``).
+        self._search_loop: asyncio.AbstractEventLoop | None = None
 
         # Per-collection async ingest locks
         self._collection_locks: dict[str, asyncio.Lock] = {}
@@ -2086,12 +2089,13 @@ class KnowledgeEngine:
             await self._metadata.close()
         except Exception as e:
             logger.debug(f"Knowledge metadata close: {e}")
-        # Dense searches on Postgres share this loop's pool per database (``asearch``) with any
-        # other engine on the loop; the last engine to release it closes it.
+        # Dense searches on Postgres share their loop's pool per database (``asearch``) with any
+        # other engine on the loop; the last engine to release it closes it. Only on that loop.
         from cuga.backend.storage.embedding.prod import release_loop_pools
 
         try:
-            await release_loop_pools(self)
+            if self._search_loop is asyncio.get_running_loop():
+                await release_loop_pools(self)
         except Exception as e:
             logger.debug(f"Knowledge vector pool close: {e}")
         # Close every cached vector store's underlying connection pool.
@@ -3438,12 +3442,18 @@ class KnowledgeEngine:
                     return self._vector_stores[collection]
 
             adapter = await asyncio.to_thread(_adapter)
+            asearch = getattr(adapter, "asearch", None)
+            loop = asyncio.get_running_loop()
+            if self._search_loop is None:
+                self._search_loop = loop
+            # A caller that runs each call on a new loop (asyncio.run per call) would leave an
+            # open pool on every loop that ended: off the first loop, search as before, on a
+            # short-lived pool of its own.
+            if asearch is None or loop is not self._search_loop:
+                return await asyncio.to_thread(adapter.search, q, k=k)
             from cuga.backend.storage.embedding.prod import hold_loop_pools
 
             hold_loop_pools(self)  # until aclose(): another engine's aclose() leaves them open
-            asearch = getattr(adapter, "asearch", None)
-            if asearch is None:  # an adapter that only has the sync interface
-                return await asyncio.to_thread(adapter.search, q, k=k)
             return await asearch(q, k=k)
 
         def _do_lexical_search(k: int, q: str = query):

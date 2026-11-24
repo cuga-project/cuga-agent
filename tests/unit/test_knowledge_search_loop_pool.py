@@ -176,11 +176,15 @@ def test_an_adapter_without_an_async_store_searches_in_a_worker_thread():
     assert asyncio.run(_SyncOnly().asearch("question", k=2)) == [("question", 2.0)]
 
 
+class _Engine:
+    """An owner of the loop's pools, as a KnowledgeEngine is."""
+
+
 def test_the_loop_pool_closes_when_the_last_engine_releases_it(created_pools):
     # One engine per CugaAgent; agents on one loop share its pool. Closing it under another
     # engine would fail that engine's searches.
     adapter = _adapter("kb_holders")
-    first, second = object(), object()
+    first, second = _Engine(), _Engine()
 
     async def main():
         prod.hold_loop_pools(first)
@@ -194,4 +198,27 @@ def test_the_loop_pool_closes_when_the_last_engine_releases_it(created_pools):
 
     assert asyncio.run(main()) is True
     assert len(created_pools) == 1  # the second engine kept using the same pool
+    created_pools[0].close.assert_awaited_once()
+
+
+def test_an_engine_dropped_without_aclose_stops_holding_the_loop_pool(created_pools):
+    import gc
+
+    adapter = _adapter("kb_dropped_engine")
+    kept, dropped = _Engine(), _Engine()
+
+    async def main():
+        prod.hold_loop_pools(kept)
+        prod.hold_loop_pools(dropped)
+        await adapter.asearch("question")
+
+    async def run():
+        nonlocal dropped
+        await main()
+        dropped = None  # an agent dropped without aclose()
+        gc.collect()
+        await prod.release_loop_pools(kept)
+
+    asyncio.run(run())
+
     created_pools[0].close.assert_awaited_once()
