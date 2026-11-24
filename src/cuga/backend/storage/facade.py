@@ -69,6 +69,18 @@ class StorageFacade:
             await store.close()
         self._relational_stores.clear()
 
+    async def close_loop_pools(self) -> None:
+        """Close the PostgreSQL pools the running event loop opened, keeping the cached stores.
+
+        Each event loop gets its own pools, so a sync wrapper that runs a call on its own
+        short-lived loop (``asyncio.run``) calls this before that loop ends.
+        """
+        from cuga.backend.storage.relational.prod import ProdRelationalStore
+
+        for store in list(self._relational_stores.values()):
+            if isinstance(store, ProdRelationalStore):
+                await store.close()
+
     def invalidate_relational_stores(self) -> None:
         """Drop cached relational stores so the next access reopens against current files.
 

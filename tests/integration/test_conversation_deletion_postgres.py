@@ -1,5 +1,6 @@
 """Atomic source-deletion outbox behavior on the production PostgreSQL store."""
 
+import asyncio
 import os
 import uuid
 
@@ -21,7 +22,9 @@ async def test_postgres_conversation_deletion_rolls_back_with_outbox():
     admin = await asyncpg.connect(dsn)
     await admin.execute(f'CREATE SCHEMA "{schema}"')
     store = ProdRelationalStore(dsn, "conversation")
-    store._pool = await asyncpg.create_pool(dsn, server_settings={"search_path": schema})
+    store._pools[asyncio.get_running_loop()] = await asyncpg.create_pool(
+        dsn, server_settings={"search_path": schema}
+    )
     db = ConversationHistoryDB()
     db._get_store = lambda: store
     try:

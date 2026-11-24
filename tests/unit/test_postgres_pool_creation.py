@@ -1,4 +1,4 @@
-"""Concurrent first requests share one Postgres pool per store instead of each creating one."""
+"""Postgres pools: one per store and event loop, created once per loop, closed by the loop that opened them."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from cuga.backend.server import config_store
+from cuga.backend.storage import get_storage, secrets_store
 from cuga.backend.storage.embedding.base import EmbeddingSchemaConfig
 from cuga.backend.storage.embedding.prod import ProdEmbeddingStore
 from cuga.backend.storage.relational import prod as relational_prod
@@ -202,3 +204,76 @@ def test_closing_one_event_loops_pool_leaves_another_loops_pool_open(monkeypatch
     pools["first"].close.assert_awaited_once()
     pools["second"].close.assert_awaited_once()
     assert not store._pools
+
+
+def _relational_store_with_fake_pools(monkeypatch) -> tuple[ProdRelationalStore, list[MagicMock]]:
+    created: list[MagicMock] = []
+
+    async def create_pool(*args, **kwargs):
+        created.append(_fake_pool())
+        return created[-1]
+
+    monkeypatch.setattr(relational_prod, "asyncpg", MagicMock(create_pool=create_pool))
+    store = ProdRelationalStore("postgresql://x/y", "config")
+    monkeypatch.setitem(get_storage()._relational_stores, "config", store)
+    return store, created
+
+
+def test_relational_store_gives_each_event_loop_its_own_pool(monkeypatch):
+    """The store is cached for the process; ``asyncio.run`` callers must not get a pool of a closed loop."""
+    store, created = _relational_store_with_fake_pools(monkeypatch)
+
+    async def two_calls():
+        return await store._get_pool(), await store._get_pool()
+
+    first_loop = asyncio.run(two_calls())
+    second_loop = asyncio.run(two_calls())
+
+    assert first_loop[0] is first_loop[1]
+    assert second_loop[0] is second_loop[1]
+    assert first_loop[0] is not second_loop[0]
+    assert created == [first_loop[0], second_loop[0]]
+
+
+@pytest.mark.parametrize("inside_a_running_loop", [False, True], ids=["cli", "server"])
+def test_run_sync_closes_the_pool_it_opened(monkeypatch, inside_a_running_loop):
+    store, created = _relational_store_with_fake_pools(monkeypatch)
+
+    async def call():
+        await store._get_pool()
+        return "result"
+
+    if inside_a_running_loop:
+
+        async def server():
+            return config_store.run_sync(call())
+
+        assert asyncio.run(server()) == "result"
+    else:
+        assert config_store.run_sync(call()) == "result"
+
+    assert len(created) == 1
+    created[0].close.assert_awaited_once()
+    assert not store._pools
+
+
+def test_get_secret_sync_in_the_server_loop_reads_and_closes_on_a_pool_of_its_own(monkeypatch):
+    store, created = _relational_store_with_fake_pools(monkeypatch)
+
+    async def get_secret(secret_id, **kwargs):
+        await store._get_pool()
+        return f"value of {secret_id}"
+
+    monkeypatch.setattr(secrets_store, "get_secret", get_secret)
+
+    async def server():
+        server_pool = await store._get_pool()
+        assert secrets_store.get_secret_sync("openai-api-key") == "value of openai-api-key"
+        assert await store._get_pool() is server_pool
+        return server_pool
+
+    server_pool = asyncio.run(server())
+
+    (reader_pool,) = [pool for pool in created if pool is not server_pool]
+    reader_pool.close.assert_awaited_once()
+    server_pool.close.assert_not_awaited()

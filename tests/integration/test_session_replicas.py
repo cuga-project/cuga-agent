@@ -320,7 +320,7 @@ async def test_postgres_lease_timestamp_upgrade_and_short_ttl(dsn, monkeypatch, 
     store = ProdRelationalStore(dsn, "conversation")
     try:
         await admin.execute(f'CREATE SCHEMA "{schema}"')
-        store._pool = await asyncpg.create_pool(
+        store._pools[asyncio.get_running_loop()] = await asyncpg.create_pool(
             dsn, min_size=1, max_size=2, server_settings={"search_path": schema}
         )
         if upgrade:
