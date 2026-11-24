@@ -73,6 +73,8 @@ def is_ready(model_name: str = DEFAULT_RERANK_MODEL) -> bool:
 
 
 def _build_encoder(model_name: str) -> Any:
+    from cuga.backend.knowledge.cpu_quota import onnx_threads
+
     try:
         from fastembed.rerank.cross_encoder import TextCrossEncoder
     except ImportError as e:  # core dep, but be explicit rather than crash search
@@ -82,6 +84,10 @@ def _build_encoder(model_name: str) -> Any:
     cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
     local_files_only = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
 
+    # One thread per CPU the container may use, like the embedder (cpu_quota.onnx_threads).
+    threads = onnx_threads()
+    extra: dict[str, Any] = {"threads": threads} if threads is not None else {}
+
     def load() -> Any:
         # Without ONNX Runtime's CPU arena, like the embedder (engine._FastEmbedEmbeddings):
         # the arena keeps the memory of the largest batch it has scored.
@@ -90,6 +96,7 @@ def _build_encoder(model_name: str) -> Any:
             cache_dir=cache_dir,
             local_files_only=local_files_only,
             enable_cpu_mem_arena=False,
+            **extra,
         )
 
     try:

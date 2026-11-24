@@ -1027,6 +1027,7 @@ class _FastEmbedEmbeddings(Embeddings):
         from fastembed import TextEmbedding
         import os
 
+        from cuga.backend.knowledge.cpu_quota import onnx_threads
         from cuga.backend.knowledge.fastembed_models import register
 
         register(model_name)
@@ -1037,10 +1038,11 @@ class _FastEmbedEmbeddings(Embeddings):
         # before ever reaching the local_files_only check.
         cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
         local_files_only = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
-        # ONNX Runtime's CPU arena grows to the largest batch it has embedded (about 1.7 GB
-        # for 64 chunks of 512 tokens) and never shrinks, so the server kept that memory
-        # after every large upload. Without the arena, embedding a file took 17-36% longer
-        # (a few seconds), while parsing it takes minutes; search latency did not change.
+        # ONNX Runtime's CPU arena grows to the largest batch it has embedded and never
+        # shrinks: in a 2-CPU container the process kept 2.8 GB after embedding with
+        # bge-small-en-v1.5 and 4.8 GB with multilingual-e5-small, against 0.3-0.6 GB without
+        # it. Without the arena, embedding takes 30-39% longer there; parsing a file still
+        # takes longer than embedding it, and search latency does not change.
         kwargs: dict[str, Any] = {
             "cache_dir": cache_dir,
             "local_files_only": local_files_only,
@@ -1048,6 +1050,11 @@ class _FastEmbedEmbeddings(Embeddings):
         }
         if providers:
             kwargs["providers"] = providers
+        # One thread per CPU the container may use; unset (ONNX Runtime's default) without a
+        # CPU limit. See cpu_quota.onnx_threads.
+        threads = onnx_threads()
+        if threads is not None:
+            kwargs["threads"] = threads
         try:
             self._model = TextEmbedding(model_name, **kwargs)
         except Exception as exc:
