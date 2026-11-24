@@ -4936,11 +4936,14 @@ class KnowledgeEngine:
             try:
                 emb = _embedder()
                 if isinstance(emb, _FastEmbedEmbeddings):
+                    # Where fastembed truncates (#1166), but never above the cap used so far, so
+                    # long-context models (nomic, jina v2: 8192) keep the chunks they had.
+                    seq = _fastembed_docling_seq_limit(model_raw)
                     return _make(
                         "fastembed",
                         emb,
                         f"fastembed:{model_raw or 'default'}",
-                        emb.chunk_token_limit(default=_fastembed_docling_seq_limit(model_raw)),
+                        min(emb.chunk_token_limit(default=seq), seq),
                     )
             except Exception:
                 pass  # fall through to approximate
@@ -5617,9 +5620,8 @@ class KnowledgeEngine:
         # debug — into a clean token-aware re-split plus one visible WARNING.
         # ``hf``, ``tiktoken`` and ``fastembed`` are checked here; the
         # ``approximate`` path has no exact counter and falls to the coarse net
-        # below. Only the chunks over the limit are re-split: the fastembed
-        # splitter counts characters, so a chunk that fits would be cut into
-        # pieces of ``cap`` characters.
+        # below. Only the chunks over the limit are re-split; the others stay
+        # as they are.
         if docs:
             tok_info = self.get_chunking_tokenizer(pinned)
             if tok_info.kind in ("hf", "tiktoken", "fastembed"):
@@ -5633,7 +5635,22 @@ class KnowledgeEngine:
                     too_long = []
                 over = sum(too_long)
                 if over:
-                    splitter = self._build_text_splitter(chunk_size, chunk_overlap, pinned)
+                    if tok_info.kind == "fastembed":
+                        # The fastembed text splitter counts characters, and a piece of ``cap``
+                        # characters can still be over the limit (one token per CJK character).
+                        # The splitter adds up the length of each piece it joins, so it counts
+                        # them without the prefix and special tokens, which are taken off once.
+                        counter = tok_info.encoder.passage_token_counter()
+                        cap = min(
+                            chunk_size, tok_info.safe_max_tokens
+                        ) - tok_info.encoder.count_passage_tokens("")
+                        splitter = RecursiveCharacterTextSplitter(
+                            chunk_size=cap,
+                            chunk_overlap=min(chunk_overlap, max(cap // 4, 1)),
+                            length_function=lambda t: len(counter.encode(t, add_special_tokens=False).ids),
+                        )
+                    else:
+                        splitter = self._build_text_splitter(chunk_size, chunk_overlap, pinned)
                     n_before = len(docs)
                     docs = [
                         piece

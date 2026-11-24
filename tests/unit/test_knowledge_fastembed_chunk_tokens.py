@@ -9,7 +9,7 @@ import pytest
 from langchain_core.documents import Document
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
-from tokenizers.pre_tokenizers import WhitespaceSplit
+from tokenizers.pre_tokenizers import Split, WhitespaceSplit
 from tokenizers.processors import TemplateProcessing
 
 from cuga.backend.knowledge.config import KnowledgeConfig
@@ -95,6 +95,19 @@ def test_the_chunk_limit_is_where_the_model_truncates(tmp_path, limit):
     eng = _engine(tmp_path, _embedder(limit=limit), embedding_model="sentence-transformers/all-MiniLM-L6-v2")
     tok = eng.get_chunking_tokenizer()
     assert (tok.kind, tok.safe_max_tokens) == ("fastembed", limit)
+
+
+@pytest.mark.parametrize(
+    ("model", "truncation", "limit"),
+    [
+        ("nomic-ai/nomic-embed-text-v1.5", 8192, 512),  # long context: keeps its 512-token chunks
+        ("snowflake/snowflake-arctic-embed-m-long", 512, 512),  # reads 512, not the 2048 assumed
+        ("snowflake/snowflake-arctic-embed-m-long", 2048, 2048),
+    ],
+)
+def test_the_chunk_limit_never_grows_past_the_cap_used_so_far(tmp_path, model, truncation, limit):
+    eng = _engine(tmp_path, _embedder(limit=truncation), embedding_model=model)
+    assert eng.get_chunking_tokenizer().safe_max_tokens == limit
 
 
 def test_a_tokenizer_without_truncation_keeps_the_default_limit():
@@ -198,6 +211,21 @@ def test_loading_a_document_frees_semchunks_counters(tmp_path, fails):
         _load_with_docling(tmp_path, eng, load)
 
     assert semchunk._memoized_token_counters == {}
+
+
+def test_a_chunk_with_more_tokens_than_characters_is_split_to_fit(tmp_path):
+    # One token per character (as for CJK text) plus [CLS] and [SEP]: a chunk of LIMIT characters
+    # is over the limit, and cutting it into pieces of LIMIT characters would change nothing.
+    emb = _embedder(special_tokens=True)
+    emb._model.model.tokenizer.pre_tokenizer = Split(pattern="", behavior="isolated")
+    eng = _engine(tmp_path, emb, chunk_overlap=0)
+    text = "abcdefgh" * 3
+
+    docs = _load_with_docling(tmp_path, eng, lambda: [Document(page_content=text)])
+
+    texts = [d.page_content for d in docs]
+    assert [emb.count_passage_tokens(t) for t in texts] == [LIMIT] * 4  # 6 characters each, and full
+    assert "".join(texts) == text
 
 
 def test_only_a_chunk_over_the_limit_is_split_again(tmp_path):
