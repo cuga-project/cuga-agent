@@ -306,3 +306,18 @@ async def test_restarted_agent_resumes_a_hitl_pause(tmp_path):
     assert resumed.answer == APPROVED_ANSWER
     assert after["next"] == []
     assert after["hitl_action"] is False
+
+
+async def test_sdk_checkpoint_read_failure_preserves_thread_and_does_not_invoke(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    agent = _agent()
+    graph = agent.graph
+    read = AsyncMock(side_effect=RuntimeError("temporary database timeout"))
+    invoke = AsyncMock()
+    monkeypatch.setattr(graph, "aget_state", read)
+    monkeypatch.setattr(graph, "ainvoke", invoke)
+    with pytest.raises(RuntimeError, match="Could not read conversation state"):
+        await agent.invoke("follow up", thread_id="existing-thread")
+    invoke.assert_not_awaited()
+    read.assert_awaited_once()

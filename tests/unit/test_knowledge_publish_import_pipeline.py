@@ -147,6 +147,38 @@ def test_publish_via_post_route_strips_keys_from_disk(monkeypatch):
     assert saved_kb.get("embedding_base_url") == "https://ete-litellm.bx.cloud9.ibm.com/v1"
 
 
+def test_publish_stores_no_knowledge_state(monkeypatch):
+    """Publish keeps no document list or server paths in the draft or the published version,
+    and drops a stale copy sent back from an older draft."""
+    from cuga.backend.server import config_store
+
+    saved = {}
+
+    def _capture(kind):
+        async def _save(config, agent_id):
+            saved[kind] = dict(config)
+            return "1"
+
+        return _save
+
+    monkeypatch.setattr(config_store, "save_config", _capture("published"))
+    monkeypatch.setattr(config_store, "save_draft", _capture("draft"))
+    monkeypatch.setattr("cuga.backend.server.manage_routes._apply_published_config", _no_op_async)
+
+    client = TestClient(
+        _build_app(KnowledgeEngine(_full_cfg())), client=("127.0.0.1", 50000), base_url="http://localhost"
+    )
+    stale = {"collection": "kb_agent_old", "documents": [{"file_path": "/srv/old/a.pdf"}]}
+    payload = {
+        "config": {"agent": {"name": "no-state"}, "knowledge": {"enabled": True}, "knowledge_state": stale}
+    }
+    resp = client.post("/api/manage/config", params={"agent_id": "no-state"}, json=payload)
+
+    assert set(saved) == {"draft", "published"}, f"status={resp.status_code}, body={resp.text}"
+    assert "knowledge_state" not in saved["draft"]
+    assert "knowledge_state" not in saved["published"]
+
+
 async def _no_op_async(*args, **kwargs):
     return None
 

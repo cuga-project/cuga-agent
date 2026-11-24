@@ -254,8 +254,9 @@ class ToolGuide(BaseModel):
     target_apps: Optional[List[str]] = Field(
         None,
         description=(
-            "List of app names to enrich tools for (optional). Directly provided LangChain/runtime "
-            "tools use the app name 'runtime_tools', so scoped policies for those tools must include it."
+            "List of app names to enrich tools for (optional). A tool matches by its "
+            "metadata['app_name']. A directly provided LangChain/runtime tool without "
+            "metadata['app_name'] does not match any app; name it in target_tools instead."
         ),
     )
     guide_content: str = Field(..., description="Markdown content to append to tool descriptions")
@@ -291,7 +292,12 @@ class ToolApproval(BaseModel):
         ..., description="List of tool names that require approval (use '*' for all tools)"
     )
     required_apps: Optional[List[str]] = Field(
-        None, description="List of app names whose tools require approval (optional)"
+        None,
+        description=(
+            "List of app names whose tools require approval (optional). Matches calls to tools "
+            "named '<app>_...' (for example 'gmail_send_email' for 'gmail'); a tool without that "
+            "prefix does not match by app, so name it in required_tools."
+        ),
     )
     approval_message: Optional[str] = Field(
         None, description="Custom message to show when requesting approval"

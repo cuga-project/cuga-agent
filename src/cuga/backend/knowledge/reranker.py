@@ -81,8 +81,34 @@ def _build_encoder(model_name: str) -> Any:
     # so a container with a pre-baked model dir never reaches the network.
     cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
     local_files_only = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
-    try:
+
+    def load() -> Any:
         return TextCrossEncoder(model_name=model_name, cache_dir=cache_dir, local_files_only=local_files_only)
+
+    try:
+        return load()
+    except Exception as e:
+        # Broad on purpose: a corrupt cache raises varied fastembed/onnxruntime types; others re-raise below.
+        # An interrupted download leaves the model's cache entry without its weights, and
+        # fastembed reuses the entry without checking it, so every later load failed and search
+        # quietly ran without its reranker. Repair it as the embedder does: purge, download once.
+        from cuga.backend.knowledge.engine import (
+            _is_corrupt_model_cache_error,
+            _model_cache_root_from_error,
+            _purge_model_cache,
+        )
+
+        cache_root = _model_cache_root_from_error(e, cache_dir)
+        if local_files_only or cache_root is None or not _is_corrupt_model_cache_error(e):
+            raise RerankerUnavailableError(f"could not load reranker model {model_name!r}: {e}") from e
+        logger.warning(
+            "Reranker model cache for %s is incomplete (%s); purging and downloading it again.",
+            model_name,
+            cache_root.name,
+        )
+        _purge_model_cache(cache_root)
+    try:
+        return load()  # exactly once more: a second failure is a real fault (offline, disk full)
     except Exception as e:
         raise RerankerUnavailableError(f"could not load reranker model {model_name!r}: {e}") from e
 

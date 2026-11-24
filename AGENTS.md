@@ -1,5 +1,11 @@
 # Agent guidelines
 
+## Frontend changes
+
+Read [the frontend rules](src/frontend_workspaces/AGENTS.md) before editing frontend
+workspaces. They define the shared IBM Carbon components, loading states,
+navigation, accessibility, layout, secret handling, and browser validation.
+
 ## Declare known arguments explicitly
 
 When a function's arguments are known in advance, declare them explicitly instead
@@ -50,6 +56,16 @@ Rules:
 3. If a suite cannot share a process with others, give it its own **job** (or its own `pytest` invocation of a directory). Do not start a file allowlist.
 4. Keep fork CI on the same directories as internal CI so a test cannot pass one and skip the other.
 5. Local `uv run pytest` remains full discovery. CI is a disjoint partition of that set.
+
+## New dependencies must have an approved license
+
+The project is licensed under Apache-2.0 (`LICENSE`, `NOTICE`). The `Licenses` workflow checks every installed dependency against `.github/licenses/policy.json` (see [License CI](docs/contributing/license-ci.md)). Before you add a dependency to `pyproject.toml`, a frontend `package.json` or a Dockerfile, or copy code into the repository:
+
+1. Look up its license and the licenses of the packages it pulls in. For Python, `uv tree --package <name>` lists those packages and `uv run pip-licenses --packages <name> <dependency> ...` shows their licenses. For the frontend, use `pnpm view <name> license`.
+2. If every license is in `approved_expressions` in `policy.json`, you may add it. For an SPDX `OR` expression, one approved choice is enough; for `AND`, every part must be approved.
+3. Otherwise (GPL, LGPL, AGPL, MPL, EPL, SSPL, a custom license, or no license), do not add it. Use an approved alternative. If there is none, stop and ask: the dependency needs a reviewed approval in a separate policy PR first, because a PR cannot approve its own finding. Never add a package listed in `forbidden_packages`.
+4. Being a dependency already does not make a package approved. Do not use a package whose license is not approved in new code when an approved package does the job (for example, use asyncpg, Apache-2.0, instead of psycopg, LGPL-3.0-only).
+5. Do not copy code from a project whose license is not approved. When you copy from an approved project, keep its copyright and license notice, and carry its `NOTICE` text into ours if it has one.
 
 ## Lazy imports — rules for new code and tests
 

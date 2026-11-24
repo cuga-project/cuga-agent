@@ -41,10 +41,7 @@ def _set_tracker(value: bool) -> None:
 
 
 def test_default_setting_is_off():
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python 3.10
-        import tomli as tomllib
+    import tomllib
 
     import cuga
 
