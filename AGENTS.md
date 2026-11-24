@@ -1,21 +1,16 @@
 # Agent guidelines
 
+This file states the rules. When a rule links to a file under `docs/contributing/`, read that file before you do the work the rule covers.
+
 ## Frontend changes
 
-Read [the frontend rules](src/frontend_workspaces/AGENTS.md) before editing frontend
-workspaces. They define the shared IBM Carbon components, loading states,
-navigation, accessibility, layout, secret handling, and browser validation.
+Read [the frontend rules](src/frontend_workspaces/AGENTS.md) before editing frontend workspaces. They define the shared IBM Carbon components, loading states, navigation, accessibility, layout, secret handling, and browser validation.
 
 ## Declare known arguments explicitly
 
-When a function's arguments are known in advance, declare them explicitly instead
-of reading them from `**kwargs` or `**_`. Reserve `**kwargs` for wrappers that
-forward arbitrary arguments that cannot be known before runtime.
-
-For LangChain tools, declare runtime-injected context as
-`Annotated[..., InjectedToolArg]`. This keeps context in the validation schema
-while excluding it from model-facing schemas. Bind conversation context from
-the trusted runtime or captured thread; do not let model-supplied values override it.
+- When a function's arguments are known in advance, declare them explicitly instead of reading them from `**kwargs` or `**_`. Reserve `**kwargs` for wrappers that forward arbitrary arguments that cannot be known before runtime.
+- For LangChain tools, declare runtime-injected context as `Annotated[..., InjectedToolArg]`. This keeps context in the validation schema while excluding it from model-facing schemas.
+- Bind conversation context from the trusted runtime or captured thread; do not let model-supplied values override it.
 
 ## Mark tests with their type
 
@@ -34,28 +29,14 @@ Do not leave tests unmarked when a type marker applies.
 
 ## CI discovers tests by directory — do not edit workflow YAML
 
-CI shards in `.github/workflows/tests.yml` (and the matching commands in `external-fork-tests.yml`) select **directories and markers**, not individual `test_*.py` files. A new test is in CI when its directory is one of the shard roots below; adding a file path to YAML is the wrong change.
+CI shards in `.github/workflows/tests.yml` (and the matching commands in `external-fork-tests.yml`) select **directories and markers**, not individual `test_*.py` files. [CI test discovery](docs/contributing/ci-test-discovery.md) lists which directory and marker runs in which job.
 
-| New test lives in | CI job | Notes |
-|---|---|---|
-| `tests/unit/` or `tests/integration/` | `unit-b` | Whole tree is collected; excluded only by marker (`manual`, `pgvector`, `load`, `e2e`, `stability`) |
-| One of the 7 colocated dirs listed in the `unit-a` step | `unit-a` | **Not** a `src/**/tests/` glob — an explicit list, one pytest process per suite (singleton isolation) |
-| `src/cuga/backend/cuga_graph/policy/tests/` | `policy-a` / `policy-b` | `test_e2e_*.py` vs the rest of that directory |
-| `src/cuga/sdk_core/tests/` | `sdk` | CRUD, mocks, supervisor policy invoke tests, and a small live invoke smoke (`-m "not e2e"`). Live-LLM duplicates (summarization, extra invoke variants, JSON utterance matching) are `@pytest.mark.e2e` — same opt-out as `unit-b`. |
-| `tests/system/` or `src/system_tests/load/tests/` | `extras` | |
-| `@pytest.mark.load` mocked load | `load` | |
-| `@pytest.mark.pgvector` | `pgvector-integration` | Needs the pgvector service job |
-| `@pytest.mark.stability` | stability workflow | Not the unit-tests aggregator |
-
-Known gap: `unit-a`'s directory list does not cover every colocated suite. `backend/evolve/tests`, `demo_tools/crm/tests`, `tools_env/code_sandbox/tests`, `cuga_lite/executors/filesystem/tests` and `tests/e2e/` currently run in **no** job. Adding a test there means it runs locally but never in CI — extend the `unit-a` list (a directory, not a file) if you need coverage.
-
-Rules:
-
-1. Put a new unit test in `tests/unit/` or in a colocated dir that `unit-a` already collects. Do not list an individual file in a workflow.
-2. Opt a test out of default PR CI with a marker (`manual`, `pgvector`, `load`, `e2e`, `stability`) — not by omitting it from YAML.
-3. If a suite cannot share a process with others, give it its own **job** (or its own `pytest` invocation of a directory). Do not start a file allowlist.
-4. Keep fork CI on the same directories as internal CI so a test cannot pass one and skip the other.
-5. Local `uv run pytest` remains full discovery. CI is a disjoint partition of that set.
+1. Put a new unit test in `tests/unit/` or `tests/integration/` (job `unit-b`), or in a colocated dir that the `unit-a` step already lists. Do not list an individual file in a workflow.
+2. `unit-a` is an explicit list of directories, not a `src/**/tests/` glob. Some colocated suites and `tests/e2e/` run in **no** job (see the known gap in that file): a test there runs locally but never in CI. For coverage, add the directory (not a file) to the `unit-a` list.
+3. Opt a test out of default PR CI with a marker (`manual`, `pgvector`, `load`, `e2e`, `stability`) — not by omitting it from YAML.
+4. If a suite cannot share a process with others, give it its own **job** (or its own `pytest` invocation of a directory). Do not start a file allowlist.
+5. Keep fork CI on the same directories as internal CI so a test cannot pass one and skip the other.
+6. Local `uv run pytest` remains full discovery. CI is a disjoint partition of that set.
 
 ## New dependencies must have an approved license
 
@@ -69,65 +50,27 @@ The project is licensed under Apache-2.0 (`LICENSE`, `NOTICE`). The `Licenses` w
 
 ## Lazy imports — rules for new code and tests
 
-**Any additions to these files must preserve the pattern or the startup gains are lost.**
-Cold-start work (#486) made `import cuga` ~4 ms and cut SDK `import_s` ~66%. Re-eagerizing imports undoes that.
+Cold-start work (#486) made `import cuga` ~4 ms and cut SDK `import_s` ~66%. An eager import in one of the files below undoes that. [Lazy imports](docs/contributing/lazy-imports.md) has the background, the patch-target table, and test examples.
 
-### `cuga/__init__.py` — PEP 562 lazy exports
-`import cuga` is near-instant (~4 ms). All public exports are deferred via `__getattr__`.
+- **`cuga/__init__.py`:** do not add top-level imports. Add a new public export to the `_import_map` dict (lazy), not as a bare `from cuga.xxx import Yyy` statement. The `if TYPE_CHECKING:` block is fine.
+- **`cuga/backend/llm/models.py`:** import each provider library (`langchain_openai`, `langchain_ibm`, `langchain_groq`, …) inside the `if platform == "..."` branch that uses it, never at the top of the file. Build `ReasoningChatOpenAI` only inside the `_get_reasoning_chat_openai()` factory. Never re-export provider classes (`ChatWatsonx`, `AzureChatOpenAI`, …) as module attributes.
+- **`cuga/sdk.py` and `cuga/backend/server/main.py`:** import heavy dependencies (graph, policy, provider, observability) inside the function that uses them, not at the top of the file. `openlit` must stay behind the disabled-by-default observability gate.
+- **Tests:** provider classes are not attributes of `cuga.backend.llm.models`. Patch the source module (`langchain_openai.AzureChatOpenAI`, `langchain_ibm.ChatWatsonx`) or the factory (`cuga.backend.llm.models._get_reasoning_chat_openai`). If a test fails with `AttributeError: <module 'cuga.backend.llm.models' ...> does not have the attribute '…'`, update the patch target — do not re-add a module-level import to make the patch work.
 
-- **Do not add top-level imports** to `cuga/__init__.py`.
-- New public exports must be added to the `_import_map` dict (lazy), not as bare `from cuga.xxx import Yyy` statements.
-- The `if TYPE_CHECKING:` block is fine — it is never executed at runtime.
+## HARD RULE: a database schema change must state what happens to existing data
 
-### `cuga/backend/llm/models.py` — scope-local provider imports
-All LLM provider libraries (`langchain_openai`, `langchain_ibm`, `langchain_groq`, etc.) and the `ReasoningChatOpenAI` class are imported **inside** the `if platform == "..."` branch that uses them, not at module level.
+**Every pull request that changes a database schema must state what happens to data written by older versions. This is critical: a user who upgrades must not lose data, and the server must still start on an old database. There are no exceptions** — not for one new column, an index, a renamed field, or a store that "nobody uses yet".
 
-- **New provider branches must follow the same pattern** — keep `from langchain_xxx import ...` inside the branch, never at the top of the file.
-- `ReasoningChatOpenAI` is built inside the `_get_reasoning_chat_openai()` factory function and never exists at module level.
-- Never re-export provider classes (`ChatWatsonx`, `AzureChatOpenAI`, …) as module attributes of `models.py`.
+A schema change is a change to a table, index or column definition, to the format of a stored value (JSON keys, status values, embedding dimension), or to the location of the data, in SQLite or Postgres. This repository has no migration framework, and `CREATE TABLE IF NOT EXISTS` does nothing on an existing table, so a column added only to the `CREATE TABLE` statement is missing in every existing installation.
 
-### `cuga/sdk.py` and `cuga/backend/server/main.py` — deferred function-body imports
-Heavy imports (graph, policy, provider, observability) were moved from module-top into the function bodies that use them.
+Before you open or push the pull request, read [Schema changes](docs/contributing/schema-changes.md) and:
 
-- New heavy dependencies added to these files should follow the same pattern: import inside the function, not at the top of the file.
-- `openlit` must stay behind the disabled-by-default observability gate — do not import it at module top.
+1. Write the upgrade code in the same pull request. It runs at every startup, so it must be safe to run again.
+2. Do not drop, rename, or change the type of a column or table that holds user data unless the same pull request copies the data first. If the data cannot be carried over, stop and ask the user.
+3. Add a test that upgrades a database created with the old schema.
+4. Add the `Data migration` section from that file to the pull request description and fill in every line.
 
-### Patching lazy-loaded classes in tests
-Because provider classes are not attributes of `cuga.backend.llm.models`, patching them there raises `AttributeError` (or never hits the real import). Patch the **source module** (or the factory) instead:
-
-| Class | Correct patch target | Wrong (breaks) |
-|---|---|---|
-| `ReasoningChatOpenAI` | `cuga.backend.llm.models._get_reasoning_chat_openai` — patch the factory; `mock_factory.return_value` is the class | `cuga.backend.llm.models.ReasoningChatOpenAI` |
-| `AzureChatOpenAI` | `langchain_openai.AzureChatOpenAI` | `cuga.backend.llm.models.AzureChatOpenAI` |
-| `ChatWatsonx` | `langchain_ibm.ChatWatsonx` — prefer a real fake class (MagicMock breaks `isinstance`) | `cuga.backend.llm.models.ChatWatsonx` |
-
-Example (factory):
-```python
-with patch("cuga.backend.llm.models._get_reasoning_chat_openai") as mock_factory:
-    mock_cls = mock_factory.return_value   # the class returned by the factory
-    mock_cls.return_value = object()       # the instance returned by calling the class
-    mgr.get_model(settings)
-
-assert mock_cls.call_args.kwargs["timeout"] == 120.0
-```
-
-Example (source-module provider, same pattern as Azure — use a real class so
-`isinstance(model, ChatWatsonx)` in `_update_model_parameters` still works):
-```python
-class _FakeChatWatsonx:
-    last_kwargs = None
-
-    def __init__(self, **kwargs):
-        type(self).last_kwargs = kwargs
-        self.params = dict(kwargs.get("params") or {})
-
-with patch("langchain_ibm.ChatWatsonx", _FakeChatWatsonx):
-    mgr.get_model(settings_for_watsonx)
-
-assert _FakeChatWatsonx.last_kwargs["model_id"] == "configured-model-name"
-```
-
-If a test fails with `AttributeError: <module 'cuga.backend.llm.models' ...> does not have the attribute '…'`, update the patch target — do not re-add a module-level import to “make the patch work”.
+When you review a pull request that changes a schema, request changes if the `Data migration` section is missing or a line is empty.
 
 ## HARD RULE: at most 5 open pull requests per author
 
