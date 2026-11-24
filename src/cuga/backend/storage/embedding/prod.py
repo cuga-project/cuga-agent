@@ -71,25 +71,28 @@ class ProdEmbeddingStore:
         except ImportError:
             raise ImportError("pgvector is required for storage.mode=prod. Install with: uv add pgvector")
 
+        async def prepare_connection(conn: Any) -> None:
+            # Runs for every connection the pool opens, so each one accepts and returns vectors.
+            try:
+                await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            except asyncpg.exceptions.UniqueViolationError:
+                pass  # another session created it at the same moment
+            except asyncpg.exceptions.InsufficientPrivilegeError:
+                logger.warning(
+                    "Permission denied for CREATE EXTENSION vector; assuming it was pre-installed by "
+                    "a database admin. If pgvector is not installed in this database, embedding store "
+                    "setup will fail next."
+                )
+            await register_vector(conn)
+
         pool = await asyncpg.create_pool(
             self._postgres_url,
             min_size=1,
             max_size=4,
             command_timeout=60,
+            init=prepare_connection,
         )
         try:
-            async with pool.acquire() as conn:
-                try:
-                    await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                except asyncpg.exceptions.UniqueViolationError:
-                    pass  # another session created it at the same moment
-                except asyncpg.exceptions.InsufficientPrivilegeError:
-                    logger.warning(
-                        "Permission denied for CREATE EXTENSION vector; assuming it was pre-installed by "
-                        "a database admin. If pgvector is not installed in this database, embedding store "
-                        "setup will fail next."
-                    )
-                await register_vector(conn)
             await self._ensure_table(pool)
         except BaseException:
             await pool.close()

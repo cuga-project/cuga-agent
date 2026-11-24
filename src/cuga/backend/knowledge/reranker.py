@@ -83,7 +83,14 @@ def _build_encoder(model_name: str) -> Any:
     local_files_only = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
 
     def load() -> Any:
-        return TextCrossEncoder(model_name=model_name, cache_dir=cache_dir, local_files_only=local_files_only)
+        # Without ONNX Runtime's CPU arena, like the embedder (engine._FastEmbedEmbeddings):
+        # the arena keeps the memory of the largest batch it has scored.
+        return TextCrossEncoder(
+            model_name=model_name,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+            enable_cpu_mem_arena=False,
+        )
 
     try:
         return load()
