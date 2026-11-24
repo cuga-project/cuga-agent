@@ -124,8 +124,24 @@ def create_call_model_node(
             summarization_system_prompt += f"\n\n## Task Guidance\n{playbook_guidance}"
 
         # ── Context summarisation ──────────────────────────────────────────
-        effective_messages = await apply_context_summarization(
-            adapter.get_messages(state) or [],
+        # A caller's instructions are the system messages it sent last: a turn that sends one or
+        # more replaces the earlier ones, a turn that sends none keeps them, and SystemMessage("")
+        # clears them. They hold for the whole thread, but summarization keeps only recent turns,
+        # so they stay out of it and go back in front, one per text: an SDK caller resends its
+        # SystemMessage with every turn. Earlier ones are dropped, from the prompt and the history.
+        history = adapter.get_messages(state) or []
+        system_messages: dict = {}
+        after_system = False
+        for m in history:
+            is_system = getattr(m, "type", None) == "system"
+            if is_system and not after_system:
+                system_messages = {}  # a new group of instructions replaces the last one
+            if is_system:
+                system_messages.setdefault(m.text, m)
+            after_system = is_system
+        summarization_system_prompt += "".join(f"\n\n{text}" for text in system_messages if text)
+        effective_messages = list(system_messages.values()) + await apply_context_summarization(
+            [m for m in history if getattr(m, "type", None) != "system"],
             active_model,
             system_prompt=summarization_system_prompt,
             tools=None,
@@ -151,6 +167,7 @@ def create_call_model_node(
         pi_added = False
         playbook_fired = False
         modified_messages: list = []
+        system_texts_added: set = set()
 
         for i, msg in enumerate(effective_messages):
             is_last = i == len(effective_messages) - 1
@@ -207,6 +224,16 @@ def create_call_model_node(
                 messages_for_model.append(
                     {"role": "user", "content": f"Tool result ({tool_name}):\n{tool_content}"}
                 )
+
+            elif msg_role == "system":
+                # A caller's instructions, e.g. invoke([SystemMessage(...), HumanMessage(...)]).
+                # Appended to the system prompt, the one place every provider accepts them.
+                modified_messages.append(msg)
+                # Once each: an SDK caller sends it with every turn. Only an exact repeat is
+                # skipped; a text found inside the prompt or a longer instruction is still added.
+                if msg.text and msg.text not in system_texts_added:
+                    system_texts_added.add(msg.text)
+                    messages_for_model[0]["content"] += f"\n\n{msg.text}"
 
             else:
                 modified_messages.append(msg)

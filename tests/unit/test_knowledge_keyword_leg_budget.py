@@ -171,3 +171,26 @@ def test_keyword_leg_within_budget_is_fused(monkeypatch):
     results, _ = asyncio.run(eng.search_with_stats("kb", "invoice INV-7710", limit=5, scope="agent"))
 
     assert {r.text for r in results} == {"dense hit", "keyword hit"}
+
+
+def test_a_keyword_call_past_its_budget_stays_counted_until_it_returns(monkeypatch):
+    """A keyword call can outlive its search (the first one after an upgrade rebuilds the index).
+    It is counted like every engine thread, so a takeover of the directory waits for it."""
+    monkeypatch.setattr(engine_mod, "_KEYWORD_LEG_BUDGET_S", 0.1)
+    release = threading.Event()
+
+    class _BlockedAdapter(_Adapter):
+        def search_lexical(self, q, k=10):
+            release.wait(10)
+            return super().search_lexical(q, k)
+
+    adapter = _BlockedAdapter(keyword_seconds=0)
+    eng = _engine(monkeypatch, adapter)
+
+    results, _ = asyncio.run(eng.search_with_stats("kb", "invoice INV-7710", limit=5, scope="agent"))
+
+    assert [r.text for r in results] == ["dense hit"]
+    assert eng._threads_in_flight == 1, "the keyword call still running is not counted"
+    release.set()
+    assert adapter.keyword_done.wait(timeout=5)
+    assert _wait_until(lambda: eng._threads_in_flight == 0)

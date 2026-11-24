@@ -70,6 +70,8 @@ Tool Approval Example (with HITL):
 
 from typing import Callable, List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
 import asyncio
+import functools
+import inspect
 import json
 import sys
 import time
@@ -110,6 +112,67 @@ _llm_manager_instance = None
 # Stream driver tasks whose cleanup outlived the grace period. The event loop holds only weak
 # references to tasks, so this set keeps each one alive until it finishes (see CugaAgent.stream).
 _DETACHED_STREAM_DRIVERS: set = set()
+
+
+def _check_max_steps(value: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"cuga_lite_max_steps must be a positive integer, got {value!r}")
+    return value
+
+
+def _restores_run_context(fn):
+    """Restore the caller's run-context variables when ``invoke``/``stream`` finishes.
+
+    Otherwise the finished run's config, and the knowledge engine it holds, stays referenced
+    from the caller's context; an agent created afterwards then cannot open knowledge.
+
+    A stream's steps run in whichever task asks for the next item or closes it, so the stream
+    keeps its own values: each step starts from them and leaves the caller's as they were.
+    Closing the stream closes the wrapped generator before it returns.
+    """
+    if inspect.isasyncgenfunction(fn):
+
+        @functools.wraps(fn)
+        async def gen(*args, **kwargs):
+            from cuga.backend.cuga_graph.utils.langfuse_tracing import (
+                get_run_context,
+                restore_run_context,
+                set_run_context,
+            )
+
+            inner = fn(*args, **kwargs)
+            own = None  # the stream's values, from one step to the next
+
+            async def step(call):
+                nonlocal own
+                with restore_run_context():
+                    if own is not None:
+                        set_run_context(own)
+                    try:
+                        return await call()
+                    finally:
+                        own = get_run_context()
+
+            try:
+                while True:
+                    try:
+                        item = await step(inner.__anext__)
+                    except StopAsyncIteration:
+                        return
+                    yield item
+            finally:
+                await step(inner.aclose)
+
+        return gen
+
+    @functools.wraps(fn)
+    async def run(*args, **kwargs):
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import restore_run_context
+
+        with restore_run_context():
+            return await fn(*args, **kwargs)
+
+    return run
 
 
 def _get_llm_manager():
@@ -2007,6 +2070,7 @@ class CugaAgent:
         step_discipline: Optional[str] = None,
         *,
         checkpointer: Optional["BaseCheckpointSaver"] = None,
+        cuga_lite_max_steps: Optional[int] = None,
         hooks: Optional[List[Any]] = None,
     ):
         """
@@ -2053,6 +2117,9 @@ class CugaAgent:
             checkpointer: Keyword-only LangGraph saver for the compiled graph. None = a fresh
                 `MemorySaver` (unchanged behavior). Must be async-capable; a sync-only saver
                 (e.g. `SqliteSaver`) raises `TypeError` on first compile.
+            cuga_lite_max_steps: Keyword-only cap on agent steps per run, as on `CugaSupervisor`.
+                None = `advanced_features.cuga_lite_max_steps` from settings. Overridable per
+                invoke()/stream().
 
         Example with tool approval policy:
             ```python
@@ -2221,6 +2288,8 @@ class CugaAgent:
         # Initialize knowledge manager (cached instance)
         self._knowledge_client = None
         self._feature_overrides: Dict[str, Any] = {}
+        if cuga_lite_max_steps is not None:
+            self._feature_overrides["cuga_lite_max_steps"] = _check_max_steps(cuga_lite_max_steps)
 
     async def initialize(self):
         """
@@ -2661,13 +2730,17 @@ class CugaAgent:
             from cuga.config import settings
 
             config = KnowledgeConfig.from_settings(settings)
+            if self._enable_knowledge is not None:
+                config.enabled = self._enable_knowledge
             if self._enable_citations is not None:
                 config.citations_enabled = self._enable_citations
             from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
 
             # Inject cuga's LLM for optional query transformation (multi_query / HyDE);
             # lazy + inert unless a profile enables search_query_transform.
-            engine = KnowledgeEngine(config, chat_generator=CugaChatGenerator())
+            # Owned by this agent: once it is collected, a new agent can take its knowledge
+            # directory over even while asyncpg timers still hold this engine (#1138).
+            engine = KnowledgeEngine(config, chat_generator=CugaChatGenerator(), owner=self)
             # Gate citation-marker resolution on this agent's flag (module-global
             # hook — matches the session-override hook's single-process assumption).
             from cuga.backend.knowledge.sources import set_agent_citations_lookup
@@ -2925,6 +2998,7 @@ class CugaAgent:
         shortlister: Optional["Shortlister"],
         execution_mode: Optional[str],
         step_discipline: Optional[str],
+        cuga_lite_max_steps: Optional[int] = None,
     ) -> "InvokeResult":
         """Run invoke() inside the session_start, on_user_message, before_reply and on_task_end hooks.
 
@@ -2951,6 +3025,7 @@ class CugaAgent:
                 shortlister=shortlister,
                 execution_mode=execution_mode,
                 step_discipline=step_discipline,
+                cuga_lite_max_steps=cuga_lite_max_steps,
             )
             return result, before
 
@@ -3006,6 +3081,7 @@ class CugaAgent:
             return thread_id
         return f"sdk_{uuid.uuid4().hex[:8]}"
 
+    @_restores_run_context
     async def invoke(
         self,
         message: Union[str, List[BaseMessage], None] = None,
@@ -3018,6 +3094,7 @@ class CugaAgent:
         shortlister: Optional["Shortlister"] = None,
         execution_mode: Optional[str] = None,
         step_discipline: Optional[str] = None,
+        cuga_lite_max_steps: Optional[int] = None,
     ) -> InvokeResult:
         # One Langfuse trace per call when advanced_features.langfuse_tracing is on (see observability/langfuse_sdk.py).
         from cuga.backend.observability.langfuse_sdk import run_trace
@@ -3038,6 +3115,7 @@ class CugaAgent:
                 shortlister=shortlister,
                 execution_mode=execution_mode,
                 step_discipline=step_discipline,
+                cuga_lite_max_steps=cuga_lite_max_steps,
             )
             trace.end(
                 result.answer,
@@ -3058,6 +3136,7 @@ class CugaAgent:
         shortlister: Optional["Shortlister"] = None,
         execution_mode: Optional[str] = None,
         step_discipline: Optional[str] = None,
+        cuga_lite_max_steps: Optional[int] = None,
     ) -> InvokeResult:
         """
         Invoke the agent with a message and get the response.
@@ -3080,6 +3159,7 @@ class CugaAgent:
                 None = use the agent default.
             step_discipline: `"off"` or `"one_tool_per_step"` for this call only.
                 None = use the agent default.
+            cuga_lite_max_steps: Cap on agent steps for this call only. None = use the agent default.
 
         Returns:
             InvokeResult containing:
@@ -3141,6 +3221,7 @@ class CugaAgent:
                 shortlister=shortlister,
                 execution_mode=execution_mode,
                 step_discipline=step_discipline,
+                cuga_lite_max_steps=cuga_lite_max_steps,
             )
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
@@ -3169,6 +3250,8 @@ class CugaAgent:
         run_config = self._prepare_run_config(config)
         self._apply_shortlister(run_config, shortlister)
         self._apply_execution_mode(run_config, execution_mode, step_discipline)
+        if cuga_lite_max_steps is not None:
+            run_config["configurable"]["cuga_lite_max_steps"] = _check_max_steps(cuga_lite_max_steps)
 
         # Pass track_tool_calls flag via configurable
         run_config["configurable"]["track_tool_calls"] = track_tool_calls
@@ -3591,6 +3674,7 @@ class CugaAgent:
             ),
         )
 
+    @_restores_run_context
     async def stream(
         self,
         message: Union[str, List[BaseMessage], None] = None,
@@ -3600,6 +3684,7 @@ class CugaAgent:
         shortlister: Optional["Shortlister"] = None,
         execution_mode: Optional[str] = None,
         step_discipline: Optional[str] = None,
+        cuga_lite_max_steps: Optional[int] = None,
     ):
         """Stream graph updates. Close the iterator explicitly when stopping early.
 
@@ -3632,6 +3717,7 @@ class CugaAgent:
                 shortlister=shortlister,
                 execution_mode=execution_mode,
                 step_discipline=step_discipline,
+                cuga_lite_max_steps=cuga_lite_max_steps,
             )
 
         if not enabled() or caller_has_trace(config, getattr(self, "_callbacks", None)):
@@ -3754,6 +3840,7 @@ class CugaAgent:
         shortlister: Optional["Shortlister"] = None,
         execution_mode: Optional[str] = None,
         step_discipline: Optional[str] = None,
+        cuga_lite_max_steps: Optional[int] = None,
     ):
         """
         Stream the agent's execution step by step.
@@ -3776,6 +3863,7 @@ class CugaAgent:
                 None = use the agent default.
             step_discipline: `"off"` or `"one_tool_per_step"` for this call only.
                 None = use the agent default.
+            cuga_lite_max_steps: Cap on agent steps for this call only. None = use the agent default.
 
         Yields:
             State updates as the agent executes
@@ -3811,6 +3899,8 @@ class CugaAgent:
         run_config = self._prepare_run_config(config)
         self._apply_shortlister(run_config, shortlister)
         self._apply_execution_mode(run_config, execution_mode, step_discipline)
+        if cuga_lite_max_steps is not None:
+            run_config["configurable"]["cuga_lite_max_steps"] = _check_max_steps(cuga_lite_max_steps)
 
         # Pass skills configuration via configurable (overrides settings when set)
         if self._enable_skills is not None:
