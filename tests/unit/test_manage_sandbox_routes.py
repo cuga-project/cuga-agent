@@ -220,20 +220,29 @@ def test_status_names_what_is_missing(monkeypatch):
 
 def _connection_read_fails(monkeypatch):
     def broken():
-        raise PermissionError("[Errno 13] Permission denied: '/var/run/secrets/sandbox/api_key'")
+        # Built as open() builds it, so the text carries the path and errno is set.
+        raise PermissionError(13, "Permission denied", "/var/run/secrets/sandbox/api_key")
 
     monkeypatch.setattr(connection, "configured", broken)
 
 
 def test_status_gives_a_reason_not_the_exception_text(monkeypatch):
-    # The exception text can name secret paths; it goes to the log only (CodeQL py/stack-trace-exposure).
+    # The exception text can name secret paths: neither the response nor the log gets it.
+    from loguru import logger
+
     monkeypatch.setattr(settings.advanced_features, "sandbox_mode", "execd", raising=False)
     _connection_read_fails(monkeypatch)
-
-    error = connection.status()["error"]
+    logged: list[str] = []
+    sink = logger.add(lambda message: logged.append(str(message)), level="DEBUG")
+    try:
+        error = connection.status()["error"]
+    finally:
+        logger.remove(sink)
 
     assert error == "The sandbox connection could not be read; see the server log"
     assert "/var/run/secrets" not in error
+    assert any("PermissionError" in line and "errno 13" in line for line in logged), logged
+    assert not any("/var/run/secrets" in line or "Permission denied" in line for line in logged), logged
 
 
 @pytest.mark.asyncio
