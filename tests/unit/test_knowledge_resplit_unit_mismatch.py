@@ -226,7 +226,7 @@ class TestStrictTokenBoundGuard:
     """Fix 4 (production sweep): the chunk->embedder boundary guard counts
     each finished chunk in the embedder's OWN tokenizer and re-splits any
     that exceed safe_max_tokens — converting a silent embedder truncation
-    into a clean re-split + one visible WARNING. Scoped to hf/tiktoken,
+    into a clean re-split + one visible WARNING. Scoped to hf/tiktoken/fastembed,
     the kinds with a cheap exact local counter and a HARD context limit."""
 
     def test_exact_chunk_tokens_hf_uses_tokenize(self):
@@ -249,14 +249,14 @@ class TestStrictTokenBoundGuard:
         )
         assert KnowledgeEngine._exact_chunk_tokens("abcd", tok) == 4
 
-    def test_guard_present_and_scoped_to_hf_tiktoken(self):
+    def test_guard_present_and_scoped_to_exact_counters(self):
         # Source-level pins (a full _load_document run needs Docling + a file).
         import inspect
 
         from cuga.backend.knowledge import engine as eng
 
         src = inspect.getsource(eng.KnowledgeEngine._load_document)
-        assert 'tok_info.kind in ("hf", "tiktoken")' in src, "token guard lost its kind scoping"
+        assert 'tok_info.kind in ("hf", "tiktoken", "fastembed")' in src, "token guard lost its kind scoping"
         assert "_exact_chunk_tokens" in src, "token guard no longer measures exact tokens"
         assert "safe_max_tokens" in src and "Token-bound re-split" in src
 
