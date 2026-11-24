@@ -178,6 +178,29 @@ def test_a_failed_nli_load_is_not_retried_on_every_answer(monkeypatch):
     assert len(calls) == 1
 
 
+def test_the_nli_model_loads_at_its_pinned_revision(monkeypatch):
+    """An upstream change to the model repository must not change the verdicts."""
+    import transformers
+
+    from cuga.backend.knowledge import citation_check
+
+    revisions = []
+
+    def record(name, **kwargs):
+        revisions.append((name, kwargs.get("revision")))
+        if len(revisions) == 1:
+            return object()  # the tokenizer
+        raise OSError("stop before loading the weights")
+
+    monkeypatch.setattr(citation_check, "_nli", None)
+    monkeypatch.setattr(citation_check, "_nli_failed_at", 0.0)
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", record)
+    monkeypatch.setattr(transformers.AutoModelForSequenceClassification, "from_pretrained", record)
+    assert asyncio.run(check_citations("A [s1].", CHUNKS.get, "nli")) == {}
+    assert revisions == [(citation_check.NLI_MODEL, citation_check.NLI_MODEL_REVISION)] * 2
+    assert len(citation_check.NLI_MODEL_REVISION) == 40
+
+
 def test_quotes_are_the_exact_source_passages_the_verdicts_rest_on():
     chunks = {"s1": "Invoice INV-9 was issued to\nContoso. It covers backups.", "s2": "The total is $4,200."}
     reply = {

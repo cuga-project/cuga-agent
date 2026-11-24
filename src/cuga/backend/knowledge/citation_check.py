@@ -36,6 +36,9 @@ from cuga.backend.knowledge.sources import _CODE_RE, _MARKER_RE
 SUPPORTED, CONTRADICTED, NOT_STATED = "supported", "contradicted", "not_stated"
 _WORST_FIRST = (CONTRADICTED, NOT_STATED, SUPPORTED)
 NLI_MODEL = "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7"
+# The model repository commit the verdicts were measured with (a public commit hash, not a
+# secret): an upstream change cannot change them.
+NLI_MODEL_REVISION = "b5113eb38ab63efdd7f280f8c144ea8b13f978ce"  # pragma: allowlist secret
 _MAX_CLAIM_CHARS = 400
 # A plain source reference the model writes before the marker ("... stations. [handbook.txt, page 2]
 # [s1]"): a bracket naming a file or a page. Other brackets ("codes [E12, E14] [s1]") are the claim's.
@@ -291,8 +294,10 @@ def _nli_model() -> tuple[Any, Any, dict[int, str]]:
             from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
             try:
-                tokenizer = AutoTokenizer.from_pretrained(NLI_MODEL)
-                model = AutoModelForSequenceClassification.from_pretrained(NLI_MODEL).eval()
+                tokenizer = AutoTokenizer.from_pretrained(NLI_MODEL, revision=NLI_MODEL_REVISION)
+                model = AutoModelForSequenceClassification.from_pretrained(
+                    NLI_MODEL, revision=NLI_MODEL_REVISION
+                ).eval()
             except Exception:
                 _nli_failed_at = time.monotonic()
                 raise
