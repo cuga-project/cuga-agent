@@ -2,6 +2,7 @@
 answer function, its ordering inside FinalAnswerNode.finalize_answer, and
 the instructions override."""
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -62,7 +63,7 @@ def test_defaults_leave_answer_untouched():
     assert settings.final_answer.function == ""
     assert settings.final_answer.instructions == ""
     state = _state("[[New Hampshire]] *raw* text")
-    FinalAnswerNode.finalize_answer(state)
+    asyncio.run(FinalAnswerNode.finalize_answer(state))
     assert state.final_answer == "[[New Hampshire]] *raw* text"
     assert state.sources == []
 
@@ -73,14 +74,14 @@ def test_defaults_leave_answer_untouched():
 def test_settings_dotted_path_applies():
     settings.set("final_answer.function", "json.dumps")
     state = _state("hello")
-    FinalAnswerNode.finalize_answer(state)
+    asyncio.run(FinalAnswerNode.finalize_answer(state))
     assert state.final_answer == '"hello"'
 
 
 def test_injected_callable_applies_and_wins_over_settings():
     settings.set("final_answer.function", "json.dumps")
     state = _state("[[42]]")
-    FinalAnswerNode.finalize_answer(state, _strip_brackets)
+    asyncio.run(FinalAnswerNode.finalize_answer(state, _strip_brackets))
     assert state.final_answer == "42"
 
 
@@ -89,8 +90,8 @@ def test_idempotent_function_double_application_is_stable():
     # a recommended safety margin, and this locks that an idempotent function
     # survives an accidental second pass unchanged.
     state = _state("[[42]]")
-    FinalAnswerNode.finalize_answer(state, _strip_brackets)
-    FinalAnswerNode.finalize_answer(state, _strip_brackets)
+    asyncio.run(FinalAnswerNode.finalize_answer(state, _strip_brackets))
+    asyncio.run(FinalAnswerNode.finalize_answer(state, _strip_brackets))
     assert state.final_answer == "42"
 
 
@@ -105,7 +106,7 @@ def test_function_receives_harmony_stripped_text():
         return text
 
     state = _state("The total is 42<|return|>")
-    FinalAnswerNode.finalize_answer(state, probe)
+    asyncio.run(FinalAnswerNode.finalize_answer(state, probe))
     assert seen["input"] == "The total is 42"
     assert state.final_answer == "The total is 42"
 
@@ -123,7 +124,7 @@ def test_function_sees_raw_citation_markers_not_resolved_chips():
         return text
 
     state = _state("answer [s1] done")
-    FinalAnswerNode.finalize_answer(state, probe)
+    asyncio.run(FinalAnswerNode.finalize_answer(state, probe))
     assert seen["input"] == "answer [s1] done"  # pre-citation
     assert state.final_answer == "answer [1] done"  # citations still resolve after
 
@@ -136,20 +137,20 @@ def test_function_raising_delivers_original():
         raise RuntimeError("nope")
 
     state = _state("safe answer")
-    FinalAnswerNode.finalize_answer(state, boom)
+    asyncio.run(FinalAnswerNode.finalize_answer(state, boom))
     assert state.final_answer == "safe answer"
 
 
 def test_function_returning_non_str_is_ignored():
     state = _state("safe answer")
-    FinalAnswerNode.finalize_answer(state, lambda _t: 42)
+    asyncio.run(FinalAnswerNode.finalize_answer(state, lambda _t: 42))
     assert state.final_answer == "safe answer"
 
 
 def test_unresolvable_settings_path_delivers_original():
     settings.set("final_answer.function", "no.such.module.fn")
     state = _state("safe answer")
-    FinalAnswerNode.finalize_answer(state)
+    asyncio.run(FinalAnswerNode.finalize_answer(state))
     assert state.final_answer == "safe answer"
 
 
@@ -163,7 +164,7 @@ def test_empty_answer_skips_function():
 
 def test_empty_string_return_is_a_valid_result():
     state = _state("refused")
-    FinalAnswerNode.finalize_answer(state, lambda _t: "")
+    asyncio.run(FinalAnswerNode.finalize_answer(state, lambda _t: ""))
     assert state.final_answer == ""
 
 
@@ -184,7 +185,7 @@ def test_resolver_rejects_class_paths():
 def test_settings_class_path_delivers_original():
     settings.set("final_answer.function", "collections.OrderedDict")
     state = _state("safe answer")
-    FinalAnswerNode.finalize_answer(state)
+    asyncio.run(FinalAnswerNode.finalize_answer(state))
     assert state.final_answer == "safe answer"
 
 
@@ -192,7 +193,7 @@ def test_non_str_settings_values_never_break_delivery():
     settings.set("final_answer.function", 1)
     settings.set("final_answer.instructions", 1)
     state = _state("safe answer")
-    FinalAnswerNode.finalize_answer(state)  # must not raise
+    asyncio.run(FinalAnswerNode.finalize_answer(state))  # must not raise
     assert state.final_answer == "safe answer"
     assert resolve_final_answer_instructions() == ""
 
@@ -290,7 +291,7 @@ def test_fallback_shim_strips_harmony_before_function():
 def test_terminal_branches_set_the_finalized_flag():
     state = _state("[[42]]")
     state.final_answer_finalized = False
-    FinalAnswerNode.finalize_answer(state, _strip_brackets)
+    asyncio.run(FinalAnswerNode.finalize_answer(state, _strip_brackets))
     assert state.final_answer_finalized is True
 
 

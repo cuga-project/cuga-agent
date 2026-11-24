@@ -498,3 +498,61 @@ def test_get_tools_needing_probing_empty_when_all_observed():
 def test_get_tools_needing_probing_empty_by_default():
     adapter = _make_adapter()
     assert adapter.get_tools_needing_probing() == frozenset()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_classify_auto_continue_sends_an_unsearched_citing_answer_back_to_search():
+    """#1124: an answer citing [sN] with no knowledge search this turn would lose every citation."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import SEARCH_BEFORE_CITING_CORRECTION
+    from cuga.backend.knowledge import sources
+
+    sources._reset_all_ledgers_for_tests()
+    adapter = _make_adapter()
+    state = SimpleNamespace(chat_messages=[], cuga_lite_metadata={}, thread_id="t-1124")
+    answer = "Unused leave can be carried over, up to five days [s1]."
+    no_continue = patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
+        new_callable=AsyncMock,
+        return_value=_decision(False),
+    )
+
+    adapter._tools_context = {"find_tools": object()}
+    with no_continue:
+        assert await adapter.classify_auto_continue(state, None, answer, None) is False, "no knowledge tool"
+
+    adapter._tools_context = {"knowledge_search_knowledge": object()}
+    with no_continue:
+        assert (
+            await adapter.classify_auto_continue(state, None, answer, None) == SEARCH_BEFORE_CITING_CORRECTION
+        )
+        assert await adapter.classify_auto_continue(state, None, answer, None) is False, "once per turn"
+    sources._reset_all_ledgers_for_tests()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_name, retried",
+    [("knowledge_search_knowledge", True), ("crm_knowledge_search_tickets", False)],
+)
+async def test_the_search_before_citing_retry_needs_the_knowledge_search_tool(tool_name, retried):
+    """Matched by the tool's exact name: a user tool whose name contains "knowledge_search" is
+    not the knowledge search tool."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import SEARCH_BEFORE_CITING_CORRECTION
+    from cuga.backend.knowledge import sources
+
+    sources._reset_all_ledgers_for_tests()
+    adapter = _make_adapter()
+    adapter._tools_context = {tool_name: object()}
+    state = SimpleNamespace(chat_messages=[], cuga_lite_metadata={}, thread_id=f"t-{tool_name}")
+    try:
+        with patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
+            new_callable=AsyncMock,
+            return_value=_decision(False),
+        ):
+            result = await adapter.classify_auto_continue(state, None, "Five days [s1].", None)
+    finally:
+        sources._reset_all_ledgers_for_tests()
+    assert (result == SEARCH_BEFORE_CITING_CORRECTION) is retried

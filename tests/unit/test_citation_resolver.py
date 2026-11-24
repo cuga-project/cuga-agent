@@ -223,6 +223,30 @@ def test_current_turn_marker_still_resolves():
     assert sources[0]["filename"] == "milga.pdf"
 
 
+def test_verified_marker_from_earlier_turn_resolves():
+    ledger = SourceLedger()
+    ledger.register(_chunk("turn-1 benchmark text"), query="benchmarks")  # s1
+    ledger.register(_chunk("turn-1 invoice text", filename="inv.pdf"), query="invoice")  # s2
+    ledger.begin_turn()
+
+    text, sources = resolve_citations("Benchmarks [s1]. Invoice [s2].", ledger, verified={"s2"})
+
+    assert text == "Benchmarks . Invoice [1]."
+    assert [s["filename"] for s in sources] == ["inv.pdf"]
+
+
+def test_strict_strips_unverified_markers_from_this_turn_too():
+    ledger = SourceLedger()
+    ledger.begin_turn()
+    ledger.register(_chunk("benchmark text"), query="benchmarks")  # s1
+    ledger.register(_chunk("invoice text", filename="inv.pdf"), query="invoice")  # s2
+
+    text, sources = resolve_citations("Benchmarks [s1]. Invoice [s2].", ledger, verified={"s2"}, strict=True)
+
+    assert text == "Benchmarks . Invoice [1]."
+    assert [s["filename"] for s in sources] == ["inv.pdf"]
+
+
 def test_chunk_re_retrieved_this_turn_resolves():
     """Same content pulled again this turn is legitimately current-turn evidence."""
     ledger = SourceLedger()

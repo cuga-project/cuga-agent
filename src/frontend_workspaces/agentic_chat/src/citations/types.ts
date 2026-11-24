@@ -8,6 +8,30 @@ export interface MessageSource {
   snippet: string;
   score?: number;
   query?: string;
+  // Set when knowledge.citation_check is on: whether this source states what it is cited for.
+  support?: CitationSupport;
+  // The passage of this source the verdict rests on, exactly as it appears in the snippet.
+  support_quote?: string;
+}
+
+export type CitationSupport = 'supported' | 'contradicted' | 'not_stated';
+
+/** Split a snippet around the passage the citation check quoted; null when it has none. */
+export function quoteSegments(snippet: string, quote?: string): Array<{ text: string; mark: boolean }> | null {
+  const at = quote ? snippet.indexOf(quote) : -1;
+  if (!quote || at < 0) return null;
+  return [
+    { text: snippet.slice(0, at), mark: false },
+    { text: quote, mark: true },
+    { text: snippet.slice(at + quote.length), mark: false },
+  ];
+}
+
+/** Whether the quoted passage ends past what a collapsed snippet shows (the panel collapses
+ * snippets over 350 characters), so the snippet should open expanded. */
+export function quoteBelowFold(source: Pick<MessageSource, 'snippet' | 'support_quote'>): boolean {
+  const at = source.support_quote ? source.snippet.indexOf(source.support_quote) : -1;
+  return at >= 0 && at + (source.support_quote?.length ?? 0) > 350;
 }
 
 // Formats where "page" is a chunk ordinal, not a real page number. `.docx` is

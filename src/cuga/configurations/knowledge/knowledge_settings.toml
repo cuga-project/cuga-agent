@@ -3,6 +3,21 @@ enabled = false
 agent_level_enabled = true
 session_level_enabled = true
 citations_enabled = true  # numbered [1] source citations in answers (UI toggle: Knowledge -> Settings)
+# Check that cited sources support their claims; a checked source gets "support" (supported |
+# contradicted | not_stated).
+#   "off"    no check and no extra call; citations reused from an earlier answer are removed.
+#   "reused" only citations reused from an earlier answer, with the agent's model: each is kept
+#            when supported. Answers citing only this turn's sources make no extra call.
+#   "llm"    every citation, with the agent's model: one extra call per cited answer. Use it for
+#            answers that are not in English.
+#   "nli"    every citation, with a local multilingual NLI model (~1 GB download on first use, no
+#            API calls).
+citation_check = "reused"
+# Show only citations the check found supported (needs citation_check "llm" or "nli"). If the
+# check fails, the answer is delivered without citations.
+citation_strict = false
+# When an answer cites sources that no search returned, send the model back once to search first.
+citation_search_retry = true
 persist_dir = ""  # empty = default <cwd>/.cuga/knowledge/
 # Local: vectors in persist_dir/knowledge_vectors.db; metadata in persist_dir/metadata.db. Prod: storage.postgres_url.
 # Uploaded source files always remain under persist_dir/files/ (filesystem).

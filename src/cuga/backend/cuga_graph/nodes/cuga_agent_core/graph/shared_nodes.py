@@ -384,6 +384,12 @@ def create_call_model_node(
             if budget_exhausted
             else await adapter.classify_auto_continue(state, active_model, content, reasoning)
         )
+        if isinstance(should_continue, str) and not step_remains:
+            # A corrective retry (search before citing, unverified blocker) replaces an answer the
+            # model already wrote. On the last allowed step it would trip the step limit in
+            # call_model, and the user would get the limit message instead of that answer.
+            logger.info(f"{adapter.sender_name}: no step left for a corrective retry — keeping the answer")
+            should_continue = False
         if should_continue:
             # A str result is a corrective directive (e.g. Lite's unverified-blocker
             # retry, issue #610) — use it as the synthetic user message.

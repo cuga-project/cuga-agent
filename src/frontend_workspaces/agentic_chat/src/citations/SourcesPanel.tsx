@@ -5,7 +5,8 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { pageLabel, scopeLabel, type MessageSource } from './types';
+import { SupportIcon, supportInfo } from './SupportIcon';
+import { pageLabel, quoteBelowFold, quoteSegments, scopeLabel, type MessageSource } from './types';
 import './SourcesPanel.css';
 
 /** Split snippet into plain/mark segments for the retrieving-query terms.
@@ -36,6 +37,41 @@ export interface SourcesPanelProps {
   onOpenDocument?: (source: MessageSource) => Promise<boolean>;
 }
 
+/** The snippet, marking the passage the citation check quoted, or else the query's terms. */
+function SnippetText({ source }: { source: MessageSource }) {
+  const quoted = quoteSegments(source.snippet, source.support_quote);
+  if (!quoted) return <QueryMarks text={source.snippet} query={source.query} />;
+  const [before, quote, after] = quoted;
+  return (
+    <>
+      <QueryMarks text={before.text} query={source.query} />
+      <mark className={`cuga-sources-panel__quote cuga-sources-panel__quote--${source.support}`}>{quote.text}</mark>
+      <QueryMarks text={after.text} query={source.query} />
+    </>
+  );
+}
+
+function QueryMarks({ text, query }: { text: string; query?: string }) {
+  return (
+    <>
+      {highlightSegments(text, query).map((seg, i) =>
+        seg.mark ? <mark key={i}>{seg.text}</mark> : <span key={i}>{seg.text}</span>,
+      )}
+    </>
+  );
+}
+
+function SupportNote({ support }: { support?: string }) {
+  const info = supportInfo(support);
+  if (!info) return null;
+  return (
+    <div className="cuga-sources-panel__support">
+      <SupportIcon support={support} />
+      {info.label}
+    </div>
+  );
+}
+
 export default function SourcesPanel({
   sources,
   activeN,
@@ -45,6 +81,8 @@ export default function SourcesPanel({
   const activeRef = useRef<HTMLDivElement | null>(null);
   const [unavailable, setUnavailable] = useState<Record<number, boolean>>({});
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+  // A snippet whose quoted passage would sit under the fold starts expanded.
+  const isOpen = (s: MessageSource) => expanded[s.n] ?? quoteBelowFold(s);
 
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -97,22 +135,21 @@ export default function SourcesPanel({
                 {pageLabel(s) ? ` · ${pageLabel(s)}` : ''}
               </span>
             </div>
+            <SupportNote support={s.support} />
             {s.section_path && <div className="cuga-sources-panel__section">{s.section_path}</div>}
             <blockquote
-              className={`cuga-sources-panel__snippet${expanded[s.n] ? ' is-expanded' : ''}`}
-              onClick={() => setExpanded((e) => ({ ...e, [s.n]: !e[s.n] }))}
+              className={`cuga-sources-panel__snippet${isOpen(s) ? ' is-expanded' : ''}`}
+              onClick={() => setExpanded((e) => ({ ...e, [s.n]: !isOpen(s) }))}
             >
-              {highlightSegments(s.snippet, s.query).map((seg, i) =>
-                seg.mark ? <mark key={i}>{seg.text}</mark> : <span key={i}>{seg.text}</span>,
-              )}
+              <SnippetText source={s} />
             </blockquote>
             {s.snippet.length > 350 && (
               <button
                 className="cuga-sources-panel__expand"
-                onClick={() => setExpanded((e) => ({ ...e, [s.n]: !e[s.n] }))}
-                aria-expanded={!!expanded[s.n]}
+                onClick={() => setExpanded((e) => ({ ...e, [s.n]: !isOpen(s) }))}
+                aria-expanded={isOpen(s)}
               >
-                {expanded[s.n] ? 'Show less ↑' : 'Show more ↓'}
+                {isOpen(s) ? 'Show less ↑' : 'Show more ↓'}
               </button>
             )}
             <div className="cuga-sources-panel__foot">

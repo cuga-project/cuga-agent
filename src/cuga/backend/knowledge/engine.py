@@ -4458,6 +4458,11 @@ class KnowledgeEngine:
     def get_knowledge_config(self) -> dict[str, Any]:
         return self._config.to_dict()
 
+    @property
+    def config(self) -> KnowledgeConfig:
+        """The live config; ``apply_knowledge_config`` replaces it, so read it at each use."""
+        return self._config
+
     def get_settings(self) -> dict[str, Any]:
         from cuga.backend.knowledge.config import list_profiles
 
@@ -4467,6 +4472,9 @@ class KnowledgeEngine:
                 "agent_level_enabled": self._config.agent_level_enabled,
                 "session_level_enabled": self._config.session_level_enabled,
                 "citations_enabled": getattr(self._config, "citations_enabled", True),
+                "citation_check": getattr(self._config, "citation_check", "reused"),
+                "citation_strict": getattr(self._config, "citation_strict", False),
+                "citation_search_retry": getattr(self._config, "citation_search_retry", True),
                 "rag_profile": self._config.rag_profile,
                 "embedding_provider": self._config.embedding_provider,
                 "embedding_model": self._config.embedding_model,

@@ -497,6 +497,28 @@ def list_profiles() -> dict[str, dict[str, Any]]:
     return profiles
 
 
+CITATION_CHECK_MODES = ("off", "reused", "llm", "nli")
+
+
+def validate_citation_settings(citations_enabled: Any, citation_check: Any, citation_strict: Any) -> None:
+    """Raise ValueError unless the citation settings are valid together.
+
+    The one rule for both ``KnowledgeConfig.validate`` and ``CugaAgent(...)``, which checks the
+    values it is given before the engine would reject them and run the agent without knowledge.
+    """
+    if not isinstance(citations_enabled, bool):
+        raise ValueError(f"citations_enabled must be a boolean, got {type(citations_enabled).__name__}")
+    if citation_check not in CITATION_CHECK_MODES:
+        raise ValueError(
+            f"citation_check must be one of {', '.join(repr(m) for m in CITATION_CHECK_MODES)}, "
+            f"got {citation_check!r}"
+        )
+    if not isinstance(citation_strict, bool):
+        raise ValueError(f"citation_strict must be a boolean, got {type(citation_strict).__name__}")
+    if citation_strict and citation_check not in ("llm", "nli"):
+        raise ValueError("citation_strict needs citation_check 'llm' or 'nli'")
+
+
 @dataclass
 class KnowledgeConfig:
     """Configuration for the knowledge engine."""
@@ -509,6 +531,19 @@ class KnowledgeConfig:
     # never triggers a reindex.
     # Per-session override lives in SessionKnowledgeState.overrides (session_provider.py); consumed via citations_enabled_for() in sources.py.
     citations_enabled: bool = True
+    # Check citations against the sources they cite (citation_check.py), one of
+    # CITATION_CHECK_MODES: "off" (no check, no extra call; citations reused from an earlier turn
+    # are removed), "reused" (only those reused citations, with the agent's model; a supported one
+    # is kept), "llm" (every citation, with the agent's model) or "nli" (every citation, with a
+    # local multilingual NLI model). Search-only, excluded from vector_config_hash like
+    # citations_enabled.
+    citation_check: str = "reused"
+    # Show only the citations the check found supported, instead of every citation with its
+    # verdict. Needs citation_check "llm" or "nli". If the check fails, citations are withheld.
+    citation_strict: bool = False
+    # When an answer cites sources that no search returned, send the model back once to search
+    # before answering (#1124). Search-only, like citations_enabled.
+    citation_search_retry: bool = True
     persist_dir: Path = field(default_factory=lambda: Path.cwd() / ".cuga" / "knowledge")
 
     # Embeddings
@@ -858,9 +893,10 @@ class KnowledgeConfig:
         # the structured glossary in place so callers see the cleaned form.
         _validate_client_adaptation(self.client_adaptation_text)
         self.client_adaptation_glossary = _validate_glossary(self.client_adaptation_glossary)
-        if not isinstance(self.citations_enabled, bool):
+        validate_citation_settings(self.citations_enabled, self.citation_check, self.citation_strict)
+        if not isinstance(self.citation_search_retry, bool):
             raise ValueError(
-                f"citations_enabled must be a boolean, got {type(self.citations_enabled).__name__}"
+                f"citation_search_retry must be a boolean, got {type(self.citation_search_retry).__name__}"
             )
         # Reranker bounds: top_k_in 1..100; model name is a free string
         # (operators may point at fine-tuned variants); loading-time tests
@@ -1107,6 +1143,9 @@ class KnowledgeConfig:
             agent_level_enabled=kb.get("agent_level_enabled", True),
             session_level_enabled=kb.get("session_level_enabled", True),
             citations_enabled=kb.get("citations_enabled", True),
+            citation_check=kb.get("citation_check", "reused"),
+            citation_strict=kb.get("citation_strict", False),
+            citation_search_retry=kb.get("citation_search_retry", True),
             persist_dir=persist_dir,
             embedding_provider=embeddings.get("provider", "fastembed"),
             embedding_model=_profile_key(

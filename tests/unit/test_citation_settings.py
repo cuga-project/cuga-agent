@@ -61,6 +61,21 @@ def test_not_in_vector_config_hash():
     assert a.vector_config_hash() == b.vector_config_hash()
 
 
+def test_citation_check_settings_round_trip_read_out_and_never_reindex():
+    """Saved agent configs are exported with to_dict and imported through coerce_and_validate."""
+    from cuga.backend.knowledge.engine import KnowledgeEngine
+
+    cfg = KnowledgeConfig.coerce_and_validate({"citation_check": "llm", "citation_strict": "true"})
+    assert (cfg.citation_check, cfg.citation_strict) == ("llm", True)
+    assert {k: cfg.to_dict()[k] for k in ("citation_check", "citation_strict")} == {
+        "citation_check": "llm",
+        "citation_strict": True,
+    }
+    settings = KnowledgeEngine.get_settings(SimpleNamespace(_config=cfg))["knowledge"]
+    assert (settings["citation_check"], settings["citation_strict"]) == ("llm", True)
+    assert cfg.vector_config_hash() == KnowledgeConfig().vector_config_hash()
+
+
 def test_effective_enablement_prefers_session_override():
     cfg = KnowledgeConfig(citations_enabled=True)
     assert citations_enabled_for(cfg, "t-1") is True

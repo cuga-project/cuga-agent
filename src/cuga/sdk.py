@@ -138,9 +138,12 @@ class InvokeResult(BaseModel):
     sources: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="Citation sources for the answer: [{n, cite_id, filename, page, "
-        "section_path, scope, snippet, score, query}] — populated when knowledge "
+        "section_path, scope, snippet, score, query, support}] — populated when knowledge "
         "citations are enabled and the answer cites retrieved chunks. "
-        "section_path and score are optional (omitted when absent). Stream "
+        "section_path and score are optional (omitted when absent); support "
+        "(supported | contradicted | not_stated) is present when the citation check judged the "
+        "source: every cited source with knowledge.citation_check 'llm' or 'nli', and citations reused "
+        "from an earlier turn with 'reused' (the default); support_quote holds the passage the verdict rests on. Stream "
         "consumers: the FinalAnswerAgent node update carries both final_answer "
         "and sources.",
     )
@@ -2008,6 +2011,8 @@ class CugaAgent:
         *,
         checkpointer: Optional["BaseCheckpointSaver"] = None,
         hooks: Optional[List[Any]] = None,
+        citation_check: Optional[str] = None,
+        citation_strict: Optional[bool] = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -2050,6 +2055,13 @@ class CugaAgent:
                 function=...)` combines both. None = unchanged behavior. Non-SDK
                 deployments use the `[final_answer]` settings section. Not applied to
                 supervisor-composed synthesis (#621).
+            citation_check: Keyword-only. None = follow knowledge settings (default "reused"). How
+                citations are checked against their sources: "off" (never; citations reused from
+                an earlier turn are removed), "reused" (only those, with the agent's model),
+                "llm" (every citation, with the agent's model) or "nli" (every citation, with a
+                local model). Applies to this agent's runs only.
+            citation_strict: Keyword-only. None = follow knowledge settings; True shows only
+                citations the check found supported (needs citation_check "llm" or "nli").
             checkpointer: Keyword-only LangGraph saver for the compiled graph. None = a fresh
                 `MemorySaver` (unchanged behavior). Must be async-capable; a sync-only saver
                 (e.g. `SqliteSaver`) raises `TypeError` on first compile.
@@ -2165,6 +2177,20 @@ class CugaAgent:
         # Knowledge configuration
         self._enable_knowledge = enable_knowledge  # None = auto from settings
         self._enable_citations = enable_citations  # None = follow knowledge settings
+        self._citation_check = citation_check  # None = follow knowledge settings
+        self._citation_strict = citation_strict  # None = follow knowledge settings
+        if (enable_citations, citation_check, citation_strict) != (None, None, None):
+            # Checked here, on the values the agent will run with, with the engine's own rule:
+            # the engine would reject them later, where agent setup only logs the error and runs
+            # the agent without knowledge.
+            from cuga.backend.knowledge.config import validate_citation_settings
+
+            kb_settings = settings.get("knowledge") or {}
+            validate_citation_settings(
+                kb_settings.get("citations_enabled", True) if enable_citations is None else enable_citations,
+                kb_settings.get("citation_check", "reused") if citation_check is None else citation_check,
+                kb_settings.get("citation_strict", False) if citation_strict is None else citation_strict,
+            )
 
         # Skills configuration
         self._enable_skills = enable_skills  # None = auto from settings
@@ -2454,9 +2480,15 @@ class CugaAgent:
                 logger.warning(f"Knowledge auto-injection failed (will retry): {e}")
 
     def _inject_knowledge_to_config(self, run_config: dict) -> None:
-        """Add knowledge engine to configurable for awareness injection."""
+        """Pass this agent's knowledge engine with the run: awareness injection and the citation
+        settings read it (knowledge.sources.run_knowledge_config), and the ``llm`` citation check
+        uses this agent's model."""
         if self._knowledge_client is not None:
+            from cuga.backend.cuga_graph.nodes.answer.final_answer import CITATION_CHECK_MODEL_KEY
+
             run_config["configurable"]["knowledge_engine"] = self._knowledge_client._engine
+            if self._model is not None:
+                run_config["configurable"][CITATION_CHECK_MODEL_KEY] = self._model
 
     def _create_graph(self, thread_id: Optional[str] = None):
         """Create the LangGraph graph with HITL support."""
@@ -2663,16 +2695,17 @@ class CugaAgent:
             config = KnowledgeConfig.from_settings(settings)
             if self._enable_citations is not None:
                 config.citations_enabled = self._enable_citations
+            if self._citation_check is not None:
+                config.citation_check = self._citation_check
+            if self._citation_strict is not None:
+                config.citation_strict = self._citation_strict  # KnowledgeEngine validates the combination
             from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
 
             # Inject cuga's LLM for optional query transformation (multi_query / HyDE);
             # lazy + inert unless a profile enables search_query_transform.
             engine = KnowledgeEngine(config, chat_generator=CugaChatGenerator())
-            # Gate citation-marker resolution on this agent's flag (module-global
-            # hook — matches the session-override hook's single-process assumption).
-            from cuga.backend.knowledge.sources import set_agent_citations_lookup
-
-            set_agent_citations_lookup(lambda: bool(config.citations_enabled))
+            # This agent's citation settings and model= reach its runs with the engine
+            # (_inject_knowledge_to_config), so other agents in the process keep their own.
             # Use agent_id from app_state if running in server, else "cuga-default"
             _agent_id = "cuga-default"
             try:
@@ -3320,8 +3353,9 @@ class CugaAgent:
         run_config["configurable"]["thread_id"] = thread_id
 
         # New user turn (not a HITL resume — that path returns above): scope
-        # citations to this turn's retrieval so an id from an earlier turn can't
-        # resolve in this answer. Mirrors the server's event_stream hook.
+        # citations to this turn's retrieval so an id from an earlier turn resolves
+        # in this answer only if the citation check verifies it. Mirrors the
+        # server's event_stream hook.
         try:
             from cuga.backend.knowledge.sources import begin_ledger_turn
 
@@ -3467,15 +3501,19 @@ class CugaAgent:
             if final_answer:
                 final_answer = _apply_answer_function_to_text(final_answer, self._answer_function)
 
-            from cuga.backend.knowledge.sources import (
-                get_ledger,
-                has_citation_markers,
-                resolve_citations,
-            )
+            from cuga.backend.knowledge.sources import has_citation_markers
 
             if final_answer and has_citation_markers(final_answer):
-                ledger = get_ledger(thread_id, create=False)
-                final_answer, fallback_sources = resolve_citations(final_answer, ledger)
+                from types import SimpleNamespace
+
+                from cuga.backend.cuga_graph.nodes.answer.final_answer import FinalAnswerNode
+
+                # The same steps as FinalAnswerNode: the citation check, then resolution (strip
+                # mode when citations are off for this thread).
+                fallback = SimpleNamespace(final_answer=final_answer, thread_id=thread_id, sources=[])
+                verdicts = await FinalAnswerNode.check_citation_support(fallback)
+                FinalAnswerNode.apply_citation_resolution(fallback, verdicts)
+                final_answer, fallback_sources = fallback.final_answer, fallback.sources
             else:
                 fallback_sources = []
 
