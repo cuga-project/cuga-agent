@@ -227,8 +227,15 @@ def problem() -> Optional[str]:
     try:
         conn = configured()
     except Exception as e:
-        # The text can name secret paths or a secret store's reply: the log gets it, the UI does not.
-        logger.warning(f"[execd:conn] Could not read the sandbox connection: {e}")
+        # The message can name secret paths or quote a secret store's reply, so neither the UI
+        # nor the log gets it: the log gets the exception type and, for OS errors, the number.
+        kind = type(e).__name__
+        if isinstance(e, OSError) and e.errno is not None:
+            kind += f" (errno {e.errno})"
+        logger.warning(
+            f"[execd:conn] Could not read the sandbox connection: {kind}. "
+            "Check the sandbox secret mount and the execd settings."
+        )
         return "The sandbox connection could not be read; see the server log"
     if not conn.url:
         return "Sandbox URL is not configured"
