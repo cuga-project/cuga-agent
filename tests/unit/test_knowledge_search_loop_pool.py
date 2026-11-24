@@ -58,6 +58,7 @@ def created_pools(monkeypatch) -> list[_Pool]:
 
     monkeypatch.setattr(prod, "_new_pool", new_pool)
     monkeypatch.setattr(prod, "_loop_pools", type(prod._loop_pools)())
+    monkeypatch.setattr(prod, "_loop_pool_holders", type(prod._loop_pool_holders)())
     return created
 
 
@@ -173,3 +174,24 @@ def test_an_adapter_without_an_async_store_searches_in_a_worker_thread():
             pass
 
     assert asyncio.run(_SyncOnly().asearch("question", k=2)) == [("question", 2.0)]
+
+
+def test_the_loop_pool_closes_when_the_last_engine_releases_it(created_pools):
+    # One engine per CugaAgent; agents on one loop share its pool. Closing it under another
+    # engine would fail that engine's searches.
+    adapter = _adapter("kb_holders")
+    first, second = object(), object()
+
+    async def main():
+        prod.hold_loop_pools(first)
+        prod.hold_loop_pools(second)
+        await adapter.asearch("question")
+        await prod.release_loop_pools(first)
+        open_after_first = created_pools[0].close.await_count == 0
+        await adapter.asearch("question")
+        await prod.release_loop_pools(second)
+        return open_after_first
+
+    assert asyncio.run(main()) is True
+    assert len(created_pools) == 1  # the second engine kept using the same pool
+    created_pools[0].close.assert_awaited_once()

@@ -191,3 +191,54 @@ def test_a_search_never_creates_a_dropped_table_again(clean_tenant, monkeypatch)
         assert not asyncio.run(_table_exists(dsn, name))
     finally:
         searched.drop()
+
+
+def test_one_engine_closing_leaves_the_pool_of_another_engine_open(clean_tenant, monkeypatch):
+    # Two SDK agents on one loop have one engine each, and both search through the loop's pool.
+    # When one agent closes, the other's searches keep working, including those waiting for a
+    # connection; the pool closes when the last engine releases it.
+    dsn = _dsn()
+    asyncio.run(_setup_extension(dsn))
+    adapter = _build_adapter(dsn, clean_tenant, monkeypatch, f"kb_loopclose_{uuid.uuid4().hex[:8]}")
+    adapter.add_documents(_docs(3, "/tmp/close.pdf"))
+    closing, searching = object(), object()  # the two engines
+    errors: list[str] = []
+
+    async def main():
+        prod.hold_loop_pools(closing)
+        prod.hold_loop_pools(searching)
+        stop, searches = asyncio.Event(), [0]
+
+        async def search_until_stopped():
+            while not stop.is_set():
+                try:
+                    assert len(await adapter.asearch("chunk text body", k=3)) == 3
+                    searches[0] += 1
+                except Exception as exc:  # noqa: BLE001 - reported below
+                    errors.append(repr(exc))
+
+        # More searchers than the pool has connections, so some wait for one.
+        tasks = [asyncio.create_task(search_until_stopped()) for _ in range(2 * prod.LOOP_POOL_MAX_SIZE)]
+        while searches[0] < 20:
+            await asyncio.sleep(0.005)
+        await prod.release_loop_pools(closing)  # the first agent's aclose()
+        after = searches[0]
+        while searches[0] < after + 40:
+            await asyncio.sleep(0.005)
+        stop.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), 60)
+        await prod.release_loop_pools(searching)  # the last agent's aclose() closes the pool
+        watcher = await asyncpg.connect(dsn)
+        for _ in range(100):
+            if await _pool_connections(watcher) == 0:
+                break
+            await asyncio.sleep(0.02)
+        left = await _pool_connections(watcher)
+        await watcher.close()
+        return left
+
+    try:
+        assert asyncio.run(main()) == 0
+        assert errors == []
+    finally:
+        adapter.drop()

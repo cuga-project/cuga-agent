@@ -75,11 +75,16 @@ async def _new_pool(postgres_url: str, *, min_size: int, max_size: int, applicat
 # One pool per (event loop, database), shared by every store created with use_loop_pool=True.
 # It is for a caller that keeps its loop, such as the knowledge engine: its collections (one per
 # agent and one per conversation) then share a bounded set of open connections instead of opening
-# a pool per call. The loop's owner closes it with close_loop_pools() before the loop ends, as the
-# engine's aclose() already does for its metadata pool.
+# a pool per call. Several engines can share a loop (one per CugaAgent), so each one holds the
+# loop's pools while it uses them, and the last to release them closes them (its aclose(), as
+# for its metadata pool). Closing a pool another engine uses would fail its searches, and leave
+# hanging those that wait for a connection.
 LOOP_POOL_MAX_SIZE = 8
 LOOP_POOL_APPLICATION_NAME = "cuga-embedding-store"  # visible in pg_stat_activity
 _loop_pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Dict[str, Any]]" = (
+    weakref.WeakKeyDictionary()
+)
+_loop_pool_holders: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, set[int]]" = (
     weakref.WeakKeyDictionary()
 )
 _loop_pools_guard = threading.Lock()
@@ -115,6 +120,24 @@ async def close_loop_pools() -> None:
         await pool.close()
 
 
+def hold_loop_pools(owner: object) -> None:
+    """``owner`` uses the running loop's shared pools: another owner's release leaves them open."""
+    with _loop_pools_guard:
+        _loop_pool_holders.setdefault(asyncio.get_running_loop(), set()).add(id(owner))
+
+
+async def release_loop_pools(owner: object) -> None:
+    """``owner`` is done with the running loop's shared pools; the last holder closes them."""
+    loop = asyncio.get_running_loop()
+    with _loop_pools_guard:
+        holders = _loop_pool_holders.get(loop, set())
+        holders.discard(id(owner))
+        if holders:
+            return
+        _loop_pool_holders.pop(loop, None)
+    await close_loop_pools()
+
+
 class ProdEmbeddingStore:
     def __init__(
         self,
@@ -145,6 +168,8 @@ class ProdEmbeddingStore:
     async def _get_pool(self):
         loop = asyncio.get_running_loop()
         if self._use_loop_pool:
+            # Nothing is awaited between taking the pool and acquiring a connection from it, so
+            # close_loop_pools() (another engine's aclose on this loop) cannot close it in between.
             return await loop_pool(self._postgres_url)
         with self._pools_guard:
             pool = self._pools.get(loop)

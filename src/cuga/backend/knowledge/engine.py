@@ -2086,11 +2086,12 @@ class KnowledgeEngine:
             await self._metadata.close()
         except Exception as e:
             logger.debug(f"Knowledge metadata close: {e}")
-        # Dense searches on Postgres share this loop's pool per database (``asearch``).
-        from cuga.backend.storage.embedding.prod import close_loop_pools
+        # Dense searches on Postgres share this loop's pool per database (``asearch``) with any
+        # other engine on the loop; the last engine to release it closes it.
+        from cuga.backend.storage.embedding.prod import release_loop_pools
 
         try:
-            await close_loop_pools()
+            await release_loop_pools(self)
         except Exception as e:
             logger.debug(f"Knowledge vector pool close: {e}")
         # Close every cached vector store's underlying connection pool.
@@ -3437,6 +3438,9 @@ class KnowledgeEngine:
                     return self._vector_stores[collection]
 
             adapter = await asyncio.to_thread(_adapter)
+            from cuga.backend.storage.embedding.prod import hold_loop_pools
+
+            hold_loop_pools(self)  # until aclose(): another engine's aclose() leaves them open
             asearch = getattr(adapter, "asearch", None)
             if asearch is None:  # an adapter that only has the sync interface
                 return await asyncio.to_thread(adapter.search, q, k=k)
