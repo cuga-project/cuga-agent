@@ -70,6 +70,7 @@ Tool Approval Example (with HITL):
 
 from typing import Callable, List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
 import asyncio
+import json
 import sys
 import time
 import uuid
@@ -105,6 +106,10 @@ from cuga.backend.cuga_graph.utils.run_receipt import (
 )
 
 _llm_manager_instance = None
+
+# Stream driver tasks whose cleanup outlived the grace period. The event loop holds only weak
+# references to tasks, so this set keeps each one alive until it finishes (see CugaAgent.stream).
+_DETACHED_STREAM_DRIVERS: set = set()
 
 
 def _get_llm_manager():
@@ -167,6 +172,11 @@ class InvokeResult(BaseModel):
     receipt: Optional[RunReceipt] = Field(
         default=None,
         description="Per-run token/cost/timing receipt (populated when advanced_features.run_receipt is enabled)",
+    )
+    hook_events: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Lifecycle hook events of this invocation (hook, summary, outcome, message, details), "
+        "when CugaAgent(hooks=...) is set",
     )
 
     def __str__(self) -> str:
@@ -1865,6 +1875,11 @@ def _empty_answer_is_final(result: dict, formatter_configured: bool) -> bool:
     return formatter_configured and _finalization_ran(result)
 
 
+def _checkpoint_id(state: Any) -> Optional[str]:
+    """The checkpoint id of a LangGraph state snapshot (None when nothing is saved for the thread)."""
+    return ((getattr(state, "config", None) or {}).get("configurable") or {}).get("checkpoint_id")
+
+
 def _resolve_checkpointer(saver: Optional["BaseCheckpointSaver"], owner: str) -> "BaseCheckpointSaver":
     """Return the saver to compile ``owner``'s graph with.
 
@@ -1992,6 +2007,7 @@ class CugaAgent:
         step_discipline: Optional[str] = None,
         *,
         checkpointer: Optional["BaseCheckpointSaver"] = None,
+        hooks: Optional[List[Any]] = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -2021,6 +2037,12 @@ class CugaAgent:
             step_discipline: `"one_tool_per_step"` lets the model run only one tool per step
                 (in both execution modes); `"off"` (default) allows any number. None = use
                 `advanced_features.cuga_lite_step_discipline`. Overridable per invoke()/stream().
+            hooks: Optional experimental lifecycle hooks (``cuga.backend.hooks.AgentHooks`` instances). They run at
+                session_start, on_user_message, before_llm_call, after_llm_call, after_plan, before_tool_call,
+                after_tool_call, before_reply and on_task_end; see the ``cuga.backend.hooks`` docstring. Events
+                are returned in ``InvokeResult.hook_events``; stream them with ``agent.hooks.add_listener(fn)``.
+                ``stream()`` runs only the model, plan and tool hooks: session_start, on_user_message,
+                before_reply and on_task_end run in ``invoke()`` only.
             final_answer: How the final answer is shaped. A `str` adds guidance for the
                 answer-composing LLM; a callable `(str) -> str` deterministically
                 post-processes the composed answer before delivery (must be pure;
@@ -2068,6 +2090,16 @@ class CugaAgent:
         from cuga.config import settings
 
         self._model = model
+        from cuga.backend.hooks import HookRegistry
+
+        self.hooks = HookRegistry(list(hooks or []))
+        if self.hooks:
+            from cuga.backend.hooks import HooksCallback, wrap_provider_with_hooks, wrap_tools_with_hooks
+
+            tools = wrap_tools_with_hooks(list(tools or []), self.hooks)
+            if tool_provider is not None:  # tools from a custom provider get the same tool-call hooks
+                tool_provider = wrap_provider_with_hooks(tool_provider, self.hooks)
+            callbacks = list(callbacks or []) + [HooksCallback(self.hooks)]
         self._callbacks = callbacks
         self._graph = None
         self._compiled_graph = None
@@ -2260,6 +2292,8 @@ class CugaAgent:
         """
         run_config: dict = dict(config) if config else {}
         run_config["configurable"] = dict(run_config.get("configurable") or {})
+        if getattr(self, "hooks", None):
+            run_config["configurable"]["cuga_hooks"] = self.hooks
         for key, value in (getattr(self, "_feature_overrides", None) or {}).items():
             if value is not None:
                 run_config["configurable"].setdefault(key, value)
@@ -2388,17 +2422,29 @@ class CugaAgent:
                     kb_config = KnowledgeConfig.from_settings(settings)
                     kb_enabled = kb_config.enabled
 
-                from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import unwrap_tool_provider
                 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import (
                     DirectLangChainToolsProvider,
                 )
 
-                provider_for_knowledge = unwrap_tool_provider(self.tool_provider)
+                from cuga.backend.hooks.registry import (
+                    base_tool_provider,
+                    hook_wrapper_records,
+                    wrap_tools_with_hooks,
+                )
+
+                provider_for_knowledge = base_tool_provider(self.tool_provider)
                 if kb_enabled and isinstance(provider_for_knowledge, DirectLangChainToolsProvider):
                     existing_names = {t.name for t in provider_for_knowledge.tools}
                     knowledge_tools = self.knowledge.get_langchain_tools()
                     new_tools = [t for t in knowledge_tools if t.name not in existing_names]
                     if new_tools:
+                        if self.hooks:  # the same tool-call hooks as the tools given at construction
+                            new_tools = [
+                                wrap_tools_with_hooks(
+                                    [t], self.hooks, record=hook_wrapper_records(self.tool_provider, t)
+                                )[0]
+                                for t in new_tools
+                            ]
                         self.tool_provider.add_tools(new_tools)
                         logger.info(f"Auto-injected {len(new_tools)} knowledge tools into SDK agent")
                 # Mark success only after injection completes (or knowledge disabled)
@@ -2772,7 +2818,235 @@ class CugaAgent:
                 raise
             return None
 
+    async def _approval_pending(self, thread_id: Optional[str]) -> bool:
+        """True when the thread's graph stopped for a human-in-the-loop approval (``state.next`` is set)."""
+        if not thread_id:
+            return False
+        try:
+            state = await self.graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return bool(state.next)
+        except Exception as e:
+            logger.debug(f"Could not check interrupt state: {e}")
+            return False
+
+    async def _thread_snapshot(self, thread_id: Optional[str]) -> Optional[Tuple[Optional[str], List[Any]]]:
+        """The thread's last checkpoint id and its ``chat_messages``, read before a run, so that
+        ``_save_rewritten_answer`` can tell what the run added. ``(None, [])`` when nothing is saved for the
+        thread; None when this cannot be read (a caller's checkpointer before the first run builds the graph)."""
+        if not thread_id:
+            return None, []  # invoke() starts a new thread
+        if self._compiled_graph is None:
+            # invoke() builds the graph after it sets up tools and policies. The default saver is created with the
+            # graph, so it holds nothing yet; a caller's saver may already hold the thread.
+            return (None, []) if self._checkpointer is None else None
+        try:
+            state = await self.graph.aget_state({"configurable": {"thread_id": thread_id}})
+        except Exception as exc:
+            logger.debug(f"hooks: thread {thread_id} not read before the run: {exc}")
+            return None
+        return _checkpoint_id(state), list((state.values or {}).get("chat_messages") or [])
+
+    async def _save_rewritten_answer(
+        self,
+        thread_id: Optional[str],
+        shown: Optional[str],
+        new: str,
+        before: Optional[Tuple[Optional[str], List[Any]]],
+    ) -> None:
+        """A before_reply rewrite becomes the thread's saved answer, so the next turn continues from the reply the
+        caller got. The answer is saved in three places: ``final_answer``, the agent's reply in ``chat_messages``
+        and the final-answer node's message in ``messages``.
+
+        ``before`` is the ``_thread_snapshot`` taken before the run. The reply in ``chat_messages`` is found by
+        position, not by text: it is the last message, when that is an agent message and the run changed
+        ``chat_messages``. Its text can differ from ``final_answer``, because ``final_answer=``, output formatters
+        and citation resolution change the answer after the chat copy is taken. When the run saved nothing (the
+        graph did not run), nothing is changed."""
+        if not thread_id:
+            return
+        config = {"configurable": {"thread_id": thread_id}}
+        try:
+            state = await self.graph.aget_state(config)
+        except Exception as exc:
+            logger.warning("hooks: rewritten answer not saved for thread {}: {}", thread_id, exc)
+            return
+        checkpoint = _checkpoint_id(state)
+        if checkpoint is None or (before is not None and checkpoint == before[0]):
+            return  # no checkpoint from this run: the saved answer is an earlier turn's
+        values = state.values or {}
+        saved = values.get("final_answer")
+        old = {a for a in (saved, shown) if a}
+        update: Dict[str, Any] = {"final_answer": new}
+
+        def _content(m: Any) -> Any:
+            return m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+
+        def _with(m: Any, content: str) -> Any:
+            return (
+                {**m, "content": content}
+                if isinstance(m, dict)
+                else m.model_copy(update={"content": content})
+            )
+
+        def _is_ai(m: Any) -> bool:
+            return (m.get("type") if isinstance(m, dict) else getattr(m, "type", None)) == "ai"
+
+        chat = list(values.get("chat_messages") or [])
+        if chat and _is_ai(chat[-1]) and (before is None or chat != before[1]):  # the reply this run added
+            chat[-1] = _with(chat[-1], new)
+            update["chat_messages"] = chat
+        # the final-answer node saves the finished answer, the same text as final_answer
+        node_messages = list(values.get("messages") or [])
+        for i in range(len(node_messages) - 1, -1, -1):
+            content = _content(node_messages[i])
+            try:
+                payload = json.loads(content) if isinstance(content, str) else None
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict) and payload.get("final_answer") in old:
+                node_messages[i] = _with(node_messages[i], json.dumps({**payload, "final_answer": new}))
+                update["messages"] = node_messages
+                break
+        try:
+            await self.graph.aupdate_state(config, update)
+        except Exception as exc:
+            logger.warning("hooks: rewritten answer not saved for thread {}: {}", thread_id, exc)
+
+    async def _invoke_with_hooks(
+        self,
+        message: Union[str, List[BaseMessage], None],
+        *,
+        thread_id: Optional[str],
+        config: Optional[Dict[str, Any]],
+        action_response: Optional[Any],
+        user_context: Optional[str],
+        track_tool_calls: bool,
+        variables: Optional[Dict[str, Any]],
+        shortlister: Optional["Shortlister"],
+        execution_mode: Optional[str],
+        step_discipline: Optional[str],
+    ) -> "InvokeResult":
+        """Run invoke() inside the session_start, on_user_message, before_reply and on_task_end hooks.
+
+        A before_reply hook can send the agent back to work (at most twice); its message becomes the next
+        user turn in the same thread. A run paused for approval gets no before_reply or on_task_end: they run
+        when ``invoke(None, action_response=...)`` finishes it. Events of this invocation are returned in
+        ``result.hook_events``.
+        """
+        reg = self.hooks
+
+        async def run(
+            turn: Union[str, List[BaseMessage], None], turn_thread_id: Optional[str], resume: Optional[Any]
+        ) -> Tuple["InvokeResult", Optional[Tuple[Optional[str], List[Any]]]]:
+            """One invoke() (inside this run it does not run the hooks again), and the thread as it was before."""
+            before = await self._thread_snapshot(turn_thread_id)
+            result = await self.invoke(
+                turn,
+                thread_id=turn_thread_id,
+                config=config,
+                action_response=resume,
+                user_context=user_context,
+                track_tool_calls=track_tool_calls,
+                variables=variables,
+                shortlister=shortlister,
+                execution_mode=execution_mode,
+                step_discipline=step_discipline,
+            )
+            return result, before
+
+        with reg.run(thread_id):
+            if isinstance(message, str):
+                if not reg.thread_started(thread_id):
+                    reg.session_start(thread_id)
+                guard = reg.on_user_message(message, thread_id)
+                if guard.answer is not None:  # a hook answered (e.g. an intent guard): the agent does not run
+                    reg.on_task_end(guard.answer)
+                    return InvokeResult(
+                        answer=guard.answer, thread_id=thread_id, hook_events=reg.run_events()
+                    )
+            result, before = await run(message, thread_id, action_response)
+            for attempt in range(3):
+                reg.set_thread(result.thread_id)
+                if not result.error and await self._approval_pending(result.thread_id):
+                    result.hook_events = reg.run_events()  # the task is not over
+                    return result
+                reply = reg.before_reply(result.answer or "")
+                if reply.message and not result.error and attempt < 2:  # sent back to work (at most twice)
+                    # a send-back is a new user turn in the same thread, not another resume
+                    result, before = await run(reply.message, result.thread_id, None)
+                    continue
+                if reply.answer is not None:  # e.g. an output formatter added a required note
+                    await self._save_rewritten_answer(result.thread_id, result.answer, reply.answer, before)
+                    result.answer = reply.answer
+                break
+            reg.on_task_end(result.answer or "")
+            result.hook_events = reg.run_events()
+            return result
+
+    @staticmethod
+    def _trace_run_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Copy per-run config before adding tracing callbacks."""
+        run_config = dict(config or {})
+        run_config["configurable"] = dict(run_config.get("configurable") or {})
+        return run_config
+
+    def _trace_thread_id(
+        self,
+        message: Any,
+        thread_id: Optional[str],
+        action_response: Optional[Any],
+        config: Dict[str, Any],
+    ) -> Optional[str]:
+        """Allocate the new SDK thread before opening its trace, never for a resume."""
+        if thread_id or message is None or action_response is not None:
+            return thread_id
+        from cuga.backend.observability.langfuse_sdk import caller_has_trace, enabled
+
+        if not enabled() or caller_has_trace(config, getattr(self, "_callbacks", None)):
+            return thread_id
+        return f"sdk_{uuid.uuid4().hex[:8]}"
+
     async def invoke(
+        self,
+        message: Union[str, List[BaseMessage], None] = None,
+        thread_id: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
+        action_response: Optional[Any] = None,
+        user_context: Optional[str] = None,
+        track_tool_calls: bool = False,
+        variables: Optional[Dict[str, Any]] = None,
+        shortlister: Optional["Shortlister"] = None,
+        execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
+    ) -> InvokeResult:
+        # One Langfuse trace per call when advanced_features.langfuse_tracing is on (see observability/langfuse_sdk.py).
+        from cuga.backend.observability.langfuse_sdk import run_trace
+
+        config = self._trace_run_config(config)
+        thread_id = self._trace_thread_id(message, thread_id, action_response, config)
+        async with run_trace(
+            "cuga.invoke", message, thread_id, config, default_callbacks=getattr(self, "_callbacks", None)
+        ) as trace:
+            result = await self._invoke_untraced(
+                message,
+                thread_id=thread_id,
+                config=config,
+                action_response=action_response,
+                user_context=user_context,
+                track_tool_calls=track_tool_calls,
+                variables=variables,
+                shortlister=shortlister,
+                execution_mode=execution_mode,
+                step_discipline=step_discipline,
+            )
+            trace.end(
+                result.answer,
+                error=result.error,
+                metadata={"thread_id": result.thread_id, "tool_calls": len(result.tool_calls or [])},
+            )
+            return result
+
+    async def _invoke_untraced(
         self,
         message: Union[str, List[BaseMessage], None] = None,
         thread_id: Optional[str] = None,
@@ -2855,6 +3129,19 @@ class CugaAgent:
             result = await agent.invoke(None, thread_id="user-123", action_response=approval)
             ```
         """
+        if self.hooks and not self.hooks.in_run():
+            return await self._invoke_with_hooks(
+                message,
+                thread_id=thread_id,
+                config=config,
+                action_response=action_response,
+                user_context=user_context,
+                track_tool_calls=track_tool_calls,
+                variables=variables,
+                shortlister=shortlister,
+                execution_mode=execution_mode,
+                step_discipline=step_discipline,
+            )
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
@@ -3051,8 +3338,8 @@ class CugaAgent:
             if state_snapshot and state_snapshot.values:
                 existing_state = AgentState(**state_snapshot.values)
                 logger.debug(f"Found existing state for thread_id: {thread_id}")
-        except Exception as e:
-            logger.debug(f"No existing state found for thread_id {thread_id}: {e}")
+        except Exception as exc:
+            raise RuntimeError("Could not read conversation state. Please retry.") from exc
 
         # Build state: use existing state if available, otherwise create new
         if existing_state:
@@ -3314,12 +3601,169 @@ class CugaAgent:
         execution_mode: Optional[str] = None,
         step_discipline: Optional[str] = None,
     ):
+        """Stream graph updates. Close the iterator explicitly when stopping early.
+
+        For deterministic cleanup after ``break`` (especially if keeping the iterator), use
+        ``async with contextlib.aclosing(agent.stream(...)) as updates:`` around the loop,
+        or call ``await updates.aclose()``. Breaking an ``async for`` alone does not close it.
+        """
+        # A dedicated pull task owns the trace context for the whole stream. It advances only on
+        # demand: neither tracing nor graph ContextVars leak into the consumer between updates.
+        # One task also keeps ContextVar tokens valid on Python 3.10 (which has no Task(context=)).
+        from contextlib import aclosing
+
+        from cuga.backend.observability.langfuse_sdk import (
+            caller_has_trace,
+            check_tool_ownership,
+            enabled,
+            final_answer,
+            run_trace,
+        )
+
+        config = self._trace_run_config(config)
+        thread_id = self._trace_thread_id(message, thread_id, action_response, config)
+
+        def source():
+            return self._stream_untraced(
+                message,
+                thread_id=thread_id,
+                config=config,
+                action_response=action_response,
+                shortlister=shortlister,
+                execution_mode=execution_mode,
+                step_discipline=step_discipline,
+            )
+
+        if not enabled() or caller_has_trace(config, getattr(self, "_callbacks", None)):
+            # Without an SDK span, preserve caller-task execution and ContextVar changes.
+            check_tool_ownership(config, getattr(self, "_callbacks", None))
+            async with aclosing(source()) as updates:
+                async for state in updates:
+                    yield state
+            return
+
+        requests = asyncio.Queue()
+        traces = []  # the driver's RunTrace, so cleanup that outlives the grace period can end it
+
+        async def drive():
+            response = None
+            try:
+                response = await requests.get()
+                async with run_trace(
+                    "cuga.stream",
+                    message,
+                    thread_id,
+                    config,
+                    default_callbacks=getattr(self, "_callbacks", None),
+                ) as trace:
+                    traces.append(trace)
+                    last = None
+                    try:
+                        async with aclosing(source()) as updates:
+                            while True:
+                                if response is None:  # normal early close, not a failed agent run
+                                    return
+                                try:
+                                    state = await updates.__anext__()
+                                except StopAsyncIteration:
+                                    if not response.done():
+                                        response.set_result((False, None))
+                                    response = None
+                                    return
+                                last = state
+                                if not response.done():
+                                    response.set_result((True, state))
+                                response = None
+                                response = await requests.get()
+                    finally:
+                        # Includes early close and errors; close the graph/hook generators first.
+                        trace.end(final_answer(last))
+            except BaseException as exc:
+                if response is not None and not response.done():
+                    response.set_exception(exc)
+                raise
+
+        driver = asyncio.create_task(drive())
+        advancing = False
+        try:
+            while True:
+                response = asyncio.get_running_loop().create_future()
+                requests.put_nowait(response)
+                advancing = True
+                try:
+                    await asyncio.wait((response, driver), return_when=asyncio.FIRST_COMPLETED)
+                    if not response.done():
+                        # Cancellation/failure between pulls may leave no response producer.
+                        driver.result()
+                        raise RuntimeError("stream driver exited without a response")
+                    available, state = response.result()
+                finally:
+                    if not response.done():
+                        response.cancel()
+                    elif not response.cancelled():
+                        response.exception()  # Retrieve a racing driver failure on caller cancellation.
+                advancing = False
+                if not available:
+                    return
+                yield state
+        finally:
+            if not driver.done():
+                if advancing:
+                    driver.cancel()
+                else:
+                    requests.put_nowait(None)
+
+            def stop_driver():
+                # Don't wait for a generator that suppresses cancellation indefinitely.
+                # Retrieve any late error so it isn't reported as an unhandled task failure.
+                driver.cancel()
+                driver.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+                if driver.done():
+                    return
+                # The event loop keeps only weak references to tasks: hold the driver until it finishes.
+                _DETACHED_STREAM_DRIVERS.add(driver)
+                driver.add_done_callback(_DETACHED_STREAM_DRIVERS.discard)
+                # End the root observation now; the detached cleanup may run for much longer.
+                for trace in traces:
+                    trace.end(error="cancelled: stream cleanup was still running when the caller left")
+                    trace.close()
+
+            if not driver.done():
+                try:
+                    # Let normal close finish deterministically. Give an already-cancelled
+                    # pull only a short grace period to unwind before returning to its caller.
+                    done, _ = await asyncio.wait({driver}, timeout=0.5 if advancing else None)
+                except asyncio.CancelledError:
+                    stop_driver()
+                    raise
+                if not done:
+                    stop_driver()
+            if driver.done():
+                try:
+                    driver.result()
+                except asyncio.CancelledError:
+                    if not advancing:
+                        raise
+
+    async def _stream_untraced(
+        self,
+        message: Union[str, List[BaseMessage], None] = None,
+        thread_id: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
+        action_response: Optional[Any] = None,  # ActionResponse for resuming after HITL
+        shortlister: Optional["Shortlister"] = None,
+        execution_mode: Optional[str] = None,
+        step_discipline: Optional[str] = None,
+    ):
         """
         Stream the agent's execution step by step.
 
         This method yields state updates as the agent processes the task,
         allowing you to monitor progress in real-time.
         Can also resume execution after a human-in-the-loop interaction.
+
+        With ``CugaAgent(hooks=...)``, only the model, plan and tool hooks run here; session_start,
+        on_user_message, before_reply and on_task_end run in ``invoke()`` only.
 
         Args:
             message: User message (string), list of messages, or None to resume execution
@@ -3350,6 +3794,8 @@ class CugaAgent:
                 print(f"Resuming: {state}")
             ```
         """
+        from contextlib import aclosing
+
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
@@ -3400,13 +3846,19 @@ class CugaAgent:
             if action_response:
                 logger.info(f"Streaming resume after HITL response (action_id: {action_response.action_id})")
 
-            async for state in self.graph.astream(
-                resume_input,
-                config=run_config,
-                stream_mode="updates",
-                subgraphs=True,
-            ):
-                yield state
+            async with aclosing(
+                self._in_hooks_run(
+                    self.graph.astream(
+                        resume_input,
+                        config=run_config,
+                        stream_mode="updates",
+                        subgraphs=True,
+                    ),
+                    thread_id,
+                )
+            ) as updates:
+                async for state in updates:
+                    yield state
             return
 
         # Normal streaming case
@@ -3449,13 +3901,27 @@ class CugaAgent:
 
         # Stream the graph with subgraph updates enabled
         logger.debug(f"Streaming agent with {len(messages)} messages")
-        async for state in self.graph.astream(
-            initial_state,
-            config=run_config,
-            stream_mode="updates",  # Stream node updates (including subgraph internals)
-            subgraphs=True,  # Include subgraph updates
-        ):
-            yield state
+        async with aclosing(
+            self._in_hooks_run(
+                self.graph.astream(
+                    initial_state,
+                    config=run_config,
+                    stream_mode="updates",  # Stream node updates (including subgraph internals)
+                    subgraphs=True,  # Include subgraph updates
+                ),
+                thread_id,
+            )
+        ) as updates:
+            async for state in updates:
+                yield state
+
+    def _in_hooks_run(self, updates: Any, thread_id: Optional[str]) -> Any:
+        """The graph updates of one stream(), read inside a hook run of their own, as invoke() has one: tool notes
+        carried to the next model call stay in this stream (a stream outside any run would share them with every
+        other thread). The caller of stream() never runs inside that run (see ``HookRegistry.run_stream``)."""
+        if getattr(self, "hooks", None) and not self.hooks.in_run():
+            return self.hooks.run_stream(updates, thread_id)
+        return updates
 
     def add_tool(self, tool: BaseTool):
         """
@@ -3481,16 +3947,22 @@ class CugaAgent:
             result = await agent.invoke("Use new_tool with 5")
             ```
         """
-        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
-            unwrap_tool_provider,
-            invalidate_toolguard_provider,
-        )
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import invalidate_toolguard_provider
         from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+        from cuga.backend.hooks.registry import (
+            base_tool_provider,
+            hook_wrapper_records,
+            wrap_tools_with_hooks,
+        )
 
-        base_provider = unwrap_tool_provider(self.tool_provider)
+        base_provider = base_tool_provider(self.tool_provider)
         if isinstance(base_provider, DirectLangChainToolsProvider) and hasattr(
             self.tool_provider, "add_tool"
         ):
+            if self.hooks:  # the same tool-call hooks as the tools given at construction
+                (tool,) = wrap_tools_with_hooks(
+                    [tool], self.hooks, record=hook_wrapper_records(self.tool_provider, tool)
+                )
             self.tool_provider.add_tool(tool)
             invalidate_toolguard_provider(self.tool_provider)  # noqa: F821
             # Reset graph so it gets recreated with new tools
@@ -3518,6 +3990,9 @@ class CugaAgent:
         """
         for tool in tools:
             self.add_tool(tool)
+
+    invoke.__doc__ = _invoke_untraced.__doc__
+    stream.__doc__ = (stream.__doc__ or "") + (_stream_untraced.__doc__ or "")
 
 
 class CugaSupervisor:
@@ -3888,6 +4363,33 @@ class CugaSupervisor:
         tenant_id: Optional[str] = None,
         checkpoint_thread_id: Optional[str] = None,
     ) -> InvokeResult:
+        # One Langfuse trace per call when advanced_features.langfuse_tracing is on (see observability/langfuse_sdk.py).
+        from cuga.backend.observability.langfuse_sdk import run_trace
+
+        trace_config: Dict[str, Any] = {"callbacks": list(self._callbacks or [])}
+        async with run_trace("cuga.supervisor", message, thread_id, trace_config) as trace:
+            result = await self._invoke_untraced(
+                message,
+                thread_id=thread_id,
+                action_response=action_response,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                checkpoint_thread_id=checkpoint_thread_id,
+                _callbacks=trace_config["callbacks"] or None,
+            )
+            trace.end(result.answer, error=result.error, metadata={"thread_id": result.thread_id})
+            return result
+
+    async def _invoke_untraced(
+        self,
+        message: Optional[str],
+        thread_id: Optional[str] = None,
+        action_response: Optional[Any] = None,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        checkpoint_thread_id: Optional[str] = None,
+        _callbacks: Optional[List[Any]] = None,
+    ) -> InvokeResult:
         """
         Invoke the supervisor with a message.
 
@@ -3922,8 +4424,9 @@ class CugaSupervisor:
             )
 
         config = {"configurable": {}}
-        if self._callbacks:
-            config["callbacks"] = self._callbacks
+        callbacks = _callbacks if _callbacks is not None else self._callbacks
+        if callbacks:
+            config["callbacks"] = callbacks
         if self._policy_system:
             config["configurable"]["policy_system"] = self._policy_system
 
@@ -4072,8 +4575,11 @@ class CugaSupervisor:
             self._compiled_graph = None
             logger.info(f"Removed agent '{name}' - graph will be recreated on next invocation")
 
+    # Convenience function for quick usage
 
-# Convenience function for quick usage
+    invoke.__doc__ = _invoke_untraced.__doc__
+
+
 async def run_agent(
     message: str,
     tools: Optional[List[BaseTool]] = None,

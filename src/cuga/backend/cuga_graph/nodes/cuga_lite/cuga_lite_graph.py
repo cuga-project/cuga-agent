@@ -53,7 +53,7 @@ class CugaLiteState(BaseModel):
     - hitl_action: Optional[FollowUpAction] (human-in-the-loop action request)
     - hitl_response: Optional[ActionResponse] (human-in-the-loop response)
     - sender: str (node that sent the current state)
-    - service_scope: Dict[str, str] (tenant_id, instance_id for multi-tenant/prod scoping)
+    - service_scope: Dict[str, Any] (tenant_id, instance_id for multi-tenant/prod scoping, plus server stamps)
     - user_id: Optional[str] (caller user ID for Evolve attribution; None when unset)
 
     Subgraph-only keys:
@@ -73,7 +73,8 @@ class CugaLiteState(BaseModel):
     final_answer: Optional[str] = ""
     user_id: Optional[str] = None  # Shared with AgentState; None means unset (no user context sent to Evolve)
     thread_id: Optional[str] = None
-    service_scope: Optional[Dict[str, str]] = Field(
+    # Must match AgentState.service_scope: the server stamps ``config_fingerprint`` as a dict (#774).
+    service_scope: Optional[Dict[str, Any]] = Field(
         default_factory=lambda: {"tenant_id": "", "instance_id": ""}
     )
     pi: Optional[str] = ""

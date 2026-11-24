@@ -9,12 +9,14 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     AppDefinition,
     ToolProviderInterface,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
     ToolGuardingToolProvider,
     configure_toolguard_provider,
     ensure_toolguard_provider,
     unwrap_tool_provider,
 )
+from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
 from cuga.backend.cuga_graph.policy.models import ToolGuard, ToolGuide
 from cuga.backend.cuga_graph.policy.tool_guard.tool_guard_policy_updates import merge_tool_guards
 from cuga.backend.cuga_graph.policy.tool_guard.tool_guard_runtime import ToolGuardRuntime
@@ -230,6 +232,44 @@ async def test_toolguard_provider_preserves_metadata_on_wrapped_tool_function() 
     assert guarded_tool.func._param_constraints == {"passengers": ["max 3 for regular members"]}
     assert guarded_tool.func._response_schemas == {"success": {"type": "object"}}
     assert guarded_tool.args_schema is raw_tool.args_schema
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_toolguard_provider_keeps_langchain_metadata_for_tool_guides() -> None:
+    raw_tool = _make_recording_tool([])
+    raw_tool.metadata = {"app_name": "travel"}
+    provider = ToolGuardingToolProvider(DummyProvider([raw_tool], app_name="travel"), policy_storage=None)
+
+    guarded_tool = (await provider.get_tools("travel"))[0]
+
+    assert guarded_tool is not raw_tool
+    assert guarded_tool.metadata == {"app_name": "travel"}
+    guides = {
+        "guides": [{"guide_content": "Check the fare first.", "target_tools": [], "target_apps": ["travel"]}]
+    }
+    (enriched,) = PolicyEnactment.apply_tool_guide([guarded_tool], guides)
+    assert enriched.description.endswith("Check the fare first.")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_toolguard_provider_guards_tagged_sdk_tool_under_its_app() -> None:
+    calls: list[dict[str, Any]] = []
+    tagged = _make_recording_tool(calls)
+    tagged.metadata = {"app_name": "travel"}
+    provider = ToolGuardingToolProvider(DirectLangChainToolsProvider(tools=[tagged]), policy_storage=object())
+    runtime = FakeRuntime(error=None)
+
+    async def fake_get_runtime() -> FakeRuntime:
+        return runtime
+
+    provider._get_or_create_toolguard_runtime = fake_get_runtime  # type: ignore[method-assign]
+
+    (guarded_tool,) = await provider.get_all_tools()
+    await guarded_tool.ainvoke({"user_id": "uid_1", "flight_id": "AB12", "passengers": 2})
+
+    assert [c["app_name"] for c in runtime.calls] == ["travel"]
 
 
 @pytest.mark.asyncio

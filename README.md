@@ -23,7 +23,7 @@ English · [简体中文](docs/readme/README.zh-CN.md)
 
 ## Quick install
 
-Use **Python 3.12** and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Use **Python 3.12** and [uv](https://docs.astral.sh/uv/getting-started/installation/). CUGA supports Python 3.11.5 to 3.14; we recommend 3.12.
 
 ```bash
 git clone https://github.com/cuga-project/cuga-agent.git

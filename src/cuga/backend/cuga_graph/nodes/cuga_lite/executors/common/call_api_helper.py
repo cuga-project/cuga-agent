@@ -45,8 +45,8 @@ class CallApiHelper:
         """
         import json
         import aiohttp
-        from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
-        from cuga.backend.activity_tracker.tracker import ActivityTracker
+        from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url, post_registry_call
+        from cuga.backend.activity_tracker.tracker import ActivityTracker, InnerToolCall, inner_tool_call
         from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
 
         tracker = ActivityTracker()
@@ -73,6 +73,9 @@ class CallApiHelper:
             start_time = time.time()
             result = None
             error_msg = None
+            # invoke_tool reports whether a caller's stock Langfuse handler recorded the inner tool.ainvoke.
+            inner_call = InnerToolCall()
+            inner_token = inner_tool_call.set(inner_call)
 
             try:
                 # First try tracker (for runtime tools)
@@ -103,23 +106,17 @@ class CallApiHelper:
 
                     try:
                         async with aiohttp.ClientSession() as session:
-                            async with session.post(
-                                url,
-                                json=payload,
-                                headers={"accept": "application/json", "Content-Type": "application/json"},
-                                timeout=aiohttp.ClientTimeout(total=timeout_seconds),
-                            ) as response:
-                                if response.status != 200:
-                                    error_text = await response.text()
-                                    error_msg = f"HTTP Error: {response.status} - {error_text}"
-                                    raise Exception(error_msg)
-
-                                response_data = await response.text()
-                                try:
-                                    result = json.loads(response_data)
-                                except json.JSONDecodeError:
-                                    result = response_data
-                                return result
+                            status, response_data = await post_registry_call(
+                                session, url, payload, timeout_seconds
+                            )
+                            if status != 200:
+                                error_msg = f"HTTP Error: {status} - {response_data}"
+                                raise Exception(error_msg)
+                            try:
+                                result = json.loads(response_data)
+                            except json.JSONDecodeError:
+                                result = response_data
+                            return result
                     except asyncio.TimeoutError:
                         error_msg = f"Tool call '{api_name}' timed out after {timeout_seconds} seconds"
                         raise TimeoutError(error_msg)
@@ -145,7 +142,9 @@ class CallApiHelper:
                     operation_id=operation_id,
                     duration_ms=duration_ms,
                     error=error_msg,
+                    langchain_tool=inner_call.caller_recorded,
                 )
+                inner_tool_call.reset(inner_token)
 
         return call_api
 

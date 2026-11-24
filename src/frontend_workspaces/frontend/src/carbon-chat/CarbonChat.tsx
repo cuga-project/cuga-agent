@@ -20,7 +20,7 @@ import {
   type MessageResponse,
 } from '@carbon/ai-chat';
 import { Button, IconButton, ComposedModal, ModalHeader, ModalBody, ModalFooter, InlineLoading, InlineNotification, CodeSnippet } from '@carbon/react';
-import { Document, Renew, Attachment, Close, Code } from "@carbon/icons-react";
+import { Document, Renew, Attachment, Close, Code, WarningFilled } from "@carbon/icons-react";
 import {
   registerCiteElement,
   CITE_CLICK_EVENT,
@@ -36,8 +36,11 @@ import {
   type SessionAttachmentItem,
   type KnowledgeAttachmentSnapshot,
 } from "../knowledge/useSessionKnowledgeAttachments";
-import { customSendMessage as customSendMessageImpl, stopCugaAgent, StreamHttpError } from './customSendMessage';
+import { customSendMessage as customSendMessageImpl, stopCugaAgent, StreamHttpError, type ConfigNotice } from './customSendMessage';
 import { getCurrentThreadId, getThreadGeneration, keepThread, onThreadIssued, showThread } from './threadState';
+
+/** Marks a send that replaced a rejected restored draft ID; never a real conversation ID. */
+const REJECTED_DRAFT_ID = "\u0000rejected-draft";
 import { customLoadHistory } from './customLoadHistory';
 import { useEventsInbox } from '../events/useEventsInbox';
 import { getResponseUserProfile } from './carbonChatHelpers';
@@ -93,10 +96,13 @@ interface CarbonChatProps {
   onSessionDocsChanged?: () => void;
   /** Creates the conversation on demand, so a new chat can attach session documents. */
   resolveThreadId?: () => Promise<string>;
+  prepareThreadId?: (beforePublish?: (id: string) => void) => Promise<string | null>;
   onOpenKnowledge?: () => void;
   onOpenMemoryUsage?: (entityIds: string[], relationship: "used" | "saved") => void;
   onPreviewKnowledgeAttachment?: (attachment: KnowledgeAttachmentSnapshot) => void;
   onStreamError?: (status: number, error?: string) => void;
+  /** Called with a notice when the agent configuration changed, and with null when a new send starts. */
+  onConfigNotice?: (notice: ConfigNotice | null) => void;
 }
 
 interface ConversationMessage {
@@ -162,6 +168,7 @@ function ComposerToolbar({
                   <div
                     key={item.id}
                     className={`cuga-composer-chip cuga-composer-chip--${item.status}`}
+                    title={item.status === "error" ? `Upload failed: ${item.error || "unknown error"}` : undefined}
                   >
                     {(item.status === "uploading" || item.status === "deleting") && <InlineLoading iconDescription={item.status === "deleting" ? "Removing file…" : "Uploading file…"} aria-live="polite" className="cuga-composer-chip__loading" />}
                     <Button kind="ghost" size="sm"
@@ -173,11 +180,16 @@ function ComposerToolbar({
                       }}
                       disabled={!previewSnapshot || !onPreviewAttachment}
                     >
-                      {item.status !== "uploading" && item.status !== "deleting" && <Document size={16} />}
+                      {item.status === "error" ? (
+                        <WarningFilled size={16} className="cuga-composer-chip__error-icon" aria-hidden="true" />
+                      ) : (
+                        item.status !== "uploading" && item.status !== "deleting" && <Document size={16} />
+                      )}
                       <span className="cuga-composer-chip__name">{item.displayName}</span>
+                      {item.status === "error" && <span className="cuga-composer-chip__status">Upload failed</span>}
                     </Button>
                     {item.kind === "upload" && item.status === "error" && (
-                      <IconButton kind="ghost" size="sm" label={`Retry upload ${item.displayName}`}
+                      <IconButton kind="ghost" size="sm" label={`Retry upload ${item.displayName}. Upload failed: ${item.error || "unknown error"}`}
                         onClick={() => onRetryUpload(item.id)}><Renew /></IconButton>
                     )}
                     <IconButton kind="ghost" size="sm"
@@ -231,20 +243,22 @@ const CarbonChat = ({
   sessionDocsVersion = 0,
   onSessionDocsChanged,
   resolveThreadId,
+  prepareThreadId,
   onOpenKnowledge,
   onOpenMemoryUsage,
   onPreviewKnowledgeAttachment,
   onStreamError,
+  onConfigNotice,
 }: CarbonChatProps) => {
   const hs = homescreen ?? DEFAULT_HOMESCREEN;
   const starterLabels = (hs.starters ?? DEFAULT_HOMESCREEN.starters ?? []).filter(Boolean).slice(0, 4);
   const chatInstanceRef = useRef<ChatInstance | null>(null);
   const historyMutationQueueRef = useRef<Promise<void>>(Promise.resolve());
   const historyReplayGenerationRef = useRef(0);
-  const sendContextRef = useRef({ agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange, onStreamError });
+  const sendContextRef = useRef({ agentId, threadId, useDraft, disableHistory, onConfigNotice, onRestart, onThreadChange, onStreamError });
   useLayoutEffect(() => {
-    sendContextRef.current = { agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange, onStreamError };
-  }, [agentId, threadId, useDraft, disableHistory, onRestart, onThreadChange, onStreamError]);
+    sendContextRef.current = { agentId, threadId, useDraft, disableHistory, onConfigNotice, onRestart, onThreadChange, onStreamError };
+  }, [agentId, threadId, useDraft, disableHistory, onConfigNotice, onRestart, onThreadChange, onStreamError]);
   // Preview chats are never saved, so the server issues no ID: keep one locally until restart.
   const previewThreadIdRef = useRef<string | null>(null);
   const shownThreadId = (newPreview = false): string | null => {
@@ -814,7 +828,28 @@ const CarbonChat = ({
       setTranscriptScope(conversationScope);
       const startedAt = getThreadGeneration();
       const attachmentSnapshot = createMessageAttachmentSnapshot();
+      onConfigNotice?.(null);
       try {
+        if (prepareThreadId && !useDraft && !disableHistory) {
+          const resolvedId = await prepareThreadId((id) => {
+            if (getThreadGeneration() !== startedAt || sendContextRef.current.agentId !== agentId) return;
+            if (sendContextRef.current.threadId !== id) skipNextHistoryLoadRef.current = id;
+            keepThread(id);
+            setTranscriptScope(JSON.stringify([agentId, id, useDraft]));
+          });
+          if (resolvedId === null && getCurrentThreadId() !== null && getThreadGeneration() === startedAt
+            && sendContextRef.current.agentId === agentId) {
+            // The restored draft ID was rejected: this send starts the conversation and /stream
+            // issues its ID. Keep the transcript when the parent clears the rejected ID.
+            skipNextHistoryLoadRef.current = REJECTED_DRAFT_ID;
+            keepThread(null);
+            setTranscriptScope(JSON.stringify([agentId, null, useDraft]));
+          }
+          if (getThreadGeneration() !== startedAt || getCurrentThreadId() !== resolvedId
+            || sendContextRef.current.agentId !== agentId) {
+            throw new DOMException("Conversation changed before sending", "AbortError");
+          }
+        }
         const result = await customSendMessageImpl(
           request,
           options,
@@ -824,6 +859,7 @@ const CarbonChat = ({
           undefined,
           attachmentScope === "session" ? attachmentSnapshot : undefined,
           agentId,
+          onConfigNotice,
         );
 
         // A new chat gets its ID from the server during the send; skip if the user moved on.
@@ -846,7 +882,7 @@ const CarbonChat = ({
         }
       }
     },
-    [agentId, attachmentScope, conversationScope, createMessageAttachmentSnapshot, disableHistory, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, useDraft]
+    [agentId, attachmentScope, conversationScope, createMessageAttachmentSnapshot, disableHistory, onConfigNotice, onStreamError, onThreadChange, refreshMessageAttachmentSnapshots, prepareThreadId, useDraft]
   );
 
   const handleChatReady = useCallback((instance: ChatInstance) => {
@@ -921,10 +957,10 @@ const CarbonChat = ({
           const context = sendContextRef.current;
           const approvedThreadId = getCurrentThreadId();
           if (!approvedThreadId || (user_defined.thread_id && user_defined.thread_id !== approvedThreadId)) return;
+          context.onConfigNotice?.(null);
           try {
-            await customSendMessageImpl(request, options, instance, context.useDraft, context.disableHistory, actionResponse, undefined, context.agentId);
+            await customSendMessageImpl(request, options, instance, context.useDraft, context.disableHistory, actionResponse, undefined, context.agentId, context.onConfigNotice);
           } catch (err) {
-            // Same handling as a normal send: a busy or missing conversation gets feedback, not silence.
             if (err instanceof StreamHttpError) {
               sendContextRef.current.onStreamError?.(err.status, err.errorCode);
               return;
@@ -948,6 +984,13 @@ const CarbonChat = ({
     const generation = historyReplayGenerationRef.current;
     const isCurrent = () => !cancelled && generation === historyReplayGenerationRef.current
       && chatInstanceRef.current === instance;
+    if (!threadId && skipNextHistoryLoadRef.current === REJECTED_DRAFT_ID) {
+      // The parent cleared a rejected restored ID while its replacement send is running.
+      skipNextHistoryLoadRef.current = null;
+      keepThread(null);
+      setReconciledScope(conversationScope);
+      return;
+    }
     if (threadId && skipNextHistoryLoadRef.current === threadId) {
       // Same conversation echoed back after a send — keep the transcript and citation state.
       skipNextHistoryLoadRef.current = null;

@@ -18,8 +18,10 @@ import asyncio
 import contextvars
 import functools
 import time
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, Iterator, List, Optional, TypeVar
 from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
@@ -36,6 +38,72 @@ _tracking_enabled_context: contextvars.ContextVar[bool] = contextvars.ContextVar
 _timings_only_context: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "tracking_timings_only", default=False
 )
+
+
+@dataclass
+class _ToolRecording:
+    name: str
+    accepts_inner_record: bool
+    recorded: bool = False
+    callback_covered: bool = False
+
+
+_direct_tool_recording: contextvars.ContextVar[Optional[_ToolRecording]] = contextvars.ContextVar(
+    "direct_tool_recording", default=None
+)
+_delegated_recorder: contextvars.ContextVar[Optional[tuple[Callable[..., Any], str]]] = (
+    contextvars.ContextVar("delegated_recorder", default=None)
+)
+_tool_callback_recording: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "tool_callback_recording", default=None
+)
+
+
+@contextmanager
+def tool_callback_recording(
+    tool_name: str, *, covered: bool, recorder: Optional[Callable[..., Any]] = None
+) -> Iterator[None]:
+    """Mark the delegated tool covered by an emitting LangChain handler."""
+    recording = _direct_tool_recording.get()
+    if recording is not None and recording.accepts_inner_record and recording.name == tool_name:
+        recording.callback_covered = covered
+    token = _tool_callback_recording.set(tool_name if covered else None)
+    delegate_token = _delegated_recorder.set((recorder, tool_name) if recorder is not None else None)
+    try:
+        yield
+    finally:
+        _delegated_recorder.reset(delegate_token)
+        _tool_callback_recording.reset(token)
+
+
+@contextmanager
+def _claim_delegated_recording(recorder: Callable[..., Any]) -> Iterator[Optional[str]]:
+    """Match the delegated wrapper, without claiming any call made by its body."""
+    delegate = _delegated_recorder.get()
+    if delegate is None or delegate[0] is not recorder:
+        yield None
+        return
+    delegate_token = _delegated_recorder.set(None)
+    direct_token = _direct_tool_recording.set(None)
+    callback_token = _tool_callback_recording.set(None)
+    try:
+        yield delegate[1]
+    finally:
+        _tool_callback_recording.reset(callback_token)
+        _direct_tool_recording.reset(direct_token)
+        _delegated_recorder.reset(delegate_token)
+
+
+def outer_callback_records(tool_name: str) -> bool:
+    """A caller's Langfuse handler already received an outer ``tool.ainvoke`` for this call (ToolGuard path)."""
+    return _tool_callback_recording.get() == tool_name
+
+
+def _note_tool_record(tool_name: str) -> None:
+    recording = _direct_tool_recording.get()
+    if recording is not None and recording.accepts_inner_record and recording.name == tool_name:
+        recording.recorded = True
+
 
 # Three nested tool-call budgets, widest to narrowest. Each is a mutable [count]
 # box so increments made inside child tasks (e.g. under asyncio.wait_for) stay
@@ -211,6 +279,7 @@ class ToolCallTracker:
         error: Optional[str] = None,
         arg_defaults: Optional[Dict[str, Any]] = None,
         param_names: Optional[List[str]] = None,
+        langchain_tool: bool = False,
     ) -> None:
         """Record a tool call.
 
@@ -226,7 +295,23 @@ class ToolCallTracker:
                 (only used for the pagination facts, see #750)
             param_names: The tool's declared parameter names, when known
                 (only used to tell whether the tool paginates, see #750)
+            langchain_tool: A caller-owned LangChain handler owns this tool span
+                (only used by the Langfuse record, see observability/langfuse_sdk.py)
         """
+        _note_tool_record(tool_name)
+        # Langfuse sees every call, also when the caller did not ask for tracked calls.
+        from cuga.backend.observability.langfuse_sdk import record_tool_call
+
+        record_tool_call(
+            tool_name,
+            arguments,
+            result,
+            app_name=app_name,
+            duration_ms=duration_ms,
+            error=error,
+            langchain_tool=langchain_tool or _tool_callback_recording.get() == tool_name,
+        )
+
         if not ToolCallTracker.is_enabled():
             return
 
@@ -502,16 +587,20 @@ def make_recording_awaitable(
     tool_name: str,
     app_name: Optional[str] = None,
     param_names: Optional[List[str]] = None,
+    *,
+    accepts_inner_record: Optional[bool] = None,
 ) -> Callable[..., Any]:
     """Wrap an already-awaitable tool function so each call is recorded.
 
     Used for direct LangChain tools, which (unlike registry/combined provider
     tools) have no built-in recorder. Apply AFTER make_tool_awaitable so sync
     tools record in the event-loop context, where this tracker's contextvars
-    are visible. Recording is a no-op unless a tracking session is active.
+    are visible. Langfuse observations also record when local tracking is disabled.
 
     ``param_names`` (from the tool's args schema) maps positional arguments to
     their real parameter names, so traces read the same as registry-tool traces.
+    Pass ``accepts_inner_record`` when wrapping has obscured the original recorder
+    marker (e.g. a ToolGuard wrapped for argument warnings and async execution).
     """
 
     @functools.wraps(awaitable_func)
@@ -524,30 +613,43 @@ def make_recording_awaitable(
         result = None
         error_msg = None
 
+        recording = _ToolRecording(
+            tool_name,
+            accepts_inner_record=(
+                bool(
+                    getattr(awaitable_func, "_cuga_tracked", False)
+                    or getattr(awaitable_func, "_cuga_toolguard_wrapper", False)
+                )
+                if accepts_inner_record is None
+                else accepts_inner_record
+            ),
+        )
+        token = _direct_tool_recording.set(recording)
         try:
             result = await awaitable_func(*args, **kwargs)
             return result
         except asyncio.CancelledError:
-            # CancelledError is a BaseException, so it would skip `except
-            # Exception` and be recorded in `finally` as a success with no
-            # error — a cancelled/timed-out call must not look like one.
+            # A cancelled/timed-out call must not be recorded as success.
             error_msg = "cancelled"
             raise
         except Exception as e:
             error_msg = str(e)
             raise
         finally:
-            duration_ms = (time.time() - start_time) * 1000
-            ToolCallTracker.record_call(
-                tool_name=tool_name,
-                arguments=merge_tool_call_args(args, kwargs, param_names or []),
-                result=result,
-                app_name=app_name,
-                operation_id=tool_name,
-                duration_ms=duration_ms,
-                error=error_msg,
-                param_names=param_names,
-            )
+            _direct_tool_recording.reset(token)
+            if not recording.recorded:
+                duration_ms = (time.time() - start_time) * 1000
+                ToolCallTracker.record_call(
+                    tool_name=tool_name,
+                    arguments=merge_tool_call_args(args, kwargs, param_names or []),
+                    result=result,
+                    app_name=app_name,
+                    operation_id=tool_name,
+                    duration_ms=duration_ms,
+                    error=error_msg,
+                    param_names=param_names,
+                    langchain_tool=recording.callback_covered,
+                )
 
     return _recorded
 
@@ -612,15 +714,19 @@ def tracked_tool(
             error_msg = None
 
             try:
-                result = await func(*args, **kwargs)
+                with _claim_delegated_recording(async_wrapper) as delegated_name:
+                    result = await func(*args, **kwargs)
                 return result
+            except asyncio.CancelledError:
+                error_msg = "cancelled"
+                raise
             except Exception as e:
                 error_msg = str(e)
                 raise
             finally:
                 duration_ms = (time.time() - start_time) * 1000
                 ToolCallTracker.record_call(
-                    tool_name=func_name,
+                    tool_name=delegated_name or func_name,
                     arguments=kwargs if kwargs else dict(zip(func.__code__.co_varnames, args)),
                     result=result,
                     app_name=app_name,
@@ -636,7 +742,8 @@ def tracked_tool(
             error_msg = None
 
             try:
-                result = func(*args, **kwargs)
+                with _claim_delegated_recording(sync_wrapper) as delegated_name:
+                    result = func(*args, **kwargs)
                 return result
             except Exception as e:
                 error_msg = str(e)
@@ -644,7 +751,7 @@ def tracked_tool(
             finally:
                 duration_ms = (time.time() - start_time) * 1000
                 ToolCallTracker.record_call(
-                    tool_name=func_name,
+                    tool_name=delegated_name or func_name,
                     arguments=kwargs if kwargs else dict(zip(func.__code__.co_varnames, args)),
                     result=result,
                     app_name=app_name,
