@@ -1983,6 +1983,9 @@ class KnowledgeEngine:
         self._docling_converters: dict[str, Any] = {}
 
         self._vector_store_lock = threading.Lock()
+        # The event loop of the first dense search: only searches on it use that loop's shared
+        # Postgres pool, which aclose() releases there (see ``_dense_search``).
+        self._search_loop: asyncio.AbstractEventLoop | None = None
 
         # Per-collection async ingest locks
         self._collection_locks: dict[str, asyncio.Lock] = {}
@@ -2192,6 +2195,15 @@ class KnowledgeEngine:
             await self._metadata.close()
         except Exception as e:
             logger.debug(f"Knowledge metadata close: {e}")
+        # Dense searches on Postgres share their loop's pool per database (``asearch``) with any
+        # other engine on the loop; the last engine to release it closes it. Only on that loop.
+        from cuga.backend.storage.embedding.prod import release_loop_pools
+
+        try:
+            if self._search_loop is asyncio.get_running_loop():
+                await release_loop_pools(self)
+        except Exception as e:
+            logger.debug(f"Knowledge vector pool close: {e}")
         # Close every cached vector store's underlying connection pool.
         # Without this, the asyncpg pool inside ProdEmbeddingStore stays
         # bound to whatever loop first called ``_get_pool()`` — fine in
@@ -3525,16 +3537,33 @@ class KnowledgeEngine:
 
         # ``q`` defaults to the (glossary-expanded) query; the query-transform
         # fan-out and the empty-guard retry pass an explicit query string.
-        def _do_dense_search(k: int, q: str = query):
+        async def _dense_search(k: int, q: str = query):
             # Hold the lock only long enough to fetch the adapter reference.
             # Adapters are safe to call concurrently for reads (sqlite-vec
             # uses per-call connections; pgvector wraps an asyncpg pool).
-            # Holding the global lock across ``adapter.search`` would
+            # Holding the global lock across the search would
             # serialize the parallel fan-out in ``search_multi`` and double
-            # p50 latency on multi-scope queries.
-            with self._vector_store_lock:
-                adapter = self._vector_stores[collection]
-            return adapter.search(q, k=k)
+            # p50 latency on multi-scope queries. The lock is taken in a
+            # worker thread: an upload holds it for its whole insert, and
+            # the event loop must not wait for that.
+            def _adapter():
+                with self._vector_store_lock:
+                    return self._vector_stores[collection]
+
+            adapter = await asyncio.to_thread(_adapter)
+            asearch = getattr(adapter, "asearch", None)
+            loop = asyncio.get_running_loop()
+            if self._search_loop is None:
+                self._search_loop = loop
+            # A caller that runs each call on a new loop (asyncio.run per call) would leave an
+            # open pool on every loop that ended: off the first loop, search as before, on a
+            # short-lived pool of its own.
+            if asearch is None or loop is not self._search_loop:
+                return await asyncio.to_thread(adapter.search, q, k=k)
+            from cuga.backend.storage.embedding.prod import hold_loop_pools
+
+            hold_loop_pools(self)  # until aclose(): another engine's aclose() leaves them open
+            return await asearch(q, k=k)
 
         def _do_lexical_search(k: int, q: str = query):
             with self._vector_store_lock:
@@ -3635,10 +3664,10 @@ class KnowledgeEngine:
         # usually faster than dense (no embedding round-trip), so the
         # added latency is bounded by the dense call.
         if _hybrid_on:
-            dense_task = asyncio.to_thread(_do_dense_search, first_k)
+            dense_task = _dense_search(first_k)
             dense_scored, lexical_scored = await asyncio.gather(dense_task, _lexical_within_budget(first_k))
         else:
-            dense_scored = await asyncio.to_thread(_do_dense_search, first_k)
+            dense_scored = await _dense_search(first_k)
             lexical_scored = []
 
         # Empty-guard retry: if glossary expansion drove the dense embedding
@@ -3656,7 +3685,7 @@ class KnowledgeEngine:
                 },
             )
 
-            dense_scored = await asyncio.to_thread(_do_dense_search, first_k, original_query)
+            dense_scored = await _dense_search(first_k, original_query)
 
         if dense_scored:
             logger.debug(
@@ -3702,7 +3731,7 @@ class KnowledgeEngine:
             except Exception:
                 _variants = None
             if _variants is not None and _variants.active:
-                _legs = [asyncio.to_thread(_do_dense_search, first_k, qv) for qv in _variants.dense_extra]
+                _legs = [_dense_search(first_k, qv) for qv in _variants.dense_extra]
                 if _hybrid_on:
                     _legs += [_lexical_within_budget(first_k, qv) for qv in _variants.lexical_extra]
                 _scored_legs = await asyncio.gather(*_legs, return_exceptions=True)
@@ -3743,7 +3772,7 @@ class KnowledgeEngine:
         # is only needed for pure-dense pathological pages.
         if _filter_mode == "enforce" and len(results) < limit and len(dense_scored) >= first_k:
             second_k = min(200, max(limit * 2, first_k + limit))
-            scored2 = await asyncio.to_thread(_do_dense_search, second_k)
+            scored2 = await _dense_search(second_k)
             seen_drain = set(r.text for r in results)
             # Snapshot the threshold counter so we can split drain-pass
             # rejects from the original pass for the wire ``drain_drops``

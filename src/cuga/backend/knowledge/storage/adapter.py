@@ -206,6 +206,8 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         # buffer. Locally (sqlite-vec) the value is harmless.
         self._vector_insert_batch_size = max(1, int(vector_insert_batch_size))
         self._store: Any = None
+        # Postgres only: the same table through the event loop's shared pool, for ``asearch``.
+        self._search_store: Any = None
         self._dim: int | None = None
         self._fts_ready = False
         self._pg_recheck_at = 0.0  # when to look again for rows stored without terms
@@ -233,6 +235,9 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         if self._use_prod:
             from cuga.backend.storage.embedding.prod import ProdEmbeddingStore
 
+            self._search_store = ProdEmbeddingStore(
+                self._postgres_url, self._collection, schema, use_loop_pool=True
+            )
             self._store = ProdEmbeddingStore(self._postgres_url, self._collection, schema)
         else:
             from cuga.backend.storage.embedding.local import LocalEmbeddingStore
@@ -1149,7 +1154,25 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         async def _go():
             return await self._store.search(q_emb, k, filt)
 
-        rows = self._run_embedding_coro(_go())
+        return self._search_results(self._run_embedding_coro(_go()))
+
+    async def asearch(self, query: str, k: int = 10) -> list[tuple[Document, float]]:
+        """Dense search awaited on the caller's event loop. On Postgres it uses the loop's shared
+        pool, so a search reuses an open connection instead of opening a pool of its own; the
+        engine closes that pool in ``aclose``. SQLite searches still run in a worker thread."""
+        if not self._use_prod:
+            return await super().asearch(query, k)
+
+        def _prepare():
+            self._ensure_store()
+            return self._search_store, self._embeddings.embed_query(query), dict(self._scope())
+
+        store, q_emb, filt = await asyncio.to_thread(_prepare)  # embedding is CPU or network work
+        if store is None:  # drop() ran in between
+            return []
+        return self._search_results(await store.search(q_emb, k, filt))
+
+    def _search_results(self, rows) -> list[tuple[Document, float]]:
         out: list[tuple[Document, float]] = []
         sim_fn = self._cosine_similarity if self._use_prod else self._l2_similarity
         for row in rows:
@@ -1243,5 +1266,6 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         # raised, we've already propagated the exception and skipped this.
         self._fts_drop()
         self._store = None
+        self._search_store = None  # a search still running keeps its store and finds nothing
         self._dim = None
         self._fts_ready = False
