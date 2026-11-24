@@ -15,6 +15,7 @@ from cuga.backend.cuga_graph.policy.agent import PolicyAgent, PolicyContext
 from cuga.backend.cuga_graph.policy.models import PolicyMatch, PolicyType
 from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 from cuga.backend.llm.models import LLMManager
+from cuga.backend.storage.sql_identifier import safe_sql_identifier
 from cuga.config import settings, DBS_DIR
 
 
@@ -28,7 +29,8 @@ def _named_agent_collection_name(agent_id: str, draft: bool) -> str:
     readable_id = re.sub(r"[^a-z0-9]+", "_", agent_id.lower()).strip("_") or "agent"
     digest_suffix = f"_{digest}{draft_suffix}"
     readable_prefix = f"{_POLICY_COLLECTION_BASE}__agent_{readable_id}"
-    return f"{readable_prefix[: 63 - len(digest_suffix)]}{digest_suffix}"
+    # Always valid; the check makes that explicit, since the agent id comes from the request.
+    return safe_sql_identifier(f"{readable_prefix[: 63 - len(digest_suffix)]}{digest_suffix}")
 
 
 def get_agent_policy_collection_name(agent_id: Optional[str] = None, draft: bool = False) -> str:

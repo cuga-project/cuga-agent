@@ -1,0 +1,5 @@
+# Alerts closed by sending a fixed reason, not exception text, to the sandbox UI, and by
+# marking the checked embedding-store table name as safe for SQL.
+# GitHub alerts #222, #225, #226, #227.
+py/stack-trace-exposure	src/cuga/backend/server/manage_routes/sandbox_routes.py
+py/sql-injection	src/cuga/backend/storage/embedding/prod.py

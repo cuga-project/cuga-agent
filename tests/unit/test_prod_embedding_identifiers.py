@@ -6,6 +6,7 @@ import pytest
 
 from cuga.backend.storage.embedding.base import EmbeddingSchemaConfig
 from cuga.backend.storage.embedding.prod import ProdEmbeddingStore, _embedding_index_name
+from cuga.backend.storage.sql_identifier import safe_sql_identifier
 
 pytestmark = pytest.mark.unit
 
@@ -43,6 +44,16 @@ def test_rejects_oversized_or_unsafe_collection_name(
 ) -> None:
     with pytest.raises(ValueError, match="not a valid PostgreSQL identifier"):
         ProdEmbeddingStore("postgresql://unused", collection_name, schema)
+
+
+def test_safe_sql_identifier_returns_a_valid_name_unchanged() -> None:
+    assert safe_sql_identifier("cuga_policies__draft") == "cuga_policies__draft"
+
+
+@pytest.mark.parametrize("name", ["x; DROP TABLE t", 'x"', "x--", "", "a" * 64])
+def test_safe_sql_identifier_rejects_text_that_could_change_the_statement(name: str) -> None:
+    with pytest.raises(ValueError, match="not a valid PostgreSQL identifier"):
+        safe_sql_identifier(name)
 
 
 def test_embedding_index_name_is_bounded_deterministic_and_collision_resistant() -> None:

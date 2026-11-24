@@ -1,6 +1,5 @@
 import asyncio
 import hashlib
-import re
 import threading
 import weakref
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -9,13 +8,10 @@ from loguru import logger
 
 from cuga.backend.storage.embedding.base import EmbeddingSchemaConfig
 from cuga.backend.storage.loop_lock import PerLoopLock
+from cuga.backend.storage.sql_identifier import safe_sql_identifier
 
 SCOPE_COLS = ["tenant_id", "instance_id"]
 
-# Table identifiers are interpolated directly into DDL statements where PostgreSQL
-# does not support parameterised identifiers. Restricting names to lowercase ASCII
-# also makes the 63-character bound equivalent to PostgreSQL's 63-byte limit.
-_SAFE_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _INDEX_DIGEST_LENGTH = 16
 _INDEX_PREFIX = "idx_"
 _INDEX_SUFFIX = "_embedding"
@@ -41,13 +37,8 @@ def _pg_type(s: str) -> str:
 
 class ProdEmbeddingStore:
     def __init__(self, postgres_url: str, collection_name: str, schema: EmbeddingSchemaConfig):
-        if _SAFE_IDENTIFIER_RE.fullmatch(collection_name) is None:
-            raise ValueError(
-                f"collection_name {collection_name!r} is not a valid PostgreSQL identifier. "
-                "Must match ^[a-z][a-z0-9_]{0,62}$ (lowercase-leading, max 63 characters)."
-            )
         self._postgres_url = postgres_url
-        self._collection_name = collection_name
+        self._collection_name = safe_sql_identifier(collection_name)
         self._schema = schema
         # An asyncpg pool works only on the event loop that created it, and callers such as the
         # knowledge adapter run each call on its own short-lived loop. So each loop gets its own
