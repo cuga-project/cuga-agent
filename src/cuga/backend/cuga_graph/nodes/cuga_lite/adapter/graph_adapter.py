@@ -485,11 +485,12 @@ class AgentGraphAdapter(CoreGraphAdapter):
         """Bool as in the base contract; a non-empty ``str`` means "continue, and
         use this text as the synthetic user message" (unverified-blocker retry,
         issue #610)."""
-        if any("knowledge_search" in name for name in self._tools_context):
-            from cuga.backend.knowledge.sources import needs_search_before_citing
+        from cuga.backend.knowledge.sources import KNOWLEDGE_SEARCH_TOOL, needs_search_before_citing
 
-            if needs_search_before_citing(content, getattr(state, "thread_id", None)):
-                return SEARCH_BEFORE_CITING_CORRECTION
+        if KNOWLEDGE_SEARCH_TOOL in self._tools_context and needs_search_before_citing(
+            content, getattr(state, "thread_id", None)
+        ):
+            return SEARCH_BEFORE_CITING_CORRECTION
         evidence = BlockedClaimEvidence(
             tools_available=bool(self._tools_context),
             code_executed=self._any_execution_ran(state),

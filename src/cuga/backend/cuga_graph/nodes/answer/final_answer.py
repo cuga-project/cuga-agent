@@ -47,29 +47,23 @@ class HumanInTheLoopHandler:
         self._action_handlers[action_id] = handler
 
 
-# The SDK agent's model= for the ``llm`` citation checker, set where the agent's knowledge is
-# wired (one agent per process, like the citation lookups in knowledge.sources). None on the server.
-_sdk_agent_model = None
 # A slow checker (a hung model call, the NLI model's first download) never holds up the answer.
 _CITATION_CHECK_TIMEOUT_S = 30.0
-
-
-def set_citation_check_model(model) -> None:
-    """Have the ``llm`` citation checker use this SDK agent's model."""
-    global _sdk_agent_model
-    _sdk_agent_model = model
+# The run's configurable key for an SDK agent's model=, which the ``llm`` checker uses.
+CITATION_CHECK_MODEL_KEY = "citation_check_model"
 
 
 def _citation_check_llm():
     """The agent's model for the ``llm`` citation checker, looked up for each check: the model
     the server runs this request with (``configurable["llm"]``, set once a model is published),
-    else the SDK agent's ``model=``, else the configured agent model (cached by LLMManager)."""
+    else the SDK agent's ``model=`` passed with the run, else the configured agent model (cached
+    by LLMManager)."""
     from langchain_core.runnables.config import ensure_config
 
     from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
 
-    model = (ensure_config().get("configurable") or {}).get("llm") or _sdk_agent_model
-    return CugaChatGenerator(model)
+    configurable = ensure_config().get("configurable") or {}
+    return CugaChatGenerator(configurable.get("llm") or configurable.get(CITATION_CHECK_MODEL_KEY))
 
 
 class FinalAnswerNode(BaseNode):
@@ -105,7 +99,7 @@ class FinalAnswerNode(BaseNode):
            (the same strip inside citation resolution then no-ops)
         2. answer function — opt-in deterministic ``(str) -> str``
            (``[final_answer].function`` or an SDK-injected callable)
-        3. citation check (``knowledge.citation_check``; off by default)
+        3. citation check (``knowledge.citation_check``; reused citations only by default)
         4. citation resolution, with each source's ``support`` verdict when checked
 
         The function runs before citation resolution so it never sees
@@ -128,10 +122,10 @@ class FinalAnswerNode(BaseNode):
         A checked result is a ``citation_check.Verdicts``, whose ``quotes`` hold the passages
         (read with ``getattr``; a copy of the dict drops them).
 
-        With the check off, only citations reused from an earlier turn are checked, with the
-        agent's model: they are kept only when supported, and a follow-up answered from the
-        previous turn's results would otherwise lose them all. An answer citing only this
-        turn's sources makes no extra call."""
+        ``off`` checks nothing. ``reused`` (the default) checks only citations reused from an
+        earlier turn, with the agent's model: they are kept only when supported, and a follow-up
+        answered from the previous turn's results would otherwise lose them all. An answer citing
+        only this turn's sources makes no extra call."""
         try:
             from cuga.backend.knowledge.sources import (
                 effective_citation_check,
@@ -141,6 +135,8 @@ class FinalAnswerNode(BaseNode):
             )
 
             mode = effective_citation_check()
+            if mode == "off":
+                return {}
             text = state.final_answer or ""
             if not state.thread_id or not has_citation_markers(text):
                 return {}
@@ -150,7 +146,7 @@ class FinalAnswerNode(BaseNode):
             if ledger is None:
                 return {}
 
-            reused_only = mode == "off"
+            reused_only = mode == "reused"
             if reused_only:
                 from cuga.backend.knowledge.citation_check import claims_by_marker
 

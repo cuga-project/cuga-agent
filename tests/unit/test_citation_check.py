@@ -316,7 +316,42 @@ def test_an_earlier_turn_citation_is_kept_only_when_verified(thread, monkeypatch
     assert [(s["filename"], s["support"]) for s in state.sources] == [("Invoic.txt", "supported")]
 
 
-def test_with_the_check_off_only_citations_reused_from_an_earlier_turn_are_checked(thread, monkeypatch):
+def _reused_and_new_citation(thread):
+    """A follow-up citing s1 from the previous turn and s3, retrieved this turn."""
+    thread.begin_turn()
+    thread.register(
+        SimpleNamespace(
+            text="Refunds take 5 days.",
+            filename="Refund.txt",
+            page=1,
+            scope="agent",
+            score=0.9,
+            section_path="",
+        ),
+        query="q",
+    )  # s3
+
+
+def test_with_the_check_off_no_model_is_called_and_reused_citations_are_removed(thread, monkeypatch):
+    """ "off" means no check at all: a reused citation is removed unchecked, as before checks."""
+    _reused_and_new_citation(thread)
+    sources.set_agent_citation_check_lookup(lambda: "off")
+
+    prompts: list[str] = []  # the check fails open, so a model call must be recorded, not raised
+    monkeypatch.setattr(
+        final_answer,
+        "_citation_check_llm",
+        lambda: SimpleNamespace(generate=_fake_llm({1: "supported"}, prompts)),
+    )
+    state = _finalize("Issued to Contoso [s1]. Refunds take 5 days [s3].")
+
+    assert prompts == []
+
+    assert state.final_answer == "Issued to Contoso . Refunds take 5 days [1]."
+    assert [(s["filename"], s.get("support")) for s in state.sources] == [("Refund.txt", None)]
+
+
+def test_reused_checks_only_citations_reused_from_an_earlier_turn(thread, monkeypatch):
     """A follow-up answered from the previous turn's results keeps a reused citation the agent's
     model finds supported; this turn's own citations are not sent to the model."""
     thread.begin_turn()
@@ -331,7 +366,7 @@ def test_with_the_check_off_only_citations_reused_from_an_earlier_turn_are_check
         ),
         query="q",
     )  # s3, retrieved this turn
-    sources.set_agent_citation_check_lookup(lambda: "off")
+    sources.set_agent_citation_check_lookup(lambda: "reused")
     prompts: list[str] = []
     monkeypatch.setattr(
         final_answer,
@@ -508,7 +543,8 @@ def test_attribution_framing_is_removed_before_the_nli_check(claim, stripped):
 
 def test_the_llm_checker_answers_with_the_model_this_run_uses(monkeypatch):
     """Looked up for each check, inside the graph run: the model the server published for this
-    request (configurable["llm"]) wins, then the SDK agent's model=, then the configured model."""
+    request (configurable["llm"]) wins, then the SDK agent's model= passed with the run, then the
+    configured model."""
     from typing import TypedDict
 
     from langgraph.graph import END, StateGraph
@@ -535,12 +571,14 @@ def test_the_llm_checker_answers_with_the_model_this_run_uses(monkeypatch):
     def run(config=None):
         return asyncio.run(app.ainvoke({"reply": ""}, config=config))["reply"]
 
-    monkeypatch.setattr(final_answer, "_sdk_agent_model", None)
+    key = final_answer.CITATION_CHECK_MODEL_KEY
     assert final_answer._citation_check_llm()._model is None  # the configured model, loaded on use
-    final_answer.set_citation_check_model(_Model("sdk agent's model"))
-    assert run() == "sdk agent's model"
+    # Two SDK agents in one process: each run checks with its own agent's model.
+    assert run({"configurable": {key: _Model("agent A's model")}}) == "agent A's model"
+    assert run({"configurable": {key: _Model("agent B's model")}}) == "agent B's model"
     assert run({"configurable": {"llm": _Model("published model")}}) == "published model"
-    assert run({"configurable": {"llm": _Model("model published later")}}) == "model published later"
+    both = {"llm": _Model("published model"), key: _Model("agent's model")}
+    assert run({"configurable": both}) == "published model"
 
 
 def test_markers_needing_verification_are_kept_where_their_own_claim_is_supported():
@@ -571,7 +609,7 @@ def test_a_follow_up_keeps_each_reused_citation_where_its_source_states_the_clai
     sentence no single source states. Judged per source, the summary took every citation away
     (seen live: four supported markers stripped); judged per marker, only the summary's go."""
     thread.begin_turn()  # a follow-up answered from the previous turn's search results
-    sources.set_agent_citation_check_lookup(lambda: "off")
+    sources.set_agent_citation_check_lookup(lambda: "reused")
     monkeypatch.setattr(
         final_answer,
         "_citation_check_llm",

@@ -528,3 +528,31 @@ async def test_classify_auto_continue_sends_an_unsearched_citing_answer_back_to_
         )
         assert await adapter.classify_auto_continue(state, None, answer, None) is False, "once per turn"
     sources._reset_all_ledgers_for_tests()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_name, retried",
+    [("knowledge_search_knowledge", True), ("crm_knowledge_search_tickets", False)],
+)
+async def test_the_search_before_citing_retry_needs_the_knowledge_search_tool(tool_name, retried):
+    """Matched by the tool's exact name: a user tool whose name contains "knowledge_search" is
+    not the knowledge search tool."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import SEARCH_BEFORE_CITING_CORRECTION
+    from cuga.backend.knowledge import sources
+
+    sources._reset_all_ledgers_for_tests()
+    adapter = _make_adapter()
+    adapter._tools_context = {tool_name: object()}
+    state = SimpleNamespace(chat_messages=[], cuga_lite_metadata={}, thread_id=f"t-{tool_name}")
+    try:
+        with patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
+            new_callable=AsyncMock,
+            return_value=_decision(False),
+        ):
+            result = await adapter.classify_auto_continue(state, None, "Five days [s1].", None)
+    finally:
+        sources._reset_all_ledgers_for_tests()
+    assert (result == SEARCH_BEFORE_CITING_CORRECTION) is retried

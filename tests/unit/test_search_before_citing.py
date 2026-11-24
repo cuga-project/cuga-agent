@@ -55,3 +55,13 @@ def test_citing_an_earlier_turn_s_source_leaves_it_to_the_citation_check():
     sources.begin_ledger_turn("t5")  # the follow-up turn
     assert sources.needs_search_before_citing(f"Five days [{cite_id}].", "t5") is False
     assert sources.needs_search_before_citing(f"Five days [{cite_id}][s99].", "t5") is True
+
+
+def test_the_retry_can_be_turned_off():
+    """knowledge.citation_search_retry = false stops the retry without turning citations off."""
+    sources.set_agent_citation_search_retry_lookup(lambda: False)
+    try:
+        assert sources.needs_search_before_citing("Five days [s1].", "t6") is False
+    finally:
+        sources.set_agent_citation_search_retry_lookup(None)
+    assert sources.needs_search_before_citing("Five days [s1].", "t6") is True

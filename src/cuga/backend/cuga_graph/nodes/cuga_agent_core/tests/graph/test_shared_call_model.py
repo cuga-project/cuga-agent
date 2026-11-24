@@ -575,3 +575,49 @@ async def test_reasoning_mentioning_other_special_tokens_is_still_surfaced(mock_
 
     assert result.goto == END
     assert result.update["final_answer"] == reasoning
+
+
+class _CorrectiveRetryAdapter(_TestAdapter):
+    """Sends the model back with a corrective message, as the search-before-citing and
+    unverified-blocker retries do."""
+
+    async def classify_auto_continue(self, state: Any, model: Any, content: str, reasoning: Optional[str]):
+        return "Search the knowledge base before citing."
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("step_count", [0, 48])
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_a_corrective_retry_runs_while_a_step_remains(mock_summarize, step_count):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+    state = _make_state(step_count=step_count, max_steps=50)
+
+    node = _get_factory()(_CorrectiveRetryAdapter(), _mock_model("Five days [s1]."), _mock_settings())
+    result = await node(state, config=None)
+
+    assert result.goto == "call_model"
+    assert result.update["chat_messages"][-1].content == "Search the knowledge base before citing."
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_a_corrective_retry_on_the_last_step_keeps_the_answer(mock_summarize):
+    """On the last allowed step the retry would trip the step limit in call_model, and the user
+    would get "Maximum step limit reached" instead of the answer the model wrote."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+    state = _make_state(step_count=49, max_steps=50)
+
+    node = _get_factory()(_CorrectiveRetryAdapter(), _mock_model("Five days [s1]."), _mock_settings())
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert result.update["final_answer"] == "Five days [s1]."
+    assert result.update["execution_complete"] is True

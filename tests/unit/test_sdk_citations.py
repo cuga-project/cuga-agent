@@ -107,37 +107,11 @@ def test_invoke_empty_answer_fallback_resolves_markers_and_overrides_stale_sourc
     assert result.sources[0]["filename"] == "report.pdf"
 
 
-def test_citation_check_params_reach_the_answer_path(monkeypatch):
-    """CugaAgent(citation_check=..., citation_strict=...) override the knowledge settings for
-    this agent, and the final answer reads them."""
-    from cuga.backend.cuga_graph.nodes.answer import final_answer
-    from cuga.backend.knowledge import sources
-    from cuga.sdk import CugaAgent
-
-    monkeypatch.setattr(
-        "cuga.backend.knowledge.engine.KnowledgeEngine", lambda config, **_: SimpleNamespace(_config=config)
-    )
-    monkeypatch.setattr(
-        "cuga.backend.knowledge.client.KnowledgeClient", lambda engine, **_: SimpleNamespace(engine=engine)
-    )
-    agent = CugaAgent(enable_knowledge=True, citation_check="nli", citation_strict=True)
-    try:
-        config = agent.knowledge.engine._config
-        assert (config.citation_check, config.citation_strict) == ("nli", True)
-        assert (sources.effective_citation_check(), sources.effective_citation_strict()) == ("nli", True)
-        assert final_answer._sdk_agent_model is agent._model  # the "llm" checker uses this agent's model
-    finally:
-        sources.set_agent_citation_check_lookup(None)
-        sources.set_agent_citation_strict_lookup(None)
-        sources.set_agent_citations_lookup(None)
-        final_answer.set_citation_check_model(None)
-
-
 def test_strict_without_a_checker_is_rejected_when_the_agent_is_built():
     """Agent setup only logs a knowledge error, so this must fail before it, not disable knowledge."""
     from cuga.sdk import CugaAgent
 
-    with pytest.raises(ValueError, match="citation_strict needs a citation check"):
+    with pytest.raises(ValueError, match="citation_strict needs citation_check"):
         CugaAgent(citation_strict=True)
     CugaAgent(citation_check="nli", citation_strict=True)
 
@@ -150,7 +124,7 @@ def test_strict_from_the_settings_is_checked_against_the_agent_s_checker(monkeyp
 
     monkeypatch.setitem(settings.get("knowledge"), "citation_strict", True)
     monkeypatch.setitem(settings.get("knowledge"), "citation_check", "llm")
-    with pytest.raises(ValueError, match="citation_strict needs a citation check"):
+    with pytest.raises(ValueError, match="citation_strict needs citation_check"):
         CugaAgent(citation_check="off")
     CugaAgent(citation_check="off", citation_strict=False)
     CugaAgent()
@@ -256,24 +230,145 @@ def test_invoke_empty_answer_fallback_honours_strict_mode(monkeypatch):
     assert (result.answer, result.sources) == ("Issued to Globex .", [])
 
 
-def test_the_sdk_reads_the_engines_live_citation_check(monkeypatch):
-    """apply_knowledge_config replaces the engine's config; the answer path must follow it."""
-    from cuga.backend.knowledge import sources
-    from cuga.backend.knowledge.config import KnowledgeConfig
+class _Engine:
+    """A knowledge engine stand-in with the live ``config`` the answer path reads."""
+
+    def __init__(self, config):
+        self._config = config
+
+    @property
+    def config(self):
+        return self._config
+
+
+def _agent_with_knowledge(monkeypatch, **kwargs):
     from cuga.sdk import CugaAgent
 
+    monkeypatch.setattr("cuga.backend.knowledge.engine.KnowledgeEngine", lambda config, **_: _Engine(config))
     monkeypatch.setattr(
-        "cuga.backend.knowledge.engine.KnowledgeEngine", lambda config, **_: SimpleNamespace(_config=config)
+        "cuga.backend.knowledge.client.KnowledgeClient",
+        lambda engine, **_: SimpleNamespace(_engine=engine, engine=engine),
     )
-    monkeypatch.setattr(
-        "cuga.backend.knowledge.client.KnowledgeClient", lambda engine, **_: SimpleNamespace(engine=engine)
+    agent = CugaAgent(enable_knowledge=True, **kwargs)
+    assert agent.knowledge is not None  # builds the agent's engine
+    return agent
+
+
+def _in_run(agent, read):
+    """Call ``read()`` inside a graph run configured the way agent.invoke()/stream() configure it."""
+    from typing import TypedDict
+
+    from langgraph.graph import END, StateGraph
+
+    class _State(TypedDict):
+        out: object
+
+    graph = StateGraph(_State)
+    graph.add_node("final_answer", lambda state: {"out": read()})
+    graph.set_entry_point("final_answer")
+    graph.add_edge("final_answer", END)
+    run_config = {"configurable": {}}
+    agent._inject_knowledge_to_config(run_config)
+    return asyncio.run(graph.compile().ainvoke({"out": None}, config=run_config))["out"]
+
+
+def _citation_settings():
+    from cuga.backend.knowledge import sources
+
+    return (
+        sources.effective_citations_enabled(None),
+        sources.effective_citation_check(),
+        sources.effective_citation_strict(),
+        sources.effective_citation_search_retry(),
     )
-    agent = CugaAgent(enable_knowledge=True)
+
+
+def test_citation_params_apply_to_the_agent_s_own_runs(monkeypatch):
+    """CugaAgent(citation_check=..., citation_strict=...) override the knowledge settings for
+    this agent's runs, and the "llm" checker uses this agent's model."""
+    from cuga.backend.cuga_graph.nodes.answer import final_answer
+
+    agent = _agent_with_knowledge(monkeypatch, citation_check="nli", citation_strict=True)
+    agent._model = SimpleNamespace(name="agent's model")
+
+    assert _in_run(agent, _citation_settings) == (True, "nli", True, True)
+    assert _in_run(agent, lambda: final_answer._citation_check_llm()._model) is agent._model
+
+
+def test_two_agents_in_one_process_keep_their_own_citation_settings(monkeypatch):
+    """Building a second agent (the server builds one per spawned sub-agent) used to replace the
+    first agent's settings, strict mode included, and the server's own lookups."""
+    from cuga.backend.knowledge import sources
+
+    sources.set_agent_citation_check_lookup(lambda: "off")  # the server's published setting
     try:
-        agent.knowledge.engine._config = KnowledgeConfig(citation_check="llm", citations_enabled=False)
-        assert sources.effective_citation_check() == "llm"
-        assert sources.effective_citations_enabled(None) is False
+        strict = _agent_with_knowledge(monkeypatch, citation_check="llm", citation_strict=True)
+        plain = _agent_with_knowledge(monkeypatch, enable_citations=False, citation_check="off")
+
+        assert _in_run(strict, _citation_settings) == (True, "llm", True, True)
+        assert _in_run(plain, _citation_settings) == (False, "off", False, True)
+        assert sources.effective_citation_check() == "off"  # outside an SDK run: the server's
     finally:
         sources.set_agent_citation_check_lookup(None)
-        sources.set_agent_citation_strict_lookup(None)
-        sources.set_agent_citations_lookup(None)
+
+
+def test_the_answer_path_reads_the_engines_live_config(monkeypatch):
+    """apply_knowledge_config replaces the engine's config; the next run must follow it."""
+    from cuga.backend.knowledge.config import KnowledgeConfig
+
+    agent = _agent_with_knowledge(monkeypatch)
+    agent.knowledge.engine._config = KnowledgeConfig(
+        citation_check="llm", citations_enabled=False, citation_search_retry=False
+    )
+
+    assert _in_run(agent, _citation_settings) == (False, "llm", False, False)
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"citation_check": "llm", "citation_strict": "false"}, "citation_strict must be a boolean"),
+        ({"enable_citations": "yes"}, "citations_enabled must be a boolean"),
+        ({"citation_check": "always"}, "citation_check must be one of"),
+        ({"citation_check": "reused", "citation_strict": True}, "citation_strict needs citation_check"),
+    ],
+)
+def test_invalid_citation_params_fail_when_the_agent_is_built(kwargs, message):
+    """The engine would reject them later, where agent setup only logs the error and the agent
+    runs without knowledge."""
+    from cuga.sdk import CugaAgent
+
+    with pytest.raises(ValueError, match=message):
+        CugaAgent(**kwargs)
+
+
+def test_the_citation_params_are_keyword_only():
+    """Positional callers of the arguments after enable_citations keep their meaning."""
+    import inspect
+
+    from cuga.sdk import CugaAgent
+
+    params = inspect.signature(CugaAgent.__init__).parameters
+    assert [name for name, p in params.items() if p.kind is p.POSITIONAL_OR_KEYWORD] == [
+        "self",
+        "tools",
+        "tool_provider",
+        "model",
+        "callbacks",
+        "policy_system",
+        "special_instructions",
+        "cuga_folder",
+        "auto_load_policies",
+        "reset_policy_storage",
+        "filesystem_sync",
+        "enable_knowledge",
+        "enable_citations",
+        "enable_skills",
+        "skills_folder",
+        "shortlister",
+        "final_answer",
+        "execution_mode",
+        "step_discipline",
+    ]
+    assert params["citation_check"].kind is params["citation_check"].KEYWORD_ONLY
+    assert params["citation_strict"].kind is params["citation_strict"].KEYWORD_ONLY

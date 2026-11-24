@@ -12,7 +12,11 @@ from typing import Annotated, Any
 from langchain_core.tools import InjectedToolArg
 
 from cuga.backend.knowledge.engine import KnowledgeEngine
-from cuga.backend.knowledge.sources import annotate_envelope_with_citations, citations_enabled_for
+from cuga.backend.knowledge.sources import (
+    KNOWLEDGE_SEARCH_TOOL,
+    annotate_envelope_with_citations,
+    citations_enabled_for,
+)
 
 
 class KnowledgeClient:
@@ -547,7 +551,7 @@ class KnowledgeClient:
         tools = [
             StructuredTool.from_function(
                 coroutine=knowledge_search_knowledge,
-                name="knowledge_search_knowledge",
+                name=KNOWLEDGE_SEARCH_TOOL,
                 description=knowledge_search_knowledge.__doc__,
             ),
             StructuredTool.from_function(

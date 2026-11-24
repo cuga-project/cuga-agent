@@ -317,6 +317,11 @@ def _warn_unsupported_markers(text: str) -> None:
             return
 
 
+# The knowledge search tool's name, in the SDK (KnowledgeClient) and on the server (the
+# "knowledge" app's search_knowledge tool).
+KNOWLEDGE_SEARCH_TOOL = "knowledge_search_knowledge"
+
+
 def needs_search_before_citing(text: str, thread_id: str | None) -> bool:
     """True, once per turn, when ``text`` cites sources, none of them was retrieved this turn, and
     some do not resolve to any source in the thread (the citation check verifies the others).
@@ -325,7 +330,7 @@ def needs_search_before_citing(text: str, thread_id: str | None) -> bool:
     user could get the answer with no sources. That happens when the model answers from a document's preview in the prompt, or
     from memory, without searching (#1124). The caller sends the model back to search.
     """
-    if not thread_id or not effective_citations_enabled(thread_id):
+    if not thread_id or not effective_citations_enabled(thread_id) or not effective_citation_search_retry():
         return False
     prose = [part for i, part in enumerate(_CODE_RE.split(text or "")) if not i % 2]
     ids = [
@@ -489,8 +494,28 @@ def set_agent_citations_lookup(fn: Callable[[], bool] | None) -> None:
     _agent_flag_lookup = fn
 
 
-# Wired next to the citations flag: the agent-level citation_check mode ("off" | "llm" | "nli"),
-# read from the LIVE engine config each call. Unwired -> "off".
+def run_knowledge_config() -> KnowledgeConfig | None:
+    """The knowledge config of the agent this graph run belongs to, or None.
+
+    An SDK agent passes its engine with each run (``configurable["knowledge_engine"]``), so its
+    citation settings apply to its own runs only, even with several agents in one process (a
+    server builds one for each spawned sub-agent). Without it, as on the server, the module-level
+    lookups below apply.
+    """
+    try:
+        from langchain_core.runnables.config import ensure_config
+
+        from cuga.backend.knowledge.config import KnowledgeConfig
+
+        engine = (ensure_config().get("configurable") or {}).get("knowledge_engine")
+        config = getattr(engine, "config", None) if engine is not None else None
+        return config if isinstance(config, KnowledgeConfig) else None
+    except Exception:
+        logger.exception("knowledge config lookup for this run failed; using the agent-level settings")
+        return None
+
+
+# The server wires these next to the citations flag, reading the LIVE engine config each call.
 _agent_check_lookup: Callable[[], str] | None = None
 
 
@@ -500,17 +525,23 @@ def set_agent_citation_check_lookup(fn: Callable[[], str] | None) -> None:
 
 
 def effective_citation_check() -> str:
-    """The citation check mode for this agent: "off", "llm" or "nli"."""
+    """The citation check mode for this run: "off", "reused", "llm" or "nli".
+
+    This run's agent config first, then the server's lookup; "reused", the default, when neither
+    is there."""
+    config = run_knowledge_config()
+    if config is not None:
+        return config.citation_check
     if _agent_check_lookup is None:
-        return "off"
+        return "reused"
     try:
-        return str(_agent_check_lookup() or "off")
+        return str(_agent_check_lookup() or "reused")
     except Exception:
-        logger.exception("citation check lookup failed; checking off")
-        return "off"
+        logger.exception("citation check lookup failed; checking reused citations only")
+        return "reused"
 
 
-# Wired next to citation_check: whether only supported citations are shown. Unwired -> False.
+# Whether only supported citations are shown. Unwired -> False.
 _agent_strict_lookup: Callable[[], bool] | None = None
 
 
@@ -520,7 +551,10 @@ def set_agent_citation_strict_lookup(fn: Callable[[], bool] | None) -> None:
 
 
 def effective_citation_strict() -> bool:
-    """Whether this agent shows only the citations the check found supported."""
+    """Whether this run shows only the citations the check found supported."""
+    config = run_knowledge_config()
+    if config is not None:
+        return config.citation_strict
     if _agent_strict_lookup is None:
         return False
     try:
@@ -528,6 +562,29 @@ def effective_citation_strict() -> bool:
     except Exception:
         logger.exception("citation strict lookup failed; not strict")
         return False
+
+
+# Whether an answer citing unretrieved sources is sent back to search once. Unwired -> True.
+_agent_search_retry_lookup: Callable[[], bool] | None = None
+
+
+def set_agent_citation_search_retry_lookup(fn: Callable[[], bool] | None) -> None:
+    global _agent_search_retry_lookup
+    _agent_search_retry_lookup = fn
+
+
+def effective_citation_search_retry() -> bool:
+    """Whether this run may send the model back to search before citing (``citation_search_retry``)."""
+    config = run_knowledge_config()
+    if config is not None:
+        return config.citation_search_retry
+    if _agent_search_retry_lookup is None:
+        return True
+    try:
+        return bool(_agent_search_retry_lookup())
+    except Exception:
+        logger.exception("citation search retry lookup failed; retry on")
+        return True
 
 
 def _coerce_override(value: Any, thread_id: str | None) -> bool | None:
@@ -575,6 +632,9 @@ def effective_citations_enabled(thread_id: str | None) -> bool:
     override = _session_override(thread_id)
     if override is not None:
         return override
+    config = run_knowledge_config()
+    if config is not None:
+        return bool(config.citations_enabled)
     base = True
     if _agent_flag_lookup is not None:
         try:
