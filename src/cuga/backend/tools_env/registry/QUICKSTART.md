@@ -32,7 +32,7 @@ curl http://localhost:8001/applications
 mcpServers:
   my_files:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/your-username/Documents"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/Documents"]
     description: "My document file manager"
 ```
 
@@ -124,7 +124,7 @@ tail -f logs/registry_server.log
    mcpServers:
      workspace:
        command: "npx"
-       args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/workspace"]
+       args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/workspace"]
        description: "My workspace files"
    ```
 

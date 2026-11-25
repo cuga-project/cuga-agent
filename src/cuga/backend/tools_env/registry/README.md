@@ -180,13 +180,13 @@ mcpServers:
   # File system server for document management
   document_fs:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/documents"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/documents"]
     description: "Document management file system server"
 
   # File system server for project files
   project_fs:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/projects", "--readonly"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/projects", "--readonly"]
     description: "Read-only access to project files"
 
   # Custom Python file system server
@@ -243,7 +243,7 @@ mcpServers:
   # Local file system server
   documents:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/shared/documents"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/shared/documents"]
     description: "Document management system"
 
   # Local Python MCP server
@@ -277,19 +277,19 @@ mcpServers:
   # Basic file operations
   file_manager:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/workspace"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/workspace"]
     description: "File management operations"
 
   # Read-only document access
   docs_readonly:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/documents", "--readonly"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/documents", "--readonly"]
     description: "Read-only access to documents"
 
   # Multiple directory access
   multi_dir:
     command: "python"
-    args: ["-m", "filesystem_mcp", "--dirs", "/Users/projects,/Users/temp", "--max-depth", "3"]
+    args: ["-m", "filesystem_mcp", "--dirs", "/path/to/projects,/path/to/temp", "--max-depth", "3"]
     description: "Multi-directory file system access"
 
   # Secure file server with restrictions
