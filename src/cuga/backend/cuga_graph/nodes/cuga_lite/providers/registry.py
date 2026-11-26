@@ -29,6 +29,7 @@ from cuga.backend.tools_env.registry.utils.api_utils import (
     get_registry_base_url,
     post_registry_call,
 )
+from cuga.backend.mcp_apps.protocol import McpAppInteractionPause, envelope_from, ui_host_enabled
 from cuga.backend.tools_env.registry.utils.schema_utils import python_type_for_schema
 from cuga.config import settings
 
@@ -71,6 +72,9 @@ async def call_api(
         registry_host += f"?agent_id={agent_id}"
 
     payload = {"function_name": api_name, "app_name": app_name, "args": args}
+    if ui_host_enabled():
+        # The chat client renders MCP Apps: tools with a UI return their form instead of text.
+        payload["mcp_apps"] = True
 
     timeout_seconds = getattr(settings.advanced_features, "tool_call_timeout", 30)
     start_time = time.time()
@@ -275,6 +279,13 @@ def create_tool_from_api_dict(
                 arg_defaults=arg_defaults,
                 param_names=param_names,
             )
+            envelope = envelope_from(result)
+            if envelope is not None:
+                # An MCP Apps tool: the user has to finish its form first. End the
+                # block here; the sandbox node turns this into a human-in-the-loop step.
+                raise McpAppInteractionPause(
+                    envelope, app_name=app_name, tool_name=tool_name, agent_id=_agent_id
+                )
             return result
         except TimeoutError:
             raise
