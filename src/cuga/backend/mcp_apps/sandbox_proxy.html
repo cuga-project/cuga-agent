@@ -1,0 +1,76 @@
+<!doctype html>
+<!--
+  MCP Apps sandbox proxy for the CUGA chat UI.
+
+  Adapted from the reference host in modelcontextprotocol/ext-apps
+  (examples/basic-host/src/sandbox.ts), Copyright (c) Anthropic, PBC and
+  contributors, licensed under the MIT License / Apache-2.0.
+
+  Double-iframe sandbox: the chat UI embeds this page from a different origin;
+  this page loads the app's HTML into an inner iframe and relays JSON-RPC
+  messages between the chat UI and the app. The server sends this page with a
+  Content-Security-Policy built from the resource's _meta.ui.csp, which the
+  inner document inherits.
+-->
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="color-scheme" content="light dark" />
+<title>MCP App sandbox</title>
+<style>
+  html, body { margin: 0; height: 100vh; width: 100vw; background: transparent; }
+  body { display: flex; flex-direction: column; }
+  iframe { background: transparent; border: 0; padding: 0; overflow: hidden; flex-grow: 1; color-scheme: inherit; }
+</style>
+</head>
+<body>
+<script>
+(() => {
+  "use strict";
+  const ALLOWED_HOST_ORIGINS = /*__ALLOWED_HOST_ORIGINS__*/[];
+  if (window.self === window.top) throw new Error("This page only runs inside the CUGA chat UI.");
+  if (!document.referrer) throw new Error("No referrer: cannot verify the embedding page.");
+  const HOST_ORIGIN = new URL(document.referrer).origin;
+  if (!ALLOWED_HOST_ORIGINS.includes(HOST_ORIGIN)) throw new Error(`Embedding origin not allowed: ${HOST_ORIGIN}`);
+  const OWN_ORIGIN = window.location.origin;
+
+  // Isolation self-test: the top window must be cross-origin from here.
+  try { void window.top.location.href; throw "FAIL"; }
+  catch (e) { if (e === "FAIL") throw new Error("The sandbox is not isolated from the host page."); }
+
+  const inner = document.createElement("iframe");
+  inner.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
+  inner.setAttribute("title", "Interactive tool form");
+  document.body.appendChild(inner);
+
+  const RESOURCE_READY = "ui/notifications/sandbox-resource-ready";
+  const PROXY_READY = "ui/notifications/sandbox-proxy-ready";
+  const PERMISSION_FEATURES = { camera: "camera", microphone: "microphone", geolocation: "geolocation", clipboardWrite: "clipboard-write" };
+
+  window.addEventListener("message", (event) => {
+    if (event.source === window.parent) {
+      if (event.origin !== HOST_ORIGIN) return;
+      const data = event.data;
+      if (data && data.method === RESOURCE_READY) {
+        const { html, sandbox, permissions } = data.params || {};
+        if (typeof sandbox === "string") inner.setAttribute("sandbox", sandbox);
+        const allow = Object.keys(permissions || {}).map((k) => PERMISSION_FEATURES[k]).filter(Boolean).join("; ");
+        if (allow) inner.setAttribute("allow", allow);
+        if (typeof html === "string") {
+          const doc = inner.contentDocument || (inner.contentWindow && inner.contentWindow.document);
+          if (doc) { doc.open(); doc.write(html); doc.close(); } else { inner.srcdoc = html; }
+        }
+      } else if (inner.contentWindow) {
+        inner.contentWindow.postMessage(data, "*");
+      }
+    } else if (event.source === inner.contentWindow) {
+      if (event.origin !== OWN_ORIGIN) return;
+      window.parent.postMessage(event.data, HOST_ORIGIN);
+    }
+  });
+
+  window.parent.postMessage({ jsonrpc: "2.0", method: PROXY_READY, params: {} }, HOST_ORIGIN);
+})();
+</script>
+</body>
+</html>

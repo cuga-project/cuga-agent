@@ -30,6 +30,7 @@
     "@carbon/icons-react": "^11.91.0",
     "@carbon/react": "^1.119.0",
     "@ibm/plex": "^6.4.0",
+    "@mcp-ui/client": "7.1.1",
     "agentic_chat": "workspace:*",
     "copy-webpack-plugin": "^13.0.0",
     "lucide-react": "^0.525.0",
@@ -47,12 +48,14 @@
     "@babel/preset-env": "^7.26.0",
     "@babel/preset-react": "^7.25.9",
     "@babel/preset-typescript": "^7.26.0",
+    "@playwright/test": "^1.49.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "babel-loader": "^9.2.1",
     "css-loader": "^7.1.2",
     "electron": "^42.11.16",
     "electron-builder": "^26.15.0",
+    "electron-builder-squirrel-windows": "26.15.7",
     "html-webpack-plugin": "^5.6.3",
     "sass": "^1.77.0",
     "sass-loader": "^16.0.0",
@@ -65,8 +68,6 @@
     "webpack": "5.104.1",
     "webpack-bundle-analyzer": "^5.0.1",
     "webpack-cli": "5.1.4",
-    "webpack-dev-server": "5.2.6",
-    "@playwright/test": "^1.49.0",
-    "electron-builder-squirrel-windows": "26.15.7"
+    "webpack-dev-server": "5.2.6"
   }
 }

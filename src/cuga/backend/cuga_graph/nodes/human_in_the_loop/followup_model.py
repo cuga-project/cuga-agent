@@ -17,6 +17,7 @@ class ActionType(str, Enum):
     SELECT = "select"
     TEXT_INPUT = "text_input"
     CONFIRMATION = "confirmation"
+    MCP_APP = "mcp_app"  # an MCP Apps UI resource the user fills in; see cuga.backend.mcp_apps
 
 
 class SelectOption(BaseModel):

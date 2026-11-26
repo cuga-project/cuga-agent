@@ -47,6 +47,13 @@ import { getResponseUserProfile } from './carbonChatHelpers';
 import { SlashCommandDropdown } from './SlashCommandDropdown';
 import { findShadowRoots } from './composerTextarea';
 import './CarbonChat.css';
+import { McpAppWidget } from './McpAppWidget';
+import {
+  MCP_APP_ACTION_ID,
+  MCP_APP_RESPONSE_TYPE,
+  MCP_APP_USER_DEFINED_TYPE,
+  type McpAppActionInfo,
+} from './mcpApps';
 
 // Register the <cuga-cite> citation chip on the global custom-element registry
 // once per page. It upgrades inside @carbon/ai-chat's shadow roots, where the
@@ -352,8 +359,61 @@ const CarbonChat = ({
     return () => document.removeEventListener(CITE_CLICK_EVENT, onCiteClick);
   }, []);
 
+  // Resume a paused turn with a human-in-the-loop response: approval cards and MCP App forms.
+  const sendActionResponse = useCallback(
+    async (actionResponse: Record<string, unknown>, actionThreadId?: string | null) => {
+      const instance = chatInstanceRef.current;
+      if (!instance) return;
+      const request: MessageRequest = { input: { text: '' } };
+      const options: CustomSendMessageOptions = {
+        signal: new AbortController().signal,
+        silent: false,
+      };
+      // Carbon installs listeners once; read the current agent after dropdown switches.
+      const context = sendContextRef.current;
+      const resumedThreadId = getCurrentThreadId();
+      if (!resumedThreadId || (actionThreadId && actionThreadId !== resumedThreadId)) return;
+      context.onConfigNotice?.(null);
+      try {
+        await customSendMessageImpl(request, options, instance, context.useDraft, context.disableHistory, actionResponse, undefined, context.agentId, context.onConfigNotice);
+      } catch (err) {
+        if (err instanceof StreamHttpError) {
+          sendContextRef.current.onStreamError?.(err.status, err.errorCode);
+          return;
+        }
+        throw err;
+      }
+      if (sendContextRef.current.agentId === context.agentId && getCurrentThreadId() === resumedThreadId) {
+        sendContextRef.current.onThreadChange?.(resumedThreadId);
+      }
+    },
+    [],
+  );
+
   const renderUserDefinedResponse = useCallback((state: RenderUserDefinedState) => {
     const item = state.messageItem as any;
+    if (item?.user_defined?.type === MCP_APP_USER_DEFINED_TYPE && item.user_defined.mcp_app) {
+      const info = item.user_defined.mcp_app as McpAppActionInfo;
+      const actionThreadId: string | null = item.user_defined.thread_id ?? info.thread_id ?? null;
+      return (
+        <McpAppWidget
+          info={info}
+          threadId={actionThreadId ?? getCurrentThreadId()}
+          onFinish={({ message, cancelled }) =>
+            sendActionResponse(
+              {
+                action_id: MCP_APP_ACTION_ID,
+                response_type: MCP_APP_RESPONSE_TYPE,
+                timestamp: new Date().toISOString(),
+                text_response: message ?? null,
+                metadata: { interaction_id: info.interaction_id, message: message ?? '', cancelled: !!cancelled },
+              },
+              actionThreadId,
+            )
+          }
+        />
+      );
+    }
     if (item?.user_defined?.type === 'cuga_memory_usage') {
       if (!onOpenMemoryUsage) return undefined;
       const entityIds = Array.isArray(item.user_defined.entity_ids)
@@ -387,7 +447,7 @@ const CarbonChat = ({
         onOpen={(n: number) => setSourcesPanel({ sources, activeN: n })}
       />
     );
-  }, [onOpenMemoryUsage]);
+  }, [onOpenMemoryUsage, sendActionResponse]);
 
   const getChatResponseUserProfile = useCallback(
     (draft = useDraft) => getResponseUserProfile(draft, agentId),
@@ -947,29 +1007,7 @@ const CarbonChat = ({
             // Echo the action's identity (e.g. ACP permission pending_id) so stale approvals are rejected.
             additional_data: user_defined?.additional_data,
           };
-
-          const request: MessageRequest = { input: { text: '' } };
-          const options: CustomSendMessageOptions = {
-            signal: new AbortController().signal,
-            silent: false,
-          };
-          // Carbon installs this listener once; read the current agent after dropdown switches.
-          const context = sendContextRef.current;
-          const approvedThreadId = getCurrentThreadId();
-          if (!approvedThreadId || (user_defined.thread_id && user_defined.thread_id !== approvedThreadId)) return;
-          context.onConfigNotice?.(null);
-          try {
-            await customSendMessageImpl(request, options, instance, context.useDraft, context.disableHistory, actionResponse, undefined, context.agentId, context.onConfigNotice);
-          } catch (err) {
-            if (err instanceof StreamHttpError) {
-              sendContextRef.current.onStreamError?.(err.status, err.errorCode);
-              return;
-            }
-            throw err;
-          }
-          if (sendContextRef.current.agentId === context.agentId && getCurrentThreadId() === approvedThreadId) {
-            sendContextRef.current.onThreadChange?.(approvedThreadId);
-          }
+          await sendActionResponse(actionResponse, user_defined.thread_id);
         }
       },
     });

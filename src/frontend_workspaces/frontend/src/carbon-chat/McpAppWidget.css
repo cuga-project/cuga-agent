@@ -1,0 +1,63 @@
+.cuga-mcp-app {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cds-spacing-04, 0.75rem);
+  width: 100%;
+  min-width: 0;
+  margin-block: var(--cds-spacing-03, 0.5rem);
+}
+
+.cuga-mcp-app__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cds-spacing-03, 0.5rem);
+  min-width: 0;
+}
+
+.cuga-mcp-app__icon {
+  color: var(--cds-icon-secondary, #525252);
+  flex: none;
+}
+
+.cuga-mcp-app__title {
+  font-weight: 600;
+  color: var(--cds-text-primary, #161616);
+  overflow-wrap: anywhere;
+}
+
+.cuga-mcp-app__source {
+  margin-inline-start: auto;
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #525252);
+}
+
+.cuga-mcp-app__frame {
+  width: 100%;
+  min-width: 0;
+}
+
+/*
+ * AppFrame (from @mcp-ui/client) writes the guest's reported size into the
+ * iframe's inline style. Its width would freeze the frame at the first measured
+ * width and stop it following the chat column, and inline styles can only be
+ * overridden with !important; the reported height is kept.
+ */
+.cuga-mcp-app__frame iframe {
+  width: 100% !important;
+  display: block;
+}
+
+.cuga-mcp-app__notice {
+  max-width: 100%;
+}
+
+.cuga-mcp-app__footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.cuga-mcp-app__done {
+  margin: 0;
+  color: var(--cds-text-secondary, #525252);
+}

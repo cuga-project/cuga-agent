@@ -285,6 +285,7 @@ cuga = [
     "backend/**/*.jinja2",
     "backend/cuga_graph/nodes/cuga_lite/prompts/*.json",
     "backend/**/*.js",
+    "backend/mcp_apps/*.html",
     "backend/server/demo_setup_utils/*.json",
     "backend/observability/assets/*.json",
     "frontend/dist/**",

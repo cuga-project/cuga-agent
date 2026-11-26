@@ -8,9 +8,12 @@ from typing import Any, Callable, Optional
 
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.graph import END
+from langgraph.types import Command
 from loguru import logger
 
 from cuga.backend.cuga_graph.utils.thread_ids import logical_thread_id
+from cuga.backend.mcp_apps.protocol import McpAppInteractionPause
 from cuga.backend.activity_tracker.tracker import Step
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import extract_task_todos_from_new_vars
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
@@ -124,6 +127,62 @@ def _budget_updates() -> dict:
         "tool_calls_used_thread": ToolCallTracker.get_thread_budget_used(),
         "tool_budget_exhausted": ToolCallTracker.budget_exhausted(),
     }
+
+
+def _mcp_app_pause_command(
+    adapter: Any,
+    state: Any,
+    pause: McpAppInteractionPause,
+    *,
+    thread_id: Optional[str],
+    user_id: Optional[str],
+    fc_plan: Optional[list],
+    fc_outcomes: dict,
+    fc_meta: dict,
+    track_tool_calls: Any,
+    max_steps: int,
+) -> Command:
+    """An MCP Apps tool needs the user: end the subgraph with a human-in-the-loop action.
+
+    The CugaLite callback routes the action to SuggestHumanActions; the user's
+    outcome comes back through ``CugaLiteHumanInTheLoopHandler`` as the result
+    of the paused call.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
+    from cuga.backend.mcp_apps.interaction import create_pause_action
+
+    execution_tool_calls = ToolCallTracker.stop_tracking()
+    _record_weak_schema_shapes(adapter, execution_tool_calls)
+    accumulated_tool_calls = (state.tool_calls or []) + (execution_tool_calls if track_tool_calls else [])
+    hitl_action, note = create_pause_action(pause, thread_id=thread_id, user_id=user_id)
+    logger.info(f"MCP App interaction for {pause.tool_name}: pausing the turn for the user")
+    adapter._tracker.collect_step(step=Step(name="McpAppInteraction", data=hitl_action.model_dump_json()))
+    new_messages = (
+        replies_without_execution(fc_plan, note, fc_outcomes) if fc_plan else [HumanMessage(content=note)]
+    )
+    updated_messages, error_message = core_append_with_step_limit(adapter, state, new_messages, max_steps)
+    if error_message:
+        return core_create_error_command(
+            adapter,
+            updated_messages,
+            error_message,
+            state.step_count,
+            additional_updates={**fc_meta, **_budget_updates()},
+        )
+    return Command(
+        goto=END,
+        update={
+            **fc_meta,
+            adapter.messages_key: updated_messages,
+            "final_answer": hitl_action.description,
+            "hitl_action": hitl_action,
+            "sender": adapter.sender_name,
+            "step_count": state.step_count + 1,
+            "verify_revise_streak": 0,
+            "tool_calls": accumulated_tool_calls,
+            **_budget_updates(),
+        },
+    )
 
 
 def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) -> Callable:
@@ -552,6 +611,19 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             if todo_state_update is not None:
                 base_update["task_todos"] = todo_state_update
             return base_update
+        except McpAppInteractionPause as pause:
+            return _mcp_app_pause_command(
+                adapter,
+                state,
+                pause,
+                thread_id=current_thread_id,
+                user_id=configurable.get("user_id"),
+                fc_plan=fc_plan,
+                fc_outcomes=fc_outcomes,
+                fc_meta=fc_meta,
+                track_tool_calls=track_tool_calls,
+                max_steps=max_steps,
+            )
         except Exception as e:
             # Collect tool calls even on error
             execution_tool_calls = ToolCallTracker.stop_tracking()

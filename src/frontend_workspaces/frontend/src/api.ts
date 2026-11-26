@@ -194,6 +194,8 @@ export async function postStream(
     "Content-Type": "application/json",
     ...(options.threadId ? { "X-Thread-ID": options.threadId } : {}),
     "X-Agent-ID": options.agentId || getKnowledgeAgentId(),
+    // This chat renders MCP Apps tool forms (see carbon-chat/McpAppWidget).
+    "X-CUGA-MCP-Apps": "1",
   };
   if (options.useDraft) headers["X-Use-Draft"] = "true";
   if (options.disableHistory) headers["X-Disable-History"] = "true";

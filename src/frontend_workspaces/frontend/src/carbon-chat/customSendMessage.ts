@@ -32,6 +32,7 @@ import type { KnowledgeAttachmentSnapshot } from "../knowledge/useSessionKnowled
 // Import thread ID management from CarbonChat
 import { generateUUID } from './CarbonChat';
 import { adoptIssuedThreadId, getCurrentThreadId, getThreadGeneration } from './threadState';
+import { MCP_APP_USER_DEFINED_TYPE, isMcpAppActionEcho, mcpAppInfoFromAction } from './mcpApps';
 
 
 export class StreamHttpError extends Error {
@@ -324,6 +325,12 @@ export async function customSendMessage(
         continue;
       }
 
+      // Resuming an MCP App form replays the paused action (WaitForResponse, then CugaLite);
+      // it is already on screen as the form, so it is not repeated as reasoning steps.
+      if (isMcpAppActionEcho(event.name, event.data)) {
+        continue;
+      }
+
       // First event means backend is responding — create shell and hide loading indicator
       ensureShellMessage();
       clearLoadingIndicator();
@@ -490,6 +497,32 @@ export async function customSendMessage(
           // Parse the action data
           try {
             const actionData = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+
+            // MCP Apps: the tool's own UI (a form) replaces the generic action card.
+            const mcpApp = mcpAppInfoFromAction(actionData);
+            if (mcpApp) {
+              flushPendingStep();
+              const widgetItem = {
+                response_type: MessageResponseTypes.USER_DEFINED,
+                user_defined: { type: MCP_APP_USER_DEFINED_TYPE, mcp_app: mcpApp, thread_id: threadId },
+              } as any;
+              if (shellMessageCreated) {
+                // Complete the streamed message (its reasoning steps) with the form as its body.
+                instance.messaging.addMessageChunk({
+                  final_response: {
+                    id: responseID,
+                    output: { generic: [widgetItem] },
+                    message_options: {
+                      ...(collectedSteps.length > 0 ? { reasoning: { steps: collectedSteps } } : {}),
+                      response_user_profile: responseUserProfile,
+                    },
+                  },
+                } as StreamChunk);
+              } else {
+                instance.messaging.addMessage({ output: { generic: [widgetItem] } });
+              }
+              return;
+            }
             
             // Create card body with action details
             const cardBody: any[] = [

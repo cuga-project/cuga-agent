@@ -2000,6 +2000,7 @@ async def event_stream(
     claim_owner: bool = True,
     reset_stop_event: bool = True,
     gateway_tokens: Any = None,
+    mcp_apps: bool = False,
 ):
     """Handles the main agent event stream. If agent is None, uses app_state.agent (published).
 
@@ -2009,11 +2010,15 @@ async def event_stream(
     already read and validated under the lease; the turn runs on it instead of reading again.
     ``claim_owner=False`` checks ownership without recording an owner, for preview and draft chats.
     ``gateway_tokens`` is the signed-in user's MCP gateway token provider for this run's tool calls.
+    ``mcp_apps`` is True when the client renders MCP Apps forms (the web chat sends ``X-CUGA-MCP-Apps``).
     """
+    from cuga.backend.mcp_apps.protocol import set_ui_host
     from cuga.backend.server.auth.gateway_tokens import set_provider
 
     # The signed-in user's MCP gateway tokens for tool calls of this run (task-local).
     set_provider(gateway_tokens)
+    # Whether MCP Apps tools of this run may open their form in the client (task-local).
+    set_ui_host(mcp_apps)
     from cuga.backend.activity_tracker.tracker import ActivityTracker
     from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
     from cuga.backend.cuga_graph.utils.agent_loop import AgentLoop, AgentLoopAnswer, StreamEvent
@@ -2752,8 +2757,11 @@ app.state.draft_app_state = draft_app_state
 from cuga.backend.knowledge.routes import knowledge_router  # noqa: E402
 from cuga.backend.server.memory_routes import router as memory_router  # noqa: E402
 
+from cuga.backend.mcp_apps.routes import router as mcp_apps_router  # noqa: E402
+
 app.include_router(knowledge_router)
 app.include_router(memory_router)
+app.include_router(mcp_apps_router)
 _cors_origins = (
     ["https://localhost:7860", "https://localhost:3002"]
     if (getattr(settings, "auth", None) and getattr(settings.auth, "enabled", False))
@@ -3413,9 +3421,11 @@ async def stream(
 ):
     """Endpoint to start the agent stream. Use draft agent when X-Use-Draft is set."""
     from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+    from cuga.backend.mcp_apps.protocol import CLIENT_HEADER, header_enabled
     from cuga.backend.server.auth.gateway_tokens import provider_from_request
 
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
+    mcp_apps = header_enabled(request.headers.get(CLIENT_HEADER))
     query = await get_query(request)
     agent_id_header = _runtime_agent_id(request) or "cuga-default"
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
@@ -3525,6 +3535,7 @@ async def stream(
             agent_id=agent_id_header,
             current_llm=runtime_llm,
             gateway_tokens=provider_from_request(request, current_user),
+            mcp_apps=mcp_apps,
             issued_thread_id=issued_thread_id,
             preloaded_snapshot=preloaded_snapshot,
             claim_owner=not preview,
