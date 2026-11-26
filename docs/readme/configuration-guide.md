@@ -1386,6 +1386,50 @@ Also supply the Evolve model settings described above, and configure [authentica
 
 </details>
 
+## Interactive tool forms (MCP Apps)
+
+A tool on an MCP server can ask the user to fill in a form in the CUGA chat before it returns its
+result. CUGA supports the [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) standard
+(it grew out of [MCP-UI](https://mcpui.dev)). No CUGA setting turns it on: a tool opens a form when
+its MCP server declares one.
+
+**How a tool opens a form.** The tool declares a UI resource in its metadata,
+`_meta.ui.resourceUri = "ui://..."`. The resource is an HTML page with the MIME type
+`text/html;profile=mcp-app`. When the agent calls the tool, CUGA pauses the turn and shows the page
+in the chat. The page calls its own server's tools through CUGA and, when the user is done, sends
+`ui/update-model-context` and `ui/message`. The agent then continues, with that outcome as the
+result of the tool call. If the user closes the form, the agent is told the form was cancelled.
+
+**Who sees which tool.** A tool's `_meta.ui.visibility` decides who may call it:
+
+| Visibility | The agent can call it | The form can call it |
+|---|---|---|
+| `["model", "app"]` (default) | Yes | Yes |
+| `["model"]` | Yes | No |
+| `["app"]` | No, and it is not listed to the agent | Yes |
+
+**Where forms appear.** Only in the CUGA web chat, which tells the server it can show them (the
+`X-CUGA-MCP-Apps: 1` header on `/stream`). Everywhere else (the Python SDK, API clients of
+`/stream`, channels and other agents) a tool with a UI returns its ordinary result, as it did before
+MCP Apps support, and the run never waits for a form.
+
+**Security.** The form runs in a sandboxed iframe on a different origin from the chat, through a
+proxy page that CUGA serves at `/mcp-apps/sandbox_proxy.html`. The page's network access follows the
+resource's `_meta.ui.csp`; with none declared it has none. The browser only names an interaction:
+which server, resource and tools a form may reach is decided on the server.
+
+**Deployment.** Locally, CUGA serves the form from the other spelling of the same host
+(`localhost` and `127.0.0.1` swap), so nothing needs configuring. Behind a real domain, give the
+form its own origin that reaches the same CUGA server:
+
+| Environment variable | Purpose |
+|---|---|
+| `CUGA_MCP_APPS_SANDBOX_ORIGIN` | Origin that serves `/mcp-apps/sandbox_proxy.html` for forms, for example `https://cuga-sandbox.example.com`. It must differ from the chat's origin. Without it, forms are not shown on hosts other than `localhost` and `127.0.0.1`. |
+| `CUGA_MCP_APPS_HOST_ORIGINS` | Comma-separated chat origins allowed to embed that page, for example `https://cuga.example.com`. |
+
+**Limitations.** Supported for MCP server tools in CugaLite (CodeAct and function calling). A form
+that is still open when the CUGA server restarts cannot be continued; start the task again.
+
 ## Advanced Usage
 
 <details>
