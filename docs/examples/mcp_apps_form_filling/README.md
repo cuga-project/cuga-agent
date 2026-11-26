@@ -9,15 +9,6 @@ This uses the [MCP Apps](https://mcpui.dev/guide/mcp-apps) standard (SEP-1865; i
 - when the user is done, the app sends `ui/update-model-context` and `ui/message`; CUGA gives the
   outcome to the agent as the result of the original tool call, and the agent continues.
 
-A narrated demo video (real time, recorded against a running CUGA) is attached to the pull request.
-To record such a video against a running demo (needs Google Chrome; run `playwright install ffmpeg` once,
-and `pip install imageio-ffmpeg pillow numpy` for the second step):
-
-```bash
-uv run python docs/examples/mcp_apps_form_filling/recording/record_demo.py /tmp/cuga_demo_video
-python docs/examples/mcp_apps_form_filling/recording/compose_video.py /tmp/cuga_demo_video demo.mp4
-```
-
 ## The demo: table designer
 
 `src/cuga/demo_tools/table_designer_mcp/` is a deterministic MCP server (same input, same output):
