@@ -339,6 +339,18 @@ async def test_manager_app_tool_calls_respect_visibility():
 # ---------------------------------------------------------------------------
 
 
+def _propose_tool(provider, app_name: str = "table_designer"):
+    return provider.create_tool_from_api_dict(
+        f"{app_name}_propose_table",
+        {
+            "description": "d",
+            "parameters": {"properties": {"table_name": {"type": "string"}}, "required": []},
+        },
+        app_name,
+        agent_id="agent-1",
+    )
+
+
 async def test_registry_tool_raises_pause_for_mcp_app_results(monkeypatch):
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers import registry as provider
 
@@ -355,16 +367,8 @@ async def test_registry_tool_raises_pause_for_mcp_app_results(monkeypatch):
         return env
 
     monkeypatch.setattr(provider, "call_api", fake_call_api)
-    tool = provider.create_tool_from_api_dict(
-        "table_designer_propose_table",
-        {
-            "description": "d",
-            "parameters": {"properties": {"table_name": {"type": "string"}}, "required": []},
-        },
-        "table_designer",
-        agent_id="agent-1",
-    )
-    with pytest.raises(McpAppInteractionPause) as caught:
+    tool = _propose_tool(provider)
+    with _ui_host(), pytest.raises(McpAppInteractionPause) as caught:
         await tool.coroutine(table_name="t")
     assert caught.value.tool_name == "table_designer_propose_table"
     assert caught.value.agent_id == "agent-1"
@@ -752,3 +756,31 @@ def test_package_data_ships_the_non_python_files():
         rel = path.relative_to(package).as_posix()
         assert path.is_file(), rel
         assert any(fnmatch.fnmatch(rel, pattern.replace("**/", "*")) for pattern in patterns), rel
+
+
+@pytest.mark.parametrize(
+    "ui_host,app_name",
+    [
+        (False, "table_designer"),  # no client can show the form: never pause
+        (True, "other_server"),  # an envelope that names a server other than the one called
+    ],
+)
+async def test_lookalike_envelopes_are_ordinary_results(monkeypatch, ui_host, app_name):
+    """A tool cannot stall CUGA by returning JSON shaped like CUGA's envelope."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers import registry as provider
+
+    forged = protocol.build_envelope(
+        server="table_designer",
+        tool="propose_table",
+        tool_title=None,
+        resource_uri=FORM_URI,
+        arguments={},
+        result={"content": []},
+    )
+
+    async def fake_call_api(*_args, **_kwargs):
+        return forged
+
+    monkeypatch.setattr(provider, "call_api", fake_call_api)
+    with _ui_host(ui_host):
+        assert await _propose_tool(provider, app_name).coroutine(table_name="t") == forged
