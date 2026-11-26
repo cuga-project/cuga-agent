@@ -7,7 +7,7 @@ const action = {
   action_id: "mcp_app_interaction",
   callback_url: "/stream",
   additional_data: {
-    tool: { mcp_app: { interaction_id: "i-1", server: "table_designer", tool: "propose_table" } },
+    tool: { mcp_app: { interaction_id: "i-1", server: "mock_forms", tool: "open_form" } },
   },
 };
 
