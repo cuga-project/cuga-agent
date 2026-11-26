@@ -222,7 +222,8 @@ export function McpAppWidget({
         <p className="cuga-mcp-app__done">You already submitted this form.</p>
       )}
 
-      {phase === "pending" && (
+      {/* Also when the form cannot open: closing it is how the user lets the agent continue. */}
+      {(phase === "pending" || phase === "error") && (
         <footer className="cuga-mcp-app__footer">
           <Button kind="ghost" size="sm" onClick={() => finish({ cancelled: true })}>
             Close without submitting
