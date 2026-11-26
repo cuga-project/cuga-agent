@@ -28,6 +28,7 @@ class ActionIds:
     CONSULT_WITH_HUMAN = "consult_with_human"
     TOOL_APPROVAL = "tool_approval"
     AGENT_APPROVAL = "agent_approval"
+    MCP_APP_INTERACTION = "mcp_app_interaction"
 
 
 # Message Prefixes
