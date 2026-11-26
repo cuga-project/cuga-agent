@@ -235,3 +235,37 @@ test("closing the form without submitting tells the agent it was cancelled", asy
   });
   await expect(widget.getByText("Closed")).toBeVisible();
 });
+
+test("a form that cannot open can still be closed, so the agent continues", async ({ page }) => {
+  await stub(page);
+  await stubMcpApps(page);
+  await page.route("**/api/mcp-apps/resource", (route) =>
+    route.fulfill({ status: 404, json: { detail: "This form is no longer available." } }),
+  );
+  const streams: any[] = [];
+  await page.route("**/stream", async (route) => {
+    streams.push(route.request().postDataJSON());
+    await route.fulfill({
+      contentType: "text/event-stream",
+      body:
+        streams.length === 1
+          ? sse([
+              ["thread_created", THREAD],
+              ["SuggestHumanActions", JSON.stringify(ACTION)],
+            ])
+          : sse([["Answer", "Okay, I stopped."]]),
+    });
+  });
+
+  await page.goto("/chat");
+  const composer = page.getByRole("textbox").first();
+  await composer.fill("Create a customers table");
+  await composer.press("Enter");
+
+  const widget = page.locator(".cuga-mcp-app");
+  await expect(widget.getByText("This form is no longer available.")).toBeVisible();
+  await (await settled(widget.getByRole("button", { name: "Close without submitting" }))).click();
+  await expect.poll(() => streams.length).toBe(2);
+  expect(streams[1]).toMatchObject({ metadata: { interaction_id: INTERACTION, cancelled: true } });
+  await expect(widget.getByText("Closed")).toBeVisible();
+});
