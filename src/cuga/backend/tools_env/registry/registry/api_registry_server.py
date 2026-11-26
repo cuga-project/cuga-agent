@@ -14,6 +14,7 @@ from cuga.backend.tools_env.registry.config.config_loader import (
     load_service_configs,
     load_service_configs_from_db,
 )
+from cuga.backend.mcp_apps.protocol import reset_ui_host, set_ui_host
 from cuga.backend.tools_env.registry import mcp_gateway
 from cuga.backend.tools_env.registry.mcp_manager.mcp_manager import MCPManager
 from cuga.backend.tools_env.registry.registry.api_registry import ApiRegistry
@@ -49,6 +50,9 @@ class FunctionCallRequest(BaseModel):
     args: Dict[str, Any]  # Arguments for the function
     # Transport credential, excluded from argument traces and repr/log output.
     knowledge_run_token: Optional[str] = Field(default=None, exclude=True, repr=False)
+    # The caller's client renders MCP Apps: a tool with a UI resource returns its envelope.
+    # Excluded from argument traces; absent for every caller that predates MCP Apps.
+    mcp_apps: bool = Field(default=False, exclude=True)
 
 
 class FunctionCallOnboardRequest(BaseModel):
@@ -331,6 +335,63 @@ def _serving_server_config(mcp_mgr: Any, function_name: str) -> Any:
     return (getattr(mcp_mgr, "schema_urls", None) or {}).get(server)
 
 
+class McpAppResourceRequest(BaseModel):
+    """Read the ``ui://`` resource of an MCP Apps tool."""
+
+    server: str
+    uri: str
+
+
+class McpAppToolCallRequest(BaseModel):
+    """A ``tools/call`` sent by an MCP App to its own server."""
+
+    server: str
+    name: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+
+
+async def _mcp_manager_for(agent_id: Optional[str]) -> MCPManager:
+    if database_mode and agent_id:
+        mcp_mgr, _ = await _get_or_create_registry(agent_id)
+        return mcp_mgr
+    return mcp_manager
+
+
+def _mcp_app_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, PermissionError):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, LookupError):
+        return HTTPException(status_code=404, detail=str(exc))
+    logger.exception("MCP Apps request failed")
+    return HTTPException(status_code=502, detail=f"MCP server error: {exc}")
+
+
+@app.post("/mcp_apps/resources/read", tags=["MCP Apps"])
+async def read_mcp_app_resource(
+    request: McpAppResourceRequest,
+    agent_id: Optional[str] = Query(None, description="Agent ID (database mode only)"),
+):
+    """Fetch the HTML of an MCP Apps UI resource (``text/html;profile=mcp-app``)."""
+    try:
+        mgr = await _mcp_manager_for(agent_id)
+        return await mgr.read_mcp_app_resource(request.server, request.uri)
+    except Exception as exc:
+        raise _mcp_app_error(exc) from exc
+
+
+@app.post("/mcp_apps/tools/call", tags=["MCP Apps"])
+async def call_mcp_app_tool(
+    request: McpAppToolCallRequest,
+    agent_id: Optional[str] = Query(None, description="Agent ID (database mode only)"),
+):
+    """Proxy an app's ``tools/call``; only tools whose visibility includes ``"app"``."""
+    try:
+        mgr = await _mcp_manager_for(agent_id)
+        return await mgr.call_mcp_app_tool(request.server, request.name, request.arguments)
+    except Exception as exc:
+        raise _mcp_app_error(exc) from exc
+
+
 # --- ENDPOINT for Calling Functions ---
 @app.post("/functions/call", tags=["Functions"])
 async def call_mcp_function(
@@ -420,6 +481,7 @@ async def call_mcp_function(
                 status_code=401, content=mcp_gateway.user_token_required_body(gateway_instance)
             )
         token_reset = mcp_gateway.CALL_USER_TOKEN.set((gateway_instance, user_token) if user_token else None)
+        ui_reset = set_ui_host(request.mcp_apps)
         try:
             result: TextContent = await reg.call_function(
                 app_name=request.app_name,
@@ -429,6 +491,7 @@ async def call_mcp_function(
                 **run_credentials,
             )
         finally:
+            reset_ui_host(ui_reset)
             mcp_gateway.CALL_USER_TOKEN.reset(token_reset)
 
         # Check if this is an /auth/token endpoint call and update stored token
