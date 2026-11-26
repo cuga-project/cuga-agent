@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, type Page, type Request } from "@playwright/test";
+import { test, expect, type Locator, type Page, type Request } from "@playwright/test";
 import { stub } from "./fixtures/carbon-backend";
 
 /**
@@ -14,12 +15,13 @@ const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../cuga")
 const INTERACTION = "interaction-e2e";
 const THREAD = "thread-e2e";
 
-/** The vendored ext-apps guest SDK as a classic script (same as the demo server does). */
+/**
+ * The MCP Apps guest SDK (``@modelcontextprotocol/ext-apps``) as a classic script. It is the copy
+ * ``@mcp-ui/client`` depends on, so the lockfile pins it and no network is needed.
+ */
 function guestSdk(): string {
-  const bundle = readFileSync(
-    resolve(PKG, "demo_tools/table_designer_mcp/third_party/ext-apps-app-with-deps.js"),
-    "utf8",
-  );
+  const fromClient = createRequire(createRequire(import.meta.url).resolve("@mcp-ui/client"));
+  const bundle = readFileSync(fromClient.resolve("@modelcontextprotocol/ext-apps/app-with-deps"), "utf8");
   const match = bundle.match(/export\s*\{([^}]*)\}\s*;?\s*$/);
   if (!match || match.index === undefined) throw new Error("unexpected ext-apps bundle format");
   const pairs = match[1]
@@ -51,7 +53,7 @@ const APP_HTML = `<!doctype html><html><body>
 
 const ACTION = {
   action_id: "mcp_app_interaction",
-  action_name: "Propose table",
+  action_name: "Open form",
   description: "Proposed 3 columns.",
   type: "mcp_app",
   callback_url: "/stream",
@@ -60,17 +62,31 @@ const ACTION = {
       mcp_app: {
         interaction_id: INTERACTION,
         thread_id: THREAD,
-        server: "table_designer",
-        tool: "propose_table",
-        agent_tool: "table_designer_propose_table",
-        tool_title: "Propose table",
-        resource_uri: "ui://table-designer/form",
+        server: "mock_forms",
+        tool: "open_form",
+        agent_tool: "mock_forms_open_form",
+        tool_title: "Open form",
+        resource_uri: "ui://mock-forms/form",
         tool_input: { table_name: "customers" },
         tool_result: { content: [{ type: "text", text: "Proposed 3 columns." }], structuredContent: { columns: 3 } },
       },
     },
   },
 };
+
+/** Wait until the element stops moving: the app's frame resizes to its content after it loads. */
+async function settled(locator: Locator): Promise<Locator> {
+  let last = "";
+  await expect
+    .poll(async () => {
+      const box = JSON.stringify(await locator.boundingBox());
+      const same = box === last;
+      last = box;
+      return same;
+    }, { intervals: [150] })
+    .toBe(true);
+  return locator;
+}
 
 function sse(events: [string, string][]): string {
   return events.map(([name, data]) => `event: ${name}\ndata: ${data}\n\n`).join("");
@@ -160,7 +176,7 @@ test("a paused tool's form renders, calls its server and resumes the agent", asy
   await expect(form.getByText("proposed 3")).toBeVisible(); // the tool result reached the app
   expect(calls[0]).toMatchObject({ path: "/api/mcp-apps/resource", body: { interaction_id: INTERACTION } });
 
-  await form.getByRole("button", { name: "Accept" }).click();
+  await (await settled(form.getByRole("button", { name: "Accept" }))).click();
   await expect(form.getByText("Design confirmed by the server.")).toBeVisible();
 
   const toolCall = calls.find((c) => c.path === "/api/mcp-apps/tools/call");
@@ -181,7 +197,7 @@ test("a paused tool's form renders, calls its server and resumes the agent", asy
     metadata: { interaction_id: INTERACTION, message: "Design accepted.", cancelled: false },
   });
   await expect(widget.getByText("Submitted")).toBeVisible();
-  await expect(page.getByText("Created table customers with 3 columns.")).toBeVisible();
+  await expect(page.getByTestId(/^message-by-index-/).getByText("Created table customers with 3 columns.")).toBeVisible();
 });
 
 test("closing the form without submitting tells the agent it was cancelled", async ({ page }) => {
@@ -208,7 +224,10 @@ test("closing the form without submitting tells the agent it was cancelled", asy
   await composer.press("Enter");
 
   const widget = page.locator(".cuga-mcp-app");
-  await widget.getByRole("button", { name: "Close without submitting" }).click();
+  // The frame resizes to its content once the app loads; act on the loaded form, as a user would.
+  const form = page.frameLocator(".cuga-mcp-app iframe").frameLocator("iframe");
+  await expect(form.getByText("proposed 3")).toBeVisible();
+  await (await settled(widget.getByRole("button", { name: "Close without submitting" }))).click();
   await expect.poll(() => streams.length).toBe(2);
   expect(streams[1]).toMatchObject({
     action_id: "mcp_app_interaction",
