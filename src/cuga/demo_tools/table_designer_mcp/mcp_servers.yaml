@@ -1,0 +1,6 @@
+# MCP Apps demo: the table designer server (start it first, see README.md).
+mcpServers:
+  table_designer:
+    url: http://127.0.0.1:8210/mcp
+    transport: http
+    description: Design database tables together with the user through interactive forms (MCP Apps).
