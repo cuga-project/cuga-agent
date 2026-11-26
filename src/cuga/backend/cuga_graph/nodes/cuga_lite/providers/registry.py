@@ -279,10 +279,12 @@ def create_tool_from_api_dict(
                 arg_defaults=arg_defaults,
                 param_names=param_names,
             )
-            envelope = envelope_from(result)
-            if envelope is not None:
-                # An MCP Apps tool: the user has to finish its form first. End the
-                # block here; the sandbox node turns this into a human-in-the-loop step.
+            # An MCP Apps tool: the user has to finish its form first. End the block here;
+            # the sandbox node turns this into a human-in-the-loop step. Only when this run's
+            # client shows forms, and only for an envelope naming the server that was called:
+            # a tool's own output that merely looks like an envelope stays an ordinary result.
+            envelope = envelope_from(result) if ui_host_enabled() else None
+            if envelope is not None and envelope.get("server") == app_name:
                 raise McpAppInteractionPause(
                     envelope, app_name=app_name, tool_name=tool_name, agent_id=_agent_id
                 )
