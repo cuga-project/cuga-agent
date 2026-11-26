@@ -38,6 +38,15 @@ from cuga.backend.utils.consts import ServiceType, LOCAL_ORCHESTRATE_URL, LOCAL_
 from cuga.backend.tools_env.registry import mcp_gateway
 from cuga.backend.tools_env.registry.mcp_gateway import AUTH_TYPE as GATEWAY_AUTH_TYPE
 from types import SimpleNamespace
+from cuga.backend.mcp_apps.protocol import (
+    UI_MIME_TYPE,
+    app_can_call,
+    build_envelope,
+    call_tool_result_dict,
+    model_can_see,
+    ui_host_enabled,
+    ui_meta,
+)
 
 
 def _gateway_transport(name: str, config: ServiceConfig):
@@ -83,6 +92,9 @@ class MCPManager:
         self.tools_by_server = defaultdict(list)
         self.server_by_tool = {}
         self.original_tool_name_by_sanitized: Dict[str, str] = {}
+        # MCP Apps: server -> original tool name -> {"resourceUri"?, "visibility"?, "title"?}.
+        # Holds every tool the server lists, including app-only ones the model never sees.
+        self.mcp_app_tool_meta: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.server_ports = {}
         self.auth_config = {}
         self.schemas = {}
@@ -724,6 +736,7 @@ class MCPManager:
     def _clear_mcp_server_registration(self, name: str) -> None:
         self.schemas.pop(name, None)
         self.tools_by_server.pop(name, None)
+        self.mcp_app_tool_meta.pop(name, None)
         self.mcp_clients.pop(name, None)
         if hasattr(self, 'mcp_transports'):
             self.mcp_transports.pop(name, None)
@@ -825,6 +838,15 @@ class MCPManager:
                     raise
 
             include_set = set(config.include) if config.include else None
+
+            # MCP Apps: remember each tool's ui metadata, and keep app-only tools
+            # (visibility without "model") out of the agent's tool list.
+            app_meta = {
+                tool.name: {**ui_meta(getattr(tool, "meta", None)), "title": getattr(tool, "title", None)}
+                for tool in tools
+            }
+            self.mcp_app_tool_meta[name] = app_meta
+            tools = [tool for tool in tools if model_can_see(app_meta[tool.name])]
 
             self.schemas[name] = {
                 "tools": [
@@ -1235,6 +1257,20 @@ class MCPManager:
 
                         call_options["meta"] = {RUN_TOKEN_META: knowledge_run_token}
                     result = await client.call_tool(original_tool_name, args, **call_options)
+                    app_meta = self.mcp_app_tool_meta.get(server_name, {}).get(original_tool_name, {})
+                    if app_meta.get("resourceUri") and ui_host_enabled():
+                        # An MCP Apps tool, called for a client that renders apps: hand the whole
+                        # result and its UI resource to the agent's tool wrapper, which pauses the
+                        # turn for the user. Other callers get the ordinary result below.
+                        envelope = build_envelope(
+                            server=server_name,
+                            tool=original_tool_name,
+                            tool_title=app_meta.get("title"),
+                            resource_uri=app_meta["resourceUri"],
+                            arguments=args,
+                            result=call_tool_result_dict(result),
+                        )
+                        return [TextContent(text=json.dumps(envelope), type='text')]
                     ##TODO add result.structured output if exists and retutn instead of text key  return [TextContent(text=result_text, type='text')]
                     structured_content = (
                         result.structured_content if hasattr(result, 'structured_content') else None
@@ -1320,6 +1356,39 @@ class MCPManager:
         except Exception as e:
             error_msg = f"Error calling MCP server tool: {e}"
             return [TextContent(text=error_msg, type='text')]
+
+    async def read_mcp_app_resource(self, server_name: str, uri: str) -> Dict[str, Any]:
+        """Read an MCP Apps ``ui://`` resource: ``{"uri", "mimeType", "text", "_meta"?}``."""
+        if server_name not in getattr(self, 'mcp_transports', {}):
+            raise LookupError(f"MCP server '{server_name}' is not connected")
+        known = {m.get("resourceUri") for m in self.mcp_app_tool_meta.get(server_name, {}).values()}
+        if uri not in known:
+            raise PermissionError(f"'{uri}' is not the UI resource of any tool on '{server_name}'")
+        async with FastMCPClient(self._call_transport(server_name)) as client:
+            contents = await client.read_resource(uri)
+        if len(contents) != 1:
+            raise ValueError(f"Expected one content item for {uri}, got {len(contents)}")
+        item = contents[0]
+        data = item.model_dump(mode="json", by_alias=True, exclude_none=True)
+        if data.get("mimeType") != UI_MIME_TYPE:
+            raise ValueError(f"{uri} has MIME type {data.get('mimeType')!r}, expected {UI_MIME_TYPE!r}")
+        return data
+
+    async def call_mcp_app_tool(self, server_name: str, tool_name: str, args: dict) -> Dict[str, Any]:
+        """A ``tools/call`` from an MCP App, as a wire-format ``CallToolResult`` dict.
+
+        Only tools of the app's own server whose visibility includes ``"app"``.
+        """
+        if server_name not in getattr(self, 'mcp_transports', {}):
+            raise LookupError(f"MCP server '{server_name}' is not connected")
+        meta = self.mcp_app_tool_meta.get(server_name, {}).get(tool_name)
+        if meta is None:
+            raise LookupError(f"Tool '{tool_name}' not found on '{server_name}'")
+        if not app_can_call(meta):
+            raise PermissionError(f"Tool '{tool_name}' is not visible to apps")
+        async with FastMCPClient(self._call_transport(server_name)) as client:
+            result = await client.call_tool(tool_name, args or {}, raise_on_error=False)
+        return call_tool_result_dict(result)
 
     async def load_tools(self):
         openapi = []
