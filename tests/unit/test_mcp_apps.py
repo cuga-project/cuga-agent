@@ -1,8 +1,8 @@
 """MCP Apps (SEP-1865) host support: a tool's form pauses the agent and its result resumes it.
 
-Covers the protocol helpers, the deterministic table designer demo server, the MCP
-manager (visibility, envelope, app tool calls), the tool wrapper's pause, the
-pause/resume helpers and handler, and the chat UI's HTTP API.
+Covers the protocol helpers, the MCP manager (visibility, envelope, app tool calls) against
+the deterministic mock MCP Apps server in ``tests/fixtures/mcp_apps``, the tool wrapper's
+pause, the pause/resume helpers and handler, and the chat UI's HTTP API.
 """
 
 from __future__ import annotations
@@ -27,17 +27,9 @@ from cuga.backend.mcp_apps import protocol
 from cuga.backend.mcp_apps.interaction import create_pause_action, interaction_id_of, outcome_message
 from cuga.backend.mcp_apps.protocol import McpAppInteractionPause
 from cuga.backend.mcp_apps.store import InteractionStore, interaction_store
-from cuga.demo_tools.table_designer_mcp import schema_logic
-from cuga.demo_tools.table_designer_mcp.server import FORM_URI, form_html, mcp
+from tests.fixtures.mcp_apps.mock_server import FORM_HTML, FORM_URI, mcp
 
 pytestmark = pytest.mark.unit
-
-FIELDS = ["name", "email", "signup date"]
-
-
-def _edit_columns(form: dict) -> list[dict]:
-    return [dict(c) for c in form["fields"][1]["value"]]
-
 
 # ---------------------------------------------------------------------------
 # protocol
@@ -110,142 +102,18 @@ def test_csp_header_is_restrictive_by_default_and_rejects_injection():
 
 
 # ---------------------------------------------------------------------------
-# demo: deterministic schema logic
+# the mock MCP Apps server the tests use
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("field", "label"),
-    [
-        ("email VARCHAR(255) NOT NULL", "email"),
-        ("name (string, customer's full name, required)", "name"),
-        ("signup date: when they joined", "signup date"),
-        ("signup date", "signup date"),
-        ("phone - mobile", "phone"),
-        ("name text", "name"),
-        ("age int", "age"),
-        ("signup_date date", "signup_date"),
-        ("signup date", "signup date"),
-        ("order date", "order date"),
-    ],
-)
-def test_field_label(field, label):
-    assert schema_logic.field_label(field) == label
-
-
-def test_propose_columns_is_deterministic():
-    first = schema_logic.propose_columns(FIELDS + ["phone number", "order count", "is active"])
-    assert first == schema_logic.propose_columns(FIELDS + ["phone number", "order count", "is active"])
-    assert [(c.name, c.type) for c in first] == [
-        ("id", "INTEGER"),
-        ("name", "VARCHAR(255)"),
-        ("email", "VARCHAR(255)"),
-        ("signup_date", "DATE"),
-        ("phone_number", "VARCHAR(255)"),
-        ("order_count", "INTEGER"),
-        ("is_active", "BOOLEAN"),
-        ("created_at", "TIMESTAMP"),
-    ]
-    assert first[0].primary_key and not first[0].nullable
-    assert schema_logic.session_id_for("t", FIELDS) == schema_logic.session_id_for("t", FIELDS)
-
-
-def test_diff_validate_and_ddl():
-    proposed = schema_logic.propose_columns(FIELDS)
-    edited = list(proposed)
-    edited[1] = schema_logic.Column("full_name", "VARCHAR(255)")
-    edited[3] = schema_logic.Column("signup_date", "TIMESTAMP")
-    edited.append(schema_logic.Column("phone", "VARCHAR(255)"))
-    kinds = {(c["kind"], c["column"]) for c in schema_logic.diff_columns(proposed, edited)}
-    assert kinds == {("renamed", "full_name"), ("modified", "signup_date"), ("added", "phone")}
-    removed = schema_logic.diff_columns(proposed, proposed[:-1])
-    assert removed == [{"kind": "removed", "column": "created_at", "detail": "TIMESTAMP"}]
-
-    assert schema_logic.validate("customers", edited) == []
-    errors = schema_logic.validate("Bad Name", [schema_logic.Column("a", "VARCHAR(255)")] * 2)
-    assert any("Table name" in e for e in errors)
-    assert any("more than once" in e for e in errors)
-    assert any("primary key" in e for e in errors)
-
-    ddl = schema_logic.render_ddl("customers", proposed)
-    assert ddl.startswith("CREATE TABLE customers (") and "PRIMARY KEY (id)" in ddl
-
-
-# ---------------------------------------------------------------------------
-# demo: MCP server
-# ---------------------------------------------------------------------------
-
-
-async def test_server_declares_mcp_apps_metadata():
+async def test_mock_server_declares_mcp_apps_metadata():
     async with Client(mcp) as client:
         tools = {t.name: t for t in await client.list_tools()}
-        assert tools["propose_table"].meta["ui"] == {"resourceUri": FORM_URI, "visibility": ["model", "app"]}
-        for name in ("submit_table_design", "edit_table_design", "confirm_table_design"):
-            assert tools[name].meta["ui"]["visibility"] == ["app"]
-        assert "ui" not in (tools["create_table"].meta or {})
+        assert tools["open_form"].meta["ui"] == {"resourceUri": FORM_URI, "visibility": ["model", "app"]}
+        assert tools["submit_form"].meta["ui"]["visibility"] == ["app"]
+        assert tools["plain_tool"].meta["ui"]["visibility"] == ["model"]
         (content,) = await client.read_resource(FORM_URI)
-        assert content.mime_type == protocol.UI_MIME_TYPE
-        assert "McpExtApps" in content.text and "export{" not in content.text[-200:]
-
-
-async def test_server_form_flow_edit_review_accept():
-    async with Client(mcp) as client:
-        first = await client.call_tool(
-            "propose_table", {"table_name": "Customers", "purpose": "customer records", "fields": FIELDS}
-        )
-        again = await client.call_tool(
-            "propose_table", {"table_name": "Customers", "purpose": "customer records", "fields": FIELDS}
-        )
-        assert first.structured_content == again.structured_content
-        form = first.structured_content["form"]
-        assert form["view"] == "edit"
-        sid = form["session_id"]
-
-        early = await client.call_tool("confirm_table_design", {"session_id": sid}, raise_on_error=False)
-        assert early.is_error
-
-        columns = _edit_columns(form)
-        columns[1]["name"] = "full_name"
-        columns.append({"name": "phone", "type": "VARCHAR(255)", "nullable": True, "primary_key": False})
-        bad = await client.call_tool(
-            "submit_table_design",
-            {"session_id": sid, "table_name": "customers", "columns": columns + [dict(columns[-1])]},
-        )
-        assert bad.structured_content["form"]["view"] == "edit"
-        assert bad.structured_content["form"]["errors"]
-
-        review = await client.call_tool(
-            "submit_table_design", {"session_id": sid, "table_name": "customers", "columns": columns}
-        )
-        rform = review.structured_content["form"]
-        assert rform["view"] == "review"
-        assert [c["kind"] for c in rform["changes"]] == ["renamed", "added"]
-
-        done = await client.call_tool("confirm_table_design", {"session_id": sid})
-        result = done.structured_content["result"]
-        assert done.structured_content["status"] == "completed"
-        assert [c["name"] for c in result["columns"]] == [
-            "id",
-            "full_name",
-            "email",
-            "signup_date",
-            "created_at",
-            "phone",
-        ]
-
-        created = await client.call_tool(
-            "create_table", {"table_name": "customers", "columns": result["columns"]}
-        )
-        assert created.structured_content["status"] == "created"
-        assert created.structured_content["ddl"] == schema_logic.render_ddl(
-            "customers", [schema_logic.Column.from_dict(c) for c in result["columns"]]
-        )
-
-
-def test_form_html_inlines_the_guest_sdk_once():
-    html = form_html()
-    assert html.count("globalThis.McpExtApps={") == 1
-    assert "/*__EXT_APPS_BUNDLE__*/" not in html
+        assert content.mime_type == protocol.UI_MIME_TYPE and content.text == FORM_HTML
 
 
 # ---------------------------------------------------------------------------
@@ -253,20 +121,19 @@ def test_form_html_inlines_the_guest_sdk_once():
 # ---------------------------------------------------------------------------
 
 
-def _manager_with_demo_server():
+def _manager_with_mock_server():
     from cuga.backend.tools_env.registry.mcp_manager.mcp_manager import MCPManager
 
     mgr = MCPManager(config={})
-    mgr.mcp_transports["table_designer"] = object()
+    mgr.mcp_transports["mock_forms"] = object()
     mgr._call_transport = lambda server_name: mcp  # in-process FastMCP server as the transport
-    mgr.mcp_app_tool_meta["table_designer"] = {
-        "propose_table": {"resourceUri": FORM_URI, "visibility": ["model", "app"], "title": None},
-        "submit_table_design": {"visibility": ["app"], "title": None},
-        "confirm_table_design": {"visibility": ["app"], "title": None},
-        "create_table": {"title": None},
+    mgr.mcp_app_tool_meta["mock_forms"] = {
+        "open_form": {"resourceUri": FORM_URI, "visibility": ["model", "app"], "title": None},
+        "submit_form": {"visibility": ["app"], "title": None},
+        "plain_tool": {"visibility": ["model"], "title": None},
     }
-    mgr.original_tool_name_by_sanitized["table_designer_propose_table"] = "propose_table"
-    mgr.original_tool_name_by_sanitized["table_designer_create_table"] = "create_table"
+    mgr.original_tool_name_by_sanitized["mock_forms_open_form"] = "open_form"
+    mgr.original_tool_name_by_sanitized["mock_forms_plain_tool"] = "plain_tool"
     return mgr
 
 
@@ -280,58 +147,58 @@ def _ui_host(enabled: bool = True):
 
 
 async def test_manager_wraps_mcp_app_results_in_an_envelope():
-    mgr = _manager_with_demo_server()
-    args = {"table_name": "orders", "purpose": "orders", "fields": ["total"]}
+    mgr = _manager_with_mock_server()
+    args = {"title": "Orders", "fields": ["total"]}
     with _ui_host():
-        (text,) = await mgr._call_mcp_server_tool("table_designer", "table_designer_propose_table", args)
+        (text,) = await mgr._call_mcp_server_tool("mock_forms", "mock_forms_open_form", args)
     env = protocol.envelope_from(json.loads(text.text))
-    assert env["server"] == "table_designer" and env["tool"] == "propose_table"
+    assert env["server"] == "mock_forms" and env["tool"] == "open_form"
     assert env["resource_uri"] == FORM_URI and env["tool_input"] == args
-    assert env["tool_result"]["structuredContent"]["form"]["view"] == "edit"
+    assert env["tool_result"]["structuredContent"]["form"]["fields"] == ["total"]
 
     with _ui_host():
-        (plain,) = await mgr._call_mcp_server_tool(
-            "table_designer", "table_designer_create_table", {"table_name": "t", "columns": []}
-        )
-    assert protocol.envelope_from(json.loads(plain.text)) is None
+        (plain,) = await mgr._call_mcp_server_tool("mock_forms", "mock_forms_plain_tool", {"x": 2})
+    assert json.loads(plain.text) == {"double": 4}  # a tool without a UI is unchanged
 
 
 async def test_manager_returns_the_ordinary_result_when_the_client_cannot_show_apps():
     """Regression: SDK, API and channel callers keep getting an MCP Apps tool's plain result."""
-    mgr = _manager_with_demo_server()
-    args = {"table_name": "orders", "purpose": "orders", "fields": ["total"]}
+    mgr = _manager_with_mock_server()
+    args = {"title": "Orders", "fields": ["total"]}
     assert protocol.ui_host_enabled() is False  # the default
-    (text,) = await mgr._call_mcp_server_tool("table_designer", "table_designer_propose_table", args)
+    (text,) = await mgr._call_mcp_server_tool("mock_forms", "mock_forms_open_form", args)
     data = json.loads(text.text)
     assert protocol.envelope_from(data) is None
-    assert data["form"]["view"] == "edit"  # the tool's structured content, as before MCP Apps support
+    assert data["form"]["fields"] == ["total"]  # the tool's structured content, as before MCP Apps support
 
 
 async def test_manager_app_tool_calls_respect_visibility():
-    mgr = _manager_with_demo_server()
+    mgr = _manager_with_mock_server()
     with _ui_host():
-        proposed = await mgr._call_mcp_server_tool(
-            "table_designer",
-            "table_designer_propose_table",
-            {"table_name": "t", "purpose": "p", "fields": ["a"]},
+        opened = await mgr._call_mcp_server_tool(
+            "mock_forms", "mock_forms_open_form", {"title": "T", "fields": ["a"]}
         )
-    sid = protocol.envelope_from(json.loads(proposed[0].text))["tool_result"]["structuredContent"]["form"][
+    sid = protocol.envelope_from(json.loads(opened[0].text))["tool_result"]["structuredContent"]["form"][
         "session_id"
     ]
-    result = await mgr.call_mcp_app_tool("table_designer", "confirm_table_design", {"session_id": sid})
-    assert result["isError"] is True  # forwarded as a result, not raised
+    result = await mgr.call_mcp_app_tool(
+        "mock_forms", "submit_form", {"session_id": sid, "values": {"a": "1"}}
+    )
+    assert result["isError"] is False
+    assert result["structuredContent"] == {"status": "completed", "session_id": sid, "values": {"a": "1"}}
+    bad = await mgr.call_mcp_app_tool("mock_forms", "submit_form", {"session_id": sid})
+    assert bad["isError"] is True  # a tool error is forwarded to the app as a result, not raised
 
-    mgr.mcp_app_tool_meta["table_designer"]["create_table"] = {"visibility": ["model"]}
-    with pytest.raises(PermissionError):
-        await mgr.call_mcp_app_tool("table_designer", "create_table", {})
+    with pytest.raises(PermissionError):  # model-only tool
+        await mgr.call_mcp_app_tool("mock_forms", "plain_tool", {"x": 1})
     with pytest.raises(LookupError):
-        await mgr.call_mcp_app_tool("table_designer", "no_such_tool", {})
+        await mgr.call_mcp_app_tool("mock_forms", "no_such_tool", {})
     with pytest.raises(LookupError):
-        await mgr.call_mcp_app_tool("other_server", "propose_table", {})
+        await mgr.call_mcp_app_tool("other_server", "open_form", {})
     with pytest.raises(PermissionError):
-        await mgr.read_mcp_app_resource("table_designer", "ui://table-designer/other")
-    content = await mgr.read_mcp_app_resource("table_designer", FORM_URI)
-    assert content["mimeType"] == protocol.UI_MIME_TYPE
+        await mgr.read_mcp_app_resource("mock_forms", "ui://mock-forms/other")
+    content = await mgr.read_mcp_app_resource("mock_forms", FORM_URI)
+    assert content["mimeType"] == protocol.UI_MIME_TYPE and content["text"] == FORM_HTML
 
 
 # ---------------------------------------------------------------------------
@@ -339,9 +206,9 @@ async def test_manager_app_tool_calls_respect_visibility():
 # ---------------------------------------------------------------------------
 
 
-def _propose_tool(provider, app_name: str = "table_designer"):
+def _open_form_tool(provider, app_name: str = "mock_forms"):
     return provider.create_tool_from_api_dict(
-        f"{app_name}_propose_table",
+        f"{app_name}_open_form",
         {
             "description": "d",
             "parameters": {"properties": {"table_name": {"type": "string"}}, "required": []},
@@ -355,8 +222,8 @@ async def test_registry_tool_raises_pause_for_mcp_app_results(monkeypatch):
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers import registry as provider
 
     env = protocol.build_envelope(
-        server="table_designer",
-        tool="propose_table",
+        server="mock_forms",
+        tool="open_form",
         tool_title="Propose Table",
         resource_uri=FORM_URI,
         arguments={"table_name": "t"},
@@ -367,10 +234,10 @@ async def test_registry_tool_raises_pause_for_mcp_app_results(monkeypatch):
         return env
 
     monkeypatch.setattr(provider, "call_api", fake_call_api)
-    tool = _propose_tool(provider)
+    tool = _open_form_tool(provider)
     with _ui_host(), pytest.raises(McpAppInteractionPause) as caught:
         await tool.coroutine(table_name="t")
-    assert caught.value.tool_name == "table_designer_propose_table"
+    assert caught.value.tool_name == "mock_forms_open_form"
     assert caught.value.agent_id == "agent-1"
     assert caught.value.envelope["resource_uri"] == FORM_URI
 
@@ -382,16 +249,14 @@ async def test_registry_tool_raises_pause_for_mcp_app_results(monkeypatch):
 
 def _pause() -> McpAppInteractionPause:
     env = protocol.build_envelope(
-        server="table_designer",
-        tool="propose_table",
+        server="mock_forms",
+        tool="open_form",
         tool_title=None,
         resource_uri=FORM_URI,
         arguments={"table_name": "customers"},
         result={"content": [{"type": "text", "text": "Proposed 5 columns."}], "isError": False},
     )[protocol.ENVELOPE_KEY]
-    return McpAppInteractionPause(
-        env, app_name="table_designer", tool_name="table_designer_propose_table", agent_id=None
-    )
+    return McpAppInteractionPause(env, app_name="mock_forms", tool_name="mock_forms_open_form", agent_id=None)
 
 
 def test_create_pause_action_records_the_interaction():
@@ -400,8 +265,8 @@ def test_create_pause_action_records_the_interaction():
     assert action.action_id == ActionIds.MCP_APP_INTERACTION
     assert action.type == ActionType.MCP_APP.value
     item = interaction_store.get(info["interaction_id"])
-    assert item.thread_id == "thread-1" and item.server == "table_designer" and item.status == "pending"
-    assert "table_designer_propose_table" in note and "did not run" in note
+    assert item.thread_id == "thread-1" and item.server == "mock_forms" and item.status == "pending"
+    assert "mock_forms_open_form" in note and "did not run" in note
     assert interaction_id_of(action.additional_data) == info["interaction_id"]
 
 
@@ -412,15 +277,15 @@ def test_outcome_message_prefers_model_context_then_server_result():
         user_id=None,
         agent_id=None,
         server="s",
-        tool="propose_table",
-        agent_tool="s_propose_table",
+        tool="open_form",
+        agent_tool="s_open_form",
         resource_uri=FORM_URI,
         tool_input={"table_name": "x"},
         tool_result={},
     )
     store.record_app_result(
         item.interaction_id,
-        "confirm_table_design",
+        "submit_form",
         {},
         {"content": [{"type": "text", "text": "accepted"}], "structuredContent": {"server": True}},
     )
@@ -514,7 +379,7 @@ def test_api_reads_the_resource_of_the_recorded_server(api):
     assert r.status_code == 200
     body = r.json()
     assert body["html"] == "<p>form</p>" and body["csp"] == {"connectDomains": ["https://api.example.com"]}
-    assert api.calls[-1][1] == {"server": "table_designer", "uri": FORM_URI}
+    assert api.calls[-1][1] == {"server": "mock_forms", "uri": FORM_URI}
 
     assert api.client.post("/api/mcp-apps/resource", json={"interaction_id": "nope"}).status_code == 404
     other = api.client.post(
@@ -526,15 +391,15 @@ def test_api_reads_the_resource_of_the_recorded_server(api):
 def test_api_tool_calls_are_recorded_and_closed_after_completion(api):
     r = api.client.post(
         "/api/mcp-apps/tools/call",
-        json={"interaction_id": api.iid, "name": "submit_table_design", "arguments": {"a": 1}},
+        json={"interaction_id": api.iid, "name": "submit_form", "arguments": {"a": 1}},
     )
     assert r.status_code == 200
     assert api.calls[-1][1] == {
-        "server": "table_designer",
-        "name": "submit_table_design",
+        "server": "mock_forms",
+        "name": "submit_form",
         "arguments": {"a": 1},
     }
-    assert interaction_store.get(api.iid).app_results[-1]["tool"] == "submit_table_design"
+    assert interaction_store.get(api.iid).app_results[-1]["tool"] == "submit_form"
 
     assert (
         api.client.post(
@@ -595,15 +460,15 @@ async def test_call_api_asks_for_the_envelope_only_for_an_app_client(monkeypatch
 
     monkeypatch.setattr(provider, "post_registry_call", fake_post)
     with _ui_host(enabled):
-        await provider.call_api("table_designer", "table_designer_create_table", {"table_name": "t"})
+        await provider.call_api("mock_forms", "mock_forms_plain_tool", {"table_name": "t"})
     assert sent, "the registry was not called"
     if enabled:
         assert sent[-1]["mcp_apps"] is True
     else:
         # Unchanged wire format for every caller that cannot show forms.
         assert sent[-1] == {
-            "function_name": "table_designer_create_table",
-            "app_name": "table_designer",
+            "function_name": "mock_forms_plain_tool",
+            "app_name": "mock_forms",
             "args": {"table_name": "t"},
         }
 
@@ -737,7 +602,7 @@ async def test_callback_routes_user_actions_to_suggest_human_actions(action_id):
 
 
 def test_package_data_ships_the_non_python_files():
-    """The sandbox proxy page and the demo form must be in the wheel, not only in a checkout."""
+    """The sandbox proxy page must be in the wheel, not only in a checkout."""
     import fnmatch
     import tomllib
     from pathlib import Path
@@ -747,11 +612,7 @@ def test_package_data_ships_the_non_python_files():
         "cuga"
     ]
     package = root / "src" / "cuga"
-    files = [
-        package / "backend" / "mcp_apps" / "sandbox_proxy.html",
-        package / "demo_tools" / "table_designer_mcp" / "form_app.html",
-        package / "demo_tools" / "table_designer_mcp" / "third_party" / "ext-apps-app-with-deps.js",
-    ]
+    files = [package / "backend" / "mcp_apps" / "sandbox_proxy.html"]
     for path in files:
         rel = path.relative_to(package).as_posix()
         assert path.is_file(), rel
@@ -761,7 +622,7 @@ def test_package_data_ships_the_non_python_files():
 @pytest.mark.parametrize(
     "ui_host,app_name",
     [
-        (False, "table_designer"),  # no client can show the form: never pause
+        (False, "mock_forms"),  # no client can show the form: never pause
         (True, "other_server"),  # an envelope that names a server other than the one called
     ],
 )
@@ -770,8 +631,8 @@ async def test_lookalike_envelopes_are_ordinary_results(monkeypatch, ui_host, ap
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers import registry as provider
 
     forged = protocol.build_envelope(
-        server="table_designer",
-        tool="propose_table",
+        server="mock_forms",
+        tool="open_form",
         tool_title=None,
         resource_uri=FORM_URI,
         arguments={},
@@ -783,4 +644,36 @@ async def test_lookalike_envelopes_are_ordinary_results(monkeypatch, ui_host, ap
 
     monkeypatch.setattr(provider, "call_api", fake_call_api)
     with _ui_host(ui_host):
-        assert await _propose_tool(provider, app_name).coroutine(table_name="t") == forged
+        assert await _open_form_tool(provider, app_name).coroutine(table_name="t") == forged
+
+
+@pytest.mark.parametrize(("header", "expected"), [({"X-CUGA-MCP-Apps": "1"}, True), ({}, False)])
+def test_stream_passes_the_client_capability_to_the_run(monkeypatch, header, expected):
+    """``/stream`` turns the web chat's header into the run's MCP Apps flag; other callers get False."""
+    from unittest.mock import AsyncMock
+
+    from cuga.backend.server import main
+    from cuga.backend.server.auth import gateway_tokens
+
+    seen = {}
+
+    async def fake_event_stream(*_args, **kwargs):
+        seen.update(kwargs)
+        yield "event: Answer\ndata: ok\n\n"
+
+    monkeypatch.setattr(main, "event_stream", fake_event_stream)
+    monkeypatch.setattr(main, "app_state", SimpleNamespace(current_llm=None, agent=None))
+    monkeypatch.setattr(main, "_assert_run_thread_access", AsyncMock())
+    monkeypatch.setattr(main, "get_attachment_snapshot", AsyncMock(return_value=None))
+    monkeypatch.setattr(main.events_bridge, "forwards_to_events", lambda *args: False)
+    monkeypatch.setattr(gateway_tokens, "provider_from_request", lambda *args: None)
+
+    app = FastAPI()
+    app.add_api_route("/stream", main.stream, methods=["POST"])
+    app.dependency_overrides[main.require_chat_access] = lambda: None
+    # A draft (preview) chat: no conversation record or thread lease is involved.
+    response = TestClient(app).post(
+        "/stream", json={"query": "hi"}, headers={"X-Use-Draft": "true", "X-Thread-ID": "t-1", **header}
+    )
+    assert response.status_code == 200, response.text
+    assert seen["mcp_apps"] is expected
