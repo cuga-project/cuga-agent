@@ -32,6 +32,7 @@ class CugaLiteHumanInTheLoopHandler:
     def __init__(self):
         self._action_handlers: Dict[str, Callable] = {
             ActionIds.TOOL_APPROVAL: self._handle_tool_approval,
+            ActionIds.MCP_APP_INTERACTION: self._handle_mcp_app_interaction,
         }
 
     def handle_human_response(self, state: AgentState, node_name: str) -> Command:
@@ -52,6 +53,32 @@ class CugaLiteHumanInTheLoopHandler:
     def add_action_handler(self, action_id: str, handler: Callable):
         """Add a custom action handler"""
         self._action_handlers[action_id] = handler
+
+    def _handle_mcp_app_interaction(self, state: AgentState, node_name: str) -> Command:
+        """The user finished (or closed) an MCP App form: give the agent the tool's result and continue.
+
+        ``additional_data`` was restored from the server's own action by WaitForResponse, so the
+        interaction id it names is trusted; the client's id must match it. The result itself comes
+        from the server-side interaction record, not from the request.
+        """
+        from cuga.backend.mcp_apps.interaction import interaction_id_of, outcome_message
+        from cuga.backend.mcp_apps.store import interaction_store
+
+        response = state.hitl_response
+        expected = interaction_id_of(response.additional_data)
+        metadata = response.metadata or {}
+        if not expected or metadata.get("interaction_id") != expected:
+            logger.warning("MCP App response does not match the pending interaction; ignoring it")
+            state.final_answer = "That form response no longer matches the pending request. Please try again."
+            state.sender = node_name
+            return Command(update=state.model_dump(), goto=NodeNames.FINAL_ANSWER_AGENT)
+
+        item = interaction_store.complete(expected)
+        message = outcome_message(item, metadata)
+        logger.info(f"MCP App interaction {expected} finished; resuming CugaLite")
+        state.chat_messages = [*(state.chat_messages or []), HumanMessage(content=message)]
+        state.sender = node_name
+        return Command(update=state.model_dump(), goto="CugaLiteSubgraph")
 
     def _handle_tool_approval(self, state: AgentState, node_name: str) -> Command:
         """Handle tool execution approval response"""
@@ -383,8 +410,11 @@ class CugaLiteNode(BaseNode):
             return self.hitl_handler.handle_human_response(state, self.name)
 
         # Check if we need to route to HITL for tool approval (first time, after subgraph)
-        if state.hitl_action and state.hitl_action.action_id == ActionIds.TOOL_APPROVAL:
-            logger.info("Tool approval required - routing to SuggestHumanActions")
+        if state.hitl_action and state.hitl_action.action_id in (
+            ActionIds.TOOL_APPROVAL,
+            ActionIds.MCP_APP_INTERACTION,
+        ):
+            logger.info(f"{state.hitl_action.action_id} requires the user - routing to SuggestHumanActions")
             # IMPORTANT: Set sender so WaitForResponse knows where to return to
             state.sender = self.name  # Update state object directly
             logger.info(f"Set sender to: {state.sender}")
